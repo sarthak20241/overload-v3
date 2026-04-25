@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
   RefreshControl, Modal, Pressable, TextInput, useWindowDimensions,
-  KeyboardAvoidingView, Platform, Keyboard,
+  Platform, Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -227,28 +227,26 @@ function BottomDrawer({
 
   useEffect(() => { if (!visible) setShown(false); }, [visible]);
 
-  // Track keyboard height — KeyboardAvoidingView is unreliable inside Android Modals.
+  // iOS Modal does NOT resize when the keyboard opens, so we track keyboard
+  // height and lift the sheet manually. On Android the Modal's window inherits
+  // `adjustResize`, so the modal area shrinks automatically and adding margin
+  // would double-compensate (the drawer would shoot up to the top of the
+  // screen). On Android, useWindowDimensions().height also reflects the
+  // already-resized area, so it can be used directly.
+  const isIos = Platform.OS === 'ios';
   useEffect(() => {
-    if (!visible) { setKbHeight(0); return; }
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvt, (e) => {
+    if (!visible || !isIos) { setKbHeight(0); return; }
+    const showSub = Keyboard.addListener('keyboardWillShow', (e) => {
       setKbHeight(e.endCoordinates?.height ?? 0);
     });
-    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    const hideSub = Keyboard.addListener('keyboardWillHide', () => setKbHeight(0));
     return () => {
       showSub.remove();
       hideSub.remove();
     };
-  }, [visible]);
+  }, [visible, isIos]);
 
-  // Layout strategy: sheet hugs its content and is lifted above the keyboard
-  // by `marginBottom: kbHeight`. The parent uses justifyContent: 'flex-end' so
-  // the sheet anchors at the bottom of the available area. We do NOT force a
-  // fixed height — that was causing the sheet to stretch to fill the available
-  // space with content stuck at the top. The Save button naturally sits at the
-  // bottom of the content because the content is the sheet's full extent.
-  const sheetMaxHeight = (height - kbHeight) * 0.9;
+  const sheetMaxHeight = isIos ? (height - kbHeight) * 0.9 : height * 0.9;
 
   return (
     <Modal
@@ -701,12 +699,7 @@ function LogMeasurementsDrawer({
         </TouchableOpacity>
       </View>
       <ScrollView
-        // flex: 1 lets the ScrollView claim all space between the header and
-        // the Save-button footer when the drawer has a fixed height (keyboard
-        // open). minHeight: 0 is required so flex shrink can take effect.
-        // maxHeight is a safety cap when the keyboard is closed and the sheet
-        // is content-sized.
-        style={{ flex: 1, minHeight: 0, maxHeight: winH * 0.7 }}
+        style={{ flexGrow: 0, flexShrink: 1, maxHeight: winH * 0.65 }}
         contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 16 }}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled
