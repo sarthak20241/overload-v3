@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
   StyleSheet, ActivityIndicator, Modal, Pressable,
+  Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -61,8 +62,10 @@ export default function ActiveWorkoutScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
   const workout = useWorkout();
   const { user } = useClerkUser();
+  const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -100,6 +103,21 @@ export default function ActiveWorkoutScreen() {
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
   const prevSets = currentEx?.previousSets;
+
+  // Track keyboard height on iOS — Modal does not auto-resize, so the custom
+  // exercise form needs to lift above the keyboard manually. Android's window
+  // already shrinks via adjustResize.
+  useEffect(() => {
+    if (!showCustomForm || Platform.OS !== 'ios') { setKbHeight(0); return; }
+    const showSub = Keyboard.addListener('keyboardWillShow', (e) => {
+      setKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener('keyboardWillHide', () => setKbHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [showCustomForm]);
 
   // Load routine on mount
   useEffect(() => {
@@ -1121,9 +1139,16 @@ export default function ActiveWorkoutScreen() {
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
-            style={[styles.modalSheet, { backgroundColor: C.elevated }]}
+            style={[
+              styles.modalSheet,
+              {
+                backgroundColor: C.elevated,
+                marginBottom: kbHeight,
+                maxHeight: (winH - kbHeight) * 0.9,
+              },
+            ]}
           >
-            <Pressable>
+            <Pressable style={{ flexShrink: 1 }}>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
               <View style={styles.modalHeader}>
                 <Text style={[styles.modalTitle, { color: C.foreground }]}>Create Exercise</Text>
@@ -1132,8 +1157,8 @@ export default function ActiveWorkoutScreen() {
                 </TouchableOpacity>
               </View>
               <ScrollView
-                style={{ maxHeight: 480 }}
-                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 32 }}
+                style={{ flexGrow: 0, flexShrink: 1 }}
+                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
                 showsVerticalScrollIndicator={true}
                 keyboardShouldPersistTaps="handled"
               >
@@ -1234,7 +1259,9 @@ export default function ActiveWorkoutScreen() {
                     />
                   </View>
                 </View>
+              </ScrollView>
 
+              <View style={[styles.formFooter, { borderTopColor: C.borderSubtle, paddingBottom: Math.max(insets.bottom, Spacing.xl) }]}>
                 <TouchableOpacity
                   onPress={addCustomExercise}
                   disabled={!customName.trim()}
@@ -1246,7 +1273,7 @@ export default function ActiveWorkoutScreen() {
                   <Feather name="check" size={15} color={Colors.primaryFg} />
                   <Text style={styles.formSaveBtnText}>Add Exercise</Text>
                 </TouchableOpacity>
-              </ScrollView>
+              </View>
             </Pressable>
           </Animated.View>
         </Pressable>
@@ -1642,6 +1669,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: FontWeight.semibold,
   },
+  formFooter: {
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+  },
   formSaveBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1649,7 +1681,6 @@ const styles = StyleSheet.create({
     gap: 8,
     height: 48,
     borderRadius: Radius.xl,
-    marginTop: Spacing.xl,
   },
   formSaveBtnText: {
     fontSize: FontSize.base,
