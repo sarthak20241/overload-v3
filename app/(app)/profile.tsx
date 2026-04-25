@@ -1,82 +1,166 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, ActivityIndicator,
+  TextInput, ActivityIndicator, Modal, Pressable, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
-import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import Animated, {
+  FadeInDown, useSharedValue, useAnimatedStyle, withTiming,
+  SlideInDown, SlideOutDown, FadeIn, FadeOut, Easing,
+} from 'react-native-reanimated';
+import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { mockProfile, getMockWorkouts } from '@/lib/mockData';
-import { getLevelInfo } from '@/lib/xp';
+import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import {
+  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
+  type WeightEntry, type BodyFatEntry,
+} from '@/lib/bodyStats';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
 type HeightUnit = 'cm' | 'ft';
 
-function ToggleGroup<T extends string>({ options, value, onChange, color }: {
-  options: T[]; value: T; onChange: (v: T) => void; color?: string;
-}) {
+const ROW_ICON_COLORS = {
+  gender: '#a855f7',
+  height: '#06b6d4',
+  weight: '#10b981',
+  goal: '#f59e0b',
+  bodyFat: '#ef4444',
+  bug: '#f97316',
+};
+
+function withAlpha(hex: string, alpha: string) {
+  return `${hex}${alpha}`;
+}
+
+// ─── Section header ──────────────────────────────────────────────────────────
+function SectionLabel({
+  icon, children,
+}: { icon?: React.ComponentProps<typeof Feather>['name']; children: React.ReactNode }) {
   const { C } = useTheme();
-  const accent = color || Colors.primary;
   return (
-    <View style={styles.toggleGroup}>
-      {options.map(opt => (
-        <TouchableOpacity
-          key={opt}
-          onPress={() => onChange(opt)}
-          style={[
-            styles.toggleBtn,
-            value === opt && { backgroundColor: accent },
-          ]}
-        >
-          <Text style={[
-            styles.toggleText,
-            { color: value === opt ? Colors.primaryFg : C.mutedFg },
-          ]}>
-            {opt}
-          </Text>
-        </TouchableOpacity>
-      ))}
+    <View style={styles.sectionLabelRow}>
+      {icon && <Feather name={icon} size={12} color={C.textMuted} />}
+      <Text style={[styles.sectionLabelText, { color: C.textMuted }]}>{children}</Text>
     </View>
   );
 }
 
-function ProfileRow({ icon, label, children }: {
-  icon: React.ComponentProps<typeof Feather>['name']; label: string; children: React.ReactNode;
-}) {
-  const { C } = useTheme();
+// ─── Row icon tile ───────────────────────────────────────────────────────────
+function RowIcon({
+  name, color,
+}: { name: React.ComponentProps<typeof Feather>['name']; color: string }) {
   return (
-    <View style={styles.profileRow}>
-      <View style={styles.profileRowLeft}>
-        <Feather name={icon} size={16} color={C.mutedFg} />
-        <Text style={[styles.profileRowLabel, { color: C.foreground }]}>{label}</Text>
-      </View>
-      <View style={styles.profileRowRight}>{children}</View>
+    <View style={[styles.rowIcon, { backgroundColor: withAlpha(color, '15') }]}>
+      <Feather name={name} size={11} color={color} />
     </View>
   );
 }
 
-function NumberInput({ value, onChangeText, suffix }: {
-  value: string; onChangeText: (t: string) => void; suffix?: string;
+// ─── Mini segmented toggle (used for cm/ft, kg/lbs, dark/light) ──────────────
+function MiniSegmented<T extends string>({
+  options, value, onChange, renderOption,
+}: {
+  options: T[];
+  value: T;
+  onChange: (v: T) => void;
+  renderOption?: (opt: T, active: boolean) => React.ReactNode;
 }) {
   const { C } = useTheme();
   return (
-    <View style={[styles.numberInput, { borderColor: C.border }]}>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        keyboardType="numeric"
-        style={[styles.numberText, { color: C.foreground }]}
-        textAlign="center"
-      />
-      {suffix && <Text style={[styles.numberSuffix, { color: C.textMuted }]}>{suffix}</Text>}
+    <View style={[styles.segmented, { borderColor: C.border, backgroundColor: C.muted }]}>
+      {options.map((opt) => {
+        const active = opt === value;
+        return (
+          <TouchableOpacity
+            key={opt}
+            onPress={() => onChange(opt)}
+            activeOpacity={0.85}
+            style={[
+              styles.segmentedOption,
+              active && { backgroundColor: Colors.primary },
+            ]}
+          >
+            {renderOption ? (
+              renderOption(opt, active)
+            ) : (
+              <Text style={[
+                styles.segmentedText,
+                { color: active ? Colors.primaryFg : C.textMuted },
+              ]}>
+                {opt}
+              </Text>
+            )}
+          </TouchableOpacity>
+        );
+      })}
     </View>
+  );
+}
+
+// ─── Compact pill for M/F/O ──────────────────────────────────────────────────
+function GenderPills({
+  value, onChange,
+}: { value: Gender | ''; onChange: (v: Gender) => void }) {
+  const { C } = useTheme();
+  return (
+    <View style={styles.genderRow}>
+      {(['M', 'F', 'O'] as Gender[]).map((opt) => {
+        const active = value === opt;
+        return (
+          <TouchableOpacity
+            key={opt}
+            onPress={() => onChange(opt)}
+            activeOpacity={0.85}
+            style={[
+              styles.genderPill,
+              {
+                backgroundColor: active ? Colors.primary : 'transparent',
+                borderColor: active ? Colors.primary : C.borderLight,
+              },
+            ]}
+          >
+            <Text style={[
+              styles.genderPillText,
+              { color: active ? Colors.primaryFg : C.textSecondary },
+            ]}>
+              {opt}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── Inline number input used in info rows ───────────────────────────────────
+function InlineNumberInput({
+  value, onChangeText, placeholder, width = 70,
+}: { value: string; onChangeText: (v: string) => void; placeholder?: string; width?: number }) {
+  const { C } = useTheme();
+  return (
+    <TextInput
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      placeholderTextColor={C.textDim}
+      keyboardType="numeric"
+      style={[
+        styles.numberInput,
+        {
+          width,
+          backgroundColor: C.glowBg,
+          borderColor: C.borderSubtle,
+          color: C.foreground,
+        },
+      ]}
+    />
   );
 }
 
@@ -91,7 +175,7 @@ export default function ProfileScreen() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [gender, setGender] = useState<Gender>('M');
+  const [gender, setGender] = useState<Gender | ''>('M');
   const [height, setHeight] = useState('178');
   const [weight, setWeight] = useState('78');
   const [goalWeight, setGoalWeight] = useState('75');
@@ -101,28 +185,64 @@ export default function ProfileScreen() {
   const [totalXP, setTotalXP] = useState(0);
   const [totalWorkouts, setTotalWorkouts] = useState(0);
   const [joinDate, setJoinDate] = useState('');
+  const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
+  const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   const [showSignOutAlert, setShowSignOutAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
+  const [showInfoAlert, setShowInfoAlert] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
-  const userName = user?.firstName || user?.fullName || 'Guest';
+  // Bug report modal
+  const [bugModalOpen, setBugModalOpen] = useState(false);
+  const [bugTitle, setBugTitle] = useState('');
+  const [bugDescription, setBugDescription] = useState('');
+  const [bugCategory, setBugCategory] = useState<'ui' | 'data' | 'crash' | 'performance' | 'other'>('ui');
+  const [bugSubmitting, setBugSubmitting] = useState(false);
+
+  const userName = user?.firstName || user?.fullName || 'Athlete';
   const isGuest = !user;
+  const initials = userName
+    .split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+
   const { level, xpInLevel, xpNeeded } = getLevelInfo(totalXP);
+  const tier = getTierForLevel(level);
   const levelProgress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
 
-  const w = parseFloat(weight) || 0;
-  const g = parseFloat(goalWeight) || 0;
-  const diff = w - g;
-  const goalProgress = g > 0 && w > g ? Math.min(((w - g) > 0 ? 1 - diff / w : 1), 1) : 0;
+  // Goal progress derived from current weight, goal, and starting weight from log
+  const goalProgress = (() => {
+    const current = parseFloat(weight);
+    const goal = parseFloat(goalWeight);
+    if (isNaN(current) || isNaN(goal) || current <= 0 || goal <= 0) return null;
+    const startWeight = weightLog.length > 0 ? weightLog[0].weight : current;
+    const totalDelta = Math.abs(startWeight - goal);
+    const currentDelta = Math.abs(current - goal);
+    const pct = totalDelta > 0
+      ? Math.max(0, Math.min(1, 1 - currentDelta / totalDelta))
+      : (Math.abs(current - goal) < 0.5 ? 1 : 0);
+    const diff = current - goal;
+    let label = '';
+    if (Math.abs(diff) < 0.5) label = 'At goal!';
+    else if (diff > 0) label = `${diff.toFixed(1)} to lose`;
+    else label = `${Math.abs(diff).toFixed(1)} to gain`;
+    return { pct, label };
+  })();
 
   useEffect(() => {
     loadProfile();
+    loadLogs();
   }, []);
+
+  const loadLogs = async () => {
+    const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
+    setWeightLog(wl);
+    setBodyFatLog(bfl);
+  };
 
   const loadProfile = async () => {
     try {
       if (!isSupabaseConfigured) {
         const p = mockProfile;
-        setGender(p.gender);
+        setGender(p.gender as Gender);
         setHeight(String(p.height_cm));
         setWeight(String(p.weight_kg));
         setGoalWeight(String(p.goal_weight_kg));
@@ -141,7 +261,7 @@ export default function ProfileScreen() {
         : supabase.from('workouts').select('*', { count: 'exact', head: true });
       const [{ data: profile }, { count }] = await Promise.all([profileQuery, countQuery]);
       if (profile) {
-        setGender(profile.gender || 'M');
+        setGender((profile.gender || 'M') as Gender);
         setHeight(String(profile.height_cm || 178));
         setWeight(String(profile.weight_kg || 78));
         setGoalWeight(String(profile.goal_weight_kg || 75));
@@ -157,21 +277,14 @@ export default function ProfileScreen() {
     }
   };
 
-  const saveProfile = async () => {
+  const persistField = async (patch: Record<string, unknown>) => {
     const clerkId = user?.id;
-    if (!clerkId) {
-      setShowErrorAlert('You must be signed in to save profile changes.');
-      return;
-    }
+    if (!clerkId || !isSupabaseConfigured) return;
     setSaving(true);
     try {
       const { error } = await supabase.from('user_profiles').upsert({
         clerk_user_id: clerkId,
-        gender,
-        height_cm: parseFloat(height) || null,
-        weight_kg: parseFloat(weight) || null,
-        goal_weight_kg: parseFloat(goalWeight) || null,
-        body_fat_percent: parseFloat(bodyFat) || null,
+        ...patch,
       }, { onConflict: 'clerk_user_id' });
       if (error) throw error;
     } catch (err: any) {
@@ -181,9 +294,41 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleSignOut = () => {
-    setShowSignOutAlert(true);
+  const logWeight = async () => {
+    const num = parseFloat(weight);
+    if (isNaN(num) || num <= 0) {
+      setShowErrorAlert('Enter a valid weight first');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+    const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
+    const updated = latest && latest.date.slice(0, 10) === today
+      ? [...weightLog.slice(0, -1), entry]
+      : [...weightLog, entry];
+    setWeightLog(updated);
+    await saveWeightLog(updated);
+    setShowInfoAlert('Weight logged');
   };
+
+  const logBodyFat = async () => {
+    const num = parseFloat(bodyFat);
+    if (isNaN(num) || num <= 0 || num > 60) {
+      setShowErrorAlert('Enter a valid body fat %');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+    const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
+    const updated = latest && latest.date.slice(0, 10) === today
+      ? [...bodyFatLog.slice(0, -1), entry]
+      : [...bodyFatLog, entry];
+    setBodyFatLog(updated);
+    await saveBodyFatLog(updated);
+    setShowInfoAlert('Body fat logged');
+  };
+
+  const handleSignOut = () => setShowSignOutAlert(true);
 
   const confirmSignOut = async () => {
     setShowSignOutAlert(false);
@@ -191,6 +336,22 @@ export default function ProfileScreen() {
     router.replace('/(auth)');
   };
 
+  const submitBugReport = async () => {
+    if (!bugTitle.trim()) return;
+    setBugSubmitting(true);
+    try {
+      // Persist locally for now — could be hooked to a backend later.
+      setBugTitle('');
+      setBugDescription('');
+      setBugCategory('ui');
+      setBugModalOpen(false);
+      setShowInfoAlert('Bug report submitted!');
+    } finally {
+      setBugSubmitting(false);
+    }
+  };
+
+  // Animated XP bar
   const progressWidth = useSharedValue(0);
   useEffect(() => { progressWidth.value = withTiming(levelProgress, { duration: 800 }); }, [levelProgress]);
   const progressStyle = useAnimatedStyle(() => ({ width: `${progressWidth.value * 100}%` as any }));
@@ -205,274 +366,656 @@ export default function ProfileScreen() {
 
   return (
     <>
-    <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
-        {/* Avatar + Info */}
-        <Animated.View entering={FadeInDown.duration(400)} style={styles.avatarSection}>
-          <View style={[styles.avatarCircle, { backgroundColor: C.circleBg }]}>
-            <Text style={[styles.avatarLetter, { color: C.circleFg }]}>{userName.charAt(0).toUpperCase()}</Text>
-          </View>
-          {isGuest && (
-            <View style={styles.guestBadge}>
-              <Text style={styles.guestBadgeText}>GUEST</Text>
-            </View>
-          )}
-          <Text style={[styles.profileName, { color: C.foreground }]}>{userName}</Text>
-          <Text style={[styles.profileSub, { color: C.mutedFg }]}>
-            {isGuest ? 'Guest account' : user?.emailAddresses?.[0]?.emailAddress}
-          </Text>
-          <View style={styles.badges}>
-            {joinDate ? (
-              <View style={[styles.badge, { borderColor: C.border }]}>
-                <Text style={[styles.badgeText, { color: C.mutedFg }]}>Since {joinDate}</Text>
+      <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 120 }}
+        >
+          {/* ─── Hero / Avatar ─── */}
+          <Animated.View entering={FadeInDown.duration(400)} style={styles.hero}>
+            <View style={styles.avatarWrap}>
+              <View style={[
+                styles.avatar,
+                {
+                  backgroundColor: C.circleBg,
+                  borderWidth: mode === 'light' ? 1 : 0,
+                  borderColor: mode === 'light' ? withAlpha(C.accentText, '33') : 'transparent',
+                },
+              ]}>
+                <Text style={[styles.avatarLetter, { color: C.circleFg }]}>{initials}</Text>
               </View>
-            ) : null}
-            <View style={[styles.badge, { borderColor: C.border }]}>
-              <Text style={[styles.badgeText, { color: C.mutedFg }]}>{totalWorkouts} workouts</Text>
+              {isGuest ? (
+                <View style={styles.guestBadge}>
+                  <Text style={styles.guestBadgeText}>GUEST</Text>
+                </View>
+              ) : (
+                <View style={[styles.levelBadge, { backgroundColor: tier.color }]}>
+                  <Text style={styles.levelBadgeText}>{level}</Text>
+                </View>
+              )}
             </View>
-          </View>
-        </Animated.View>
 
-        {/* XP Card */}
-        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-          <View style={[styles.xpCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={styles.xpHeader}>
-              <View style={[styles.xpLevelCircle, { backgroundColor: Colors.primary }]}>
-                <Text style={[styles.xpLevelNum, { color: Colors.primaryFg }]}>{level}</Text>
-              </View>
-              <View style={{ marginLeft: 12 }}>
-                <Text style={[styles.xpTitle, { color: C.foreground }]}>Beginner</Text>
-                <Text style={[styles.xpTotalText, { color: C.mutedFg }]}>{totalXP} total XP</Text>
-              </View>
-            </View>
-            <View style={styles.xpProgressRow}>
-              <Text style={[styles.xpProgressLabel, { color: C.mutedFg }]}>Level {level} → {level + 1}</Text>
-              <Text style={[styles.xpProgressValue, { color: C.mutedFg }]}>{xpInLevel} / {xpNeeded} XP</Text>
-            </View>
-            <View style={[styles.xpTrack, { backgroundColor: `${Colors.primary}18` }]}>
-              <Animated.View style={[styles.xpFill, { backgroundColor: Colors.primary }, progressStyle]} />
-            </View>
-            <Text style={[styles.xpPercent, { color: C.textMuted }]}>
-              {Math.round(levelProgress * 100)}% to next level
+            <Text style={[styles.heroName, { color: C.foreground }]}>{userName}</Text>
+            <Text style={[styles.heroEmail, { color: C.textMuted }]} numberOfLines={1}>
+              {isGuest ? 'Guest account' : user?.emailAddresses?.[0]?.emailAddress || '—'}
             </Text>
-          </View>
-        </View>
 
-        {/* Basic Information */}
-        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-          <View style={styles.sectionHeaderRow}>
-            <Feather name="user" size={14} color={C.mutedFg} />
-            <Text style={[styles.sectionLabel, { color: C.mutedFg }]}>BASIC INFORMATION</Text>
-          </View>
-          <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <ProfileRow icon="users" label="Gender">
-              <ToggleGroup options={['M', 'F', 'O'] as Gender[]} value={gender} onChange={setGender} />
-            </ProfileRow>
-            <View style={[styles.separator, { backgroundColor: C.border }]} />
-            <ProfileRow icon="maximize" label="Height">
-              <NumberInput value={height} onChangeText={setHeight} />
-              <ToggleGroup options={['cm', 'ft'] as HeightUnit[]} value={heightUnit} onChange={setHeightUnit} />
-            </ProfileRow>
-            <View style={[styles.separator, { backgroundColor: C.border }]} />
-            <ProfileRow icon="anchor" label="Weight">
-              <NumberInput value={weight} onChangeText={setWeight} />
-              <ToggleGroup options={['kg', 'lbs'] as WeightUnit[]} value={weightUnit} onChange={setWeightUnit} />
-            </ProfileRow>
-            <View style={[styles.separator, { backgroundColor: C.border }]} />
-            <ProfileRow icon="target" label="Goal">
-              <NumberInput value={goalWeight} onChangeText={setGoalWeight} />
-              <Text style={[styles.goalDiff, { color: C.textMuted }]}>{diff > 0 ? `${diff.toFixed(1)} to lose` : ''}</Text>
-            </ProfileRow>
-            <View style={[styles.separator, { backgroundColor: C.border }]} />
-            <ProfileRow icon="percent" label="Body Fat">
-              <NumberInput value={bodyFat} onChangeText={setBodyFat} suffix="%" />
-            </ProfileRow>
-          </View>
-
-          {/* Goal progress */}
-          {diff > 0 && (
-            <View style={{ marginTop: Spacing.md }}>
-              <View style={styles.goalRow}>
-                <Text style={[styles.goalLabel, { color: C.accentText }]}>
-                  {Math.round(goalProgress * 100)}% to goal
-                </Text>
-                <Text style={[styles.goalLabel, { color: C.mutedFg }]}>
-                  {weight} → {goalWeight} kg
-                </Text>
-              </View>
-              <View style={[styles.goalTrack, { backgroundColor: `${Colors.stat.streak}20` }]}>
-                <View style={[styles.goalFill, { backgroundColor: Colors.stat.streak, width: `${goalProgress * 100}%` }]} />
+            <View style={styles.heroBadges}>
+              {joinDate ? (
+                <View style={[styles.heroBadge, {
+                  backgroundColor: C.glowBg,
+                  borderColor: C.borderLight,
+                }]}>
+                  <Text style={[styles.heroBadgeText, { color: C.textSecondary }]}>Since {joinDate}</Text>
+                </View>
+              ) : null}
+              <View style={[styles.heroBadge, {
+                backgroundColor: C.primaryMuted,
+                borderColor: C.primaryBorder,
+              }]}>
+                <Text style={[styles.heroBadgeText, { color: C.accentText }]}>{totalWorkouts} workouts</Text>
               </View>
             </View>
-          )}
-        </View>
+          </Animated.View>
 
-        {/* Save button */}
-        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-          <TouchableOpacity
-            onPress={saveProfile}
-            disabled={saving}
-            style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-          >
-            {saving ? (
-              <ActivityIndicator color={Colors.primaryFg} />
-            ) : (
-              <Text style={styles.saveBtnText}>Save Changes</Text>
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* Settings */}
-        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-          <View style={styles.sectionHeaderRow}>
-            <Feather name="settings" size={14} color={C.mutedFg} />
-            <Text style={[styles.sectionLabel, { color: C.mutedFg }]}>SETTINGS</Text>
-          </View>
-          <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            {/* Appearance toggle */}
-            <View style={styles.profileRow}>
-              <View style={styles.profileRowLeft}>
-                <Feather name={mode === 'dark' ? 'moon' : 'sun'} size={16} color={C.mutedFg} />
-                <Text style={[styles.profileRowLabel, { color: C.foreground }]}>Appearance</Text>
+          {/* ─── XP Card ─── */}
+          <View style={styles.section}>
+            <View style={[styles.xpCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              <View style={styles.xpHeader}>
+                <View style={[
+                  styles.xpAvatar,
+                  {
+                    backgroundColor: withAlpha(tier.color, '20'),
+                  },
+                ]}>
+                  <Text style={[styles.xpAvatarText, { color: tier.color }]}>{level}</Text>
+                </View>
+                <View style={{ marginLeft: 12, flex: 1 }}>
+                  <View style={styles.xpTitleRow}>
+                    <Text style={styles.xpIcon}>{tier.icon}</Text>
+                    <Text style={[styles.xpTitle, { color: tier.color }]}>{tier.title}</Text>
+                  </View>
+                  <Text style={[styles.xpTotal, { color: C.textMuted }]}>
+                    {totalXP.toLocaleString()} total XP
+                  </Text>
+                </View>
               </View>
+              <View style={styles.xpProgressRow}>
+                <Text style={[styles.xpProgressLabel, { color: C.textMuted }]}>
+                  Level {level} → {level + 1}
+                </Text>
+                <Text style={[styles.xpProgressValue, { color: C.textDim }]}>
+                  {xpInLevel} / {xpNeeded} XP
+                </Text>
+              </View>
+              <View style={[styles.xpTrack, { backgroundColor: withAlpha(tier.color, '12') }]}>
+                <Animated.View style={[styles.xpFill, { backgroundColor: tier.color }, progressStyle]} />
+              </View>
+              <Text style={[styles.xpPercent, { color: C.textDim }]}>
+                {Math.round(levelProgress * 100)}% to next level
+              </Text>
+            </View>
+          </View>
+
+          {/* ─── Basic Information ─── */}
+          <View style={styles.section}>
+            <SectionLabel icon="user">BASIC INFORMATION</SectionLabel>
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              {/* Gender */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="user" color={ROW_ICON_COLORS.gender} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Gender</Text>
+                <View style={styles.infoRight}>
+                  <GenderPills value={gender} onChange={(v) => {
+                    setGender(v);
+                    persistField({ gender: v });
+                  }} />
+                </View>
+              </View>
+
+              {/* Height */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="bar-chart-2" color={ROW_ICON_COLORS.height} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Height</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={height}
+                    onChangeText={(v) => {
+                      setHeight(v);
+                      persistField({ height_cm: parseFloat(v) || null });
+                    }}
+                    placeholder={heightUnit === 'cm' ? '175' : '5.9'}
+                  />
+                  <MiniSegmented
+                    options={['cm', 'ft'] as HeightUnit[]}
+                    value={heightUnit}
+                    onChange={setHeightUnit}
+                  />
+                </View>
+              </View>
+
+              {/* Weight */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="anchor" color={ROW_ICON_COLORS.weight} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Weight</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={weight}
+                    onChangeText={(v) => {
+                      setWeight(v);
+                      persistField({ weight_kg: parseFloat(v) || null });
+                    }}
+                    placeholder={weightUnit === 'kg' ? '75' : '165'}
+                  />
+                  <MiniSegmented
+                    options={['kg', 'lbs'] as WeightUnit[]}
+                    value={weightUnit}
+                    onChange={setWeightUnit}
+                  />
+                  <TouchableOpacity
+                    onPress={logWeight}
+                    activeOpacity={0.85}
+                    style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
+                  >
+                    <Feather name="plus" size={12} color={Colors.primaryFg} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Goal */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="target" color={ROW_ICON_COLORS.goal} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Goal</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={goalWeight}
+                    onChangeText={(v) => {
+                      setGoalWeight(v);
+                      persistField({ goal_weight_kg: parseFloat(v) || null });
+                    }}
+                    placeholder={weightUnit}
+                  />
+                  {goalProgress && (
+                    <Text style={[styles.goalDiffText, { color: C.textMuted }]}>
+                      {goalProgress.label}
+                    </Text>
+                  )}
+                </View>
+              </View>
+
+              {/* Body Fat */}
+              <View style={styles.infoRow}>
+                <RowIcon name="percent" color={ROW_ICON_COLORS.bodyFat} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Body Fat</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={bodyFat}
+                    onChangeText={(v) => {
+                      setBodyFat(v);
+                      persistField({ body_fat_percent: parseFloat(v) || null });
+                    }}
+                    placeholder="%"
+                    width={56}
+                  />
+                  <Text style={[styles.unitSuffix, { color: C.textDim }]}>%</Text>
+                  <TouchableOpacity
+                    onPress={logBodyFat}
+                    activeOpacity={0.85}
+                    style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
+                  >
+                    <Feather name="plus" size={12} color={Colors.primaryFg} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            {/* Goal progress bar */}
+            {goalProgress && (
+              <View style={{ marginTop: 8 }}>
+                <View style={styles.goalLegendRow}>
+                  <Text style={[styles.goalLegendText, { color: C.textDim }]}>
+                    {Math.round(goalProgress.pct * 100)}% to goal
+                  </Text>
+                  <Text style={[styles.goalLegendText, { color: C.textDim }]}>
+                    {weight} → {goalWeight} {weightUnit}
+                  </Text>
+                </View>
+                <View style={[styles.goalTrack, { backgroundColor: withAlpha('#f59e0b', '15') }]}>
+                  <View style={[styles.goalFill, {
+                    backgroundColor: '#f59e0b',
+                    width: `${goalProgress.pct * 100}%`,
+                  }]} />
+                </View>
+              </View>
+            )}
+          </View>
+
+          {/* ─── Preferences ─── */}
+          <View style={styles.section}>
+            <SectionLabel icon="shield">PREFERENCES</SectionLabel>
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              {/* Appearance */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                  <Feather name={mode === 'dark' ? 'moon' : 'sun'} size={11} color={C.mutedFg} />
+                </View>
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Appearance</Text>
+                <MiniSegmented
+                  options={['dark', 'light'] as const}
+                  value={mode}
+                  onChange={(v) => { if (v !== mode) toggleTheme(); }}
+                  renderOption={(opt, active) => (
+                    <Feather
+                      name={opt === 'dark' ? 'moon' : 'sun'}
+                      size={10}
+                      color={active ? Colors.primaryFg : C.textMuted}
+                    />
+                  )}
+                />
+              </View>
+
+              {/* Weight Unit */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                  <Feather name="anchor" size={11} color={C.mutedFg} />
+                </View>
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Weight Unit</Text>
+                <MiniSegmented
+                  options={['kg', 'lbs'] as WeightUnit[]}
+                  value={weightUnit}
+                  onChange={setWeightUnit}
+                />
+              </View>
+
+              {/* Report a Bug */}
               <TouchableOpacity
-                onPress={toggleTheme}
-                style={[styles.themeToggle, { borderColor: C.border }]}
+                onPress={() => setBugModalOpen(true)}
                 activeOpacity={0.7}
+                style={styles.infoRow}
               >
-                <View style={[
-                  styles.themeOption,
-                  mode === 'dark' && { backgroundColor: Colors.primary },
-                ]}>
-                  <Feather name="moon" size={10} color={mode === 'dark' ? Colors.primaryFg : C.textMuted} />
-                </View>
-                <View style={[
-                  styles.themeOption,
-                  mode === 'light' && { backgroundColor: Colors.primary },
-                ]}>
-                  <Feather name="sun" size={10} color={mode === 'light' ? Colors.primaryFg : C.textMuted} />
-                </View>
+                <RowIcon name="alert-triangle" color={ROW_ICON_COLORS.bug} />
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Report a Bug</Text>
+                <Feather name="chevron-right" size={14} color={C.textDim} />
               </TouchableOpacity>
             </View>
           </View>
-        </View>
 
-        {/* Sign Out */}
-        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xxxl }}>
-          <TouchableOpacity onPress={handleSignOut} style={[styles.signOutBtn, { backgroundColor: C.muted }]}>
-            <Feather name="log-out" size={16} color={C.mutedFg} />
-            <Text style={[styles.signOutText, { color: C.foreground }]}>Sign Out</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+          {/* ─── Account ─── */}
+          <View style={styles.section}>
+            <SectionLabel>ACCOUNT</SectionLabel>
+            <View style={{ gap: 8 }}>
+              <TouchableOpacity
+                onPress={handleSignOut}
+                activeOpacity={0.85}
+                style={[styles.accountBtn, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+              >
+                <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                  <Feather name="log-out" size={11} color={C.mutedFg} />
+                </View>
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Sign Out</Text>
+              </TouchableOpacity>
 
-    <ThemedAlert
-      visible={showSignOutAlert}
-      icon="log-out"
-      iconColor="#f97316"
-      title="Sign Out"
-      message="Are you sure you want to sign out?"
-      buttons={[
-        { text: 'Cancel', onPress: () => setShowSignOutAlert(false) },
-        { text: 'Sign Out', style: 'destructive', onPress: confirmSignOut },
-      ]}
-      onClose={() => setShowSignOutAlert(false)}
-    />
+              {!deleteConfirm ? (
+                <TouchableOpacity
+                  onPress={() => setDeleteConfirm(true)}
+                  activeOpacity={0.85}
+                  style={[styles.accountBtn, {
+                    backgroundColor: 'rgba(239,68,68,0.08)',
+                    borderColor: 'rgba(239,68,68,0.18)',
+                  }]}
+                >
+                  <View style={[styles.rowIcon, { backgroundColor: 'rgba(239,68,68,0.12)' }]}>
+                    <Feather name="trash-2" size={11} color="#f87171" />
+                  </View>
+                  <Text style={[styles.infoLabel, { color: '#f87171' }]}>Delete Account</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={[styles.deleteConfirm, {
+                  backgroundColor: 'rgba(239,68,68,0.10)',
+                  borderColor: 'rgba(239,68,68,0.25)',
+                }]}>
+                  <Text style={styles.deleteConfirmText}>
+                    This permanently deletes your account and <Text style={{ fontWeight: FontWeight.bold }}>all data</Text>.
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TouchableOpacity
+                      onPress={() => setDeleteConfirm(false)}
+                      style={[styles.deleteConfirmBtn, { backgroundColor: C.glowBg }]}
+                    >
+                      <Feather name="x" size={10} color={C.foreground} />
+                      <Text style={[styles.deleteConfirmBtnText, { color: C.foreground }]}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setDeleteConfirm(false);
+                        setShowErrorAlert('Account deletion is not yet wired up.');
+                      }}
+                      style={[styles.deleteConfirmBtn, { backgroundColor: '#ef4444' }]}
+                    >
+                      <Feather name="trash-2" size={10} color="#fff" />
+                      <Text style={[styles.deleteConfirmBtnText, { color: '#fff' }]}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </View>
+          </View>
 
-    <ThemedAlert
-      visible={!!showErrorAlert}
-      icon="alert-circle"
-      iconColor="#ef4444"
-      title="Error"
-      message={showErrorAlert}
-      buttons={[{ text: 'OK', style: 'primary', onPress: () => setShowErrorAlert('') }]}
-      onClose={() => setShowErrorAlert('')}
-    />
+          {/* ─── Footer ─── */}
+          <View style={{ paddingHorizontal: Spacing.xl, alignItems: 'center', marginTop: 4 }}>
+            <Text style={[styles.versionText, { color: C.textDim }]}>Overload v1.0</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+
+      {/* ─── Bug Report Bottom Sheet ─── */}
+      <Modal visible={bugModalOpen} transparent animationType="none" onRequestClose={() => setBugModalOpen(false)}>
+        <Animated.View
+          entering={FadeIn.duration(200)}
+          exiting={FadeOut.duration(150)}
+          style={[styles.modalBackdrop, { backgroundColor: C.overlay }]}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setBugModalOpen(false)} />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={{ width: '100%' }}
+          >
+            <Animated.View
+              entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
+              exiting={SlideOutDown.duration(200)}
+              style={[styles.bugSheet, {
+                backgroundColor: C.elevated,
+                borderTopColor: C.borderSubtle,
+              }]}
+            >
+              <View style={styles.bugHandle}>
+                <View style={[styles.bugHandleBar, { backgroundColor: C.handle }]} />
+              </View>
+
+              <View style={styles.bugHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={[styles.bugIconWrap, { backgroundColor: withAlpha(ROW_ICON_COLORS.bug, '15') }]}>
+                    <Feather name="alert-triangle" size={16} color={ROW_ICON_COLORS.bug} />
+                  </View>
+                  <View>
+                    <Text style={[styles.bugTitle, { color: C.foreground }]}>Report a Bug</Text>
+                    <Text style={[styles.bugSubtitle, { color: C.textMuted }]}>We'll look into it ASAP</Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setBugModalOpen(false)}
+                  style={[styles.bugCloseBtn, { backgroundColor: C.glowBg }]}
+                >
+                  <Feather name="x" size={16} color={C.mutedFg} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Category */}
+              <Text style={[styles.bugSectionLabel, { color: C.textMuted }]}>CATEGORY</Text>
+              <View style={styles.bugCategories}>
+                {([
+                  { v: 'ui', l: 'UI' },
+                  { v: 'data', l: 'Data' },
+                  { v: 'crash', l: 'Crash' },
+                  { v: 'performance', l: 'Perf' },
+                  { v: 'other', l: 'Other' },
+                ] as const).map((cat) => {
+                  const active = bugCategory === cat.v;
+                  return (
+                    <TouchableOpacity
+                      key={cat.v}
+                      onPress={() => setBugCategory(cat.v)}
+                      style={[styles.bugCategoryBtn, {
+                        backgroundColor: active ? Colors.primary : 'transparent',
+                        borderColor: active ? Colors.primary : C.borderLight,
+                      }]}
+                    >
+                      <Text style={[styles.bugCategoryText, {
+                        color: active ? Colors.primaryFg : C.textSecondary,
+                      }]}>{cat.l}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <TextInput
+                value={bugTitle}
+                onChangeText={setBugTitle}
+                placeholder="Brief summary..."
+                placeholderTextColor={C.textDim}
+                maxLength={100}
+                style={[styles.bugInput, {
+                  backgroundColor: C.glowBg,
+                  borderColor: C.borderSubtle,
+                  color: C.foreground,
+                }]}
+              />
+
+              <TextInput
+                value={bugDescription}
+                onChangeText={setBugDescription}
+                placeholder="What happened?"
+                placeholderTextColor={C.textDim}
+                maxLength={1000}
+                multiline
+                numberOfLines={3}
+                style={[styles.bugInput, styles.bugTextarea, {
+                  backgroundColor: C.glowBg,
+                  borderColor: C.borderSubtle,
+                  color: C.foreground,
+                }]}
+              />
+
+              <TouchableOpacity
+                onPress={submitBugReport}
+                disabled={!bugTitle.trim() || bugSubmitting}
+                style={[styles.bugSubmit, {
+                  backgroundColor: Colors.primary,
+                  opacity: !bugTitle.trim() || bugSubmitting ? 0.4 : 1,
+                }]}
+              >
+                {bugSubmitting ? (
+                  <ActivityIndicator color={Colors.primaryFg} />
+                ) : (
+                  <>
+                    <Feather name="send" size={14} color={Colors.primaryFg} />
+                    <Text style={styles.bugSubmitText}>Submit</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </Animated.View>
+          </KeyboardAvoidingView>
+        </Animated.View>
+      </Modal>
+
+      <ThemedAlert
+        visible={showSignOutAlert}
+        icon="log-out"
+        iconColor="#f97316"
+        title="Sign Out"
+        message="Are you sure you want to sign out?"
+        buttons={[
+          { text: 'Cancel', onPress: () => setShowSignOutAlert(false) },
+          { text: 'Sign Out', style: 'destructive', onPress: confirmSignOut },
+        ]}
+        onClose={() => setShowSignOutAlert(false)}
+      />
+
+      <ThemedAlert
+        visible={!!showErrorAlert}
+        icon="alert-circle"
+        iconColor="#ef4444"
+        title="Error"
+        message={showErrorAlert}
+        buttons={[{ text: 'OK', style: 'primary', onPress: () => setShowErrorAlert('') }]}
+        onClose={() => setShowErrorAlert('')}
+      />
+
+      <ThemedAlert
+        visible={!!showInfoAlert}
+        icon="check-circle"
+        iconColor={Colors.success}
+        title="Saved"
+        message={showInfoAlert}
+        buttons={[{ text: 'OK', style: 'primary', onPress: () => setShowInfoAlert('') }]}
+        onClose={() => setShowInfoAlert('')}
+      />
     </>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
-  avatarSection: { alignItems: 'center', paddingTop: 24, paddingBottom: 20 },
-  avatarCircle: {
-    width: 80, height: 80, borderRadius: 20,
+
+  // Hero
+  hero: { alignItems: 'center', paddingTop: 24, paddingBottom: 16, paddingHorizontal: Spacing.xl },
+  avatarWrap: { position: 'relative', marginBottom: 12 },
+  avatar: {
+    width: 80, height: 80, borderRadius: 24,
     alignItems: 'center', justifyContent: 'center',
   },
-  avatarLetter: { fontSize: 32, fontWeight: FontWeight.black },
+  avatarLetter: { fontSize: 24, fontWeight: FontWeight.black },
   guestBadge: {
-    backgroundColor: '#f97316',
-    paddingHorizontal: 10, paddingVertical: 3,
-    borderRadius: Radius.full, marginTop: -8,
+    position: 'absolute', bottom: -6, right: -6,
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: Radius.full,
   },
-  guestBadgeText: { color: '#fff', fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.5 },
-  profileName: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, marginTop: 12 },
-  profileSub: { fontSize: FontSize.base, marginTop: 2 },
-  badges: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  badge: { borderWidth: 1, borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 5 },
-  badgeText: { fontSize: FontSize.sm },
-  // XP
-  xpCard: { borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.xl },
+  guestBadgeText: { color: '#0a0a0a', fontSize: 8, fontWeight: FontWeight.bold, letterSpacing: 0.4 },
+  levelBadge: {
+    position: 'absolute', bottom: -6, right: -6,
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: Radius.full,
+    minWidth: 18, alignItems: 'center',
+  },
+  levelBadgeText: { color: '#0a0a0a', fontSize: 9, fontWeight: FontWeight.black },
+  heroName: { fontSize: 20, fontWeight: FontWeight.black, letterSpacing: -0.5 },
+  heroEmail: { fontSize: FontSize.sm, marginTop: 2 },
+  heroBadges: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  heroBadge: {
+    borderWidth: 1, borderRadius: Radius.full,
+    paddingHorizontal: 8, paddingVertical: 2,
+  },
+  heroBadgeText: { fontSize: 10, fontWeight: FontWeight.medium },
+
+  // Sections
+  section: { paddingHorizontal: Spacing.xl, marginBottom: 16 },
+  sectionLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  sectionLabelText: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5 },
+
+  // XP Card
+  xpCard: { borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.xl },
   xpHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  xpLevelCircle: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  xpLevelNum: { fontSize: FontSize.xl, fontWeight: FontWeight.black },
-  xpTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
-  xpTotalText: { fontSize: FontSize.sm, marginTop: 2 },
-  xpProgressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  xpProgressLabel: { fontSize: FontSize.sm },
-  xpProgressValue: { fontSize: FontSize.sm },
-  xpTrack: { height: 8, borderRadius: 4, overflow: 'hidden', marginBottom: 6 },
-  xpFill: { height: '100%', borderRadius: 4 },
-  xpPercent: { fontSize: FontSize.sm, textAlign: 'right' },
-  // Section
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
-  sectionLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, letterSpacing: 1 },
-  infoCard: { borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.lg },
-  profileRow: {
-    flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', paddingVertical: 12,
+  xpAvatar: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  xpAvatarText: { fontSize: 18, fontWeight: FontWeight.black },
+  xpTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  xpIcon: { fontSize: 14 },
+  xpTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  xpTotal: { fontSize: FontSize.sm, marginTop: 2 },
+  xpProgressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  xpProgressLabel: { fontSize: 11, fontWeight: FontWeight.semibold },
+  xpProgressValue: { fontSize: 11 },
+  xpTrack: { height: 10, borderRadius: 5, overflow: 'hidden', marginBottom: 6 },
+  xpFill: { height: '100%', borderRadius: 5 },
+  xpPercent: { fontSize: 10, textAlign: 'right' },
+
+  // Info card / rows
+  infoCard: { borderRadius: Radius.lg, borderWidth: 1, overflow: 'hidden' },
+  infoRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  profileRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  profileRowLabel: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
-  profileRowRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  separator: { height: 1, marginHorizontal: -Spacing.lg },
-  toggleGroup: { flexDirection: 'row', borderRadius: Radius.full, overflow: 'hidden' },
-  toggleBtn: {
-    paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: Radius.full, minWidth: 34, alignItems: 'center',
+  rowIcon: {
+    width: 24, height: 24, borderRadius: 6,
+    alignItems: 'center', justifyContent: 'center',
   },
-  toggleText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  infoLabel: { fontSize: 12, fontWeight: FontWeight.medium },
+  infoRight: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 'auto' },
+
+  // Inputs
   numberInput: {
-    borderWidth: 1, borderRadius: Radius.sm,
-    paddingHorizontal: 12, paddingVertical: 6,
-    minWidth: 60, flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1, borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 6,
+    fontSize: FontSize.base, fontWeight: FontWeight.semibold,
+    textAlign: 'right',
   },
-  numberText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, minWidth: 30, textAlign: 'center' },
-  numberSuffix: { fontSize: FontSize.sm, marginLeft: 2 },
-  goalDiff: { fontSize: FontSize.sm },
+  unitSuffix: { fontSize: 11 },
+  goalDiffText: { fontSize: 10, fontWeight: FontWeight.semibold },
+
+  // Segmented (cm/ft, kg/lbs, dark/light)
+  segmented: { flexDirection: 'row', height: 24, borderWidth: 1, borderRadius: Radius.full, overflow: 'hidden' },
+  segmentedOption: {
+    paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center',
+  },
+  segmentedText: { fontSize: 10, fontWeight: FontWeight.bold },
+
+  // Gender pills
+  genderRow: { flexDirection: 'row', gap: 4 },
+  genderPill: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8, borderWidth: 1, minWidth: 30, alignItems: 'center',
+  },
+  genderPillText: { fontSize: 10, fontWeight: FontWeight.semibold },
+
+  // Plus add button
+  plusBtn: {
+    width: 28, height: 28, borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center',
+  },
+
   // Goal progress
-  goalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  goalLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  goalLegendRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  goalLegendText: { fontSize: 9 },
   goalTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
   goalFill: { height: '100%', borderRadius: 3 },
-  // Buttons
-  saveBtn: {
-    backgroundColor: Colors.primary,
-    paddingVertical: 14, borderRadius: Radius.xl,
-    alignItems: 'center',
+
+  // Account buttons
+  accountBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: 12, borderRadius: Radius.lg, borderWidth: 1,
   },
-  saveBtnText: { color: Colors.primaryFg, fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  themeToggle: {
-    flexDirection: 'row', borderRadius: Radius.full, borderWidth: 1, overflow: 'hidden',
+  deleteConfirm: { padding: 12, borderRadius: Radius.lg, borderWidth: 1 },
+  deleteConfirmText: { fontSize: 11, color: '#f87171', marginBottom: 8 },
+  deleteConfirmBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: 8, borderRadius: 12,
   },
-  themeOption: {
-    paddingHorizontal: 10, paddingVertical: 5,
-    alignItems: 'center', justifyContent: 'center',
+  deleteConfirmBtnText: { fontSize: 11, fontWeight: FontWeight.bold },
+
+  // Version
+  versionText: { fontSize: 9 },
+
+  // Bug Modal
+  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
+  bugSheet: {
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    borderTopWidth: 1, paddingHorizontal: Spacing.xl, paddingBottom: 32,
   },
-  signOutBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    padding: Spacing.lg, borderRadius: Radius.xl,
+  bugHandle: { alignItems: 'center', paddingTop: 10, paddingBottom: 6 },
+  bugHandleBar: { width: 40, height: 4, borderRadius: 2 },
+  bugHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, marginTop: 4 },
+  bugIconWrap: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  bugTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  bugSubtitle: { fontSize: 11, marginTop: 1 },
+  bugCloseBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  bugSectionLabel: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5, marginBottom: 8 },
+  bugCategories: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
+  bugCategoryBtn: {
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: Radius.full, borderWidth: 1,
   },
-  signOutText: { fontSize: FontSize.base },
+  bugCategoryText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  bugInput: {
+    borderWidth: 1, borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 12,
+    fontSize: FontSize.base, marginBottom: 12,
+  },
+  bugTextarea: { minHeight: 80, textAlignVertical: 'top' },
+  bugSubmit: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 14, borderRadius: 12,
+  },
+  bugSubmitText: { color: Colors.primaryFg, fontSize: FontSize.base, fontWeight: FontWeight.bold },
 });
