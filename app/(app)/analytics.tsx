@@ -242,8 +242,12 @@ function BottomDrawer({
     };
   }, [visible]);
 
-  // Sheet hugs its content. When the keyboard is open, the sheet itself is
-  // lifted above the keyboard via marginBottom — the sheet does not grow.
+  // Layout strategy: sheet hugs its content and is lifted above the keyboard
+  // by `marginBottom: kbHeight`. The parent uses justifyContent: 'flex-end' so
+  // the sheet anchors at the bottom of the available area. We do NOT force a
+  // fixed height — that was causing the sheet to stretch to fill the available
+  // space with content stuck at the top. The Save button naturally sits at the
+  // bottom of the content because the content is the sheet's full extent.
   const sheetMaxHeight = (height - kbHeight) * 0.9;
 
   return (
@@ -254,11 +258,6 @@ function BottomDrawer({
       onRequestClose={onClose}
       onShow={() => setShown(true)}
     >
-      {/* justifyContent: 'flex-end' anchors the sheet at the bottom of the
-          available area and lets it size to its content. marginBottom = kbHeight
-          lifts the entire sheet above the keyboard. Avoid `position: absolute`
-          here — combined with a maxHeight it caused the sheet to stretch to
-          fill the available space instead of hugging its content. */}
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
         <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
         {shown && (
@@ -702,8 +701,13 @@ function LogMeasurementsDrawer({
         </TouchableOpacity>
       </View>
       <ScrollView
-        style={{ flexGrow: 0, flexShrink: 1, maxHeight: winH * 0.65 }}
-        contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 16, flexGrow: 1 }}
+        // flex: 1 lets the ScrollView claim all space between the header and
+        // the Save-button footer when the drawer has a fixed height (keyboard
+        // open). minHeight: 0 is required so flex shrink can take effect.
+        // maxHeight is a safety cap when the keyboard is closed and the sheet
+        // is content-sized.
+        style={{ flex: 1, minHeight: 0, maxHeight: winH * 0.7 }}
+        contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 16 }}
         showsVerticalScrollIndicator={true}
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
