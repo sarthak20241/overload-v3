@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "backend-tools": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/sarthakkumar/Coding/backend-mcp-tools",
+        "main.py",
+        "--project-root",
+        "/Users/sarthakkumar/Coding/overload-v3"
+      ]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__b77f8053-a009-495d-b4bf-b4782c68c979__use_figma",
+      "Read(//Users/sarthakkumar/Coding/**)",
+      "Read(//Users/sarthakkumar/**)",
+      "Bash(ls \"/Users/sarthakkumar/Coding/overload-v3/Redesign Gym Workout Tracker UI \\(1\\)/\")",
+      "Bash(ls \"/Users/sarthakkumar/Coding/overload-v3/Redesign Gym Workout Tracker UI \\(1\\)/src/\")",
+      "Bash(ls \"/Users/sarthakkumar/Coding/overload-v3/Redesign Gym Workout Tracker UI \\(1\\)/src/app/\")",
+      "Bash(ls \"/Users/sarthakkumar/Coding/overload-v3/Redesign Gym Workout Tracker UI \\(1\\)/src/app/pages/\")",
+      "Bash(git init *)",
+      "Bash(git config *)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "backend-tools"
+  ]
+}

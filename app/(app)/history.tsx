@@ -1,0 +1,1105 @@
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+  RefreshControl,
+  TextInput,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import { useTheme } from '@/hooks/useTheme';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { getMockWorkoutsForHistory } from '@/lib/mockData';
+import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { useClerkUser } from '@/hooks/useClerkUser';
+
+const ROUTINE_COLORS = Colors.routineColors;
+
+const WEEK_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+const MONTH_SHORT = [
+  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
+];
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTH_FULL = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+interface ExerciseDetail {
+  name: string;
+  sets: { weight_kg: number; reps: number; completed: boolean }[];
+}
+
+interface WorkoutRaw {
+  id: string;
+  name: string;
+  started_at: string;
+  finished_at?: string;
+  duration_seconds?: number;
+  total_volume_kg?: number;
+  routine_id?: string;
+  workout_sets?: { id: string }[];
+  exercises?: ExerciseDetail[];
+  notes?: string;
+}
+
+function formatDuration(sec: number) {
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+}
+
+function formatDateShort(iso: string) {
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (
+    d.getFullYear() === today.getFullYear() &&
+    d.getMonth() === today.getMonth() &&
+    d.getDate() === today.getDate()
+  ) return 'Today';
+
+  if (
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate()
+  ) return 'Yesterday';
+
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function formatVolume(kg?: number) {
+  if (!kg) return '—';
+  if (kg >= 1000) return `${(kg / 1000).toFixed(1)}k kg`;
+  return `${kg} kg`;
+}
+
+function isSameDay(d1: Date, d2: Date) {
+  return d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate();
+}
+
+function isSameMonth(d1: Date, d2: Date) {
+  return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth();
+}
+
+// ─── Month Calendar ───────────────────────────────────────────────────────────
+function MonthCalendar({
+  year,
+  month,
+  workouts,
+  selectedDate,
+  onSelectDate,
+  onPrev,
+  onNext,
+  onToday,
+}: {
+  year: number;
+  month: number;
+  workouts: WorkoutRaw[];
+  selectedDate: Date | null;
+  onSelectDate: (date: Date | null) => void;
+  onPrev: () => void;
+  onNext: () => void;
+  onToday: () => void;
+}) {
+  const { C } = useTheme();
+  const today = new Date();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const showTodayBtn = !isSameMonth(new Date(year, month, 1), today);
+
+  // Count workouts per day
+  const workoutCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    workouts.forEach((w) => {
+      const d = new Date(w.started_at);
+      if (d.getFullYear() === year && d.getMonth() === month) {
+        const key = `${year}-${month}-${d.getDate()}`;
+        map[key] = (map[key] || 0) + 1;
+      }
+    });
+    return map;
+  }, [workouts, year, month]);
+
+  const monthWorkoutCount = workouts.filter((w) => {
+    const d = new Date(w.started_at);
+    return d.getFullYear() === year && d.getMonth() === month;
+  }).length;
+
+  // Build calendar cells
+  const cells: (number | null)[] = [];
+  // Add days from previous month
+  const prevMonthDays = new Date(year, month, 0).getDate();
+  for (let i = firstDay - 1; i >= 0; i--) cells.push(-(prevMonthDays - i));
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  // Add days from next month
+  const remaining = 42 - cells.length;
+  for (let i = 1; i <= remaining; i++) cells.push(null);
+
+  const isToday = (d: number) =>
+    today.getFullYear() === year && today.getMonth() === month && today.getDate() === d;
+
+  return (
+    <View style={[styles.calendarCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+      {/* Month navigation */}
+      <View style={styles.calHeader}>
+        <TouchableOpacity
+          onPress={onPrev}
+          style={[styles.calNavBtn, { backgroundColor: C.glowBg }]}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Feather name="chevron-left" size={16} color={C.mutedFg} />
+        </TouchableOpacity>
+
+        <View style={styles.calTitleWrap}>
+          <Text style={[styles.calMonthTitle, { color: C.foreground }]}>
+            {MONTH_NAMES[month]} {year}
+          </Text>
+          <Text style={[styles.calMonthSub, { color: C.textMuted }]}>
+            {monthWorkoutCount} workout{monthWorkoutCount !== 1 ? 's' : ''}
+          </Text>
+        </View>
+
+        <View style={styles.calRightNav}>
+          {showTodayBtn && (
+            <TouchableOpacity
+              onPress={onToday}
+              style={[styles.todayBtn, { backgroundColor: C.primaryMuted }]}
+            >
+              <Text style={[styles.todayBtnText, { color: C.accentText }]}>Today</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={onNext}
+            style={[styles.calNavBtn, { backgroundColor: C.glowBg }]}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Feather name="chevron-right" size={16} color={C.mutedFg} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Day headers */}
+      <View style={styles.calWeekRow}>
+        {WEEK_LABELS.map((l, i) => (
+          <View key={i} style={styles.calWeekCell}>
+            <Text style={[styles.calWeekLabel, { color: C.textDim }]}>{l}</Text>
+          </View>
+        ))}
+      </View>
+
+      {/* Day grid */}
+      {Array.from({ length: Math.ceil(cells.length / 7) }, (_, row) => (
+        <View key={row} style={styles.calDayRow}>
+          {cells.slice(row * 7, row * 7 + 7).map((day, col) => {
+            // Out of month cells (prev/next month or null)
+            if (!day || day < 1) {
+              const outDay = day ? Math.abs(day) + (prevMonthDays - firstDay + 1) : '';
+              return (
+                <View key={col} style={styles.calDayCell}>
+                  <View style={[styles.calDaySquare, { backgroundColor: 'transparent', opacity: 0.3 }]}>
+                    {outDay ? (
+                      <Text style={[styles.calDayNum, { color: C.textDim }]}>{typeof day === 'number' && day < 0 ? prevMonthDays + day + 1 : ''}</Text>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            }
+
+            const key = `${year}-${month}-${day}`;
+            const count = workoutCounts[key] || 0;
+            const hasWorkout = count > 0;
+            const todayDay = isToday(day);
+            const isSelected = selectedDate && isSameDay(selectedDate, new Date(year, month, day));
+
+            // Intensity: brighter green for more workouts
+            const intensity = count >= 3 ? 1 : count >= 2 ? 0.8 : count >= 1 ? 0.6 : 0;
+
+            const bgColor = hasWorkout
+              ? `rgba(132, 204, 22, ${intensity})`
+              : C.glowBg;
+
+            const textColor = hasWorkout
+              ? intensity >= 0.8 ? '#0a0a0a' : '#365314'
+              : C.textSecondary;
+
+            return (
+              <View key={col} style={styles.calDayCell}>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    if (isSelected) {
+                      onSelectDate(null);
+                    } else {
+                      onSelectDate(new Date(year, month, day));
+                    }
+                  }}
+                  style={[
+                    styles.calDaySquare,
+                    { backgroundColor: bgColor },
+                    hasWorkout && {
+                      shadowColor: 'rgba(132, 204, 22, 1)',
+                      shadowOffset: { width: 0, height: 0 },
+                      shadowOpacity: intensity * 0.3,
+                      shadowRadius: 8,
+                    },
+                    isSelected && {
+                      borderWidth: 2,
+                      borderColor: C.accentText,
+                    },
+                    todayDay && !hasWorkout && !isSelected && {
+                      borderWidth: 1.5,
+                      borderColor: C.primaryBorder,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.calDayNum,
+                      {
+                        color: textColor,
+                        fontWeight: hasWorkout || todayDay ? FontWeight.semibold : FontWeight.regular,
+                      },
+                    ]}
+                  >
+                    {day}
+                  </Text>
+                  {/* Multi-workout indicator */}
+                  {count >= 2 && (
+                    <View
+                      style={[
+                        styles.multiDot,
+                        { backgroundColor: count >= 3 ? '#facc15' : '#a3e635' },
+                      ]}
+                    />
+                  )}
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+      ))}
+
+      {/* Legend */}
+      <View style={[styles.calLegend, { borderTopColor: C.borderSubtle }]}>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendSquare, { backgroundColor: C.glowBg }]} />
+          <Text style={[styles.legendText, { color: C.textDim }]}>Rest</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendSquare, { backgroundColor: 'rgba(132, 204, 22, 0.6)' }]} />
+          <Text style={[styles.legendText, { color: C.textDim }]}>Trained</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendSquare, { backgroundColor: 'rgba(132, 204, 22, 1)' }]} />
+          <Text style={[styles.legendText, { color: C.textDim }]}>Multiple</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Session Card ─────────────────────────────────────────────────────────────
+function SessionCard({
+  workout,
+  colorIndex,
+  onDelete,
+}: {
+  workout: WorkoutRaw;
+  colorIndex: number;
+  onDelete: () => void;
+}) {
+  const { C } = useTheme();
+  const [expanded, setExpanded] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const dotColor = ROUTINE_COLORS[colorIndex % ROUTINE_COLORS.length];
+  const exerciseCount = workout.exercises?.length ?? 0;
+
+  return (
+    <View style={[styles.workoutCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onPress={() => setExpanded((v) => !v)}
+        style={styles.workoutCardTop}
+      >
+        {/* Color dot */}
+        <View style={[styles.wDotWrap, { backgroundColor: `${dotColor}15` }]}>
+          <View style={[styles.wDot, { backgroundColor: dotColor }]} />
+        </View>
+
+        {/* Info */}
+        <View style={styles.wInfo}>
+          <Text style={[styles.wName, { color: C.foreground }]} numberOfLines={1}>
+            {workout.name}
+          </Text>
+          <Text style={[styles.wDate, { color: C.textMuted }]}>
+            {formatDateShort(workout.started_at)}
+          </Text>
+          <View style={styles.wMeta}>
+            {workout.duration_seconds ? (
+              <View style={styles.wMetaItem}>
+                <Feather name="clock" size={10} color={C.textSecondary} />
+                <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
+                  {formatDuration(workout.duration_seconds)}
+                </Text>
+              </View>
+            ) : null}
+            {workout.total_volume_kg ? (
+              <View style={styles.wMetaItem}>
+                <Feather name="trending-up" size={10} color={C.textSecondary} />
+                <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
+                  {formatVolume(workout.total_volume_kg)}
+                </Text>
+              </View>
+            ) : null}
+            {exerciseCount > 0 && (
+              <View style={styles.wMetaItem}>
+                <Feather name="activity" size={10} color={C.textSecondary} />
+                <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
+                  {exerciseCount} exercise{exerciseCount !== 1 ? 's' : ''}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* Actions */}
+        <View style={styles.wActions}>
+          {deleteConfirm ? (
+            <View style={styles.deleteConfirmRow}>
+              <TouchableOpacity
+                onPress={() => setDeleteConfirm(false)}
+                style={[styles.deleteConfirmBtn, { backgroundColor: C.muted }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Feather name="x" size={11} color={C.foreground} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => { onDelete(); setDeleteConfirm(false); }}
+                style={[styles.deleteConfirmBtn, { backgroundColor: 'rgba(239,68,68,0.2)' }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Feather name="trash-2" size={11} color="#f87171" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              onPress={() => setDeleteConfirm(true)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.deleteIconBtn}
+            >
+              <Feather name="trash-2" size={13} color={C.textDim} />
+            </TouchableOpacity>
+          )}
+          <Feather
+            name={expanded ? 'chevron-up' : 'chevron-down'}
+            size={14}
+            color={C.textMuted}
+          />
+        </View>
+      </TouchableOpacity>
+
+      {/* Expanded exercise details */}
+      {expanded && (
+        <View style={[styles.wExpandedSection, { borderTopColor: C.borderSubtle }]}>
+          {workout.exercises && workout.exercises.length > 0 ? (
+            workout.exercises.map((ex, i) => {
+              const completedSets = ex.sets?.filter(s => s.completed) || [];
+              if (completedSets.length === 0) return null;
+              const maxWeight = Math.max(...completedSets.map(s => s.weight_kg));
+              return (
+                <View key={i} style={styles.exerciseRow}>
+                  <View style={styles.exerciseInfo}>
+                    <Text style={[styles.exerciseName, { color: C.foreground }]}>{ex.name}</Text>
+                    <View style={styles.setPills}>
+                      {completedSets.map((set, si) => (
+                        <View
+                          key={si}
+                          style={[styles.setPill, { backgroundColor: C.muted }]}
+                        >
+                          <Text style={[styles.setPillText, { color: C.mutedFg }]}>
+                            {set.weight_kg}kg x {set.reps}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                  <View style={styles.exerciseBest}>
+                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{maxWeight}kg</Text>
+                    <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
+                  </View>
+                </View>
+              );
+            })
+          ) : (
+            <Text style={[styles.noExercises, { color: C.mutedFg }]}>
+              {workout.notes || 'No exercise details available.'}
+            </Text>
+          )}
+          {workout.notes && workout.exercises && workout.exercises.length > 0 && (
+            <View style={[styles.notesSection, { borderTopColor: C.borderSubtle }]}>
+              <Text style={[styles.notesLabel, { color: C.textMuted }]}>Notes</Text>
+              <Text style={[styles.notesText, { color: C.mutedFg }]}>{workout.notes}</Text>
+            </View>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── Month Group Header ───────────────────────────────────────────────────────
+function MonthGroupHeader({ label, count }: { label: string; count: number }) {
+  const { C } = useTheme();
+  return (
+    <View style={styles.groupHeader}>
+      <Text style={[styles.groupLabel, { color: C.textMuted }]}>{label}</Text>
+      <View style={[styles.groupBadge, { backgroundColor: C.card }]}>
+        <Text style={[styles.groupBadgeText, { color: C.textDim }]}>{count}</Text>
+      </View>
+      <View style={[styles.groupDivider, { backgroundColor: C.borderSubtle }]} />
+    </View>
+  );
+}
+
+// ─── Skeleton Loader ──────────────────────────────────────────────────────────
+function SkeletonCards() {
+  const { C } = useTheme();
+  return (
+    <View style={styles.skeletonWrap}>
+      {[1, 2, 3, 4].map((i) => (
+        <View
+          key={i}
+          style={[styles.skeletonCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+        />
+      ))}
+    </View>
+  );
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+export default function HistoryScreen() {
+  const { C } = useTheme();
+  const { user } = useClerkUser();
+  const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+
+  const today = new Date();
+  const [calYear, setCalYear] = useState(today.getFullYear());
+  const [calMonth, setCalMonth] = useState(today.getMonth());
+
+  const fetchWorkouts = useCallback(async () => {
+    if (!isSupabaseConfigured) {
+      setWorkouts(getMockWorkoutsForHistory() as WorkoutRaw[]);
+      return;
+    }
+    const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    let q = supabase
+      .from('workouts')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, exercises(name))')
+      .gte('started_at', sinceIso)
+      .order('started_at', { ascending: false });
+    if (user?.id) q = q.eq('user_id', user.id);
+    const { data } = await q;
+
+    // Transform supabase data to include exercises grouping
+    const transformed = (data || []).map((w: any) => {
+      const exerciseMap: Record<string, ExerciseDetail> = {};
+      (w.workout_sets || []).forEach((s: any) => {
+        const exId = s.exercise_id;
+        if (!exerciseMap[exId]) {
+          exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', sets: [] };
+        }
+        exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed });
+      });
+      return {
+        ...w,
+        exercises: Object.values(exerciseMap),
+        workout_sets: (w.workout_sets || []).map((s: any) => ({ id: s.id })),
+      };
+    });
+    setWorkouts(transformed);
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchWorkouts().finally(() => setLoading(false));
+  }, [fetchWorkouts]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchWorkouts();
+    setRefreshing(false);
+  }, [fetchWorkouts]);
+
+  const handleDelete = (id: string) => {
+    setDeleteId(id);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteId) return;
+    if (isSupabaseConfigured) {
+      await supabase.from('workouts').delete().eq('id', deleteId);
+    }
+    setWorkouts((prev) => prev.filter((w) => w.id !== deleteId));
+    setDeleteId(null);
+  };
+
+  const handlePrevMonth = () => {
+    if (calMonth === 0) {
+      setCalMonth(11);
+      setCalYear((y) => y - 1);
+    } else {
+      setCalMonth((m) => m - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (calMonth === 11) {
+      setCalMonth(0);
+      setCalYear((y) => y + 1);
+    } else {
+      setCalMonth((m) => m + 1);
+    }
+  };
+
+  const handleToday = () => {
+    const now = new Date();
+    setCalYear(now.getFullYear());
+    setCalMonth(now.getMonth());
+  };
+
+  // Filter by search and selected date
+  const filtered = workouts.filter((w) => {
+    const matchSearch = !search.trim() ||
+      w.name.toLowerCase().includes(search.trim().toLowerCase()) ||
+      w.exercises?.some(e => e.name.toLowerCase().includes(search.trim().toLowerCase()));
+
+    const matchDate = !selectedDate ||
+      isSameDay(new Date(w.started_at), selectedDate);
+
+    return matchSearch && matchDate;
+  });
+
+  // Group by month
+  const grouped: { key: string; label: string; items: WorkoutRaw[] }[] = [];
+  filtered.forEach((w) => {
+    const d = new Date(w.started_at);
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const label = `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+    const existing = grouped.find((g) => g.key === key);
+    if (existing) {
+      existing.items.push(w);
+    } else {
+      grouped.push({ key, label, items: [w] });
+    }
+  });
+
+  // Summary stats
+  const totalVolume = workouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0);
+  const totalWorkouts = workouts.length;
+
+  return (
+    <>
+    <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={[styles.screenTitle, { color: C.foreground }]}>History</Text>
+        <View style={styles.headerStats}>
+          <Text style={[styles.headerStat, { color: C.textMuted }]}>
+            {totalWorkouts} workouts
+          </Text>
+          <Text style={[styles.headerStat, { color: C.textMuted }]}>
+            {totalVolume >= 1000
+              ? `${Math.round(totalVolume / 1000)}t`
+              : `${totalVolume}kg`}{' '}
+            total volume
+          </Text>
+        </View>
+      </View>
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 100 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={Colors.primary}
+            colors={[Colors.primary]}
+          />
+        }
+      >
+        {/* Calendar */}
+        {!loading && workouts.length > 0 && (
+          <View style={styles.calWrap}>
+            <MonthCalendar
+              year={calYear}
+              month={calMonth}
+              workouts={workouts}
+              selectedDate={selectedDate}
+              onSelectDate={setSelectedDate}
+              onPrev={handlePrevMonth}
+              onNext={handleNextMonth}
+              onToday={handleToday}
+            />
+          </View>
+        )}
+
+        {/* Active date filter indicator */}
+        {selectedDate && (
+          <View style={styles.dateFilterWrap}>
+            <View style={[styles.dateFilterBar, { backgroundColor: C.primaryMuted }]}>
+              <Text style={[styles.dateFilterText, { color: C.accentText }]}>
+                Showing: {DAY_NAMES[selectedDate.getDay()]}, {MONTH_FULL[selectedDate.getMonth()]} {selectedDate.getDate()}, {selectedDate.getFullYear()}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setSelectedDate(null)}
+                style={[styles.dateFilterClose, { backgroundColor: C.accentText }]}
+              >
+                <Feather name="x" size={10} color={Colors.primaryFg} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Search */}
+        {workouts.length > 0 && (
+          <View style={styles.searchWrap}>
+            <View style={[styles.searchBar, { backgroundColor: C.card, borderColor: C.borderLight }, Shadow.card]}>
+              <Feather name="search" size={14} color={C.textMuted} />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search workouts..."
+                placeholderTextColor={C.textMuted}
+                style={[styles.searchInput, { color: C.foreground }]}
+                returnKeyType="search"
+              />
+              {search.length > 0 && (
+                <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Feather name="x" size={13} color={C.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* Content */}
+        {loading ? (
+          <SkeletonCards />
+        ) : workouts.length === 0 ? (
+          <View style={styles.emptyWrap}>
+            <View style={[styles.emptyIcon, { backgroundColor: C.card }]}>
+              <Feather name="clock" size={24} color={C.textDim} />
+            </View>
+            <Text style={[styles.emptyTitle, { color: C.textMuted }]}>
+              No workouts logged yet
+            </Text>
+            <Text style={[styles.emptySub, { color: C.textDim }]}>
+              Complete a workout to see it here
+            </Text>
+          </View>
+        ) : filtered.length === 0 ? (
+          <View style={styles.emptyWrap}>
+            <Text style={[styles.emptyTitle, { color: C.textMuted }]}>
+              {selectedDate
+                ? `No workouts on ${MONTH_FULL[selectedDate.getMonth()]} ${selectedDate.getDate()}, ${selectedDate.getFullYear()}`
+                : `No results for "${search}"`}
+            </Text>
+            {selectedDate && (
+              <TouchableOpacity onPress={() => setSelectedDate(null)}>
+                <Text style={[styles.clearFilterText, { color: C.accentText }]}>Clear filter</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : (
+          grouped.map((group, gIdx) => (
+            <Animated.View
+              key={group.key}
+              entering={FadeInDown.delay(gIdx * 80).duration(350)}
+              style={styles.monthGroup}
+            >
+              <MonthGroupHeader label={group.label} count={group.items.length} />
+              <View style={styles.groupItems}>
+                {group.items.map((workout, wIdx) => (
+                  <SessionCard
+                    key={workout.id}
+                    workout={workout}
+                    colorIndex={wIdx}
+                    onDelete={() => handleDelete(workout.id)}
+                  />
+                ))}
+              </View>
+            </Animated.View>
+          ))
+        )}
+      </ScrollView>
+    </SafeAreaView>
+
+    <ThemedAlert
+      visible={!!deleteId}
+      icon="trash-2"
+      iconColor="#ef4444"
+      title="Delete Workout"
+      message="Are you sure? This cannot be undone."
+      buttons={[
+        { text: 'Cancel', onPress: () => setDeleteId(null) },
+        { text: 'Delete', style: 'destructive', onPress: confirmDelete },
+      ]}
+      onClose={() => setDeleteId(null)}
+    />
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+
+  // Header
+  header: {
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.md,
+  },
+  screenTitle: {
+    fontSize: FontSize.xxl,
+    fontWeight: FontWeight.black,
+    letterSpacing: -0.5,
+  },
+  headerStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.lg,
+    marginTop: 4,
+  },
+  headerStat: {
+    fontSize: FontSize.xs,
+  },
+
+  // Calendar
+  calWrap: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.md },
+  calendarCard: {
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    overflow: 'hidden',
+  },
+  calHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.lg,
+  },
+  calNavBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calRightNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  todayBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.sm,
+  },
+  todayBtnText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+  },
+  calTitleWrap: { alignItems: 'center' },
+  calMonthTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  calMonthSub: { fontSize: FontSize.xs, marginTop: 2 },
+  calWeekRow: { flexDirection: 'row', gap: 4, marginBottom: 4 },
+  calWeekCell: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  calWeekLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+  },
+  calDayRow: { flexDirection: 'row', gap: 4, marginBottom: 4 },
+  calDayCell: {
+    flex: 1,
+    aspectRatio: 1,
+  },
+  calDaySquare: {
+    flex: 1,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calDayNum: { fontSize: FontSize.xs },
+  multiDot: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+
+  // Legend
+  calLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.lg,
+    marginTop: Spacing.md,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+  },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendSquare: { width: 12, height: 12, borderRadius: 4 },
+  legendText: { fontSize: 9 },
+
+  // Date filter
+  dateFilterWrap: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.md },
+  dateFilterBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+  },
+  dateFilterText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+  },
+  dateFilterClose: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Search
+  searchWrap: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.lg },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    padding: 0,
+  },
+
+  // Skeleton
+  skeletonWrap: {
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.md,
+  },
+  skeletonCard: {
+    height: 96,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+  },
+
+  // Empty
+  emptyWrap: {
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xxl,
+    paddingTop: 80,
+  },
+  emptyIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: Radius.xxl,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: FontSize.sm,
+    marginBottom: 4,
+  },
+  emptySub: {
+    fontSize: FontSize.xs,
+    textAlign: 'center',
+  },
+  clearFilterText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    marginTop: 8,
+  },
+
+  // Month group
+  monthGroup: {
+    marginBottom: Spacing.xxl,
+  },
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.md,
+  },
+  groupLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+  },
+  groupBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.full,
+  },
+  groupBadgeText: { fontSize: FontSize.xs },
+  groupDivider: {
+    flex: 1,
+    height: 1,
+  },
+  groupItems: {
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.md,
+  },
+
+  // Workout Card
+  workoutCard: {
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  workoutCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: Spacing.lg,
+  },
+  wDotWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    marginTop: 2,
+  },
+  wDot: { width: 10, height: 10, borderRadius: 5 },
+  wInfo: { flex: 1, minWidth: 0 },
+  wName: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+  },
+  wDate: { fontSize: FontSize.xs, marginTop: 2 },
+  wMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md, marginTop: 8 },
+  wMetaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  wMetaText: { fontSize: FontSize.xs },
+  wActions: { alignItems: 'center', gap: 8, marginTop: 2 },
+  deleteIconBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteConfirmRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  deleteConfirmBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Expanded exercise details
+  wExpandedSection: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+    borderTopWidth: 1,
+    gap: Spacing.md,
+  },
+  exerciseRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  exerciseInfo: {
+    flex: 1,
+  },
+  exerciseName: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    marginBottom: 4,
+  },
+  setPills: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  setPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.full,
+  },
+  setPillText: {
+    fontSize: FontSize.xs,
+  },
+  exerciseBest: {
+    alignItems: 'flex-end',
+    marginLeft: Spacing.md,
+    flexShrink: 0,
+  },
+  bestWeight: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+  },
+  bestLabel: {
+    fontSize: FontSize.xs,
+  },
+  noExercises: {
+    fontSize: FontSize.sm,
+    lineHeight: 18,
+  },
+  notesSection: {
+    paddingTop: Spacing.sm,
+    borderTopWidth: 1,
+  },
+  notesLabel: {
+    fontSize: FontSize.xs,
+    marginBottom: 2,
+  },
+  notesText: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+  },
+});

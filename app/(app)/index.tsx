@@ -1,0 +1,813 @@
+import { useState, useEffect, useMemo } from 'react';
+import {
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
+  useWindowDimensions,
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import { useTheme } from '@/hooks/useTheme';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { getMockWorkouts, mockProfile } from '@/lib/mockData';
+import type { Workout } from '@/lib/types';
+import { getLevelInfo } from '@/lib/xp';
+import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
+import { AICoachModal } from '@/components/ai/AICoachModal';
+import { useClerkUser } from '@/hooks/useClerkUser';
+
+const ROUTINE_COLORS = Colors.routineColors;
+
+function formatDuration(sec: number) {
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function StatCard({
+  icon, label, value, suffix, sub, color,
+}: {
+  icon: React.ComponentProps<typeof Feather>['name'];
+  label: string;
+  value: string | number;
+  suffix?: string;
+  sub?: string;
+  color: string;
+}) {
+  const { C } = useTheme();
+  return (
+    <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+      {/* Subtle radial glow */}
+      <View style={[styles.cardGlow, { backgroundColor: color, opacity: 0.04 }]} />
+      <View style={styles.statHeader}>
+        <Feather name={icon} size={12} color={color} />
+        <Text style={[styles.statLabel, { color }]}>{label.toUpperCase()}</Text>
+      </View>
+      <View style={styles.statValueRow}>
+        <Text style={[styles.statValue, { color: C.foreground }]}>{value}</Text>
+        {suffix && <Text style={[styles.statSuffix, { color: C.textMuted }]}> {suffix}</Text>}
+      </View>
+      {sub && <Text style={[styles.statSub, { color: C.textDim }]}>{sub}</Text>}
+    </View>
+  );
+}
+
+function WeeklyCalendar({ workouts }: { workouts: Workout[] }) {
+  const { C } = useTheme();
+  const now = new Date();
+  const day = now.getDay();
+  const diff = (day + 6) % 7;
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - diff);
+
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    return d;
+  });
+
+  const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+
+  return (
+    <View style={styles.calendarRow}>
+      {days.map((day, i) => {
+        const hasWorkout = workouts.some(w => {
+          const wd = new Date(w.started_at);
+          return wd.toDateString() === day.toDateString();
+        });
+        const isToday = day.toDateString() === now.toDateString();
+        return (
+          <View key={i} style={styles.calendarDay}>
+            <Text style={[styles.calDayLabel, { color: isToday ? C.accentText : C.textMuted }]}>
+              {DAY_LABELS[i]}
+            </Text>
+            <View
+              style={[
+                styles.calDayCircle,
+                hasWorkout
+                  ? { backgroundColor: Colors.primary }
+                  : isToday
+                  ? { backgroundColor: C.primarySubtle, borderWidth: 1, borderColor: C.primaryBorder }
+                  : { backgroundColor: C.muted },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.calDayNum,
+                  {
+                    color: hasWorkout
+                      ? Colors.primaryFg
+                      : isToday
+                      ? C.accentText
+                      : C.textMuted,
+                    fontWeight: hasWorkout || isToday ? FontWeight.bold : FontWeight.regular,
+                  },
+                ]}
+              >
+                {day.getDate()}
+              </Text>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function XPBar({ xp }: { xp: number }) {
+  const { C } = useTheme();
+  const { level, xpInLevel, xpNeeded } = getLevelInfo(xp);
+  const progress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
+  const progressWidth = useSharedValue(0);
+
+  useEffect(() => {
+    progressWidth.value = withTiming(progress, { duration: 800 });
+  }, [progress]);
+
+  const barStyle = useAnimatedStyle(() => ({
+    width: `${progressWidth.value * 100}%` as any,
+  }));
+
+  return (
+    <View style={styles.xpRow}>
+      <View style={styles.levelCircle}>
+        <Text style={styles.levelNum}>{level}</Text>
+      </View>
+      <View style={styles.xpBarWrap}>
+        <View style={[styles.xpTrack, { backgroundColor: `${Colors.primary}18` }]}>
+          <Animated.View style={[styles.xpFill, { backgroundColor: Colors.primary }, barStyle]} />
+        </View>
+      </View>
+      <Text style={[styles.xpText, { color: C.textDim }]}>
+        {xpInLevel}/{xpNeeded}
+      </Text>
+    </View>
+  );
+}
+
+export default function DashboardScreen() {
+  const router = useRouter();
+  const { C, mode } = useTheme();
+  const isDark = mode === 'dark';
+  const aiGradient = isDark
+    ? (['rgba(168,85,247,0.28)', 'rgba(59,130,246,0.22)', 'rgba(6,182,212,0.16)'] as const)
+    : (['rgba(168,85,247,0.12)', 'rgba(59,130,246,0.10)', 'rgba(6,182,212,0.08)'] as const);
+  const aiBorderColor = isDark ? 'rgba(168,85,247,0.45)' : 'rgba(168,85,247,0.20)';
+  const aiOrb1Bg = isDark ? 'rgba(168,85,247,0.35)' : 'rgba(168,85,247,0.15)';
+  const aiOrb2Bg = isDark ? 'rgba(6,182,212,0.22)' : 'rgba(6,182,212,0.10)';
+  const aiChipBg = isDark ? 'rgba(168,85,247,0.18)' : 'rgba(168,85,247,0.08)';
+  const aiChipBorder = isDark ? 'rgba(168,85,247,0.30)' : 'rgba(168,85,247,0.12)';
+  const aiChipFg = isDark ? C.foreground : C.textSecondary;
+  const { user } = useClerkUser();
+  const [workouts, setWorkouts] = useState<Workout[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [userXP, setUserXP] = useState(0);
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const userName = user?.firstName || user?.fullName || user?.emailAddresses?.[0]?.emailAddress?.split('@')[0] || 'Athlete';
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setWorkouts(getMockWorkouts() as any[]);
+      setUserXP(mockProfile.xp);
+      setLoading(false);
+      return;
+    }
+    const clerkId = user?.id;
+    // Only fetch last 90 days to cap payload size; stats derived client-side need recent history only.
+    const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    let workoutsQ = supabase
+      .from('workouts')
+      .select('*, workout_sets(*, exercises(*))')
+      .gte('started_at', sinceIso)
+      .order('started_at', { ascending: false });
+    let profileQ = supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
+    if (clerkId) {
+      workoutsQ = workoutsQ.eq('user_id', clerkId);
+      profileQ = supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle();
+    }
+    Promise.all([workoutsQ, profileQ]).then(([{ data: wData }, { data: pData }]) => {
+      setWorkouts((wData as any[]) || []);
+      setUserXP((pData as any)?.xp || 0);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [user?.id]);
+
+  // Compute stats
+  const now = new Date();
+  const weekAgo = new Date(now);
+  weekAgo.setDate(now.getDate() - 7);
+  const weekWorkouts = workouts.filter(w => new Date(w.started_at) >= weekAgo);
+
+  let streak = 0;
+  const sortedDays = [...new Set(workouts.map(w => new Date(w.started_at).toDateString()))];
+  const checkDate = new Date(now);
+  for (let i = 0; i < 365; i++) {
+    const ds = checkDate.toDateString();
+    if (sortedDays.includes(ds)) {
+      streak++;
+      checkDate.setDate(checkDate.getDate() - 1);
+    } else if (i === 0) {
+      checkDate.setDate(checkDate.getDate() - 1);
+    } else break;
+  }
+
+  const totalVolume = weekWorkouts.reduce((sum, w) => sum + (w.total_volume_kg || 0), 0);
+  const avgDuration = weekWorkouts.length > 0
+    ? Math.floor(weekWorkouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / weekWorkouts.length / 60)
+    : 0;
+  const totalSets = workouts.reduce((s, w) => s + (w.sets?.length || 0), 0);
+  const totalReps = workouts.reduce((s, w) => s + (w.sets?.reduce((r: number, set: any) => r + set.reps, 0) || 0), 0);
+
+  const recentWorkouts = workouts.slice(0, 5);
+
+  // AI Coach state
+  const [aiCoachOpen, setAiCoachOpen] = useState(false);
+  const [aiCoachInitialScreen, setAiCoachInitialScreen] = useState<'menu' | 'chat' | 'plan' | 'workout'>('menu');
+
+  // Weekly volume trend (last 6 weeks)
+  const weeklyTrend = useMemo(() => {
+    const weeks: { volume: number; label: string }[] = [];
+    for (let w = 5; w >= 0; w--) {
+      const start = new Date(now);
+      start.setDate(now.getDate() - (w + 1) * 7);
+      const end = new Date(now);
+      end.setDate(now.getDate() - w * 7);
+      const vol = workouts
+        .filter(wk => {
+          const d = new Date(wk.started_at);
+          return d >= start && d < end;
+        })
+        .reduce((s, wk) => s + (wk.total_volume_kg || 0), 0);
+      const label = w === 0
+        ? 'This wk'
+        : start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      weeks.push({ volume: Math.round(vol), label });
+    }
+    return weeks;
+  }, [workouts]);
+  const weeklyVolumes = weeklyTrend.map(w => w.volume);
+  const weeklyLabels = weeklyTrend.map(w => w.label);
+
+  // Muscle breakdown
+  // Figma-matched muscle group colors
+  const MUSCLE_COLORS: Record<string, string> = {
+    Chest: '#ef4444',
+    Back: '#3b82f6',
+    Shoulders: '#f59e0b',
+    Quads: '#10b981',
+    Hamstrings: '#06b6d4',
+    Biceps: '#a855f7',
+    Triceps: '#ec4899',
+    Calves: '#84cc16',
+    Core: '#f97316',
+    Glutes: '#14b8a6',
+    'Full Body': '#8b5cf6',
+  };
+
+  const muscleData = useMemo(() => {
+    const counts: Record<string, number> = {};
+    workouts.forEach(w => {
+      (w.sets || []).forEach((s: any) => {
+        const mg = s.exercises?.muscle_group || s.muscle_group;
+        if (mg) counts[mg] = (counts[mg] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value, color: MUSCLE_COLORS[name] || '#6b7280' }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+  }, [workouts]);
+
+  const topMuscle = muscleData[0];
+  const muscleTotal = muscleData.reduce((s, d) => s + d.value, 0);
+  const topMusclePct = topMuscle && muscleTotal > 0 ? Math.round((topMuscle.value / muscleTotal) * 100) : 0;
+
+  return (
+    <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 100 }}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.greeting, { color: C.textDim }]}>{greeting}</Text>
+            <Text style={[styles.userName, { color: C.foreground }]}>{userName}</Text>
+            <XPBar xp={userXP} />
+          </View>
+          <View style={styles.headerRight}>
+            {/* Start button */}
+            <TouchableOpacity
+              style={styles.startBtn}
+              activeOpacity={0.8}
+              onPress={() => router.push('/workout/new')}
+            >
+              <Feather name="activity" size={16} color={Colors.primaryFg} />
+              <Text style={styles.startBtnText}>Start</Text>
+            </TouchableOpacity>
+            {/* Avatar */}
+            <TouchableOpacity
+              onPress={() => router.push('/(app)/profile')}
+              style={[styles.avatarBtn, { backgroundColor: C.circleBg, borderColor: C.primaryBorder }]}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.avatarText, { color: C.circleFg }]}>
+                {userName.charAt(0).toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Weekly calendar */}
+        <View style={styles.calendarWrap}>
+          <WeeklyCalendar workouts={workouts} />
+        </View>
+
+        {/* AI Coach Hero Card */}
+        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => { setAiCoachInitialScreen('menu'); setAiCoachOpen(true); }}
+            style={[styles.aiCoachCard, { borderColor: aiBorderColor }]}
+          >
+            {/* Background gradient */}
+            <LinearGradient
+              colors={aiGradient as any}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFillObject}
+            />
+            {/* Glow orbs */}
+            <View style={[styles.aiGlowOrb1, { backgroundColor: aiOrb1Bg }]} />
+            <View style={[styles.aiGlowOrb2, { backgroundColor: aiOrb2Bg }]} />
+
+            <View style={styles.aiCoachRow}>
+              {/* Icon */}
+              <LinearGradient
+                colors={['#a855f7', '#3b82f6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.aiCoachIconWrap}
+              >
+                <Feather name="zap" size={18} color="#ffffff" />
+              </LinearGradient>
+
+              {/* Text */}
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>AI Coach</Text>
+                  <LinearGradient
+                    colors={['#a855f7', '#3b82f6']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.newBadge}
+                  >
+                    <Text style={styles.newBadgeText}>NEW</Text>
+                  </LinearGradient>
+                </View>
+                <Text style={[styles.aiCoachSub, { color: C.textMuted }]}>
+                  Your personal coach who knows every rep, every PR
+                </Text>
+              </View>
+
+              {/* Arrow */}
+              <View style={styles.aiCoachArrow}>
+                <Feather name="chevron-right" size={14} color="#a855f7" />
+              </View>
+            </View>
+
+            {/* Quick action chips */}
+            <View style={styles.aiChipsRow}>
+              {([
+                { icon: 'message-circle' as const, label: 'Chat', screen: 'chat' as const },
+                { icon: 'zap' as const, label: 'Quick Workout', screen: 'workout' as const },
+                { icon: 'activity' as const, label: 'Full Plan', screen: 'plan' as const },
+              ]).map(({ icon, label, screen }) => (
+                <TouchableOpacity
+                  key={label}
+                  onPress={() => { setAiCoachInitialScreen(screen); setAiCoachOpen(true); }}
+                  style={[styles.aiChip, { backgroundColor: aiChipBg, borderColor: aiChipBorder }]}
+                  activeOpacity={0.7}
+                >
+                  <Feather name={icon} size={10} color={aiChipFg} />
+                  <Text style={[styles.aiChipText, { color: aiChipFg }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </TouchableOpacity>
+        </View>
+
+        {/* Stats grid */}
+        <View style={styles.statsGrid}>
+          <StatCard
+            icon="activity"
+            label="Workouts"
+            value={weekWorkouts.length}
+            suffix="this week"
+            color={Colors.stat.workouts}
+          />
+          <StatCard
+            icon="zap"
+            label="Streak"
+            value={streak}
+            suffix={streak === 1 ? 'day' : 'days'}
+            sub={streak === 0 ? 'Start today!' : streak >= 7 ? 'On fire!' : 'Keep going!'}
+            color={Colors.stat.streak}
+          />
+          {/* Volume card with area chart */}
+          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+            <View style={[styles.cardGlow, { backgroundColor: '#3b82f6', opacity: 0.04 }]} />
+            <View style={styles.statHeader}>
+              <Feather name="trending-up" size={12} color="#3b82f6" />
+              <Text style={[styles.statLabel, { color: '#3b82f6' }]}>VOLUME</Text>
+            </View>
+            <View style={styles.statValueRow}>
+              <Text style={[styles.statValue, { color: C.foreground }]}>
+                {totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume}
+              </Text>
+              <Text style={[styles.statSuffix, { color: C.textMuted }]}> kg</Text>
+            </View>
+            {weeklyVolumes.some(v => v > 0) ? (
+              <View style={{ marginTop: 6, marginHorizontal: -4, marginBottom: -4 }}>
+                <MiniAreaChart
+                  data={weeklyVolumes}
+                  labels={weeklyLabels}
+                  width={140}
+                  height={72}
+                  color="#3b82f6"
+                  valueSuffix="kg"
+                  tooltipBgColor={C.elevated}
+                  tooltipTextColor={C.foreground}
+                />
+              </View>
+            ) : (
+              <Text style={[styles.statSub, { color: C.textDim }]}>No data yet</Text>
+            )}
+          </View>
+
+          {/* Muscles card with interactive donut chart */}
+          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+            <View style={[styles.cardGlow, { backgroundColor: '#ec4899', opacity: 0.04 }]} />
+            <View style={styles.statHeader}>
+              <Feather name="activity" size={12} color="#ec4899" />
+              <Text style={[styles.statLabel, { color: '#ec4899' }]}>MUSCLES</Text>
+            </View>
+            {muscleData.length > 0 ? (
+              <View style={{ alignItems: 'center', marginTop: 2 }}>
+                <MiniDonutChart
+                  data={muscleData}
+                  size={100}
+                  thickness={18}
+                  gap={2}
+                  subColor={C.textMuted}
+                />
+              </View>
+            ) : (
+              <>
+                <Text style={[styles.statValue, { color: C.foreground }]}>-</Text>
+                <Text style={[styles.statSub, { color: C.textDim }]}>Track workouts</Text>
+              </>
+            )}
+          </View>
+          <StatCard
+            icon="clock"
+            label="Avg Duration"
+            value={avgDuration}
+            suffix="min"
+            sub="per workout"
+            color={Colors.stat.duration}
+          />
+          <StatCard
+            icon="check-square"
+            label="Sets"
+            value={totalSets}
+            suffix="sets"
+            sub={`${totalReps} reps total`}
+            color={Colors.stat.sets}
+          />
+        </View>
+
+        {/* Recent Workouts */}
+        <View style={styles.section}>
+          <Animated.View
+            entering={FadeInDown.delay(200).duration(400)}
+            style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+          >
+            {/* Subtle glow */}
+            <View style={[styles.recentGlow, { backgroundColor: C.accentText }]} />
+
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleRow}>
+                <Feather name="clock" size={14} color={C.accentText} />
+                <Text style={[styles.sectionTitle, { color: C.accentText }]}>Recent Workouts</Text>
+              </View>
+              {workouts.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => router.push('/(app)/history')}
+                  style={[styles.viewAllBtn, { backgroundColor: C.primaryMuted }]}
+                  activeOpacity={0.7}
+                >
+                  <Feather name="chevron-right" size={12} color={C.accentText} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {loading ? (
+              <View style={{ gap: 12 }}>
+                {[1, 2, 3].map(i => (
+                  <View key={i} style={[styles.skeleton, { backgroundColor: C.glowBg }]} />
+                ))}
+              </View>
+            ) : recentWorkouts.length === 0 ? (
+              <View style={styles.emptyState}>
+                <View style={[styles.emptyIcon, { backgroundColor: C.glowBg }]}>
+                  <Feather name="activity" size={22} color={C.textDim} />
+                </View>
+                <Text style={[styles.emptyTitle, { color: C.textMuted }]}>No workouts yet</Text>
+                <Text style={[styles.emptySub, { color: C.textDim }]}>
+                  Complete your first session to see it here
+                </Text>
+              </View>
+            ) : (
+              <View style={{ gap: 8 }}>
+                {recentWorkouts.map((w, idx) => (
+                  <Animated.View
+                    key={w.id}
+                    entering={FadeInDown.delay(idx * 50).duration(300)}
+                    style={[styles.workoutItem, { backgroundColor: C.glowBg, borderColor: C.borderSubtle }]}
+                  >
+                    <View style={[styles.workoutDotWrap, { backgroundColor: `${ROUTINE_COLORS[idx % ROUTINE_COLORS.length]}15` }]}>
+                      <View style={[styles.workoutDot, { backgroundColor: ROUTINE_COLORS[idx % ROUTINE_COLORS.length] }]} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.workoutName, { color: C.foreground }]}>{w.name}</Text>
+                      <Text style={[styles.workoutDate, { color: C.textMuted }]}>{formatDate(w.started_at)}</Text>
+                      {(w.sets?.length || 0) > 0 && (
+                        <View style={styles.exerciseTags}>
+                          {[...new Set(w.sets?.map((s: any) => s.exercises?.name).filter(Boolean))].slice(0, 3).map((exName: any, ei: number) => (
+                            <View key={ei} style={[styles.tag, { backgroundColor: C.muted }]}>
+                              <Text style={[styles.tagText, { color: C.textSecondary }]}>{exName}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Feather name="clock" size={10} color={C.mutedFg} />
+                        <Text style={[styles.workoutDuration, { color: C.mutedFg }]}>
+                          {w.duration_seconds ? formatDuration(w.duration_seconds) : '-'}
+                        </Text>
+                      </View>
+                      {w.total_volume_kg ? (
+                        <Text style={[styles.workoutVolume, { color: C.textMuted }]}>
+                          {w.total_volume_kg}kg
+                        </Text>
+                      ) : null}
+                    </View>
+                  </Animated.View>
+                ))}
+              </View>
+            )}
+          </Animated.View>
+        </View>
+      </ScrollView>
+
+      {/* AI Coach Modal */}
+      <AICoachModal
+        visible={aiCoachOpen}
+        onClose={() => setAiCoachOpen(false)}
+        initialScreen={aiCoachInitialScreen}
+        onRoutineCreated={() => {}}
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xxl,
+    paddingBottom: Spacing.lg,
+  },
+  greeting: { fontSize: 10, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 },
+  userName: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: -0.5, marginBottom: 4 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 20, flexShrink: 0, marginLeft: 12 },
+  startBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    backgroundColor: Colors.primary,
+  },
+  startBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.primaryFg },
+  avatarBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1,
+  },
+  avatarText: { fontSize: FontSize.base, fontWeight: FontWeight.black },
+  // XP
+  xpRow: { flexDirection: 'row', alignItems: 'center', gap: 0, maxWidth: 200 },
+  levelCircle: {
+    width: 24, height: 24, borderRadius: 12,
+    backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+    zIndex: 1,
+  },
+  levelNum: { fontSize: 10, fontWeight: FontWeight.black, color: Colors.primaryFg },
+  xpBarWrap: { flex: 1, marginLeft: -4 },
+  xpTrack: { height: 8, borderRadius: 4, overflow: 'hidden' },
+  xpFill: { height: '100%', borderRadius: 4 },
+  xpText: { fontSize: 8, fontWeight: FontWeight.bold, marginLeft: 6 },
+  // Calendar
+  calendarWrap: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl },
+  calendarRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  calendarDay: { alignItems: 'center', gap: 6 },
+  calDayLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  calDayCircle: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  calDayNum: { fontSize: FontSize.sm },
+  // Stats
+  statsGrid: {
+    paddingHorizontal: Spacing.xl,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: Spacing.xxl,
+  },
+  statCard: {
+    width: '47%',
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    padding: Spacing.md,
+    gap: 4,
+    overflow: 'hidden',
+  },
+  cardGlow: {
+    position: 'absolute',
+    top: -20,
+    left: -20,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  statHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  statLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.5 },
+  statValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
+  statValue: { fontSize: 24, fontWeight: FontWeight.black, letterSpacing: -0.5 },
+  statSuffix: { fontSize: 10, fontWeight: FontWeight.medium },
+  statSub: { fontSize: 10, marginTop: 2 },
+  // Section
+  section: { paddingHorizontal: Spacing.xl },
+  card: {
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    overflow: 'hidden',
+  },
+  recentGlow: {
+    position: 'absolute',
+    top: -40,
+    left: -40,
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    opacity: 0.04,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.lg,
+  },
+  sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  sectionTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  viewAllBtn: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  // Skeleton
+  skeleton: { height: 64, borderRadius: Radius.md },
+  // Empty state
+  emptyState: { alignItems: 'center', paddingVertical: Spacing.xxxl },
+  emptyIcon: { width: 56, height: 56, borderRadius: Radius.lg, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  emptyTitle: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  emptySub: { fontSize: FontSize.sm, marginTop: 4, textAlign: 'center' },
+  // Workout items
+  workoutItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: 12,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  workoutDotWrap: { width: 36, height: 36, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  workoutDot: { width: 8, height: 8, borderRadius: 4 },
+  workoutName: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  workoutDate: { fontSize: FontSize.sm, marginTop: 2 },
+  workoutDuration: { fontSize: FontSize.sm },
+  workoutVolume: { fontSize: FontSize.sm, marginTop: 2 },
+  exerciseTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  tag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 99 },
+  tagText: { fontSize: 10 },
+  // AI Coach hero card
+  aiCoachCard: {
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  aiGlowOrb1: {
+    position: 'absolute',
+    top: -24,
+    right: -24,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: 'rgba(168,85,247,0.35)',
+  },
+  aiGlowOrb2: {
+    position: 'absolute',
+    bottom: -16,
+    left: -16,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(6,182,212,0.22)',
+  },
+  aiCoachRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  aiCoachIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  aiCoachTitle: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+  },
+  newBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: Radius.full,
+  },
+  newBadgeText: {
+    fontSize: 8,
+    fontWeight: FontWeight.bold,
+    color: '#ffffff',
+    letterSpacing: 0.8,
+  },
+  aiCoachSub: {
+    fontSize: FontSize.sm,
+    marginTop: 2,
+  },
+  aiCoachArrow: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(168,85,247,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  aiChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  aiChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Radius.sm,
+    backgroundColor: 'rgba(168,85,247,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(168,85,247,0.30)',
+  },
+  aiChipText: {
+    fontSize: 10,
+    fontWeight: FontWeight.medium,
+  },
+});
