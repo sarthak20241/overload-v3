@@ -104,15 +104,19 @@ export default function ActiveWorkoutScreen() {
   const currentEx = exercises[currentIdx];
   const prevSets = currentEx?.previousSets;
 
-  // Track keyboard height on iOS — Modal does not auto-resize, so the custom
-  // exercise form needs to lift above the keyboard manually. Android's window
-  // already shrinks via adjustResize.
+  // Track keyboard height while the custom-exercise form is open. iOS Modal
+  // does not auto-resize. On Android we still need the height so the sheet's
+  // maxHeight can subtract it — useWindowDimensions inside a Modal does not
+  // reliably reflect the resized window, which was leaving the sheet taller
+  // than the visible area and pushing the EXERCISE NAME input off-screen.
   useEffect(() => {
-    if (!showCustomForm || Platform.OS !== 'ios') { setKbHeight(0); return; }
-    const showSub = Keyboard.addListener('keyboardWillShow', (e) => {
+    if (!showCustomForm) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
       setKbHeight(e.endCoordinates?.height ?? 0);
     });
-    const hideSub = Keyboard.addListener('keyboardWillHide', () => setKbHeight(0));
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
     return () => {
       showSub.remove();
       hideSub.remove();
@@ -1143,7 +1147,10 @@ export default function ActiveWorkoutScreen() {
               styles.modalSheet,
               {
                 backgroundColor: C.elevated,
-                marginBottom: kbHeight,
+                // iOS Modal doesn't auto-resize, so lift the sheet via margin.
+                // Android adjustResize already handles the bottom anchor;
+                // adding margin would push the sheet off the top of the screen.
+                marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
                 maxHeight: (winH - kbHeight) * 0.9,
               },
             ]}
