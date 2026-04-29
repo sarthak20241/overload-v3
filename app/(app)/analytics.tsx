@@ -227,26 +227,28 @@ function BottomDrawer({
 
   useEffect(() => { if (!visible) setShown(false); }, [visible]);
 
-  // iOS Modal does NOT resize when the keyboard opens, so we track keyboard
-  // height and lift the sheet manually. On Android the Modal's window inherits
-  // `adjustResize`, so the modal area shrinks automatically and adding margin
-  // would double-compensate (the drawer would shoot up to the top of the
-  // screen). On Android, useWindowDimensions().height also reflects the
-  // already-resized area, so it can be used directly.
-  const isIos = Platform.OS === 'ios';
+  // Track keyboard height on both platforms. On iOS the Modal does not resize,
+  // so we lift the sheet via marginBottom. On Android the Activity's adjustResize
+  // shifts the Save button above the keyboard, but useWindowDimensions().height
+  // does NOT shrink inside a Modal — so without subtracting kbHeight from
+  // maxHeight, the drawer renders at its full (unshrunk) maxHeight and its top
+  // overflows above the visible window.
   useEffect(() => {
-    if (!visible || !isIos) { setKbHeight(0); return; }
-    const showSub = Keyboard.addListener('keyboardWillShow', (e) => {
+    if (!visible) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
       setKbHeight(e.endCoordinates?.height ?? 0);
     });
-    const hideSub = Keyboard.addListener('keyboardWillHide', () => setKbHeight(0));
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
     return () => {
       showSub.remove();
       hideSub.remove();
     };
-  }, [visible, isIos]);
+  }, [visible]);
 
-  const sheetMaxHeight = isIos ? (height - kbHeight) * 0.9 : height * 0.9;
+  const sheetMaxHeight = (height - kbHeight) * 0.9;
+  const sheetMarginBottom = Platform.OS === 'ios' ? kbHeight : 0;
 
   return (
     <Modal
@@ -265,7 +267,7 @@ function BottomDrawer({
             style={[
               styles.drawerSheet,
               {
-                marginBottom: kbHeight,
+                marginBottom: sheetMarginBottom,
                 maxHeight: sheetMaxHeight,
                 backgroundColor: C.elevated,
                 borderColor: C.border,

@@ -17,6 +17,7 @@ import Animated, {
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { addGuestRoutine } from '@/lib/mockData';
 
@@ -744,6 +745,7 @@ export function AICoachModal({
   initialScreen?: Screen;
 }) {
   const { C } = useTheme();
+  const { user } = useClerkUser();
   const [screen, setScreen] = useState<Screen>(initialScreen);
 
   useEffect(() => {
@@ -756,7 +758,8 @@ export function AICoachModal({
   };
 
   const handleSaveRoutine = async (workout: GeneratedWorkout) => {
-    if (!isSupabaseConfigured) {
+    const clerkId = user?.id;
+    if (!isSupabaseConfigured || !clerkId) {
       const routineId = `guest-r-${Date.now()}`;
       addGuestRoutine({
         id: routineId,
@@ -788,10 +791,10 @@ export function AICoachModal({
       onRoutineCreated?.();
       return;
     }
-    // Create routine in Supabase
+    // Create routine in Supabase (clerkId guaranteed by guard above)
     const { data: routine, error } = await supabase
       .from('routines')
-      .insert({ name: workout.name })
+      .insert({ user_id: clerkId, name: workout.name })
       .select()
       .single();
 

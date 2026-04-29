@@ -140,7 +140,9 @@ export default function ActiveWorkoutScreen() {
       }
       try {
         let routine: any = null;
-        if (!isSupabaseConfigured) {
+        const clerkId = user?.id;
+        const isGuest = !isSupabaseConfigured || !clerkId;
+        if (isGuest) {
           routine = findMockRoutine(id!);
         } else {
           const { data } = await supabase
@@ -159,7 +161,7 @@ export default function ActiveWorkoutScreen() {
         // Build previous performance map — for each exercise, find the most recent
         // completed workout that contained it (across all routines).
         let prevPerf: Record<string, { weight_kg: number; reps: number }[]> = {};
-        if (!isSupabaseConfigured) {
+        if (isGuest) {
           prevPerf = getPreviousPerformance(routine.id);
         } else {
           const exIdToName = new Map<string, string>();

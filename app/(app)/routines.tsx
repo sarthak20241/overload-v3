@@ -27,6 +27,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { mockRoutines, getAllRoutines, addGuestRoutine } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -492,6 +493,7 @@ function RoutineEditorSheet({
   onSaved: () => void;
 }) {
   const { C } = useTheme();
+  const { user } = useClerkUser();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
@@ -598,7 +600,12 @@ function RoutineEditorSheet({
 
     setSaving(true);
     try {
-      if (!isSupabaseConfigured) {
+      const clerkId = user?.id;
+      // Guest mode: either Supabase isn't configured, or the user came in
+      // through "Continue as guest" (no Clerk session). Routines are
+      // user-scoped server-side, so without a Clerk id we can only persist
+      // locally via mockData.
+      if (!isSupabaseConfigured || !clerkId) {
         // Guest mode: create a local routine
         const routineId = editingRoutine?.id || `guest-r-${Date.now()}`;
         const routineExercises = validExercises.map((ex, i) => {
@@ -667,7 +674,7 @@ function RoutineEditorSheet({
         // Create new routine
         const { data: routineData, error: routineErr } = await supabase
           .from('routines')
-          .insert({ name: trimmedName, description: description.trim() })
+          .insert({ user_id: clerkId, name: trimmedName, description: description.trim() })
           .select()
           .single();
         if (routineErr) throw routineErr;
@@ -1100,6 +1107,7 @@ async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
 export default function RoutinesScreen() {
   const router = useRouter();
   const { C } = useTheme();
+  const { user } = useClerkUser();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1110,16 +1118,18 @@ export default function RoutinesScreen() {
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
 
   const fetchRoutines = useCallback(async () => {
-    if (!isSupabaseConfigured) {
+    const clerkId = user?.id;
+    if (!isSupabaseConfigured || !clerkId) {
       setRoutines(getAllRoutines() as unknown as RoutineRaw[]);
       return;
     }
     const { data } = await supabase
       .from('routines')
       .select('*, routine_exercises(*, exercises(*))')
+      .eq('user_id', clerkId)
       .order('created_at', { ascending: false });
     setRoutines((data as RoutineRaw[]) || []);
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     fetchRoutines().finally(() => setLoading(false));

@@ -650,7 +650,7 @@ export default function HistoryScreen() {
         }
       >
         {/* Calendar */}
-        {!loading && workouts.length > 0 && (
+        {!loading && (
           <View style={styles.calWrap}>
             <MonthCalendar
               year={calYear}

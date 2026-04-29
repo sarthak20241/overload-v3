@@ -11,6 +11,7 @@ import { useWorkout } from '@/hooks/useWorkout';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { getAllRoutines } from '@/lib/mockData';
 import { BottomNav } from '@/components/ui/BottomNav';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import type { Routine } from '@/lib/types';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -19,6 +20,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   const router = useRouter();
   const workout = useWorkout();
   const { C } = useTheme();
+  const { user } = useClerkUser();
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [loading, setLoading] = useState(false);
   const [shown, setShown] = useState(false);
@@ -29,7 +31,8 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
 
   useEffect(() => {
     if (visible) {
-      if (!isSupabaseConfigured) {
+      const clerkId = user?.id;
+      if (!isSupabaseConfigured || !clerkId) {
         setRoutines(getAllRoutines() as any[]);
         return;
       }
@@ -37,6 +40,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
       supabase
         .from('routines')
         .select('*, routine_exercises(*, exercises(*))')
+        .eq('user_id', clerkId)
         .order('created_at')
         .then(({ data }) => {
           setRoutines((data as any[]) || []);
@@ -44,7 +48,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
         })
         .catch(() => setLoading(false));
     }
-  }, [visible]);
+  }, [visible, user?.id]);
 
   const startRoutine = (routine: Routine) => {
     onClose();
