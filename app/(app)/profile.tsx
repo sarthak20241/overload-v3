@@ -18,7 +18,7 @@ import { mockProfile, getMockWorkouts } from '@/lib/mockData';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import {
-  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
+  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog, saveBasicInfo,
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 
@@ -544,7 +544,7 @@ export default function ProfileScreen() {
                   <MiniSegmented
                     options={['kg', 'lbs'] as WeightUnit[]}
                     value={weightUnit}
-                    onChange={setWeightUnit}
+                    onChange={(v) => { setWeightUnit(v); saveBasicInfo({ weightUnit: v }); }}
                   />
                   <TouchableOpacity
                     onPress={logWeight}
@@ -566,6 +566,8 @@ export default function ProfileScreen() {
                     onChangeText={(v) => {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
+                      const num = parseFloat(v);
+                      if (!isNaN(num) && num > 0) saveBasicInfo({ goalWeight: num });
                     }}
                     placeholder={weightUnit}
                   />
