@@ -21,33 +21,11 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { getXpForWorkout } from '@/lib/xp';
+import { MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
+import type { ExerciseDef } from '@/lib/exercises';
 
 const AMBER = '#fbbf24';
-
-const EXERCISE_LIBRARY: { name: string; muscle_group: string; category: string }[] = [
-  { name: 'Bench Press', muscle_group: 'Chest', category: 'Barbell' },
-  { name: 'Incline Dumbbell Press', muscle_group: 'Chest', category: 'Dumbbell' },
-  { name: 'Cable Fly', muscle_group: 'Chest', category: 'Cable' },
-  { name: 'Deadlift', muscle_group: 'Back', category: 'Barbell' },
-  { name: 'Barbell Row', muscle_group: 'Back', category: 'Barbell' },
-  { name: 'Pull-up', muscle_group: 'Back', category: 'Bodyweight' },
-  { name: 'Lat Pulldown', muscle_group: 'Back', category: 'Cable' },
-  { name: 'Overhead Press', muscle_group: 'Shoulders', category: 'Barbell' },
-  { name: 'Lateral Raise', muscle_group: 'Shoulders', category: 'Dumbbell' },
-  { name: 'Face Pull', muscle_group: 'Shoulders', category: 'Cable' },
-  { name: 'Squat', muscle_group: 'Quads', category: 'Barbell' },
-  { name: 'Leg Press', muscle_group: 'Quads', category: 'Machine' },
-  { name: 'Romanian Deadlift', muscle_group: 'Hamstrings', category: 'Barbell' },
-  { name: 'Leg Curl', muscle_group: 'Hamstrings', category: 'Machine' },
-  { name: 'Hip Thrust', muscle_group: 'Glutes', category: 'Barbell' },
-  { name: 'Calf Raise', muscle_group: 'Calves', category: 'Machine' },
-  { name: 'Dumbbell Curl', muscle_group: 'Biceps', category: 'Dumbbell' },
-  { name: 'Tricep Pushdown', muscle_group: 'Triceps', category: 'Cable' },
-  { name: 'Plank', muscle_group: 'Core', category: 'Bodyweight' },
-];
-
-const MUSCLE_GROUPS = ['Chest', 'Back', 'Shoulders', 'Biceps', 'Triceps', 'Quads', 'Hamstrings', 'Glutes', 'Calves', 'Core', 'Other'];
-const CATEGORIES = ['Barbell', 'Dumbbell', 'Cable', 'Machine', 'Bodyweight', 'Other'];
+const WORKOUT_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Other'] as const;
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -431,7 +409,7 @@ export default function ActiveWorkoutScreen() {
 
   // Resolve an exercise to a real DB row (look up by name or insert) so workout_sets.exercise_id is a valid FK.
   // Returns the resolved Exercise row, or null if Supabase is unconfigured / the call fails.
-  const resolveExerciseRow = async (lib: typeof EXERCISE_LIBRARY[0]): Promise<Exercise | null> => {
+  const resolveExerciseRow = async (lib: ExerciseDef): Promise<Exercise | null> => {
     if (!isSupabaseConfigured) return null;
     try {
       const { data: existing } = await supabase
@@ -452,7 +430,7 @@ export default function ActiveWorkoutScreen() {
   };
 
   // Add exercise from library
-  const addExercise = async (ex: typeof EXERCISE_LIBRARY[0]) => {
+  const addExercise = async (ex: ExerciseDef) => {
     const resolved = await resolveExerciseRow(ex);
     const newEx: ActiveWorkoutExercise = {
       // In guest mode (resolved === null) we still use a local temp id, but it never reaches Supabase.
@@ -663,11 +641,7 @@ export default function ActiveWorkoutScreen() {
     ? restTimer >= (currentEx.sets[0]?.reps ? 90 : 90) ? Colors.primary : C.textMuted
     : C.textDim;
 
-  const filteredLibrary = EXERCISE_LIBRARY.filter(
-    ex =>
-      ex.name.toLowerCase().includes(exerciseSearch.toLowerCase()) ||
-      ex.muscle_group.toLowerCase().includes(exerciseSearch.toLowerCase())
-  );
+  const filteredLibrary = searchExercises(exerciseSearch);
 
   if (loading) {
     return (
@@ -1184,7 +1158,7 @@ export default function ActiveWorkoutScreen() {
                 {/* Muscle Group */}
                 <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
                 <View style={styles.chipRow}>
-                  {MUSCLE_GROUPS.map(mg => {
+                  {WORKOUT_MUSCLE_GROUPS.map(mg => {
                     const active = customMuscle === mg;
                     return (
                       <TouchableOpacity
