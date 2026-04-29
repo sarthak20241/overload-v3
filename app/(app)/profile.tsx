@@ -172,6 +172,7 @@ export default function ProfileScreen() {
     try { await clerkSignOut(); } catch {}
     router.replace('/(auth)');
   };
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -334,6 +335,38 @@ export default function ProfileScreen() {
     setShowSignOutAlert(false);
     await signOut();
     router.replace('/(auth)');
+  };
+
+  const confirmDeleteAccount = async () => {
+    setDeleteConfirm(false);
+    setDeletingAccount(true);
+    try {
+      const clerkId = user?.id;
+      if (isSupabaseConfigured && clerkId) {
+        await supabase.from('workout_sets')
+          .delete()
+          .in('workout_id',
+            (await supabase.from('workouts').select('id').eq('user_id', clerkId)).data?.map((r: any) => r.id) ?? []
+          );
+        await supabase.from('workouts').delete().eq('user_id', clerkId);
+        await supabase.from('routine_exercises')
+          .delete()
+          .in('routine_id',
+            (await supabase.from('routines').select('id').eq('user_id', clerkId)).data?.map((r: any) => r.id) ?? []
+          );
+        await supabase.from('routines').delete().eq('user_id', clerkId);
+        await supabase.from('user_profiles').delete().eq('clerk_user_id', clerkId);
+      }
+      if (user && (user as any).delete) {
+        await (user as any).delete();
+      } else {
+        await clerkSignOut();
+      }
+      router.replace('/(auth)');
+    } catch (err: any) {
+      setDeletingAccount(false);
+      setShowErrorAlert(err.errors?.[0]?.longMessage || err.message || 'Failed to delete account');
+    }
   };
 
   const submitBugReport = async () => {
@@ -687,13 +720,13 @@ export default function ProfileScreen() {
                       <Text style={[styles.deleteConfirmBtnText, { color: C.foreground }]}>Cancel</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      onPress={() => {
-                        setDeleteConfirm(false);
-                        setShowErrorAlert('Account deletion is not yet wired up.');
-                      }}
-                      style={[styles.deleteConfirmBtn, { backgroundColor: '#ef4444' }]}
+                      onPress={confirmDeleteAccount}
+                      disabled={deletingAccount}
+                      style={[styles.deleteConfirmBtn, { backgroundColor: '#ef4444', opacity: deletingAccount ? 0.6 : 1 }]}
                     >
-                      <Feather name="trash-2" size={10} color="#fff" />
+                      {deletingAccount
+                        ? <ActivityIndicator size="small" color="#fff" />
+                        : <Feather name="trash-2" size={10} color="#fff" />}
                       <Text style={[styles.deleteConfirmBtnText, { color: '#fff' }]}>Delete</Text>
                     </TouchableOpacity>
                   </View>
