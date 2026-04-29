@@ -196,7 +196,11 @@ export default function DashboardScreen() {
       profileQ = supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle();
     }
     Promise.all([workoutsQ, profileQ]).then(([{ data: wData }, { data: pData }]) => {
-      setWorkouts((wData as any[]) || []);
+      const normalized = ((wData as any[]) || []).map((w: any) => ({
+        ...w,
+        sets: w.workout_sets ?? w.sets ?? [],
+      }));
+      setWorkouts(normalized as any[]);
       setUserXP((pData as any)?.xp || 0);
       setLoading(false);
     }).catch(() => setLoading(false));

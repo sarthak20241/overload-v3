@@ -18,7 +18,6 @@ function ClerkSSOCallback() {
   const signUpState = useSignUp();
   const { isSignedIn, isLoaded: userLoaded } = useClerkUser();
   const [giveUp, setGiveUp] = useState(false);
-  const [debug, setDebug] = useState('starting…');
   const activatedRef = useRef(false);
 
   useEffect(() => {
@@ -30,12 +29,6 @@ function ClerkSSOCallback() {
   // when only the createdSessionId field updates.
   const signInSessionId: string | undefined = signInState?.signIn?.createdSessionId;
   const signUpSessionId: string | undefined = signUpState?.signUp?.createdSessionId;
-
-  useEffect(() => {
-    setDebug(
-      `signedIn=${isSignedIn} signInId=${signInSessionId ?? '∅'} signUpId=${signUpSessionId ?? '∅'}`
-    );
-  }, [isSignedIn, signInSessionId, signUpSessionId]);
 
   useEffect(() => {
     if (activatedRef.current) return;
@@ -79,7 +72,6 @@ function ClerkSSOCallback() {
       }}
     >
       <ActivityIndicator size="large" color={C.accentText} />
-      <Text style={{ color: C.textMuted, fontSize: 12 }}>{debug}</Text>
     </View>
   );
 }
