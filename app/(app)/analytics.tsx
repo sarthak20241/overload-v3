@@ -1849,7 +1849,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 10,
   },
-  prName: { flex: 1, fontSize: FontSize.sm, color: '#ddd', marginRight: 12 },
+  prName: { flex: 1, fontSize: FontSize.sm, marginRight: 12 },
   prRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   prTrend: { fontSize: 10, fontWeight: FontWeight.semibold },
   prMax: { fontSize: FontSize.base, fontWeight: FontWeight.black },

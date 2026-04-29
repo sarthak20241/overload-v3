@@ -1143,7 +1143,9 @@ export default function RoutinesScreen() {
 
   const handleDelete = async (id: string) => {
     if (isSupabaseConfigured) {
-      await supabase.from('routines').delete().eq('id', id);
+      let q = supabase.from('routines').delete().eq('id', id);
+      if (user?.id) q = q.eq('user_id', user.id);
+      await q;
     }
     setRoutines((prev) => prev.filter((r) => r.id !== id));
   };

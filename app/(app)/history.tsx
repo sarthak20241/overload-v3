@@ -558,7 +558,9 @@ export default function HistoryScreen() {
   const confirmDelete = async () => {
     if (!deleteId) return;
     if (isSupabaseConfigured) {
-      await supabase.from('workouts').delete().eq('id', deleteId);
+      let q = supabase.from('workouts').delete().eq('id', deleteId);
+      if (user?.id) q = q.eq('user_id', user.id);
+      await q;
     }
     setWorkouts((prev) => prev.filter((w) => w.id !== deleteId));
     setDeleteId(null);
