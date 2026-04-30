@@ -1,11 +1,16 @@
 import { Stack } from 'expo-router';
 import { ClerkProvider } from '@clerk/clerk-expo';
 import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
+
+// Required for OAuth flows to complete when the auth session returns.
+// Must run at app boot, before any auth screen mounts.
+WebBrowser.maybeCompleteAuthSession();
 
 const tokenCache = {
   async getToken(key: string) {

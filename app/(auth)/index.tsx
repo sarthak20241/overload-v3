@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
@@ -12,8 +12,14 @@ import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import * as WebBrowser from 'expo-web-browser';
+import * as AuthSession from 'expo-auth-session';
 
-WebBrowser.maybeCompleteAuthSession();
+function useWarmUpBrowser() {
+  useEffect(() => {
+    void WebBrowser.warmUpAsync();
+    return () => { void WebBrowser.coolDownAsync(); };
+  }, []);
+}
 
 const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -52,23 +58,24 @@ const googleStyles = StyleSheet.create({
 
 function useClerkAuth() {
   if (!hasClerkKey) {
-    return { signIn: null, signUp: null, startOAuthFlow: null, setSignInActive: null, setSignUpActive: null, signInLoaded: false, signUpLoaded: false };
+    return { signIn: null, signUp: null, startSSOFlow: null, setSignInActive: null, setSignUpActive: null, signInLoaded: false, signUpLoaded: false };
   }
-  const { useSignIn, useSignUp, useOAuth } = require('@clerk/clerk-expo');
+  const { useSignIn, useSignUp, useSSO } = require('@clerk/clerk-expo');
   const si = useSignIn();
   const su = useSignUp();
-  const oa = useOAuth({ strategy: 'oauth_google' });
+  const sso = useSSO();
   return {
     signIn: si.signIn, setSignInActive: si.setActive, signInLoaded: si.isLoaded,
     signUp: su.signUp, setSignUpActive: su.setActive, signUpLoaded: su.isLoaded,
-    startOAuthFlow: oa.startOAuthFlow,
+    startSSOFlow: sso.startSSOFlow,
   };
 }
 
 export default function AuthScreen() {
+  useWarmUpBrowser();
   const router = useRouter();
   const { C } = useTheme();
-  const { signIn, setSignInActive, signInLoaded, signUp, setSignUpActive, signUpLoaded, startOAuthFlow } = useClerkAuth();
+  const { signIn, setSignInActive, signInLoaded, signUp, setSignUpActive, signUpLoaded, startSSOFlow } = useClerkAuth();
 
   const [mode, setMode] = useState<Mode>('login');
   const [name, setName] = useState('');
@@ -114,16 +121,34 @@ export default function AuthScreen() {
   };
 
   const handleGoogle = async () => {
-    if (!hasClerkKey || !startOAuthFlow) return;
+    if (!hasClerkKey || !startSSOFlow) return;
     setGoogleLoading(true);
+    setError('');
     try {
-      const { createdSessionId, setActive } = await startOAuthFlow();
+      const redirectUrl = AuthSession.makeRedirectUri({
+        scheme: 'overload',
+        path: 'sso-callback',
+      });
+      const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
+        strategy: 'oauth_google',
+        redirectUrl,
+      });
       if (createdSessionId && setActive) {
         await setActive({ session: createdSessionId });
         router.replace('/(app)');
+        return;
       }
+      if (authSessionResult?.type && authSessionResult.type !== 'success') {
+        return;
+      }
+      if (su?.status === 'missing_requirements') {
+        const missing = su.missingFields?.join(', ') || 'additional info';
+        setError(`Sign-up needs ${missing}. Set those fields to optional in your Clerk Dashboard, or collect them in a follow-up screen.`);
+        return;
+      }
+      setError('Google sign-in did not complete.');
     } catch (err: any) {
-      setError(err.message || 'Google sign-in failed');
+      setError(err.errors?.[0]?.longMessage || err.message || 'Google sign-in failed');
     } finally {
       setGoogleLoading(false);
     }
@@ -205,7 +230,7 @@ export default function AuthScreen() {
             )}
 
             {/* Google */}
-            {mode !== 'forgot' && (
+            {mode !== 'forgot' && hasClerkKey && (
               <TouchableOpacity
                 onPress={handleGoogle}
                 disabled={googleLoading}
@@ -232,7 +257,7 @@ export default function AuthScreen() {
             )}
 
             {/* Divider */}
-            {mode !== 'forgot' && (
+            {mode !== 'forgot' && hasClerkKey && (
               <View style={styles.divider}>
                 <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
                 <Text style={[styles.dividerText, { color: C.textMuted }]}>OR</Text>
