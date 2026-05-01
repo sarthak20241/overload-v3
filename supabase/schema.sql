@@ -78,6 +78,15 @@ create table if not exists workout_sets (
   "order" integer not null default 0
 );
 
+-- ─── AI Coach Rate Limit ────────────────────────────────────────────────────
+-- Sliding-window log of AI Coach requests, keyed by Clerk user id. Touched
+-- only by the ai-coach Edge Function via the service role; clients never
+-- read or write this directly.
+create table if not exists ai_coach_rate_limit (
+  user_id text not null,
+  request_at timestamptz not null default now()
+);
+
 -- ─── Indexes ────────────────────────────────────────────────────────────────
 create index if not exists idx_user_profiles_clerk on user_profiles(clerk_user_id);
 create index if not exists idx_routines_user on routines(user_id);
@@ -86,6 +95,7 @@ create index if not exists idx_workouts_user on workouts(user_id);
 create index if not exists idx_workouts_routine on workouts(routine_id);
 create index if not exists idx_workout_sets_workout on workout_sets(workout_id);
 create index if not exists idx_workout_sets_exercise on workout_sets(exercise_id);
+create index if not exists idx_ai_coach_rl_recent on ai_coach_rate_limit(user_id, request_at desc);
 
 -- ─── RLS Policies ───────────────────────────────────────────────────────────
 -- Auth model: Clerk is configured as a third-party auth provider in Supabase
@@ -97,12 +107,15 @@ create index if not exists idx_workout_sets_exercise on workout_sets(exercise_id
 -- The `exercises` catalog is the only public table — it's a shared list of
 -- movements available to every signed-in user.
 
-alter table user_profiles      enable row level security;
-alter table exercises          enable row level security;
-alter table routines           enable row level security;
-alter table routine_exercises  enable row level security;
-alter table workouts           enable row level security;
-alter table workout_sets       enable row level security;
+alter table user_profiles        enable row level security;
+alter table exercises            enable row level security;
+alter table routines             enable row level security;
+alter table routine_exercises    enable row level security;
+alter table workouts             enable row level security;
+alter table workout_sets         enable row level security;
+-- ai_coach_rate_limit: RLS on, no policies → no role except service_role can
+-- read or write. The Edge Function uses service_role, which bypasses RLS.
+alter table ai_coach_rate_limit  enable row level security;
 
 -- Drop any existing policies (legacy or otherwise) so this block is idempotent.
 drop policy if exists "anon all" on user_profiles;
