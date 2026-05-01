@@ -1,7 +1,15 @@
 /**
  * Mock data for guest mode UI visualization.
  * Used when Supabase is not configured or returns empty data.
+ *
+ * Guest routines and workouts persist to AsyncStorage so a user signed in as
+ * "Continue as guest" doesn't lose their work on app restart. Nothing here
+ * ever touches Supabase — guest data lives only on this device.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const GUEST_ROUTINES_KEY = 'guest_routines_v1';
+const GUEST_WORKOUTS_KEY = 'guest_workouts_v1';
 
 // --- Exercises ---
 const exercises = {
@@ -257,8 +265,16 @@ export const mockRoutines = [
   },
 ];
 
-// --- Guest routine store (in-memory, survives navigation but not app restart) ---
+// --- Guest routine store (AsyncStorage-backed, never sent to Supabase) ---
 const _guestRoutines: typeof mockRoutines = [];
+
+async function persistGuestRoutines() {
+  try {
+    await AsyncStorage.setItem(GUEST_ROUTINES_KEY, JSON.stringify(_guestRoutines));
+  } catch {
+    // Persistence failures shouldn't break the in-memory flow.
+  }
+}
 
 export function getGuestRoutines() {
   return _guestRoutines;
@@ -266,6 +282,7 @@ export function getGuestRoutines() {
 
 export function addGuestRoutine(routine: typeof mockRoutines[0]) {
   _guestRoutines.unshift(routine);
+  void persistGuestRoutines();
 }
 
 export function getAllRoutines() {
@@ -296,12 +313,52 @@ interface GuestWorkout {
 
 const _guestWorkouts: GuestWorkout[] = [];
 
+async function persistGuestWorkouts() {
+  try {
+    await AsyncStorage.setItem(GUEST_WORKOUTS_KEY, JSON.stringify(_guestWorkouts));
+  } catch {
+    // Persistence failures shouldn't break the in-memory flow.
+  }
+}
+
 export function addGuestWorkout(w: GuestWorkout) {
   _guestWorkouts.unshift(w);
+  void persistGuestWorkouts();
 }
 
 export function getGuestWorkouts() {
   return _guestWorkouts;
+}
+
+// Hydrate guest stores from AsyncStorage. Call once on app boot before
+// rendering screens that read from these stores. Idempotent — safe to call
+// multiple times.
+let _hydrated = false;
+let _hydratePromise: Promise<void> | null = null;
+export function hydrateGuestStore(): Promise<void> {
+  if (_hydrated) return Promise.resolve();
+  if (_hydratePromise) return _hydratePromise;
+  _hydratePromise = (async () => {
+    try {
+      const [routinesRaw, workoutsRaw] = await Promise.all([
+        AsyncStorage.getItem(GUEST_ROUTINES_KEY),
+        AsyncStorage.getItem(GUEST_WORKOUTS_KEY),
+      ]);
+      if (routinesRaw) {
+        const parsed = JSON.parse(routinesRaw) as typeof mockRoutines;
+        _guestRoutines.splice(0, _guestRoutines.length, ...parsed);
+      }
+      if (workoutsRaw) {
+        const parsed = JSON.parse(workoutsRaw) as GuestWorkout[];
+        _guestWorkouts.splice(0, _guestWorkouts.length, ...parsed);
+      }
+    } catch {
+      // First-launch / corrupt data → start fresh.
+    } finally {
+      _hydrated = true;
+    }
+  })();
+  return _hydratePromise;
 }
 
 /** Get previous performance for a routine — returns a map of exercise name → sets */
