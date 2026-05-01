@@ -21,6 +21,7 @@ import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog, saveBasicInfo,
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
+import { setGuestMode } from '@/lib/guestMode';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -171,6 +172,9 @@ export default function ProfileScreen() {
   const supabase = useSupabaseClient();
   const signOut = async () => {
     try { await clerkSignOut(); } catch {}
+    // Clear the guest flag too — sign-out should always land on /(auth),
+    // regardless of how the user originally got into /(app).
+    await setGuestMode(false);
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
