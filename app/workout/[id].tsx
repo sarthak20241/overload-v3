@@ -563,7 +563,7 @@ export default function ActiveWorkoutScreen() {
       const { data: workoutRow, error: workoutErr } = await supabase
         .from('workouts')
         .insert({
-          user_id: clerkId ?? null,
+          // user_id omitted — default `auth.jwt()->>'sub'` fills it server-side.
           routine_id: workout.routineId === 'new' ? null : workout.routineId,
           name: workout.routineName,
           started_at: new Date(Date.now() - workout.elapsed * 1000).toISOString(),
