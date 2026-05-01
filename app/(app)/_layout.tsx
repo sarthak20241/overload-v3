@@ -8,7 +8,7 @@ import Animated, {
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getAllRoutines } from '@/lib/mockData';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -21,6 +21,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   const workout = useWorkout();
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [loading, setLoading] = useState(false);
   const [shown, setShown] = useState(false);

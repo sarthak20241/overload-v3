@@ -10,7 +10,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getMockWorkouts, mockProfile } from '@/lib/mockData';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo } from '@/lib/xp';
@@ -167,6 +167,7 @@ export default function DashboardScreen() {
   const aiChipBorder = isDark ? 'rgba(168,85,247,0.30)' : 'rgba(168,85,247,0.12)';
   const aiChipFg = isDark ? C.foreground : C.textSecondary;
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [loading, setLoading] = useState(true);
   const [userXP, setUserXP] = useState(0);

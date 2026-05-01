@@ -12,7 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import {
   getMockWorkouts, getMockWeightLog, getMockBodyFatLog,
   getMockMeasurements, mockBasicInfo,
@@ -1069,6 +1069,7 @@ function get7DayDuration(workouts: WorkoutRaw[]): { data: number[]; labels: stri
 export default function AnalyticsScreen() {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const { width: winWidth } = useWindowDimensions();
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);

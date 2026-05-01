@@ -13,7 +13,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { mockProfile, getMockWorkouts } from '@/lib/mockData';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -168,6 +168,7 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { C, mode, toggleTheme } = useTheme();
   const { user, signOut: clerkSignOut } = useClerkUser();
+  const supabase = useSupabaseClient();
   const signOut = async () => {
     try { await clerkSignOut(); } catch {}
     router.replace('/(auth)');

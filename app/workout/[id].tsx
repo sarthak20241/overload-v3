@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findMockRoutine, addGuestWorkout, getPreviousPerformance } from '@/lib/mockData';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -43,6 +43,7 @@ export default function ActiveWorkoutScreen() {
   const { height: winH } = useWindowDimensions();
   const workout = useWorkout();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
