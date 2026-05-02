@@ -8,6 +8,7 @@
     "userInterfaceStyle": "light",
     "scheme": "overload",
     "splash": {
+      "image": "./assets/splash-icon.png",
       "backgroundColor": "#F5F0E8"
     },
     "ios": {
