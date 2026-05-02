@@ -9,6 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
 import { hydrateGuestStore } from '@/lib/mockData';
+import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 
 // Required for OAuth flows to complete when the auth session returns.
 // Must run at app boot, before any auth screen mounts.
@@ -70,6 +71,7 @@ export default function RootLayout() {
 
   return (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+      <ClerkSupabaseBridge />
       <AppContent />
     </ClerkProvider>
   );

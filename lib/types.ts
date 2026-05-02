@@ -1,3 +1,6 @@
+export type CoachGoal = 'hypertrophy' | 'strength' | 'fat_loss' | 'endurance' | 'general';
+export type ExperienceLevel = 'beginner' | 'intermediate' | 'advanced';
+
 export interface UserProfile {
   id: string;
   clerk_user_id: string;
@@ -13,6 +16,12 @@ export interface UserProfile {
   xp: number;
   streak: number;
   created_at: string;
+  // Phase 0 — coach context fields. Nullable; UI nudges users to fill them.
+  goal?: CoachGoal;
+  experience_level?: ExperienceLevel;
+  training_age_months?: number;
+  date_of_birth?: string;
+  weekly_target_sessions?: number;
 }
 
 export interface Exercise {

@@ -16,6 +16,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { mockProfile, getMockWorkouts } from '@/lib/mockData';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
+import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog, saveBasicInfo,
@@ -34,7 +35,26 @@ const ROW_ICON_COLORS = {
   goal: '#f59e0b',
   bodyFat: '#ef4444',
   bug: '#f97316',
+  trainingGoal: '#84cc16',
+  experience: '#3b82f6',
+  frequency: '#8b5cf6',
+  trainingAge: '#ec4899',
+  dob: '#14b8a6',
 };
+
+const GOAL_OPTIONS: { value: CoachGoal; label: string }[] = [
+  { value: 'hypertrophy', label: 'Hypertrophy' },
+  { value: 'strength',    label: 'Strength' },
+  { value: 'fat_loss',    label: 'Fat Loss' },
+  { value: 'endurance',   label: 'Endurance' },
+  { value: 'general',     label: 'General' },
+];
+
+const EXPERIENCE_OPTIONS: { value: ExperienceLevel; label: string }[] = [
+  { value: 'beginner',     label: 'Beginner' },
+  { value: 'intermediate', label: 'Intermediate' },
+  { value: 'advanced',     label: 'Advanced' },
+];
 
 function withAlpha(hex: string, alpha: string) {
   return `${hex}${alpha}`;
@@ -193,6 +213,12 @@ export default function ProfileScreen() {
   const [joinDate, setJoinDate] = useState('');
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
+  // Coach context (Phase 0). Empty string = unset / show placeholder.
+  const [coachGoal, setCoachGoal] = useState<CoachGoal | ''>('');
+  const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel | ''>('');
+  const [weeklyTargetSessions, setWeeklyTargetSessions] = useState('');
+  const [trainingAgeMonths, setTrainingAgeMonths] = useState('');
+  const [birthYear, setBirthYear] = useState('');
   const [showSignOutAlert, setShowSignOutAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   const [showInfoAlert, setShowInfoAlert] = useState('');
@@ -274,6 +300,11 @@ export default function ProfileScreen() {
         setBodyFat(String(profile.body_fat_percent || 16));
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
+        setCoachGoal((profile.goal as CoachGoal | null) || '');
+        setExperienceLevel((profile.experience_level as ExperienceLevel | null) || '');
+        setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
+        setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
+        setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
       }
       setTotalWorkouts(count || 0);
     } catch (err: any) {
@@ -621,6 +652,147 @@ export default function ProfileScreen() {
                 </View>
               </View>
             )}
+          </View>
+
+          {/* ─── Training Profile (powers AI Coach context) ─── */}
+          <View style={styles.section}>
+            <SectionLabel icon="zap">TRAINING PROFILE</SectionLabel>
+            <Text style={[styles.coachHint, { color: C.textMuted }]}>
+              Helps the AI Coach tailor recommendations to your goals and experience.
+            </Text>
+
+            {/* Goal — horizontal scroll because 5 options */}
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 8 }]}>
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="target" color={ROW_ICON_COLORS.trainingGoal} />
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Primary goal</Text>
+              </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.choicePillsRow}
+              >
+                {GOAL_OPTIONS.map((opt) => {
+                  const active = coachGoal === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.value}
+                      onPress={() => {
+                        setCoachGoal(opt.value);
+                        persistField({ goal: opt.value });
+                      }}
+                      activeOpacity={0.85}
+                      style={[
+                        styles.choicePill,
+                        {
+                          backgroundColor: active ? Colors.primary : 'transparent',
+                          borderColor: active ? Colors.primary : C.borderLight,
+                        },
+                      ]}
+                    >
+                      <Text style={[
+                        styles.choicePillText,
+                        { color: active ? Colors.primaryFg : C.textSecondary },
+                      ]}>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              {/* Experience */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="award" color={ROW_ICON_COLORS.experience} />
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Experience</Text>
+                <View style={{ flexDirection: 'row', gap: 4 }}>
+                  {EXPERIENCE_OPTIONS.map((opt) => {
+                    const active = experienceLevel === opt.value;
+                    return (
+                      <TouchableOpacity
+                        key={opt.value}
+                        onPress={() => {
+                          setExperienceLevel(opt.value);
+                          persistField({ experience_level: opt.value });
+                        }}
+                        activeOpacity={0.85}
+                        style={[
+                          styles.expPill,
+                          {
+                            backgroundColor: active ? Colors.primary : 'transparent',
+                            borderColor: active ? Colors.primary : C.borderLight,
+                          },
+                        ]}
+                      >
+                        <Text style={[
+                          styles.expPillText,
+                          { color: active ? Colors.primaryFg : C.textSecondary },
+                        ]}>
+                          {opt.label.slice(0, 3)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Weekly target sessions */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="calendar" color={ROW_ICON_COLORS.frequency} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Sessions / week</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={weeklyTargetSessions}
+                    onChangeText={(v) => {
+                      setWeeklyTargetSessions(v);
+                      const n = parseInt(v, 10);
+                      persistField({ weekly_target_sessions: Number.isFinite(n) && n > 0 ? n : null });
+                    }}
+                    placeholder="4"
+                    width={56}
+                  />
+                </View>
+              </View>
+
+              {/* Training age (months) */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <RowIcon name="clock" color={ROW_ICON_COLORS.trainingAge} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Training age (mo)</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={trainingAgeMonths}
+                    onChangeText={(v) => {
+                      setTrainingAgeMonths(v);
+                      const n = parseInt(v, 10);
+                      persistField({ training_age_months: Number.isFinite(n) && n >= 0 ? n : null });
+                    }}
+                    placeholder="24"
+                    width={64}
+                  />
+                </View>
+              </View>
+
+              {/* Birth year (stored as Jan 1 of that year) */}
+              <View style={styles.infoRow}>
+                <RowIcon name="gift" color={ROW_ICON_COLORS.dob} />
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Birth year</Text>
+                <View style={styles.infoRight}>
+                  <InlineNumberInput
+                    value={birthYear}
+                    onChangeText={(v) => {
+                      setBirthYear(v);
+                      const y = parseInt(v, 10);
+                      const valid = Number.isFinite(y) && y >= 1900 && y <= new Date().getFullYear();
+                      persistField({ date_of_birth: valid ? `${y}-01-01` : null });
+                    }}
+                    placeholder="1995"
+                    width={70}
+                  />
+                </View>
+              </View>
+            </View>
           </View>
 
           {/* ─── Preferences ─── */}
@@ -990,6 +1162,20 @@ const styles = StyleSheet.create({
     borderRadius: 8, borderWidth: 1, minWidth: 30, alignItems: 'center',
   },
   genderPillText: { fontSize: 10, fontWeight: FontWeight.semibold },
+
+  // Training profile (coach context)
+  coachHint: { fontSize: 11, marginBottom: 8, lineHeight: 14 },
+  choicePillsRow: { paddingHorizontal: 12, paddingVertical: 10, gap: 6 },
+  choicePill: {
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: Radius.full, borderWidth: 1,
+  },
+  choicePillText: { fontSize: 11, fontWeight: FontWeight.semibold },
+  expPill: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8, borderWidth: 1, minWidth: 38, alignItems: 'center',
+  },
+  expPillText: { fontSize: 10, fontWeight: FontWeight.semibold },
 
   // Plus add button
   plusBtn: {

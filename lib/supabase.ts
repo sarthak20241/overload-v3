@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { useMemo } from 'react';
+import * as SecureStore from 'expo-secure-store';
 import { hasClerkKey } from '@/hooks/useClerkUser';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
@@ -7,11 +8,43 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholde
 
 export const isSupabaseConfigured = supabaseUrl !== 'https://placeholder.supabase.co';
 
-// Anonymous fallback client. Kept ONLY so guest-mode/no-Clerk paths don't crash
-// on import. Never use it for user-scoped reads or writes — it carries no JWT
-// and RLS will reject everything once the strict policies land.
+const ExpoSecureStoreAdapter = {
+  getItem: (key: string) => SecureStore.getItemAsync(key),
+  setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
+  removeItem: (key: string) => SecureStore.deleteItemAsync(key),
+};
+
+// Clerk -> Supabase JWT bridge.
+//
+// The supabase-js v2 client checks the `accessToken` callback on every request
+// and uses its return value as the Bearer token. ClerkSupabaseBridge registers
+// a Clerk-issued JWT (template "supabase") at app boot via
+// `setSupabaseTokenGetter` so that Postgres RLS can read
+// `auth.jwt() ->> 'sub'` as the Clerk user ID.
+//
+// Without a registered getter (guest mode, sign-out, pre-Clerk boot) the
+// callback returns null and the client falls back to the anon key.
+let clerkTokenGetter: (() => Promise<string | null>) | null = null;
+
+export function setSupabaseTokenGetter(fn: (() => Promise<string | null>) | null): void {
+  clerkTokenGetter = fn;
+}
+
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  auth: {
+    storage: ExpoSecureStoreAdapter,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+  accessToken: async () => {
+    if (!clerkTokenGetter) return null;
+    try {
+      return await clerkTokenGetter();
+    } catch {
+      return null;
+    }
+  },
 });
 
 // Hook that returns a Supabase client which forwards the current Clerk session
