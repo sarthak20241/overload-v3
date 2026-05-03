@@ -15,7 +15,12 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
 
-WebBrowser.maybeCompleteAuthSession();
+function useWarmUpBrowser() {
+  useEffect(() => {
+    void WebBrowser.warmUpAsync();
+    return () => { void WebBrowser.coolDownAsync(); };
+  }, []);
+}
 
 const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -68,6 +73,7 @@ function useClerkAuth() {
 }
 
 export default function AuthScreen() {
+  useWarmUpBrowser();
   const router = useRouter();
   const { C } = useTheme();
   const { signIn, setSignInActive, signInLoaded, signUp, setSignUpActive, signUpLoaded, startSSOFlow } = useClerkAuth();
@@ -165,33 +171,41 @@ export default function AuthScreen() {
 
   const handleGoogle = async () => {
     if (!hasClerkKey || !startSSOFlow) return;
-    setError('');
     setGoogleLoading(true);
+    setError('');
     try {
       // No scheme override: lets makeRedirectUri pick `exp://` in Expo Go
       // and `overload://` in dev/prod builds automatically.
       const redirectUrl = AuthSession.makeRedirectUri({ path: 'sso-callback' });
-      const { createdSessionId, setActive, authSessionResult } = await startSSOFlow({
+      const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
         strategy: 'oauth_google',
         redirectUrl,
       });
-
       if (createdSessionId && setActive) {
         await setActive({ session: createdSessionId });
         router.replace('/(app)');
         return;
       }
 
-      // OAuth flow returned without a session. Surface whatever happened so
-      // the user isn't stranded on the auth screen with no feedback.
+      // OAuth flow returned without a session. Branch on what we know to
+      // give the user something actionable instead of stranding them.
       const t = authSessionResult?.type;
-      if (t && t !== 'success' && t !== 'cancel' && t !== 'dismiss') {
-        setError(`Google sign-in did not complete (${t}).`);
-      } else if (t === 'success') {
-        // Browser returned success but Clerk produced no session — almost
-        // always means the redirect URL isn't on Clerk's allowlist.
-        setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
+      if (t === 'cancel' || t === 'dismiss') {
+        // User backed out of the browser — silent.
+        return;
       }
+      if (su?.status === 'missing_requirements') {
+        const missing = su.missingFields?.join(', ') || 'additional info';
+        setError(`Sign-up needs ${missing}. Set those fields to optional in your Clerk Dashboard, or collect them in a follow-up screen.`);
+        return;
+      }
+      if (t && t !== 'success') {
+        setError(`Google sign-in did not complete (${t}).`);
+        return;
+      }
+      // Browser returned success but Clerk produced no session — almost
+      // always means the redirect URL isn't on Clerk's allowlist.
+      setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Google sign-in failed');
     } finally {
@@ -285,7 +299,7 @@ export default function AuthScreen() {
             )}
 
             {/* Google */}
-            {(mode === 'login' || mode === 'register') && (
+            {(mode === 'login' || mode === 'register') && hasClerkKey && (
               <TouchableOpacity
                 onPress={handleGoogle}
                 disabled={googleLoading}
@@ -312,7 +326,7 @@ export default function AuthScreen() {
             )}
 
             {/* Divider */}
-            {(mode === 'login' || mode === 'register') && (
+            {(mode === 'login' || mode === 'register') && hasClerkKey && (
               <View style={styles.divider}>
                 <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
                 <Text style={[styles.dividerText, { color: C.textMuted }]}>OR</Text>
