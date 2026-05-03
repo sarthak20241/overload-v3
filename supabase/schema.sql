@@ -87,6 +87,38 @@ create index if not exists idx_workouts_routine on workouts(routine_id);
 create index if not exists idx_workout_sets_workout on workout_sets(workout_id);
 create index if not exists idx_workout_sets_exercise on workout_sets(exercise_id);
 
+-- ─── RLS Policies ───────────────────────────────────────────────────────────
+-- Auth is enforced client-side via Clerk (the (app) route group is gated by
+-- ClerkProvider). Supabase here only sees the anon key — there is no Clerk
+-- JWT integration — so auth.uid() is always null. These policies allow the
+-- anon role to read/write through the API; rows are scoped by the
+-- `user_id` (Clerk user id) column at the query layer.
+--
+-- If you've already enabled RLS on these tables in the Supabase dashboard
+-- without adding policies, every insert is rejected with
+-- "new row violates row level security policy". Run this block to fix it.
+
+alter table user_profiles      enable row level security;
+alter table exercises          enable row level security;
+alter table routines           enable row level security;
+alter table routine_exercises  enable row level security;
+alter table workouts           enable row level security;
+alter table workout_sets       enable row level security;
+
+drop policy if exists "anon all" on user_profiles;
+drop policy if exists "anon all" on exercises;
+drop policy if exists "anon all" on routines;
+drop policy if exists "anon all" on routine_exercises;
+drop policy if exists "anon all" on workouts;
+drop policy if exists "anon all" on workout_sets;
+
+create policy "anon all" on user_profiles      for all to anon using (true) with check (true);
+create policy "anon all" on exercises          for all to anon using (true) with check (true);
+create policy "anon all" on routines           for all to anon using (true) with check (true);
+create policy "anon all" on routine_exercises  for all to anon using (true) with check (true);
+create policy "anon all" on workouts           for all to anon using (true) with check (true);
+create policy "anon all" on workout_sets       for all to anon using (true) with check (true);
+
 -- ─── Seed: Common Exercises ─────────────────────────────────────────────────
 insert into exercises (name, muscle_group, category) values
   ('Bench Press', 'Chest', 'Barbell'),

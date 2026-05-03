@@ -38,6 +38,7 @@ function AppInner() {
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="(app)" options={{ headerShown: false }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
         <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
       </Stack>
     </WorkoutProvider>

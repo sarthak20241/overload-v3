@@ -1,7 +1,10 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '@/constants/theme';
 
 type ThemeMode = 'dark' | 'light';
+
+const THEME_KEY = 'overload_theme';
 
 interface ThemeContextType {
   mode: ThemeMode;
@@ -18,8 +21,18 @@ const ThemeContext = createContext<ThemeContextType>({
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<ThemeMode>('dark');
 
+  useEffect(() => {
+    AsyncStorage.getItem(THEME_KEY).then((stored) => {
+      if (stored === 'light' || stored === 'dark') setMode(stored);
+    }).catch(() => {});
+  }, []);
+
   const toggleTheme = useCallback(() => {
-    setMode((prev) => (prev === 'dark' ? 'light' : 'dark'));
+    setMode((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      AsyncStorage.setItem(THEME_KEY, next).catch(() => {});
+      return next;
+    });
   }, []);
 
   const C = mode === 'dark' ? Colors.dark : Colors.light;

@@ -11,6 +11,7 @@ import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
 
@@ -24,7 +25,7 @@ function useWarmUpBrowser() {
 const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-type Mode = 'login' | 'register' | 'forgot';
+type Mode = 'login' | 'register' | 'forgot' | 'verify';
 
 function GoogleIcon() {
   return (
@@ -76,16 +77,28 @@ export default function AuthScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const { signIn, setSignInActive, signInLoaded, signUp, setSignUpActive, signUpLoaded, startSSOFlow } = useClerkAuth();
+  const { isSignedIn, isLoaded: clerkLoaded } = useClerkUser();
 
   const [mode, setMode] = useState<Mode>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [showResetSent, setShowResetSent] = useState(false);
   const [error, setError] = useState('');
+
+  // Once Clerk reports a signed-in user, route them into the app.
+  // Covers OAuth (where setActive may resolve before createdSessionId is
+  // returned synchronously) and any case where someone lands here with a
+  // live session.
+  useEffect(() => {
+    if (clerkLoaded && isSignedIn) {
+      router.replace('/(app)');
+    }
+  }, [clerkLoaded, isSignedIn, router]);
 
   const handleSubmit = async () => {
     if (hasClerkKey && (!signInLoaded || !signUpLoaded)) return;
@@ -96,6 +109,9 @@ export default function AuthScreen() {
       if (mode === 'login') {
         if (hasClerkKey) {
           const result = await signIn!.create({ identifier: email, password });
+          if (result.status !== 'complete' || !result.createdSessionId) {
+            throw new Error('Sign-in needs another step. Please try again.');
+          }
           await setSignInActive!({ session: result.createdSessionId });
         }
         router.replace('/(app)');
@@ -103,9 +119,30 @@ export default function AuthScreen() {
         if (!name.trim()) throw new Error('Please enter your name');
         if (password.length < 6) throw new Error('Password must be at least 6 characters');
         if (hasClerkKey) {
-          const result = await signUp!.create({ emailAddress: email, password, firstName: name.split(' ')[0], lastName: name.split(' ')[1] });
-          await setSignUpActive!({ session: result.createdSessionId });
+          const parts = name.trim().split(/\s+/);
+          const firstName = parts[0];
+          const lastName = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
+          const result = await signUp!.create({ emailAddress: email, password, firstName, lastName });
+          if (result.status === 'complete' && result.createdSessionId) {
+            await setSignUpActive!({ session: result.createdSessionId });
+            router.replace('/(app)');
+          } else {
+            // Email verification required — send code and switch to verify mode.
+            await signUp!.prepareEmailAddressVerification({ strategy: 'email_code' });
+            setCode('');
+            setMode('verify');
+          }
+        } else {
+          router.replace('/(app)');
         }
+      } else if (mode === 'verify') {
+        if (!hasClerkKey) return;
+        if (!code.trim()) throw new Error('Enter the 6-digit code from your email');
+        const result = await signUp!.attemptEmailAddressVerification({ code: code.trim() });
+        if (result.status !== 'complete' || !result.createdSessionId) {
+          throw new Error('Verification failed. Please check the code and try again.');
+        }
+        await setSignUpActive!({ session: result.createdSessionId });
         router.replace('/(app)');
       } else {
         if (hasClerkKey) {
@@ -120,15 +157,26 @@ export default function AuthScreen() {
     }
   };
 
+  const handleResendCode = async () => {
+    if (!hasClerkKey || !signUp) return;
+    setError('');
+    try {
+      await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
+      setShowResetSent(false);
+      setError('');
+    } catch (err: any) {
+      setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
+    }
+  };
+
   const handleGoogle = async () => {
     if (!hasClerkKey || !startSSOFlow) return;
     setGoogleLoading(true);
     setError('');
     try {
-      const redirectUrl = AuthSession.makeRedirectUri({
-        scheme: 'overload',
-        path: 'sso-callback',
-      });
+      // No scheme override: lets makeRedirectUri pick `exp://` in Expo Go
+      // and `overload://` in dev/prod builds automatically.
+      const redirectUrl = AuthSession.makeRedirectUri({ path: 'sso-callback' });
       const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
         strategy: 'oauth_google',
         redirectUrl,
@@ -138,7 +186,12 @@ export default function AuthScreen() {
         router.replace('/(app)');
         return;
       }
-      if (authSessionResult?.type && authSessionResult.type !== 'success') {
+
+      // OAuth flow returned without a session. Branch on what we know to
+      // give the user something actionable instead of stranding them.
+      const t = authSessionResult?.type;
+      if (t === 'cancel' || t === 'dismiss') {
+        // User backed out of the browser — silent.
         return;
       }
       if (su?.status === 'missing_requirements') {
@@ -146,7 +199,13 @@ export default function AuthScreen() {
         setError(`Sign-up needs ${missing}. Set those fields to optional in your Clerk Dashboard, or collect them in a follow-up screen.`);
         return;
       }
-      setError('Google sign-in did not complete.');
+      if (t && t !== 'success') {
+        setError(`Google sign-in did not complete (${t}).`);
+        return;
+      }
+      // Browser returned success but Clerk produced no session — almost
+      // always means the redirect URL isn't on Clerk's allowlist.
+      setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Google sign-in failed');
     } finally {
@@ -196,7 +255,7 @@ export default function AuthScreen() {
             ]}
           >
             {/* Mode tabs */}
-            {mode !== 'forgot' && (
+            {(mode === 'login' || mode === 'register') && (
               <View style={[styles.tabs, { backgroundColor: C.muted }]}>
                 {(['login', 'register'] as Mode[]).map((m) => (
                   <TouchableOpacity
@@ -229,8 +288,18 @@ export default function AuthScreen() {
               </View>
             )}
 
+            {/* Verify header */}
+            {mode === 'verify' && (
+              <View style={{ marginBottom: Spacing.xxl }}>
+                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Verify Your Email</Text>
+                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                  Enter the 6-digit code we sent to {email || 'your email'}
+                </Text>
+              </View>
+            )}
+
             {/* Google */}
-            {mode !== 'forgot' && hasClerkKey && (
+            {(mode === 'login' || mode === 'register') && hasClerkKey && (
               <TouchableOpacity
                 onPress={handleGoogle}
                 disabled={googleLoading}
@@ -257,7 +326,7 @@ export default function AuthScreen() {
             )}
 
             {/* Divider */}
-            {mode !== 'forgot' && hasClerkKey && (
+            {(mode === 'login' || mode === 'register') && hasClerkKey && (
               <View style={styles.divider}>
                 <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
                 <Text style={[styles.dividerText, { color: C.textMuted }]}>OR</Text>
@@ -280,21 +349,23 @@ export default function AuthScreen() {
             )}
 
             {/* Email */}
-            <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-              <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
-              <TextInput
-                placeholder="Email address"
-                placeholderTextColor={C.textMuted}
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                style={[styles.input, { color: C.foreground }]}
-              />
-            </View>
+            {mode !== 'verify' && (
+              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  placeholder="Email address"
+                  placeholderTextColor={C.textMuted}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  style={[styles.input, { color: C.foreground }]}
+                />
+              </View>
+            )}
 
             {/* Password */}
-            {mode !== 'forgot' && (
+            {(mode === 'login' || mode === 'register') && (
               <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
                 <Feather name="lock" size={15} color={C.textMuted} style={styles.inputIcon} />
                 <TextInput
@@ -308,6 +379,23 @@ export default function AuthScreen() {
                 <TouchableOpacity onPress={() => setShowPass(!showPass)} style={styles.eyeBtn}>
                   <Feather name={showPass ? 'eye-off' : 'eye'} size={15} color={C.textMuted} />
                 </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Verification code */}
+            {mode === 'verify' && (
+              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  placeholder="123456"
+                  placeholderTextColor={C.textMuted}
+                  value={code}
+                  onChangeText={setCode}
+                  keyboardType="number-pad"
+                  autoCapitalize="none"
+                  maxLength={6}
+                  style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
+                />
               </View>
             )}
 
@@ -341,12 +429,27 @@ export default function AuthScreen() {
               ) : (
                 <>
                   <Text style={styles.submitText}>
-                    {mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : 'Send Reset Email'}
+                    {mode === 'login' ? 'Sign In'
+                      : mode === 'register' ? 'Create Account'
+                      : mode === 'verify' ? 'Verify Email'
+                      : 'Send Reset Email'}
                   </Text>
                   <Feather name="arrow-right" size={15} color={Colors.primaryFg} />
                 </>
               )}
             </TouchableOpacity>
+
+            {/* Verify: resend + cancel */}
+            {mode === 'verify' && (
+              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                <TouchableOpacity onPress={handleResendCode}>
+                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { setMode('register'); setError(''); setCode(''); }}>
+                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Back to login */}
             {mode === 'forgot' && (
@@ -360,7 +463,7 @@ export default function AuthScreen() {
           </Animated.View>
 
           {/* Guest */}
-          {mode !== 'forgot' && (
+          {(mode === 'login' || mode === 'register') && (
             <Animated.View entering={FadeInDown.delay(200).duration(500)} style={{ alignItems: 'center', marginTop: Spacing.lg }}>
               <TouchableOpacity onPress={() => router.replace('/(app)')}>
                 <Text style={[styles.guestText, { color: C.textMuted }]}>Continue as guest</Text>
