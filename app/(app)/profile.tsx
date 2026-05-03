@@ -13,7 +13,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { mockProfile, getMockWorkouts } from '@/lib/mockData';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -21,6 +21,7 @@ import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog, saveBasicInfo,
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
+import { setGuestMode } from '@/lib/guestMode';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -168,8 +169,12 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { C, mode, toggleTheme } = useTheme();
   const { user, signOut: clerkSignOut } = useClerkUser();
+  const supabase = useSupabaseClient();
   const signOut = async () => {
     try { await clerkSignOut(); } catch {}
+    // Clear the guest flag too — sign-out should always land on /(auth),
+    // regardless of how the user originally got into /(app).
+    await setGuestMode(false);
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -341,24 +346,16 @@ export default function ProfileScreen() {
     setDeleteConfirm(false);
     setDeletingAccount(true);
     try {
-      const clerkId = user?.id;
-      if (isSupabaseConfigured && clerkId) {
-        await supabase.from('workout_sets')
-          .delete()
-          .in('workout_id',
-            (await supabase.from('workouts').select('id').eq('user_id', clerkId)).data?.map((r: any) => r.id) ?? []
-          );
-        await supabase.from('workouts').delete().eq('user_id', clerkId);
-        await supabase.from('routine_exercises')
-          .delete()
-          .in('routine_id',
-            (await supabase.from('routines').select('id').eq('user_id', clerkId)).data?.map((r: any) => r.id) ?? []
-          );
-        await supabase.from('routines').delete().eq('user_id', clerkId);
-        await supabase.from('user_profiles').delete().eq('clerk_user_id', clerkId);
+      if (isSupabaseConfigured && user?.id) {
+        // Single transactional wipe on the server, plus Clerk user deletion.
+        const { error } = await supabase.functions.invoke('delete-account');
+        if (error) throw error;
       }
+      // Clerk's user.delete() is no-op if the edge function already deleted it,
+      // and required if we're in a no-Supabase configuration. Fall back to
+      // sign-out if the SDK doesn't expose delete().
       if (user && (user as any).delete) {
-        await (user as any).delete();
+        try { await (user as any).delete(); } catch { /* already deleted */ }
       } else {
         await clerkSignOut();
       }

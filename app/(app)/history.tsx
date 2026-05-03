@@ -13,7 +13,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getMockWorkoutsForHistory } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -497,6 +497,7 @@ function SkeletonCards() {
 export default function HistoryScreen() {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

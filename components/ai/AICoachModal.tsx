@@ -18,7 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { addGuestRoutine } from '@/lib/mockData';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -746,6 +746,7 @@ export function AICoachModal({
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [screen, setScreen] = useState<Screen>(initialScreen);
 
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, ActivityIndicator } from 'react-native';
-import { Tabs, useRouter } from 'expo-router';
+import { Tabs, useRouter, Redirect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   SlideInDown, SlideOutDown, Easing,
@@ -8,10 +8,11 @@ import Animated, {
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getAllRoutines } from '@/lib/mockData';
 import { BottomNav } from '@/components/ui/BottomNav';
-import { useClerkUser } from '@/hooks/useClerkUser';
+import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
+import { useGuestMode } from '@/lib/guestMode';
 import type { Routine } from '@/lib/types';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -21,6 +22,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   const workout = useWorkout();
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [loading, setLoading] = useState(false);
   const [shown, setShown] = useState(false);
@@ -152,6 +154,19 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
 
 export default function AppLayout() {
   const [modalOpen, setModalOpen] = useState(false);
+  const { isSignedIn, isLoaded } = useClerkUser();
+  const { isGuest, isLoaded: guestLoaded } = useGuestMode();
+
+  // Wait for both auth and guest-flag reads on cold start; otherwise we may
+  // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
+  // yet) or a returning guest (AsyncStorage flag hasn't loaded yet).
+  if (hasClerkKey && (!isLoaded || !guestLoaded)) return null;
+
+  // Reject everyone who isn't signed in and isn't an explicit guest. Catches
+  // deep links, mid-session sign-out, and stale state restoration.
+  if (hasClerkKey && !isSignedIn && !isGuest) {
+    return <Redirect href="/(auth)" />;
+  }
 
   return (
     <>

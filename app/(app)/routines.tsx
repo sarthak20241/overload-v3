@@ -28,7 +28,7 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { mockRoutines, getAllRoutines, addGuestRoutine } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -494,6 +494,7 @@ function RoutineEditorSheet({
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
@@ -1108,6 +1109,7 @@ export default function RoutinesScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const supabase = useSupabaseClient();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

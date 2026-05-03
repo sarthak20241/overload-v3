@@ -14,6 +14,7 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
+import { setGuestMode } from '@/lib/guestMode';
 
 function useWarmUpBrowser() {
   useEffect(() => {
@@ -96,6 +97,8 @@ export default function AuthScreen() {
   // live session.
   useEffect(() => {
     if (clerkLoaded && isSignedIn) {
+      // A real session takes precedence over any lingering guest flag.
+      void setGuestMode(false);
       router.replace('/(app)');
     }
   }, [clerkLoaded, isSignedIn, router]);
@@ -465,7 +468,10 @@ export default function AuthScreen() {
           {/* Guest */}
           {(mode === 'login' || mode === 'register') && (
             <Animated.View entering={FadeInDown.delay(200).duration(500)} style={{ alignItems: 'center', marginTop: Spacing.lg }}>
-              <TouchableOpacity onPress={() => router.replace('/(app)')}>
+              <TouchableOpacity onPress={async () => {
+                await setGuestMode(true);
+                router.replace('/(app)');
+              }}>
                 <Text style={[styles.guestText, { color: C.textMuted }]}>Continue as guest</Text>
               </TouchableOpacity>
             </Animated.View>

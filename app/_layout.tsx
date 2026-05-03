@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
 import { ClerkProvider } from '@clerk/clerk-expo';
 import * as SecureStore from 'expo-secure-store';
@@ -7,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
+import { hydrateGuestStore } from '@/lib/mockData';
 
 // Required for OAuth flows to complete when the auth session returns.
 // Must run at app boot, before any auth screen mounts.
@@ -46,11 +48,15 @@ function AppInner() {
 }
 
 function AppContent() {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    hydrateGuestStore().finally(() => setHydrated(true));
+  }, []);
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <ThemeProvider>
-          <AppInner />
+          {hydrated ? <AppInner /> : null}
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
