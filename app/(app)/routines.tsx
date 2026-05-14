@@ -28,7 +28,7 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
 import { mockRoutines, getAllRoutines, addGuestRoutine } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -1079,15 +1079,17 @@ function parseReps(reps: string): [number, number] {
 }
 
 async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
-  // First try to find existing exercise by name
+  // First try to find existing exercise by name. Avoid .single() — it errors when 0 or >1
+  // rows match. The `exercises` table has no UNIQUE(name) constraint, so a stray duplicate
+  // would force this branch to throw and we'd fall through to insert another copy.
   const { data: existing } = await supabase
     .from('exercises')
     .select('id')
     .ilike('name', ex.name.trim())
-    .limit(1)
-    .single();
+    .order('created_at', { ascending: true })
+    .limit(1);
 
-  if (existing) return existing.id;
+  if (existing && existing.length > 0) return existing[0].id;
 
   // Create new exercise
   const { data: created, error } = await supabase

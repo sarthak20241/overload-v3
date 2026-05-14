@@ -18,7 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
 import { addGuestRoutine } from '@/lib/mockData';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
