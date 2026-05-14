@@ -10,7 +10,16 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLERK_SECRET_KEY = Deno.env.get("CLERK_SECRET_KEY");
-const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "https://integral-cattle-75.clerk.accounts.dev";
+// Required. See ai-coach/index.ts for the rationale — a hardcoded dev-tenant
+// fallback would let a misconfigured deploy silently accept JWTs from someone
+// else's Clerk instance. Fail at module load.
+const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER");
+if (!CLERK_ISSUER) {
+  throw new Error(
+    "CLERK_ISSUER env var is required. Set it to your Clerk Frontend API URL " +
+    "(e.g. https://your-tenant.clerk.accounts.dev) in the Edge Function secrets.",
+  );
+}
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

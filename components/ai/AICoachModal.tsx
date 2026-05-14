@@ -18,7 +18,8 @@ import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
+import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/mockData';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -69,7 +70,13 @@ export class AICoachUnavailableError extends Error {
 }
 
 // ─── AI API Call ─────────────────────────────────────────────────────────────
-async function callAICoach(messages: { role: string; content: string }[]): Promise<string> {
+// Takes the Clerk-aware Supabase client as a parameter rather than referencing
+// a module-level import. Top-level functions can't call hooks, and only the
+// useSupabaseClient() output carries the Clerk JWT in its custom fetch.
+async function callAICoach(
+  messages: { role: string; content: string }[],
+  supabase: SupabaseClient,
+): Promise<string> {
   // Configured environments must hit the real edge function. Guest/demo mode
   // (no Supabase) falls back to the canned mock so the UI still demonstrates the flow.
   if (isSupabaseConfigured) {
@@ -77,7 +84,22 @@ async function callAICoach(messages: { role: string; content: string }[]): Promi
       const { data, error } = await supabase.functions.invoke('ai-coach', {
         body: { messages },
       });
-      if (error) throw error;
+      if (error) {
+        // supabase-js wraps non-2xx as FunctionsHttpError with the body buried
+        // in error.context. Surface it so server-side reasons are visible in
+        // the chat instead of the generic "non-2xx status code".
+        let detail = error?.message || 'Edge Function failed';
+        try {
+          const ctx = (error as any)?.context;
+          if (ctx && typeof ctx.json === 'function') {
+            const body = await ctx.json();
+            detail = body?.error
+              ? `${body.error}${body.debug ? ` (${body.debug})` : ''}`
+              : JSON.stringify(body);
+          }
+        } catch { /* fall through */ }
+        throw new AICoachUnavailableError(`AI Coach error: ${detail}`);
+      }
       if (data?.response) return data.response as string;
       throw new AICoachUnavailableError();
     } catch (err: any) {
@@ -203,6 +225,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
 function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRoutine: (name: string) => void }) {
   const { C } = useTheme();
+  const supabase = useSupabaseClient();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
@@ -228,7 +251,7 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
     const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
     let content: string;
     try {
-      content = await callAICoach(allMessages);
+      content = await callAICoach(allMessages, supabase);
     } catch (err: any) {
       content = err instanceof AICoachUnavailableError
         ? err.message
@@ -331,6 +354,7 @@ function GeneratePlanScreen({
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
 }) {
   const { C } = useTheme();
+  const supabase = useSupabaseClient();
   const [goal, setGoal] = useState('');
   const [days, setDays] = useState('4 days');
   const [sessionLength, setSessionLength] = useState('45-60 min');
@@ -341,7 +365,7 @@ function GeneratePlanScreen({
   const handleGenerate = async () => {
     setLoading(true);
     const prompt = `Generate a workout plan: Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Return a structured plan with workout names and exercises (name, sets, reps, rest).`;
-    try { await callAICoach([{ role: 'user', content: prompt }]); } catch {}
+    try { await callAICoach([{ role: 'user', content: prompt }], supabase); } catch {}
     // For demo, create mock structured data
     const mockPlan: GeneratedWorkout[] = [
       {
@@ -535,6 +559,7 @@ function GenerateWorkoutScreen({
   onSaveRoutine: (workout: GeneratedWorkout) => void;
 }) {
   const { C } = useTheme();
+  const supabase = useSupabaseClient();
   const [focus, setFocus] = useState('');
   const [duration, setDuration] = useState('45 min');
   const [equipment, setEquipment] = useState('Full Gym');
@@ -544,7 +569,7 @@ function GenerateWorkoutScreen({
   const handleGenerate = async () => {
     setLoading(true);
     const prompt = `Generate a single workout: Focus: ${focus || 'full body'}. Duration: ${duration}. Equipment: ${equipment}. Return exercise name, sets, reps, rest.`;
-    try { await callAICoach([{ role: 'user', content: prompt }]); } catch {}
+    try { await callAICoach([{ role: 'user', content: prompt }], supabase); } catch {}
     // Mock structured data
     const focusLower = focus.toLowerCase();
     let mockWorkout: GeneratedWorkout;

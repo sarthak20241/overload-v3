@@ -12,7 +12,16 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "https://integral-cattle-75.clerk.accounts.dev";
+// Required. The dev-tenant default we used to fall back to was a privacy bug
+// in disguise: a fresh deploy that forgot to set CLERK_ISSUER would silently
+// accept JWTs from someone else's Clerk instance. Fail at module load instead.
+const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER");
+if (!CLERK_ISSUER) {
+  throw new Error(
+    "CLERK_ISSUER env var is required. Set it to your Clerk Frontend API URL " +
+    "(e.g. https://your-tenant.clerk.accounts.dev) in the Edge Function secrets.",
+  );
+}
 
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const RATE_LIMIT_MAX = 30;
