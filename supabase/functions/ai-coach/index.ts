@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
-import { buildSystemPrompt } from "./prompt.ts";
+import { buildSystemPrompt, TERMINAL_TOOLS } from "./prompt.ts";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
 // NOT Edge Functions. We deploy verify_jwt:false and verify the Clerk JWT
@@ -29,6 +29,15 @@ const PREVIEW_MAX_CHARS = 200;
 const MODEL = "claude-sonnet-4-20250514";
 const MAX_TOOL_ITERATIONS = 5;
 const ANTHROPIC_MAX_TOKENS = 1024;
+
+// Retrieval (Phase 2.2). VOYAGE_API_KEY is optional — if missing, we skip
+// retrieval and the coach falls back to user_context + core_principles. That
+// degrades quality but doesn't break the function; useful for local/dev.
+const VOYAGE_API_KEY = Deno.env.get("VOYAGE_API_KEY");
+const RETRIEVAL_TOP_K = 8;
+const RETRIEVAL_FLOOR = 0.40; // skip retrieval entirely if no candidate clears this cosine
+const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
+const VOYAGE_TIMEOUT_MS = 6000;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -73,6 +82,7 @@ interface CoachTrace {
   message_count: number | null;
   has_user_context: boolean | null;
   retrieved_doc_ids: string[];
+  retrieval_status: string | null;
   citation_ids: string[];
   tool_calls: string[];
   last_user_message_preview: string | null;
@@ -93,6 +103,7 @@ function newTrace(): CoachTrace {
     message_count: null,
     has_user_context: null,
     retrieved_doc_ids: [],
+    retrieval_status: null,
     citation_ids: [],
     tool_calls: [],
     last_user_message_preview: null,
@@ -163,6 +174,48 @@ async function executeTool(
   }
 }
 
+// ── Voyage query embedding (Phase 2.2) ──────────────────────────────────────
+// Asymmetric retrieval: documents were ingested with input_type:"document",
+// queries here use input_type:"query" so the same idea encoded as casual
+// gym-speak lands close to its formal-language answer.
+async function embedQuery(text: string): Promise<number[] | null> {
+  if (!VOYAGE_API_KEY) {
+    console.log("[ai-coach] VOYAGE_API_KEY missing — skipping retrieval");
+    return null;
+  }
+  const trimmed = (text ?? "").trim().slice(0, RETRIEVAL_QUERY_CAP);
+  if (trimmed.length === 0) return null;
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), VOYAGE_TIMEOUT_MS);
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${VOYAGE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        input: [trimmed],
+        model: "voyage-3",
+        input_type: "query",
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.log(`[ai-coach] voyage query embed failed: ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    return data.data?.[0]?.embedding ?? null;
+  } catch (e) {
+    console.log("[ai-coach] voyage query embed threw:", String(e));
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 // ── Anthropic API ───────────────────────────────────────────────────────────
 interface AnthropicMessage {
   role: "user" | "assistant";
@@ -185,6 +238,231 @@ async function callAnthropic(
     return { ok: false, status: response.status, body: await response.text() };
   }
   return { ok: true, data: await response.json() };
+}
+
+// ── SSE helpers (Phase 2.6) ─────────────────────────────────────────────────
+interface SSEWriter {
+  write: (event: string, data: unknown) => void;
+  close: () => void;
+}
+
+function createSSEResponse(): { response: Response; sse: SSEWriter } {
+  let writer!: SSEWriter;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      let closed = false;
+      writer = {
+        write(event, data) {
+          if (closed) return;
+          const chunk = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+          try {
+            controller.enqueue(encoder.encode(chunk));
+          } catch {
+            closed = true;
+          }
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          try { controller.close(); } catch { /* already closed */ }
+        },
+      };
+    },
+  });
+  const response = new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+      ...CORS_HEADERS,
+    },
+  });
+  return { response, sse: writer };
+}
+
+// Parse Anthropic's SSE stream into typed events. Each `event:`+`data:` pair
+// becomes one yielded JSON object.
+async function* parseAnthropicStream(body: ReadableStream<Uint8Array>): AsyncGenerator<any> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const chunk of events) {
+      let data = "";
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("data: ")) data += line.slice(6);
+        else if (line.startsWith("data:")) data += line.slice(5);
+      }
+      if (!data || data === "[DONE]") continue;
+      try { yield JSON.parse(data); } catch { /* ignore malformed */ }
+    }
+  }
+}
+
+// Streaming tool-use loop. Parses Anthropic's SSE, forwards text deltas to
+// the client SSE writer, executes any tool_use blocks server-side, and loops
+// until the model emits stop_reason != tool_use.
+//
+// Returns aggregated state (finalText for citation parsing, token totals).
+// The trace's tool_calls is mutated in place across iterations.
+interface StreamingLoopResult {
+  finalText: string;
+  totalInput: number;
+  totalOutput: number;
+  totalCacheCreation: number;
+  totalCacheRead: number;
+  hitIterationCap: boolean;
+  // Set when a terminal tool (generate_workout, generate_plan) fires — its
+  // input becomes the structured response. The loop exits as soon as one
+  // arrives; no further iterations.
+  structured?: { name: string; input: Record<string, unknown> } | null;
+}
+
+async function runStreamingToolLoop(
+  sse: SSEWriter,
+  system: unknown,
+  tools: unknown,
+  initialConversation: AnthropicMessage[],
+  userClient: SupabaseClient,
+  trace: CoachTrace,
+  forceTool: string | null,
+): Promise<StreamingLoopResult> {
+  const conversation = [...initialConversation];
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCacheCreation = 0;
+  let totalCacheRead = 0;
+  let accumulatedText = "";
+  let hitIterationCap = false;
+  let structured: { name: string; input: Record<string, unknown> } | null = null;
+
+  for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    // forceTool ONLY on the first iteration. Once the terminal tool has
+    // fired (or after a follow-up turn appended tool_results), the model
+    // should be free to either chat or call another tool.
+    const toolChoice = (forceTool && iter === 0)
+      ? { type: "tool" as const, name: forceTool }
+      : undefined;
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY!,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: ANTHROPIC_MAX_TOKENS,
+        system,
+        tools,
+        messages: conversation,
+        stream: true,
+        ...(toolChoice ? { tool_choice: toolChoice } : {}),
+      }),
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Anthropic ${response.status}: ${await response.text()}`);
+    }
+
+    const blocks: any[] = []; // accumulated content blocks for this iteration
+    let stopReason: string | null = null;
+
+    for await (const event of parseAnthropicStream(response.body)) {
+      const t = event.type;
+      if (t === "message_start") {
+        const u = event.message?.usage ?? {};
+        totalInput += u.input_tokens ?? 0;
+        totalCacheCreation += u.cache_creation_input_tokens ?? 0;
+        totalCacheRead += u.cache_read_input_tokens ?? 0;
+      } else if (t === "content_block_start") {
+        blocks[event.index] = { ...event.content_block, _text: "", _input: "" };
+      } else if (t === "content_block_delta") {
+        const d = event.delta;
+        const blk = blocks[event.index];
+        if (!blk) continue;
+        if (d.type === "text_delta") {
+          blk._text += d.text;
+          accumulatedText += d.text;
+          sse.write("delta", { text: d.text });
+        } else if (d.type === "input_json_delta") {
+          blk._input += d.partial_json;
+        }
+      } else if (t === "content_block_stop") {
+        const blk = blocks[event.index];
+        if (!blk) continue;
+        if (blk.type === "text") blk.text = blk._text;
+        if (blk.type === "tool_use") {
+          try { blk.input = blk._input ? JSON.parse(blk._input) : {}; }
+          catch { blk.input = {}; }
+        }
+      } else if (t === "message_delta") {
+        stopReason = event.delta?.stop_reason ?? null;
+        const u = event.usage ?? {};
+        totalOutput += u.output_tokens ?? 0;
+      } else if (t === "error") {
+        throw new Error(`Anthropic stream error: ${JSON.stringify(event.error ?? {})}`);
+      }
+    }
+
+    // Strip our private accumulators before persisting in conversation history
+    const cleanBlocks = blocks
+      .filter(Boolean)
+      .map((b: any) => {
+        const { _text, _input, ...rest } = b;
+        return rest;
+      });
+
+    if (stopReason !== "tool_use") {
+      // Model is done — we've streamed all the text already.
+      return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
+    }
+
+    // Tool calls. Separate terminal tools (generate_workout / generate_plan)
+    // from regular data-fetch tools.
+    const toolUses = cleanBlocks.filter((b: any) => b.type === "tool_use");
+    const terminalUse = toolUses.find((b: any) => TERMINAL_TOOLS.has(b.name));
+
+    if (terminalUse) {
+      // Terminal tool: emit input as a structured SSE event and exit. Don't
+      // try to "execute" it — its input IS the response.
+      trace.tool_calls.push(terminalUse.name);
+      structured = { name: terminalUse.name, input: terminalUse.input ?? {} };
+      sse.write("structured", { name: terminalUse.name, input: terminalUse.input ?? {} });
+      return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
+    }
+
+    if (toolUses.length > 0) {
+      sse.write("status", { phase: "tool_use", tools: toolUses.map((t: any) => t.name) });
+    }
+    const toolResults = await Promise.all(
+      toolUses.map(async (block: any) => {
+        trace.tool_calls.push(block.name ?? "<unknown>");
+        const result = await executeTool(userClient, block.name ?? "", block.input ?? {});
+        return {
+          type: "tool_result" as const,
+          tool_use_id: block.id ?? "",
+          content: JSON.stringify(result),
+        };
+      }),
+    );
+
+    conversation.push({ role: "assistant", content: cleanBlocks });
+    conversation.push({ role: "user", content: toolResults });
+
+    if (iter === MAX_TOOL_ITERATIONS - 1) {
+      hitIterationCap = true;
+      return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
+    }
+  }
+
+  return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
 }
 
 // ── Main handler ────────────────────────────────────────────────────────────
@@ -293,15 +571,138 @@ Deno.serve(async (req) => {
   const lastUser = [...incomingMessages].reverse().find((m) => m.role === "user");
   trace.last_user_message_preview = preview(lastUser?.content ?? null);
 
-  const { system, tools } = buildSystemPrompt({ userContext });
+  // 6. Retrieval (Phase 2.2): embed last user message, look up top-k research
+  //    via the weighted-similarity RPC. Non-fatal — if Voyage or the RPC
+  //    fails, the coach falls back to user_context + core_principles.
+  let retrievedResearch: Array<{
+    id: string; title: string; authors: string[]; year?: number; url?: string;
+    practical_takeaway: string; trust_score?: number;
+  }> = [];
+  if (!VOYAGE_API_KEY) {
+    trace.retrieval_status = "skipped_no_voyage_key";
+  } else if (!lastUser?.content) {
+    trace.retrieval_status = "skipped_empty_message";
+  } else {
+    const queryEmbedding = await embedQuery(lastUser.content);
+    if (!queryEmbedding) {
+      trace.retrieval_status = "embed_failed";
+    } else {
+      try {
+        const { data, error } = await userClient.rpc("coach_search_research", {
+          p_query_embedding: JSON.stringify(queryEmbedding),
+          p_top_k: RETRIEVAL_TOP_K,
+          p_floor: RETRIEVAL_FLOOR,
+        });
+        if (error) {
+          trace.retrieval_status = `rpc_error: ${error.message}`.slice(0, 200);
+          console.log("[ai-coach] retrieval RPC error:", error.message);
+        } else if (Array.isArray(data)) {
+          retrievedResearch = data.map((r: Record<string, unknown>) => ({
+            id: String(r.id),
+            title: String(r.title),
+            authors: Array.isArray(r.authors) ? (r.authors as string[]) : [],
+            year: r.year ? Number(r.year) : undefined,
+            url: r.url ? String(r.url) : undefined,
+            practical_takeaway: String(r.practical_takeaway ?? ""),
+            trust_score: r.trust_score ? Number(r.trust_score) : undefined,
+          }));
+          trace.retrieved_doc_ids = retrievedResearch.map((r) => r.id);
+          trace.retrieval_status = retrievedResearch.length > 0 ? "ok" : "no_matches";
+          console.log(
+            `[ai-coach] retrieved ${retrievedResearch.length} research entries`,
+          );
+        } else {
+          trace.retrieval_status = "unexpected_response_shape";
+        }
+      } catch (e) {
+        trace.retrieval_status = `threw: ${String(e)}`.slice(0, 200);
+        console.log("[ai-coach] retrieval threw:", String(e));
+      }
+    }
+  }
+
+  // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
+  // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
+  // single terminal tool and force tool_choice on it.
+  const rawForceTool = (body as { force_tool?: unknown }).force_tool;
+  const forceTool: 'generate_workout' | 'generate_plan' | null =
+    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
+      ? rawForceTool
+      : null;
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' = forceTool ?? 'chat';
+
+  const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
   trace.model = MODEL;
 
-  // 6. Tool-use loop. Each iteration:
-  //    - call Anthropic
-  //    - if it asked for tools, execute them and append results, loop again
-  //    - otherwise, return final text
-  // Token usage from EVERY iteration is summed into the trace so cost
-  // attribution covers the whole turn, not just the final call.
+  // ── Streaming branch (Phase 2.6) ────────────────────────────────────────
+  // Client opts in via `stream: true` in the request body. We return an SSE
+  // response and the tool-use loop runs in a fire-and-forget IIFE, writing
+  // text deltas, tool-call status, and a final `done` event with citations.
+  const streamMode = (body as { stream?: unknown }).stream === true;
+  if (streamMode) {
+    const initialConversation: AnthropicMessage[] = incomingMessages.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+    const { response: sseResponse, sse } = createSSEResponse();
+
+    // Headers flush as soon as we return; body fills asynchronously.
+    (async () => {
+      try {
+        sse.write("status", { phase: forceTool ? `generating_${forceTool === 'generate_workout' ? 'workout' : 'plan'}` : "thinking" });
+        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, forceTool);
+
+        // Citations: same regex as non-streaming path
+        const refs = new Set<number>();
+        for (const m of result.finalText.matchAll(/\[(\d+)\]/g)) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= retrievedResearch.length) refs.add(n);
+        }
+        const citations = Array.from(refs)
+          .sort((a, b) => a - b)
+          .map((n) => {
+            const r = retrievedResearch[n - 1];
+            return { n, id: r.id, title: r.title, authors: r.authors, year: r.year, url: r.url };
+          });
+
+        trace.status = "success";
+        trace.input_tokens = result.totalInput || null;
+        trace.output_tokens = result.totalOutput || null;
+        trace.cache_creation_input_tokens = result.totalCacheCreation || null;
+        trace.cache_read_input_tokens = result.totalCacheRead || null;
+        trace.citation_ids = citations.map((c) => c.id);
+        trace.response_preview = preview(result.finalText);
+
+        sse.write("done", {
+          citations,
+          usage: {
+            input_tokens: result.totalInput,
+            output_tokens: result.totalOutput,
+            cache_creation_input_tokens: result.totalCacheCreation,
+            cache_read_input_tokens: result.totalCacheRead,
+          },
+          tool_calls: trace.tool_calls,
+          hit_iteration_cap: result.hitIterationCap,
+          // Phase 2.5: included redundantly in done so a client that missed
+          // the live 'structured' event (e.g., reconnected mid-stream) still
+          // gets the generated workout/plan on the final event.
+          structured: result.structured ?? null,
+        });
+      } catch (e) {
+        trace.status = "internal_error";
+        trace.error_message = `stream_threw: ${String(e)}`.slice(0, 200);
+        sse.write("error", { error: String(e) });
+      } finally {
+        trace.http_status = 200;
+        try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
+        sse.close();
+      }
+    })();
+
+    return sseResponse;
+  }
+
+  // 6. Non-streaming tool-use loop (legacy / fallback path).
   let conversation: AnthropicMessage[] = incomingMessages.map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
@@ -388,6 +789,42 @@ Deno.serve(async (req) => {
     return respond({ error: "Internal error", details: String(err) }, 500);
   }
 
+  // ── Citations (Phase 2.3) ───────────────────────────────────────────────────
+  // The model writes inline `[N]` markers referencing the numbered entries in
+  // <retrieved_research>. Parse them out, map back to each entry's metadata,
+  // and return a structured citations[] array. Only the entries the model
+  // ACTUALLY referenced make it into the payload (vs all 8 retrieved).
+  interface Citation {
+    n: number;
+    id: string;
+    title: string;
+    authors: string[];
+    year?: number;
+    url?: string;
+  }
+  let citations: Citation[] = [];
+  if (finalText && retrievedResearch.length > 0) {
+    const refs = new Set<number>();
+    for (const m of finalText.matchAll(/\[(\d+)\]/g)) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= retrievedResearch.length) refs.add(n);
+    }
+    citations = Array.from(refs)
+      .sort((a, b) => a - b)
+      .map((n) => {
+        const r = retrievedResearch[n - 1];
+        return {
+          n,
+          id: r.id,
+          title: r.title,
+          authors: r.authors,
+          year: r.year,
+          url: r.url,
+        };
+      });
+    trace.citation_ids = citations.map((c) => c.id);
+  }
+
   trace.status = "success";
   trace.input_tokens = totalInput || null;
   trace.output_tokens = totalOutput || null;
@@ -398,6 +835,7 @@ Deno.serve(async (req) => {
   return respond(
     {
       response: finalText,
+      citations,
       usage: {
         input_tokens: totalInput,
         output_tokens: totalOutput,
