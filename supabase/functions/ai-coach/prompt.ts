@@ -5,7 +5,11 @@
 
 export interface PromptContext {
   userContext: unknown | null; // JSON from get_user_coach_context()
-  retrievedResearch?: ResearchSnippet[]; // Phase 2+; unused in Phase 1
+  retrievedResearch?: ResearchSnippet[];
+  // 'chat' (default) — full coach toolkit (history, recent workouts, SQL).
+  // 'generate_workout' / 'generate_plan' — only the relevant generate tool
+  // exposed; caller pairs this with tool_choice to force structured output.
+  mode?: 'chat' | 'generate_workout' | 'generate_plan';
 }
 
 export interface ResearchSnippet {
@@ -199,6 +203,114 @@ export const COACH_TOOLS: AnthropicTool[] = [
   },
 ];
 
+// ── Generate-flow tools (Phase 2.5) ──────────────────────────────────────────
+// These are "terminal" tools: when the model calls them, we don't execute
+// anything — the input IS the structured response we send to the client.
+// The Generate Workout / Generate Plan screens force the model to call the
+// matching tool via tool_choice, so output is guaranteed valid JSON matching
+// the schema (no more "JSON wrapped in markdown fences" failures).
+const EXERCISE_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    name: {
+      type: 'string',
+      description: 'Exact name matching the exercises table when possible (e.g. "Bench Press", "Squat", "Romanian Deadlift"). Fall back to descriptive name for novel movements.',
+    },
+    sets: { type: 'integer', description: 'Number of working sets. 1-8.' },
+    reps: {
+      type: 'string',
+      description: 'Rep prescription. Examples: "6-8", "5", "AMRAP", "8-10 then drop to 12-15".',
+    },
+    rest_seconds: {
+      type: 'integer',
+      description: 'Rest between sets in seconds. 30-300.',
+    },
+    note: {
+      type: 'string',
+      description: 'Optional 1-line coaching cue. Examples: "RIR 2 — leave 2 reps in the tank", "Go heavy, focus on bar path", "Hams-focused, push hips back", "Last set to failure", "Pause 1s at chest". Use this to convey intent and form. Omit when the exercise needs no special cue.',
+    },
+  },
+  required: ['name', 'sets', 'reps', 'rest_seconds'],
+};
+
+export const GENERATE_TOOLS: AnthropicTool[] = [
+  {
+    name: 'generate_workout',
+    description:
+      'Emit a single structured workout session. Before calling this tool, write 1 short sentence (5-15 words) like "Designing a chest-focused push day for your hypertrophy goal" so the user sees the intent stream in. The rationale field inside the tool input is the longer explanation (2-4 sentences) that appears with the workout card.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Short, evocative workout name. Examples: "Push Day", "Heavy Squat Session", "Upper Hypertrophy".',
+        },
+        focus: {
+          type: 'string',
+          description: 'One-line summary of primary muscle groups + style, e.g. "Chest, shoulders, triceps — strength bias on the compound, hypertrophy on the rest".',
+        },
+        rationale: {
+          type: 'string',
+          description: '2-4 sentences explaining why this workout fits THIS user. Reference specifics from user_context: their goal, experience_level, recent volume on the target muscles, top lifts. Tone: confident coach, not generic. Avoid empty phrases like "this is a great workout".',
+        },
+        estimated_duration_min: { type: 'integer' },
+        exercises: {
+          type: 'array',
+          items: EXERCISE_SCHEMA,
+        },
+      },
+      required: ['name', 'focus', 'rationale', 'exercises'],
+    },
+  },
+  {
+    name: 'generate_plan',
+    description:
+      'Emit a multi-day structured training plan. Before calling, write 1 short sentence signaling what you\'re designing. The rationale field inside is the longer explanation.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Plan name, e.g. "4-Day Upper/Lower for Intermediate Hypertrophy".',
+        },
+        split_type: {
+          type: 'string',
+          description: 'Split style: "Push/Pull/Legs", "Upper/Lower", "Full Body x N", "Bro Split", etc.',
+        },
+        days_per_week: { type: 'integer' },
+        rationale: {
+          type: 'string',
+          description: '3-5 sentences explaining why this split + structure fits THIS user. Reference their goal, training age, weekly target sessions, recovery considerations. Mention the progression strategy briefly.',
+        },
+        workouts: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'e.g. "Day 1 — Push (Heavy)" or "Pull Day"',
+              },
+              note: {
+                type: 'string',
+                description: 'Optional 1-line theme/focus for this session, e.g. "Volume-focused chest day, RIR 1-2 throughout".',
+              },
+              exercises: { type: 'array', items: EXERCISE_SCHEMA },
+            },
+            required: ['name', 'exercises'],
+          },
+        },
+      },
+      required: ['name', 'rationale', 'workouts'],
+    },
+  },
+];
+
+// Tool names whose tool_use blocks should NOT be executed server-side. They
+// produce the structured response the client renders directly. The streaming
+// loop emits them as a `structured` SSE event and ends the iteration.
+export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan']);
+
 export function buildSystemPrompt(ctx: PromptContext): {
   system: AnthropicSystemBlock[];
   tools: AnthropicTool[];
@@ -236,10 +348,20 @@ export function buildSystemPrompt(ctx: PromptContext): {
     });
   }
 
+  // Pick tool set based on mode. Chat mode gets the full coach toolkit; the
+  // generate modes get just the single matching terminal tool (caller forces
+  // tool_choice on the matching name so output is guaranteed structured).
+  const mode = ctx.mode ?? 'chat';
+  const baseTools: AnthropicTool[] = mode === 'generate_workout'
+    ? [GENERATE_TOOLS[0]]
+    : mode === 'generate_plan'
+      ? [GENERATE_TOOLS[1]]
+      : COACH_TOOLS;
+
   // Tools: cache them since they're static. Last tool gets the cache_control
   // marker per Anthropic's convention.
-  const tools = COACH_TOOLS.map((t, i) =>
-    i === COACH_TOOLS.length - 1
+  const tools = baseTools.map((t, i) =>
+    i === baseTools.length - 1
       ? { ...t, cache_control: { type: 'ephemeral' as const } }
       : t,
   );
