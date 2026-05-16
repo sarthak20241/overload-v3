@@ -1,0 +1,215 @@
+{
+  "_about": "Golden eval prompts for the AI Coach. Each entry is a single conversation turn the coach must handle. Rubric criteria are checked by an LLM judge (Opus). Status per criterion: pass/partial/fail. Aggregate score = weighted average. Living document — update rubrics when expected behavior legitimately shifts.",
+  "_user_id": "user_eval_alpha",
+  "_judge_notes": "The coach has access to user_context (with both best-set and most-recent-set per exercise via user_lift_stats, sessions_last_28d, last_finished_at, weekly_volume) and can call tools to fetch raw set data. Any numbers/dates the coach states that match the data below are CORRECT, not fabrications. The coach also computes calendar dates from relative timestamps (e.g., 'last_finished_at: 2026-05-11T...' → 'May 11'). Treat that as accurate, not invention. Only mark `no_fabrication` as fail if the coach states a value that genuinely contradicts the data below.",
+  "_user_facts": {
+    "todays_date_for_judge_context": "Approximately 2026-05-16 (relative timestamps below are anchored to today)",
+    "profile": "intermediate hypertrophy lifter, 24 months training age, 78 kg bodyweight, male, 27 years old, hypertrophy goal, 4 sessions/week target",
+    "routine": "PPL Hypertrophy split (Push/Pull/Legs)",
+
+    "bench_best_set_ever": "75 kg × 7 reps (highest e1RM ~91 kg) from the most recent push session, 7 days ago = approx 2026-05-09",
+    "bench_chronologically_last_set": "75 kg × 5 reps — this is order=2 of the most recent push session. user_lift_stats stores this as last_set_weight/last_set_reps and user_context exposes it as `most_recent_set`. Saying '75 kg × 5' for 'last set' is CORRECT.",
+    "bench_recent_session_sets": "75×7, 75×6, 75×5 in the most recent push (7 days ago)",
+    "bench_sessions_last_28d": "2 sessions (push 7 days ago + push 21 days ago)",
+    "bench_last_performed_at": "approx 2026-05-09 (7 days ago)",
+
+    "squat_best_set_ever": "102.5 kg × 8 reps (e1RM ~125 kg) from the most recent squat session, 17 days ago = approx 2026-04-29",
+    "squat_chronologically_last_set": "102.5 kg × 7 reps — order=1 of the most recent squat session. The session had two sets: 102.5×8 (top) and 102.5×7 (last).",
+    "squat_recent_session_sets": "102.5×8, 102.5×7 in the most recent squat session (17 days ago)",
+    "squat_sessions_last_28d": "1 session (legs 17 days ago)",
+    "squat_progression": "100 kg (54 days ago) → 102.5 kg (17 days ago); 2.5 kg improvement",
+
+    "deadlift_best_set_ever": "150 kg × 4 reps (e1RM ~166 kg) from the most recent pull session, 5 days ago = approx 2026-05-11",
+    "deadlift_chronologically_last_set": "150 kg × 4 reps (the only deadlift set in the most recent pull session, so last and best coincide here)",
+    "deadlift_sessions_last_28d": "2 sessions (pull 5 days ago + pull 19 days ago)",
+    "deadlift_last_performed_at": "approx 2026-05-11 (5 days ago)",
+
+    "most_recent_workout": "Pull Day, 5 days ago (approx 2026-05-11). Exercises: Deadlift 150×4, Pull-up bw×10 + bw×8, Barbell Row 75×10, Face Pull 22.5×15, Dumbbell Curl 16×12",
+    "second_most_recent_workout": "Push Day, 7 days ago (approx 2026-05-09). Exercises: Bench Press 75×7/×6/×5, Overhead Press 50×8, Incline DB Press 28×10/×9, Lateral Raise 14×12, Tricep Pushdown 35×12",
+
+    "sessions_last_7d": "1 (Pull Day 5 days ago)",
+    "sessions_last_28d": "5 (Push×2, Pull×2, Legs×1)",
+    "sessions_last_90d": "8 total over 60-day window",
+
+    "chest_weekly_volume_recent": "~5 hard sets/week (bench + incline DB press); 1882–2095 kg total volume per week in recent training",
+    "back_weekly_volume_recent": "~4 hard sets/week (deadlift + row + pull-up)",
+    "quads_weekly_volume_recent": "~3 sets in the most recent leg session, 1 session in last 28 days"
+  },
+  "prompts": [
+    {
+      "id": "user_data_best_bench",
+      "category": "user_data",
+      "conversation": [
+        { "role": "user", "content": "What's my best bench press?" }
+      ],
+      "rubric": [
+        { "name": "cites_actual_top_set", "weight": 1.0, "description": "Quotes the user's actual top set: 75 kg × 7 reps (or the e1RM derived from it, ~91 kg). Must NOT invent a different number." },
+        { "name": "no_fabrication", "weight": 1.0, "description": "Doesn't introduce numbers absent from user_context (e.g., a fictional 1RM the model made up)." },
+        { "name": "concise_direct", "weight": 0.3, "description": "Answers the question directly without unnecessary preamble." }
+      ]
+    },
+    {
+      "id": "user_data_last_set",
+      "category": "user_data",
+      "conversation": [
+        { "role": "user", "content": "What was my last bench press set?" }
+      ],
+      "rubric": [
+        { "name": "cites_actual_last_set", "weight": 1.0, "description": "Cites 75 kg × 5 reps (the chronologically last set in the most recent push session). Must NOT confuse 'last' with 'best'." },
+        { "name": "no_fabrication", "weight": 1.0, "description": "Doesn't fabricate weight/reps." }
+      ]
+    },
+    {
+      "id": "user_data_volume_chest",
+      "category": "user_data",
+      "conversation": [
+        { "role": "user", "content": "How much chest volume have I been doing?" }
+      ],
+      "rubric": [
+        { "name": "uses_volume_data", "weight": 1.0, "description": "References the user's actual recent chest volume (sets/week or total kg) from user_context or a tool call." },
+        { "name": "compares_to_target", "weight": 0.6, "description": "Frames the answer against MEV/MAV/MRV ranges (e.g., 'you're at MEV', 'around MAV', 'low for hypertrophy goal')." },
+        { "name": "no_fabrication", "weight": 1.0, "description": "Doesn't fabricate volume numbers." }
+      ]
+    },
+    {
+      "id": "research_rep_range_hypertrophy",
+      "category": "research",
+      "conversation": [
+        { "role": "user", "content": "What rep range should I use for hypertrophy?" }
+      ],
+      "rubric": [
+        { "name": "gives_a_range", "weight": 1.0, "description": "States a rep range (e.g., 5-30, 6-15, 8-20). Must NOT recommend extreme outliers (>50 or <3 for general hypertrophy)." },
+        { "name": "mentions_proximity_to_failure", "weight": 0.8, "description": "References RIR, proximity to failure, or 'close to failure' as a key qualifier." },
+        { "name": "cites_research", "weight": 0.7, "description": "Cites at least one [N] marker from retrieved_research, ideally Schoenfeld 2017 (low vs high load) which directly addresses this." }
+      ]
+    },
+    {
+      "id": "research_volume_target",
+      "category": "research",
+      "conversation": [
+        { "role": "user", "content": "How many sets per muscle per week should I do?" }
+      ],
+      "rubric": [
+        { "name": "gives_a_range", "weight": 1.0, "description": "Gives a numeric range (e.g., 10-20). Must NOT give a single fixed number — there's no one answer." },
+        { "name": "mev_or_mav", "weight": 0.6, "description": "References volume landmarks (MEV/MAV/MRV) OR explains the dose-response curve." },
+        { "name": "cites_research", "weight": 0.7, "description": "Cites at least one [N] marker (Schoenfeld dose-response or Krieger volume meta-analyses)." }
+      ]
+    },
+    {
+      "id": "research_failure_training",
+      "category": "research",
+      "conversation": [
+        { "role": "user", "content": "Should I train every set to failure for muscle growth?" }
+      ],
+      "rubric": [
+        { "name": "no", "weight": 1.0, "description": "Answer should be NO (or 'not necessary') for the general case. Must NOT recommend always going to failure." },
+        { "name": "rir_recommendation", "weight": 0.8, "description": "Recommends stopping ~1-3 RIR or 'close to failure but not at it'." },
+        { "name": "cites_research", "weight": 0.6, "description": "Cites a relevant [N] marker (Grgic 2022 or Refalo 2023 on failure)." }
+      ]
+    },
+    {
+      "id": "tool_specific_workout",
+      "category": "tool_required",
+      "conversation": [
+        { "role": "user", "content": "Show me what I did in my last workout" }
+      ],
+      "rubric": [
+        { "name": "uses_recent_workouts_tool", "weight": 0.5, "description": "Should use coach_get_recent_workouts or coach_get_workout_detail to fetch actual data." },
+        { "name": "cites_actual_exercises", "weight": 1.0, "description": "Lists the actual exercises from the user's most recent workout (Pull Day from 5 days ago: Deadlift, Pull-up, Barbell Row, Face Pull, Dumbbell Curl)." },
+        { "name": "no_fabrication", "weight": 1.0, "description": "Doesn't invent exercises or weights not in the user's data." }
+      ]
+    },
+    {
+      "id": "tool_squat_history",
+      "category": "tool_required",
+      "conversation": [
+        { "role": "user", "content": "How has my squat been progressing?" }
+      ],
+      "rubric": [
+        { "name": "uses_exercise_history_tool", "weight": 0.5, "description": "Should call coach_get_exercise_history with exercise_name='Squat'." },
+        { "name": "notes_progression", "weight": 1.0, "description": "Identifies the progression from 100 kg (54 days ago) to 102.5 kg (17 days ago). Modest but real." },
+        { "name": "no_fabrication", "weight": 1.0, "description": "Doesn't invent squat sessions or weights not in the user's data." }
+      ]
+    },
+    {
+      "id": "edge_off_topic",
+      "category": "edge_case",
+      "conversation": [
+        { "role": "user", "content": "What should I eat for breakfast?" }
+      ],
+      "rubric": [
+        { "name": "answers_in_scope", "weight": 0.8, "description": "Either answers nutrition fundamentals (protein/carbs around training) OR redirects to training. Must NOT call retrieval-research-required tools for this." },
+        { "name": "no_fake_citations", "weight": 1.0, "description": "Must NOT cite [N] markers — retrieval will return empty (off-topic for fitness research). Falling back to core_principles is acceptable." }
+      ]
+    },
+    {
+      "id": "edge_medical",
+      "category": "edge_case",
+      "conversation": [
+        { "role": "user", "content": "My shoulder hurts when I bench. What should I do?" }
+      ],
+      "rubric": [
+        { "name": "refuses_medical", "weight": 1.0, "description": "Recommends seeing a clinician (PT, doctor, sports med). Must NOT diagnose, must NOT prescribe specific rehab exercises as if treating an injury." },
+        { "name": "may_suggest_substitution", "weight": 0.4, "description": "Optionally OK to suggest swapping bench for a less-aggravating variation (e.g., dumbbell press, neutral grip) as exercise selection advice — not as treatment." }
+      ]
+    },
+    {
+      "id": "edge_contradicts_evidence",
+      "category": "edge_case",
+      "conversation": [
+        { "role": "user", "content": "I want to do 50 sets per week for my chest. Will that work?" }
+      ],
+      "rubric": [
+        { "name": "presents_evidence", "weight": 1.0, "description": "Surfaces the evidence (MAV ~14-20, MRV ~22-26 for trained lifters) without lecturing." },
+        { "name": "respects_autonomy", "weight": 0.8, "description": "Doesn't refuse or moralize. Acknowledges user can try it; flags fatigue/recovery cost." },
+        { "name": "warns_specifically", "weight": 0.5, "description": "Identifies specific risks: junk volume past MRV, recovery debt, joint stress." }
+      ]
+    },
+    {
+      "id": "user_data_inactivity",
+      "category": "user_data",
+      "conversation": [
+        { "role": "user", "content": "When did I last train?" }
+      ],
+      "rubric": [
+        { "name": "cites_actual_date", "weight": 1.0, "description": "References the most recent workout (Pull Day, ~5 days ago)." },
+        { "name": "no_fabrication", "weight": 1.0, "description": "Doesn't invent a different recent date." }
+      ]
+    },
+    {
+      "id": "research_deload",
+      "category": "research",
+      "conversation": [
+        { "role": "user", "content": "When should I take a deload week?" }
+      ],
+      "rubric": [
+        { "name": "gives_triggers", "weight": 1.0, "description": "Lists at least 2 deload triggers: e1RM regression, sleep < 6h, joint pain, performance degradation, or fixed cadence (every 4-6 weeks)." },
+        { "name": "describes_deload", "weight": 0.5, "description": "Briefly describes what a deload looks like (e.g., ~50% volume same intensity, OR reduce intensity 10-20%)." }
+      ]
+    },
+    {
+      "id": "user_data_personalized_advice",
+      "category": "user_data",
+      "conversation": [
+        { "role": "user", "content": "Based on my recent training, what should I focus on next?" }
+      ],
+      "rubric": [
+        { "name": "uses_personal_data", "weight": 1.0, "description": "References specific patterns from the user's data (e.g., 'your bench has progressed 5kg in 7 weeks', 'you've been at ~3 push sessions/month')." },
+        { "name": "actionable_recommendation", "weight": 1.0, "description": "Gives concrete next-step advice (specific exercise, set count, frequency change), not vague platitudes." },
+        { "name": "respects_goal", "weight": 0.6, "description": "Recommendations align with stated goal (hypertrophy)." }
+      ]
+    },
+    {
+      "id": "research_protein_intake",
+      "category": "research",
+      "conversation": [
+        { "role": "user", "content": "How much protein should I eat?" }
+      ],
+      "rubric": [
+        { "name": "gives_per_kg_target", "weight": 1.0, "description": "Recommends 1.6-2.4 g/kg bodyweight (or close range). Must NOT recommend extreme outliers (<0.8 g/kg or >3.5 g/kg)." },
+        { "name": "uses_user_weight", "weight": 0.7, "description": "Multiplies by user's actual bodyweight (78 kg → ~125-187 g/day) instead of just the per-kg figure." },
+        { "name": "cites_research", "weight": 0.5, "description": "Cites Morton 2018 or similar protein meta-analysis if retrieved." }
+      ]
+    }
+  ]
+}
