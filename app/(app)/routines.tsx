@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -31,6 +31,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { mockRoutines, getAllRoutines, addGuestRoutine } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
@@ -495,11 +496,14 @@ function RoutineEditorSheet({
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
-  const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  // Sub-frame double-tap guard — modal closes on save, so we don't need a
+  // disabled-button render state; just block reentry.
+  const inFlightRef = useRef(false);
 
   // Custom exercise drawer state
   const [showCustomDrawer, setShowCustomDrawer] = useState(false);
@@ -587,7 +591,122 @@ function RoutineEditorSheet({
     }
   };
 
-  const handleSave = async () => {
+  // Pure save worker — takes a snapshot so the closure is independent of any
+  // post-close state changes. Used by both the initial save and the toast Retry.
+  const performSave = async (snapshot: {
+    trimmedName: string;
+    trimmedDescription: string;
+    validExercises: EditorExercise[];
+    editingId?: string;
+  }) => {
+    const clerkId = user?.id;
+    const { trimmedName, trimmedDescription, validExercises, editingId } = snapshot;
+
+    // Guest mode: no Supabase / no Clerk id — persist locally only.
+    if (!isSupabaseConfigured || !clerkId) {
+      const routineId = editingId || `guest-r-${Date.now()}`;
+      const routineExercises = validExercises.map((ex, i) => {
+        const [repsMin, repsMax] = parseReps(ex.targetReps);
+        return {
+          id: `gre-${Date.now()}-${i}`,
+          exercise_id: ex.id,
+          order: i,
+          sets: ex.targetSets,
+          reps_min: repsMin,
+          reps_max: repsMax,
+          rest_seconds: ex.restSeconds,
+          exercises: {
+            id: ex.id,
+            name: ex.name,
+            muscle_group: ex.muscleGroup || 'Other',
+            category: 'Custom',
+          },
+        };
+      });
+      if (!editingId) {
+        addGuestRoutine({
+          id: routineId,
+          user_id: 'guest',
+          name: trimmedName,
+          description: trimmedDescription,
+          color: undefined as any,
+          created_at: new Date().toISOString(),
+          routine_exercises: routineExercises,
+        });
+      }
+      return;
+    }
+
+    if (editingId) {
+      const { error: updErr } = await supabase
+        .from('routines')
+        .update({ name: trimmedName, description: trimmedDescription })
+        .eq('id', editingId);
+      if (updErr) throw updErr;
+
+      await supabase
+        .from('routine_exercises')
+        .delete()
+        .eq('routine_id', editingId);
+
+      // Parallelize per-exercise: select-or-create + link insert.
+      await Promise.all(validExercises.map(async (ex, i) => {
+        const exerciseId = await findOrCreateExercise(ex);
+        const [repsMin, repsMax] = parseReps(ex.targetReps);
+        await supabase.from('routine_exercises').insert({
+          routine_id: editingId,
+          exercise_id: exerciseId,
+          sets: ex.targetSets,
+          reps_min: repsMin,
+          reps_max: repsMax,
+          rest_seconds: ex.restSeconds,
+          order: i,
+        });
+      }));
+    } else {
+      const { data: routineData, error: routineErr } = await supabase
+        .from('routines')
+        .insert({ user_id: clerkId, name: trimmedName, description: trimmedDescription })
+        .select()
+        .single();
+      if (routineErr) throw routineErr;
+
+      await Promise.all(validExercises.map(async (ex, i) => {
+        const exerciseId = await findOrCreateExercise(ex);
+        const [repsMin, repsMax] = parseReps(ex.targetReps);
+        await supabase.from('routine_exercises').insert({
+          routine_id: routineData.id,
+          exercise_id: exerciseId,
+          sets: ex.targetSets,
+          reps_min: repsMin,
+          reps_max: repsMax,
+          rest_seconds: ex.restSeconds,
+          order: i,
+        });
+      }));
+    }
+  };
+
+  const runSave = (snapshot: Parameters<typeof performSave>[0]) => {
+    inFlightRef.current = true;
+    toast.info(`Saving “${snapshot.trimmedName}”…`);
+    performSave(snapshot)
+      .then(() => {
+        toast.success(snapshot.editingId ? 'Routine updated' : 'Routine saved');
+        onSaved();
+      })
+      .catch(() => {
+        toast.error(`Couldn't save “${snapshot.trimmedName}”`, {
+          action: { label: 'Retry', onPress: () => runSave(snapshot) },
+        });
+      })
+      .finally(() => { inFlightRef.current = false; });
+  };
+
+  const handleSave = () => {
+    // Validation must stay inline so error messages display in the modal
+    // before we close it — otherwise the user loses their unsaved work
+    // without knowing why.
     const trimmedName = name.trim();
     if (!trimmedName) {
       setErrorMsg('Please enter a routine name');
@@ -598,111 +717,16 @@ function RoutineEditorSheet({
       setErrorMsg('Add at least one exercise');
       return;
     }
+    if (inFlightRef.current) return;
 
-    setSaving(true);
-    try {
-      const clerkId = user?.id;
-      // Guest mode: either Supabase isn't configured, or the user came in
-      // through "Continue as guest" (no Clerk session). Routines are
-      // user-scoped server-side, so without a Clerk id we can only persist
-      // locally via mockData.
-      if (!isSupabaseConfigured || !clerkId) {
-        // Guest mode: create a local routine
-        const routineId = editingRoutine?.id || `guest-r-${Date.now()}`;
-        const routineExercises = validExercises.map((ex, i) => {
-          const [repsMin, repsMax] = parseReps(ex.targetReps);
-          return {
-            id: `gre-${Date.now()}-${i}`,
-            exercise_id: ex.id,
-            order: i,
-            sets: ex.targetSets,
-            reps_min: repsMin,
-            reps_max: repsMax,
-            rest_seconds: ex.restSeconds,
-            exercises: {
-              id: ex.id,
-              name: ex.name,
-              muscle_group: ex.muscleGroup || 'Other',
-              category: 'Custom',
-            },
-          };
-        });
-        if (!editingRoutine?.id) {
-          addGuestRoutine({
-            id: routineId,
-            user_id: 'guest',
-            name: trimmedName,
-            description: description.trim(),
-            color: undefined as any,
-            created_at: new Date().toISOString(),
-            routine_exercises: routineExercises,
-          });
-        }
-        onSaved();
-        onClose();
-        return;
-      }
-
-      if (editingRoutine?.id) {
-        // Update existing routine
-        await supabase
-          .from('routines')
-          .update({ name: trimmedName, description: description.trim() })
-          .eq('id', editingRoutine.id);
-
-        // Delete old exercises and re-insert
-        await supabase
-          .from('routine_exercises')
-          .delete()
-          .eq('routine_id', editingRoutine.id);
-
-        // Find or create exercises and insert routine_exercises
-        for (let i = 0; i < validExercises.length; i++) {
-          const ex = validExercises[i];
-          const exerciseId = await findOrCreateExercise(ex);
-          const [repsMin, repsMax] = parseReps(ex.targetReps);
-          await supabase.from('routine_exercises').insert({
-            routine_id: editingRoutine.id,
-            exercise_id: exerciseId,
-            sets: ex.targetSets,
-            reps_min: repsMin,
-            reps_max: repsMax,
-            rest_seconds: ex.restSeconds,
-            order: i,
-          });
-        }
-      } else {
-        // Create new routine
-        const { data: routineData, error: routineErr } = await supabase
-          .from('routines')
-          .insert({ user_id: clerkId, name: trimmedName, description: description.trim() })
-          .select()
-          .single();
-        if (routineErr) throw routineErr;
-
-        for (let i = 0; i < validExercises.length; i++) {
-          const ex = validExercises[i];
-          const exerciseId = await findOrCreateExercise(ex);
-          const [repsMin, repsMax] = parseReps(ex.targetReps);
-          await supabase.from('routine_exercises').insert({
-            routine_id: routineData.id,
-            exercise_id: exerciseId,
-            sets: ex.targetSets,
-            reps_min: repsMin,
-            reps_max: repsMax,
-            rest_seconds: ex.restSeconds,
-            order: i,
-          });
-        }
-      }
-
-      onSaved();
-      onClose();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to save routine');
-    } finally {
-      setSaving(false);
-    }
+    const snapshot = {
+      trimmedName,
+      trimmedDescription: description.trim(),
+      validExercises,
+      editingId: editingRoutine?.id,
+    };
+    handleClose();
+    runSave(snapshot);
   };
 
   const handleClose = () => {
@@ -734,17 +758,10 @@ function RoutineEditorSheet({
               </Text>
               <TouchableOpacity
                 onPress={handleSave}
-                disabled={saving}
-                style={[styles.sheetSaveBtn, { opacity: saving ? 0.6 : 1 }]}
+                style={styles.sheetSaveBtn}
               >
-                {saving ? (
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
-                ) : (
-                  <>
-                    <Feather name="check" size={13} color={Colors.primaryFg} />
-                    <Text style={styles.sheetSaveBtnText}>Save</Text>
-                  </>
-                )}
+                <Feather name="check" size={13} color={Colors.primaryFg} />
+                <Text style={styles.sheetSaveBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
 
@@ -1110,6 +1127,7 @@ export default function RoutinesScreen() {
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1144,12 +1162,28 @@ export default function RoutinesScreen() {
   }, [fetchRoutines]);
 
   const handleDelete = async (id: string) => {
-    if (isSupabaseConfigured) {
+    const target = routines.find((r) => r.id === id);
+    if (!target) return;
+
+    // Optimistic: remove from list immediately. Snapshot the previous list so
+    // we can restore exact order on error rather than re-sorting.
+    const previous = routines;
+    setRoutines((prev) => prev.filter((r) => r.id !== id));
+
+    if (!isSupabaseConfigured) return;
+
+    try {
       let q = supabase.from('routines').delete().eq('id', id);
       if (user?.id) q = q.eq('user_id', user.id);
-      await q;
+      const { error } = await q;
+      if (error) throw error;
+      toast.success(`Deleted “${target.name}”`);
+    } catch {
+      setRoutines(previous);
+      toast.error(`Couldn't delete “${target.name}”`, {
+        action: { label: 'Retry', onPress: () => handleDelete(id) },
+      });
     }
-    setRoutines((prev) => prev.filter((r) => r.id !== id));
   };
 
   const openCreate = () => {

@@ -21,6 +21,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/mockData';
+import { useToast } from '@/components/ui/Toast';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout';
@@ -438,7 +439,7 @@ function GeneratePlanScreen({
         <View style={[s.resultActions, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
           <TouchableOpacity
             onPress={() => onSaveRoutines(result)}
-            style={[s.primaryBtn]}
+            style={s.primaryBtn}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
             <Text style={s.primaryBtnText}>Save All Routines</Text>
@@ -654,7 +655,7 @@ function GenerateWorkoutScreen({
         <View style={[s.resultActions, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
           <TouchableOpacity
             onPress={() => onSaveRoutine(result)}
-            style={[s.primaryBtn]}
+            style={s.primaryBtn}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
             <Text style={s.primaryBtnText}>Save as Routine</Text>
@@ -772,7 +773,12 @@ export function AICoachModal({
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const [screen, setScreen] = useState<Screen>(initialScreen);
+  // Sub-frame double-tap guard — modal closes immediately on save, so the
+  // visible-button block goes away fast, but the close animation leaves a tiny
+  // window where a second tap could fire before React re-renders.
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
     if (visible) setScreen(initialScreen);
@@ -783,7 +789,7 @@ export function AICoachModal({
     onClose();
   };
 
-  const handleSaveRoutine = async (workout: GeneratedWorkout) => {
+  const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
     const clerkId = user?.id;
     if (!isSupabaseConfigured || !clerkId) {
       const routineId = `guest-r-${Date.now()}`;
@@ -813,27 +819,20 @@ export function AICoachModal({
           };
         }),
       });
-      handleClose();
-      onRoutineCreated?.();
       return;
     }
-    // Create routine in Supabase (clerkId guaranteed by guard above)
     const { data: routine, error } = await supabase
       .from('routines')
       .insert({ user_id: clerkId, name: workout.name })
       .select()
       .single();
 
-    if (error || !routine) {
-      handleClose();
-      return;
-    }
+    if (error || !routine) throw error || new Error('Failed to create routine');
 
-    // Find or create exercises and link them
-    for (let i = 0; i < workout.exercises.length; i++) {
-      const ex = workout.exercises[i];
-      // Try to find existing exercise
-      let { data: existingEx } = await supabase
+    // Resolve all exercises in parallel — each one does select + optional insert + link insert.
+    // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
+    await Promise.all(workout.exercises.map(async (ex, i) => {
+      const { data: existingEx } = await supabase
         .from('exercises')
         .select('id')
         .eq('name', ex.name)
@@ -848,29 +847,61 @@ export function AICoachModal({
           .single();
         exerciseId = newEx?.id;
       }
+      if (!exerciseId) return;
 
-      if (exerciseId) {
-        const repsArr = ex.reps.split('-').map(Number);
-        await supabase.from('routine_exercises').insert({
-          routine_id: routine.id,
-          exercise_id: exerciseId,
-          sets: ex.sets,
-          reps_min: repsArr[0] || 8,
-          reps_max: repsArr[1] || repsArr[0] || 12,
-          rest_seconds: parseInt(ex.rest) || 60,
-          order: i,
-        });
-      }
-    }
-
-    handleClose();
-    onRoutineCreated?.();
+      const repsArr = ex.reps.split('-').map(Number);
+      await supabase.from('routine_exercises').insert({
+        routine_id: routine.id,
+        exercise_id: exerciseId,
+        sets: ex.sets,
+        reps_min: repsArr[0] || 8,
+        reps_max: repsArr[1] || repsArr[0] || 12,
+        rest_seconds: parseInt(ex.rest) || 60,
+        order: i,
+      });
+    }));
   };
 
-  const handleSaveRoutines = async (workouts: GeneratedWorkout[]) => {
-    for (const workout of workouts) {
-      await handleSaveRoutine(workout);
-    }
+  const handleSaveRoutine = (workout: GeneratedWorkout) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    handleClose();
+    toast.info(`Saving “${workout.name}”…`);
+    insertRoutineToBackend(workout)
+      .then(() => {
+        toast.success('Routine saved');
+        onRoutineCreated?.();
+      })
+      .catch(() => {
+        toast.error(`Couldn't save “${workout.name}”`, {
+          action: { label: 'Retry', onPress: () => handleSaveRoutine(workout) },
+        });
+      })
+      .finally(() => {
+        inFlightRef.current = false;
+      });
+  };
+
+  const handleSaveRoutines = (workouts: GeneratedWorkout[]) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    handleClose();
+    (async () => {
+      try {
+        for (let i = 0; i < workouts.length; i++) {
+          toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
+          await insertRoutineToBackend(workouts[i]);
+        }
+        toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
+        onRoutineCreated?.();
+      } catch {
+        toast.error("Couldn't save all routines", {
+          action: { label: 'Retry', onPress: () => handleSaveRoutines(workouts) },
+        });
+      } finally {
+        inFlightRef.current = false;
+      }
+    })();
   };
 
   return (
