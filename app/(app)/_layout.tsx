@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { Tabs, useRouter, Redirect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  SlideInDown, SlideOutDown, Easing,
+  Easing,
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  runOnJS,
 } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -23,13 +27,48 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
+  // Compute sheet height as absolute pixels rather than '80%' — the percentage
+  // resolved unreliably inside the Reanimated entering animation on some devices,
+  // collapsing the sheet to roughly half-screen.
+  const { height: winH } = useWindowDimensions();
+  const sheetHeight = Math.round(winH * 0.8);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [loading, setLoading] = useState(false);
-  const [shown, setShown] = useState(false);
+  // `render` stays true through the exit animation so it can play before unmount.
+  // Driven by parent's `visible` plus the slide-out animation's completion callback.
+  const [render, setRender] = useState(false);
+  const translateY = useSharedValue(sheetHeight);
 
+  // Replaces the Reanimated `entering={SlideInDown}` + `onShow={() => setShown(true)}`
+  // gate, which raced with React Native Modal's presentation timing on Android —
+  // sometimes the Animated.View measured before the Modal was fully laid out,
+  // leaving the sheet stuck at ~50% height with its X button clipped offscreen.
+  // A manual shared-value translation is deterministic and immune to that race.
   useEffect(() => {
-    if (!visible) setShown(false);
-  }, [visible]);
+    if (visible) {
+      setRender(true);
+      translateY.value = sheetHeight;
+      // Defer one frame so the Modal's native window is on screen before the slide.
+      requestAnimationFrame(() => {
+        translateY.value = withTiming(0, {
+          duration: 320,
+          easing: Easing.out(Easing.cubic),
+        });
+      });
+    } else if (render) {
+      translateY.value = withTiming(
+        sheetHeight,
+        { duration: 200, easing: Easing.in(Easing.cubic) },
+        (finished) => {
+          if (finished) runOnJS(setRender)(false);
+        }
+      );
+    }
+  }, [visible, sheetHeight]);
+
+  const sheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
 
   useEffect(() => {
     if (visible) {
@@ -64,27 +103,31 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
 
   return (
     <Modal
-      visible={visible}
+      visible={render}
       transparent
       animationType="none"
       onRequestClose={onClose}
-      onShow={() => setShown(true)}
     >
       <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
-        {shown && (
         <Animated.View
-          entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-          exiting={SlideOutDown.duration(200)}
-          style={[styles.modalSheet, { backgroundColor: C.elevated, borderColor: C.border }]}
+          style={[
+            styles.modalSheet,
+            { backgroundColor: C.elevated, borderColor: C.border, height: sheetHeight },
+            sheetAnimatedStyle,
+          ]}
         >
-          <Pressable>
+          <Pressable style={{ flex: 1 }}>
             <View style={[styles.handle, { backgroundColor: C.handle }]} />
             <View style={styles.modalHeader}>
               <View>
                 <Text style={[styles.modalTitle, { color: C.foreground }]}>Start Workout</Text>
                 <Text style={[styles.modalSub, { color: C.mutedFg }]}>Choose a routine or start blank</Text>
               </View>
-              <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
+              <TouchableOpacity
+                onPress={onClose}
+                style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}
+                hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+              >
                 <Feather name="x" size={15} color={C.foreground} />
               </TouchableOpacity>
             </View>
@@ -112,7 +155,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
             </View>
 
             <ScrollView
-              style={{ maxHeight: 320 }}
+              style={{ flex: 1 }}
               contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40, gap: 8 }}
               showsVerticalScrollIndicator={false}
             >
@@ -146,7 +189,6 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
             </ScrollView>
           </Pressable>
         </Animated.View>
-        )}
       </Pressable>
     </Modal>
   );
@@ -195,7 +237,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderTopWidth: 1,
-    maxHeight: '80%',
+    // height is set inline via useWindowDimensions to get an absolute pixel value;
+    // the percentage version of this style resolved unreliably under Reanimated.
   },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginTop: 12, marginBottom: 4 },
   modalHeader: {
