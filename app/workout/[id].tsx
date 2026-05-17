@@ -15,7 +15,7 @@ import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { findMockRoutine, addGuestWorkout, getPreviousPerformance } from '@/lib/mockData';
+import { findMockRoutine, addGuestWorkout, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { BottomNav } from '@/components/ui/BottomNav';
@@ -157,15 +157,22 @@ export default function ActiveWorkoutScreen() {
               .from('workout_sets')
               .select('exercise_id, weight_kg, reps, "order", workout_id, workouts!inner(finished_at)')
               .in('exercise_id', exerciseIds)
-              .not('workouts.finished_at', 'is', null)
-              .order('finished_at', { foreignTable: 'workouts', ascending: false })
-              .order('order', { ascending: true });
+              .not('workouts.finished_at', 'is', null);
 
             if (rows && rows.length > 0) {
+              // Sort client-side by workouts.finished_at DESC. PostgREST's foreignTable
+              // ordering is unreliable here, so we can't trust the row order from the
+              // server — explicitly sort locally so "most recent workout per exercise"
+              // is actually the most recent.
+              const sorted = (rows as any[]).slice().sort((a, b) => {
+                const af = String(a.workouts?.finished_at ?? '');
+                const bf = String(b.workouts?.finished_at ?? '');
+                return bf.localeCompare(af);
+              });
               // For each exercise, only keep sets from the first (most recent) workout we see.
               const firstWorkoutPerEx = new Map<string, string>();
               const grouped: Record<string, { weight_kg: number; reps: number; order: number }[]> = {};
-              for (const r of rows as any[]) {
+              for (const r of sorted) {
                 const exId = r.exercise_id as string;
                 if (!firstWorkoutPerEx.has(exId)) firstWorkoutPerEx.set(exId, r.workout_id);
                 if (firstWorkoutPerEx.get(exId) !== r.workout_id) continue;
@@ -199,6 +206,11 @@ export default function ActiveWorkoutScreen() {
                 completed: false,
               })),
               notes: '',
+              // Phase 2.5: carry the AI Coach's per-exercise cue through so
+              // the user sees it while doing the set (e.g. "RIR 2", "Top set
+              // close to failure", "Hams-focused"). Null/missing on
+              // editor-built routines.
+              coachNote: typeof re.note === 'string' && re.note.length > 0 ? re.note : undefined,
               previousSets: prev || undefined,
               targetSets: re.sets,
               repsMin: re.reps_min,
@@ -408,8 +420,54 @@ export default function ActiveWorkoutScreen() {
     workout.updateExercises(updated);
   };
 
+  // Look up the most recent finished workout that contained this exercise and return its sets in order.
+  // Mirrors the per-routine prefetch in the load effect, but for a single exercise added ad-hoc (e.g. a
+  // blank workout where there's no routine to prefetch from).
+  const fetchPreviousSetsForExercise = async (
+    resolvedId: string | null,
+    name: string
+  ): Promise<{ weight_kg: number; reps: number }[] | undefined> => {
+    if (!isSupabaseConfigured || !resolvedId || resolvedId.startsWith('temp-')) {
+      return getPreviousPerformanceForExerciseName(name);
+    }
+    try {
+      const { data: rows } = await supabase
+        .from('workout_sets')
+        .select('weight_kg, reps, "order", workout_id, workouts!inner(finished_at)')
+        .eq('exercise_id', resolvedId)
+        .not('workouts.finished_at', 'is', null);
+      if (!rows || rows.length === 0) return undefined;
+      // Sort client-side by workouts.finished_at DESC. PostgREST's
+      // .order('finished_at', { foreignTable: 'workouts' }) silently no-ops
+      // (workout_sets has no finished_at column), so trusting rows[0] would
+      // return whichever workout Postgres happened to scan first — usually
+      // the OLDEST one. Sorting locally guarantees most-recent first.
+      const sorted = (rows as any[]).slice().sort((a, b) => {
+        const af = String(a.workouts?.finished_at ?? '');
+        const bf = String(b.workouts?.finished_at ?? '');
+        return bf.localeCompare(af);
+      });
+      const firstWorkoutId = sorted[0].workout_id;
+      const filtered = sorted
+        .filter(r => r.workout_id === firstWorkoutId)
+        .map((r, i) => ({
+          weight_kg: Number(r.weight_kg),
+          reps: r.reps as number,
+          order: r.order ?? i,
+        }))
+        .sort((a, b) => a.order - b.order);
+      return filtered.length > 0
+        ? filtered.map(({ weight_kg, reps }) => ({ weight_kg, reps }))
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   // Resolve an exercise to a real DB row (look up by name or insert) so workout_sets.exercise_id is a valid FK.
   // Returns the resolved Exercise row, or null if Supabase is unconfigured / the call fails.
+  // NOTE: uses limit(1) + order rather than maybeSingle() — `exercises` has no UNIQUE(name) constraint,
+  // so historical duplicates would make maybeSingle() return null and silently insert another duplicate.
   const resolveExerciseRow = async (lib: ExerciseDef): Promise<Exercise | null> => {
     if (!isSupabaseConfigured) return null;
     try {
@@ -417,8 +475,9 @@ export default function ActiveWorkoutScreen() {
         .from('exercises')
         .select('*')
         .eq('name', lib.name)
-        .maybeSingle();
-      if (existing) return existing as Exercise;
+        .order('created_at', { ascending: true })
+        .limit(1);
+      if (existing && existing.length > 0) return existing[0] as Exercise;
       const { data: inserted } = await supabase
         .from('exercises')
         .insert({ name: lib.name, muscle_group: lib.muscle_group, category: lib.category })
@@ -433,12 +492,19 @@ export default function ActiveWorkoutScreen() {
   // Add exercise from library
   const addExercise = async (ex: ExerciseDef) => {
     const resolved = await resolveExerciseRow(ex);
+    const prev = await fetchPreviousSetsForExercise(resolved?.id ?? null, ex.name);
+    const targetSets = 3;
     const newEx: ActiveWorkoutExercise = {
       // In guest mode (resolved === null) we still use a local temp id, but it never reaches Supabase.
       exercise: resolved ?? { id: `temp-${Date.now()}`, name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
-      sets: [{ weight_kg: 0, reps: 10, completed: false }, { weight_kg: 0, reps: 10, completed: false }, { weight_kg: 0, reps: 10, completed: false }],
+      sets: Array.from({ length: targetSets }, (_, i) => ({
+        weight_kg: prev?.[i]?.weight_kg ?? 0,
+        reps: prev?.[i]?.reps ?? 10,
+        completed: false,
+      })),
       notes: '',
-      targetSets: 3,
+      previousSets: prev || undefined,
+      targetSets,
       repsMin: 8,
       repsMax: 12,
       restSeconds: 90,
@@ -478,10 +544,16 @@ export default function ActiveWorkoutScreen() {
     const restSeconds = Math.max(0, parseInt(customRest) || 90);
 
     const resolved = await resolveExerciseRow({ name, muscle_group: customMuscle, category: customCategory });
+    const prev = await fetchPreviousSetsForExercise(resolved?.id ?? null, name);
     const newEx: ActiveWorkoutExercise = {
       exercise: resolved ?? { id: `temp-${Date.now()}`, name, muscle_group: customMuscle, category: customCategory },
-      sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: repsMin, completed: false })),
+      sets: Array.from({ length: targetSets }, (_, i) => ({
+        weight_kg: prev?.[i]?.weight_kg ?? 0,
+        reps: prev?.[i]?.reps ?? repsMin,
+        completed: false,
+      })),
       notes: '',
+      previousSets: prev || undefined,
       targetSets,
       repsMin,
       repsMax,
@@ -560,16 +632,26 @@ export default function ActiveWorkoutScreen() {
       }
 
       const clerkId = user?.id;
+      const startedAtIso = new Date(Date.now() - workout.elapsed * 1000).toISOString();
+
+      // Three-phase finalize so the workout never appears "finished" without
+      // its sets:
+      //   1. INSERT workouts with finished_at = NULL (a placeholder)
+      //   2. Bulk INSERT workout_sets — fires the per-user stats trigger
+      //      (migration 0008), which recomputes only this user's affected
+      //      lift / volume rows.
+      //   3. UPDATE workouts SET finished_at, duration, total_volume — flips
+      //      the workout to "complete." If steps 2 fails partially, step 3
+      //      doesn't run and the workout stays open so the user can retry
+      //      instead of being left with a finished-but-empty workout.
       const { data: workoutRow, error: workoutErr } = await supabase
         .from('workouts')
         .insert({
           // user_id omitted — default `auth.jwt()->>'sub'` fills it server-side.
           routine_id: workout.routineId === 'new' ? null : workout.routineId,
           name: workout.routineName,
-          started_at: new Date(Date.now() - workout.elapsed * 1000).toISOString(),
-          finished_at: new Date().toISOString(),
-          duration_seconds: workout.elapsed,
-          total_volume_kg: vol,
+          started_at: startedAtIso,
+          // finished_at left null on purpose — set in step 3.
         })
         .select()
         .single();
@@ -596,6 +678,17 @@ export default function ActiveWorkoutScreen() {
           const { error: setsErr } = await supabase.from('workout_sets').insert(setsToInsert);
           if (setsErr) throw setsErr;
         }
+
+        // Step 3: only mark the workout finished now that sets landed.
+        const { error: finalizeErr } = await supabase
+          .from('workouts')
+          .update({
+            finished_at: new Date().toISOString(),
+            duration_seconds: workout.elapsed,
+            total_volume_kg: vol,
+          })
+          .eq('id', workoutRow.id);
+        if (finalizeErr) throw finalizeErr;
 
         // Persist XP earned on this workout to user_profiles so the dashboard level bar advances.
         if (clerkId) {
@@ -784,6 +877,11 @@ export default function ActiveWorkoutScreen() {
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
                   {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
+                {currentEx.coachNote ? (
+                  <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
+                    {currentEx.coachNote}
+                  </Text>
+                ) : null}
               </View>
               <TouchableOpacity onPress={removeExercise} style={[styles.removeBtn, { backgroundColor: C.muted }]}>
                 <Feather name="trash-2" size={13} color={C.textDim} />
@@ -1426,6 +1524,10 @@ const styles = StyleSheet.create({
   muscleLabel: { fontSize: 10, fontWeight: FontWeight.semibold, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 4 },
   exerciseName: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, letterSpacing: -0.5 },
   exerciseMeta: { fontSize: 11, marginTop: 4 },
+  // Phase 2.5: AI Coach's per-exercise cue surfaced on the active workout
+  // card so the user remembers the intent ("RIR 2", "Hams-focused", etc.)
+  // while they're doing the set.
+  coachCue: { fontSize: 12, fontStyle: 'italic', marginTop: 6, lineHeight: 16 },
   removeBtn: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.md },
 
   // Timers

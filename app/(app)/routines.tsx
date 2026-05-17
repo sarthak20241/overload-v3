@@ -28,7 +28,7 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
 import { mockRoutines, getAllRoutines, addGuestRoutine } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -45,6 +45,9 @@ interface RoutineExerciseRaw {
   reps_max: number;
   rest_seconds: number;
   order: number;
+  // Phase 2.5: AI-generated routines carry the coach's per-exercise cue.
+  // Optional — null/missing on editor-built routines.
+  note?: string | null;
   exercises: {
     id: string;
     name: string;
@@ -256,6 +259,11 @@ function RoutineDetailSheet({
                     <Text style={[styles.detailExMeta, { color: C.textMuted }]}>
                       {re.sets} sets · {re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · {re.rest_seconds}s rest
                     </Text>
+                    {re.note ? (
+                      <Text style={[styles.detailExNote, { color: C.accentText }]} numberOfLines={3}>
+                        {re.note}
+                      </Text>
+                    ) : null}
                   </View>
                   {re.exercises?.muscle_group ? (
                     <View style={[styles.detailExBadge, { backgroundColor: C.muted }]}>
@@ -579,7 +587,10 @@ function RoutineEditorSheet({
             ? String(re.reps_min)
             : `${re.reps_min}-${re.reps_max}`,
           restSeconds: re.rest_seconds || 90,
-          notes: re.notes || '',
+          // The DB column is `note` (singular). `re.notes` was a typo that
+          // silently read undefined, so opening an AI-generated routine in
+          // the editor dropped its coach cues.
+          notes: re.note || re.notes || '',
         }))
       );
     } else {
@@ -669,6 +680,9 @@ function RoutineEditorSheet({
             reps_max: repsMax,
             rest_seconds: ex.restSeconds,
             order: i,
+            // Round-trip the cue. Without this, editing an AI-generated
+            // routine and re-saving would silently drop every coach note.
+            note: ex.notes?.trim() ? ex.notes.trim() : null,
           });
         }
       } else {
@@ -692,6 +706,7 @@ function RoutineEditorSheet({
             reps_max: repsMax,
             rest_seconds: ex.restSeconds,
             order: i,
+            note: ex.notes?.trim() ? ex.notes.trim() : null,
           });
         }
       }
@@ -1079,15 +1094,17 @@ function parseReps(reps: string): [number, number] {
 }
 
 async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
-  // First try to find existing exercise by name
+  // First try to find existing exercise by name. Avoid .single() — it errors when 0 or >1
+  // rows match. The `exercises` table has no UNIQUE(name) constraint, so a stray duplicate
+  // would force this branch to throw and we'd fall through to insert another copy.
   const { data: existing } = await supabase
     .from('exercises')
     .select('id')
     .ilike('name', ex.name.trim())
-    .limit(1)
-    .single();
+    .order('created_at', { ascending: true })
+    .limit(1);
 
-  if (existing) return existing.id;
+  if (existing && existing.length > 0) return existing[0].id;
 
   // Create new exercise
   const { data: created, error } = await supabase
@@ -1784,6 +1801,12 @@ const styles = StyleSheet.create({
   detailExMeta: {
     fontSize: FontSize.xs,
     marginTop: 2,
+  },
+  detailExNote: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    marginTop: 4,
+    lineHeight: 14,
   },
   detailExBadge: {
     paddingHorizontal: 8,

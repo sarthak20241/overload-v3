@@ -372,6 +372,18 @@ export function getPreviousPerformance(routineId: string): Record<string, { weig
   return map;
 }
 
+/** Find the most recent guest workout that contained an exercise with this name and return its sets. */
+export function getPreviousPerformanceForExerciseName(
+  exerciseName: string
+): { weight_kg: number; reps: number }[] | undefined {
+  for (const w of _guestWorkouts) {
+    if (!w.exercises) continue;
+    const found = w.exercises.find(e => e.name === exerciseName);
+    if (found && found.sets.length > 0) return found.sets;
+  }
+  return undefined;
+}
+
 // --- Body stats (for analytics guest visualization) ---
 function buildWeightLog() {
   // ~12 weeks of weekly weigh-ins, gentle downward trend from 82 → 78

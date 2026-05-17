@@ -39,6 +39,10 @@ export interface RoutineExercise {
   reps_max: number;
   rest_seconds: number;
   order: number;
+  // Phase 2.5: coach cue persisted from generate_workout / generate_plan
+  // (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Optional — only
+  // set on AI-generated routines, not editor-built ones.
+  note?: string;
 }
 
 export interface Routine {
@@ -78,7 +82,12 @@ export interface Workout {
 export interface ActiveWorkoutExercise {
   exercise: Exercise;
   sets: ActiveSet[];
+  // User-editable session notes (typed during the workout).
   notes: string;
+  // Phase 2.5: read-only coach cue carried over from the routine
+  // (the `routine_exercises.note` column). Displayed as a subtle hint
+  // above the exercise; not mutated by the user.
+  coachNote?: string;
   previousSets?: { weight_kg: number; reps: number }[];
   targetSets: number;
   repsMin: number;
