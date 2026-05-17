@@ -116,6 +116,14 @@ async function main() {
   const entries: SeedEntry[] = JSON.parse(await readFile(seedPath, 'utf8'));
   console.log(`Loaded ${entries.length} seed entries from ${seedPath}\n`);
 
+  // No-op guard: empty seed file would crash on `embeddings[0].length` below.
+  // Treat zero entries as a successful no-op so re-runs on an empty seed
+  // (or accidental empty array) don't blow up.
+  if (entries.length === 0) {
+    console.log('Seed file is empty — nothing to embed or upsert. Exiting.');
+    return;
+  }
+
   console.log(`Embedding ${entries.length} passages via Voyage 3 …`);
   const embeddings = await embedDocuments(entries.map(passageFor));
   if (embeddings.length !== entries.length) {

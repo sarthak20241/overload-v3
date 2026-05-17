@@ -28,7 +28,23 @@ const RATE_LIMIT_MAX = 30;
 const PREVIEW_MAX_CHARS = 200;
 const MODEL = "claude-sonnet-4-20250514";
 const MAX_TOOL_ITERATIONS = 5;
-const ANTHROPIC_MAX_TOKENS = 1024;
+// Mode-aware token budgets. Chat replies stay tight (the rubric rewards
+// concise coaching prose). Single-workout generation needs ~700–1500 tokens
+// for the JSON tool input plus the 1-line intent. Plan generation easily
+// pushes 2k+ tokens once you've got 4–6 days × 5–6 exercises with notes
+// and a multi-sentence rationale. Without this split, plans silently fail
+// when the model hits the cap mid-tool-emission → stop_reason flips to
+// "max_tokens", the tool_use block is incomplete, and the client gets a
+// `structured: null` payload.
+const CHAT_MAX_TOKENS = 1024;
+const GENERATE_WORKOUT_MAX_TOKENS = 2048;
+const GENERATE_PLAN_MAX_TOKENS = 4096;
+const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
+// Hard cap on a single Anthropic call. A hung upstream would otherwise pin
+// function execution for the gateway's whole 60s budget. 30s comfortably
+// covers Sonnet's worst-case latency at our max_tokens for plans (≤4k) plus
+// streaming overhead; tighten if we see false positives in coach_traces.
+const ANTHROPIC_TIMEOUT_MS = 30000;
 
 // Retrieval (Phase 2.2). VOYAGE_API_KEY is optional — if missing, we skip
 // retrieval and the coach falls back to user_context + core_principles. That
@@ -225,19 +241,35 @@ interface AnthropicMessage {
 async function callAnthropic(
   payload: Record<string, unknown>,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    return { ok: false, status: response.status, body: await response.text() };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ANTHROPIC_TIMEOUT_MS);
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY!,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return { ok: false, status: response.status, body: await response.text() };
+    }
+    return { ok: true, data: await response.json() };
+  } catch (e) {
+    const isAbort = (e as Error)?.name === "AbortError";
+    return {
+      ok: false,
+      status: isAbort ? 504 : 502,
+      body: isAbort
+        ? `Anthropic call exceeded ${ANTHROPIC_TIMEOUT_MS}ms timeout`
+        : `fetch threw: ${String(e)}`,
+    };
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return { ok: true, data: await response.json() };
 }
 
 // ── SSE helpers (Phase 2.6) ─────────────────────────────────────────────────
@@ -332,6 +364,7 @@ async function runStreamingToolLoop(
   userClient: SupabaseClient,
   trace: CoachTrace,
   forceTool: string | null,
+  maxTokens: number,
 ): Promise<StreamingLoopResult> {
   const conversation = [...initialConversation];
   let totalInput = 0;
@@ -359,7 +392,7 @@ async function runStreamingToolLoop(
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: ANTHROPIC_MAX_TOKENS,
+        max_tokens: maxTokens,
         system,
         tools,
         messages: conversation,
@@ -420,6 +453,22 @@ async function runStreamingToolLoop(
       });
 
     if (stopReason !== "tool_use") {
+      // Anthropic stopped without finishing a tool call. If it was a terminal
+      // tool that got cut off by max_tokens, the partial JSON in `blk.input`
+      // is unparseable and we'd otherwise silently return `structured: null`,
+      // leaving the client confused. Surface the failure explicitly so the
+      // UI can show a real error instead of bouncing back to the form.
+      if (stopReason === "max_tokens") {
+        const partialTerminal = cleanBlocks.find(
+          (b: any) => b.type === "tool_use" && TERMINAL_TOOLS.has(b.name),
+        );
+        if (partialTerminal) {
+          trace.tool_calls.push(`${partialTerminal.name}__truncated`);
+          const msg = `Anthropic hit max_tokens (${maxTokens}) mid-${partialTerminal.name}. Increase the per-mode budget.`;
+          sse.write("error", { error: msg, code: "tool_truncated" });
+          throw new Error(msg);
+        }
+      }
       // Model is done — we've streamed all the text already.
       return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
     }
@@ -646,11 +695,20 @@ Deno.serve(async (req) => {
     }));
     const { response: sseResponse, sse } = createSSEResponse();
 
+    // Pick the right output budget. Multi-day plans easily push 2k+ tokens
+    // of JSON tool input — leaving this at CHAT_MAX_TOKENS makes plan
+    // generation silently fail at the cap.
+    const maxTokens = forceTool === 'generate_plan'
+      ? GENERATE_PLAN_MAX_TOKENS
+      : forceTool === 'generate_workout'
+        ? GENERATE_WORKOUT_MAX_TOKENS
+        : CHAT_MAX_TOKENS;
+
     // Headers flush as soon as we return; body fills asynchronously.
     (async () => {
       try {
         sse.write("status", { phase: forceTool ? `generating_${forceTool === 'generate_workout' ? 'workout' : 'plan'}` : "thinking" });
-        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, forceTool);
+        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, forceTool, maxTokens);
 
         // Citations: same regex as non-streaming path
         const refs = new Set<number>();
@@ -703,25 +761,46 @@ Deno.serve(async (req) => {
   }
 
   // 6. Non-streaming tool-use loop (legacy / fallback path).
+  //
+  // Keep behavior in sync with the streaming branch above:
+  //  - same per-mode max_tokens budget (so generate_plan gets 4096)
+  //  - force tool_choice on iter 0 when force_tool is set
+  //  - terminal tools (generate_workout / generate_plan) are NOT executed;
+  //    their input IS the structured response, returned in `structured`
+  //    just like the streaming `done` event does
   let conversation: AnthropicMessage[] = incomingMessages.map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
   }));
+
+  const nonStreamMaxTokens = forceTool === 'generate_plan'
+    ? GENERATE_PLAN_MAX_TOKENS
+    : forceTool === 'generate_workout'
+      ? GENERATE_WORKOUT_MAX_TOKENS
+      : CHAT_MAX_TOKENS;
 
   let totalInput = 0;
   let totalOutput = 0;
   let totalCacheCreation = 0;
   let totalCacheRead = 0;
   let finalText: string | null = null;
+  let structured: { name: string; input: Record<string, unknown> } | null = null;
 
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+      // Force the matching terminal tool ONLY on the first iteration so
+      // follow-up turns (after we've appended tool_results) are free to
+      // either chat or call another tool. Identical to streaming behavior.
+      const toolChoice = (forceTool && iter === 0)
+        ? { type: "tool" as const, name: forceTool }
+        : undefined;
       const apiResult = await callAnthropic({
         model: MODEL,
-        max_tokens: ANTHROPIC_MAX_TOKENS,
+        max_tokens: nonStreamMaxTokens,
         system,
         tools,
         messages: conversation,
+        ...(toolChoice ? { tool_choice: toolChoice } : {}),
       });
 
       if (!apiResult.ok) {
@@ -753,10 +832,29 @@ Deno.serve(async (req) => {
         break;
       }
 
-      // Model asked for one or more tool calls. Execute each, append both
-      // the assistant turn (containing the tool_use blocks) and a user turn
-      // containing the tool_result blocks. Loop again.
+      // Tool calls. Split terminal tools (generate_workout / generate_plan)
+      // from regular data-fetch tools — terminal tools are NOT executed
+      // server-side; their `input` IS the structured response.
       const toolUses = contentBlocks.filter((b) => b.type === "tool_use");
+      const terminalUse = toolUses.find(
+        (b) => typeof b.name === "string" && TERMINAL_TOOLS.has(b.name),
+      );
+      if (terminalUse) {
+        trace.tool_calls.push(terminalUse.name ?? "<terminal>");
+        structured = {
+          name: terminalUse.name ?? "",
+          input: terminalUse.input ?? {},
+        };
+        finalText = contentBlocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text ?? "")
+          .join("\n")
+          .trim() || null;
+        break;
+      }
+
+      // Regular data-fetch tools: execute each, append assistant + tool_result
+      // turns, loop again.
       const toolResults = await Promise.all(
         toolUses.map(async (block) => {
           trace.tool_calls.push(block.name ?? "<unknown>");
@@ -843,6 +941,10 @@ Deno.serve(async (req) => {
         cache_read_input_tokens: totalCacheRead,
       },
       tool_calls: trace.tool_calls,
+      // Phase 2.5: parity with the streaming `done` event. When a terminal
+      // tool fired, its input IS the response — clients should render this
+      // rather than `response`.
+      structured,
     },
     200,
   );
