@@ -74,6 +74,14 @@ create table if not exists routine_exercises (
   note text
 );
 
+-- Idempotent re-apply: the column above is INSIDE the create-if-not-exists
+-- block, so on databases where routine_exercises already existed (any
+-- deployment past 0001) the column wouldn't be added by re-running this
+-- file. Mirror the column with an explicit ALTER so schema.sql stays
+-- safely runnable on existing databases.
+alter table routine_exercises
+  add column if not exists note text;
+
 -- ─── Workouts ───────────────────────────────────────────────────────────────
 create table if not exists workouts (
   id uuid primary key default uuid_generate_v4(),

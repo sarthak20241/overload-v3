@@ -587,7 +587,10 @@ function RoutineEditorSheet({
             ? String(re.reps_min)
             : `${re.reps_min}-${re.reps_max}`,
           restSeconds: re.rest_seconds || 90,
-          notes: re.notes || '',
+          // The DB column is `note` (singular). `re.notes` was a typo that
+          // silently read undefined, so opening an AI-generated routine in
+          // the editor dropped its coach cues.
+          notes: re.note || re.notes || '',
         }))
       );
     } else {
@@ -677,6 +680,9 @@ function RoutineEditorSheet({
             reps_max: repsMax,
             rest_seconds: ex.restSeconds,
             order: i,
+            // Round-trip the cue. Without this, editing an AI-generated
+            // routine and re-saving would silently drop every coach note.
+            note: ex.notes?.trim() ? ex.notes.trim() : null,
           });
         }
       } else {
@@ -700,6 +706,7 @@ function RoutineEditorSheet({
             reps_max: repsMax,
             rest_seconds: ex.restSeconds,
             order: i,
+            note: ex.notes?.trim() ? ex.notes.trim() : null,
           });
         }
       }

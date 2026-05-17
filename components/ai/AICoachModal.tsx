@@ -1094,8 +1094,12 @@ function GeneratePlanScreen({
               ...conversation,
               { role: 'assistant', content: planToText(p) },
             ];
-            setLoading(false);
-            setRefining(false);
+            // Do NOT clear loading/refining here — `structured` arrives
+            // BEFORE the stream's `done` event. If we flipped flags now,
+            // the user could submit a refinement while the prior stream
+            // is still finalizing, and the late onDone/onError callbacks
+            // would land on the wrong result. Let onDone own the
+            // "stream truly finished" signal.
           }
         },
         onDone: ({ structured }) => {
@@ -1460,8 +1464,9 @@ function GenerateWorkoutScreen({
               ...conversation,
               { role: 'assistant', content: workoutToText(w) },
             ];
-            setLoading(false);
-            setRefining(false);
+            // Loading/refining flags stay set until `done` — see the
+            // matching note on the plan screen for why. tl;dr: prevents
+            // overlapping streams from a quick second submit.
           }
         },
         onDone: ({ structured }) => {
@@ -1741,6 +1746,10 @@ export function AICoachModal({
             reps_min: repsArr[0] || 8,
             reps_max: repsArr[1] || repsArr[0] || 12,
             rest_seconds: parseInt(ex.rest) || 60,
+            // Parity with the authenticated branch — guest users keep
+            // their cues too. Otherwise the routine renders without
+            // notes the moment they save it.
+            note: ex.note ?? null,
             exercises: {
               id: `gex-${Date.now()}-${i}`,
               name: ex.name,
