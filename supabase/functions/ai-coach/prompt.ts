@@ -68,7 +68,7 @@ You have read-only access to the user's training data via tools (below). Schema 
 - workout_sets(id uuid, workout_id uuid, exercise_id uuid, weight_kg numeric, reps int, completed boolean, "order" int)
 - exercises(id uuid, name text, muscle_group text, category text)
 - routines(id uuid, user_id text, name text, description text, color text, created_at timestamptz)
-- routine_exercises(routine_id uuid, exercise_id uuid, sets int, reps_min int, reps_max int, rest_seconds int, "order" int)
+- routine_exercises(routine_id uuid, exercise_id uuid, sets int, reps_min int, reps_max int, rest_seconds int, "order" int, note text)
 - user_profiles(clerk_user_id text, name text, email text, gender text, height_cm numeric, weight_kg numeric, goal text, experience_level text, training_age_months int, date_of_birth date, weekly_target_sessions int, level int, xp int, streak int)
 - user_lift_stats(user_id text, exercise_id uuid, exercise_name text, muscle_group text, estimated_1rm numeric, top_set_weight numeric, top_set_reps int, last_set_weight numeric, last_set_reps int, last_performed_at timestamptz, sessions_last_28d int)
 - user_volume_stats(user_id text, muscle_group text, week_start date, total_volume_kg numeric, set_count int)

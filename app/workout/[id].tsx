@@ -206,6 +206,11 @@ export default function ActiveWorkoutScreen() {
                 completed: false,
               })),
               notes: '',
+              // Phase 2.5: carry the AI Coach's per-exercise cue through so
+              // the user sees it while doing the set (e.g. "RIR 2", "Top set
+              // close to failure", "Hams-focused"). Null/missing on
+              // editor-built routines.
+              coachNote: typeof re.note === 'string' && re.note.length > 0 ? re.note : undefined,
               previousSets: prev || undefined,
               targetSets: re.sets,
               repsMin: re.reps_min,
@@ -872,6 +877,11 @@ export default function ActiveWorkoutScreen() {
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
                   {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
+                {currentEx.coachNote ? (
+                  <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
+                    {currentEx.coachNote}
+                  </Text>
+                ) : null}
               </View>
               <TouchableOpacity onPress={removeExercise} style={[styles.removeBtn, { backgroundColor: C.muted }]}>
                 <Feather name="trash-2" size={13} color={C.textDim} />
@@ -1514,6 +1524,10 @@ const styles = StyleSheet.create({
   muscleLabel: { fontSize: 10, fontWeight: FontWeight.semibold, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 4 },
   exerciseName: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, letterSpacing: -0.5 },
   exerciseMeta: { fontSize: 11, marginTop: 4 },
+  // Phase 2.5: AI Coach's per-exercise cue surfaced on the active workout
+  // card so the user remembers the intent ("RIR 2", "Hams-focused", etc.)
+  // while they're doing the set.
+  coachCue: { fontSize: 12, fontStyle: 'italic', marginTop: 6, lineHeight: 16 },
   removeBtn: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.md },
 
   // Timers

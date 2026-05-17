@@ -891,6 +891,115 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
   );
 }
 
+// ─── WorkoutCard (Phase 2.5) ─────────────────────────────────────────────────
+// Shared renderer for a single generated workout. Used standalone by
+// GenerateWorkoutScreen and as the inner-day card by GeneratePlanScreen.
+// Surfaces the coach's `rationale` (workout mode) or the day-level `note`
+// (plan mode), plus any per-exercise `note` cues like "RIR 2",
+// "hams-focused", or "last set to failure".
+function WorkoutCard({
+  workout,
+  workoutNote,
+  showRationale = true,
+  animated = false,
+  delayMs = 0,
+}: {
+  workout: GeneratedWorkout;
+  workoutNote?: string;
+  showRationale?: boolean;
+  animated?: boolean;
+  delayMs?: number;
+}) {
+  const { C } = useTheme();
+  const exerciseCountLabel = `${workout.exercises.length} exercise${workout.exercises.length === 1 ? '' : 's'}`;
+  const durationLabel = workout.estimated_duration_min ? ` · ~${workout.estimated_duration_min} min` : '';
+  const Wrapper: any = animated ? Animated.View : View;
+  const wrapperProps: any = animated
+    ? { entering: FadeInDown.delay(delayMs).duration(300) }
+    : {};
+  return (
+    <Wrapper
+      {...wrapperProps}
+      style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+    >
+      <Text style={[s.resultCardTitle, { color: C.foreground }]}>{workout.name}</Text>
+      {workout.focus && (
+        <Text style={[s.resultCardFocus, { color: C.accentText }]}>{workout.focus}</Text>
+      )}
+      <Text style={[s.resultCardSub, { color: C.mutedFg }]}>
+        {exerciseCountLabel}{durationLabel}
+      </Text>
+
+      {workoutNote && (
+        <Text style={[s.workoutNoteCaption, { color: C.mutedFg }]}>
+          {workoutNote}
+        </Text>
+      )}
+
+      {showRationale && workout.rationale && (
+        <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
+          <View style={s.rationaleHeader}>
+            <Feather name="zap" size={11} color={C.accentText} />
+            <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
+          </View>
+          <Text style={[s.rationaleText, { color: C.foreground }]}>
+            {workout.rationale}
+          </Text>
+        </View>
+      )}
+
+      {workout.exercises.map((ex, ei) => (
+        <View key={ei} style={[s.resultExRowOuter, { borderColor: C.borderSubtle }]}>
+          <View style={s.resultExRowTop}>
+            <Text style={[s.resultExName, { color: C.foreground, flex: 1 }]} numberOfLines={2}>{ex.name}</Text>
+            <Text style={[s.resultExDetail, { color: C.mutedFg }]}>
+              {ex.sets}×{ex.reps} · {ex.rest}
+            </Text>
+          </View>
+          {ex.note && (
+            <Text style={[s.resultExNote, { color: C.mutedFg }]} numberOfLines={3}>
+              {ex.note}
+            </Text>
+          )}
+        </View>
+      ))}
+    </Wrapper>
+  );
+}
+
+// Build the textual recap of a generated plan/workout that we append as the
+// "assistant" turn before a refinement, so the model can see what it last
+// produced and refine accordingly without us re-implementing tool-result
+// plumbing on the client.
+function workoutToText(w: GeneratedWorkout): string {
+  const lines: string[] = [];
+  lines.push(`Name: ${w.name}`);
+  if (w.focus) lines.push(`Focus: ${w.focus}`);
+  if (w.estimated_duration_min) lines.push(`Estimated duration: ${w.estimated_duration_min} min`);
+  if (w.rationale) lines.push(`Rationale: ${w.rationale}`);
+  lines.push(`Exercises:`);
+  for (const ex of w.exercises) {
+    const tail = ex.note ? ` — ${ex.note}` : '';
+    lines.push(`  - ${ex.name}: ${ex.sets}×${ex.reps} (${ex.rest})${tail}`);
+  }
+  return lines.join('\n');
+}
+
+function planToText(p: GeneratedPlan): string {
+  const lines: string[] = [];
+  lines.push(`[Previously generated plan]`);
+  lines.push(`Name: ${p.name}`);
+  if (p.split_type) lines.push(`Split: ${p.split_type}`);
+  if (p.days_per_week) lines.push(`Days/week: ${p.days_per_week}`);
+  if (p.rationale) lines.push(`Rationale: ${p.rationale}`);
+  for (const w of p.workouts) {
+    lines.push('');
+    if (w.note) lines.push(`Day note: ${w.note}`);
+    lines.push(workoutToText(w));
+  }
+  return lines.join('\n');
+}
+
 // ─── Generate Plan Screen ────────────────────────────────────────────────────
 function GeneratePlanScreen({
   onBack,
@@ -902,100 +1011,272 @@ function GeneratePlanScreen({
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
 }) {
   const { C } = useTheme();
-  const supabase = useSupabaseClient();
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
+  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+
   const [goal, setGoal] = useState('');
   const [days, setDays] = useState('4 days');
   const [sessionLength, setSessionLength] = useState('45-60 min');
   const [level, setLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<GeneratedWorkout[] | null>(null);
+  const [refining, setRefining] = useState(false);
+  const [coachIntent, setCoachIntent] = useState('');
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [result, setResult] = useState<GeneratedPlan | null>(null);
+  const [refineInput, setRefineInput] = useState('');
+  // Conversation history (carries across refinements). Stored in a ref so
+  // mid-stream callbacks read the latest value without re-binding.
+  const conversationRef = useRef<{ role: string; content: string }[]>([]);
 
-  const handleGenerate = async () => {
-    setLoading(true);
-    const prompt = `Generate a workout plan: Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Return a structured plan with workout names and exercises (name, sets, reps, rest).`;
-    try { await callAICoach([{ role: 'user', content: prompt }], supabase); } catch {}
-    // For demo, create mock structured data
-    const mockPlan: GeneratedWorkout[] = [
+  const buildInitialPrompt = () =>
+    `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
+
+  const runGeneration = async (
+    conversation: { role: string; content: string }[],
+    isRefine: boolean,
+  ) => {
+    setErrorText(null);
+    setCoachIntent('');
+    if (isRefine) setRefining(true);
+    else setLoading(true);
+
+    // Guest fallback (no Supabase / no Clerk): minimal mock so the demo UI still works.
+    if (!isSupabaseConfigured || !getToken) {
+      setTimeout(() => {
+        setResult({
+          name: 'Demo Plan',
+          rationale: 'Demo plan (guest mode). Sign in to get a real coach-designed plan that uses your training data.',
+          split_type: 'Push/Pull/Legs',
+          days_per_week: 3,
+          workouts: [
+            {
+              name: 'Push Day', note: 'Chest-led, RIR 1-2',
+              exercises: [
+                { name: 'Bench Press', sets: 4, reps: '6-8', rest: '120s', note: 'Top set heavy, RIR 1' },
+                { name: 'Incline DB Press', sets: 3, reps: '8-12', rest: '90s', note: 'Hams of the chest — push hard' },
+              ],
+            },
+            {
+              name: 'Pull Day', note: 'Back volume + biceps',
+              exercises: [
+                { name: 'Pull-ups', sets: 4, reps: '6-10', rest: '120s' },
+                { name: 'Barbell Row', sets: 3, reps: '8-10', rest: '90s', note: 'Strict, no body english' },
+              ],
+            },
+          ],
+        });
+        setLoading(false);
+        setRefining(false);
+      }, 600);
+      return;
+    }
+
+    let token: string | null = null;
+    try { token = await getToken!(); } catch { token = null; }
+    if (!token) {
+      setErrorText('Not signed in. Please sign in again.');
+      setLoading(false);
+      setRefining(false);
+      return;
+    }
+
+    callAICoachStreaming(
+      conversation,
+      token,
       {
-        name: 'Push Day',
-        exercises: [
-          { name: 'Bench Press', sets: 4, reps: '8-10', rest: '90s' },
-          { name: 'Overhead Press', sets: 3, reps: '8-12', rest: '90s' },
-          { name: 'Incline Dumbbell Press', sets: 3, reps: '10-12', rest: '60s' },
-          { name: 'Lateral Raises', sets: 3, reps: '12-15', rest: '60s' },
-          { name: 'Tricep Pushdowns', sets: 3, reps: '12-15', rest: '60s' },
-        ],
+        onDelta: (chunk) => setCoachIntent((prev) => prev + chunk),
+        onStructured: ({ name, input }) => {
+          if (name === 'generate_plan') {
+            const p = structuredToPlan(input);
+            setResult(p);
+            conversationRef.current = [
+              ...conversation,
+              { role: 'assistant', content: planToText(p) },
+            ];
+            setLoading(false);
+            setRefining(false);
+          }
+        },
+        onDone: ({ structured }) => {
+          // Defensive fallback if 'structured' SSE event was missed
+          if (structured?.name === 'generate_plan') {
+            const p = structuredToPlan(structured.input);
+            setResult((cur) => cur ?? p);
+            if (!result) {
+              conversationRef.current = [
+                ...conversation,
+                { role: 'assistant', content: planToText(p) },
+              ];
+            }
+          }
+          setLoading(false);
+          setRefining(false);
+        },
+        onError: (err) => {
+          setErrorText(err);
+          setLoading(false);
+          setRefining(false);
+        },
       },
-      {
-        name: 'Pull Day',
-        exercises: [
-          { name: 'Deadlift', sets: 4, reps: '5-6', rest: '120s' },
-          { name: 'Barbell Rows', sets: 4, reps: '8-10', rest: '90s' },
-          { name: 'Pull-Ups', sets: 3, reps: '8-12', rest: '90s' },
-          { name: 'Face Pulls', sets: 3, reps: '12-15', rest: '60s' },
-          { name: 'Barbell Curls', sets: 3, reps: '10-12', rest: '60s' },
-        ],
-      },
-      {
-        name: 'Leg Day',
-        exercises: [
-          { name: 'Squats', sets: 4, reps: '6-8', rest: '120s' },
-          { name: 'Romanian Deadlift', sets: 3, reps: '8-10', rest: '90s' },
-          { name: 'Leg Press', sets: 3, reps: '10-12', rest: '90s' },
-          { name: 'Leg Curls', sets: 3, reps: '12-15', rest: '60s' },
-          { name: 'Calf Raises', sets: 4, reps: '12-15', rest: '60s' },
-        ],
-      },
-    ];
-    setResult(mockPlan);
-    setLoading(false);
+      { forceTool: 'generate_plan' },
+    );
   };
 
+  const handleGenerate = async () => {
+    const prompt = buildInitialPrompt();
+    conversationRef.current = [{ role: 'user', content: prompt }];
+    await runGeneration(conversationRef.current, false);
+  };
+
+  const handleRefine = async () => {
+    const text = refineInput.trim();
+    if (!text || refining || loading) return;
+    setRefineInput('');
+    const next = [...conversationRef.current, { role: 'user', content: text }];
+    conversationRef.current = next;
+    await runGeneration(next, true);
+  };
+
+  // ── Result view ─────────────────────────────────────────────────────────
   if (result) {
     return (
-      <View style={{ flex: 1 }}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}
+      >
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-          <TouchableOpacity onPress={() => setResult(null)} style={[s.backBtn, { backgroundColor: C.muted }]}>
+          <TouchableOpacity
+            onPress={() => { setResult(null); conversationRef.current = []; }}
+            style={[s.backBtn, { backgroundColor: C.muted }]}
+          >
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
           <SparkleIcon size={16} color={C.accentText} />
           <Text style={[s.screenTitle, { color: C.foreground }]}>Your Plan</Text>
         </View>
-        <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 100, gap: 16 }}>
-          {result.map((workout, wi) => (
-            <Animated.View
-              key={wi}
-              entering={FadeInDown.delay(wi * 100).duration(300)}
-              style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-            >
-              <Text style={[s.resultCardTitle, { color: C.foreground }]}>{workout.name}</Text>
-              <Text style={[s.resultCardSub, { color: C.mutedFg }]}>
-                {workout.exercises.length} exercises
-              </Text>
-              {workout.exercises.map((ex, ei) => (
-                <View key={ei} style={[s.resultExRow, { borderColor: C.borderSubtle }]}>
-                  <Text style={[s.resultExName, { color: C.foreground }]}>{ex.name}</Text>
-                  <Text style={[s.resultExDetail, { color: C.mutedFg }]}>
-                    {ex.sets}x{ex.reps} · {ex.rest}
+        <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
+          {/* Plan header + plan-level rationale (the "why" for the whole program) */}
+          <Animated.View
+            entering={FadeInDown.duration(300)}
+            style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+          >
+            <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.name}</Text>
+            {(result.split_type || result.days_per_week) && (
+              <View style={s.planMetaRow}>
+                {result.split_type && (
+                  <Text style={[s.planMetaText, { color: C.accentText }]}>{result.split_type}</Text>
+                )}
+                {result.split_type && result.days_per_week && (
+                  <Text style={[s.planMetaText, { color: C.mutedFg }]}>·</Text>
+                )}
+                {result.days_per_week && (
+                  <Text style={[s.planMetaText, { color: C.mutedFg }]}>
+                    {result.days_per_week} day{result.days_per_week === 1 ? '' : 's'}/week
                   </Text>
+                )}
+              </View>
+            )}
+            {result.rationale && (
+              <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
+                <View style={s.rationaleHeader}>
+                  <Feather name="zap" size={11} color={C.accentText} />
+                  <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
                 </View>
-              ))}
-            </Animated.View>
+                <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
+              </View>
+            )}
+          </Animated.View>
+
+          {/* Per-day workout cards — rationale is plan-level, so suppress here */}
+          {result.workouts.map((workout, wi) => (
+            <WorkoutCard
+              key={wi}
+              workout={workout}
+              workoutNote={workout.note}
+              showRationale={false}
+              animated
+              delayMs={(wi + 1) * 80}
+            />
           ))}
+
+          {errorText && (
+            <View style={[s.errorBanner, { backgroundColor: C.muted }]}>
+              <Feather name="alert-circle" size={14} color={C.textMuted} />
+              <Text style={[s.errorBannerText, { color: C.mutedFg }]}>{errorText}</Text>
+            </View>
+          )}
         </ScrollView>
-        <View style={[s.resultActions, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
+
+        <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
+          <View style={[s.refineInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+            <Feather name="message-circle" size={14} color={C.textMuted} style={{ marginLeft: 4, marginBottom: 10 }} />
+            <TextInput
+              value={refineInput}
+              onChangeText={setRefineInput}
+              placeholder={refining ? 'Refining…' : 'Refine: e.g. "drop to 3 days" or "more pulling"'}
+              placeholderTextColor={C.textMuted}
+              style={[s.refineInput, { color: C.foreground }]}
+              multiline
+              maxLength={300}
+              editable={!refining}
+              onSubmitEditing={handleRefine}
+              blurOnSubmit
+            />
+            <TouchableOpacity
+              onPress={handleRefine}
+              disabled={!refineInput.trim() || refining}
+              style={[
+                s.sendBtn,
+                {
+                  backgroundColor: refineInput.trim() && !refining ? Colors.primary : C.muted,
+                  marginBottom: 2,
+                },
+              ]}
+            >
+              {refining ? (
+                <ActivityIndicator size="small" color={C.textMuted} />
+              ) : (
+                <Feather name="send" size={14} color={refineInput.trim() ? Colors.primaryFg : C.textMuted} />
+              )}
+            </TouchableOpacity>
+          </View>
           <TouchableOpacity
-            onPress={() => onSaveRoutines(result)}
-            style={[s.primaryBtn]}
+            onPress={() => onSaveRoutines(result.workouts)}
+            disabled={refining}
+            style={[s.primaryBtn, refining && { opacity: 0.6 }]}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
             <Text style={s.primaryBtnText}>Save All Routines</Text>
           </TouchableOpacity>
         </View>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ── Loading state (first generation only — refinement shows over the card)
+  if (loading) {
+    return (
+      <View style={{ flex: 1 }}>
+        <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
+          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+            <Feather name="arrow-left" size={16} color={C.foreground} />
+          </TouchableOpacity>
+          <SparkleIcon size={16} color={C.accentText} />
+          <Text style={[s.screenTitle, { color: C.foreground }]}>Generating…</Text>
+        </View>
+        <View style={s.loadingWrap}>
+          <ActivityIndicator size="small" color={C.accentText} />
+          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach is designing your plan</Text>
+          <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
+            {coachIntent || 'Reviewing your training history and matching split, volume, and progression…'}
+          </Text>
+        </View>
       </View>
     );
   }
 
+  // ── Form ────────────────────────────────────────────────────────────────
   return (
     <View style={{ flex: 1 }}>
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
@@ -1067,20 +1348,21 @@ function GeneratePlanScreen({
           </View>
         </View>
 
+        {errorText && (
+          <View style={[s.errorBanner, { backgroundColor: C.muted }]}>
+            <Feather name="alert-circle" size={14} color={C.textMuted} />
+            <Text style={[s.errorBannerText, { color: C.mutedFg }]}>{errorText}</Text>
+          </View>
+        )}
+
         {/* Generate button */}
         <TouchableOpacity
           onPress={handleGenerate}
           disabled={loading}
-          style={[s.primaryBtn, loading && { opacity: 0.7 }]}
+          style={[s.primaryBtn]}
         >
-          {loading ? (
-            <ActivityIndicator size="small" color={Colors.primaryFg} />
-          ) : (
-            <>
-              <SparkleIcon size={16} color={Colors.primaryFg} />
-              <Text style={s.primaryBtnText}>Generate Plan</Text>
-            </>
-          )}
+          <SparkleIcon size={16} color={Colors.primaryFg} />
+          <Text style={s.primaryBtnText}>Generate Plan</Text>
         </TouchableOpacity>
 
         {/* Chat alternative */}
@@ -1107,7 +1389,6 @@ function GenerateWorkoutScreen({
   onSaveRoutine: (workout: GeneratedWorkout) => void;
 }) {
   const { C } = useTheme();
-  const supabase = useSupabaseClient();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
   const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
@@ -1116,18 +1397,28 @@ function GenerateWorkoutScreen({
   const [duration, setDuration] = useState('45 min');
   const [equipment, setEquipment] = useState('Full Gym');
   const [loading, setLoading] = useState(false);
-  const [streamingText, setStreamingText] = useState('');
+  const [refining, setRefining] = useState(false);
+  const [coachIntent, setCoachIntent] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedWorkout | null>(null);
+  const [refineInput, setRefineInput] = useState('');
+  // Conversation history (carries across refinements). A ref so async
+  // streaming callbacks read the latest value without re-binding on each turn.
+  const conversationRef = useRef<{ role: string; content: string }[]>([]);
 
-  const handleGenerate = async () => {
-    setLoading(true);
+  const buildInitialPrompt = () =>
+    `Design a workout for me. Focus: ${focus || 'full body'}. Time available: ${duration}. Equipment: ${equipment}. Use my training data (volume trends, recent workouts, PRs) and pick exercises that fit my goal and experience. Add per-exercise notes for form, intent, or RIR cues. Before calling generate_workout, write one short sentence (5-15 words) signaling your intent.`;
+
+  const runGeneration = async (
+    conversation: { role: string; content: string }[],
+    isRefine: boolean,
+  ) => {
     setErrorText(null);
-    setStreamingText('');
-    const userMsg = `Design a workout for me. Focus: ${focus || 'full body'}. Time available: ${duration}. Equipment: ${equipment}. Use my training data (volume trends, recent workouts, PRs) and pick exercises that fit my goal and experience. Before calling generate_workout, write one short sentence signaling your intent.`;
+    setCoachIntent('');
+    if (isRefine) setRefining(true);
+    else setLoading(true);
 
-    // Guest fallback (no Supabase / no Clerk): keep a minimal mock so the UI
-    // is still demoable without a real backend.
+    // Guest fallback: minimal mock so the UI demos without a real backend.
     if (!isSupabaseConfigured || !getToken) {
       setTimeout(() => {
         setResult({
@@ -1141,138 +1432,174 @@ function GenerateWorkoutScreen({
           ],
         });
         setLoading(false);
+        setRefining(false);
       }, 600);
       return;
     }
 
     let token: string | null = null;
-    try { token = await getToken(); } catch { token = null; }
+    try { token = await getToken!(); } catch { token = null; }
     if (!token) {
       setErrorText('Not signed in. Please sign in again.');
       setLoading(false);
+      setRefining(false);
       return;
     }
 
     callAICoachStreaming(
-      [{ role: 'user', content: userMsg }],
+      conversation,
       token,
       {
-        onDelta: (chunk) => setStreamingText(prev => prev + chunk),
+        onDelta: (chunk) => setCoachIntent((prev) => prev + chunk),
         onStructured: ({ name, input }) => {
           if (name === 'generate_workout') {
-            setResult(structuredToWorkout(input));
+            const w = structuredToWorkout(input);
+            setResult(w);
+            // Snapshot conversation context for the next refinement turn
+            conversationRef.current = [
+              ...conversation,
+              { role: 'assistant', content: workoutToText(w) },
+            ];
             setLoading(false);
+            setRefining(false);
           }
         },
         onDone: ({ structured }) => {
-          // Defensive: if 'structured' SSE event was missed but it's in done
-          if (!result && structured?.name === 'generate_workout') {
-            setResult(structuredToWorkout(structured.input));
+          // Defensive: if the live 'structured' event was missed
+          if (structured?.name === 'generate_workout') {
+            const w = structuredToWorkout(structured.input);
+            setResult((cur) => cur ?? w);
+            if (!result) {
+              conversationRef.current = [
+                ...conversation,
+                { role: 'assistant', content: workoutToText(w) },
+              ];
+            }
           }
           setLoading(false);
+          setRefining(false);
         },
         onError: (err) => {
           setErrorText(err);
           setLoading(false);
+          setRefining(false);
         },
       },
       { forceTool: 'generate_workout' },
     );
-    return;
-    // Mock structured data
-    const focusLower = focus.toLowerCase();
-    let mockWorkout: GeneratedWorkout;
-    if (focusLower.includes('push') || focusLower.includes('chest')) {
-      mockWorkout = {
-        name: focus || 'Push Day',
-        exercises: [
-          { name: 'Bench Press', sets: 4, reps: '8-10', rest: '90s' },
-          { name: 'Overhead Press', sets: 3, reps: '8-12', rest: '90s' },
-          { name: 'Incline Dumbbell Press', sets: 3, reps: '10-12', rest: '60s' },
-          { name: 'Cable Flyes', sets: 3, reps: '12-15', rest: '60s' },
-          { name: 'Tricep Dips', sets: 3, reps: '10-12', rest: '60s' },
-        ],
-      };
-    } else if (focusLower.includes('pull') || focusLower.includes('back')) {
-      mockWorkout = {
-        name: focus || 'Pull Day',
-        exercises: [
-          { name: 'Deadlift', sets: 4, reps: '5-6', rest: '120s' },
-          { name: 'Barbell Rows', sets: 4, reps: '8-10', rest: '90s' },
-          { name: 'Pull-Ups', sets: 3, reps: '8-12', rest: '90s' },
-          { name: 'Face Pulls', sets: 3, reps: '12-15', rest: '60s' },
-          { name: 'Barbell Curls', sets: 3, reps: '10-12', rest: '60s' },
-        ],
-      };
-    } else if (focusLower.includes('leg')) {
-      mockWorkout = {
-        name: focus || 'Leg Day',
-        exercises: [
-          { name: 'Squats', sets: 4, reps: '6-8', rest: '120s' },
-          { name: 'Romanian Deadlift', sets: 3, reps: '8-10', rest: '90s' },
-          { name: 'Leg Press', sets: 3, reps: '10-12', rest: '90s' },
-          { name: 'Leg Curls', sets: 3, reps: '12-15', rest: '60s' },
-          { name: 'Calf Raises', sets: 4, reps: '12-15', rest: '60s' },
-        ],
-      };
-    } else {
-      mockWorkout = {
-        name: focus || 'Full Body',
-        exercises: [
-          { name: 'Squats', sets: 4, reps: '6-8', rest: '120s' },
-          { name: 'Bench Press', sets: 4, reps: '8-10', rest: '90s' },
-          { name: 'Barbell Rows', sets: 4, reps: '8-10', rest: '90s' },
-          { name: 'Overhead Press', sets: 3, reps: '8-12', rest: '60s' },
-          { name: 'Pull-Ups', sets: 3, reps: '8-12', rest: '60s' },
-        ],
-      };
-    }
-    setResult(mockWorkout);
-    setLoading(false);
   };
 
+  const handleGenerate = async () => {
+    const prompt = buildInitialPrompt();
+    conversationRef.current = [{ role: 'user', content: prompt }];
+    await runGeneration(conversationRef.current, false);
+  };
+
+  const handleRefine = async () => {
+    const text = refineInput.trim();
+    if (!text || refining || loading) return;
+    setRefineInput('');
+    const next = [...conversationRef.current, { role: 'user', content: text }];
+    conversationRef.current = next;
+    await runGeneration(next, true);
+  };
+
+  // ── Result view ─────────────────────────────────────────────────────────
   if (result) {
     return (
-      <View style={{ flex: 1 }}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}
+      >
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-          <TouchableOpacity onPress={() => setResult(null)} style={[s.backBtn, { backgroundColor: C.muted }]}>
+          <TouchableOpacity
+            onPress={() => { setResult(null); conversationRef.current = []; }}
+            style={[s.backBtn, { backgroundColor: C.muted }]}
+          >
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
           <SparkleIcon size={16} color={C.accentText} />
           <Text style={[s.screenTitle, { color: C.foreground }]}>Your Workout</Text>
         </View>
-        <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 100, gap: 16 }}>
-          <Animated.View
-            entering={FadeInDown.duration(300)}
-            style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-          >
-            <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.name}</Text>
-            <Text style={[s.resultCardSub, { color: C.mutedFg }]}>
-              {result.exercises.length} exercises
-            </Text>
-            {result.exercises.map((ex, ei) => (
-              <View key={ei} style={[s.resultExRow, { borderColor: C.borderSubtle }]}>
-                <Text style={[s.resultExName, { color: C.foreground }]}>{ex.name}</Text>
-                <Text style={[s.resultExDetail, { color: C.mutedFg }]}>
-                  {ex.sets}x{ex.reps} · {ex.rest}
-                </Text>
-              </View>
-            ))}
-          </Animated.View>
+        <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
+          <WorkoutCard workout={result} animated />
+          {errorText && (
+            <View style={[s.errorBanner, { backgroundColor: C.muted }]}>
+              <Feather name="alert-circle" size={14} color={C.textMuted} />
+              <Text style={[s.errorBannerText, { color: C.mutedFg }]}>{errorText}</Text>
+            </View>
+          )}
         </ScrollView>
-        <View style={[s.resultActions, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
+
+        <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
+          <View style={[s.refineInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+            <Feather name="message-circle" size={14} color={C.textMuted} style={{ marginLeft: 4, marginBottom: 10 }} />
+            <TextInput
+              value={refineInput}
+              onChangeText={setRefineInput}
+              placeholder={refining ? 'Refining…' : 'Refine: e.g. "swap squat for hack squat" or "shorter"'}
+              placeholderTextColor={C.textMuted}
+              style={[s.refineInput, { color: C.foreground }]}
+              multiline
+              maxLength={300}
+              editable={!refining}
+              onSubmitEditing={handleRefine}
+              blurOnSubmit
+            />
+            <TouchableOpacity
+              onPress={handleRefine}
+              disabled={!refineInput.trim() || refining}
+              style={[
+                s.sendBtn,
+                {
+                  backgroundColor: refineInput.trim() && !refining ? Colors.primary : C.muted,
+                  marginBottom: 2,
+                },
+              ]}
+            >
+              {refining ? (
+                <ActivityIndicator size="small" color={C.textMuted} />
+              ) : (
+                <Feather name="send" size={14} color={refineInput.trim() ? Colors.primaryFg : C.textMuted} />
+              )}
+            </TouchableOpacity>
+          </View>
           <TouchableOpacity
             onPress={() => onSaveRoutine(result)}
-            style={[s.primaryBtn]}
+            disabled={refining}
+            style={[s.primaryBtn, refining && { opacity: 0.6 }]}
           >
             <Feather name="check" size={16} color={Colors.primaryFg} />
             <Text style={s.primaryBtnText}>Save as Routine</Text>
           </TouchableOpacity>
         </View>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ── Loading state ───────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <View style={{ flex: 1 }}>
+        <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
+          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+            <Feather name="arrow-left" size={16} color={C.foreground} />
+          </TouchableOpacity>
+          <SparkleIcon size={16} color={C.accentText} />
+          <Text style={[s.screenTitle, { color: C.foreground }]}>Generating…</Text>
+        </View>
+        <View style={s.loadingWrap}>
+          <ActivityIndicator size="small" color={C.accentText} />
+          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach is designing your workout</Text>
+          <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
+            {coachIntent || 'Pulling your training data and matching exercises…'}
+          </Text>
+        </View>
       </View>
     );
   }
 
+  // ── Form ────────────────────────────────────────────────────────────────
   return (
     <View style={{ flex: 1 }}>
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
@@ -1337,20 +1664,21 @@ function GenerateWorkoutScreen({
           </View>
         </View>
 
+        {errorText && (
+          <View style={[s.errorBanner, { backgroundColor: C.muted }]}>
+            <Feather name="alert-circle" size={14} color={C.textMuted} />
+            <Text style={[s.errorBannerText, { color: C.mutedFg }]}>{errorText}</Text>
+          </View>
+        )}
+
         {/* Generate button */}
         <TouchableOpacity
           onPress={handleGenerate}
           disabled={loading}
-          style={[s.primaryBtn, loading && { opacity: 0.7 }]}
+          style={[s.primaryBtn]}
         >
-          {loading ? (
-            <ActivityIndicator size="small" color={Colors.primaryFg} />
-          ) : (
-            <>
-              <SparkleIcon size={16} color={Colors.primaryFg} />
-              <Text style={s.primaryBtnText}>Generate Workout</Text>
-            </>
-          )}
+          <SparkleIcon size={16} color={Colors.primaryFg} />
+          <Text style={s.primaryBtnText}>Generate Workout</Text>
         </TouchableOpacity>
 
         {/* Chat alternative */}
@@ -1468,6 +1796,9 @@ export function AICoachModal({
           reps_max: repsArr[1] || repsArr[0] || 12,
           rest_seconds: parseInt(ex.rest) || 60,
           order: i,
+          // Phase 2.5: persist the coach's per-exercise cue (e.g. "RIR 2",
+          // "Hams-focused"). Routines created via the editor don't set this.
+          note: ex.note ?? null,
         });
       }
     }
@@ -1484,57 +1815,67 @@ export function AICoachModal({
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
-      <Pressable
-        style={[s.backdrop, { backgroundColor: C.overlay }]}
-        onPress={screen === 'menu' ? handleClose : undefined}
-      >
+      {/*
+        Backdrop layout: a flex column that pushes the modal sheet to the
+        bottom. The top ~8% is a separate Pressable that handles the
+        "tap-to-close" affordance (menu screen only). The modal sheet itself
+        is a plain View — NOTHING wraps the screen content, so ScrollViews
+        inside (chat history, workout/plan result) receive pan gestures
+        without an outer Pressable competing for the touch responder.
+        (Previously a `<Pressable style={{flex:1}}>` wrapped the screens to
+        block taps from bubbling to the backdrop Pressable, but that's what
+        was eating scroll-from-the-middle gestures.)
+      */}
+      <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
+        <Pressable
+          style={{ flex: 1 }}
+          onPress={screen === 'menu' ? handleClose : undefined}
+        />
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
           style={[s.modalContainer, { backgroundColor: C.background }]}
         >
-          <Pressable style={{ flex: 1 }}>
-            {/* Close/handle for menu */}
-            {screen === 'menu' && (
-              <View style={s.menuHeader}>
-                <TouchableOpacity
-                  onPress={handleClose}
-                  style={[s.closeCircle, { backgroundColor: C.muted }]}
-                >
-                  <Feather name="x" size={16} color={C.foreground} />
-                </TouchableOpacity>
-                <View style={s.menuHeaderTitle}>
-                  <SparkleIcon size={16} color={C.accentText} />
-                  <Text style={[s.menuHeaderText, { color: C.foreground }]}>AI Coach</Text>
-                </View>
-                <View style={{ width: 32 }} />
+          {/* Close/handle for menu */}
+          {screen === 'menu' && (
+            <View style={s.menuHeader}>
+              <TouchableOpacity
+                onPress={handleClose}
+                style={[s.closeCircle, { backgroundColor: C.muted }]}
+              >
+                <Feather name="x" size={16} color={C.foreground} />
+              </TouchableOpacity>
+              <View style={s.menuHeaderTitle}>
+                <SparkleIcon size={16} color={C.accentText} />
+                <Text style={[s.menuHeaderText, { color: C.foreground }]}>AI Coach</Text>
               </View>
-            )}
+              <View style={{ width: 32 }} />
+            </View>
+          )}
 
-            {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
-            {screen === 'chat' && (
-              <ChatScreen
-                onBack={() => setScreen('menu')}
-                onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
-              />
-            )}
-            {screen === 'plan' && (
-              <GeneratePlanScreen
-                onBack={() => setScreen('menu')}
-                onChatWithCoach={() => setScreen('chat')}
-                onSaveRoutines={handleSaveRoutines}
-              />
-            )}
-            {screen === 'workout' && (
-              <GenerateWorkoutScreen
-                onBack={() => setScreen('menu')}
-                onChatWithCoach={() => setScreen('chat')}
-                onSaveRoutine={handleSaveRoutine}
-              />
-            )}
-          </Pressable>
+          {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
+          {screen === 'chat' && (
+            <ChatScreen
+              onBack={() => setScreen('menu')}
+              onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
+            />
+          )}
+          {screen === 'plan' && (
+            <GeneratePlanScreen
+              onBack={() => setScreen('menu')}
+              onChatWithCoach={() => setScreen('chat')}
+              onSaveRoutines={handleSaveRoutines}
+            />
+          )}
+          {screen === 'workout' && (
+            <GenerateWorkoutScreen
+              onBack={() => setScreen('menu')}
+              onChatWithCoach={() => setScreen('chat')}
+              onSaveRoutine={handleSaveRoutine}
+            />
+          )}
         </Animated.View>
-      </Pressable>
+      </View>
     </Modal>
   );
 }
@@ -1913,5 +2254,118 @@ const s = StyleSheet.create({
     paddingVertical: Spacing.lg,
     paddingBottom: 40,
     borderTopWidth: 1,
+  },
+
+  // ── Phase 2.5: generated card extras (rationale callout, exercise notes,
+  //              refine chat strip, loading + error states) ────────────────
+  resultCardFocus: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
+    marginBottom: 2,
+  },
+  resultExRowOuter: {
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    gap: 4,
+  },
+  resultExRowTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  resultExNote: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    lineHeight: 14,
+  },
+  rationaleCallout: {
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    gap: 6,
+  },
+  rationaleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  rationaleHeaderText: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.8,
+  },
+  rationaleText: {
+    fontSize: FontSize.sm,
+    lineHeight: 18,
+  },
+  workoutNoteCaption: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    marginBottom: 4,
+  },
+  planMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+    marginBottom: Spacing.sm,
+  },
+  planMetaText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
+  },
+  refineWrap: {
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.md,
+    paddingBottom: 30,
+    borderTopWidth: 1,
+    gap: 10,
+  },
+  refineInputBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: Radius.xl,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  refineInput: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    maxHeight: 80,
+    paddingVertical: 6,
+  },
+  loadingWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.xl,
+    gap: Spacing.md,
+  },
+  loadingHeader: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+  },
+  loadingIntent: {
+    fontSize: FontSize.sm,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    maxWidth: 280,
+    lineHeight: 18,
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 10,
+    borderRadius: Radius.md,
+  },
+  errorBannerText: {
+    fontSize: FontSize.sm,
+    flex: 1,
   },
 });

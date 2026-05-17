@@ -66,7 +66,12 @@ create table if not exists routine_exercises (
   reps_min integer not null default 8,
   reps_max integer not null default 12,
   rest_seconds integer not null default 90,
-  "order" integer not null default 0
+  "order" integer not null default 0,
+  -- Phase 2.5: per-exercise coach cue. Populated when the AI Coach's
+  -- generate_workout / generate_plan tool emits a `note` for the exercise
+  -- (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Nullable —
+  -- hand-built routines from the editor don't set this.
+  note text
 );
 
 -- ─── Workouts ───────────────────────────────────────────────────────────────

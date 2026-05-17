@@ -45,6 +45,9 @@ interface RoutineExerciseRaw {
   reps_max: number;
   rest_seconds: number;
   order: number;
+  // Phase 2.5: AI-generated routines carry the coach's per-exercise cue.
+  // Optional — null/missing on editor-built routines.
+  note?: string | null;
   exercises: {
     id: string;
     name: string;
@@ -256,6 +259,11 @@ function RoutineDetailSheet({
                     <Text style={[styles.detailExMeta, { color: C.textMuted }]}>
                       {re.sets} sets · {re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · {re.rest_seconds}s rest
                     </Text>
+                    {re.note ? (
+                      <Text style={[styles.detailExNote, { color: C.accentText }]} numberOfLines={3}>
+                        {re.note}
+                      </Text>
+                    ) : null}
                   </View>
                   {re.exercises?.muscle_group ? (
                     <View style={[styles.detailExBadge, { backgroundColor: C.muted }]}>
@@ -1786,6 +1794,12 @@ const styles = StyleSheet.create({
   detailExMeta: {
     fontSize: FontSize.xs,
     marginTop: 2,
+  },
+  detailExNote: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    marginTop: 4,
+    lineHeight: 14,
   },
   detailExBadge: {
     paddingHorizontal: 8,
