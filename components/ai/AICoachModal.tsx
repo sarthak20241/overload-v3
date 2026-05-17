@@ -711,6 +711,16 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  // Tracks the in-flight stream so we can abort it on screen dismiss /
+  // unmount and avoid late callbacks firing into an unmounted component
+  // (also stops burning Anthropic tokens after the user has left).
+  const streamRef = useRef<{ abort: () => void } | null>(null);
+  useEffect(() => {
+    return () => {
+      streamRef.current?.abort();
+      streamRef.current = null;
+    };
+  }, []);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -731,10 +741,17 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
 
     const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
 
-    // Guest mode (no Supabase, no Clerk): keep the synchronous mock path.
+    // Demo / fallback path: hit only when the live coach is unreachable.
+    //   - !isSupabaseConfigured: guest/demo build, no backend at all.
+    //   - !getToken: Supabase is configured but Clerk isn't (or user is
+    //     signed out). The edge function would 401 on us, so use the mock
+    //     directly instead of letting callAICoach surface an
+    //     AICoachUnavailableError to the user.
     if (!isSupabaseConfigured || !getToken) {
       try {
-        const reply = await callAICoach(allMessages, supabase);
+        const reply = !getToken
+          ? { text: getMockResponse(text), citations: [] as Citation[] }
+          : await callAICoach(allMessages, supabase);
         setMessages(prev => prev.map(m =>
           m.id === assistantId
             ? { ...m, content: reply.text, citations: reply.citations.length > 0 ? reply.citations : undefined }
@@ -761,12 +778,18 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
       return;
     }
 
+    // Abort any prior in-flight stream before starting a new one — the
+    // user-facing guard above prevents this in practice (loading=true
+    // disables the send button), but cheap insurance against any future
+    // code path that lets a second send slip through.
+    streamRef.current?.abort();
+
     // Typewriter buffer — decouples server arrival from UI display so even
     // if the server delivers in chunky bursts the user sees smooth typing.
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
     const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
-    callAICoachStreaming(allMessages, token, {
+    streamRef.current = callAICoachStreaming(allMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
       onStatus: (phase, payload) => {
         // Translate server phase tokens into friendly UI labels. The labels
@@ -798,11 +821,13 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
               : m
           ));
           setLoading(false);
+          streamRef.current = null;
         });
       },
       onError: (errStr) => {
         typewriter.fail(`AI Coach error: ${errStr}`);
         setLoading(false);
+        streamRef.current = null;
       },
     });
   }, [input, loading, messages, supabase, getToken]);
@@ -1028,6 +1053,16 @@ function GeneratePlanScreen({
   // Conversation history (carries across refinements). Stored in a ref so
   // mid-stream callbacks read the latest value without re-binding.
   const conversationRef = useRef<{ role: string; content: string }[]>([]);
+  // Abort handle for the in-flight stream. Cancelled on screen dismiss /
+  // unmount so a backgrounded request doesn't keep burning tokens and
+  // late callbacks don't land on an unmounted component.
+  const streamRef = useRef<{ abort: () => void } | null>(null);
+  useEffect(() => {
+    return () => {
+      streamRef.current?.abort();
+      streamRef.current = null;
+    };
+  }, []);
 
   const buildInitialPrompt = () =>
     `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
@@ -1081,46 +1116,61 @@ function GeneratePlanScreen({
       return;
     }
 
-    callAICoachStreaming(
+    // Per-invocation flag: did the live `structured` SSE event fire and
+    // get handled here, or did the stream end without it? Lets the onDone
+    // fallback know whether to ALSO write conversationRef. Using a
+    // closure variable instead of a ref because it's stream-scoped, not
+    // component-scoped — each runGeneration call gets its own.
+    let handledStructured = false;
+
+    // Cancel any prior stream before opening a new one. Belt-and-suspenders
+    // — `loading`/`refining` flags already gate the UI, but this prevents
+    // any future code path that bypasses them from leaking concurrent
+    // streams.
+    streamRef.current?.abort();
+    streamRef.current = callAICoachStreaming(
       conversation,
       token,
       {
         onDelta: (chunk) => setCoachIntent((prev) => prev + chunk),
         onStructured: ({ name, input }) => {
           if (name === 'generate_plan') {
+            handledStructured = true;
             const p = structuredToPlan(input);
             setResult(p);
             conversationRef.current = [
               ...conversation,
               { role: 'assistant', content: planToText(p) },
             ];
-            // Do NOT clear loading/refining here — `structured` arrives
-            // BEFORE the stream's `done` event. If we flipped flags now,
-            // the user could submit a refinement while the prior stream
-            // is still finalizing, and the late onDone/onError callbacks
-            // would land on the wrong result. Let onDone own the
-            // "stream truly finished" signal.
+            // Loading/refining flags stay set until `done` — `structured`
+            // arrives before stream finalization, so flipping flags here
+            // would let a quick second refine overlap streams.
           }
         },
         onDone: ({ structured }) => {
-          // Defensive fallback if 'structured' SSE event was missed
-          if (structured?.name === 'generate_plan') {
+          // Defensive fallback if the live `structured` event was missed
+          // (e.g. mid-stream reconnect). The previous version checked
+          // `!result` from the closure, which is stale on refine turns
+          // (already truthy) — so the card updated but conversationRef
+          // silently stayed on the previous plan, sending stale context
+          // on the next refine. Use the per-call flag instead.
+          if (!handledStructured && structured?.name === 'generate_plan') {
             const p = structuredToPlan(structured.input);
-            setResult((cur) => cur ?? p);
-            if (!result) {
-              conversationRef.current = [
-                ...conversation,
-                { role: 'assistant', content: planToText(p) },
-              ];
-            }
+            setResult(p);
+            conversationRef.current = [
+              ...conversation,
+              { role: 'assistant', content: planToText(p) },
+            ];
           }
           setLoading(false);
           setRefining(false);
+          streamRef.current = null;
         },
         onError: (err) => {
           setErrorText(err);
           setLoading(false);
           setRefining(false);
+          streamRef.current = null;
         },
       },
       { forceTool: 'generate_plan' },
@@ -1409,6 +1459,15 @@ function GenerateWorkoutScreen({
   // Conversation history (carries across refinements). A ref so async
   // streaming callbacks read the latest value without re-binding on each turn.
   const conversationRef = useRef<{ role: string; content: string }[]>([]);
+  // See the matching block in GeneratePlanScreen — abort handle for the
+  // in-flight stream, cancelled on unmount / dismiss.
+  const streamRef = useRef<{ abort: () => void } | null>(null);
+  useEffect(() => {
+    return () => {
+      streamRef.current?.abort();
+      streamRef.current = null;
+    };
+  }, []);
 
   const buildInitialPrompt = () =>
     `Design a workout for me. Focus: ${focus || 'full body'}. Time available: ${duration}. Equipment: ${equipment}. Use my training data (volume trends, recent workouts, PRs) and pick exercises that fit my goal and experience. Add per-exercise notes for form, intent, or RIR cues. Before calling generate_workout, write one short sentence (5-15 words) signaling your intent.`;
@@ -1450,44 +1509,49 @@ function GenerateWorkoutScreen({
       return;
     }
 
-    callAICoachStreaming(
+    // Same per-invocation flag + abort discipline as GeneratePlanScreen.
+    let handledStructured = false;
+    streamRef.current?.abort();
+    streamRef.current = callAICoachStreaming(
       conversation,
       token,
       {
         onDelta: (chunk) => setCoachIntent((prev) => prev + chunk),
         onStructured: ({ name, input }) => {
           if (name === 'generate_workout') {
+            handledStructured = true;
             const w = structuredToWorkout(input);
             setResult(w);
-            // Snapshot conversation context for the next refinement turn
             conversationRef.current = [
               ...conversation,
               { role: 'assistant', content: workoutToText(w) },
             ];
-            // Loading/refining flags stay set until `done` — see the
-            // matching note on the plan screen for why. tl;dr: prevents
-            // overlapping streams from a quick second submit.
+            // Flags stay set until `done` — see GeneratePlanScreen for the
+            // overlapping-stream reasoning.
           }
         },
         onDone: ({ structured }) => {
-          // Defensive: if the live 'structured' event was missed
-          if (structured?.name === 'generate_workout') {
+          // Defensive fallback if the live 'structured' event was missed.
+          // Use the per-call flag, NOT a stale `!result` closure (which is
+          // truthy on refine turns and would leave conversationRef pointed
+          // at the previous workout — next refine would send stale context).
+          if (!handledStructured && structured?.name === 'generate_workout') {
             const w = structuredToWorkout(structured.input);
-            setResult((cur) => cur ?? w);
-            if (!result) {
-              conversationRef.current = [
-                ...conversation,
-                { role: 'assistant', content: workoutToText(w) },
-              ];
-            }
+            setResult(w);
+            conversationRef.current = [
+              ...conversation,
+              { role: 'assistant', content: workoutToText(w) },
+            ];
           }
           setLoading(false);
           setRefining(false);
+          streamRef.current = null;
         },
         onError: (err) => {
           setErrorText(err);
           setLoading(false);
           setRefining(false);
+          streamRef.current = null;
         },
       },
       { forceTool: 'generate_workout' },
