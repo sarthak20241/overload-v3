@@ -66,8 +66,21 @@ create table if not exists routine_exercises (
   reps_min integer not null default 8,
   reps_max integer not null default 12,
   rest_seconds integer not null default 90,
-  "order" integer not null default 0
+  "order" integer not null default 0,
+  -- Phase 2.5: per-exercise coach cue. Populated when the AI Coach's
+  -- generate_workout / generate_plan tool emits a `note` for the exercise
+  -- (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Nullable —
+  -- hand-built routines from the editor don't set this.
+  note text
 );
+
+-- Idempotent re-apply: the column above is INSIDE the create-if-not-exists
+-- block, so on databases where routine_exercises already existed (any
+-- deployment past 0001) the column wouldn't be added by re-running this
+-- file. Mirror the column with an explicit ALTER so schema.sql stays
+-- safely runnable on existing databases.
+alter table routine_exercises
+  add column if not exists note text;
 
 -- ─── Workouts ───────────────────────────────────────────────────────────────
 create table if not exists workouts (
@@ -255,7 +268,7 @@ create policy "exercises insert authenticated" on exercises
 
 -- Helper: read Clerk subject from the JWT. Named with `current_` prefix to
 -- avoid ambiguity with the `clerk_user_id` column on `user_profiles`.
-create or replace function current_current_clerk_user_id() returns text
+create or replace function current_clerk_user_id() returns text
 language sql stable as $$
   select coalesce(
     nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'sub', ''),
@@ -540,55 +553,20 @@ $$;
 revoke all on function get_user_coach_context() from public;
 grant execute on function get_user_coach_context() to authenticated;
 
--- ─── Rate Limiting (Phase 1) ────────────────────────────────────────────────
--- Per-user-per-minute counter for AI Coach calls. The edge function increments
--- this and rejects when the bucket exceeds the limit. Cheap, in-Postgres.
+-- ─── AI Coach Rate Limit (matches migration 0002_ai_coach_rate_limit.sql) ──
+-- Sliding-window log of AI Coach requests for per-user rate limiting.
+-- Touched only by the ai-coach Edge Function via the service role — clients
+-- cannot read/write because RLS is enabled with no policies.
 
-create table if not exists coach_rate_limits (
-  clerk_user_id text not null,
-  bucket timestamptz not null,         -- minute-truncated timestamp
-  count integer not null default 0,
-  primary key (clerk_user_id, bucket)
+create table if not exists ai_coach_rate_limit (
+  user_id text not null,
+  request_at timestamptz not null default now()
 );
 
--- Records older than 24h are noise. A small daily prune keeps the table tiny.
-create or replace function prune_coach_rate_limits() returns void
-language sql as $$
-  delete from coach_rate_limits where bucket < now() - interval '1 day';
-$$;
+create index if not exists idx_ai_coach_rl_recent
+  on ai_coach_rate_limit(user_id, request_at desc);
 
--- Increment-and-check used by the edge function. Returns the new count.
--- On exceeding `cap`, the function still returns the count so the caller can
--- decide whether to reject, but does NOT increment past it.
-create or replace function check_coach_rate_limit(cap integer default 10)
-returns integer
-language plpgsql
-security definer
-as $$
-declare
-  uid text := current_clerk_user_id();
-  current_bucket timestamptz := date_trunc('minute', now());
-  new_count integer;
-begin
-  if uid is null then
-    raise exception 'unauthenticated';
-  end if;
-
-  insert into coach_rate_limits (clerk_user_id, bucket, count)
-  values (uid, current_bucket, 1)
-  on conflict (clerk_user_id, bucket) do update
-    set count = case
-      when coach_rate_limits.count >= cap then coach_rate_limits.count
-      else coach_rate_limits.count + 1
-    end
-  returning count into new_count;
-
-  return new_count;
-end;
-$$;
-
-revoke all on function check_coach_rate_limit(integer) from public;
-grant execute on function check_coach_rate_limit(integer) to authenticated;
+alter table ai_coach_rate_limit enable row level security;
 
 -- ─── Seed: Common Exercises ─────────────────────────────────────────────────
 insert into exercises (name, muscle_group, category) values

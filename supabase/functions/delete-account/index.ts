@@ -1,12 +1,25 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 
-// Auth: relies on the gateway's JWT verification (Clerk via third-party auth).
-// Body is empty — the user being deleted is whoever's JWT is on the request.
+// Auth model: same as ai-coach. Supabase's third-party Clerk integration
+// doesn't extend to Edge Function gateway verify_jwt — Clerk JWTs that work
+// fine for PostgREST get rejected at the function gateway. We deploy with
+// `verify_jwt: false` and verify the Clerk JWT ourselves via Clerk's JWKS.
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLERK_SECRET_KEY = Deno.env.get("CLERK_SECRET_KEY");
+// Required. See ai-coach/index.ts for the rationale — a hardcoded dev-tenant
+// fallback would let a misconfigured deploy silently accept JWTs from someone
+// else's Clerk instance. Fail at module load.
+const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER");
+if (!CLERK_ISSUER) {
+  throw new Error(
+    "CLERK_ISSUER env var is required. Set it to your Clerk Frontend API URL " +
+    "(e.g. https://your-tenant.clerk.accounts.dev) in the Edge Function secrets.",
+  );
+}
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -21,23 +34,29 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function decodeJwtSub(authHeader: string | null): string | null {
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  const parts = authHeader.slice(7).split(".");
-  if (parts.length !== 3) return null;
+const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`));
+
+async function verifyClerkJwt(authHeader: string | null): Promise<{ sub: string | null; reason: string }> {
+  if (!authHeader) return { sub: null, reason: "no auth header" };
+  if (!authHeader.startsWith("Bearer ")) return { sub: null, reason: "no Bearer prefix" };
+  const token = authHeader.slice(7);
   try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return typeof payload.sub === "string" ? payload.sub : null;
-  } catch {
-    return null;
+    const { payload } = await jwtVerify(token, JWKS, { issuer: CLERK_ISSUER });
+    if (typeof payload.sub !== "string") return { sub: null, reason: "sub claim missing" };
+    return { sub: payload.sub, reason: "ok" };
+  } catch (e) {
+    return { sub: null, reason: `verify failed: ${(e as Error).message}` };
   }
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  const userId = decodeJwtSub(req.headers.get("Authorization"));
-  if (!userId) return jsonResponse({ error: "Unauthorized" }, 401);
+  const auth = await verifyClerkJwt(req.headers.get("Authorization"));
+  if (!auth.sub) {
+    return jsonResponse({ error: "Unauthorized", debug: auth.reason }, 401);
+  }
+  const userId = auth.sub;
 
   // All Supabase rows wiped in one transaction via the SECURITY DEFINER RPC.
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
@@ -47,7 +66,7 @@ Deno.serve(async (req) => {
   if (rpcErr) {
     return jsonResponse(
       { error: "Database deletion failed", details: rpcErr.message },
-      500
+      500,
     );
   }
 

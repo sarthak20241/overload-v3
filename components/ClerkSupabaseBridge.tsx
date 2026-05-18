@@ -4,13 +4,13 @@
  *
  * Renders nothing. Mount once inside <ClerkProvider> at the root layout.
  *
- * Required Clerk dashboard setup:
- *   JWT Templates -> New template -> name: "supabase"
- *   Signing key: same Supabase JWT secret (Project Settings -> API -> JWT Secret)
- *   Claims: { "sub": "{{user.id}}" }
+ * Required setup:
+ *   Supabase Dashboard -> Authentication -> Third-Party Auth -> Add Clerk
  *
- * Without that template, getToken({template:'supabase'}) returns null and the
- * client falls back to the anon key — RLS will then block all per-user reads.
+ * That integration teaches PostgREST and the edge functions' JWKS verifier
+ * to trust Clerk's RS256 session tokens directly. We pass Clerk's NATIVE
+ * session JWT (no template) — NOT the legacy `template: 'supabase'` HS256
+ * token, which wouldn't verify against Clerk's JWKS.
  */
 import { useEffect } from 'react';
 import { setSupabaseTokenGetter } from '@/lib/supabase';
@@ -29,7 +29,7 @@ export function ClerkSupabaseBridge() {
     }
     setSupabaseTokenGetter(async () => {
       try {
-        return (await getToken({ template: 'supabase' })) ?? null;
+        return (await getToken()) ?? null;
       } catch {
         return null;
       }
