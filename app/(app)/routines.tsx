@@ -29,7 +29,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
-import { mockRoutines, getAllRoutines, addGuestRoutine } from '@/lib/mockData';
+import { mockRoutines, getAllRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -634,16 +634,24 @@ function RoutineEditorSheet({
           },
         };
       });
-      if (!editingId) {
-        addGuestRoutine({
-          id: routineId,
-          user_id: 'guest',
-          name: trimmedName,
-          description: trimmedDescription,
-          color: undefined as any,
-          created_at: new Date().toISOString(),
-          routine_exercises: routineExercises,
-        });
+      const guestRoutine = {
+        id: routineId,
+        user_id: 'guest',
+        name: trimmedName,
+        description: trimmedDescription,
+        color: undefined as any,
+        created_at: new Date().toISOString(),
+        routine_exercises: routineExercises,
+      };
+      if (editingId) {
+        // Try in-place update first; if the id belongs to a hardcoded mockRoutine
+        // (read-only sample data, updateGuestRoutine returns false), fall back
+        // to creating a new guest copy so the user's edits aren't silently lost.
+        if (!updateGuestRoutine(guestRoutine)) {
+          addGuestRoutine({ ...guestRoutine, id: `guest-r-${Date.now()}` });
+        }
+      } else {
+        addGuestRoutine(guestRoutine);
       }
       return;
     }
@@ -655,16 +663,20 @@ function RoutineEditorSheet({
         .eq('id', editingId);
       if (updErr) throw updErr;
 
-      await supabase
+      // Without this check a failed delete would silently leave stale
+      // routine_exercises attached, and the subsequent inserts below would
+      // result in duplicates rather than the user's intended edit.
+      const { error: delErr } = await supabase
         .from('routine_exercises')
         .delete()
         .eq('routine_id', editingId);
+      if (delErr) throw delErr;
 
       // Parallelize per-exercise: select-or-create + link insert.
       await Promise.all(validExercises.map(async (ex, i) => {
         const exerciseId = await findOrCreateExercise(ex);
         const [repsMin, repsMax] = parseReps(ex.targetReps);
-        await supabase.from('routine_exercises').insert({
+        const { error: insErr } = await supabase.from('routine_exercises').insert({
           routine_id: editingId,
           exercise_id: exerciseId,
           sets: ex.targetSets,
@@ -676,6 +688,7 @@ function RoutineEditorSheet({
           // routine and re-saving doesn't silently drop it.
           note: ex.notes?.trim() ? ex.notes.trim() : null,
         });
+        if (insErr) throw insErr;
       }));
     } else {
       const { data: routineData, error: routineErr } = await supabase
@@ -688,7 +701,7 @@ function RoutineEditorSheet({
       await Promise.all(validExercises.map(async (ex, i) => {
         const exerciseId = await findOrCreateExercise(ex);
         const [repsMin, repsMax] = parseReps(ex.targetReps);
-        await supabase.from('routine_exercises').insert({
+        const { error: insErr } = await supabase.from('routine_exercises').insert({
           routine_id: routineData.id,
           exercise_id: exerciseId,
           sets: ex.targetSets,
@@ -698,6 +711,7 @@ function RoutineEditorSheet({
           order: i,
           note: ex.notes?.trim() ? ex.notes.trim() : null,
         });
+        if (insErr) throw insErr;
       }));
     }
   };
@@ -1187,7 +1201,13 @@ export default function RoutinesScreen() {
     const previous = routines;
     setRoutines((prev) => prev.filter((r) => r.id !== id));
 
-    if (!isSupabaseConfigured) return;
+    if (!isSupabaseConfigured) {
+      // Persist the delete in the guest store so it stays gone after the next
+      // fetchRoutines() (which reads from getAllRoutines). Hardcoded
+      // mockRoutines return false here and aren't removable — that's by design.
+      removeGuestRoutine(id);
+      return;
+    }
 
     try {
       let q = supabase.from('routines').delete().eq('id', id);

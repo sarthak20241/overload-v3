@@ -14,7 +14,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { getMockWorkoutsForHistory } from '@/lib/mockData';
+import { getMockWorkoutsForHistory, removeGuestWorkout } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -563,7 +563,13 @@ export default function HistoryScreen() {
     const previous = workouts;
     setWorkouts((prev) => prev.filter((w) => w.id !== id));
 
-    if (!isSupabaseConfigured) return;
+    if (!isSupabaseConfigured) {
+      // Persist the delete in the guest store so it stays gone after the next
+      // fetchWorkouts() (which reads from getMockWorkoutsForHistory).
+      // Hardcoded sample workouts return false and aren't removable — by design.
+      removeGuestWorkout(id);
+      return;
+    }
 
     try {
       let q = supabase.from('workouts').delete().eq('id', id);

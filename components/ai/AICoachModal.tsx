@@ -1860,7 +1860,7 @@ export function AICoachModal({
       if (!exerciseId) return;
 
       const repsArr = ex.reps.split('-').map(Number);
-      await supabase.from('routine_exercises').insert({
+      const { error: linkErr } = await supabase.from('routine_exercises').insert({
         routine_id: routine.id,
         exercise_id: exerciseId,
         sets: ex.sets,
@@ -1873,6 +1873,7 @@ export function AICoachModal({
         // don't set this.
         note: ex.note ?? null,
       });
+      if (linkErr) throw linkErr;
     }));
   };
 
@@ -1901,16 +1902,24 @@ export function AICoachModal({
     inFlightRef.current = true;
     handleClose();
     (async () => {
+      // Track which item we're attempting so Retry resumes from the failure
+      // point instead of replaying earlier items that already committed —
+      // otherwise a failure on item N produces duplicates of 0..N-1 on retry.
+      let attemptingIndex = 0;
       try {
         for (let i = 0; i < workouts.length; i++) {
+          attemptingIndex = i;
           toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
           await insertRoutineToBackend(workouts[i]);
         }
         toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
         onRoutineCreated?.();
       } catch {
+        const remaining = workouts.slice(attemptingIndex);
+        // Refresh to surface whatever did save before the failure.
+        if (attemptingIndex > 0) onRoutineCreated?.();
         toast.error("Couldn't save all routines", {
-          action: { label: 'Retry', onPress: () => handleSaveRoutines(workouts) },
+          action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining) },
         });
       } finally {
         inFlightRef.current = false;

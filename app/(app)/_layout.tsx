@@ -45,11 +45,12 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   // leaving the sheet stuck at ~50% height with its X button clipped offscreen.
   // A manual shared-value translation is deterministic and immune to that race.
   useEffect(() => {
+    let rafId: number | null = null;
     if (visible) {
       setRender(true);
       translateY.value = sheetHeight;
       // Defer one frame so the Modal's native window is on screen before the slide.
-      requestAnimationFrame(() => {
+      rafId = requestAnimationFrame(() => {
         translateY.value = withTiming(0, {
           duration: 320,
           easing: Easing.out(Easing.cubic),
@@ -64,6 +65,12 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
         }
       );
     }
+    // Cancel the queued rAF if visible toggles before it fires — otherwise a
+    // fast open→close→open could trigger an entry animation after the exit
+    // animation has already started, making the sheet appear to bounce.
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
   }, [visible, sheetHeight]);
 
   const sheetAnimatedStyle = useAnimatedStyle(() => ({
