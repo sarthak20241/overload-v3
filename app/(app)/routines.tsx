@@ -1206,6 +1206,7 @@ export default function RoutinesScreen() {
       // fetchRoutines() (which reads from getAllRoutines). Hardcoded
       // mockRoutines return false here and aren't removable — that's by design.
       removeGuestRoutine(id);
+      toast.success(`Deleted “${target.name}”`);
       return;
     }
 

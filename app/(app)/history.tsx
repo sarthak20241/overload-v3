@@ -568,6 +568,7 @@ export default function HistoryScreen() {
       // fetchWorkouts() (which reads from getMockWorkoutsForHistory).
       // Hardcoded sample workouts return false and aren't removable — by design.
       removeGuestWorkout(id);
+      toast.success('Workout deleted');
       return;
     }
 
