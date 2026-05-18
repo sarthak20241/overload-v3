@@ -1,0 +1,107 @@
+name: Research Ingest
+
+# Phase 3 daily research ingestion. Pulls new papers from Europe PMC (and
+# later bioRxiv / SportRxiv), distills them via Haiku 4.5, embeds with
+# Voyage 3, and lands them in research_kb_pending for manual review.
+#
+# Schedule: 3am UTC daily (~8:30am IST). Output lands in research_kb_pending
+# where the admin dashboard surfaces it for review.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#
+#   ANTHROPIC_API_KEY          — claude.com console → API keys
+#   VOYAGE_API_KEY             — voyageai.com → dashboard → API keys
+#   SUPABASE_URL               — https://rjmmslierxhvwdjgjilb.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY  — Supabase dash → Settings → API → secret key
+#
+# Manual trigger: Actions tab → Research Ingest → Run workflow.
+
+on:
+  schedule:
+    # 3am UTC — quietest time on Anthropic / Voyage, lands before morning IST
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      max_papers:
+        description: 'Total papers budget for this run (split across topic plan)'
+        required: false
+        default: '20'
+      skip_topic_plan:
+        description: 'Skip the topic-driven plan and use the broad query only'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+# Don't let two runs overlap — they'd race on checkpoint updates and the
+# Voyage rate limiter doesn't share state across processes. cancel-in-
+# progress:false means a second trigger queues rather than killing the
+# already-running cron.
+concurrency:
+  group: research-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    # Hard cap. A 20-paper run takes ~8 min under Voyage's 3 RPM free tier;
+    # 30 min leaves headroom for retries and Haiku queue blips.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # Use npm ci against the committed lockfile for reproducible installs.
+        # tsx is a transitive dep (we invoke via `npx tsx` below) so no
+        # separate install needed.
+        run: npm ci
+
+      - name: Run ingestion
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Optional: bumps PubMed/Europe PMC rate cap from 3 → 10 req/s
+          PUBMED_CONTACT_EMAIL: ${{ secrets.PUBMED_CONTACT_EMAIL }}
+          MAX_PAPERS: ${{ github.event.inputs.max_papers || '20' }}
+          SKIP_TOPIC_PLAN: ${{ github.event.inputs.skip_topic_plan || 'false' }}
+        run: |
+          set -eo pipefail
+          ARGS="--max-papers=${MAX_PAPERS}"
+          if [ "${SKIP_TOPIC_PLAN}" = "true" ]; then
+            ARGS="${ARGS} --skip-topic-plan"
+          fi
+          echo "▶ Running: npx tsx tools/research-ingest/run.ts ${ARGS}"
+          npx tsx tools/research-ingest/run.ts ${ARGS}
+
+      - name: Summarize checkpoint state
+        # Always runs, even on ingestion failure. Prints the per-source
+        # checkpoint snapshot so we can see "did the cron actually advance
+        # the watermark?" without opening the Supabase dashboard.
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo ""
+          echo "═════ Checkpoint state after run ═════"
+          curl -s "${SUPABASE_URL}/rest/v1/ingest_checkpoints?select=source,last_pub_date,papers_fetched,papers_added,last_run_at,last_error" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            | jq '.'
+          echo ""
+          echo "═════ Pending queue size ═════"
+          curl -s "${SUPABASE_URL}/rest/v1/research_kb_pending?select=count&review_status=eq.pending" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Prefer: count=exact" \
+            -I 2>/dev/null | grep -i content-range || echo "(query failed)"
