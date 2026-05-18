@@ -18,6 +18,7 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findMockRoutine, addGuestWorkout, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { getXpForWorkout } from '@/lib/xp';
@@ -44,6 +45,7 @@ export default function ActiveWorkoutScreen() {
   const workout = useWorkout();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
@@ -490,31 +492,29 @@ export default function ActiveWorkoutScreen() {
   };
 
   // Add exercise from library
-  const addExercise = async (ex: ExerciseDef) => {
-    const resolved = await resolveExerciseRow(ex);
-    const prev = await fetchPreviousSetsForExercise(resolved?.id ?? null, ex.name);
+  const addExercise = (ex: ExerciseDef) => {
+    // Optimistic: add immediately with a temp id and default sets, close modal.
+    // Real exercise row + previous-set defaults are fetched in the background
+    // by reconcileExerciseRow.
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const targetSets = 3;
     const newEx: ActiveWorkoutExercise = {
-      // In guest mode (resolved === null) we still use a local temp id, but it never reaches Supabase.
-      exercise: resolved ?? { id: `temp-${Date.now()}`, name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
-      sets: Array.from({ length: targetSets }, (_, i) => ({
-        weight_kg: prev?.[i]?.weight_kg ?? 0,
-        reps: prev?.[i]?.reps ?? 10,
-        completed: false,
-      })),
+      exercise: { id: tempId, name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
+      sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: 10, completed: false })),
       notes: '',
-      previousSets: prev || undefined,
       targetSets,
       repsMin: 8,
       repsMax: 12,
       restSeconds: 90,
     };
-    workout.updateExercises([...exercises, newEx]);
+    workout.updateExercises(prev => [...prev, newEx]);
     setExerciseStarted(prev => [...prev, false]);
     setExerciseFinished(prev => [...prev, false]);
     setShowAddExercise(false);
     setExerciseSearch('');
     setTimeout(() => setCurrentIdx(exercises.length), 100);
+
+    void reconcileExerciseRow(ex, tempId);
   };
 
   // Open custom-create form, optionally pre-filled with the search query
@@ -531,7 +531,7 @@ export default function ActiveWorkoutScreen() {
   };
 
   // Create a custom exercise and add it to the workout
-  const addCustomExercise = async () => {
+  const addCustomExercise = () => {
     const name = customName.trim();
     if (!name) {
       setShowErrorAlert('Exercise name is required');
@@ -543,29 +543,84 @@ export default function ActiveWorkoutScreen() {
     const repsMax = Math.max(repsMin, repsMaxRaw);
     const restSeconds = Math.max(0, parseInt(customRest) || 90);
 
-    const resolved = await resolveExerciseRow({ name, muscle_group: customMuscle, category: customCategory });
-    const prev = await fetchPreviousSetsForExercise(resolved?.id ?? null, name);
+    // Optimistic: temp id + default sets, close modal instantly. Reconcile fetches
+    // the real exercise row and previous-set defaults in the background.
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const def: ExerciseDef = { name, muscle_group: customMuscle, category: customCategory };
     const newEx: ActiveWorkoutExercise = {
-      exercise: resolved ?? { id: `temp-${Date.now()}`, name, muscle_group: customMuscle, category: customCategory },
-      sets: Array.from({ length: targetSets }, (_, i) => ({
-        weight_kg: prev?.[i]?.weight_kg ?? 0,
-        reps: prev?.[i]?.reps ?? repsMin,
-        completed: false,
-      })),
+      exercise: { id: tempId, name, muscle_group: customMuscle, category: customCategory },
+      sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: repsMin, completed: false })),
       notes: '',
-      previousSets: prev || undefined,
       targetSets,
       repsMin,
       repsMax,
       restSeconds,
     };
-    workout.updateExercises([...exercises, newEx]);
+    workout.updateExercises(prev => [...prev, newEx]);
     setExerciseStarted(prev => [...prev, false]);
     setExerciseFinished(prev => [...prev, false]);
     setShowCustomForm(false);
     setExerciseSearch('');
     setCustomName('');
     setTimeout(() => setCurrentIdx(exercises.length), 100);
+
+    void reconcileExerciseRow(def, tempId);
+  };
+
+  // Background: swap the temp-id placeholder for the real DB row once resolved,
+  // and pre-populate sets with the user's previous performance for this exercise
+  // (a feature from PR #6). Only overwrites the sets if the user hasn't started
+  // recording yet — checked via `completed: false` on every set. Already-started
+  // exercises keep their in-progress values untouched.
+  //
+  // On resolve failure the exercise keeps its temp id — the finish-save's
+  // existing .filter on `temp-` ids will skip it to avoid FK violations, so we
+  // surface a toast so the user knows those sets won't persist.
+  const reconcileExerciseRow = async (def: ExerciseDef, tempId: string) => {
+    if (!isSupabaseConfigured) {
+      // Guest mode still wants the previous-sets pre-fill from mockData.
+      const prev = await fetchPreviousSetsForExercise(null, def.name);
+      if (!prev || prev.length === 0) return;
+      workout.updateExercises(prevExs => prevExs.map(e => {
+        if (e.exercise.id !== tempId) return e;
+        const userStarted = e.sets.some(s => s.completed);
+        if (userStarted) return { ...e, previousSets: prev };
+        return {
+          ...e,
+          previousSets: prev,
+          sets: e.sets.map((s, i) => ({
+            weight_kg: prev[i]?.weight_kg ?? s.weight_kg,
+            reps: prev[i]?.reps ?? s.reps,
+            completed: false,
+          })),
+        };
+      }));
+      return;
+    }
+
+    const resolved = await resolveExerciseRow(def);
+    if (!resolved) {
+      toast.error(`Couldn't link “${def.name}” — its sets won't be saved`);
+      return;
+    }
+    const prev = await fetchPreviousSetsForExercise(resolved.id, def.name);
+    workout.updateExercises(prevExs => prevExs.map(e => {
+      if (e.exercise.id !== tempId) return e;
+      const userStarted = e.sets.some(s => s.completed);
+      const nextSets = !userStarted && prev && prev.length > 0
+        ? e.sets.map((s, i) => ({
+            weight_kg: prev[i]?.weight_kg ?? s.weight_kg,
+            reps: prev[i]?.reps ?? s.reps,
+            completed: false,
+          }))
+        : e.sets;
+      return {
+        ...e,
+        exercise: resolved,
+        sets: nextSets,
+        previousSets: prev || undefined,
+      };
+    }));
   };
 
   // Remove exercise
@@ -605,6 +660,7 @@ export default function ActiveWorkoutScreen() {
   const confirmFinish = async () => {
     setShowFinishAlert(false);
     setSaving(true);
+    toast.info('Saving workout…');
     try {
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
       const vol = allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0);
@@ -628,6 +684,7 @@ export default function ActiveWorkoutScreen() {
         });
         workout.finishWorkout();
         router.replace('/(app)/history');
+        toast.success('Workout saved');
         return;
       }
 
@@ -675,6 +732,7 @@ export default function ActiveWorkoutScreen() {
             }))
         );
         if (setsToInsert.length > 0) {
+          toast.info(`Recording ${setsToInsert.length} ${setsToInsert.length === 1 ? 'set' : 'sets'}…`);
           const { error: setsErr } = await supabase.from('workout_sets').insert(setsToInsert);
           if (setsErr) throw setsErr;
         }
@@ -692,6 +750,7 @@ export default function ActiveWorkoutScreen() {
 
         // Persist XP earned on this workout to user_profiles so the dashboard level bar advances.
         if (clerkId) {
+          toast.info('Updating XP…');
           try {
             const earnedXp = getXpForWorkout(allCompleted.length, vol);
             const { data: profileRow } = await supabase
@@ -714,8 +773,10 @@ export default function ActiveWorkoutScreen() {
 
       workout.finishWorkout();
       router.replace('/(app)/history');
+      toast.success('Workout saved');
     } catch (err: any) {
       setShowErrorAlert(err?.message || 'Failed to save workout');
+      toast.hide();
     } finally {
       setSaving(false);
     }

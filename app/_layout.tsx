@@ -10,6 +10,7 @@ import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
 import { hydrateGuestStore } from '@/lib/mockData';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
+import { ToastProvider } from '@/components/ui/Toast';
 
 // Required for OAuth flows to complete when the auth session returns.
 // Must run at app boot, before any auth screen mounts.
@@ -35,16 +36,18 @@ const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? '';
 function AppInner() {
   const { C } = useTheme();
   return (
-    <WorkoutProvider>
-      <StatusBar style={C.statusBar} />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(app)" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
-        <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
-      </Stack>
-    </WorkoutProvider>
+    <ToastProvider>
+      <WorkoutProvider>
+        <StatusBar style={C.statusBar} />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" options={{ headerShown: false }} />
+          <Stack.Screen name="(app)" options={{ headerShown: false }} />
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
+          <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
+        </Stack>
+      </WorkoutProvider>
+    </ToastProvider>
   );
 }
 

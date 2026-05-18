@@ -14,8 +14,9 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { getMockWorkoutsForHistory } from '@/lib/mockData';
+import { getMockWorkoutsForHistory, removeGuestWorkout } from '@/lib/mockData';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -498,6 +499,7 @@ export default function HistoryScreen() {
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -556,15 +558,39 @@ export default function HistoryScreen() {
     setDeleteId(id);
   };
 
-  const confirmDelete = async () => {
-    if (!deleteId) return;
-    if (isSupabaseConfigured) {
-      let q = supabase.from('workouts').delete().eq('id', deleteId);
-      if (user?.id) q = q.eq('user_id', user.id);
-      await q;
+  // Parameterized worker so Retry doesn't need to round-trip through deleteId state.
+  const performDelete = async (id: string) => {
+    const previous = workouts;
+    setWorkouts((prev) => prev.filter((w) => w.id !== id));
+
+    if (!isSupabaseConfigured) {
+      // Persist the delete in the guest store so it stays gone after the next
+      // fetchWorkouts() (which reads from getMockWorkoutsForHistory).
+      // Hardcoded sample workouts return false and aren't removable — by design.
+      removeGuestWorkout(id);
+      toast.success('Workout deleted');
+      return;
     }
-    setWorkouts((prev) => prev.filter((w) => w.id !== deleteId));
+
+    try {
+      let q = supabase.from('workouts').delete().eq('id', id);
+      if (user?.id) q = q.eq('user_id', user.id);
+      const { error } = await q;
+      if (error) throw error;
+      toast.success('Workout deleted');
+    } catch {
+      setWorkouts(previous);
+      toast.error("Couldn't delete workout", {
+        action: { label: 'Retry', onPress: () => performDelete(id) },
+      });
+    }
+  };
+
+  const confirmDelete = () => {
+    const id = deleteId;
+    if (!id) return;
     setDeleteId(null);
+    performDelete(id);
   };
 
   const handlePrevMonth = () => {

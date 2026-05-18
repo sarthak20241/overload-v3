@@ -10,7 +10,11 @@ interface WorkoutContextType {
   exercises: ActiveWorkoutExercise[];
   startWorkout: (routineId: string, routineName: string, exercises: ActiveWorkoutExercise[]) => void;
   finishWorkout: () => void;
-  updateExercises: (exercises: ActiveWorkoutExercise[]) => void;
+  updateExercises: (
+    exercisesOrUpdater:
+      | ActiveWorkoutExercise[]
+      | ((prev: ActiveWorkoutExercise[]) => ActiveWorkoutExercise[])
+  ) => void;
   pauseWorkout: () => void;
   resumeWorkout: () => void;
   togglePause: () => void;
@@ -63,7 +67,11 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
-  const updateExercises = (exs: ActiveWorkoutExercise[]) => setExercises(exs);
+  const updateExercises = (
+    input:
+      | ActiveWorkoutExercise[]
+      | ((prev: ActiveWorkoutExercise[]) => ActiveWorkoutExercise[])
+  ) => setExercises(input);
 
   const pauseWorkout = useCallback(() => {
     pausedElapsedRef.current = Math.floor((Date.now() - startTimeRef.current) / 1000);

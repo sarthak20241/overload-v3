@@ -285,6 +285,27 @@ export function addGuestRoutine(routine: typeof mockRoutines[0]) {
   void persistGuestRoutines();
 }
 
+// Replace an existing guest routine in-place, preserving its list position.
+// If no match (e.g. trying to update a hardcoded mockRoutine), no-ops — the
+// caller should treat updates to mockRoutines as create-via-fork instead.
+export function updateGuestRoutine(routine: typeof mockRoutines[0]) {
+  const idx = _guestRoutines.findIndex(r => r.id === routine.id);
+  if (idx < 0) return false;
+  _guestRoutines[idx] = routine;
+  void persistGuestRoutines();
+  return true;
+}
+
+// Remove a guest routine by id. Only affects entries in the guest store —
+// the hardcoded `mockRoutines` array is read-only sample data.
+export function removeGuestRoutine(id: string) {
+  const idx = _guestRoutines.findIndex(r => r.id === id);
+  if (idx < 0) return false;
+  _guestRoutines.splice(idx, 1);
+  void persistGuestRoutines();
+  return true;
+}
+
 export function getAllRoutines() {
   return [..._guestRoutines, ...mockRoutines];
 }
@@ -324,6 +345,16 @@ async function persistGuestWorkouts() {
 export function addGuestWorkout(w: GuestWorkout) {
   _guestWorkouts.unshift(w);
   void persistGuestWorkouts();
+}
+
+// Remove a guest workout by id. Mirror of removeGuestRoutine for the
+// optimistic-delete path in the history screen.
+export function removeGuestWorkout(id: string) {
+  const idx = _guestWorkouts.findIndex(w => w.id === id);
+  if (idx < 0) return false;
+  _guestWorkouts.splice(idx, 1);
+  void persistGuestWorkouts();
+  return true;
 }
 
 export function getGuestWorkouts() {
