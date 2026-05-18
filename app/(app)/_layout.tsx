@@ -227,6 +227,14 @@ export default function AppLayout() {
         <Tabs.Screen name="history" />
         <Tabs.Screen name="analytics" />
         <Tabs.Screen name="profile" />
+        {/*
+          Admin dashboard for research-kb review (Phase 3).
+          Hidden from the bottom nav — only reachable via deep-link
+          (`/admin/research`) or the "Admin Tools" button rendered for
+          admin users on the Profile screen. The route itself enforces
+          the admin check via useAdminCheck + Postgres RLS.
+        */}
+        <Tabs.Screen name="admin/research" options={{ href: null }} />
       </Tabs>
 
       <BottomNav onOpenModal={() => setModalOpen(true)} />

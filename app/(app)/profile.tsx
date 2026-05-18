@@ -23,6 +23,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { setGuestMode } from '@/lib/guestMode';
+import { useAdminCheck } from '@/hooks/useAdminCheck';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -190,6 +191,9 @@ export default function ProfileScreen() {
   const { C, mode, toggleTheme } = useTheme();
   const { user, signOut: clerkSignOut } = useClerkUser();
   const supabase = useSupabaseClient();
+  // Admin status determines whether the "Admin Tools" section renders.
+  // The dashboard route itself re-checks via RLS, so this is a UX gate.
+  const { isAdmin } = useAdminCheck();
   const signOut = async () => {
     try { await clerkSignOut(); } catch {}
     // Clear the guest flag too — sign-out should always land on /(auth),
@@ -844,6 +848,33 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* ─── Admin Tools (admin users only) ─── */}
+          {isAdmin && (
+            <View style={styles.section}>
+              <SectionLabel>ADMIN TOOLS</SectionLabel>
+              <View style={{ gap: 8 }}>
+                <TouchableOpacity
+                  // typed-routes hasn't regenerated for /admin/research yet
+                  // — cast is fine, route exists at runtime.
+                  onPress={() => router.push('/admin/research' as any)}
+                  activeOpacity={0.85}
+                  style={[styles.accountBtn, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+                >
+                  <View style={[styles.rowIcon, { backgroundColor: `${Colors.primary}22` }]}>
+                    <Feather name="book-open" size={11} color={C.accentText} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.infoLabel, { color: C.foreground }]}>Research Review</Text>
+                    <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>
+                      Approve / reject papers from the ingest queue
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={14} color={C.textMuted} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* ─── Account ─── */}
           <View style={styles.section}>

@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/*
+  Theme tokens mirroring the Expo app's design system. Same lime accent
+  (#c8ff00) and dark base — admin app should feel like the same product.
+  Tailwind v4 exposes anything under @theme as utility classes:
+    bg-bg, text-fg, border-border, bg-card, text-muted-fg, etc.
+*/
+@theme {
+  --color-bg: #0a0a0a;
+  --color-bg-elevated: #111111;
+  --color-card: #161616;
+  --color-card-hover: #1c1c1c;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+  --color-fg: #ededed;
+  --color-muted-fg: rgba(255, 255, 255, 0.62);
+  --color-text-muted: rgba(255, 255, 255, 0.42);
+  --color-text-dim: rgba(255, 255, 255, 0.28);
+
+  --color-primary: #c8ff00;
+  --color-primary-fg: #0a0a0a;
+  --color-primary-subtle: rgba(200, 255, 0, 0.10);
+  --color-primary-muted: rgba(200, 255, 0, 0.18);
+  --color-accent: #d4ff33;
+
+  --color-success: #4ade80;
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+  --color-info: #60a5fa;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle scrollbars inside the admin shell */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.16); }
