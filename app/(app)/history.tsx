@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -511,6 +511,9 @@ export default function HistoryScreen() {
   const [calYear, setCalYear] = useState(today.getFullYear());
   const [calMonth, setCalMonth] = useState(today.getMonth());
 
+  const scrollRef = useRef<ScrollView>(null);
+  const searchBarY = useRef(0);
+
   const fetchWorkouts = useCallback(async () => {
     if (!isSupabaseConfigured) {
       setWorkouts(getMockWorkoutsForHistory() as WorkoutRaw[]);
@@ -667,8 +670,11 @@ export default function HistoryScreen() {
       </View>
 
       <ScrollView
+        ref={scrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 100 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -713,7 +719,10 @@ export default function HistoryScreen() {
 
         {/* Search */}
         {workouts.length > 0 && (
-          <View style={styles.searchWrap}>
+          <View
+            style={styles.searchWrap}
+            onLayout={(e) => { searchBarY.current = e.nativeEvent.layout.y; }}
+          >
             <View style={[styles.searchBar, { backgroundColor: C.card, borderColor: C.borderLight }, Shadow.card]}>
               <Feather name="search" size={14} color={C.textMuted} />
               <TextInput
@@ -723,6 +732,9 @@ export default function HistoryScreen() {
                 placeholderTextColor={C.textMuted}
                 style={[styles.searchInput, { color: C.foreground }]}
                 returnKeyType="search"
+                onFocus={() => {
+                  scrollRef.current?.scrollTo({ y: Math.max(0, searchBarY.current - 8), animated: true });
+                }}
               />
               {search.length > 0 && (
                 <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
