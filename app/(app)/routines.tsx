@@ -195,10 +195,12 @@ function RoutineDetailSheet({
   routine,
   onClose,
   onStartWorkout,
+  onEdit,
 }: {
   routine: RoutineRaw | null;
   onClose: () => void;
   onStartWorkout: () => void;
+  onEdit: () => void;
 }) {
   const { C } = useTheme();
   if (!routine) return null;
@@ -207,13 +209,16 @@ function RoutineDetailSheet({
 
   return (
     <Modal visible={routine !== null} transparent animationType="none" onRequestClose={onClose}>
-      <Pressable style={[styles.backdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
+      <View style={styles.backdrop}>
+        <Pressable
+          style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+          onPress={onClose}
+        />
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
           style={[styles.detailSheet, { backgroundColor: C.card, borderColor: C.border }]}
         >
-          <Pressable>
             <View style={[styles.handle, { backgroundColor: C.handle }]} />
 
             {/* Header */}
@@ -241,9 +246,9 @@ function RoutineDetailSheet({
             </View>
 
             <ScrollView
-              style={{ flexShrink: 1 }}
+              style={{ flexShrink: 1, flexGrow: 1 }}
               contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md }}
-              showsVerticalScrollIndicator={false}
+              showsVerticalScrollIndicator
             >
               {sortedExercises.map((re, i) => (
                 <View
@@ -277,20 +282,27 @@ function RoutineDetailSheet({
               ))}
             </ScrollView>
 
-            {/* Start Workout Button */}
+            {/* Footer Actions */}
             <View style={styles.detailFooter}>
               <TouchableOpacity
+                onPress={onEdit}
+                style={[styles.editRoutineBtn, { backgroundColor: C.muted, borderColor: C.border }]}
+                activeOpacity={0.8}
+              >
+                <Feather name="edit-2" size={14} color={C.foreground} />
+                <Text style={[styles.editRoutineBtnText, { color: C.foreground }]}>Edit</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={onStartWorkout}
-                style={[styles.startWorkoutBtn]}
+                style={styles.startWorkoutBtn}
                 activeOpacity={0.8}
               >
                 <Feather name="play" size={16} color={Colors.primaryFg} />
                 <Text style={styles.startWorkoutBtnText}>Start Workout</Text>
               </TouchableOpacity>
             </View>
-          </Pressable>
         </Animated.View>
-      </Pressable>
+      </View>
     </Modal>
   );
 }
@@ -1312,6 +1324,13 @@ export default function RoutinesScreen() {
             router.push(`/workout/${detailRoutine.id}` as any);
           }
         }}
+        onEdit={() => {
+          if (detailRoutine) {
+            const target = detailRoutine;
+            setDetailRoutine(null);
+            openEdit(target);
+          }
+        }}
       />
       <RoutineEditorSheet
         visible={sheetOpen}
@@ -1515,6 +1534,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginTop: 12,
     marginBottom: 4,
+    flexShrink: 0,
   },
 
   // Menu
@@ -1806,7 +1826,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: Radius.xxl,
     borderTopWidth: 1,
     paddingBottom: Spacing.xxl,
-    maxHeight: '75%',
+    height: '80%',
   },
   detailHeader: {
     flexDirection: 'row',
@@ -1816,6 +1836,7 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.md,
     paddingBottom: Spacing.lg,
     gap: 12,
+    flexShrink: 0,
   },
   detailTitle: {
     fontSize: FontSize.xl,
@@ -1830,6 +1851,7 @@ const styles = StyleSheet.create({
   detailExercisesLabel: {
     paddingHorizontal: Spacing.xl,
     marginBottom: Spacing.sm,
+    flexShrink: 0,
   },
   detailExRow: {
     flexDirection: 'row',
@@ -1873,8 +1895,27 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.medium,
   },
   detailFooter: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 10,
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.lg,
+    flexShrink: 0,
+  },
+  editRoutineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 14,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    flexShrink: 0,
+  },
+  editRoutineBtnText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
   },
   startWorkoutBtn: {
     flexDirection: 'row',
@@ -1884,6 +1925,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: Radius.xl,
     backgroundColor: Colors.primary,
+    flex: 1,
   },
   startWorkoutBtnText: {
     fontSize: FontSize.base,
