@@ -32,6 +32,10 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      review_age_hours:
+        description: 'Min hours a pending paper must age before agent acts (24 = production, 0 = test mode)'
+        required: false
+        default: '24'
 
 # Don't let two runs overlap — they'd race on checkpoint updates and the
 # Voyage rate limiter doesn't share state across processes. cancel-in-
@@ -72,6 +76,9 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           # Optional: bumps PubMed/Europe PMC rate cap from 3 → 10 req/s
           PUBMED_CONTACT_EMAIL: ${{ secrets.PUBMED_CONTACT_EMAIL }}
+          # Optional: 100 req/5min unauth, 5k/day with key. Trust v2 falls
+          # back to the unauth path if missing.
+          SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
           MAX_PAPERS: ${{ github.event.inputs.max_papers || '20' }}
           SKIP_TOPIC_PLAN: ${{ github.event.inputs.skip_topic_plan || 'false' }}
         run: |
@@ -80,7 +87,30 @@ jobs:
           if [ "${SKIP_TOPIC_PLAN}" = "true" ]; then
             ARGS="${ARGS} --skip-topic-plan"
           fi
-          echo "▶ Running: npx tsx tools/research-ingest/run.ts ${ARGS}"
+          echo "▶ Running ingest: npx tsx tools/research-ingest/run.ts ${ARGS}"
+          npx tsx tools/research-ingest/run.ts ${ARGS}
+
+      - name: Run agent auto-review
+        # Second pass: walk every pending row that's been waiting ≥ 24h and
+        # let the Sonnet review agent make the final call. The agent runs
+        # AFTER ingestion in the same job because:
+        #   - Same secrets / runtime → no separate workflow overhead.
+        #   - Lets the same cron tick handle "yesterday's intake" review.
+        # The agent will skip any row that already has a live agent_review_log
+        # entry — re-running the cron is safe and idempotent.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          REVIEW_AGE_HOURS: ${{ github.event.inputs.review_age_hours || '24' }}
+        # `if: always()` would also re-run on failure of ingest — we want
+        # that because review is independent of whether the new fetch
+        # succeeded. The pending queue should still get processed.
+        if: always()
+        run: |
+          set -eo pipefail
+          ARGS="--review --review-age-hours=${REVIEW_AGE_HOURS}"
+          echo "▶ Running auto-review: npx tsx tools/research-ingest/run.ts ${ARGS}"
           npx tsx tools/research-ingest/run.ts ${ARGS}
 
       - name: Summarize checkpoint state

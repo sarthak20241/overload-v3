@@ -31,6 +31,23 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
+// Phase 3 contradiction detection. Set on pending rows by the ingest worker
+// when a new paper's key_finding conflicts with an existing kb entry (or
+// describes different conditions). The dashboard surfaces them side-by-side
+// in the detail sheet so the reviewer sees the disagreement before they
+// hit Approve.
+interface ContradictionFlag {
+  kb_id: string;
+  kb_title: string;
+  kb_finding: string;
+  kb_study_design: string;
+  kb_trust_score: number;
+  similarity: number;
+  verdict: 'contradict' | 'agree' | 'different_conditions' | 'unrelated';
+  confidence: number;
+  rationale: string;
+}
+
 interface PendingPaper {
   id: string;
   source: string;
@@ -49,6 +66,7 @@ interface PendingPaper {
   practical_takeaway: string;
   ingested_at: string;
   source_meta: Record<string, unknown> | null;
+  contradiction_flags: ContradictionFlag[] | null;
 }
 
 interface ResearchStats {
@@ -57,6 +75,27 @@ interface ResearchStats {
   rejected_today: number;
   kb_total: number;
   last_cron_at: string | null;
+}
+
+// Phase 3 auto-review agent — one row per decision made by the Sonnet
+// review agent. Surfaces in the dashboard's "AGENT ACTIVITY" section so
+// the admin can audit what got auto-acted overnight + revert anything
+// that looks wrong with one tap.
+interface AgentLogEntry {
+  id: string;
+  paper_title: string;
+  paper_url: string;
+  proposed_action: 'approve' | 'reject' | 'supersede' | 'coexist';
+  final_action: 'approve' | 'reject' | 'supersede' | 'coexist';
+  downgrade_reason: string | null;
+  rationale: string;
+  confidence: number;
+  flags: string[];
+  superseded_kb_ids: string[];
+  new_kb_id: string | null;
+  agent_model: string;
+  decided_at: string;
+  reverted_at: string | null;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -112,6 +151,11 @@ function PendingCard({
   const tsColor = trustColor(C, paper.trust_score);
   const tags = paper.topic_tags.slice(0, 4);
   const extraTagCount = paper.topic_tags.length - tags.length;
+  // Contradiction badge — count only the 'contradict' verdicts on the card
+  // (the headline case). 'different_conditions' is real signal too but
+  // shows in the detail sheet rather than competing for space here.
+  const contradictCount = (paper.contradiction_flags ?? [])
+    .filter((f) => f.verdict === 'contradict').length;
   return (
     <Animated.View entering={FadeInDown.delay(index * 60).duration(300)}>
       <TouchableOpacity
@@ -128,6 +172,14 @@ function PendingCard({
           <Text style={[s.designBadge, { color: C.mutedFg }]}>
             {paper.study_design.toUpperCase()}
           </Text>
+          {contradictCount > 0 && (
+            <View style={[s.conflictBadge, { backgroundColor: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.30)' }]}>
+              <Feather name="alert-triangle" size={9} color="#f87171" />
+              <Text style={[s.conflictBadgeText, { color: '#f87171' }]}>
+                {contradictCount} conflict{contradictCount === 1 ? '' : 's'}
+              </Text>
+            </View>
+          )}
           <View style={{ flex: 1 }} />
           <Text style={[s.cardAge, { color: C.textMuted }]}>
             {timeSince(paper.ingested_at)}
@@ -166,17 +218,33 @@ function PaperDetailSheet({
   paper: PendingPaper | null;
   busy: boolean;
   onClose: () => void;
-  onApprove: () => void;
+  // Phase 3 supersede: an Approve can also supersede selected existing kb
+  // entries. supersedeKbIds is the set of kb_ids the user toggled on via
+  // ConflictCard's "Replace this in KB" affordance.
+  onApprove: (supersedeKbIds: string[]) => void;
   onReject: (reason: string) => void;
 }) {
   const { C } = useTheme();
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  // kb_ids that should be marked superseded_by the new paper on approve.
+  // Populated only when the user toggles the per-conflict "Replace this in
+  // KB" button. Always reset when the sheet opens a different paper.
+  const [supersedeTargets, setSupersedeTargets] = useState<Set<string>>(new Set());
+  const toggleSupersede = (kbId: string) => {
+    setSupersedeTargets((prev) => {
+      const next = new Set(prev);
+      if (next.has(kbId)) next.delete(kbId);
+      else next.add(kbId);
+      return next;
+    });
+  };
 
   useEffect(() => {
-    // Reset reject UI whenever a new paper opens
+    // Reset reject UI + supersede selections whenever a new paper opens
     setRejectMode(false);
     setRejectReason('');
+    setSupersedeTargets(new Set());
   }, [paper?.id]);
 
   if (!paper) return null;
@@ -237,6 +305,25 @@ function PaperDetailSheet({
                   Open source{doi ? ` (DOI: ${doi.slice(0, 30)})` : pmid ? ` (PMID: ${pmid})` : ''}
                 </Text>
               </TouchableOpacity>
+            )}
+
+            {/* Possible conflicts (Phase 3 contradiction detection).
+                Surfaced ABOVE the distillation so reviewers see disagreements
+                with existing kb entries before they read the new paper's
+                takeaway. Each flag carries Haiku's verdict + rationale +
+                a similarity score and links to the existing kb entry. */}
+            {paper.contradiction_flags && paper.contradiction_flags.length > 0 && (
+              <>
+                <SectionLabel>POSSIBLE CONFLICTS</SectionLabel>
+                {paper.contradiction_flags.map((f, i) => (
+                  <ConflictCard
+                    key={`${f.kb_id}-${i}`}
+                    flag={f}
+                    supersedeOn={supersedeTargets.has(f.kb_id)}
+                    onToggleSupersede={() => toggleSupersede(f.kb_id)}
+                  />
+                ))}
+              </>
             )}
 
             {/* Distillation */}
@@ -319,7 +406,7 @@ function PaperDetailSheet({
                   <Text style={[s.actionBtnSecondaryText, { color: '#f87171' }]}>Reject</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  onPress={onApprove}
+                  onPress={() => onApprove(Array.from(supersedeTargets))}
                   disabled={busy}
                   style={[s.actionBtnPrimary, { opacity: busy ? 0.6 : 1 }]}
                 >
@@ -328,7 +415,11 @@ function PaperDetailSheet({
                   ) : (
                     <>
                       <Feather name="check" size={14} color={Colors.primaryFg} />
-                      <Text style={s.actionBtnPrimaryText}>Approve to KB</Text>
+                      <Text style={s.actionBtnPrimaryText}>
+                        {supersedeTargets.size > 0
+                          ? `Approve + Replace ${supersedeTargets.size}`
+                          : 'Approve to KB'}
+                      </Text>
                     </>
                   )}
                 </TouchableOpacity>
@@ -363,6 +454,180 @@ function Field({ label, value, highlight = false }: { label: string; value: stri
   );
 }
 
+// ─── ConflictCard ──────────────────────────────────────────────────────────
+// Side-by-side surfacing of a single contradiction flag. Shows verdict,
+// similarity, Haiku rationale, and a snippet of the existing kb entry's
+// finding so the reviewer can judge "is this paper actually contradicting,
+// or just covering different conditions?"
+//
+// Phase 3 supersede: for `contradict` verdicts, exposes a toggle that lets
+// the reviewer say "mark this kb entry as superseded by the new paper when
+// I approve". Toggling off is a no-op; the kb stays. Different-conditions
+// verdicts don't get the toggle — coexist is the right call for those.
+function ConflictCard({
+  flag, supersedeOn, onToggleSupersede,
+}: {
+  flag: ContradictionFlag;
+  supersedeOn: boolean;
+  onToggleSupersede: () => void;
+}) {
+  const { C } = useTheme();
+  const isContradict = flag.verdict === 'contradict';
+  const verdictColor = isContradict ? '#f87171' : '#d29800'; // red vs amber
+  const verdictBg = isContradict ? 'rgba(239,68,68,0.10)' : 'rgba(210,152,0,0.10)';
+  const verdictBorder = isContradict ? 'rgba(239,68,68,0.30)' : 'rgba(210,152,0,0.30)';
+  const verdictLabel = isContradict ? 'Contradicts' : 'Different conditions';
+  return (
+    <View style={[s.conflictCard, { backgroundColor: verdictBg, borderColor: verdictBorder }]}>
+      <View style={s.conflictHeader}>
+        <Feather name={isContradict ? 'alert-triangle' : 'git-branch'} size={12} color={verdictColor} />
+        <Text style={[s.conflictVerdict, { color: verdictColor }]}>
+          {verdictLabel}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <Text style={[s.conflictMeta, { color: C.textMuted }]}>
+          sim {flag.similarity.toFixed(2)} · conf {flag.confidence.toFixed(2)}
+        </Text>
+      </View>
+      <Text style={[s.conflictKbTitle, { color: C.foreground }]} numberOfLines={2}>
+        vs. {flag.kb_title}
+      </Text>
+      <Text style={[s.conflictKbFinding, { color: C.mutedFg }]} numberOfLines={3}>
+        “{flag.kb_finding}”
+      </Text>
+      <Text style={[s.conflictRationale, { color: C.foreground }]}>
+        {flag.rationale}
+      </Text>
+      <Text style={[s.conflictKbMeta, { color: C.textMuted }]}>
+        {flag.kb_study_design} · trust {flag.kb_trust_score.toFixed(2)}
+      </Text>
+
+      {isContradict && (
+        <TouchableOpacity
+          onPress={onToggleSupersede}
+          activeOpacity={0.7}
+          style={[
+            s.supersedeToggle,
+            supersedeOn
+              ? { backgroundColor: verdictColor, borderColor: verdictColor }
+              : { backgroundColor: 'transparent', borderColor: verdictBorder },
+          ]}
+        >
+          <Feather
+            name={supersedeOn ? 'check-square' : 'square'}
+            size={12}
+            color={supersedeOn ? '#fff' : verdictColor}
+          />
+          <Text
+            style={[
+              s.supersedeToggleText,
+              { color: supersedeOn ? '#fff' : verdictColor },
+            ]}
+          >
+            {supersedeOn ? 'Will replace in KB on approve' : 'Replace this in KB on approve'}
+          </Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
+// ─── AgentActivityCard ──────────────────────────────────────────────────────
+// One row per agent_review_log entry. Compact: action chip, paper title,
+// timestamp, rationale snippet, downgrade indicator (if guardrails fired),
+// revert button. Tapping the title opens the source URL.
+function AgentActivityCard({
+  entry, busy, onRevert,
+}: {
+  entry: AgentLogEntry;
+  busy: boolean;
+  onRevert: () => void;
+}) {
+  const { C } = useTheme();
+  const actionColors: Record<AgentLogEntry['final_action'], string> = {
+    approve: '#84cc16',     // lime
+    reject: '#f87171',      // red
+    supersede: '#ec4899',   // pink
+    coexist: '#06b6d4',     // cyan
+  };
+  const c = actionColors[entry.final_action] ?? C.mutedFg;
+  const downgraded = entry.proposed_action !== entry.final_action;
+
+  return (
+    <View style={[s.agentCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+      <View style={s.agentCardHeader}>
+        <View style={[s.agentChip, { backgroundColor: `${c}22`, borderColor: `${c}55` }]}>
+          <Text style={[s.agentChipText, { color: c }]}>
+            {entry.final_action.toUpperCase()}
+          </Text>
+        </View>
+        {downgraded && (
+          <View style={[s.agentChip, { backgroundColor: 'rgba(210,152,0,0.12)', borderColor: 'rgba(210,152,0,0.30)' }]}>
+            <Feather name="corner-down-right" size={9} color="#d29800" />
+            <Text style={[s.agentChipText, { color: '#d29800' }]}>
+              downgraded
+            </Text>
+          </View>
+        )}
+        <View style={[s.agentChip, { backgroundColor: C.muted, borderColor: 'transparent' }]}>
+          <Text style={[s.agentChipText, { color: C.textMuted }]}>
+            conf {entry.confidence.toFixed(2)}
+          </Text>
+        </View>
+        <View style={{ flex: 1 }} />
+        <Text style={[s.agentTime, { color: C.textMuted }]}>
+          {timeSince(entry.decided_at)}
+        </Text>
+      </View>
+
+      <TouchableOpacity
+        onPress={() => entry.paper_url && Linking.openURL(entry.paper_url).catch(() => {})}
+        activeOpacity={0.7}
+      >
+        <Text style={[s.agentPaperTitle, { color: C.foreground }]} numberOfLines={2}>
+          {entry.paper_title}
+        </Text>
+      </TouchableOpacity>
+
+      <Text style={[s.agentRationale, { color: C.mutedFg }]} numberOfLines={3}>
+        {entry.rationale}
+      </Text>
+
+      {downgraded && entry.downgrade_reason && (
+        <Text style={[s.agentDowngradeReason, { color: '#d29800' }]} numberOfLines={2}>
+          ↳ {entry.downgrade_reason}
+        </Text>
+      )}
+
+      {entry.flags.length > 0 && (
+        <View style={s.tagsRow}>
+          {entry.flags.slice(0, 6).map((f) => (
+            <View key={f} style={[s.tag, { backgroundColor: C.muted }]}>
+              <Text style={[s.tagText, { color: C.textMuted }]}>{f}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      <TouchableOpacity
+        onPress={onRevert}
+        disabled={busy}
+        style={[s.revertBtn, { borderColor: C.borderSubtle, backgroundColor: C.muted, opacity: busy ? 0.5 : 1 }]}
+        activeOpacity={0.7}
+      >
+        {busy ? (
+          <ActivityIndicator size="small" color={C.textMuted} />
+        ) : (
+          <>
+            <Feather name="rotate-ccw" size={11} color={C.foreground} />
+            <Text style={[s.revertBtnText, { color: C.foreground }]}>Revert</Text>
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // ─── Main Screen ────────────────────────────────────────────────────────────
 export default function ResearchReviewScreen() {
   const { C } = useTheme();
@@ -372,22 +637,30 @@ export default function ResearchReviewScreen() {
 
   const [stats, setStats] = useState<ResearchStats | null>(null);
   const [papers, setPapers] = useState<PendingPaper[]>([]);
+  const [agentLog, setAgentLog] = useState<AgentLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedPaper, setSelectedPaper] = useState<PendingPaper | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [revertingLogId, setRevertingLogId] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [papersRes, statsRes] = await Promise.all([
+      const [papersRes, statsRes, agentLogRes] = await Promise.all([
         supabase
           .from('research_kb_pending')
-          .select('id, source, url, title, authors, journal, pub_year, topic_tags, study_design, confidence, trust_score, population, intervention, key_finding, practical_takeaway, ingested_at, source_meta')
+          .select('id, source, url, title, authors, journal, pub_year, topic_tags, study_design, confidence, trust_score, population, intervention, key_finding, practical_takeaway, ingested_at, source_meta, contradiction_flags')
           .eq('review_status', 'pending')
           .order('ingested_at', { ascending: true })
           .limit(50),
         supabase.rpc('admin_research_stats').single(),
+        supabase
+          .from('agent_review_log')
+          .select('id, paper_title, paper_url, proposed_action, final_action, downgrade_reason, rationale, confidence, flags, superseded_kb_ids, new_kb_id, agent_model, decided_at, reverted_at')
+          .is('reverted_at', null)
+          .order('decided_at', { ascending: false })
+          .limit(20),
       ]);
       if (papersRes.data) {
         setPapers(papersRes.data.map((p) => ({
@@ -409,6 +682,12 @@ export default function ResearchReviewScreen() {
           last_cron_at: typeof raw.last_cron_at === 'string' ? raw.last_cron_at : null,
         });
       }
+      if (agentLogRes.data) {
+        setAgentLog(agentLogRes.data.map((r) => ({
+          ...r,
+          confidence: Number(r.confidence),
+        })) as AgentLogEntry[]);
+      }
     } catch (e) {
       setBanner({ kind: 'err', text: `Failed to load: ${String(e).slice(0, 100)}` });
     } finally {
@@ -416,6 +695,24 @@ export default function ResearchReviewScreen() {
       setRefreshing(false);
     }
   }, [supabase]);
+
+  const handleRevert = useCallback(async (logId: string) => {
+    setRevertingLogId(logId);
+    try {
+      const { error } = await supabase.rpc('revert_agent_decision', {
+        p_log_id: logId,
+      });
+      if (error) throw new Error(error.message);
+      setBanner({ kind: 'ok', text: 'Reverted — paper back in pending queue' });
+      // Optimistic: remove from agent log + refetch to update pending queue
+      setAgentLog((prev) => prev.filter((l) => l.id !== logId));
+      fetchData();
+    } catch (e) {
+      setBanner({ kind: 'err', text: `Revert failed: ${String(e).slice(0, 120)}` });
+    } finally {
+      setRevertingLogId(null);
+    }
+  }, [supabase, fetchData]);
 
   useEffect(() => {
     if (!adminLoading && isAdmin) fetchData();
@@ -429,15 +726,44 @@ export default function ResearchReviewScreen() {
     return () => clearTimeout(t);
   }, [banner]);
 
-  const handleApprove = useCallback(async () => {
+  const handleApprove = useCallback(async (supersedeKbIds: string[] = []) => {
     if (!selectedPaper) return;
     setActionBusy(true);
     try {
-      const { error } = await supabase.rpc('promote_pending_to_kb', {
+      // promote_pending_to_kb returns the new kb_id; we need it to wire the
+      // supersede_by links from the selected old kb entries to this new one.
+      const { data: newKbId, error } = await supabase.rpc('promote_pending_to_kb', {
         p_pending_id: selectedPaper.id,
       });
       if (error) throw new Error(error.message);
-      setBanner({ kind: 'ok', text: `Approved — added to research_kb` });
+
+      // Soft-supersede each kb_id the reviewer toggled. Done sequentially so
+      // a partial failure (e.g. one row already superseded) doesn't abandon
+      // the rest. Failures bubble up as banner errors but the approve has
+      // already succeeded, so the new kb entry stays.
+      let superseded = 0;
+      const supersedeErrors: string[] = [];
+      if (newKbId && supersedeKbIds.length > 0) {
+        for (const kbId of supersedeKbIds) {
+          const { error: sErr } = await supabase.rpc('supersede_kb', {
+            p_superseded_id: kbId,
+            p_by_id: newKbId as string,
+          });
+          if (sErr) supersedeErrors.push(sErr.message);
+          else superseded += 1;
+        }
+      }
+
+      if (supersedeErrors.length > 0) {
+        setBanner({
+          kind: 'err',
+          text: `Approved, but ${supersedeErrors.length} supersede(s) failed: ${supersedeErrors[0].slice(0, 80)}`,
+        });
+      } else if (superseded > 0) {
+        setBanner({ kind: 'ok', text: `Approved + replaced ${superseded} kb entr${superseded === 1 ? 'y' : 'ies'}` });
+      } else {
+        setBanner({ kind: 'ok', text: `Approved — added to research_kb` });
+      }
       setSelectedPaper(null);
       // Optimistic removal; refetch to confirm + update stats
       setPapers((prev) => prev.filter((p) => p.id !== selectedPaper.id));
@@ -579,6 +905,26 @@ export default function ResearchReviewScreen() {
             ))}
           </>
         )}
+
+        {/* Agent activity (Phase 3 auto-review audit log). Last 20 live
+            (un-reverted) decisions across approve/reject/supersede/coexist
+            so the admin can spot-check what the agent did overnight and
+            revert anything wrong with a tap. */}
+        {agentLog.length > 0 && (
+          <>
+            <Text style={[s.queueLabel, { color: C.textMuted, marginTop: 24 }]}>
+              AGENT ACTIVITY ({agentLog.length})
+            </Text>
+            {agentLog.map((entry) => (
+              <AgentActivityCard
+                key={entry.id}
+                entry={entry}
+                busy={revertingLogId === entry.id}
+                onRevert={() => handleRevert(entry.id)}
+              />
+            ))}
+          </>
+        )}
       </ScrollView>
 
       <PaperDetailSheet
@@ -694,9 +1040,144 @@ const s = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     letterSpacing: 0.5,
   },
+  conflictBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: Radius.full ?? 999,
+    borderWidth: 1,
+  },
+  conflictBadgeText: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.3,
+  },
   cardAge: {
     fontSize: FontSize.xs,
   },
+
+  // Detail-sheet conflict card (Phase 3 contradiction surface)
+  conflictCard: {
+    padding: 12,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    gap: 6,
+    marginBottom: 8,
+  },
+  conflictHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  conflictVerdict: {
+    fontSize: 11,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  conflictMeta: {
+    fontSize: 10,
+    fontVariant: ['tabular-nums'],
+  },
+  conflictKbTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    lineHeight: 18,
+  },
+  conflictKbFinding: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    lineHeight: 16,
+  },
+  conflictRationale: {
+    fontSize: FontSize.sm,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  conflictKbMeta: {
+    fontSize: 10,
+    marginTop: 2,
+  },
+  supersedeToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  supersedeToggleText: {
+    fontSize: 11,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: 0.2,
+  },
+
+  // Phase 3 auto-review agent activity log
+  agentCard: {
+    padding: Spacing.lg,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    gap: 8,
+  },
+  agentCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  agentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.full ?? 999,
+    borderWidth: 1,
+  },
+  agentChipText: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.3,
+  },
+  agentTime: {
+    fontSize: FontSize.xs,
+  },
+  agentPaperTitle: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+    lineHeight: 20,
+  },
+  agentRationale: {
+    fontSize: FontSize.sm,
+    lineHeight: 18,
+  },
+  agentDowngradeReason: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    lineHeight: 16,
+  },
+  revertBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  revertBtnText: {
+    fontSize: 11,
+    fontWeight: FontWeight.semibold,
+  },
+
   cardTitle: {
     fontSize: FontSize.base,
     fontWeight: FontWeight.semibold,

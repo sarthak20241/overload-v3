@@ -35,6 +35,9 @@ import type { IngestResult, Source, Paper } from './shared/types.js';
 
 import { europepmcSource } from './sources/europepmc.js';
 import { buildTopicPlan, type TopicPlan, type TopicPlanItem } from './shared/topics.js';
+import { findConflicts, type ContradictionFlag } from './shared/contradictions.js';
+import { enrichAuthority, trustScoreV2 } from './shared/trust.js';
+import { runAgentReview, type PendingPaperForAgent, type AgentDecision } from './shared/agent-review.js';
 
 const ALL_SOURCES: Source[] = [europepmcSource];
 
@@ -94,6 +97,14 @@ interface CliOpts {
   // query. Useful for debugging the fetch path without burning a Haiku
   // clustering call, or for cold-start runs where coach_traces is empty.
   skipTopicPlan: boolean;
+  // --review: skip ingestion entirely and run the auto-review agent pass.
+  // The GH Actions cron invokes this AFTER the ingest pass — both share
+  // the same binary so deploys are atomic.
+  reviewMode: boolean;
+  // For --review: minimum age (hours) of pending rows before the agent
+  // acts. Default 24h gives the human the agreed-on window. Set to 0
+  // for testing.
+  reviewAgeHours: number;
 }
 
 function parseArgs(): CliOpts {
@@ -102,14 +113,18 @@ function parseArgs(): CliOpts {
     maxPapers: DEFAULT_MAX_PAPERS,
     sourceFilter: null,
     skipTopicPlan: false,
+    reviewMode: false,
+    reviewAgeHours: 24,
   };
   for (const arg of process.argv.slice(2)) {
     if (arg === '--dry-run') opts.dryRun = true;
     else if (arg.startsWith('--max-papers=')) opts.maxPapers = Number(arg.slice('--max-papers='.length));
     else if (arg.startsWith('--source=')) opts.sourceFilter = arg.slice('--source='.length);
     else if (arg === '--skip-topic-plan') opts.skipTopicPlan = true;
+    else if (arg === '--review') opts.reviewMode = true;
+    else if (arg.startsWith('--review-age-hours=')) opts.reviewAgeHours = Number(arg.slice('--review-age-hours='.length));
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: tsx run.ts [--dry-run] [--max-papers=N] [--source=NAME] [--skip-topic-plan]');
+      console.log('Usage: tsx run.ts [--dry-run] [--max-papers=N] [--source=NAME] [--skip-topic-plan] [--review] [--review-age-hours=N]');
       process.exit(0);
     } else {
       console.error(`Unknown arg: ${arg}`);
@@ -119,23 +134,12 @@ function parseArgs(): CliOpts {
   return opts;
 }
 
-// ── Trust scoring stub ──────────────────────────────────────────────────────
-// Real trust scoring (Semantic Scholar h-index + journal tier + study design)
-// lands in a follow-up commit. For v1 we use a study-design heuristic only —
-// enough signal to outrank single observational studies vs. meta-analyses.
-function trustScoreV1(studyDesign: string, confidence: string): number {
-  let s = 0.5;
-  if (studyDesign === 'meta-analysis' || studyDesign === 'systematic-review') s = 0.85;
-  else if (studyDesign === 'RCT') s = 0.7;
-  else if (studyDesign === 'crossover') s = 0.65;
-  else if (studyDesign === 'cohort') s = 0.55;
-  else if (studyDesign === 'observational') s = 0.45;
-  else if (studyDesign === 'narrative-review') s = 0.5;
-  else if (studyDesign === 'preprint') s = 0.4;
-  if (confidence === 'replicated') s = Math.min(0.95, s + 0.05);
-  if (confidence === 'preliminary') s = Math.max(0.3, s - 0.1);
-  return Math.round(s * 100) / 100;
-}
+// ── Trust scoring ────────────────────────────────────────────────────────────
+// v2 lives in shared/trust.ts — combines study_design (base) with Semantic
+// Scholar author h-index + citation count + journal tier from journals.ts.
+// Imported below; the per-paper pipeline calls enrichAuthority() then
+// trustScoreV2().
+//
 
 // ── Per-paper pipeline ──────────────────────────────────────────────────────
 async function processPaper(
@@ -185,7 +189,37 @@ async function processPaper(
       return { paper, status: 'rejected_embedding', reason: String(e) };
     }
 
-    const trust = trustScoreV1(dist.study_design, dist.confidence);
+    // Trust scoring v2: study_design (base) + Semantic Scholar author
+    // h-index + citation count + journal tier. enrichAuthority is best-
+    // effort; if Semantic Scholar 404s or rate-limits we fall through to
+    // a v1-equivalent score (study_design only). Authority enrichment is
+    // also stashed into source_meta for the dashboard to display.
+    const authority = await enrichAuthority(paper);
+    const trust = trustScoreV2(dist, authority);
+    paper.source_meta = {
+      ...(paper.source_meta ?? {}),
+      authority: {
+        author_h_index: authority.authorMaxHIndex,
+        citation_count: authority.citationCount,
+        influential_citations: authority.influentialCitationCount,
+        journal_tier: authority.journalTier,
+        source: authority.source,
+      },
+    };
+
+    // Contradiction detection (Phase 3). Reuses the HyDE embedding we just
+    // computed — zero extra Voyage calls. 0–3 extra Haiku calls per paper,
+    // and we never block on a verdict failure (worst case = paper lands
+    // with `contradiction_flags=null`, same as if nothing conflicted).
+    let contradictionFlags: ContradictionFlag[] = [];
+    try {
+      contradictionFlags = await findConflicts(client, paper, dist, embedding);
+    } catch (e) {
+      log.warn('contradictions', `findConflicts threw; continuing without flags`, {
+        url: paper.url,
+        error: String(e).slice(0, 200),
+      });
+    }
 
     if (opts.dryRun) {
       log.info('orch', '[DRY] would insert', {
@@ -195,11 +229,16 @@ async function processPaper(
         topic_tags: dist.topic_tags,
         trust,
         hyde: dist.hyde_questions,
+        contradictions: contradictionFlags.length,
+        contradiction_verdicts: contradictionFlags.map((f) => `${f.verdict}@${f.similarity.toFixed(2)}`),
       });
       return { paper, status: 'added' };
     }
 
-    const pendingId = await insertPending(client, paper, dist, embedding, trust);
+    const pendingId = await insertPending(
+      client, paper, dist, embedding, trust,
+      contradictionFlags.length > 0 ? contradictionFlags : null,
+    );
     return { paper, status: 'added', pending_id: pendingId };
   } catch (e) {
     return { paper, status: 'error', reason: String(e) };
@@ -329,19 +368,205 @@ async function runTopicItem(
   return { fetched: papers.length, added, lastIdentifier, lastPubDate, error: null, counts };
 }
 
+// ── Auto-review pass ────────────────────────────────────────────────────────
+// Triggered by --review. Walks every pending row >= reviewAgeHours old that
+// doesn't yet have a live agent_review_log entry, calls the Sonnet agent,
+// applies the (post-guardrail) action via existing RPCs, and logs the
+// decision for audit + revert. Each paper costs ~1500 input + 500 output
+// Sonnet tokens ≈ $0.012. At 20 papers/day worst-case = ~$0.24/day.
+async function runAgentReviewPass(
+  client: ReturnType<typeof makeServiceClient>,
+  opts: CliOpts,
+): Promise<void> {
+  log.info('agent-review', 'starting', { age_hours: opts.reviewAgeHours, dry_run: opts.dryRun });
+
+  // Pull pending rows ready for review.
+  const { data: rows, error } = await client.rpc('pending_ready_for_agent_review', {
+    p_age_hours: opts.reviewAgeHours,
+    p_limit: 50,
+  });
+  if (error) {
+    log.error('agent-review', `pending_ready_for_agent_review failed: ${error.message}`);
+    return;
+  }
+  const pending = Array.isArray(rows) ? rows : [];
+  if (pending.length === 0) {
+    log.info('agent-review', 'no pending rows past the age threshold; nothing to do');
+    return;
+  }
+  log.info('agent-review', `processing ${pending.length} pending paper(s)`);
+
+  let approved = 0, rejected = 0, superseded = 0, coexisted = 0, errors = 0;
+
+  for (const row of pending) {
+    // Shape the row for the agent. source_meta.authority is the trust v2
+    // enrichment we stashed at ingest; pass it through so the agent has
+    // the same signals the trust score used.
+    const sourceMeta = (row.source_meta ?? {}) as Record<string, any>;
+    const authority = sourceMeta.authority as PendingPaperForAgent['authority'] | undefined;
+    const paper: PendingPaperForAgent = {
+      pending_id: row.pending_id as string,
+      title: row.title as string,
+      url: row.url as string,
+      source: row.source as string,
+      authors: Array.isArray(row.authors) ? (row.authors as string[]) : [],
+      journal: (row.journal as string | null) ?? null,
+      pub_year: (row.pub_year as number | null) ?? null,
+      topic_tags: Array.isArray(row.topic_tags) ? (row.topic_tags as string[]) : [],
+      trust_score: Number(row.trust_score ?? 0.5),
+      study_design: row.study_design as string,
+      confidence: row.confidence as string,
+      license: typeof sourceMeta.license === 'string' ? sourceMeta.license : null,
+      population: row.population as string,
+      intervention: row.intervention as string,
+      key_finding: row.key_finding as string,
+      practical_takeaway: row.practical_takeaway as string,
+      ingested_at: row.ingested_at as string,
+      contradiction_flags: Array.isArray(row.contradiction_flags)
+        ? (row.contradiction_flags as PendingPaperForAgent['contradiction_flags'])
+        : [],
+      authority,
+    };
+
+    let decision: AgentDecision;
+    try {
+      decision = await runAgentReview(paper);
+    } catch (e) {
+      log.error('agent-review', `Sonnet call failed for ${paper.title.slice(0, 60)}`, {
+        error: String(e).slice(0, 200),
+      });
+      errors += 1;
+      continue;
+    }
+
+    log.info('agent-review', `decision: ${decision.final_action}${decision.proposed_action !== decision.final_action ? ` (proposed ${decision.proposed_action})` : ''}`, {
+      url: paper.url,
+      confidence: decision.confidence,
+      flags: decision.flags,
+      superseded_count: decision.superseded_kb_ids.length,
+      downgrade: decision.downgrade_reason,
+    });
+
+    if (opts.dryRun) {
+      log.info('agent-review', '[DRY] would apply', {
+        pending_id: paper.pending_id,
+        action: decision.final_action,
+      });
+      continue;
+    }
+
+    // Apply the decision.
+    let newKbId: string | null = null;
+    try {
+      if (decision.final_action === 'reject') {
+        const { error: rErr } = await client.rpc('reject_pending', {
+          p_pending_id: paper.pending_id,
+          p_reason: decision.rationale.slice(0, 200),
+          p_reviewer: 'agent',
+        });
+        if (rErr) throw new Error(`reject_pending: ${rErr.message}`);
+        rejected += 1;
+      } else {
+        // approve / supersede / coexist all promote the paper first.
+        const { data: kbId, error: pErr } = await client.rpc('promote_pending_to_kb', {
+          p_pending_id: paper.pending_id,
+          p_reviewer: 'agent',
+        });
+        if (pErr) throw new Error(`promote_pending_to_kb: ${pErr.message}`);
+        newKbId = kbId as string;
+
+        if (decision.final_action === 'supersede' && decision.superseded_kb_ids.length > 0) {
+          // Each supersede target is independent; partial failure is OK
+          // (the new kb row stays; we just don't get the supersede link).
+          for (const targetId of decision.superseded_kb_ids) {
+            const { error: sErr } = await client.rpc('supersede_kb', {
+              p_superseded_id: targetId,
+              p_by_id: newKbId,
+              p_reviewer: 'agent',
+            });
+            if (sErr) {
+              log.warn('agent-review', `supersede_kb failed for target ${targetId}`, {
+                error: sErr.message,
+              });
+            }
+          }
+          superseded += 1;
+        } else if (decision.final_action === 'approve') {
+          approved += 1;
+        } else {
+          coexisted += 1;
+        }
+      }
+    } catch (e) {
+      log.error('agent-review', `applying decision failed; logging anyway`, {
+        url: paper.url,
+        action: decision.final_action,
+        error: String(e).slice(0, 200),
+      });
+      errors += 1;
+      // Don't insert a log row when the apply step failed — next cron will
+      // retry. Otherwise we'd have an orphan log claiming "approved" with
+      // no kb row.
+      continue;
+    }
+
+    // Audit log.
+    try {
+      const { error: lErr } = await client.from('agent_review_log').insert({
+        pending_id: paper.pending_id,
+        paper_url: paper.url,
+        paper_title: paper.title,
+        proposed_action: decision.proposed_action,
+        final_action: decision.final_action,
+        downgrade_reason: decision.downgrade_reason,
+        rationale: decision.rationale,
+        confidence: decision.confidence,
+        flags: decision.flags,
+        superseded_kb_ids: decision.superseded_kb_ids,
+        new_kb_id: newKbId,
+        agent_model: 'claude-sonnet-4-20250514',
+        raw_response: decision.raw_response as object,
+      });
+      if (lErr) {
+        log.error('agent-review', `agent_review_log insert failed`, {
+          error: lErr.message,
+        });
+      }
+    } catch (e) {
+      log.error('agent-review', `agent_review_log threw`, {
+        error: String(e).slice(0, 200),
+      });
+    }
+  }
+
+  log.info('agent-review', 'done', {
+    processed: pending.length,
+    approved, rejected, superseded, coexisted, errors,
+  });
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
   const opts = parseArgs();
   assertRequiredEnv();
 
   log.info('orch', 'config', {
+    mode: opts.reviewMode ? 'review' : 'ingest',
     dry_run: opts.dryRun,
     total_papers_budget: opts.maxPapers,
     source_filter: opts.sourceFilter,
     skip_topic_plan: opts.skipTopicPlan,
+    review_age_hours: opts.reviewAgeHours,
   });
 
   const client = makeServiceClient();
+
+  // Branch: --review skips ingestion and runs the agent pass.
+  if (opts.reviewMode) {
+    await runAgentReviewPass(client, opts);
+    process.exit(0);
+  }
+
   const denylist = await loadDenylist(client);
   log.info('orch', `loaded ${denylist.length} denylist patterns`);
 

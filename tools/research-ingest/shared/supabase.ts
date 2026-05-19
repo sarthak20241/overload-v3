@@ -178,6 +178,11 @@ export async function insertPending(
   dist: Distillation,
   embedding: number[],
   trustScore: number,
+  // Phase 3 contradiction detection — `contradiction_flags` is null when no
+  // conflicts were found OR when the contradiction check failed (we don't
+  // want to block the whole ingest on a Haiku verdict failure). Non-empty
+  // array surfaces in the dashboard's detail sheet.
+  contradictionFlags: unknown[] | null = null,
 ): Promise<string> {
   const row = {
     source: paper.source,
@@ -198,6 +203,7 @@ export async function insertPending(
     license: paper.license ?? null,
     embedding: JSON.stringify(embedding),
     source_meta: paper.source_meta ?? null,
+    contradiction_flags: contradictionFlags && contradictionFlags.length > 0 ? contradictionFlags : null,
     review_status: 'pending',
   };
   return withRetry(`insertPending(${paper.url.slice(0, 60)})`, async () => {
