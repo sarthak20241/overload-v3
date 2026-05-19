@@ -34,19 +34,53 @@ import {
 import type { IngestResult, Source, Paper } from './shared/types.js';
 
 import { europepmcSource } from './sources/europepmc.js';
+import { biorxivSource } from './sources/biorxiv.js';
+import { sportrxivSource } from './sources/sportrxiv.js';
 import { buildTopicPlan, type TopicPlan, type TopicPlanItem } from './shared/topics.js';
 import { findConflicts, type ContradictionFlag } from './shared/contradictions.js';
 import { enrichAuthority, trustScoreV2 } from './shared/trust.js';
 import { runAgentReview, type PendingPaperForAgent, type AgentDecision } from './shared/agent-review.js';
 
-const ALL_SOURCES: Source[] = [europepmcSource];
+const ALL_SOURCES: Source[] = [europepmcSource, biorxivSource, sportrxivSource];
 
-// For now every topic-plan item routes to Europe PMC. When bioRxiv +
-// SportRxiv land we'll branch by bucket / topic content (e.g. preprints
-// for "trending", established journals for "user_need"). Map is a single
-// function so adding sources is a localized change.
-function pickSourceFor(_item: TopicPlanItem): Source {
-  return europepmcSource;
+/**
+ * Map a topic-plan item to the set of sources it should hit, along with each
+ * source's slice of the item's budget. Different buckets get different
+ * source mixes:
+ *
+ *   user_need / gap → Europe PMC only. These buckets exist because USERS
+ *     are asking about these topics; we want peer-reviewed evidence the
+ *     coach can cite with confidence. Preprints would dilute trust here.
+ *
+ *   trending → fans out across all three sources, with weighting:
+ *     Europe PMC gets the majority (latest peer-reviewed), bioRxiv gets
+ *     a small share (catches bleeding-edge cross-domain preprints — most
+ *     get filtered by the relevance keyword pass), SportRxiv gets a
+ *     small share (all on-topic, but smaller corpus + OSF migration may
+ *     mean low yield).
+ *
+ * The orchestrator iterates these returned (source, budget) pairs and
+ * runs each as its own fetch, with cross-source dedupe via seenUrls.
+ */
+interface SourceShare {
+  source: Source;
+  budget: number;
+}
+
+function sourcesForItem(item: TopicPlanItem): SourceShare[] {
+  if (item.bucket !== 'trending') {
+    return [{ source: europepmcSource, budget: item.budget }];
+  }
+  // Trending: weighted fan-out. 60/20/20.
+  const total = item.budget;
+  const epmc = Math.max(1, Math.floor(total * 0.6));
+  const biorxiv = Math.max(1, Math.floor(total * 0.2));
+  const sportrxiv = Math.max(1, total - epmc - biorxiv);
+  return [
+    { source: europepmcSource, budget: epmc },
+    { source: biorxivSource, budget: biorxiv },
+    { source: sportrxivSource, budget: sportrxiv },
+  ];
 }
 
 // Plagiarism threshold: cos(HyDE_passage, source_abstract). The HyDE passage
@@ -617,11 +651,12 @@ async function main() {
   });
 
   // ── Iterate the plan ────────────────────────────────────────────────────
-  // We only have one source (Europe PMC). When bioRxiv/SportRxiv land,
-  // pickSourceFor decides per-item. Checkpoint is per-source so we
-  // aggregate watermarks ACROSS topic items and update once at the end.
-  // Cross-topic dedupe via seenUrls — same paper showing up in two topic
-  // queries is processed once.
+  // Each topic-plan item fans out to one or more sources via sourcesForItem
+  // (trending → europe_pmc + biorxiv + sportrxiv, user_need/gap → europe_pmc
+  // only). Each (source, budget_share) pair runs as its own fetch. Per-source
+  // checkpoints aggregate watermarks ACROSS topic items and get updated once
+  // at the end. Cross-source dedupe via seenUrls — same paper appearing in
+  // two source queries is processed once.
   const seenUrls = new Set<string>();
   const voyageCallsSoFar = { count: 0 };
   const aggregatedBySource = new Map<string, {
@@ -635,38 +670,47 @@ async function main() {
   let anySucceeded = false;
 
   for (const item of plan.items) {
-    const source = pickSourceFor(item);
-    if (opts.sourceFilter && source.name !== opts.sourceFilter) {
-      log.skip('orch', `topic skipped by --source filter`, { topic: item.label, source: source.name });
-      continue;
-    }
-
-    const checkpoint = await getCheckpoint(client, source.name);
-    let r: Awaited<ReturnType<typeof runTopicItem>> | null = null;
-    try {
-      r = await runTopicItem(client, source, item, denylist, opts, checkpoint, seenUrls, voyageCallsSoFar);
-      if (r.error === null) anySucceeded = true;
-      totalAdded += r.added;
-    } catch (e) {
-      log.error('orch', `runTopicItem(${item.label}) threw`, { error: String(e).slice(0, 200) });
-    }
-
-    // Roll up source-level watermarks across all topic items.
-    if (r) {
-      const agg = aggregatedBySource.get(source.name) ?? {
-        fetched: 0, added: 0, lastIdentifier: null, lastPubDate: null, error: null,
-      };
-      agg.fetched += r.fetched;
-      agg.added += r.added;
-      if (r.error) agg.error = r.error;
-      // Watermarks: keep the highest seen. lastIdentifier is opaque/per-source
-      // so we just keep the last non-null; lastPubDate is ISO date, so max
-      // by string compare works.
-      if (r.lastIdentifier) agg.lastIdentifier = r.lastIdentifier;
-      if (r.lastPubDate && (!agg.lastPubDate || r.lastPubDate > agg.lastPubDate)) {
-        agg.lastPubDate = r.lastPubDate;
+    const shares = sourcesForItem(item);
+    for (const { source, budget } of shares) {
+      if (opts.sourceFilter && source.name !== opts.sourceFilter) {
+        log.skip('orch', `share skipped by --source filter`, {
+          topic: item.label, source: source.name,
+        });
+        continue;
       }
-      aggregatedBySource.set(source.name, agg);
+      // Each share runs as its own topic-item sub-fetch with its own budget.
+      // We synthesize a per-share TopicPlanItem so runTopicItem gets the
+      // right budget; the bucket / label / queryTerms pass through so
+      // source_meta on each paper still carries the topic context.
+      const shareItem: TopicPlanItem = { ...item, budget };
+
+      const checkpoint = await getCheckpoint(client, source.name);
+      let r: Awaited<ReturnType<typeof runTopicItem>> | null = null;
+      try {
+        r = await runTopicItem(client, source, shareItem, denylist, opts, checkpoint, seenUrls, voyageCallsSoFar);
+        if (r.error === null) anySucceeded = true;
+        totalAdded += r.added;
+      } catch (e) {
+        log.error('orch', `runTopicItem(${source.name}/${item.label}) threw`, { error: String(e).slice(0, 200) });
+      }
+
+      // Roll up per-source watermarks across all (item × source) shares.
+      if (r) {
+        const agg = aggregatedBySource.get(source.name) ?? {
+          fetched: 0, added: 0, lastIdentifier: null, lastPubDate: null, error: null,
+        };
+        agg.fetched += r.fetched;
+        agg.added += r.added;
+        if (r.error) agg.error = r.error;
+        // Watermarks: keep the highest seen. lastIdentifier is opaque per
+        // source so we just keep the last non-null; lastPubDate is ISO so
+        // lex-max works.
+        if (r.lastIdentifier) agg.lastIdentifier = r.lastIdentifier;
+        if (r.lastPubDate && (!agg.lastPubDate || r.lastPubDate > agg.lastPubDate)) {
+          agg.lastPubDate = r.lastPubDate;
+        }
+        aggregatedBySource.set(source.name, agg);
+      }
     }
   }
 
