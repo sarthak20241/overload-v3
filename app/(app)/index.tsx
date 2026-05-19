@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
-  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -233,7 +232,58 @@ export default function DashboardScreen() {
   const totalSets = workouts.reduce((s, w) => s + (w.sets?.length || 0), 0);
   const totalReps = workouts.reduce((s, w) => s + (w.sets?.reduce((r: number, set: any) => r + set.reps, 0) || 0), 0);
 
-  const recentWorkouts = workouts.slice(0, 5);
+  const recentWorkouts = workouts.slice(0, 3);
+
+  // Expanded workout id (tap to expand)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Per-workout PR detection: walk workouts chronologically, track best Epley 1RM
+  // per exercise, flag a workout if it set a new best for any exercise it touched.
+  // First-ever entry for an exercise is the baseline, not a PR.
+  const workoutPRs = useMemo(() => {
+    const sortedAsc = [...workouts].sort(
+      (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
+    );
+    const best: Record<string, number> = {};
+    const result: Record<string, string[]> = {};
+    for (const w of sortedAsc) {
+      const prs: string[] = [];
+      for (const s of (w.sets || []) as any[]) {
+        if (!s.completed) continue;
+        const exId = s.exercise_id || s.exercises?.id;
+        const exName = s.exercises?.name;
+        if (!exId || !exName || s.weight_kg <= 0 || s.reps <= 0) continue;
+        const epley = s.weight_kg * (1 + s.reps / 30);
+        const prev = best[exId] ?? 0;
+        if (epley > prev) {
+          if (prev > 0 && !prs.includes(exName)) prs.push(exName);
+          best[exId] = epley;
+        }
+      }
+      if (prs.length > 0) result[w.id] = prs;
+    }
+    return result;
+  }, [workouts]);
+
+  // Volume delta vs the previous same-routine workout.
+  // Matches by routine_id (falls back to workout name) so Push Day compares to last Push Day,
+  // not to whatever was logged in between. Walks workouts oldest → newest.
+  const volumeDeltas = useMemo(() => {
+    const sortedAsc = [...workouts].sort(
+      (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
+    );
+    const lastVolByKey: Record<string, number> = {};
+    const result: Record<string, number> = {};
+    for (const w of sortedAsc) {
+      const key = w.routine_id || w.name || w.id;
+      const vol = w.total_volume_kg || 0;
+      if (vol > 0 && lastVolByKey[key] !== undefined && lastVolByKey[key] > 0) {
+        result[w.id] = vol - lastVolByKey[key];
+      }
+      if (vol > 0) lastVolByKey[key] = vol;
+    }
+    return result;
+  }, [workouts]);
 
   // AI Coach state
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
@@ -545,43 +595,167 @@ export default function DashboardScreen() {
               </View>
             ) : (
               <View style={{ gap: 8 }}>
-                {recentWorkouts.map((w, idx) => (
-                  <Animated.View
-                    key={w.id}
-                    entering={FadeInDown.delay(idx * 50).duration(300)}
-                    style={[styles.workoutItem, { backgroundColor: C.glowBg, borderColor: C.borderSubtle }]}
-                  >
-                    <View style={[styles.workoutDotWrap, { backgroundColor: `${ROUTINE_COLORS[idx % ROUTINE_COLORS.length]}15` }]}>
-                      <View style={[styles.workoutDot, { backgroundColor: ROUTINE_COLORS[idx % ROUTINE_COLORS.length] }]} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.workoutName, { color: C.foreground }]}>{w.name}</Text>
-                      <Text style={[styles.workoutDate, { color: C.textMuted }]}>{formatDate(w.started_at)}</Text>
-                      {(w.sets?.length || 0) > 0 && (
-                        <View style={styles.exerciseTags}>
-                          {[...new Set(w.sets?.map((s: any) => s.exercises?.name).filter(Boolean))].slice(0, 3).map((exName: any, ei: number) => (
-                            <View key={ei} style={[styles.tag, { backgroundColor: C.muted }]}>
-                              <Text style={[styles.tagText, { color: C.textSecondary }]}>{exName}</Text>
+                {recentWorkouts.map((w, idx) => {
+                  const prs = workoutPRs[w.id] || [];
+                  const isExpanded = expandedId === w.id;
+                  const dotColor = ROUTINE_COLORS[idx % ROUTINE_COLORS.length];
+                  const delta = volumeDeltas[w.id];
+
+                    // Group sets by exercise (in order of first appearance)
+                    const grouped: { name: string; sets: { weight: number; reps: number; completed: boolean }[] }[] = [];
+                    const groupIdx: Record<string, number> = {};
+                    for (const s of (w.sets || []) as any[]) {
+                      const name = s.exercises?.name || 'Unknown';
+                      if (groupIdx[name] === undefined) {
+                        groupIdx[name] = grouped.length;
+                        grouped.push({ name, sets: [] });
+                      }
+                      grouped[groupIdx[name]].sets.push({
+                        weight: s.weight_kg,
+                        reps: s.reps,
+                        completed: s.completed,
+                      });
+                    }
+
+                    return (
+                      <Animated.View
+                        key={w.id}
+                        entering={FadeInDown.delay(idx * 50).duration(300)}
+                      >
+                        <TouchableOpacity
+                          activeOpacity={0.7}
+                          onPress={() => setExpandedId(isExpanded ? null : w.id)}
+                          style={[
+                            styles.workoutItem,
+                            {
+                              backgroundColor: C.glowBg,
+                              borderColor: isExpanded ? C.primaryBorder : C.borderSubtle,
+                            },
+                          ]}
+                        >
+                          <View style={[styles.workoutDotWrap, { backgroundColor: `${dotColor}15` }]}>
+                            <View style={[styles.workoutDot, { backgroundColor: dotColor }]} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <View style={styles.workoutNameRow}>
+                              <Text style={[styles.workoutName, { color: C.foreground }]} numberOfLines={1}>
+                                {w.name}
+                              </Text>
+                              {prs.length > 0 && (
+                                <View style={styles.prBadge}>
+                                  <Feather name="award" size={9} color={Colors.primaryFg} />
+                                  <Text style={styles.prBadgeText}>
+                                    PR{prs.length > 1 ? ` ×${prs.length}` : ''}
+                                  </Text>
+                                </View>
+                              )}
                             </View>
-                          ))}
-                        </View>
-                      )}
-                    </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                        <Feather name="clock" size={10} color={C.mutedFg} />
-                        <Text style={[styles.workoutDuration, { color: C.mutedFg }]}>
-                          {w.duration_seconds ? formatDuration(w.duration_seconds) : '-'}
-                        </Text>
-                      </View>
-                      {w.total_volume_kg ? (
-                        <Text style={[styles.workoutVolume, { color: C.textMuted }]}>
-                          {w.total_volume_kg}kg
-                        </Text>
-                      ) : null}
-                    </View>
-                  </Animated.View>
-                ))}
+                            <Text style={[styles.workoutDate, { color: C.textMuted }]}>{formatDate(w.started_at)}</Text>
+                            {!isExpanded && (w.sets?.length || 0) > 0 && (
+                              <View style={styles.exerciseTags}>
+                                {[...new Set(w.sets?.map((s: any) => s.exercises?.name).filter(Boolean))].slice(0, 3).map((exName: any, ei: number) => (
+                                  <View key={ei} style={[styles.tag, { backgroundColor: C.muted }]}>
+                                    <Text style={[styles.tagText, { color: C.textSecondary }]}>{exName}</Text>
+                                  </View>
+                                ))}
+                              </View>
+                            )}
+                          </View>
+                          <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                              <Feather name="clock" size={10} color={C.mutedFg} />
+                              <Text style={[styles.workoutDuration, { color: C.mutedFg }]}>
+                                {w.duration_seconds ? formatDuration(w.duration_seconds) : '-'}
+                              </Text>
+                            </View>
+                            {w.total_volume_kg ? (
+                              <Text style={[styles.workoutVolume, { color: C.textMuted }]}>
+                                {w.total_volume_kg}kg
+                              </Text>
+                            ) : null}
+                            {delta !== undefined && Math.round(delta) !== 0 && (
+                              <View style={styles.deltaRow}>
+                                <Feather
+                                  name={delta > 0 ? 'trending-up' : 'trending-down'}
+                                  size={9}
+                                  color={delta > 0 ? Colors.success : Colors.danger}
+                                />
+                                <Text style={[
+                                  styles.deltaText,
+                                  { color: delta > 0 ? Colors.success : Colors.danger },
+                                ]}>
+                                  {delta > 0 ? '+' : ''}{Math.round(delta)}kg
+                                </Text>
+                              </View>
+                            )}
+                            <Feather
+                              name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                              size={14}
+                              color={C.textDim}
+                              style={{ marginTop: 2 }}
+                            />
+                          </View>
+                        </TouchableOpacity>
+
+                        {isExpanded && (
+                          <Animated.View
+                            entering={FadeInDown.duration(180)}
+                            style={[styles.expandedWrap, { backgroundColor: C.muted, borderColor: C.borderSubtle }]}
+                          >
+                            {grouped.length === 0 ? (
+                              <Text style={[styles.expandedEmpty, { color: C.textMuted }]}>
+                                No set data recorded for this workout
+                              </Text>
+                            ) : (
+                              grouped.map((g, gi) => {
+                                const isPR = prs.includes(g.name);
+                                return (
+                                  <View
+                                    key={gi}
+                                    style={[
+                                      styles.expandedExercise,
+                                      gi > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.borderSubtle },
+                                    ]}
+                                  >
+                                    <View style={styles.expandedExHeader}>
+                                      <Text style={[styles.expandedExName, { color: C.foreground }]}>
+                                        {g.name}
+                                      </Text>
+                                      {isPR && (
+                                        <View style={styles.prBadgeSm}>
+                                          <Feather name="award" size={8} color={Colors.primaryFg} />
+                                          <Text style={styles.prBadgeTextSm}>PR</Text>
+                                        </View>
+                                      )}
+                                      <Text style={[styles.expandedExCount, { color: C.textDim }]}>
+                                        {g.sets.length} {g.sets.length === 1 ? 'set' : 'sets'}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.expandedSets}>
+                                      {g.sets.map((s, si) => (
+                                        <View
+                                          key={si}
+                                          style={[
+                                            styles.expandedSet,
+                                            { backgroundColor: C.card, borderColor: C.borderSubtle },
+                                            !s.completed && { opacity: 0.5 },
+                                          ]}
+                                        >
+                                          <Text style={[styles.expandedSetText, { color: C.textSecondary }]}>
+                                            {s.weight > 0 ? `${s.weight}kg × ${s.reps}` : `${s.reps} reps`}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  </View>
+                                );
+                              })
+                            )}
+                          </Animated.View>
+                        )}
+                      </Animated.View>
+                    );
+                })}
               </View>
             )}
           </Animated.View>
@@ -728,6 +902,68 @@ const styles = StyleSheet.create({
   exerciseTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   tag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 99 },
   tagText: { fontSize: 10 },
+  // PR badge
+  workoutNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  prBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 99,
+    backgroundColor: Colors.primary,
+  },
+  prBadgeText: {
+    fontSize: 9,
+    fontWeight: FontWeight.black,
+    color: Colors.primaryFg,
+    letterSpacing: 0.4,
+  },
+  prBadgeSm: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 99,
+    backgroundColor: Colors.primary,
+  },
+  prBadgeTextSm: {
+    fontSize: 8,
+    fontWeight: FontWeight.black,
+    color: Colors.primaryFg,
+    letterSpacing: 0.4,
+  },
+  // Volume delta vs previous same-routine workout
+  deltaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginTop: 1,
+  },
+  deltaText: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 0.2 },
+  // Expanded workout detail
+  expandedWrap: {
+    marginTop: 6,
+    marginHorizontal: 4,
+    padding: 12,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    gap: 10,
+  },
+  expandedEmpty: { fontSize: 11, fontStyle: 'italic', textAlign: 'center', paddingVertical: 8 },
+  expandedExercise: { paddingTop: 8, gap: 6 },
+  expandedExHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  expandedExName: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, flexShrink: 1 },
+  expandedExCount: { fontSize: 10, marginLeft: 'auto' },
+  expandedSets: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  expandedSet: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,
