@@ -13,6 +13,7 @@
  */
 import { ANTHROPIC_API_KEY } from './env.js';
 import type { Distillation, Paper } from './types.js';
+import { logUsage } from './usage.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5';
@@ -95,6 +96,7 @@ ${paper.abstract}
 
 Extract the structured fields via submit_distillation.`;
 
+  const startMs = Date.now();
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: {
@@ -111,10 +113,45 @@ Extract the structured fields via submit_distillation.`;
       messages: [{ role: 'user', content: userMessage }],
     }),
   });
+  const latencyMs = Date.now() - startMs;
+
+  // Log usage regardless of outcome. Failures still cost tokens (well,
+  // Anthropic only bills for successful calls but we want to see that an
+  // attempt happened for debugging).
   if (!res.ok) {
+    void logUsage({
+      pipeline: 'ingest_distill',
+      provider: 'anthropic',
+      model: MODEL,
+      latency_ms: latencyMs,
+      status: 'error',
+      error_message: `${res.status}`,
+      metadata: { paper_url: paper.url, paper_title: paper.title.slice(0, 200) },
+    });
     throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
   }
   const body = await res.json();
+  const usage = body.usage ?? {};
+
+  // Fire-and-forget usage log
+  void logUsage({
+    pipeline: 'ingest_distill',
+    provider: 'anthropic',
+    model: MODEL,
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+    cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
+    latency_ms: latencyMs,
+    status: 'success',
+    metadata: {
+      paper_url: paper.url,
+      paper_title: paper.title.slice(0, 200),
+      pub_year: paper.pub_year,
+      source: paper.source,
+    },
+  });
+
   const toolUse = (body.content as any[]).find((b) => b.type === 'tool_use');
   if (!toolUse) {
     throw new Error('Haiku did not emit submit_distillation tool_use block');

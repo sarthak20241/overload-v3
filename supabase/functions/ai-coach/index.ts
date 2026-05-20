@@ -132,6 +132,44 @@ function preview(text: string | null | undefined): string | null {
   return text.length > PREVIEW_MAX_CHARS ? text.slice(0, PREVIEW_MAX_CHARS) : text;
 }
 
+// ── Token usage logging (Phase 3 observability) ─────────────────────────────
+// Writes one row to token_usage_log per Anthropic / Voyage call. Best-effort:
+// any failure is swallowed so logging never breaks the coach turn.
+async function logTokenUsage(
+  admin: SupabaseClient,
+  rec: {
+    pipeline: string;
+    provider: string;
+    model: string;
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_tokens?: number;
+    cache_creation_tokens?: number;
+    metadata?: Record<string, unknown>;
+    latency_ms?: number;
+    status?: "success" | "error";
+    error_message?: string;
+  },
+): Promise<void> {
+  try {
+    await admin.rpc("log_token_usage", {
+      p_pipeline: rec.pipeline,
+      p_provider: rec.provider,
+      p_model: rec.model,
+      p_input_tokens: rec.input_tokens ?? 0,
+      p_output_tokens: rec.output_tokens ?? 0,
+      p_cache_read_tokens: rec.cache_read_tokens ?? 0,
+      p_cache_creation_tokens: rec.cache_creation_tokens ?? 0,
+      p_metadata: rec.metadata ?? null,
+      p_latency_ms: rec.latency_ms ?? null,
+      p_status: rec.status ?? "success",
+      p_error_message: rec.error_message ?? null,
+    });
+  } catch (e) {
+    console.log("[ai-coach] logTokenUsage failed (swallowed):", String(e).slice(0, 200));
+  }
+}
+
 async function recordTrace(
   admin: SupabaseClient,
   trace: CoachTrace,
@@ -194,7 +232,14 @@ async function executeTool(
 // Asymmetric retrieval: documents were ingested with input_type:"document",
 // queries here use input_type:"query" so the same idea encoded as casual
 // gym-speak lands close to its formal-language answer.
-async function embedQuery(text: string): Promise<number[] | null> {
+//
+// Logs one token_usage_log row per call (Phase 3 observability). admin
+// + userId are passed so the row carries provenance for the dashboard.
+async function embedQuery(
+  text: string,
+  admin: SupabaseClient,
+  userId: string,
+): Promise<number[] | null> {
   if (!VOYAGE_API_KEY) {
     console.log("[ai-coach] VOYAGE_API_KEY missing — skipping retrieval");
     return null;
@@ -202,6 +247,7 @@ async function embedQuery(text: string): Promise<number[] | null> {
   const trimmed = (text ?? "").trim().slice(0, RETRIEVAL_QUERY_CAP);
   if (trimmed.length === 0) return null;
 
+  const startMs = Date.now();
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), VOYAGE_TIMEOUT_MS);
   try {
@@ -218,13 +264,41 @@ async function embedQuery(text: string): Promise<number[] | null> {
       }),
       signal: controller.signal,
     });
+    const latencyMs = Date.now() - startMs;
     if (!res.ok) {
+      void logTokenUsage(admin, {
+        pipeline: "embed_query",
+        provider: "voyage",
+        model: "voyage-3",
+        latency_ms: latencyMs,
+        status: "error",
+        error_message: `${res.status}`,
+        metadata: { user_id: userId },
+      });
       console.log(`[ai-coach] voyage query embed failed: ${res.status}`);
       return null;
     }
     const data = await res.json();
+    void logTokenUsage(admin, {
+      pipeline: "embed_query",
+      provider: "voyage",
+      model: "voyage-3",
+      input_tokens: data.usage?.total_tokens ?? 0,
+      latency_ms: latencyMs,
+      status: "success",
+      metadata: { user_id: userId, query_len: trimmed.length },
+    });
     return data.data?.[0]?.embedding ?? null;
   } catch (e) {
+    void logTokenUsage(admin, {
+      pipeline: "embed_query",
+      provider: "voyage",
+      model: "voyage-3",
+      latency_ms: Date.now() - startMs,
+      status: "error",
+      error_message: String(e).slice(0, 200),
+      metadata: { user_id: userId },
+    });
     console.log("[ai-coach] voyage query embed threw:", String(e));
     return null;
   } finally {
@@ -632,7 +706,7 @@ Deno.serve(async (req) => {
   } else if (!lastUser?.content) {
     trace.retrieval_status = "skipped_empty_message";
   } else {
-    const queryEmbedding = await embedQuery(lastUser.content);
+    const queryEmbedding = await embedQuery(lastUser.content, admin, userId);
     if (!queryEmbedding) {
       trace.retrieval_status = "embed_failed";
     } else {
@@ -731,6 +805,31 @@ Deno.serve(async (req) => {
         trace.citation_ids = citations.map((c) => c.id);
         trace.response_preview = preview(result.finalText);
 
+        // Phase 3 observability: one row per coach turn into token_usage_log.
+        // The trace table already captures this for the Conversations page,
+        // but the unified log powers the cost-page breakdowns where coach +
+        // ingest + review-agent costs sit side-by-side.
+        void logTokenUsage(admin, {
+          pipeline: "coach",
+          provider: "anthropic",
+          model: MODEL,
+          input_tokens: result.totalInput,
+          output_tokens: result.totalOutput,
+          cache_read_tokens: result.totalCacheRead,
+          cache_creation_tokens: result.totalCacheCreation,
+          latency_ms: Date.now() - startedAtMs,
+          status: "success",
+          metadata: {
+            user_id: userId,
+            mode: forceTool ?? "chat",
+            message_count: incomingMessages.length,
+            tool_calls: trace.tool_calls,
+            citation_count: citations.length,
+            retrieval_status: trace.retrieval_status,
+            stream: true,
+          },
+        });
+
         sse.write("done", {
           citations,
           usage: {
@@ -750,6 +849,18 @@ Deno.serve(async (req) => {
         trace.status = "internal_error";
         trace.error_message = `stream_threw: ${String(e)}`.slice(0, 200);
         sse.write("error", { error: String(e) });
+        // Error path: still log usage so the Errors page surfaces this.
+        // input/output tokens unknown for stream-aborts so we just record
+        // the latency + error message.
+        void logTokenUsage(admin, {
+          pipeline: "coach",
+          provider: "anthropic",
+          model: MODEL,
+          latency_ms: Date.now() - startedAtMs,
+          status: "error",
+          error_message: `stream_threw: ${String(e)}`.slice(0, 200),
+          metadata: { user_id: userId, mode: forceTool ?? "chat", stream: true },
+        });
       } finally {
         trace.http_status = 200;
         try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
@@ -929,6 +1040,28 @@ Deno.serve(async (req) => {
   trace.cache_creation_input_tokens = totalCacheCreation || null;
   trace.cache_read_input_tokens = totalCacheRead || null;
   trace.response_preview = preview(finalText);
+
+  // Phase 3 observability: mirror the streaming branch's log.
+  void logTokenUsage(admin, {
+    pipeline: "coach",
+    provider: "anthropic",
+    model: MODEL,
+    input_tokens: totalInput,
+    output_tokens: totalOutput,
+    cache_read_tokens: totalCacheRead,
+    cache_creation_tokens: totalCacheCreation,
+    latency_ms: Date.now() - startedAtMs,
+    status: "success",
+    metadata: {
+      user_id: userId,
+      mode: forceTool ?? "chat",
+      message_count: incomingMessages.length,
+      tool_calls: trace.tool_calls,
+      citation_count: citations.length,
+      retrieval_status: trace.retrieval_status,
+      stream: false,
+    },
+  });
 
   return respond(
     {

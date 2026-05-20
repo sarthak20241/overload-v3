@@ -7,6 +7,7 @@
  * above what we hit per single-paper passage, but we batch when we can.
  */
 import { VOYAGE_API_KEY } from './env.js';
+import { logUsage } from './usage.js';
 
 const VOYAGE_URL = 'https://api.voyageai.com/v1/embeddings';
 const MODEL = 'voyage-3';
@@ -16,6 +17,7 @@ async function embedBatch(
   inputType: 'document' | 'query',
 ): Promise<number[][]> {
   if (inputs.length === 0) return [];
+  const startMs = Date.now();
   const res = await fetch(VOYAGE_URL, {
     method: 'POST',
     headers: {
@@ -28,10 +30,38 @@ async function embedBatch(
       input_type: inputType,
     }),
   });
+  const latencyMs = Date.now() - startMs;
+
+  // Pipeline name encodes whether this is ingest-time doc embed or
+  // retrieval-time query embed — separate buckets on the Cost page.
+  const pipeline = inputType === 'query' ? 'embed_query' : 'embed_ingest';
+
   if (!res.ok) {
+    void logUsage({
+      pipeline,
+      provider: 'voyage',
+      model: MODEL,
+      latency_ms: latencyMs,
+      status: 'error',
+      error_message: `${res.status}`,
+      metadata: { batch_size: inputs.length, input_type: inputType },
+    });
     throw new Error(`Voyage ${res.status}: ${await res.text()}`);
   }
   const body = await res.json();
+  const tokens = body.usage?.total_tokens ?? 0;
+
+  // Voyage charges only input tokens (no concept of output). Map to
+  // input_tokens column so the cost calc works.
+  void logUsage({
+    pipeline,
+    provider: 'voyage',
+    model: MODEL,
+    input_tokens: tokens,
+    latency_ms: latencyMs,
+    status: 'success',
+    metadata: { batch_size: inputs.length, input_type: inputType },
+  });
   return body.data.map((d: { embedding: number[] }) => d.embedding);
 }
 
