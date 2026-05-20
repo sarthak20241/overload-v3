@@ -63,13 +63,27 @@ const STATUS_FILTERS = [
   { id: 'error',   label: 'Errors' },
 ] as const;
 
-export function ConversationsInteractive({ traces }: { traces: CoachTrace[] }) {
+export function ConversationsInteractive({
+  traces,
+  initialUserFilter = null,
+  initialSelectedId  = null,
+}: {
+  traces: CoachTrace[];
+  /** From `/conversations?user=<hash>` — last-5 hash of a Clerk user_id.
+   *  Matches the internal shortHash buckets so the /users page link
+   *  pre-applies the filter on landing. */
+  initialUserFilter?: string | null;
+  /** From `/conversations?trace=<traceId>` — opens the side panel on
+   *  the matching trace if it's in the loaded window. From /gaps deep
+   *  links. */
+  initialSelectedId?: string | null;
+}) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all');
   const [retrievalFilter, setRetrievalFilter] = useState<string | null>(null);
   const [hasCitations, setHasCitations] = useState<boolean | null>(null);
-  const [userFilter, setUserFilter] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [userFilter, setUserFilter] = useState<string | null>(initialUserFilter);
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
 
   // Distinct retrieval-status values for filter pills
   const retrievalStatuses = useMemo(() => {

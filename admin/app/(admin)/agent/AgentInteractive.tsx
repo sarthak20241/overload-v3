@@ -84,12 +84,22 @@ export function AgentInteractive({ rows }: { rows: AgentReviewLog[] }) {
 
   const handleRevert = (logId: string) => {
     startTransition(async () => {
-      const r = await revertAgentDecision(logId);
-      if (r.ok) {
-        setBanner({ kind: 'ok', text: r.message });
-        router.refresh();
-      } else {
-        setBanner({ kind: 'err', text: r.error });
+      try {
+        const r = await revertAgentDecision(logId);
+        if (r.ok) {
+          setBanner({ kind: 'ok', text: r.message });
+          router.refresh();
+        } else {
+          setBanner({ kind: 'err', text: r.error });
+        }
+      } catch (e) {
+        // Server actions can throw (network drop, action runtime panic,
+        // Next.js redirect-as-throw). Without this, the spinner clears
+        // but no banner appears and the curator has no idea what happened.
+        setBanner({
+          kind: 'err',
+          text: `Failed to revert: ${String((e as Error)?.message ?? e).slice(0, 200)}`,
+        });
       }
     });
   };

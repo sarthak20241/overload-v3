@@ -220,13 +220,22 @@ function ClusterRow({
 }
 
 function DetailPanel({ cluster, onClose }: { cluster: GapCluster; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'ok' | 'err' | null>(null);
 
   const copy = () => {
-    navigator.clipboard.writeText(cluster.preview).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    // Clipboard can reject in iframes, insecure contexts, or when the
+    // page isn't focused. Without a catch the button silently goes
+    // stale and the curator has no idea why nothing was copied.
+    navigator.clipboard
+      .writeText(cluster.preview)
+      .then(() => {
+        setCopied('ok');
+        setTimeout(() => setCopied(null), 1500);
+      })
+      .catch(() => {
+        setCopied('err');
+        setTimeout(() => setCopied(null), 2000);
+      });
   };
 
   return (
@@ -254,9 +263,16 @@ function DetailPanel({ cluster, onClose }: { cluster: GapCluster; onClose: () =>
 
       <button
         onClick={copy}
-        className="w-full mb-5 px-3 py-2 rounded-md border border-primary-muted bg-primary-subtle text-primary text-xs font-semibold hover:bg-primary-subtle/80 flex items-center justify-center gap-1.5"
+        className={
+          'w-full mb-5 px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ' +
+          (copied === 'err'
+            ? 'border border-danger/30 bg-danger/10 text-danger'
+            : 'border border-primary-muted bg-primary-subtle text-primary hover:bg-primary-subtle/80')
+        }
       >
-        {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy as seed term</>}
+        {copied === 'ok'  && (<><Check size={12} /> Copied</>)}
+        {copied === 'err' && (<><AlertCircle size={12} /> Clipboard blocked</>)}
+        {copied === null  && (<><Copy size={12} /> Copy as seed term</>)}
       </button>
 
       <Section title="Window">
@@ -324,7 +340,7 @@ function DetailPanel({ cluster, onClose }: { cluster: GapCluster; onClose: () =>
           {cluster.trace_ids.map((id) => (
             <li key={id}>
               <Link
-                href={`/conversations#${id}`}
+                href={`/conversations?trace=${id}`}
                 className="text-primary hover:underline font-mono text-[11px] flex items-center gap-1"
               >
                 {id.slice(0, 8)}… <ChevronRight size={11} />

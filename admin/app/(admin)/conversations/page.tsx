@@ -54,7 +54,12 @@ async function loadTraces(): Promise<{ traces: CoachTrace[]; error: string | nul
   }
 }
 
-export default async function ConversationsPage() {
+export default async function ConversationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ user?: string; trace?: string }>;
+}) {
+  const sp = await searchParams;
   const { traces, error } = await loadTraces();
   return (
     <div className="flex flex-col h-screen">
@@ -87,7 +92,11 @@ export default async function ConversationsPage() {
             </p>
           </div>
         ) : (
-          <ConversationsInteractive traces={traces} />
+          <ConversationsInteractive
+            traces={traces}
+            initialUserFilter={sp.user ?? null}
+            initialSelectedId={sp.trace ?? null}
+          />
         )}
       </div>
     </div>

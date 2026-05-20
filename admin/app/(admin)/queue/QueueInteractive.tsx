@@ -683,7 +683,11 @@ function Section({
     setError(null);
   }, [value]);
 
-  if (!value && !isEditing) return null;
+  // Only collapse the section entirely when there's nothing to show AND
+  // nothing the curator could add. When the field is editable, render an
+  // "Add" affordance even with an empty value so missing distillation
+  // fields can be filled in inline.
+  if (!value && !isEditing && !editable) return null;
 
   if (isEditing && editable) {
     return (
@@ -735,6 +739,7 @@ function Section({
     );
   }
 
+  const isEmpty = !value;
   return (
     <div className="group">
       <div className="flex items-center gap-1.5 mb-1">
@@ -742,16 +747,36 @@ function Section({
         {editable && (
           <button
             onClick={() => { setDraft(value); setIsEditing(true); }}
-            className="opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-primary"
-            title={`Edit ${label.toLowerCase()}`}
+            className={
+              // Empty-and-editable: keep the pencil visible so the
+              // curator notices the affordance. Otherwise hover-only.
+              (isEmpty
+                ? 'opacity-100 text-primary'
+                : 'opacity-0 group-hover:opacity-100 text-text-muted hover:text-primary')
+              + ' transition-opacity'
+            }
+            title={isEmpty ? `Add ${label.toLowerCase()}` : `Edit ${label.toLowerCase()}`}
           >
             <Pencil size={10} />
           </button>
         )}
       </div>
-      <div className={'text-sm leading-relaxed ' + (highlight ? 'text-fg' : 'text-muted-fg')}>
-        {value}
-      </div>
+      {isEmpty ? (
+        editable ? (
+          <button
+            onClick={() => { setDraft(''); setIsEditing(true); }}
+            className="text-xs text-primary hover:underline italic"
+          >
+            Add {label.toLowerCase()}…
+          </button>
+        ) : (
+          <div className="text-sm text-text-muted italic">—</div>
+        )
+      ) : (
+        <div className={'text-sm leading-relaxed ' + (highlight ? 'text-fg' : 'text-muted-fg')}>
+          {value}
+        </div>
+      )}
     </div>
   );
 }
