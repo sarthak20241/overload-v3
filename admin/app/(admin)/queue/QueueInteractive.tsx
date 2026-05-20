@@ -10,9 +10,12 @@
 
 import { useState, useMemo, useTransition, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import type { PendingPaper } from '@/lib/types';
-import { Search, X, Check, ExternalLink, AlertCircle, ChevronRight } from 'lucide-react';
-import { approvePending, rejectPending } from './actions';
+import type { PendingPaper, ContradictionFlag } from '@/lib/types';
+import {
+  Search, X, Check, ExternalLink, AlertCircle, ChevronRight,
+  AlertTriangle, Replace,
+} from 'lucide-react';
+import { approvePendingWithSupersede, rejectPending } from './actions';
 
 interface Props {
   papers: PendingPaper[];
@@ -84,12 +87,17 @@ export function QueueInteractive({ papers }: Props) {
     return () => clearTimeout(t);
   }, [banner]);
 
-  const handleApprove = useCallback(() => {
+  const handleApprove = useCallback((supersedeKbIds: string[]) => {
     if (!selected) return;
     startTransition(async () => {
-      const r = await approvePending(selected.id);
+      const r = await approvePendingWithSupersede(selected.id, supersedeKbIds);
       if (r.ok) {
-        setBanner({ kind: 'ok', text: r.message });
+        setBanner({
+          kind: r.partial_errors && r.partial_errors.length > 0 ? 'err' : 'ok',
+          text: r.partial_errors && r.partial_errors.length > 0
+            ? `${r.message} · failed: ${r.partial_errors.join(', ').slice(0, 200)}`
+            : r.message,
+        });
         setSelectedId(null);
         router.refresh();
       } else {
@@ -119,7 +127,10 @@ export function QueueInteractive({ papers }: Props) {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if (e.key === 'Escape' && selected) { setSelectedId(null); return; }
       if (!selected) return;
-      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); handleApprove(); }
+      // Keyboard approve = "approve, no supersedes". If the reviewer wants
+      // to supersede something, they have to click the toggle + button —
+      // intentionally not bound to a hotkey because supersede is destructive.
+      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); handleApprove([]); }
       if (e.key === 'j' || e.key === 'J' || e.key === 'ArrowDown') {
         e.preventDefault();
         const next = filtered[Math.min(filtered.length - 1, selectedIdx + 1)];
@@ -263,6 +274,24 @@ function PaperCard({
         <span className="text-text-muted uppercase tracking-wide text-[10px] font-semibold">
           {paper.study_design}
         </span>
+        {/*
+          Phase 3 contradiction detection: surface a red pill whenever the
+          ingest worker flagged this paper as 'contradict' (not
+          'different_conditions' — that's noisier and less actionable).
+          Reviewer should see at-a-glance that this one needs careful
+          attention before approval.
+        */}
+        {(() => {
+          const contradicts = (paper.contradiction_flags ?? []).filter(
+            (f) => f.verdict === 'contradict',
+          ).length;
+          if (contradicts === 0) return null;
+          return (
+            <span className="px-1.5 py-0.5 rounded-md border border-danger/40 bg-danger/15 text-danger text-[10px] font-bold uppercase tracking-wide">
+              {contradicts} conflict{contradicts === 1 ? '' : 's'}
+            </span>
+          );
+        })()}
         <span className="ml-auto text-text-muted">{timeSince(paper.ingested_at)}</span>
       </div>
       <h3 className="text-sm text-fg font-medium leading-snug line-clamp-2">
@@ -293,24 +322,39 @@ function DetailPanel({
   paper: PendingPaper;
   busy: boolean;
   onClose: () => void;
-  onApprove: () => void;
+  onApprove: (supersedeKbIds: string[]) => void;
   onReject: (reason: string) => void;
 }) {
   const [rejectMode, setRejectMode] = useState(false);
   const [reason, setReason] = useState('');
+  // Phase 3 supersede: reviewer-toggled set of kb_ids the new paper should
+  // replace. Empty by default. Reset whenever the panel switches to a new
+  // paper so toggles don't leak between reviews.
+  const [toggledSupersede, setToggledSupersede] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setRejectMode(false);
     setReason('');
+    setToggledSupersede(new Set());
   }, [paper.id]);
 
   const meta = (paper.source_meta ?? {}) as Record<string, unknown>;
   const doi = typeof meta.doi === 'string' ? meta.doi : undefined;
   const pmid = typeof meta.pmid === 'string' ? meta.pmid : undefined;
   const hyde = Array.isArray((meta as any).hyde_questions) ? (meta as any).hyde_questions as string[] : [];
+  const flags = paper.contradiction_flags ?? [];
+
+  const toggleSupersede = useCallback((kbId: string) => {
+    setToggledSupersede((prev) => {
+      const next = new Set(prev);
+      if (next.has(kbId)) next.delete(kbId);
+      else next.add(kbId);
+      return next;
+    });
+  }, []);
 
   return (
-    <aside className="w-[420px] border-l border-border bg-bg-elevated flex flex-col h-screen">
+    <aside className="w-[440px] border-l border-border bg-bg-elevated flex flex-col h-screen">
       {/* Header */}
       <div className="px-5 py-4 border-b border-border flex items-start gap-3">
         <div className="flex-1 min-w-0">
@@ -353,6 +397,33 @@ function DetailPanel({
             <ExternalLink size={11} />
             Open source{doi ? ` (DOI: ${doi.slice(0, 40)})` : pmid ? ` (PMID: ${pmid})` : ''}
           </a>
+        )}
+
+        {/*
+          Phase 3: Possible Conflicts — surfaced above the distillation so
+          the reviewer sees disagreements with existing kb entries FIRST.
+          Each flag is a verdict-color-coded card with a "Replace this in KB"
+          toggle. Toggling sets are gathered into approvePendingWithSupersede
+          on click so promote + supersede happen as one atomic-feeling action.
+        */}
+        {flags.length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-danger mb-2 flex items-center gap-1.5">
+              <AlertTriangle size={11} />
+              Possible conflicts ({flags.length})
+            </div>
+            <div className="space-y-2">
+              {flags.map((flag, i) => (
+                <ConflictCard
+                  key={`${flag.kb_id}-${i}`}
+                  flag={flag}
+                  toggled={toggledSupersede.has(flag.kb_id)}
+                  onToggle={() => toggleSupersede(flag.kb_id)}
+                  disabled={busy}
+                />
+              ))}
+            </div>
+          </div>
         )}
 
         <Section label="Population" value={paper.population} />
@@ -430,12 +501,19 @@ function DetailPanel({
               <X size={13} /> Reject <kbd className="ml-1 text-[10px] opacity-60">R</kbd>
             </button>
             <button
-              onClick={onApprove}
+              onClick={() => onApprove(Array.from(toggledSupersede))}
               disabled={busy}
               className="flex-1 px-3 py-2 rounded-md bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-1.5"
             >
-              <Check size={14} /> {busy ? 'Approving…' : 'Approve to KB'}
-              <kbd className="text-[10px] opacity-70 ml-1">A</kbd>
+              <Check size={14} />
+              {busy
+                ? 'Approving…'
+                : toggledSupersede.size > 0
+                  ? `Approve + Replace ${toggledSupersede.size}`
+                  : 'Approve to KB'}
+              {toggledSupersede.size === 0 && (
+                <kbd className="text-[10px] opacity-70 ml-1">A</kbd>
+              )}
             </button>
           </div>
         )}
@@ -444,6 +522,76 @@ function DetailPanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+/**
+ * Phase 3 contradiction-card. Shown in the detail panel above the
+ * distillation. Each card represents ONE existing kb entry that the
+ * ingest pipeline judged as conflicting with the new paper.
+ *
+ * verdict='contradict'           → red treatment, the high-stakes case
+ * verdict='different_conditions' → amber, gentler — papers may both stay
+ *
+ * The "Replace this in KB" toggle queues this kb_id for supersede on
+ * approve. Reviewer can flip multiple at once before clicking Approve;
+ * the Approve action will run a server-side promote + supersede chain.
+ */
+function ConflictCard({
+  flag, toggled, onToggle, disabled,
+}: {
+  flag: ContradictionFlag;
+  toggled: boolean;
+  onToggle: () => void;
+  disabled: boolean;
+}) {
+  const isContradict = flag.verdict === 'contradict';
+  const accent = isContradict
+    ? 'border-danger/40 bg-danger/10'
+    : 'border-warning/40 bg-warning/10';
+  const verdictLabel = isContradict ? 'CONTRADICT' : 'DIFFERENT CONDITIONS';
+  const verdictTextColor = isContradict ? 'text-danger' : 'text-warning';
+
+  return (
+    <div className={'p-3 rounded-md border ' + accent}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={'px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide ' + verdictTextColor + ' bg-bg-elevated border ' + (isContradict ? 'border-danger/30' : 'border-warning/30')}>
+          {verdictLabel}
+        </span>
+        <span className="text-[10px] text-text-muted tabular-nums">
+          sim {flag.similarity.toFixed(2)} · conf {flag.confidence.toFixed(2)}
+        </span>
+      </div>
+
+      <div className="text-xs text-muted-fg mb-1">vs.</div>
+      <div className="text-sm text-fg font-medium leading-snug mb-1.5">
+        {flag.kb_title}
+      </div>
+      <blockquote className={'text-xs italic pl-2 border-l-2 leading-relaxed mb-2 ' + (isContradict ? 'border-danger/40' : 'border-warning/40') + ' text-muted-fg'}>
+        {flag.kb_finding}
+      </blockquote>
+      <div className="text-xs text-fg/85 leading-relaxed mb-2">
+        {flag.rationale}
+      </div>
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/50">
+        <div className="text-[10px] text-text-muted">
+          {flag.kb_study_design} · trust {flag.kb_trust_score.toFixed(2)}
+        </div>
+        <button
+          onClick={onToggle}
+          disabled={disabled}
+          className={
+            'px-2.5 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors disabled:opacity-50 ' +
+            (toggled
+              ? 'bg-primary text-primary-fg'
+              : 'bg-card text-fg border border-border hover:border-border-strong')
+          }
+        >
+          <Replace size={11} />
+          {toggled ? 'Will replace' : 'Replace in KB'}
+        </button>
+      </div>
+    </div>
   );
 }
 

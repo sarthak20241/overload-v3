@@ -8,9 +8,7 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { UserButton } from '@clerk/nextjs';
-import {
-  Inbox, BookOpen, BarChart3, AlertTriangle, Bot,
-} from 'lucide-react';
+import { Inbox, BookOpen, BarChart3, Bot } from 'lucide-react';
 import { isAdmin } from '@/lib/admin-check';
 import { SidebarLink } from './SidebarLink';
 
@@ -32,14 +30,16 @@ export default async function AdminLayout({
         </div>
 
         <nav className="flex-1 px-3 py-4 flex flex-col gap-0.5">
+          <div className="mb-1 px-3 text-[10px] uppercase tracking-widest text-text-muted">
+            Research
+          </div>
           <SidebarLink href="/queue" icon={<Inbox size={15} />}>Queue</SidebarLink>
           <SidebarLink href="/kb" icon={<BookOpen size={15} />}>Knowledge Base</SidebarLink>
-          <SidebarLink href="/stats" icon={<BarChart3 size={15} />}>Stats</SidebarLink>
+          <SidebarLink href="/agent" icon={<Bot size={15} />}>Agent Activity</SidebarLink>
           <div className="mt-4 mb-1 px-3 text-[10px] uppercase tracking-widest text-text-muted">
-            Coming soon
+            System
           </div>
-          <SidebarLink href="#" icon={<AlertTriangle size={15} />} disabled>Contradictions</SidebarLink>
-          <SidebarLink href="#" icon={<Bot size={15} />} disabled>Agent Log</SidebarLink>
+          <SidebarLink href="/stats" icon={<BarChart3 size={15} />}>Stats</SidebarLink>
         </nav>
 
         <div className="px-4 py-4 border-t border-border flex items-center gap-3">

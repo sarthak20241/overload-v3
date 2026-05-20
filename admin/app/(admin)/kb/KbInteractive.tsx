@@ -5,7 +5,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Search, ExternalLink } from 'lucide-react';
+import { Search, ExternalLink, ArrowRight, History, EyeOff } from 'lucide-react';
 import type { ResearchKbEntry } from '@/lib/types';
 
 function trustColor(ts: number): string {
@@ -18,11 +18,40 @@ function trustColor(ts: number): string {
 export function KbInteractive({ entries }: { entries: ResearchKbEntry[] }) {
   const [search, setSearch] = useState('');
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  // Phase 3: superseded rows are hidden by default so the browser shows
+  // what retrieval actually pulls from. Toggle to inspect the full lineage.
+  const [showSuperseded, setShowSuperseded] = useState(false);
 
-  // Aggregate the top tags so we have a filter pill row
+  // Build maps for chain rendering:
+  //   byId            — quick lookup so a "Superseded by → {title}" pill
+  //                     can show the replacing paper's title.
+  //   replacesByActive — for each active row id, the list of OTHER rows
+  //                     that have superseded_by pointing to it. Powers
+  //                     the "Replaces: …" lineage on the active replacement.
+  const { byId, replacesByActive, supersededCount } = useMemo(() => {
+    const byId = new Map<string, ResearchKbEntry>();
+    const replacesByActive = new Map<string, ResearchKbEntry[]>();
+    let supersededCount = 0;
+    for (const e of entries) {
+      byId.set(e.id, e);
+      if (e.superseded_by) supersededCount++;
+    }
+    for (const e of entries) {
+      if (e.superseded_by) {
+        const list = replacesByActive.get(e.superseded_by) ?? [];
+        list.push(e);
+        replacesByActive.set(e.superseded_by, list);
+      }
+    }
+    return { byId, replacesByActive, supersededCount };
+  }, [entries]);
+
+  // Aggregate the top tags (from active rows only — superseded contributes
+  // noise we don't want to surface in the filter pills)
   const topTags = useMemo(() => {
     const counts = new Map<string, number>();
     for (const e of entries) {
+      if (e.superseded_by) continue;
       for (const t of e.topic_tags) counts.set(t, (counts.get(t) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -33,6 +62,7 @@ export function KbInteractive({ entries }: { entries: ResearchKbEntry[] }) {
 
   const filtered = useMemo(() => {
     return entries.filter((e) => {
+      if (!showSuperseded && e.superseded_by) return false;
       if (tagFilter && !e.topic_tags.includes(tagFilter)) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
@@ -41,7 +71,9 @@ export function KbInteractive({ entries }: { entries: ResearchKbEntry[] }) {
       }
       return true;
     });
-  }, [entries, search, tagFilter]);
+  }, [entries, search, tagFilter, showSuperseded]);
+
+  const activeCount = entries.length - supersededCount;
 
   return (
     <div className="flex flex-col h-full">
@@ -56,7 +88,7 @@ export function KbInteractive({ entries }: { entries: ResearchKbEntry[] }) {
             className="w-full pl-9 pr-3 py-2 text-sm rounded-md bg-card border border-border focus:border-primary outline-none placeholder:text-text-muted"
           />
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Chip label="all" active={tagFilter === null} onClick={() => setTagFilter(null)} />
           {topTags.map((t) => (
             <Chip
@@ -66,17 +98,44 @@ export function KbInteractive({ entries }: { entries: ResearchKbEntry[] }) {
               onClick={() => setTagFilter(tagFilter === t ? null : t)}
             />
           ))}
+          {/* Superseded toggle pushed to the right */}
+          <div className="ml-auto">
+            <button
+              onClick={() => setShowSuperseded((v) => !v)}
+              className={
+                'px-2.5 py-1 rounded-full text-xs transition-colors flex items-center gap-1 ' +
+                (showSuperseded
+                  ? 'bg-warning/10 text-warning border border-warning/30'
+                  : 'bg-card text-muted-fg border border-border hover:text-fg hover:border-border-strong')
+              }
+              title={
+                showSuperseded
+                  ? 'Hide rows that have been replaced — these are no longer retrieved by the coach.'
+                  : 'Include superseded rows in the list — useful for inspecting lineage.'
+              }
+            >
+              {showSuperseded ? <History size={11} /> : <EyeOff size={11} />}
+              {showSuperseded
+                ? `Including ${supersededCount} superseded`
+                : `Hiding ${supersededCount} superseded`}
+            </button>
+          </div>
         </div>
       </div>
 
       {/* List */}
       <div className="flex-1 overflow-y-auto px-8 py-5">
         <div className="text-[10px] uppercase tracking-widest text-text-muted mb-3">
-          {filtered.length} of {entries.length} entries
+          {filtered.length} of {activeCount} active{showSuperseded ? ` + ${supersededCount} superseded` : ''}
         </div>
         <div className="space-y-2">
           {filtered.map((e) => (
-            <KbRow key={e.id} entry={e} />
+            <KbRow
+              key={e.id}
+              entry={e}
+              replacingEntry={e.superseded_by ? byId.get(e.superseded_by) ?? null : null}
+              replacesList={replacesByActive.get(e.id) ?? []}
+            />
           ))}
         </div>
       </div>
@@ -100,9 +159,35 @@ function Chip({ label, active, onClick }: { label: string; active: boolean; onCl
   );
 }
 
-function KbRow({ entry }: { entry: ResearchKbEntry }) {
+function KbRow({
+  entry, replacingEntry, replacesList,
+}: {
+  entry: ResearchKbEntry;
+  /** Non-null when THIS row has been superseded — the row that replaced it. */
+  replacingEntry: ResearchKbEntry | null;
+  /** Other rows where superseded_by === this row's id — what this entry replaced. */
+  replacesList: ResearchKbEntry[];
+}) {
+  const isSuperseded = replacingEntry !== null;
   return (
-    <div className="p-4 rounded-lg border border-border bg-card hover:bg-card-hover transition-colors">
+    <div className={
+      'p-4 rounded-lg border transition-colors ' +
+      (isSuperseded
+        ? 'border-warning/30 bg-warning/[0.04] opacity-75'
+        : 'border-border bg-card hover:bg-card-hover')
+    }>
+      {/* Superseded pill — top of the card so it's immediately obvious */}
+      {isSuperseded && replacingEntry && (
+        <div className="mb-2 flex items-center gap-1.5 text-[11px] text-warning">
+          <History size={11} />
+          <span className="font-semibold uppercase tracking-wide">Superseded by</span>
+          <ArrowRight size={11} className="opacity-60" />
+          <span className="truncate text-fg/90 font-medium" title={replacingEntry.title}>
+            {replacingEntry.title}
+          </span>
+        </div>
+      )}
+
       <div className="flex items-start gap-3">
         <span className={'px-1.5 py-0.5 rounded-md border tabular-nums font-semibold text-xs flex-none ' + trustColor(entry.trust_score)}>
           {entry.trust_score.toFixed(2)}
@@ -133,13 +218,34 @@ function KbRow({ entry }: { entry: ResearchKbEntry }) {
           <p className="text-xs text-muted-fg leading-relaxed mb-2">
             {entry.practical_takeaway}
           </p>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1 mb-1">
             {entry.topic_tags.slice(0, 6).map((t) => (
               <span key={t} className="px-1.5 py-0.5 rounded-full bg-bg-elevated text-[10px] text-text-muted">
                 {t}
               </span>
             ))}
           </div>
+
+          {/* Chain: "Replaces:" list — shown when this active row supersedes
+              one or more older entries. Gives the lineage at a glance. */}
+          {!isSuperseded && replacesList.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-border/60">
+              <div className="text-[10px] uppercase tracking-widest text-text-muted mb-1 flex items-center gap-1">
+                <History size={10} />
+                Replaces {replacesList.length} earlier {replacesList.length === 1 ? 'entry' : 'entries'}
+              </div>
+              <ul className="space-y-0.5">
+                {replacesList.map((r) => (
+                  <li key={r.id} className="text-[11px] text-muted-fg truncate" title={r.title}>
+                    · {r.title}
+                    <span className="ml-1 text-text-muted">
+                      ({r.study_design ?? 'unknown'}{r.pub_year ? `, ${r.pub_year}` : ''})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </div>

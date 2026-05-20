@@ -5,6 +5,25 @@
  * extract a shared `packages/types` workspace.
  */
 
+/**
+ * Phase 3 contradiction detection. Each pending paper may carry zero or
+ * more flags — semantic neighbors in research_kb that the ingest pipeline
+ * judged to either contradict or describe different conditions than the
+ * new finding. The reviewer sees these front-and-center in the detail
+ * panel so they can decide whether to coexist, supersede, or reject.
+ */
+export interface ContradictionFlag {
+  kb_id: string;
+  kb_title: string;
+  kb_finding: string;
+  kb_study_design: string;
+  kb_trust_score: number;
+  similarity: number;                                    // cosine 0..1
+  verdict: 'contradict' | 'different_conditions';
+  confidence: number;                                    // 0..1
+  rationale: string;
+}
+
 export interface PendingPaper {
   id: string;
   source: string;
@@ -29,6 +48,8 @@ export interface PendingPaper {
   reviewed_by: string | null;
   rejection_reason: string | null;
   source_meta: Record<string, unknown> | null;
+  /** Phase 3 contradiction detection — null if none surfaced. */
+  contradiction_flags: ContradictionFlag[] | null;
 }
 
 export interface ResearchKbEntry {
@@ -51,6 +72,14 @@ export interface ResearchKbEntry {
   license: string | null;
   ingested_at: string;
   updated_at: string;
+  /**
+   * Phase 3 soft-supersede. When non-null, retrieval filters this row out
+   * by default. The KB browser surfaces "Superseded by → {title}" for
+   * visibility, and the active replacement can show a "Replaces:" chain.
+   */
+  superseded_by: string | null;
+  superseded_at: string | null;
+  superseded_by_reviewer: string | null;
 }
 
 export interface ResearchStats {
@@ -71,3 +100,28 @@ export interface IngestCheckpoint {
   last_run_at: string | null;
   last_error: string | null;
 }
+
+/**
+ * Phase 3 auto-review agent. Every 24h-aged pending paper that the agent
+ * acts on lands one row here. proposed_action is the LLM's call;
+ * final_action is what got applied after code-enforced guardrails (rank
+ * monotonicity, preprint-can't-supersede-peer-reviewed, journal tier).
+ * A non-null downgrade_reason means guardrails fired.
+ */
+export interface AgentReviewLog {
+  id: string;
+  pending_id: string;
+  paper_url: string;
+  paper_title: string;
+  proposed_action: 'approve' | 'reject' | 'supersede' | 'coexist';
+  final_action:    'approve' | 'reject' | 'supersede' | 'coexist';
+  downgrade_reason: string | null;
+  confidence: number;
+  rationale: string;
+  flags: string[];
+  superseded_kb_ids: string[];
+  decided_at: string;
+  reverted_at: string | null;
+  reverted_by: string | null;
+}
+

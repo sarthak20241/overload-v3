@@ -14,11 +14,15 @@ export const dynamic = 'force-dynamic';
 async function loadKb(): Promise<{ entries: ResearchKbEntry[]; error: string | null }> {
   try {
     const supabase = await getSupabaseServerClient();
+    // Include superseded rows so the browser can show the full lineage.
+    // The KbInteractive client filters them out by default (the toggle
+    // re-shows them). Retrieval RPCs (coach_search_research, find_similar_kb)
+    // already exclude superseded automatically — see migration 0021.
     const { data, error } = await supabase
       .from('research_kb')
-      .select('id, source, url, title, authors, journal, pub_year, pub_date, topic_tags, study_design, confidence, population, intervention, key_finding, practical_takeaway, trust_score, license, ingested_at, updated_at')
+      .select('id, source, url, title, authors, journal, pub_year, pub_date, topic_tags, study_design, confidence, population, intervention, key_finding, practical_takeaway, trust_score, license, ingested_at, updated_at, superseded_by, superseded_at, superseded_by_reviewer')
       .order('updated_at', { ascending: false })
-      .limit(200);
+      .limit(500);
     if (error) return { entries: [], error: error.message };
     const entries = (data ?? []).map((p) => ({
       ...p,
