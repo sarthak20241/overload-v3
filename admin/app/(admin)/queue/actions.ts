@@ -92,6 +92,35 @@ export async function approvePendingWithSupersede(
   };
 }
 
+/**
+ * Phase 3 curator polish: inline edit of distillation fields.
+ *
+ * Whitelist of editable fields enforced server-side in the RPC. Embedding
+ * is NOT regenerated — see migration 0025 for the rationale. Re-embedding
+ * would require Voyage API key in the admin app's env (leak surface) and
+ * isn't worth it for wording fixes.
+ */
+export type EditableField = 'key_finding' | 'practical_takeaway' | 'population' | 'intervention';
+
+export async function updatePendingDistillation(
+  pendingId: string,
+  field: EditableField,
+  value: string,
+): Promise<ActionResult> {
+  if (!(await isAdmin())) return { ok: false, error: 'Not authorized' };
+  if (value.trim().length === 0) return { ok: false, error: 'Empty value not allowed' };
+  if (value.length > 4000) return { ok: false, error: 'Value too long (max 4000 chars)' };
+  const supabase = await getSupabaseServerClient();
+  const { error } = await supabase.rpc('update_pending_distillation', {
+    p_pending_id: pendingId,
+    p_field: field,
+    p_value: value.trim(),
+  });
+  if (error) return { ok: false, error: error.message };
+  revalidatePath('/queue');
+  return { ok: true, message: `Updated ${field}` };
+}
+
 export async function rejectPending(
   pendingId: string,
   reason: string,

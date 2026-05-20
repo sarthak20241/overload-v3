@@ -13,9 +13,12 @@ import { useRouter } from 'next/navigation';
 import type { PendingPaper, ContradictionFlag } from '@/lib/types';
 import {
   Search, X, Check, ExternalLink, AlertCircle, ChevronRight,
-  AlertTriangle, Replace,
+  AlertTriangle, Replace, Pencil,
 } from 'lucide-react';
-import { approvePendingWithSupersede, rejectPending } from './actions';
+import {
+  approvePendingWithSupersede, rejectPending,
+  updatePendingDistillation, type EditableField,
+} from './actions';
 
 interface Props {
   papers: PendingPaper[];
@@ -31,6 +34,19 @@ const TRUST_BUCKETS = [
   { id: 'mid',    label: 'Mid (0.55–0.74)', min: 0.55, max: 0.75 },
   { id: 'low',    label: 'Low (<0.55)',    min: 0,    max: 0.55 },
 ] as const;
+
+// Phase 3 curator polish: stable reject-reason strings power a queryable
+// taxonomy (group by rejection_reason). Click a chip → fills the field;
+// reviewer can still edit before confirming. Free-text remains for the
+// long-tail cases that don't fit any template.
+const REJECT_REASON_TEMPLATES = [
+  'small n',
+  'animal study only',
+  'not exercise science',
+  'paywalled / abstract only',
+  'predatory journal',
+  'stats unclear or not reported',
+];
 
 function trustColor(ts: number): string {
   if (ts >= 0.75) return 'text-primary border-primary-muted bg-primary-subtle';
@@ -426,10 +442,28 @@ function DetailPanel({
           </div>
         )}
 
-        <Section label="Population" value={paper.population} />
-        <Section label="Intervention" value={paper.intervention} />
-        <Section label="Key finding" value={paper.key_finding} highlight />
-        <Section label="Practical takeaway" value={paper.practical_takeaway} highlight />
+        <Section
+          label="Population"
+          value={paper.population}
+          editable={{ pendingId: paper.id, field: 'population' }}
+        />
+        <Section
+          label="Intervention"
+          value={paper.intervention}
+          editable={{ pendingId: paper.id, field: 'intervention' }}
+        />
+        <Section
+          label="Key finding"
+          value={paper.key_finding}
+          highlight
+          editable={{ pendingId: paper.id, field: 'key_finding' }}
+        />
+        <Section
+          label="Practical takeaway"
+          value={paper.practical_takeaway}
+          highlight
+          editable={{ pendingId: paper.id, field: 'practical_takeaway' }}
+        />
 
         <div>
           <div className="text-[10px] uppercase tracking-widest text-text-muted mb-1.5">Topics</div>
@@ -465,10 +499,34 @@ function DetailPanel({
       <div className="p-4 border-t border-border space-y-2">
         {rejectMode ? (
           <>
+            {/*
+              Reject-reason quick picks. 80% of rejects fall in these six
+              categories; click → fills the field. Reviewer can still edit
+              or hit Confirm directly. Free-text remains available for the
+              long-tail cases. Stable strings build a queryable reject
+              taxonomy over time (group by rejection_reason).
+            */}
+            <div className="flex flex-wrap gap-1">
+              {REJECT_REASON_TEMPLATES.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setReason(t)}
+                  disabled={busy}
+                  className={
+                    'px-2 py-0.5 rounded-full text-[10px] border transition-colors disabled:opacity-50 ' +
+                    (reason === t
+                      ? 'bg-danger/15 text-danger border-danger/40 font-semibold'
+                      : 'bg-card text-muted-fg border-border hover:text-fg hover:border-border-strong')
+                  }
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Reason (small-n, irrelevant population, paywall, etc.)"
+              placeholder="Reason (small-n, irrelevant population, paywall, etc.) — pick a template above or type your own"
               className="w-full p-2.5 text-sm rounded-md bg-card border border-border focus:border-danger outline-none placeholder:text-text-muted resize-none"
               rows={2}
               autoFocus
@@ -595,11 +653,102 @@ function ConflictCard({
   );
 }
 
-function Section({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
-  if (!value) return null;
+/**
+ * One labeled paragraph of the distillation. When `editable` is supplied,
+ * a pencil icon appears next to the label — click to swap in a textarea,
+ * Save calls updatePendingDistillation and refreshes the page so the new
+ * value reflects everywhere. Reset on paper.id change is the parent
+ * panel's responsibility (it re-mounts Section subtrees when paper.id
+ * shifts, so local edit state naturally clears).
+ */
+function Section({
+  label, value, highlight = false, editable,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  editable?: { pendingId: string; field: EditableField };
+}) {
+  const router = useRouter();
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset draft when the underlying value changes (e.g. server refresh
+  // after a save, or the panel switched papers).
+  useEffect(() => {
+    setDraft(value);
+    setIsEditing(false);
+    setError(null);
+  }, [value]);
+
+  if (!value && !isEditing) return null;
+
+  if (isEditing && editable) {
+    return (
+      <div>
+        <div className="text-[10px] uppercase tracking-widest text-text-muted mb-1">{label}</div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={Math.min(8, Math.max(2, Math.ceil(draft.length / 60)))}
+          className="w-full p-2 text-sm rounded-md bg-card border border-primary focus:border-primary outline-none resize-y text-fg"
+          autoFocus
+          disabled={saving}
+        />
+        {error && (
+          <div className="text-[11px] text-danger mt-1">{error}</div>
+        )}
+        <div className="flex gap-2 mt-1.5">
+          <button
+            onClick={() => { setIsEditing(false); setDraft(value); setError(null); }}
+            disabled={saving}
+            className="px-2.5 py-1 rounded-md bg-card border border-border text-fg text-[11px] hover:bg-card-hover disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={async () => {
+              if (draft.trim() === value.trim()) {
+                setIsEditing(false);
+                return;
+              }
+              setSaving(true);
+              setError(null);
+              const r = await updatePendingDistillation(editable.pendingId, editable.field, draft);
+              setSaving(false);
+              if (r.ok) {
+                setIsEditing(false);
+                router.refresh();
+              } else {
+                setError(r.error);
+              }
+            }}
+            disabled={saving || draft.trim().length === 0}
+            className="px-2.5 py-1 rounded-md bg-primary text-primary-fg text-[11px] font-semibold disabled:opacity-50 hover:opacity-90"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-widest text-text-muted mb-1">{label}</div>
+    <div className="group">
+      <div className="flex items-center gap-1.5 mb-1">
+        <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
+        {editable && (
+          <button
+            onClick={() => { setDraft(value); setIsEditing(true); }}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-primary"
+            title={`Edit ${label.toLowerCase()}`}
+          >
+            <Pencil size={10} />
+          </button>
+        )}
+      </div>
       <div className={'text-sm leading-relaxed ' + (highlight ? 'text-fg' : 'text-muted-fg')}>
         {value}
       </div>
