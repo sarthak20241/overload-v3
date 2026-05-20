@@ -683,6 +683,19 @@ Deno.serve(async (req) => {
   }
   trace.has_user_context = userContext !== null;
 
+  // Phase 4 goal-aware retrieval: surface user_profiles.goal from the
+  // userContext blob so we can pass it into coach_search_research as
+  // p_user_goal. The RPC boosts weighted_score 1.15× for papers whose
+  // topic_tags overlap the goal's tag set (hypertrophy → 'hypertrophy',
+  // 'muscle-growth', etc.). Null/'general' → no boost.
+  const userGoal: string | null = (() => {
+    if (!userContext || typeof userContext !== "object") return null;
+    const profile = (userContext as Record<string, unknown>).profile;
+    if (!profile || typeof profile !== "object") return null;
+    const g = (profile as Record<string, unknown>).goal;
+    return typeof g === "string" && g.length > 0 ? g : null;
+  })();
+
   // 5. Parse messages
   let body: { messages?: { role: string; content: string }[] };
   try {
@@ -725,6 +738,9 @@ Deno.serve(async (req) => {
           p_query_embedding: JSON.stringify(queryEmbedding),
           p_top_k: RETRIEVAL_TOP_K,
           p_floor: RETRIEVAL_FLOOR,
+          // Phase 4: hypertrophy/strength/fat_loss/endurance/general
+          // → boost weighted_score 1.15× when topic_tags match the goal.
+          p_user_goal: userGoal,
         });
         if (error) {
           trace.retrieval_status = `rpc_error: ${error.message}`.slice(0, 200);

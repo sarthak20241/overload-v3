@@ -77,6 +77,19 @@ interface ResearchStats {
   last_cron_at: string | null;
 }
 
+// Phase 4 cron summary — one row per ingest source. Shows whether the
+// nightly cron actually fired AND for each source: lifetime fetched vs
+// added, last_error if any. Useful for diagnosing "why didn't I see new
+// papers" without opening the Supabase dashboard.
+interface IngestSourceState {
+  source: string;
+  last_run_at: string | null;
+  last_pub_date: string | null;
+  papers_fetched: number;
+  papers_added: number;
+  last_error: string | null;
+}
+
 // Phase 3 auto-review agent — one row per decision made by the Sonnet
 // review agent. Surfaces in the dashboard's "AGENT ACTIVITY" section so
 // the admin can audit what got auto-acted overnight + revert anything
@@ -116,6 +129,84 @@ function trustColor(C: any, ts: number): string {
   if (ts >= 0.55) return '#a3b900';
   if (ts >= 0.40) return '#d29800';
   return '#c46a4a';
+}
+
+// ─── Sources Panel (Phase 4) ────────────────────────────────────────────────
+// Per-source cron state: when each source last ran, lifetime counters,
+// and any last_error. Answers "why didn't I see new papers last night?"
+// without opening Supabase. Collapsed by default — most days you don't
+// need to look at it, and an empty queue makes the answer obvious.
+function SourcesPanel({ sources }: { sources: IngestSourceState[] }) {
+  const { C } = useTheme();
+  const [expanded, setExpanded] = useState(false);
+  if (sources.length === 0) return null;
+  const hasError = sources.some((s) => s.last_error !== null);
+  const neverRan = sources.filter((s) => s.last_run_at === null).length;
+  const mostRecent = sources
+    .map((s) => s.last_run_at)
+    .filter((d): d is string => !!d)
+    .sort()
+    .reverse()[0];
+
+  // Compact summary line shown when collapsed.
+  const summary = (() => {
+    const parts: string[] = [];
+    if (mostRecent) parts.push(`Most recent: ${timeSince(mostRecent)}`);
+    else parts.push('Never run');
+    if (neverRan > 0) parts.push(`${neverRan} source${neverRan === 1 ? '' : 's'} never run`);
+    if (hasError) parts.push(`⚠ has errors`);
+    return parts.join(' · ');
+  })();
+
+  return (
+    <View style={[s.sourcesPanel, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+      <TouchableOpacity
+        onPress={() => setExpanded((v) => !v)}
+        activeOpacity={0.7}
+        style={s.sourcesHeader}
+      >
+        <Feather name="database" size={12} color={hasError ? '#f87171' : C.textMuted} />
+        <Text style={[s.sourcesHeaderLabel, { color: hasError ? '#f87171' : C.textMuted }]}>
+          SOURCES ({sources.length})
+        </Text>
+        <View style={{ flex: 1 }} />
+        <Text style={[s.sourcesHeaderSummary, { color: C.mutedFg }]} numberOfLines={1}>
+          {summary}
+        </Text>
+        <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color={C.textMuted} />
+      </TouchableOpacity>
+      {expanded && (
+        <View style={s.sourcesList}>
+          {sources.map((src) => {
+            const ran = src.last_run_at !== null;
+            const errored = src.last_error !== null;
+            const accent = errored ? '#f87171' : ran ? C.accentText : C.textMuted;
+            return (
+              <View key={src.source} style={[s.sourceRow, { borderColor: C.borderSubtle }]}>
+                <View style={s.sourceRowTop}>
+                  <View style={[s.sourceDot, { backgroundColor: accent }]} />
+                  <Text style={[s.sourceName, { color: C.foreground }]}>{src.source}</Text>
+                  <View style={{ flex: 1 }} />
+                  <Text style={[s.sourceAge, { color: C.textMuted }]}>
+                    {ran ? timeSince(src.last_run_at) : 'never run'}
+                  </Text>
+                </View>
+                <Text style={[s.sourceStats, { color: C.mutedFg }]}>
+                  {src.papers_fetched} fetched · {src.papers_added} added (lifetime)
+                  {src.last_pub_date ? ` · watermark ${src.last_pub_date}` : ''}
+                </Text>
+                {errored && (
+                  <Text style={[s.sourceError, { color: '#f87171' }]} numberOfLines={2}>
+                    {src.last_error}
+                  </Text>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
 }
 
 // ─── Stats Bar ──────────────────────────────────────────────────────────────
@@ -638,6 +729,7 @@ export default function ResearchReviewScreen() {
   const [stats, setStats] = useState<ResearchStats | null>(null);
   const [papers, setPapers] = useState<PendingPaper[]>([]);
   const [agentLog, setAgentLog] = useState<AgentLogEntry[]>([]);
+  const [sources, setSources] = useState<IngestSourceState[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedPaper, setSelectedPaper] = useState<PendingPaper | null>(null);
@@ -647,7 +739,7 @@ export default function ResearchReviewScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [papersRes, statsRes, agentLogRes] = await Promise.all([
+      const [papersRes, statsRes, agentLogRes, sourcesRes] = await Promise.all([
         supabase
           .from('research_kb_pending')
           .select('id, source, url, title, authors, journal, pub_year, topic_tags, study_design, confidence, trust_score, population, intervention, key_finding, practical_takeaway, ingested_at, source_meta, contradiction_flags')
@@ -661,6 +753,12 @@ export default function ResearchReviewScreen() {
           .is('reverted_at', null)
           .order('decided_at', { ascending: false })
           .limit(20),
+        // Phase 4 cron summary: per-source ingest state for the SOURCES card.
+        // Admin RLS on ingest_checkpoints lets us read this directly.
+        supabase
+          .from('ingest_checkpoints')
+          .select('source, last_run_at, last_pub_date, papers_fetched, papers_added, last_error')
+          .order('last_run_at', { ascending: false, nullsFirst: false }),
       ]);
       if (papersRes.data) {
         setPapers(papersRes.data.map((p) => ({
@@ -687,6 +785,13 @@ export default function ResearchReviewScreen() {
           ...r,
           confidence: Number(r.confidence),
         })) as AgentLogEntry[]);
+      }
+      if (sourcesRes.data) {
+        setSources(sourcesRes.data.map((r) => ({
+          ...r,
+          papers_fetched: Number(r.papers_fetched ?? 0),
+          papers_added: Number(r.papers_added ?? 0),
+        })) as IngestSourceState[]);
       }
     } catch (e) {
       setBanner({ kind: 'err', text: `Failed to load: ${String(e).slice(0, 100)}` });
@@ -877,6 +982,7 @@ export default function ResearchReviewScreen() {
         }
       >
         <StatsBar stats={stats} />
+        <SourcesPanel sources={sources} />
 
         {loading ? (
           <View style={{ alignItems: 'center', paddingVertical: 40 }}>
@@ -983,6 +1089,69 @@ const s = StyleSheet.create({
     gap: 8,
     marginBottom: Spacing.md,
   },
+
+  // Phase 4 cron summary panel
+  sourcesPanel: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    marginBottom: Spacing.md,
+  },
+  sourcesHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+  },
+  sourcesHeaderLabel: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
+  },
+  sourcesHeaderSummary: {
+    fontSize: FontSize.xs,
+    marginRight: 6,
+    maxWidth: 200,
+  },
+  sourcesList: {
+    paddingHorizontal: Spacing.md,
+    paddingBottom: 10,
+    gap: 8,
+  },
+  sourceRow: {
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 4,
+  },
+  sourceRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sourceDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  sourceName: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    fontVariant: ['tabular-nums'],
+  },
+  sourceAge: {
+    fontSize: FontSize.xs,
+    fontVariant: ['tabular-nums'],
+  },
+  sourceStats: {
+    fontSize: FontSize.xs,
+    fontVariant: ['tabular-nums'],
+  },
+  sourceError: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+
   statCard: {
     flex: 1,
     padding: Spacing.md,

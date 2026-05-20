@@ -311,6 +311,21 @@ export const GENERATE_TOOLS: AnthropicTool[] = [
 // loop emits them as a `structured` SSE event and ends the iteration.
 export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan']);
 
+// Phase 4: prepended to the system prompt when get_user_coach_context()'s
+// `training_inactive` flag is true (no completed workout in the last 14
+// days). Without this branch, the coach launches into the user's pre-
+// inactivity programming as if nothing happened — "your last bench was
+// 75kg×7, let's add weight" — which feels tone-deaf when the user has
+// been away. With this branch, the coach acknowledges the gap, asks
+// what changed, and helps re-onboard before pushing volume.
+const TRAINING_INACTIVE_BRANCH = `<inactivity_note>
+This user has NOT completed a workout in 14+ days. Their last_workout / top_lifts data still reflects pre-break state — DO NOT assume they can pick up where they left off. Default behavior on the first turn:
+- Acknowledge the gap gently. Ask what happened: travel, illness, work, motivation, injury, something else?
+- Adapt advice to a "return to training" frame: lower volume by 30-40% for week 1, expect strength to come back in 2-4 weeks, no need to add weight straight away.
+- Don't moralize or guilt-trip about the break. Coaches meet lifters where they are.
+- If they ask for a workout or plan, generate one for the return phase (sub-MEV volume, RIR 3-4, no failure work for the first week).
+</inactivity_note>`;
+
 export function buildSystemPrompt(ctx: PromptContext): {
   system: AnthropicSystemBlock[];
   tools: AnthropicTool[];
@@ -319,9 +334,22 @@ export function buildSystemPrompt(ctx: PromptContext): {
     ? `<user_context>\n${JSON.stringify(ctx.userContext, null, 2)}\n</user_context>`
     : `<user_context>No personalized data available — user is in guest/demo mode or has not logged any workouts yet. Ask them clarifying questions before recommending specifics.</user_context>`;
 
+  // Detect the training-inactive flag in the user_context. The RPC sets
+  // it true when no completed workout in the last 14 days. We pull it
+  // OUT of the JSON blob into a dedicated prompt block so the model
+  // doesn't have to search the user_context JSON for it — explicit
+  // prompts beat implicit ones for behavioral steering.
+  const inactive = (() => {
+    if (!ctx.userContext || typeof ctx.userContext !== 'object') return false;
+    const flag = (ctx.userContext as Record<string, unknown>).training_inactive;
+    return flag === true;
+  })();
+
   // Two cache breakpoints: the static block (role + principles + schema +
   // answer policy) and the per-user user_context. Anthropic supports up to
   // 4 cache breakpoints; we leave headroom for retrieved_research later.
+  // The inactive branch (when present) lives in the user_context block —
+  // it's user-state-dependent so it can't be cached statically.
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',
@@ -330,7 +358,9 @@ export function buildSystemPrompt(ctx: PromptContext): {
     },
     {
       type: 'text',
-      text: userContextBlock,
+      text: inactive
+        ? `${TRAINING_INACTIVE_BRANCH}\n\n${userContextBlock}`
+        : userContextBlock,
       cache_control: { type: 'ephemeral' },
     },
   ];
