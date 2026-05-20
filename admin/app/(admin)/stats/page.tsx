@@ -72,19 +72,24 @@ async function loadStats(): Promise<{
     // each so a failed source surfaces as the page error banner instead
     // of an empty card. cost_*Res use .single() and may return PGRST116
     // (no rows) when there's literally zero traffic in the window —
-    // that's not a real failure; only treat it as one if .data is null
-    // AND a non-PGRST116 error is present.
-    const fatalCostErr = (e: { code?: string; message?: string } | null | undefined) =>
-      e && e.code !== 'PGRST116';
+    // that's not a real failure; only treat it as one if a non-PGRST116
+    // error is present.
+    type PgErr = { code?: string; message?: string } | null | undefined;
+    const isFatal = (e: PgErr): boolean => Boolean(e) && e!.code !== 'PGRST116';
+    const fatalMsg = (e: PgErr): string | undefined => (isFatal(e) ? e!.message : undefined);
+
     if (statsRes.error || checkpointsRes.error || kbRes.error || gapsRes.error
-        || fatalCostErr(cost7Res.error) || fatalCostErr(cost30Res.error)) {
+        || isFatal(cost7Res.error) || isFatal(cost30Res.error)) {
+      // Walk the same order as the if-condition. Use fatalMsg() for the
+      // cost responses so a benign PGRST116 doesn't hijack the banner
+      // when the real error is on a different query.
       const firstErr =
         statsRes.error?.message
         ?? checkpointsRes.error?.message
         ?? kbRes.error?.message
         ?? gapsRes.error?.message
-        ?? cost7Res.error?.message
-        ?? cost30Res.error?.message
+        ?? fatalMsg(cost7Res.error)
+        ?? fatalMsg(cost30Res.error)
         ?? 'Failed to load stats';
       return {
         stats: null, checkpoints: [], topTopics: [], coachGaps: [],
