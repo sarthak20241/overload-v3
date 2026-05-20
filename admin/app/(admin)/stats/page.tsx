@@ -68,6 +68,30 @@ async function loadStats(): Promise<{
       supabase.rpc('cost_totals', { p_since: thirtyDaysAgo }).single(),
     ]);
 
+    // Supabase v2: rpc()/select() don't throw on backend errors. Check
+    // each so a failed source surfaces as the page error banner instead
+    // of an empty card. cost_*Res use .single() and may return PGRST116
+    // (no rows) when there's literally zero traffic in the window —
+    // that's not a real failure; only treat it as one if .data is null
+    // AND a non-PGRST116 error is present.
+    const fatalCostErr = (e: { code?: string; message?: string } | null | undefined) =>
+      e && e.code !== 'PGRST116';
+    if (statsRes.error || checkpointsRes.error || kbRes.error || gapsRes.error
+        || fatalCostErr(cost7Res.error) || fatalCostErr(cost30Res.error)) {
+      const firstErr =
+        statsRes.error?.message
+        ?? checkpointsRes.error?.message
+        ?? kbRes.error?.message
+        ?? gapsRes.error?.message
+        ?? cost7Res.error?.message
+        ?? cost30Res.error?.message
+        ?? 'Failed to load stats';
+      return {
+        stats: null, checkpoints: [], topTopics: [], coachGaps: [],
+        cost7d: null, cost30d: null, error: firstErr,
+      };
+    }
+
     const raw = (statsRes.data ?? null) as Record<string, unknown> | null;
     const stats: ResearchStats | null = raw
       ? {

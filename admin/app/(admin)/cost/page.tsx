@@ -72,36 +72,55 @@ function sinceFromPeriod(period: PeriodId): string {
 
 async function loadCost(period: PeriodId): Promise<{
   totals: CostTotals | null;
+  /** Forecast basis — always a 7d window so toggling the page period doesn't
+   *  change the projection. Null when no 7d data exists. */
+  sevenDayTotal: CostTotals | null;
   summary: CostSummaryRow[];
   byDay: CostByDayRow[];
   error: string | null;
   since: string;
 }> {
   const since = sinceFromPeriod(period);
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   try {
     const supabase = await getSupabaseServerClient();
-    const [totalsRes, summaryRes, byDayRes] = await Promise.all([
+    const [totalsRes, summaryRes, byDayRes, sevenDayRes] = await Promise.all([
       supabase.rpc('cost_totals',  { p_since: since }).single(),
       supabase.rpc('cost_summary', { p_since: since }),
       supabase.rpc('cost_by_day',  { p_since: since, p_group_by: 'pipeline' }),
+      // Dedicated 7d fetch so forecast stays anchored to recent rate even
+      // when the page is showing 30d/month/all. Without this the forecast
+      // silently changes meaning every time you toggle the period.
+      supabase.rpc('cost_totals',  { p_since: sevenDaysAgo }).single(),
     ]);
 
-    const raw = (totalsRes.data ?? null) as Record<string, unknown> | null;
-    const totals: CostTotals | null = raw
-      ? {
-          total_cost_usd:           Number(raw.total_cost_usd ?? 0),
-          total_calls:              Number(raw.total_calls ?? 0),
-          total_input_tokens:       Number(raw.total_input_tokens ?? 0),
-          total_output_tokens:      Number(raw.total_output_tokens ?? 0),
-          total_cache_read_tokens:  Number(raw.total_cache_read_tokens ?? 0),
-          anthropic_cost_usd:       Number(raw.anthropic_cost_usd ?? 0),
-          voyage_cost_usd:          Number(raw.voyage_cost_usd ?? 0),
-          coach_cost_usd:           Number(raw.coach_cost_usd ?? 0),
-          ingest_cost_usd:          Number(raw.ingest_cost_usd ?? 0),
-          review_agent_cost_usd:    Number(raw.review_agent_cost_usd ?? 0),
-          eval_cost_usd:            Number(raw.eval_cost_usd ?? 0),
-        }
-      : null;
+    // Supabase v2: rpc() returns { data, error } without throwing on
+    // backend errors. Check explicitly so a failed RPC surfaces as the
+    // page's error banner instead of rendering empty cards.
+    if (totalsRes.error)   throw new Error(`cost_totals: ${totalsRes.error.message}`);
+    if (summaryRes.error)  throw new Error(`cost_summary: ${summaryRes.error.message}`);
+    if (byDayRes.error)    throw new Error(`cost_by_day: ${byDayRes.error.message}`);
+    if (sevenDayRes.error) throw new Error(`cost_totals(7d): ${sevenDayRes.error.message}`);
+
+    const toCostTotals = (r: unknown): CostTotals | null => {
+      const o = r as Record<string, unknown> | null;
+      if (!o) return null;
+      return {
+        total_cost_usd:           Number(o.total_cost_usd ?? 0),
+        total_calls:              Number(o.total_calls ?? 0),
+        total_input_tokens:       Number(o.total_input_tokens ?? 0),
+        total_output_tokens:      Number(o.total_output_tokens ?? 0),
+        total_cache_read_tokens:  Number(o.total_cache_read_tokens ?? 0),
+        anthropic_cost_usd:       Number(o.anthropic_cost_usd ?? 0),
+        voyage_cost_usd:          Number(o.voyage_cost_usd ?? 0),
+        coach_cost_usd:           Number(o.coach_cost_usd ?? 0),
+        ingest_cost_usd:          Number(o.ingest_cost_usd ?? 0),
+        review_agent_cost_usd:    Number(o.review_agent_cost_usd ?? 0),
+        eval_cost_usd:            Number(o.eval_cost_usd ?? 0),
+      };
+    };
+    const totals        = toCostTotals(totalsRes.data);
+    const sevenDayTotal = toCostTotals(sevenDayRes.data);
 
     const summary = ((summaryRes.data ?? []) as Record<string, unknown>[]).map((r) => ({
       pipeline:            String(r.pipeline ?? ''),
@@ -120,24 +139,22 @@ async function loadCost(period: PeriodId): Promise<{
       call_count: Number(r.call_count ?? 0),
     }));
 
-    return { totals, summary, byDay, error: null, since };
+    return { totals, sevenDayTotal, summary, byDay, error: null, since };
   } catch (e) {
-    return { totals: null, summary: [], byDay: [], error: String(e), since };
+    return { totals: null, sevenDayTotal: null, summary: [], byDay: [], error: String(e), since };
   }
 }
 
-/** Forecast spend at the end of the current calendar month given the
- *  current pace over the last 7d. Useful "at this rate" pill. */
-function forecastMonthly(totals: CostTotals | null, period: PeriodId): number | null {
-  if (!totals || totals.total_cost_usd === 0) return null;
-  // Always use the 7d rate as the basis for forecast (most representative
-  // of current usage) — even when the page is viewing a different period.
-  const days = period === '7d' ? 7 :
-               period === '30d' ? 30 :
-               period === 'month' ? Math.max(1, new Date().getDate()) :
-               30;
-  const dailyRate = totals.total_cost_usd / days;
-  return dailyRate * 30;
+/** Forecast spend through the end of the current calendar month using the
+ *  last 7d as the daily-rate basis. Anchored to a fixed 7d window (not the
+ *  page period) so toggling the selector doesn't silently change what the
+ *  number means. Scales to the actual days-in-month so the projection is
+ *  right in 28/29/31-day months too. */
+function forecastMonthly(sevenDayTotal: CostTotals | null): number | null {
+  if (!sevenDayTotal || sevenDayTotal.total_cost_usd === 0) return null;
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return (sevenDayTotal.total_cost_usd / 7) * daysInMonth;
 }
 
 export default async function CostPage({
@@ -151,8 +168,8 @@ export default async function CostPage({
     (params.since as PeriodId) === 'month' ? 'month' :
     (params.since as PeriodId) === 'all'   ? 'all'   :
                                               '7d';
-  const { totals, summary, byDay, error } = await loadCost(period);
-  const forecast = forecastMonthly(totals, period);
+  const { totals, sevenDayTotal, summary, byDay, error } = await loadCost(period);
+  const forecast = forecastMonthly(sevenDayTotal);
 
   return (
     <div className="h-screen overflow-y-auto">
@@ -215,7 +232,7 @@ export default async function CostPage({
             <BigStat
               label="Forecast monthly"
               value={forecast !== null ? `$${forecast.toFixed(2)}` : '—'}
-              sub={forecast !== null ? 'at current rate × 30d' : ''}
+              sub={forecast !== null ? 'based on last 7d × days-in-month' : ''}
               icon={<TrendingUp size={11} />}
             />
           </div>

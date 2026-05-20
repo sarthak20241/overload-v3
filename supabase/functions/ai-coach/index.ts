@@ -152,7 +152,11 @@ async function logTokenUsage(
   },
 ): Promise<void> {
   try {
-    await admin.rpc("log_token_usage", {
+    // supabase-js v2 returns { data, error } and does NOT throw on
+    // backend errors. The outer try/catch only catches network /
+    // runtime failures. Inspect `error` so failed RPCs show up in logs
+    // instead of being a mystery missing row.
+    const { error } = await admin.rpc("log_token_usage", {
       p_pipeline: rec.pipeline,
       p_provider: rec.provider,
       p_model: rec.model,
@@ -165,8 +169,14 @@ async function logTokenUsage(
       p_status: rec.status ?? "success",
       p_error_message: rec.error_message ?? null,
     });
+    if (error) {
+      console.log(
+        "[ai-coach] logTokenUsage rpc error (swallowed):",
+        `pipeline=${rec.pipeline} model=${rec.model} msg=${(error.message ?? String(error)).slice(0, 200)}`,
+      );
+    }
   } catch (e) {
-    console.log("[ai-coach] logTokenUsage failed (swallowed):", String(e).slice(0, 200));
+    console.log("[ai-coach] logTokenUsage threw (swallowed):", String(e).slice(0, 200));
   }
 }
 

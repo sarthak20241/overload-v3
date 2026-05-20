@@ -60,6 +60,17 @@ async function loadErrors(): Promise<{
         .limit(200),
     ]);
 
+    // Supabase v2 returns { data, error } — failures don't throw. If
+    // either source errors, surface the failure instead of silently
+    // rendering an "everything's fine" empty state on an OBSERVABILITY
+    // page (which would defeat the point of the page entirely).
+    if (coachErrRes.error || usageErrRes.error) {
+      return {
+        errors: [], countsByStatus: {}, countsByModel: {},
+        error: coachErrRes.error?.message ?? usageErrRes.error?.message ?? 'Failed to load errors',
+      };
+    }
+
     const errors: ErrorRow[] = [];
 
     for (const r of (coachErrRes.data ?? []) as Array<Record<string, unknown>>) {
