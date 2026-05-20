@@ -100,6 +100,12 @@ jobs:
         # entry — re-running the cron is safe and idempotent.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # VOYAGE_API_KEY is required because env.ts's startup check is
+          # mode-blind. The review path itself never calls Voyage (no
+          # embedding work), but assertRequiredEnv() will exit-1 without it.
+          # Cheaper to pass the secret here than to make the env check
+          # mode-aware right now.
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           REVIEW_AGE_HOURS: ${{ github.event.inputs.review_age_hours || '24' }}

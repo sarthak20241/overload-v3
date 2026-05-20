@@ -582,7 +582,9 @@ async function runAgentReviewPass(
 // ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
   const opts = parseArgs();
-  assertRequiredEnv();
+  // Review-mode never calls Voyage (no embedding work), so we don't
+  // require VOYAGE_API_KEY in that path. Ingest mode requires the full set.
+  assertRequiredEnv({ needsVoyage: !opts.reviewMode });
 
   log.info('orch', 'config', {
     mode: opts.reviewMode ? 'review' : 'ingest',

@@ -40,10 +40,21 @@ export const SEMANTIC_SCHOLAR_API_KEY = process.env.SEMANTIC_SCHOLAR_API_KEY;
 // cap from 3 req/s → 10 req/s. They request (not require) you set this.
 export const PUBMED_CONTACT_EMAIL = process.env.PUBMED_CONTACT_EMAIL;
 
-export function assertRequiredEnv(): void {
+/**
+ * Validate the env vars the worker needs to run.
+ *
+ * `needsVoyage: false` is for --review mode — the auto-review agent reads
+ * pending rows, asks Sonnet for a verdict, and applies the decision via
+ * Supabase RPCs. It never embeds anything, so demanding VOYAGE_API_KEY
+ * would crash the cron's review pass for no benefit (this exact thing
+ * happened on the May 20 manual run when the GH Actions YAML didn't
+ * forward VOYAGE_API_KEY to the review step).
+ */
+export function assertRequiredEnv(opts?: { needsVoyage?: boolean }): void {
+  const needsVoyage = opts?.needsVoyage !== false; // default true (ingest mode)
   const missing: string[] = [];
   if (!ANTHROPIC_API_KEY) missing.push('ANTHROPIC_API_KEY');
-  if (!VOYAGE_API_KEY) missing.push('VOYAGE_API_KEY');
+  if (needsVoyage && !VOYAGE_API_KEY) missing.push('VOYAGE_API_KEY');
   if (!SUPABASE_URL) missing.push('SUPABASE_URL (or EXPO_PUBLIC_SUPABASE_URL)');
   if (!SUPABASE_SERVICE_ROLE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
   if (missing.length > 0) {
