@@ -8,7 +8,7 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { UserButton } from '@clerk/nextjs';
-import { Inbox, BookOpen, BarChart3, Bot } from 'lucide-react';
+import { Inbox, BookOpen, BarChart3, Bot, DollarSign } from 'lucide-react';
 import { isAdmin } from '@/lib/admin-check';
 import { SidebarLink } from './SidebarLink';
 
@@ -40,6 +40,7 @@ export default async function AdminLayout({
             System
           </div>
           <SidebarLink href="/stats" icon={<BarChart3 size={15} />}>Stats</SidebarLink>
+          <SidebarLink href="/cost" icon={<DollarSign size={15} />}>Cost</SidebarLink>
         </nav>
 
         <div className="px-4 py-4 border-t border-border flex items-center gap-3">
