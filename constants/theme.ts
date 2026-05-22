@@ -4,6 +4,13 @@ export const Colors = {
   primary: '#c8ff00',
   primaryFg: '#0a0a0a',
 
+  // Sign in with Apple — brand-locked per Apple HIG, theme-independent.
+  // The "Sign in with Apple" button must be solid black or solid white;
+  // no other variants are HIG-compliant. Kept at the top level (not in
+  // light/dark palettes) because the values do not change with theme.
+  appleBg: '#000000',
+  appleFg: '#ffffff',
+
   // Dark theme
   dark: {
     background: '#0a0a0a',

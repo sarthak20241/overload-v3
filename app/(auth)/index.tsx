@@ -92,6 +92,15 @@ export default function AuthScreen() {
   const [showResetSent, setShowResetSent] = useState(false);
   const [error, setError] = useState('');
 
+  // Single derived flag that any auth handler should respect. Each per-button
+  // state (loading, googleLoading, appleLoading) still controls its own
+  // spinner so the right button shows feedback, but `authBusy` is the
+  // disabled-state for every auth entry point. Without this, a user can
+  // tap Apple, see the in-app browser open, tap back to the auth screen,
+  // and then tap Google — racing the shared `error` state and creating
+  // two overlapping Clerk sign-in attempts.
+  const authBusy = loading || googleLoading || appleLoading;
+
   // Once Clerk reports a signed-in user, route them into the app.
   // Covers OAuth (where setActive may resolve before createdSessionId is
   // returned synchronously) and any case where someone lands here with a
@@ -106,6 +115,7 @@ export default function AuthScreen() {
 
   const handleSubmit = async () => {
     if (hasClerkKey && (!signInLoaded || !signUpLoaded)) return;
+    if (authBusy) return;
     setError('');
     setLoading(true);
 
@@ -174,7 +184,7 @@ export default function AuthScreen() {
   };
 
   const handleApple = async () => {
-    if (!hasClerkKey || !startSSOFlow) return;
+    if (!hasClerkKey || !startSSOFlow || authBusy) return;
     setAppleLoading(true);
     setError('');
     try {
@@ -217,7 +227,7 @@ export default function AuthScreen() {
   };
 
   const handleGoogle = async () => {
-    if (!hasClerkKey || !startSSOFlow) return;
+    if (!hasClerkKey || !startSSOFlow || authBusy) return;
     setGoogleLoading(true);
     setError('');
     try {
@@ -351,19 +361,23 @@ export default function AuthScreen() {
             {(mode === 'login' || mode === 'register') && hasClerkKey && Platform.OS === 'ios' && (
               <TouchableOpacity
                 onPress={handleApple}
-                disabled={appleLoading}
+                disabled={authBusy}
                 style={[
                   styles.appleBtn,
-                  { backgroundColor: '#000', borderColor: '#000' },
+                  { backgroundColor: Colors.appleBg, borderColor: Colors.appleBg },
+                  // Dim only when *another* auth flow holds the lock — keep
+                  // this button fully opaque while it's the one in flight so
+                  // its spinner reads naturally against the Apple black.
+                  authBusy && !appleLoading && { opacity: 0.5 },
                 ]}
                 activeOpacity={0.7}
               >
                 {appleLoading ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <ActivityIndicator size="small" color={Colors.appleFg} />
                 ) : (
                   <>
-                    <Ionicons name="logo-apple" size={18} color="#fff" style={{ marginTop: -2 }} />
-                    <Text style={[styles.appleText, { color: '#fff' }]}>
+                    <Ionicons name="logo-apple" size={18} color={Colors.appleFg} style={{ marginTop: -2 }} />
+                    <Text style={[styles.appleText, { color: Colors.appleFg }]}>
                       Continue with Apple
                     </Text>
                   </>
@@ -375,13 +389,16 @@ export default function AuthScreen() {
             {(mode === 'login' || mode === 'register') && hasClerkKey && (
               <TouchableOpacity
                 onPress={handleGoogle}
-                disabled={googleLoading}
+                disabled={authBusy}
                 style={[
                   styles.googleBtn,
                   {
                     borderColor: C.border,
                     backgroundColor: C.glowBg,
                   },
+                  // Dim only when *another* auth flow holds the lock —
+                  // mirrors the Apple button so the visual cue is consistent.
+                  authBusy && !googleLoading && { opacity: 0.5 },
                 ]}
                 activeOpacity={0.7}
               >
@@ -493,8 +510,8 @@ export default function AuthScreen() {
             {/* Submit button */}
             <TouchableOpacity
               onPress={handleSubmit}
-              disabled={loading}
-              style={[styles.submitBtn, loading && { opacity: 0.6 }]}
+              disabled={authBusy}
+              style={[styles.submitBtn, authBusy && { opacity: 0.6 }]}
               activeOpacity={0.85}
             >
               {loading ? (
