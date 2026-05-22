@@ -401,7 +401,12 @@ export default function AuthScreen() {
                   styles.googleBtn,
                   {
                     borderColor: C.border,
-                    backgroundColor: C.glowBg,
+                    // Solid muted fill (not the near-transparent glowBg) so
+                    // the Google button has the same visual weight as the
+                    // solid-black Apple button — keeps the two SSO options
+                    // looking like a unified pair instead of one solid,
+                    // one ghost.
+                    backgroundColor: C.muted,
                   },
                   // Dim only when *another* auth flow holds the lock —
                   // mirrors the Apple button so the visual cue is consistent.
@@ -649,9 +654,11 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: Radius.xl,
     borderWidth: 1,
-    marginBottom: Spacing.lg,
+    // Matched to appleBtn so the two SSO options share identical geometry.
+    marginBottom: Spacing.md,
   },
-  googleText: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  // Matched to appleText so both SSO buttons read with the same weight.
+  googleText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   appleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
