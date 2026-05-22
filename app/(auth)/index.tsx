@@ -376,6 +376,13 @@ export default function AuthScreen() {
                   <ActivityIndicator size="small" color={Colors.appleFg} />
                 ) : (
                   <>
+                    {/* Exception to the project's Feather-icons-at-24px convention.
+                        Feather has no Apple-logo glyph (it's a UI-primitive set,
+                        not a brand-icon set), and Apple HIG mandates the official
+                        Apple logo on the Sign in with Apple button — substituting
+                        any other shape would violate the button's brand contract.
+                        Size 18 keeps the logo proportional to the 14pt button
+                        label per HIG; 24 would visually overpower the text. */}
                     <Ionicons name="logo-apple" size={18} color={Colors.appleFg} style={{ marginTop: -2 }} />
                     <Text style={[styles.appleText, { color: Colors.appleFg }]}>
                       Continue with Apple
