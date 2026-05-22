@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Feather } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -88,6 +88,7 @@ export default function AuthScreen() {
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
   const [showResetSent, setShowResetSent] = useState(false);
   const [error, setError] = useState('');
 
@@ -169,6 +170,49 @@ export default function AuthScreen() {
       setError('');
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
+    }
+  };
+
+  const handleApple = async () => {
+    if (!hasClerkKey || !startSSOFlow) return;
+    setAppleLoading(true);
+    setError('');
+    try {
+      // Mirrors handleGoogle below — uses Clerk's web-based OAuth so no
+      // native module / entitlement is required. The user signs in via the
+      // in-app browser, redirects back to `overload://sso-callback`, and
+      // Clerk creates the session. Apple OAuth must be enabled in the Clerk
+      // Dashboard (Configure → SSO Connections → Apple) and the Services ID
+      // configured in Apple Developer Portal.
+      const redirectUrl = AuthSession.makeRedirectUri({ path: 'sso-callback' });
+      const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
+        strategy: 'oauth_apple',
+        redirectUrl,
+      });
+      if (createdSessionId && setActive) {
+        await setActive({ session: createdSessionId });
+        router.replace('/(app)');
+        return;
+      }
+
+      const t = authSessionResult?.type;
+      if (t === 'cancel' || t === 'dismiss') {
+        return;
+      }
+      if (su?.status === 'missing_requirements') {
+        const missing = su.missingFields?.join(', ') || 'additional info';
+        setError(`Sign-up needs ${missing}. Set those fields to optional in your Clerk Dashboard, or collect them in a follow-up screen.`);
+        return;
+      }
+      if (t && t !== 'success') {
+        setError(`Apple sign-in did not complete (${t}).`);
+        return;
+      }
+      setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
+    } catch (err: any) {
+      setError(err.errors?.[0]?.longMessage || err.message || 'Apple sign-in failed');
+    } finally {
+      setAppleLoading(false);
     }
   };
 
@@ -299,6 +343,32 @@ export default function AuthScreen() {
                   Enter the 6-digit code we sent to {email || 'your email'}
                 </Text>
               </View>
+            )}
+
+            {/* Apple — iOS only. App Store Review Guideline 4.8 requires
+                Sign in with Apple whenever another third-party social login
+                (Google here) is offered on iOS. */}
+            {(mode === 'login' || mode === 'register') && hasClerkKey && Platform.OS === 'ios' && (
+              <TouchableOpacity
+                onPress={handleApple}
+                disabled={appleLoading}
+                style={[
+                  styles.appleBtn,
+                  { backgroundColor: '#000', borderColor: '#000' },
+                ]}
+                activeOpacity={0.7}
+              >
+                {appleLoading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="logo-apple" size={18} color="#fff" style={{ marginTop: -2 }} />
+                    <Text style={[styles.appleText, { color: '#fff' }]}>
+                      Continue with Apple
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
             )}
 
             {/* Google */}
@@ -558,6 +628,17 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.lg,
   },
   googleText: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  appleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    marginBottom: Spacing.md,
+  },
+  appleText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
