@@ -222,6 +222,13 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
           styles.navBar,
           {
             backgroundColor: C.navBg,
+            // Make the safe-area inset additive to the bar height instead of
+            // eating into the 64px icon row. Without this, iOS devices with a
+            // home indicator (insets.bottom ≈ 34) crush the icon area to
+            // ~20px, making the nav look noticeably shorter than Android
+            // (where insets.bottom ≈ 0 with gesture nav, so the icons get
+            // the full 64px).
+            height: 64 + insets.bottom,
             paddingBottom: insets.bottom,
             borderTopColor: C.border,
           },
@@ -272,7 +279,8 @@ const styles = StyleSheet.create({
   navBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 64,
+    // height is set inline as `64 + insets.bottom` so the iOS home-indicator
+    // safe area is additive to the icon row, not subtractive from it.
     paddingTop: 10,
     borderTopWidth: 1,
     position: 'absolute',
