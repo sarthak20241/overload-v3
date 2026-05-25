@@ -4,6 +4,7 @@ import {
   TextInput, ActivityIndicator, Modal, Pressable, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -19,9 +20,10 @@ import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import {
-  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog, saveBasicInfo,
+  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
+import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { setGuestMode } from '@/lib/guestMode';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 
@@ -210,7 +212,11 @@ export default function ProfileScreen() {
   const [weight, setWeight] = useState('78');
   const [goalWeight, setGoalWeight] = useState('75');
   const [bodyFat, setBodyFat] = useState('16');
-  const [weightUnit, setWeightUnit] = useState<WeightUnit>('kg');
+  const {
+    weightUnit,
+    setWeightUnit,
+    setGoalWeight: setCtxGoalWeight,
+  } = useBasicInfo();
   const [heightUnit, setHeightUnit] = useState<HeightUnit>('cm');
   const [totalXP, setTotalXP] = useState(0);
   const [totalWorkouts, setTotalWorkouts] = useState(0);
@@ -282,6 +288,7 @@ export default function ProfileScreen() {
         setHeight(String(p.height_cm));
         setWeight(String(p.weight_kg));
         setGoalWeight(String(p.goal_weight_kg));
+        setCtxGoalWeight(p.goal_weight_kg);
         setBodyFat(String(p.body_fat_percent));
         setTotalXP(p.xp);
         setJoinDate(new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
@@ -301,6 +308,7 @@ export default function ProfileScreen() {
         setHeight(String(profile.height_cm || 178));
         setWeight(String(profile.weight_kg || 78));
         setGoalWeight(String(profile.goal_weight_kg || 75));
+        if (profile.goal_weight_kg) setCtxGoalWeight(profile.goal_weight_kg);
         setBodyFat(String(profile.body_fat_percent || 16));
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
@@ -405,12 +413,26 @@ export default function ProfileScreen() {
     if (!bugTitle.trim()) return;
     setBugSubmitting(true);
     try {
-      // Persist locally for now — could be hooked to a backend later.
+      if (isSupabaseConfigured) {
+        const { error } = await supabase.from('bug_reports').insert({
+          user_id: user?.id ?? null,
+          title: bugTitle.trim(),
+          description: bugDescription.trim() || null,
+          category: bugCategory,
+          app_version: Constants.expoConfig?.version ?? null,
+          platform: Platform.OS,
+          os_version: String(Platform.Version),
+        });
+        if (error) {
+          setShowErrorAlert(`Couldn't send report: ${error.message}`);
+          return;
+        }
+      }
       setBugTitle('');
       setBugDescription('');
       setBugCategory('ui');
       setBugModalOpen(false);
-      setShowInfoAlert('Bug report submitted!');
+      setShowInfoAlert('Bug report submitted — thanks!');
     } finally {
       setBugSubmitting(false);
     }
@@ -576,7 +598,7 @@ export default function ProfileScreen() {
                   <MiniSegmented
                     options={['kg', 'lbs'] as WeightUnit[]}
                     value={weightUnit}
-                    onChange={(v) => { setWeightUnit(v); saveBasicInfo({ weightUnit: v }); }}
+                    onChange={(v) => setWeightUnit(v)}
                   />
                   <TouchableOpacity
                     onPress={logWeight}
@@ -599,7 +621,7 @@ export default function ProfileScreen() {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
                       const num = parseFloat(v);
-                      if (!isNaN(num) && num > 0) saveBasicInfo({ goalWeight: num });
+                      if (!isNaN(num) && num > 0) setCtxGoalWeight(num);
                     }}
                     placeholder={weightUnit}
                   />
@@ -662,7 +684,7 @@ export default function ProfileScreen() {
           <View style={styles.section}>
             <SectionLabel icon="zap">TRAINING PROFILE</SectionLabel>
             <Text style={[styles.coachHint, { color: C.textMuted }]}>
-              Helps the AI Coach tailor recommendations to your goals and experience.
+              Helps Coach Drona tailor recommendations to your goals and experience.
             </Text>
 
             {/* Goal — horizontal scroll because 5 options */}

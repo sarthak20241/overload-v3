@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
+import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { hydrateGuestStore } from '@/lib/mockData';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { ToastProvider } from '@/components/ui/Toast';
@@ -37,16 +38,18 @@ function AppInner() {
   const { C } = useTheme();
   return (
     <ToastProvider>
-      <WorkoutProvider>
-        <StatusBar style={C.statusBar} />
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="(app)" options={{ headerShown: false }} />
-          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-          <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
-          <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
-        </Stack>
-      </WorkoutProvider>
+      <BasicInfoProvider>
+        <WorkoutProvider>
+          <StatusBar style={C.statusBar} />
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" options={{ headerShown: false }} />
+            <Stack.Screen name="(app)" options={{ headerShown: false }} />
+            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+            <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
+            <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
+          </Stack>
+        </WorkoutProvider>
+      </BasicInfoProvider>
     </ToastProvider>
   );
 }
