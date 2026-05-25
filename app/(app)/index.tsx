@@ -20,6 +20,22 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
+// Figma-matched muscle group colors. Module-scoped so consumers get a stable
+// identity across renders.
+const MUSCLE_COLORS: Record<string, string> = {
+  Chest: '#ef4444',
+  Back: '#3b82f6',
+  Shoulders: '#f59e0b',
+  Quads: '#10b981',
+  Hamstrings: '#06b6d4',
+  Biceps: '#a855f7',
+  Triceps: '#ec4899',
+  Calves: '#84cc16',
+  Core: '#f97316',
+  Glutes: '#14b8a6',
+  'Full Body': '#8b5cf6',
+};
+
 function formatDuration(sec: number) {
   const m = Math.floor(sec / 60);
   if (m < 60) return `${m}m`;
@@ -206,33 +222,44 @@ export default function DashboardScreen() {
     }).catch(() => setLoading(false));
   }, [user?.id]);
 
-  // Compute stats
+  // Compute stats. Memoized so we don't reprocess every workout on every
+  // re-render — useWorkout's timer ticks 60×/min while a workout is active.
   const now = new Date();
-  const weekAgo = new Date(now);
-  weekAgo.setDate(now.getDate() - 7);
-  const weekWorkouts = workouts.filter(w => new Date(w.started_at) >= weekAgo);
+  const { streak, totalVolume, avgDuration, totalSets, totalReps, recentWorkouts, weekWorkouts } = useMemo(() => {
+    const _now = new Date();
+    const weekAgo = new Date(_now);
+    weekAgo.setDate(_now.getDate() - 7);
+    const _weekWorkouts = workouts.filter(w => new Date(w.started_at) >= weekAgo);
 
-  let streak = 0;
-  const sortedDays = [...new Set(workouts.map(w => new Date(w.started_at).toDateString()))];
-  const checkDate = new Date(now);
-  for (let i = 0; i < 365; i++) {
-    const ds = checkDate.toDateString();
-    if (sortedDays.includes(ds)) {
-      streak++;
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else if (i === 0) {
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else break;
-  }
+    let _streak = 0;
+    const sortedDays = new Set(workouts.map(w => new Date(w.started_at).toDateString()));
+    const checkDate = new Date(_now);
+    for (let i = 0; i < 365; i++) {
+      const ds = checkDate.toDateString();
+      if (sortedDays.has(ds)) {
+        _streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else if (i === 0) {
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else break;
+    }
 
-  const totalVolume = weekWorkouts.reduce((sum, w) => sum + (w.total_volume_kg || 0), 0);
-  const avgDuration = weekWorkouts.length > 0
-    ? Math.floor(weekWorkouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / weekWorkouts.length / 60)
-    : 0;
-  const totalSets = workouts.reduce((s, w) => s + (w.sets?.length || 0), 0);
-  const totalReps = workouts.reduce((s, w) => s + (w.sets?.reduce((r: number, set: any) => r + set.reps, 0) || 0), 0);
-
-  const recentWorkouts = workouts.slice(0, 3);
+    const _totalVolume = _weekWorkouts.reduce((sum, w) => sum + (w.total_volume_kg || 0), 0);
+    const _avgDuration = _weekWorkouts.length > 0
+      ? Math.floor(_weekWorkouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / _weekWorkouts.length / 60)
+      : 0;
+    const _totalSets = workouts.reduce((s, w) => s + (w.sets?.length || 0), 0);
+    const _totalReps = workouts.reduce((s, w) => s + (w.sets?.reduce((r: number, set: any) => r + set.reps, 0) || 0), 0);
+    return {
+      streak: _streak,
+      totalVolume: _totalVolume,
+      avgDuration: _avgDuration,
+      totalSets: _totalSets,
+      totalReps: _totalReps,
+      recentWorkouts: workouts.slice(0, 3),
+      weekWorkouts: _weekWorkouts,
+    };
+  }, [workouts]);
 
   // Expanded workout id (tap to expand)
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -310,25 +337,10 @@ export default function DashboardScreen() {
     }
     return weeks;
   }, [workouts]);
-  const weeklyVolumes = weeklyTrend.map(w => w.volume);
-  const weeklyLabels = weeklyTrend.map(w => w.label);
+  const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
+  const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
 
   // Muscle breakdown
-  // Figma-matched muscle group colors
-  const MUSCLE_COLORS: Record<string, string> = {
-    Chest: '#ef4444',
-    Back: '#3b82f6',
-    Shoulders: '#f59e0b',
-    Quads: '#10b981',
-    Hamstrings: '#06b6d4',
-    Biceps: '#a855f7',
-    Triceps: '#ec4899',
-    Calves: '#84cc16',
-    Core: '#f97316',
-    Glutes: '#14b8a6',
-    'Full Body': '#8b5cf6',
-  };
-
   const muscleData = useMemo(() => {
     const counts: Record<string, number> = {};
     workouts.forEach(w => {
@@ -420,7 +432,7 @@ export default function DashboardScreen() {
               {/* Text */}
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>AI Coach</Text>
+                  <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>Coach Drona</Text>
                   <LinearGradient
                     colors={['#a855f7', '#3b82f6']}
                     start={{ x: 0, y: 0 }}
@@ -431,7 +443,7 @@ export default function DashboardScreen() {
                   </LinearGradient>
                 </View>
                 <Text style={[styles.aiCoachSub, { color: C.textMuted }]}>
-                  Your personal coach who knows every rep, every PR
+                  Your coach. Knows every rep, every PR.
                 </Text>
               </View>
 
@@ -571,6 +583,9 @@ export default function DashboardScreen() {
                   onPress={() => router.push('/(app)/history')}
                   style={[styles.viewAllBtn, { backgroundColor: C.primaryMuted }]}
                   activeOpacity={0.7}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="View all workouts"
                 >
                   <Feather name="chevron-right" size={12} color={C.accentText} />
                 </TouchableOpacity>

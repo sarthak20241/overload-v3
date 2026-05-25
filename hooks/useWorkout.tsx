@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useRef, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useRef, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import type { ActiveWorkoutExercise } from '@/lib/types';
 
 interface WorkoutContextType {
@@ -46,7 +46,7 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   const startTimeRef = useRef(0);
   const pausedElapsedRef = useRef(0);
 
-  const startWorkout = (id: string, name: string, exs: ActiveWorkoutExercise[]) => {
+  const startWorkout = useCallback((id: string, name: string, exs: ActiveWorkoutExercise[]) => {
     const now = Date.now();
     startTimeRef.current = now;
     setRoutineId(id);
@@ -55,9 +55,9 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setElapsed(0);
     setIsPaused(false);
     setIsActive(true);
-  };
+  }, []);
 
-  const finishWorkout = () => {
+  const finishWorkout = useCallback(() => {
     setIsActive(false);
     setIsPaused(false);
     setRoutineId(null);
@@ -65,13 +65,13 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setElapsed(0);
     setExercises([]);
     if (timerRef.current) clearInterval(timerRef.current);
-  };
+  }, []);
 
-  const updateExercises = (
+  const updateExercises = useCallback((
     input:
       | ActiveWorkoutExercise[]
       | ((prev: ActiveWorkoutExercise[]) => ActiveWorkoutExercise[])
-  ) => setExercises(input);
+  ) => setExercises(input), []);
 
   const pauseWorkout = useCallback(() => {
     pausedElapsedRef.current = Math.floor((Date.now() - startTimeRef.current) / 1000);
@@ -102,12 +102,18 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [isActive, isPaused]);
 
+  const value = useMemo(() => ({
+    isActive, isPaused, routineId, routineName, elapsed, exercises,
+    startWorkout, finishWorkout, updateExercises,
+    pauseWorkout, resumeWorkout, togglePause,
+  }), [
+    isActive, isPaused, routineId, routineName, elapsed, exercises,
+    startWorkout, finishWorkout, updateExercises,
+    pauseWorkout, resumeWorkout, togglePause,
+  ]);
+
   return (
-    <WorkoutContext.Provider value={{
-      isActive, isPaused, routineId, routineName, elapsed, exercises,
-      startWorkout, finishWorkout, updateExercises,
-      pauseWorkout, resumeWorkout, togglePause,
-    }}>
+    <WorkoutContext.Provider value={value}>
       {children}
     </WorkoutContext.Provider>
   );

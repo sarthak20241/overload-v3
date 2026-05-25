@@ -602,12 +602,18 @@ function MeasurementHistoryDrawer({
                     <TouchableOpacity
                       onPress={() => setConfirmId(null)}
                       style={[styles.mConfirmBtn, { backgroundColor: C.closeBtn }]}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel delete"
                     >
                       <Feather name="x" size={12} color={C.foreground} />
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() => { onDelete(entry.id); setConfirmId(null); }}
                       style={[styles.mConfirmBtn, { backgroundColor: 'rgba(239,68,68,0.20)' }]}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Confirm delete measurement"
                     >
                       <Feather name="trash-2" size={12} color="#ef4444" />
                     </TouchableOpacity>
@@ -616,6 +622,9 @@ function MeasurementHistoryDrawer({
                   <TouchableOpacity
                     onPress={() => setConfirmId(entry.id)}
                     style={[styles.mConfirmBtn, { backgroundColor: 'transparent' }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Delete measurement"
                   >
                     <Feather name="trash-2" size={12} color={C.textDim} />
                   </TouchableOpacity>

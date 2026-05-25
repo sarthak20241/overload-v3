@@ -604,6 +604,9 @@ export default function ProfileScreen() {
                     onPress={logWeight}
                     activeOpacity={0.85}
                     style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Log current weight"
                   >
                     <Feather name="plus" size={12} color={Colors.primaryFg} />
                   </TouchableOpacity>
@@ -652,6 +655,9 @@ export default function ProfileScreen() {
                     onPress={logBodyFat}
                     activeOpacity={0.85}
                     style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Log body fat percentage"
                   >
                     <Feather name="plus" size={12} color={Colors.primaryFg} />
                   </TouchableOpacity>

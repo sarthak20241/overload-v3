@@ -445,6 +445,9 @@ export default function AuthScreen() {
                   placeholderTextColor={C.textMuted}
                   value={name}
                   onChangeText={setName}
+                  textContentType="name"
+                  autoComplete="name"
+                  accessibilityLabel="Your name"
                   style={[styles.input, { color: C.foreground }]}
                 />
               </View>
@@ -461,6 +464,9 @@ export default function AuthScreen() {
                   onChangeText={setEmail}
                   keyboardType="email-address"
                   autoCapitalize="none"
+                  textContentType="emailAddress"
+                  autoComplete="email"
+                  accessibilityLabel="Email address"
                   style={[styles.input, { color: C.foreground }]}
                 />
               </View>
@@ -476,6 +482,9 @@ export default function AuthScreen() {
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPass}
+                  textContentType={mode === 'register' ? 'newPassword' : 'password'}
+                  autoComplete={mode === 'register' ? 'password-new' : 'password'}
+                  accessibilityLabel="Password"
                   style={[styles.input, { color: C.foreground }]}
                 />
                 <TouchableOpacity onPress={() => setShowPass(!showPass)} style={styles.eyeBtn}>
@@ -496,6 +505,9 @@ export default function AuthScreen() {
                   keyboardType="number-pad"
                   autoCapitalize="none"
                   maxLength={6}
+                  textContentType="oneTimeCode"
+                  autoComplete="sms-otp"
+                  accessibilityLabel="Verification code"
                   style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
                 />
               </View>
