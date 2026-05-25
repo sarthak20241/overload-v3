@@ -24,6 +24,11 @@ ios/
 .env.local
 .env.*.local
 
+# EAS submit credentials — Google Play service account key
+google-service-account.json
+*.p8
+AuthKey_*.p8
+
 # OS / editor
 .DS_Store
 .vscode/
