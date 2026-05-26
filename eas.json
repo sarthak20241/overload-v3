@@ -34,8 +34,8 @@
   "submit": {
     "production": {
       "ios": {
-        "appleId": "REPLACE_WITH_APPLE_ID_EMAIL",
-        "ascAppId": "REPLACE_WITH_APP_STORE_CONNECT_APP_ID",
+        "appleId": "sarthakbuilds99@gmail.com",
+        "ascAppId": "6773063775",
         "appleTeamId": "JSA76PM8YB"
       },
       "android": {
