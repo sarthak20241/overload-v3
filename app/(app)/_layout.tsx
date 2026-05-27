@@ -15,7 +15,7 @@ import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getAllRoutines } from '@/lib/mockData';
 import { BottomNav } from '@/components/ui/BottomNav';
-import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import type { Routine } from '@/lib/types';
 
@@ -208,12 +208,21 @@ export default function AppLayout() {
 
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
-  // yet) or a returning guest (AsyncStorage flag hasn't loaded yet).
-  if (hasClerkKey && (!isLoaded || !guestLoaded)) return null;
+  // yet) or a returning guest (AsyncStorage flag hasn't loaded yet). The
+  // original `hasClerkKey &&` short-circuit here treated a missing Clerk key
+  // as auto-passthrough — the same silent-bypass class as the auth screen
+  // bug. useClerkUser already returns isLoaded:true when no key is present,
+  // so this just waits on the guest flag in that case.
+  if (!isLoaded || !guestLoaded) return null;
 
   // Reject everyone who isn't signed in and isn't an explicit guest. Catches
-  // deep links, mid-session sign-out, and stale state restoration.
-  if (hasClerkKey && !isSignedIn && !isGuest) {
+  // deep links, mid-session sign-out, and stale state restoration. With no
+  // Clerk key configured, isSignedIn is always false, so only callers who
+  // explicitly opted into guest mode via setGuestMode(true) pass — a
+  // misconfigured build (e.g. EAS env vars missing on a TestFlight build)
+  // now bounces to /(auth) where the error screen renders, instead of
+  // silently handing out access.
+  if (!isSignedIn && !isGuest) {
     return <Redirect href="/(auth)" />;
   }
 

@@ -113,44 +113,89 @@ export default function AuthScreen() {
     }
   }, [clerkLoaded, isSignedIn, router]);
 
+  // Misconfigured build: EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY is missing, so no
+  // ClerkProvider was mounted at the root. Render an explicit error screen
+  // with no auth form, no SSO buttons, and no "Continue as guest" fallthrough
+  // — the entire screen is informational. We hit this on a TestFlight build
+  // where EAS env vars weren't configured: the form rendered, every Clerk
+  // call was skipped, and `router.replace('/(app)')` ran anyway, letting
+  // any email+password into the app as a fake guest. Failing loudly here
+  // means future misconfigurations surface as a visible error, not a silent
+  // bypass. Placed AFTER every hook so React's rules-of-hooks ordering is
+  // preserved across renders (hasClerkKey is a build-time constant so the
+  // branch taken never changes between mounts).
+  if (!hasClerkKey) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: C.background }]}>
+        <View style={styles.misconfigContainer}>
+          <Text style={[styles.logoText, { color: C.foreground }]}>
+            OVER<Text style={{ color: C.accentText }}>LOAD</Text>
+          </Text>
+          <View style={[styles.misconfigCard, { backgroundColor: C.elevated, borderColor: 'rgba(239,68,68,0.30)' }]}>
+            <Feather name="alert-triangle" size={32} color="#f87171" />
+            <Text style={[styles.misconfigTitle, { color: C.foreground }]}>
+              Build misconfigured
+            </Text>
+            <Text style={[styles.misconfigBody, { color: C.textMuted }]}>
+              This build is missing required authentication keys. Please contact{' '}
+              <Text style={{ color: C.accentText, fontWeight: FontWeight.semibold }}>
+                support@tryoverload.app
+              </Text>
+              .
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   const handleSubmit = async () => {
-    if (hasClerkKey && (!signInLoaded || !signUpLoaded)) return;
+    // Belt-and-suspenders against the bypass we hit on TestFlight: a build
+    // shipped without EAS env vars had hasClerkKey === false, every mode
+    // branch below skipped its Clerk block, and the unconditional
+    // `router.replace('/(app)')` calls handed any email+password through
+    // into the app with no real session. The screen now renders an error
+    // placeholder above this function (so this is unreachable from the UI),
+    // but we refuse here too so a hot-reload or upstream regression can't
+    // re-open the hole.
+    if (!hasClerkKey) {
+      setError('This build is misconfigured — please contact support@tryoverload.app');
+      return;
+    }
+    if (!signInLoaded || !signUpLoaded) return;
     if (authBusy) return;
     setError('');
     setLoading(true);
 
     try {
       if (mode === 'login') {
-        if (hasClerkKey) {
-          const result = await signIn!.create({ identifier: email, password });
-          if (result.status !== 'complete' || !result.createdSessionId) {
-            throw new Error('Sign-in needs another step. Please try again.');
-          }
-          await setSignInActive!({ session: result.createdSessionId });
+        const result = await signIn!.create({ identifier: email, password });
+        if (result.status !== 'complete' || !result.createdSessionId) {
+          throw new Error('Sign-in needs another step. Please try again.');
         }
+        await setSignInActive!({ session: result.createdSessionId });
         router.replace('/(app)');
       } else if (mode === 'register') {
         if (!name.trim()) throw new Error('Please enter your name');
-        if (password.length < 6) throw new Error('Password must be at least 6 characters');
-        if (hasClerkKey) {
-          const parts = name.trim().split(/\s+/);
-          const firstName = parts[0];
-          const lastName = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
-          const result = await signUp!.create({ emailAddress: email, password, firstName, lastName });
-          if (result.status === 'complete' && result.createdSessionId) {
-            await setSignUpActive!({ session: result.createdSessionId });
-            router.replace('/(app)');
-          } else {
-            // Email verification required — send code and switch to verify mode.
-            await signUp!.prepareEmailAddressVerification({ strategy: 'email_code' });
-            setCode('');
-            setMode('verify');
-          }
-        } else {
+        // Matches Clerk's instance-side minimum (Configure → User & authentication
+        // → Password → Minimum password length = 8). Keeping these in sync means
+        // the app rejects too-short passwords locally instead of round-tripping
+        // to Clerk only to surface the same error.
+        if (password.length < 8) throw new Error('Password must be at least 8 characters');
+        const parts = name.trim().split(/\s+/);
+        const firstName = parts[0];
+        const lastName = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
+        const result = await signUp!.create({ emailAddress: email, password, firstName, lastName });
+        if (result.status === 'complete' && result.createdSessionId) {
+          await setSignUpActive!({ session: result.createdSessionId });
           router.replace('/(app)');
+        } else {
+          // Email verification required — send code and switch to verify mode.
+          await signUp!.prepareEmailAddressVerification({ strategy: 'email_code' });
+          setCode('');
+          setMode('verify');
         }
       } else if (mode === 'verify') {
-        if (!hasClerkKey) return;
         if (!code.trim()) throw new Error('Enter the 6-digit code from your email');
         const result = await signUp!.attemptEmailAddressVerification({ code: code.trim() });
         if (result.status !== 'complete' || !result.createdSessionId) {
@@ -159,9 +204,7 @@ export default function AuthScreen() {
         await setSignUpActive!({ session: result.createdSessionId });
         router.replace('/(app)');
       } else {
-        if (hasClerkKey) {
-          await signIn!.create({ strategy: 'reset_password_email_code', identifier: email });
-        }
+        await signIn!.create({ strategy: 'reset_password_email_code', identifier: email });
         setShowResetSent(true);
       }
     } catch (err: any) {
@@ -731,4 +774,32 @@ const styles = StyleSheet.create({
     color: Colors.primaryFg,
   },
   guestText: { fontSize: FontSize.base },
+  // Misconfigured-build error screen. Centered card with the same
+  // border-radius / padding scale as the auth card so it reads as part of
+  // the same surface, plus a red-tinted border to mark it as a fault state.
+  misconfigContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.xxl,
+  },
+  misconfigCard: {
+    borderRadius: Radius.xxl,
+    borderWidth: 1,
+    padding: Spacing.xxl,
+    alignItems: 'center',
+    gap: Spacing.md,
+    maxWidth: 360,
+  },
+  misconfigTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    textAlign: 'center',
+  },
+  misconfigBody: {
+    fontSize: FontSize.sm,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
 });
