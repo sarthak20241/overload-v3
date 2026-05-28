@@ -422,15 +422,40 @@ function CostPreviewCard({
       <div className="text-3xl font-bold tabular-nums text-fg mb-3">
         ${total.toFixed(2)}
       </div>
+
+      {/* BY PROVIDER — Anthropic vs Voyage, glanceable. Previously buried as
+          a footer line; promoted to its own section because Voyage cost
+          changes much more visibly than Anthropic when embedding volume
+          shifts (e.g. ingest backfills). */}
+      <div className="text-[9px] uppercase tracking-widest text-text-muted mb-1.5">
+        By provider
+      </div>
+      <div className="space-y-1.5 text-[11px] mb-3">
+        <CostRow
+          label="Anthropic"
+          value={totals.anthropic_cost_usd}
+          total={total}
+          color="primary"
+        />
+        <CostRow
+          label="Voyage"
+          value={totals.voyage_cost_usd}
+          total={total}
+          color="voyage"
+        />
+      </div>
+
+      {/* BY PIPELINE — coach vs ingest vs review vs eval. The pipeline
+          split is what tells you "which workload is burning the budget" —
+          provider split tells you "which vendor". Both are useful. */}
+      <div className="text-[9px] uppercase tracking-widest text-text-muted mb-1.5 pt-2 border-t border-border/60">
+        By pipeline
+      </div>
       <div className="space-y-1.5 text-[11px]">
         <CostRow label="Coach inference"   value={totals.coach_cost_usd}        total={total} color="primary" />
         <CostRow label="Ingest (Haiku + Voyage)" value={totals.ingest_cost_usd}        total={total} color="info" />
         <CostRow label="Review agent"      value={totals.review_agent_cost_usd} total={total} color="warning" />
         <CostRow label="Eval harness"      value={totals.eval_cost_usd}         total={total} color="muted" />
-      </div>
-      <div className="mt-3 pt-2 border-t border-border/60 flex justify-between text-[10px] text-text-muted">
-        <span>Anthropic ${totals.anthropic_cost_usd.toFixed(2)}</span>
-        <span>Voyage ${totals.voyage_cost_usd.toFixed(2)}</span>
       </div>
     </div>
   );
@@ -442,13 +467,17 @@ function CostRow({
   label: string;
   value: number;
   total: number;
-  color: 'primary' | 'info' | 'warning' | 'muted';
+  color: 'primary' | 'info' | 'warning' | 'muted' | 'voyage';
 }) {
   const pct = total > 0 ? (value / total) * 100 : 0;
+  // Voyage gets its own color so the provider split reads at a glance.
+  // Falls back to a violet tone via inline class so we don't need to wire
+  // a new Tailwind token for one-off use.
   const barCls =
     color === 'primary' ? 'bg-primary' :
     color === 'info'    ? 'bg-info'    :
     color === 'warning' ? 'bg-warning' :
+    color === 'voyage'  ? 'bg-[#a855f7]' :   // violet — distinct from anthropic's primary
                           'bg-text-muted';
   return (
     <div className="flex items-center gap-2">

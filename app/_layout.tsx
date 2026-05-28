@@ -11,6 +11,7 @@ import { ThemeProvider, useTheme } from '@/hooks/useTheme';
 import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { hydrateGuestStore } from '@/lib/mockData';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
+import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { ToastProvider } from '@/components/ui/Toast';
 
 // Required for OAuth flows to complete when the auth session returns.
@@ -78,6 +79,7 @@ export default function RootLayout() {
   return (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
       <ClerkSupabaseBridge />
+      <RevenueCatBridge />
       <AppContent />
     </ClerkProvider>
   );

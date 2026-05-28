@@ -9,7 +9,8 @@
       "Bash(ls \"/Users/sarthakkumar/Coding/overload-v3/Redesign Gym Workout Tracker UI \\(1\\)/src/app/\")",
       "Bash(ls \"/Users/sarthakkumar/Coding/overload-v3/Redesign Gym Workout Tracker UI \\(1\\)/src/app/pages/\")",
       "Bash(git init *)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in {**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}.items\\(\\) if 'supabase' in k.lower\\(\\) or 'clerk' in k.lower\\(\\)}, indent=2\\)\\)\")"
     ]
   },
   "enabledMcpjsonServers": [

@@ -8,8 +8,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, Pressable,
-  TextInput, ScrollView, FlatList, KeyboardAvoidingView, Platform,
-  ActivityIndicator, Linking,
+  TextInput, ScrollView, FlatList, Keyboard, Platform,
+  ActivityIndicator, Linking, useWindowDimensions,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
@@ -22,6 +22,9 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/mockData';
 import { useToast } from '@/components/ui/Toast';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { CoachAccessGate } from './CoachAccessGate';
+import { Paywall } from './Paywall';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout';
@@ -843,12 +846,12 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
     });
   }, [input, loading, messages, supabase, getToken]);
 
+  // Note: keyboard avoidance is handled by AICoachModal's sheet sizing —
+  // the parent shrinks the sheet and lifts it via marginBottom on iOS so
+  // the input naturally sits above the keyboard. No KeyboardAvoidingView
+  // here (it doesn't work reliably inside a transparent Modal on iOS).
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={{ flex: 1 }}
-      keyboardVerticalOffset={0}
-    >
+    <View style={{ flex: 1 }}>
       {/* Header */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
@@ -864,6 +867,7 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
         style={{ flex: 1 }}
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {messages.map((msg) => (
           <View
@@ -923,7 +927,7 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
           </TouchableOpacity>
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -1258,12 +1262,12 @@ function GeneratePlanScreen({
   }
 
   // ── Result view ─────────────────────────────────────────────────────────
+  // No KeyboardAvoidingView here — there is no TextInput on this screen,
+  // and the parent AICoachModal already handles iOS keyboard avoidance
+  // for any chat sub-screens via its sheet's marginBottom.
   if (result) {
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
+      <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
           <TouchableOpacity
             onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
@@ -1352,7 +1356,7 @@ function GeneratePlanScreen({
             <Text style={s.primaryBtnText}>Save All Routines</Text>
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     );
   }
 
@@ -1675,12 +1679,10 @@ function GenerateWorkoutScreen({
   }
 
   // ── Result view ─────────────────────────────────────────────────────────
+  // No KeyboardAvoidingView — see GeneratePlanScreen for rationale.
   if (result) {
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
+      <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
           <TouchableOpacity
             onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
@@ -1727,7 +1729,7 @@ function GenerateWorkoutScreen({
             <Text style={s.primaryBtnText}>Save as Routine</Text>
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     );
   }
 
@@ -2191,12 +2193,11 @@ function RefineChatScreen({
     });
   }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured]);
 
+  // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
+  // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
+  // which is unreliable inside a transparent Modal on iOS.
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={{ flex: 1 }}
-      keyboardVerticalOffset={0}
-    >
+    <View style={{ flex: 1 }}>
       {/* Header */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
@@ -2214,6 +2215,7 @@ function RefineChatScreen({
         style={{ flex: 1 }}
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {messages.map((msg) => (
           <View
@@ -2269,7 +2271,7 @@ function RefineChatScreen({
           </TouchableOpacity>
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -2290,10 +2292,58 @@ export function AICoachModal({
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [screen, setScreen] = useState<Screen>(initialScreen);
+  // Phase 3 gate. Calls get_coach_access_status. Cached at the hook layer
+  // so opening/closing the modal is free after the first fetch. While
+  // loading, render the gate's spinner instead of the menu — flashing a
+  // menu the user can't use would be worse than waiting 100ms.
+  const { access, loading: accessLoading, refresh: refreshAccess } = useCoachAccess();
+  const accessAllowed = !accessLoading
+    && (access.state === 'paid' || access.state === 'trialing');
+  // Manual paywall — opened by the upgrade banner on trialing users' menu.
+  // Closing returns to the menu; a successful purchase calls refreshAccess
+  // (state → 'paid') which makes the banner disappear on the next render.
+  const [showPaywall, setShowPaywall] = useState(false);
+  // Reset paywall flag whenever the modal closes/reopens, so stale state
+  // from a previous session doesn't auto-show it the next time around.
+  useEffect(() => {
+    if (!visible) setShowPaywall(false);
+  }, [visible]);
   // Sub-frame double-tap guard — modal closes immediately on save, so the
   // visible-button block goes away fast, but the close animation leaves a tiny
   // window where a second tap could fire before React re-renders.
   const inFlightRef = useRef(false);
+
+  // Keyboard avoidance for the modal sheet. On iOS a transparent <Modal> does
+  // NOT resize when the keyboard appears, so a KeyboardAvoidingView nested
+  // inside ends up adding padding that lives BELOW the visible window — the
+  // input remains hidden behind the keyboard. The reliable fix (already used
+  // by analytics.tsx's BottomDrawer) is to track keyboard height ourselves
+  // and physically lift the sheet via marginBottom + cap its height to
+  // (winH - kbHeight) so the top doesn't get pushed off-screen.
+  const { height: winH } = useWindowDimensions();
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    if (!visible) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [visible]);
+  // Sheet sizing: when keyboard is up, cap height to the available space
+  // above it (minus a small top buffer) so the sheet doesn't overflow the
+  // viewport. When keyboard is down, fall back to the original 92% height.
+  // marginBottom only applies on iOS — Android's adjustResize already
+  // shrinks the activity, so adding marginBottom there would double-lift.
+  const sheetHeight = kbHeight > 0
+    ? Math.max(winH - kbHeight - 40, winH * 0.5)
+    : winH * 0.92;
+  const sheetMarginBottom = Platform.OS === 'ios' ? kbHeight : 0;
 
   useEffect(() => {
     if (visible) setScreen(initialScreen);
@@ -2452,48 +2502,117 @@ export function AICoachModal({
       <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
         <Pressable
           style={{ flex: 1 }}
-          onPress={screen === 'menu' ? handleClose : undefined}
+          // Backdrop closes on menu OR while the gate owns the modal —
+          // neither has user input that could be lost. Chat/plan/workout
+          // screens keep the tap inert so accidental backdrop hits don't
+          // throw away mid-conversation state.
+          onPress={(screen === 'menu' || !accessAllowed) ? handleClose : undefined}
         />
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
-          style={[s.modalContainer, { backgroundColor: C.background }]}
+          style={[
+            s.modalContainer,
+            {
+              backgroundColor: C.background,
+              height: sheetHeight,
+              marginBottom: sheetMarginBottom,
+            },
+          ]}
         >
-          {/* Close/handle for menu */}
-          {screen === 'menu' && (
-            <View style={s.menuHeader}>
-              <TouchableOpacity
-                onPress={handleClose}
-                style={[s.closeCircle, { backgroundColor: C.muted }]}
-              >
-                <Feather name="x" size={16} color={C.foreground} />
-              </TouchableOpacity>
-              <View style={s.menuHeaderTitle}>
-                <SparkleIcon size={16} color={C.accentText} />
-                <Text style={[s.menuHeaderText, { color: C.foreground }]}>Coach Drona</Text>
-              </View>
-              <View style={{ width: 32 }} />
-            </View>
-          )}
+          {/*
+            Gate first. When the user isn't paid/trialing the gate owns the
+            entire modal body — including its own header — and the menu
+            header + screen dispatch below are skipped. When the gate is
+            cleared (paid/trialing), we fall through to the existing flow.
+          */}
+          {!accessAllowed ? (
+            <CoachAccessGate
+              access={access}
+              loading={accessLoading}
+              refresh={refreshAccess}
+              supabase={supabase}
+              onClose={handleClose}
+            />
+          ) : showPaywall ? (
+            /* Upgrade path for trialing users — owns the modal body
+               while open. Close returns to the menu; a successful purchase
+               flips access.state to 'paid' and we drop back to the menu
+               on the next render. */
+            <Paywall
+              supabase={supabase}
+              onClose={() => setShowPaywall(false)}
+              onPurchased={async () => {
+                await refreshAccess();
+                setShowPaywall(false);
+              }}
+            />
+          ) : (
+            <>
+              {/* Close/handle for menu */}
+              {screen === 'menu' && (
+                <View style={s.menuHeader}>
+                  <TouchableOpacity
+                    onPress={handleClose}
+                    style={[s.closeCircle, { backgroundColor: C.muted }]}
+                  >
+                    <Feather name="x" size={16} color={C.foreground} />
+                  </TouchableOpacity>
+                  <View style={s.menuHeaderTitle}>
+                    <SparkleIcon size={16} color={C.accentText} />
+                    <Text style={[s.menuHeaderText, { color: C.foreground }]}>Coach Drona</Text>
+                  </View>
+                  <View style={{ width: 32 }} />
+                </View>
+              )}
 
-          {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
-          {screen === 'chat' && (
-            <ChatScreen
-              onBack={() => setScreen('menu')}
-              onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
-            />
-          )}
-          {screen === 'plan' && (
-            <GeneratePlanScreen
-              onBack={() => setScreen('menu')}
-              onSaveRoutines={handleSaveRoutines}
-            />
-          )}
-          {screen === 'workout' && (
-            <GenerateWorkoutScreen
-              onBack={() => setScreen('menu')}
-              onSaveRoutine={handleSaveRoutine}
-            />
+              {/* Upgrade affordance for trialing users. Sits between the
+                  header and the option cards — non-intrusive, but visible
+                  every time they open the menu so converting before the
+                  trial ends feels natural. Hidden for 'paid' users (no
+                  upgrade path) and for non-menu screens (avoid clutter
+                  during chat/plan/workout sessions). */}
+              {screen === 'menu' && access.state === 'trialing' && (
+                <TouchableOpacity
+                  onPress={() => setShowPaywall(true)}
+                  style={[s.upgradeBanner, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
+                  activeOpacity={0.85}
+                >
+                  <View style={s.upgradeBannerLeft}>
+                    <Feather name="zap" size={14} color={C.accentText} />
+                    <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
+                      {typeof access.daysLeft === 'number'
+                        ? `Trial · ${Math.max(0, Math.ceil(access.daysLeft))} day${Math.ceil(access.daysLeft) === 1 ? '' : 's'} left`
+                        : 'Trial active'}
+                    </Text>
+                  </View>
+                  <View style={s.upgradeBannerRight}>
+                    <Text style={[s.upgradeBannerCta, { color: C.accentText }]}>Upgrade</Text>
+                    <Feather name="chevron-right" size={14} color={C.accentText} />
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
+              {screen === 'chat' && (
+                <ChatScreen
+                  onBack={() => setScreen('menu')}
+                  onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
+                />
+              )}
+              {screen === 'plan' && (
+                <GeneratePlanScreen
+                  onBack={() => setScreen('menu')}
+                  onSaveRoutines={handleSaveRoutines}
+                />
+              )}
+              {screen === 'workout' && (
+                <GenerateWorkoutScreen
+                  onBack={() => setScreen('menu')}
+                  onSaveRoutine={handleSaveRoutine}
+                />
+              )}
+            </>
           )}
         </Animated.View>
       </View>
@@ -2507,7 +2626,8 @@ const s = StyleSheet.create({
   modalContainer: {
     borderTopLeftRadius: Radius.xxl,
     borderTopRightRadius: Radius.xxl,
-    height: '92%',
+    // height is set dynamically by AICoachModal to react to the on-screen
+    // keyboard (see kbHeight tracking there). Do NOT add a static height here.
     overflow: 'hidden',
   },
 
@@ -2529,6 +2649,39 @@ const s = StyleSheet.create({
   },
   menuHeaderText: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,
+  },
+
+  // Upgrade banner — appears between the menu header and the option cards
+  // for trialing users only. Tapping opens the in-modal paywall.
+  upgradeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: Spacing.xl,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.md,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+  },
+  upgradeBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  upgradeBannerText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  upgradeBannerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  upgradeBannerCta: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
   },
 
   // Menu content
