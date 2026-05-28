@@ -2,10 +2,10 @@
  * Bottom-sheet exercise picker with search, muscle group tabs,
  * and custom exercise creation. Matches Figma design.
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, Modal, Pressable, ScrollView,
+  StyleSheet, Modal, Pressable, ScrollView, Keyboard, Platform,
 } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
@@ -30,6 +30,24 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const [customName, setCustomName] = useState('');
   const [customMuscle, setCustomMuscle] = useState('Chest');
   const [customCategory, setCustomCategory] = useState('Barbell');
+
+  // Keyboard avoidance: the custom-exercise form autofocuses the name input,
+  // and the library view has a search input — both bring the keyboard up and
+  // (on iOS, inside a transparent Modal) end up covering the inputs and the
+  // "Create & Add" button. KeyboardAvoidingView doesn't help here (Modal
+  // doesn't resize on iOS), so we track keyboard height and lift the sheet
+  // via marginBottom — same pattern as analytics.tsx's BottomDrawer.
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    if (!visible) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [visible]);
 
   const filtered = useMemo(() => {
     let list = searchExercises(search);
@@ -62,7 +80,14 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
-          style={[s.sheet, { backgroundColor: C.elevated }]}
+          style={[
+            s.sheet,
+            {
+              backgroundColor: C.elevated,
+              // Lift above the keyboard on iOS — see kbHeight tracking above.
+              marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
+            },
+          ]}
         >
           <Pressable>
             <View style={[s.handle, { backgroundColor: C.handle }]} />

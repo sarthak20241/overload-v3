@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, ActivityIndicator, Modal, Pressable, KeyboardAvoidingView, Platform,
+  TextInput, ActivityIndicator, Modal, Pressable, Keyboard, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
@@ -240,6 +240,23 @@ export default function ProfileScreen() {
   const [bugDescription, setBugDescription] = useState('');
   const [bugCategory, setBugCategory] = useState<'ui' | 'data' | 'crash' | 'performance' | 'other'>('ui');
   const [bugSubmitting, setBugSubmitting] = useState(false);
+
+  // Keyboard avoidance for the bug-report sheet. On iOS, KeyboardAvoidingView
+  // nested inside a transparent <Modal> doesn't lift the sheet — the parent
+  // Modal does not resize for the keyboard, so the inputs and Submit button
+  // remain hidden behind it. We track keyboard height ourselves and apply
+  // marginBottom to the sheet (the proven pattern from analytics.tsx).
+  const [bugKbHeight, setBugKbHeight] = useState(0);
+  useEffect(() => {
+    if (!bugModalOpen) { setBugKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setBugKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setBugKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [bugModalOpen]);
 
   const userName = user?.firstName || user?.fullName || 'Athlete';
   const isGuest = !user;
@@ -980,18 +997,17 @@ export default function ProfileScreen() {
           style={[styles.modalBackdrop, { backgroundColor: C.overlay }]}
         >
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setBugModalOpen(false)} />
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={{ width: '100%' }}
+          <Animated.View
+            entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
+            exiting={SlideOutDown.duration(200)}
+            style={[styles.bugSheet, {
+              backgroundColor: C.elevated,
+              borderTopColor: C.borderSubtle,
+              // Lift above the keyboard on iOS (Android's adjustResize handles
+              // it on its own). See bugKbHeight tracking above for context.
+              marginBottom: Platform.OS === 'ios' ? bugKbHeight : 0,
+            }]}
           >
-            <Animated.View
-              entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
-              exiting={SlideOutDown.duration(200)}
-              style={[styles.bugSheet, {
-                backgroundColor: C.elevated,
-                borderTopColor: C.borderSubtle,
-              }]}
-            >
               <View style={styles.bugHandle}>
                 <View style={[styles.bugHandleBar, { backgroundColor: C.handle }]} />
               </View>
@@ -1087,8 +1103,7 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
-            </Animated.View>
-          </KeyboardAvoidingView>
+          </Animated.View>
         </Animated.View>
       </Modal>
 

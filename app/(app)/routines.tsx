@@ -11,6 +11,7 @@ import {
   TextInput,
   Pressable,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   FlatList,
 } from 'react-native';
@@ -535,6 +536,24 @@ function RoutineEditorSheet({
   const [customTargetIdx, setCustomTargetIdx] = useState<number | null>(null);
   const [showMuscleDropdown, setShowMuscleDropdown] = useState(false);
 
+  // Keyboard avoidance for the custom-exercise drawer. The drawer's name
+  // input auto-focuses on open, so the keyboard appears immediately and was
+  // covering the inputs + Add Exercise button on iOS. KeyboardAvoidingView
+  // doesn't work inside a transparent Modal on iOS — instead we track the
+  // keyboard height ourselves and lift the sheet via marginBottom (the same
+  // pattern used by analytics.tsx's BottomDrawer).
+  const [customKbHeight, setCustomKbHeight] = useState(0);
+  useEffect(() => {
+    if (!showCustomDrawer) { setCustomKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setCustomKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setCustomKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [showCustomDrawer]);
+
   const openCustomDrawer = (prefill: string, targetIdx: number) => {
     setCustomName(prefill);
     setCustomMuscle('Other');
@@ -887,7 +906,15 @@ function RoutineEditorSheet({
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
-            style={[styles.customDrawer, { backgroundColor: C.card, borderColor: C.border }]}
+            style={[
+              styles.customDrawer,
+              {
+                backgroundColor: C.card,
+                borderColor: C.border,
+                // Lift above the keyboard on iOS — see customKbHeight tracking.
+                marginBottom: Platform.OS === 'ios' ? customKbHeight : 0,
+              },
+            ]}
           >
             <Pressable>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
