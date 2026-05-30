@@ -66,6 +66,10 @@ export default function ActiveWorkoutScreen() {
   const [customRest, setCustomRest] = useState('90');
   const [exerciseTimer, setExerciseTimer] = useState(0);
   const [restTimer, setRestTimer] = useState(0);
+  // True from the moment a set is logged until the user either logs the next
+  // set or taps "Skip rest". Drives the dedicated rest card so rest can be
+  // ended without being forced to log a set just to clear the timer.
+  const [isResting, setIsResting] = useState(false);
   const [exerciseStarted, setExerciseStarted] = useState<boolean[]>([]);
   const [exerciseFinished, setExerciseFinished] = useState<boolean[]>([]);
   // Alert states
@@ -261,6 +265,7 @@ export default function ActiveWorkoutScreen() {
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     lastSetTimeRef.current = Date.now();
     setRestTimer(0);
+    setIsResting(true);
     restTimerRef.current = setInterval(() => {
       if (lastSetTimeRef.current) {
         setRestTimer(Math.floor((Date.now() - lastSetTimeRef.current) / 1000));
@@ -273,6 +278,7 @@ export default function ActiveWorkoutScreen() {
     restTimerRef.current = null;
     lastSetTimeRef.current = null;
     setRestTimer(0);
+    setIsResting(false);
   }, []);
 
   useEffect(() => {
@@ -410,6 +416,12 @@ export default function ActiveWorkoutScreen() {
       return next;
     });
     stopExerciseTimer();
+    stopRestTimer();
+  };
+
+  // End the current rest period early. Lets the user signal "ready for the next
+  // set" without having to log a set just to clear the running rest timer.
+  const handleSkipRest = () => {
     stopRestTimer();
   };
 
@@ -791,10 +803,17 @@ export default function ActiveWorkoutScreen() {
   const isStarted = exerciseStarted[currentIdx];
   const isFinished = exerciseFinished[currentIdx];
 
-  // Rest timer turns neon when rest exceeds recommended rest time
-  const restColor = currentEx && restTimer > 0
-    ? restTimer >= (currentEx.sets[0]?.reps ? 90 : 90) ? Colors.primary : C.textMuted
-    : C.textDim;
+  // Rest timer: `restTimer` counts up since the last logged set. We present it
+  // as a countdown against the exercise's recommended rest (restSeconds). A
+  // restSeconds of 0 means "no target", so we just show elapsed rest instead.
+  const restTarget = currentEx?.restSeconds ?? 0;
+  const restRemaining = restTarget - restTimer;
+  const restDone = restTarget > 0 && restRemaining <= 0;
+  const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
+  const nextSetNum = currentEx ? currentEx.sets.filter(s => s.completed).length + 1 : 1;
+  const restDisplay = restTarget > 0
+    ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
+    : fmt(restTimer);
 
   const filteredLibrary = searchExercises(exerciseSearch);
 
@@ -949,22 +968,61 @@ export default function ActiveWorkoutScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Exercise & Rest Timers */}
+            {/* Exercise timer */}
             {isStarted && !isFinished && (
               <Animated.View entering={FadeIn} style={[styles.timersRow, { backgroundColor: C.muted }]}>
                 <View style={styles.timerBlock}>
                   <Text style={[styles.timerValue, { color: C.accentText }]}>{fmt(exerciseTimer)}</Text>
                   <Text style={[styles.timerLabel, { color: C.textDim }]}>ELAPSED</Text>
                 </View>
-                {currentEx.sets.some(s => s.completed) && (
-                  <>
-                    <View style={[styles.timerDivider, { backgroundColor: C.border }]} />
-                    <View style={styles.timerBlock}>
-                      <Text style={[styles.timerValue, { color: restColor }]}>{fmt(restTimer)}</Text>
-                      <Text style={[styles.timerLabel, { color: C.textDim }]}>REST</Text>
+              </Animated.View>
+            )}
+
+            {/* Rest timer — appears right after a set is logged. Counts down the
+                exercise's recommended rest and can be ended early with "Skip
+                rest", so the user no longer has to log the next set just to
+                clear a running rest timer. */}
+            {isStarted && !isFinished && isResting && (
+              <Animated.View
+                entering={FadeIn}
+                exiting={FadeOut}
+                style={[styles.restCard, { backgroundColor: C.card, borderColor: restDone ? Colors.primary : C.primaryBorder }]}
+              >
+                <View style={styles.restCardTop}>
+                  <View>
+                    <View style={styles.restCardLabelRow}>
+                      <Feather name="clock" size={12} color={restDone ? Colors.primary : C.textMuted} />
+                      <Text style={[styles.restCardLabel, { color: restDone ? Colors.primary : C.textMuted }]}>
+                        {restDone ? 'Rest complete' : 'Resting'}
+                      </Text>
                     </View>
-                  </>
+                    <Text style={[styles.restCardValue, { color: restDone ? Colors.primary : C.foreground }]}>
+                      {restDisplay}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={handleSkipRest}
+                    style={[styles.skipRestBtn, { backgroundColor: restDone ? Colors.primary : C.muted }]}
+                  >
+                    <Feather name="skip-forward" size={13} color={restDone ? Colors.primaryFg : C.mutedFg} />
+                    <Text style={[styles.skipRestBtnText, { color: restDone ? Colors.primaryFg : C.mutedFg }]}>
+                      {restDone ? 'Done' : 'Skip rest'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {restTarget > 0 && (
+                  <View style={[styles.restTrack, { backgroundColor: C.muted }]}>
+                    <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
+                    <View style={{ flex: 100 - restPct }} />
+                  </View>
                 )}
+
+                <Text style={[styles.restHint, { color: C.textDim }]}>
+                  {restDone
+                    ? `Rest’s up — tap “Done”, or just log set ${nextSetNum} whenever you’re ready.`
+                    : `Recovering before set ${nextSetNum}. Tap “Skip rest” to end it early and start now.`}
+                </Text>
               </Animated.View>
             )}
 
@@ -1604,7 +1662,29 @@ const styles = StyleSheet.create({
   timerBlock: { alignItems: 'flex-start' },
   timerValue: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
   timerLabel: { fontSize: 9, fontWeight: FontWeight.medium, textTransform: 'uppercase', letterSpacing: 2, marginTop: 2 },
-  timerDivider: { width: 1, height: 20, borderRadius: 1 },
+
+  // Rest timer card
+  restCard: {
+    borderRadius: Radius.xxl,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: Spacing.xl,
+  },
+  restCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  restCardLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 3 },
+  restCardLabel: { fontSize: 10, fontWeight: FontWeight.semibold, textTransform: 'uppercase', letterSpacing: 1.5 },
+  restCardValue: { fontSize: FontSize.xxxl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
+  skipRestBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: Radius.xl,
+  },
+  skipRestBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  restTrack: { height: 6, borderRadius: 3, marginTop: 14, overflow: 'hidden', flexDirection: 'row' },
+  restHint: { fontSize: 11, marginTop: 10, lineHeight: 15 },
 
   // Previous session
   prevSection: { marginBottom: Spacing.xl },
