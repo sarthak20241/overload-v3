@@ -24,6 +24,8 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { getXpForWorkout } from '@/lib/xp';
 import { MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
+import { AICoachModal } from '@/components/ai/AICoachModal';
+import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
 const AMBER = '#fbbf24';
 const WORKOUT_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Other'] as const;
@@ -78,6 +80,10 @@ export default function ActiveWorkoutScreen() {
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   const [finishSetCount, setFinishSetCount] = useState(0);
+  // In-workout coach. `coachContext` is a snapshot of the live session taken
+  // when the user opens the coach (see openCoach), kept stable for that chat.
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachContext, setCoachContext] = useState<WorkoutCoachContext | null>(null);
 
   const exerciseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -88,6 +94,27 @@ export default function ActiveWorkoutScreen() {
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
   const prevSets = currentEx?.previousSets;
+
+  // Snapshot the live session and open the coach. Taking the snapshot here
+  // (rather than passing live state) keeps the chat's context stable for the
+  // session — reopening after logging more sets refreshes it.
+  const openCoachWith = useCallback((kind: 'live' | 'review') => {
+    setCoachContext(buildWorkoutCoachContext({
+      routineName: workout.routineName,
+      elapsedSeconds: workout.elapsed,
+      exercises: workout.exercises,
+      currentIdx,
+      finished: exerciseFinished,
+      kind,
+    }));
+    setCoachOpen(true);
+  }, [workout.routineName, workout.elapsed, workout.exercises, currentIdx, exerciseFinished]);
+  // Quick mid-set help (top bar + rest card).
+  const openCoach = useCallback(() => openCoachWith('live'), [openCoachWith]);
+  // End-of-session review (finish confirmation). Opens the coach and lets it
+  // auto-review the workout; the session stays active so any advice can still
+  // be acted on before the user actually saves.
+  const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
   // Track keyboard height while the custom-exercise form is open. iOS Modal
   // does not auto-resize. On Android we still need the height so the sheet's
@@ -865,15 +892,27 @@ export default function ActiveWorkoutScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* EXERCISE NAV PILLS */}
+      {/* PINNED COACH CHIP + EXERCISE NAV PILLS.
+          Coach lives here (not the header) so the header stays airy and the
+          chip never scrolls away — it's fixed at the left while the exercise
+          pills scroll beside it. */}
       {exercises.length > 0 && (
-        <ScrollView
-          ref={pillsScrollRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.pillsContainer}
-          style={styles.pillsScroll}
-        >
+        <View style={styles.pillsRow}>
+          <TouchableOpacity
+            onPress={openCoach}
+            style={[styles.pillsCoachChip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
+            accessibilityLabel="Ask Coach Drona about this workout"
+          >
+            <Feather name="zap" size={13} color={C.accentText} />
+            <Text style={[styles.pillsCoachText, { color: C.accentText }]}>Coach</Text>
+          </TouchableOpacity>
+          <ScrollView
+            ref={pillsScrollRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.pillsContainer}
+            style={styles.pillsScroll}
+          >
           {exercises.map((ex, i) => {
             const isCurrent = i === currentIdx;
             const isDone = exerciseFinished[i];
@@ -922,7 +961,8 @@ export default function ActiveWorkoutScreen() {
           >
             <Feather name="plus" size={13} color={C.textMuted} />
           </TouchableOpacity>
-        </ScrollView>
+          </ScrollView>
+        </View>
       )}
 
       {/* MAIN CONTENT */}
@@ -1023,6 +1063,19 @@ export default function ActiveWorkoutScreen() {
                     ? `Rest’s up — tap “Done”, or just log set ${nextSetNum} whenever you’re ready.`
                     : `Recovering before set ${nextSetNum}. Tap “Skip rest” to end it early and start now.`}
                 </Text>
+
+                {/* Rest is prime dead-time — surface the coach right where the
+                    user is already thinking about the next set. */}
+                <TouchableOpacity
+                  onPress={openCoach}
+                  style={[styles.restCoachBtn, { borderColor: C.primaryBorder }]}
+                  activeOpacity={0.7}
+                >
+                  <Feather name="zap" size={12} color={C.accentText} />
+                  <Text style={[styles.restCoachBtnText, { color: C.accentText }]}>
+                    Ask Coach about this set
+                  </Text>
+                </TouchableOpacity>
               </Animated.View>
             )}
 
@@ -1506,8 +1559,12 @@ export default function ActiveWorkoutScreen() {
           { label: 'Volume', value: `${totalVolume}kg` },
         ]}
         buttons={[
-          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
           { text: 'Finish', style: 'primary', onPress: confirmFinish },
+          {
+            text: 'Review with Coach',
+            onPress: () => { setShowFinishAlert(false); openCoachReview(); },
+          },
+          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
         ]}
         onClose={() => setShowFinishAlert(false)}
       />
@@ -1540,6 +1597,16 @@ export default function ActiveWorkoutScreen() {
           setShowErrorAlert('');
           router.back();
         }}
+      />
+
+      {/* In-workout AI coach — reuses the full Coach Drona sheet (access gate,
+          streaming chat, citations) but opens straight to chat with the live
+          session injected as context. */}
+      <AICoachModal
+        visible={coachOpen}
+        onClose={() => setCoachOpen(false)}
+        initialScreen="chat"
+        workoutContext={coachContext}
       />
 
       {/* Bottom navigation — always visible */}
@@ -1595,10 +1662,23 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   finishBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-
-  // Pills
-  pillsScroll: { flexGrow: 0 },
-  pillsContainer: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
+  // Pills row — fixed Coach chip on the left, scrollable exercise pills filling
+  // the rest. The chip is pinned (outside the ScrollView) so it never scrolls
+  // out of view.
+  pillsRow: { flexDirection: 'row', alignItems: 'center', paddingLeft: Spacing.xl },
+  pillsCoachChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    marginRight: 8,
+  },
+  pillsCoachText: { fontSize: 11, fontWeight: FontWeight.bold },
+  pillsScroll: { flex: 1 },
+  pillsContainer: { paddingLeft: 0, paddingRight: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1685,6 +1765,18 @@ const styles = StyleSheet.create({
   skipRestBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   restTrack: { height: 6, borderRadius: 3, marginTop: 14, overflow: 'hidden', flexDirection: 'row' },
   restHint: { fontSize: 11, marginTop: 10, lineHeight: 15 },
+  restCoachBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  restCoachBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
 
   // Previous session
   prevSection: { marginBottom: Spacing.xl },

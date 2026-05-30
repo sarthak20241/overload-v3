@@ -17,12 +17,12 @@
  *   />
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
-  Modal,
+  BackHandler,
   Pressable,
   StyleSheet,
 } from 'react-native';
@@ -34,6 +34,8 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Portal } from './Portal';
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
@@ -72,10 +74,30 @@ export function ThemedAlert({
   onClose,
 }: ThemedAlertProps) {
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
+  // Three or more buttons don't fit side-by-side (labels wrap/truncate), so
+  // stack them full-width. Two-button alerts keep the original row layout.
+  const stacked = buttons.length >= 3;
+
+  // Without RN's <Modal> we lose onRequestClose, so wire the Android hardware
+  // back button to dismiss the alert while it's open.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
-      {/* Backdrop */}
+    // Rendered via a root <Portal> (the app's own window) rather than RN's
+    // <Modal>. On Android edge-to-edge a <Modal> is a separate Dialog window
+    // inset by the nav bar, so a bottom sheet floats above it with a gap; the
+    // portal keeps it flush to the bottom on both platforms (and in Expo Go).
+    <Portal>
+      {visible && (
+        /* Backdrop — full-screen dim; tap to dismiss */
       <Animated.View
         entering={FadeIn.duration(200)}
         exiting={FadeOut.duration(150)}
@@ -92,6 +114,9 @@ export function ThemedAlert({
             {
               backgroundColor: C.elevated,
               borderTopColor: C.borderSubtle,
+              // Sheet is now flush with the absolute bottom of the screen, so
+              // pad past the home indicator / gesture bar.
+              paddingBottom: insets.bottom + 24,
             },
           ]}
         >
@@ -139,7 +164,7 @@ export function ThemedAlert({
           )}
 
           {/* Action buttons */}
-          <View style={styles.buttonsRow}>
+          <View style={[styles.buttonsRow, stacked && styles.buttonsColumn]}>
             {buttons.map((btn, i) => {
               const isDestructive = btn.style === 'destructive';
               const isPrimary = btn.style === 'primary';
@@ -161,7 +186,7 @@ export function ThemedAlert({
                     btn.onPress?.();
                     if (!btn.onPress) onClose();
                   }}
-                  style={[styles.button, { backgroundColor: bgColor }]}
+                  style={[styles.button, stacked && styles.buttonStacked, { backgroundColor: bgColor }]}
                   activeOpacity={0.75}
                 >
                   <Text style={[styles.buttonText, { color: textColor }]}>
@@ -173,7 +198,8 @@ export function ThemedAlert({
           </View>
         </Animated.View>
       </Animated.View>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
@@ -188,7 +214,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     paddingHorizontal: Spacing.xl,
     paddingTop: 24,
-    paddingBottom: 40,
   },
   headerRow: {
     flexDirection: 'row',
@@ -236,11 +261,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
   },
+  // 3+ buttons stack vertically (see `stacked` in the component).
+  buttonsColumn: {
+    flexDirection: 'column',
+  },
   button: {
     flex: 1,
     paddingVertical: 14,
     borderRadius: Radius.xl,
     alignItems: 'center',
+  },
+  // In the stacked layout each button is full-width and content-height
+  // (flex:1 in an auto-height column would collapse to zero height).
+  buttonStacked: {
+    flex: 0,
+    alignSelf: 'stretch',
   },
   buttonText: {
     fontSize: FontSize.base,
