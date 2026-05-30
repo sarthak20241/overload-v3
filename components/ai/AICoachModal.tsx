@@ -7,7 +7,7 @@
  */
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Modal, Pressable,
+  View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
   TextInput, ScrollView, FlatList, Keyboard, Platform,
   ActivityIndicator, Linking, useWindowDimensions,
 } from 'react-native';
@@ -15,6 +15,8 @@ import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
@@ -25,6 +27,13 @@ import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate } from './CoachAccessGate';
 import { Paywall } from './Paywall';
+import type { WorkoutCoachContext } from '@/lib/workoutCoach';
+import {
+  workoutCoachOpener,
+  workoutCoachStarter,
+  workoutCoachSuggestions,
+  workoutCoachReviewRequest,
+} from '@/lib/workoutCoach';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout';
@@ -707,7 +716,20 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
 }
 
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
-function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRoutine: (name: string) => void }) {
+function ChatScreen({
+  onBack,
+  onSaveRoutine,
+  // When provided, this chat is opened from an ACTIVE workout. The live
+  // session (which lives only in memory until the workout is saved, so the
+  // coach's DB tools can't see it) is injected as the opening turn of every
+  // request, the greeting is tailored to where the user is, and quick-question
+  // chips are shown. Null/undefined \u2192 ordinary coach chat.
+  workoutContext,
+}: {
+  onBack: () => void;
+  onSaveRoutine: (name: string) => void;
+  workoutContext?: WorkoutCoachContext | null;
+}) {
   const { C } = useTheme();
   const supabase = useSupabaseClient();
   // Clerk getToken \u2014 used directly to authenticate the streaming SSE fetch.
@@ -715,13 +737,24 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
   const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: "I'm Coach Drona. Ask me anything about your training, recovery, or progression. Or say \"create a workout\" and I'll build one for you.",
-    },
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [
+    workoutContext
+      ? { id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }
+      : {
+          id: '1',
+          role: 'assistant',
+          content: "I'm Coach Drona. Ask me anything about your training, recovery, or progression. Or say \"create a workout\" and I'll build one for you.",
+        },
   ]);
+  // Re-seed the chat whenever a fresh workout snapshot arrives (the user
+  // reopened the coach after logging more sets). Identity is stable within a
+  // single open \u2014 the workout screen snapshots once per open \u2014 so this only
+  // fires on a genuine reopen, never wiping an in-progress conversation.
+  useEffect(() => {
+    if (!workoutContext) return;
+    setMessages([{ id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
+    setInput('');
+  }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -736,8 +769,8 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
     };
   }, []);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
+  const handleSend = useCallback(async (override?: string) => {
+    const text = (override ?? input).trim();
     if (!text || loading) return;
 
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
@@ -753,7 +786,15 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
 
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
-    const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
+    // In workout mode, prepend the live session as a synthetic user turn so
+    // the coach can see what's happening right now (the in-progress sets only
+    // exist in memory — its DB tools can't reach them). The visible assistant
+    // starter follows it, so turns stay validly alternating. Otherwise the
+    // conversation is sent as-is.
+    const turns = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
+    const allMessages = workoutContext
+      ? [{ role: 'user' as const, content: workoutCoachOpener(workoutContext) }, ...turns]
+      : turns;
 
     // Demo / fallback path: hit only when the live coach is unreachable.
     //   - !isSupabaseConfigured: guest/demo build, no backend at all.
@@ -844,12 +885,27 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
         streamRef.current = null;
       },
     });
-  }, [input, loading, messages, supabase, getToken]);
+  }, [input, loading, messages, supabase, getToken, workoutContext]);
 
-  // Note: keyboard avoidance is handled by AICoachModal's sheet sizing —
-  // the parent shrinks the sheet and lifts it via marginBottom on iOS so
-  // the input naturally sits above the keyboard. No KeyboardAvoidingView
-  // here (it doesn't work reliably inside a transparent Modal on iOS).
+  // Review mode: auto-ask the coach for a session review once the chat opens,
+  // so the user doesn't have to type. Fires exactly once per snapshot — the
+  // ref latches the snapshot we've already kicked off, and the
+  // `messages.length === 1` guard means we only fire while just the starter is
+  // present (right after the reset effect above runs). A genuine reopen brings
+  // a new snapshot object, which clears the latch and reviews afresh.
+  const reviewSentForRef = useRef<WorkoutCoachContext | null>(null);
+  useEffect(() => {
+    if (workoutContext?.kind !== 'review') return;
+    if (reviewSentForRef.current === workoutContext) return;
+    if (loading || messages.length !== 1) return;
+    reviewSentForRef.current = workoutContext;
+    handleSend(workoutCoachReviewRequest(workoutContext));
+  }, [workoutContext, messages, loading, handleSend]);
+
+  // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
+  // parent shrinks the sheet and lifts it via marginBottom (both platforms)
+  // so the input naturally sits above the keyboard. No KeyboardAvoidingView
+  // here (it doesn't work reliably inside a transparent Modal).
   return (
     <View style={{ flex: 1 }}>
       {/* Header */}
@@ -858,7 +914,9 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} />
-        <Text style={[s.screenTitle, { color: C.foreground }]}>Chat with Coach Drona</Text>
+        <Text style={[s.screenTitle, { color: C.foreground }]}>
+          {workoutContext ? 'Coach Drona · Live session' : 'Chat with Coach Drona'}
+        </Text>
       </View>
 
       {/* Messages */}
@@ -901,22 +959,49 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
         ))}
       </ScrollView>
 
+      {/* Quick-question chips (workout mode only). Shown until the user's
+          first turn — a single tap beats typing mid-set. Hidden once the
+          conversation is underway to keep the sheet clean. */}
+      {workoutContext && workoutContext.kind === 'live' && messages.length <= 1 && !loading && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          // flexGrow:0 stops the horizontal ScrollView from expanding to fill
+          // the column's vertical space (which would stretch the chips into
+          // tall ovals). It then hugs the chip height.
+          style={s.suggestionScroll}
+          contentContainerStyle={s.suggestionRow}
+        >
+          {workoutCoachSuggestions(workoutContext).map((sugg) => (
+            <TouchableOpacity
+              key={sugg}
+              onPress={() => handleSend(sugg)}
+              style={[s.suggestionChip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
+              activeOpacity={0.7}
+            >
+              <Text style={[s.suggestionChipText, { color: C.accentText }]}>{sugg}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
       {/* Input */}
       <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
         <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Ask Coach Drona anything..."
+            placeholder={workoutContext ? 'Ask about this set, a swap, form…' : 'Ask Coach Drona anything...'}
             placeholderTextColor={C.textMuted}
             style={[s.chatInput, { color: C.foreground }]}
             multiline
             maxLength={500}
-            onSubmitEditing={handleSend}
+            onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
           <TouchableOpacity
-            onPress={handleSend}
+            onPress={() => handleSend()}
             disabled={!input.trim() || loading}
             style={[
               s.sendBtn,
@@ -2281,11 +2366,17 @@ export function AICoachModal({
   onClose,
   onRoutineCreated,
   initialScreen = 'menu',
+  workoutContext,
 }: {
   visible: boolean;
   onClose: () => void;
   onRoutineCreated?: () => void;
   initialScreen?: Screen;
+  // When set, the chat screen runs in in-workout mode: the live session is
+  // injected as context, the greeting is tailored, quick-question chips show,
+  // and the chat's back arrow closes the sheet (there's no menu detour
+  // mid-workout). Callers pass initialScreen="chat" alongside this.
+  workoutContext?: WorkoutCoachContext | null;
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
@@ -2313,14 +2404,17 @@ export function AICoachModal({
   // window where a second tap could fire before React re-renders.
   const inFlightRef = useRef(false);
 
-  // Keyboard avoidance for the modal sheet. On iOS a transparent <Modal> does
-  // NOT resize when the keyboard appears, so a KeyboardAvoidingView nested
-  // inside ends up adding padding that lives BELOW the visible window — the
-  // input remains hidden behind the keyboard. The reliable fix (already used
-  // by analytics.tsx's BottomDrawer) is to track keyboard height ourselves
-  // and physically lift the sheet via marginBottom + cap its height to
-  // (winH - kbHeight) so the top doesn't get pushed off-screen.
+  // Keyboard avoidance for the modal sheet. A transparent <Modal> does NOT
+  // resize when the keyboard appears — on iOS the modal never resizes, and on
+  // Android this sheet lives inside a <Modal> (a separate window) which, under
+  // SDK 54's always-on edge-to-edge, the activity's adjustResize never reaches.
+  // So a nested KeyboardAvoidingView would just add padding BELOW the visible
+  // window and the input would stay hidden behind the keyboard. The reliable
+  // fix (already used by analytics.tsx's BottomDrawer) is to track keyboard
+  // height ourselves and physically lift the sheet via marginBottom + cap its
+  // height to (winH - kbHeight) so the top doesn't get pushed off-screen.
   const { height: winH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
   useEffect(() => {
     if (!visible) { setKbHeight(0); return; }
@@ -2338,12 +2432,16 @@ export function AICoachModal({
   // Sheet sizing: when keyboard is up, cap height to the available space
   // above it (minus a small top buffer) so the sheet doesn't overflow the
   // viewport. When keyboard is down, fall back to the original 92% height.
-  // marginBottom only applies on iOS — Android's adjustResize already
-  // shrinks the activity, so adding marginBottom there would double-lift.
+  // Lift by the keyboard height on BOTH platforms. The old code only lifted
+  // on iOS, assuming Android's adjustResize would shift the input up — but
+  // this sheet lives inside a React Native <Modal> (a separate window) and,
+  // with edge-to-edge always on in SDK 54, that window is never resized for
+  // the keyboard. The sheet is bottom-anchored, so without the lift the input
+  // stays pinned behind the keyboard and the user can't see what they type.
   const sheetHeight = kbHeight > 0
     ? Math.max(winH - kbHeight - 40, winH * 0.5)
     : winH * 0.92;
-  const sheetMarginBottom = Platform.OS === 'ios' ? kbHeight : 0;
+  const sheetMarginBottom = kbHeight;
 
   useEffect(() => {
     if (visible) setScreen(initialScreen);
@@ -2353,6 +2451,18 @@ export function AICoachModal({
     setScreen('menu');
     onClose();
   };
+
+  // <Portal> has no onRequestClose, so route the Android hardware back button
+  // to close the sheet while it's open.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleClose();
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
     const clerkId = user?.id;
@@ -2487,18 +2597,16 @@ export function AICoachModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
-      {/*
-        Backdrop layout: a flex column that pushes the modal sheet to the
-        bottom. The top ~8% is a separate Pressable that handles the
-        "tap-to-close" affordance (menu screen only). The modal sheet itself
-        is a plain View — NOTHING wraps the screen content, so ScrollViews
-        inside (chat history, workout/plan result) receive pan gestures
-        without an outer Pressable competing for the touch responder.
-        (Previously a `<Pressable style={{flex:1}}>` wrapped the screens to
-        block taps from bubbling to the backdrop Pressable, but that's what
-        was eating scroll-from-the-middle gestures.)
-      */}
+    <Portal>
+      {visible && (
+        /*
+          Rendered in the app's own window via <Portal>, not RN's <Modal> (a
+          separate Android Dialog window that edge-to-edge insets by the nav
+          bar, leaving a gap below bottom sheets). Backdrop is a flex column
+          pushing the sheet to the bottom; the top region is a separate
+          Pressable for tap-to-close (menu/gate only). The sheet itself is a
+          plain View so inner ScrollViews keep their pan gestures.
+        */
       <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
         <Pressable
           style={{ flex: 1 }}
@@ -2517,6 +2625,9 @@ export function AICoachModal({
               backgroundColor: C.background,
               height: sheetHeight,
               marginBottom: sheetMarginBottom,
+              // Flush to the screen bottom now (portal, not a nav-bar-inset
+              // Modal window), so pad content past the gesture/nav bar.
+              paddingBottom: insets.bottom,
             },
           ]}
         >
@@ -2596,8 +2707,11 @@ export function AICoachModal({
               {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
               {screen === 'chat' && (
                 <ChatScreen
-                  onBack={() => setScreen('menu')}
+                  // In workout mode the back arrow closes the sheet (no menu
+                  // detour mid-workout); otherwise it returns to the menu.
+                  onBack={workoutContext ? handleClose : () => setScreen('menu')}
                   onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
+                  workoutContext={workoutContext}
                 />
               )}
               {screen === 'plan' && (
@@ -2616,7 +2730,8 @@ export function AICoachModal({
           )}
         </Animated.View>
       </View>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
@@ -2863,6 +2978,27 @@ const s = StyleSheet.create({
   sendBtn: {
     width: 36, height: 36, borderRadius: 18,
     alignItems: 'center', justifyContent: 'center',
+  },
+
+  // In-workout quick-question chips (above the input, workout mode only)
+  suggestionScroll: {
+    flexGrow: 0,
+  },
+  suggestionRow: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
+    gap: 8,
+    alignItems: 'center',
+  },
+  suggestionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  suggestionChipText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
   },
 
   // Forms

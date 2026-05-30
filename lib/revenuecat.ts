@@ -62,11 +62,29 @@ export type PlanKey = 'monthly' | 'annual' | 'founding_lifetime';
 const PACKAGE_ID_MAP: Record<string, PlanKey> = {
   '$rc_monthly': 'monthly',
   '$rc_annual': 'annual',
+  '$rc_lifetime': 'founding_lifetime',
   'monthly': 'monthly',
   'annual': 'annual',
   'founding_lifetime': 'founding_lifetime',
   'lifetime': 'founding_lifetime',
 };
+
+// Fallback when the identifier isn't recognized: match on RC's packageType.
+// RC's standard types are MONTHLY, ANNUAL, LIFETIME, plus weekly/two-month/etc.
+// — the three we care about all map cleanly. CUSTOM packages have no
+// standard type, so they must use a recognized identifier above.
+function packageTypeToPlanKey(packageType: string | undefined): PlanKey | null {
+  switch (packageType) {
+    case 'MONTHLY': return 'monthly';
+    case 'ANNUAL': return 'annual';
+    case 'LIFETIME': return 'founding_lifetime';
+    default: return null;
+  }
+}
+
+function packageToPlanKey(pkg: RCPackage): PlanKey | null {
+  return PACKAGE_ID_MAP[pkg.identifier] ?? packageTypeToPlanKey(pkg.packageType);
+}
 
 let cachedModule: any | null | undefined;
 
@@ -116,12 +134,35 @@ export async function getCoachOfferings(): Promise<{
   try {
     const offerings = await P.getOfferings();
     const current: RevenueCatOffering | null = offerings?.current ?? null;
-    if (!current) return { byPlan: {}, raw: null };
     const byPlan: Partial<Record<PlanKey, RCPackage>> = {};
-    for (const pkg of current.availablePackages ?? []) {
-      const slug = PACKAGE_ID_MAP[pkg.identifier];
-      if (slug && !byPlan[slug]) byPlan[slug] = pkg;
+
+    // First, pull every plan we can find from the current offering. This is
+    // the canonical source.
+    if (current) {
+      for (const pkg of current.availablePackages ?? []) {
+        const slug = packageToPlanKey(pkg);
+        if (slug && !byPlan[slug]) byPlan[slug] = pkg;
+      }
     }
+
+    // Second pass: fill in any missing plans by walking ALL other offerings.
+    // Why: the user can split products across offerings (e.g. a separate
+    // "founding" offering with the lifetime tier, while "default" only has
+    // the subscriptions). Without this fallback, the lifetime card would
+    // render with no price even though the product exists in RC.
+    //
+    // We only borrow plans that the current offering didn't already
+    // provide, so the current offering remains the source of truth for
+    // overlapping packages (e.g. annual at a promo rate vs. standard).
+    const allOfferings: Record<string, RevenueCatOffering> = (offerings?.all ?? {}) as any;
+    for (const offering of Object.values(allOfferings)) {
+      if (current && offering.identifier === current.identifier) continue;
+      for (const pkg of offering.availablePackages ?? []) {
+        const slug = packageToPlanKey(pkg);
+        if (slug && !byPlan[slug]) byPlan[slug] = pkg;
+      }
+    }
+
     return { byPlan, raw: current };
   } catch (e) {
     console.warn('[revenuecat] getOfferings failed:', e);

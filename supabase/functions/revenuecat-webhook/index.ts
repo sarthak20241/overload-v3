@@ -30,6 +30,14 @@ const REVENUECAT_WEBHOOK_SECRET = Deno.env.get("REVENUECAT_WEBHOOK_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// Sandbox gate. By default we ACK sandbox events without touching the DB so
+// stray test purchases never corrupt production tiers. During pre-launch IAP
+// testing (TestFlight + sandbox testers), set REVENUECAT_ALLOW_SANDBOX="true"
+// so sandbox events flow through the full handler and actually flip the tier.
+// REMOVE / set to "false" before going live to the public App Store.
+const REVENUECAT_ALLOW_SANDBOX =
+  (Deno.env.get("REVENUECAT_ALLOW_SANDBOX") ?? "").toLowerCase() === "true";
+
 // Product IDs from App Store Connect / Play Console. Each env var accepts a
 // comma-separated list so one tier can map to BOTH the Apple and Google
 // product IDs without needing separate env vars per platform.
@@ -138,16 +146,20 @@ Deno.serve(async (req) => {
     `[revenuecat] type=${event.type} user=${event.app_user_id} product=${event.product_id} env=${event.environment}`,
   );
 
-  // Sandbox events arrive when the app is connected to test products. Log
-  // and ack them but don't mutate user_profiles — sandbox purchases don't
-  // represent real upgrades. Comment this out if you want to test the full
-  // flow against the production DB with sandbox events.
-  if (event.environment === "SANDBOX") {
-    console.log(`[revenuecat] SANDBOX event acknowledged, no DB write`);
+  // Sandbox events arrive when the app is connected to test products
+  // (TestFlight builds, dev builds, sandbox testers). By default we ack them
+  // without a DB write so they can't corrupt production tiers. When
+  // REVENUECAT_ALLOW_SANDBOX is set we let them through the full handler —
+  // this is what makes pre-launch IAP testing actually flip the tier.
+  if (event.environment === "SANDBOX" && !REVENUECAT_ALLOW_SANDBOX) {
+    console.log(`[revenuecat] SANDBOX event acknowledged, no DB write (set REVENUECAT_ALLOW_SANDBOX=true to process)`);
     return new Response(JSON.stringify({ received: true, sandbox: true }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
+  }
+  if (event.environment === "SANDBOX") {
+    console.log(`[revenuecat] SANDBOX event — processing (REVENUECAT_ALLOW_SANDBOX enabled)`);
   }
 
   try {

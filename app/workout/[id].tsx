@@ -24,6 +24,8 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { getXpForWorkout } from '@/lib/xp';
 import { MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
+import { AICoachModal } from '@/components/ai/AICoachModal';
+import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
 const AMBER = '#fbbf24';
 const WORKOUT_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Other'] as const;
@@ -78,6 +80,13 @@ export default function ActiveWorkoutScreen() {
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   const [finishSetCount, setFinishSetCount] = useState(0);
+  // In-workout coach. `coachContext` is a snapshot of the live session taken
+  // when the user opens the coach (see openCoach), kept stable for that chat.
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachContext, setCoachContext] = useState<WorkoutCoachContext | null>(null);
+  // Measured height of the bottom progress bar so the floating Coach button can
+  // sit just above it (the bar only renders when there are exercises).
+  const [bottomBarH, setBottomBarH] = useState(0);
 
   const exerciseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -88,6 +97,27 @@ export default function ActiveWorkoutScreen() {
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
   const prevSets = currentEx?.previousSets;
+
+  // Snapshot the live session and open the coach. Taking the snapshot here
+  // (rather than passing live state) keeps the chat's context stable for the
+  // session — reopening after logging more sets refreshes it.
+  const openCoachWith = useCallback((kind: 'live' | 'review') => {
+    setCoachContext(buildWorkoutCoachContext({
+      routineName: workout.routineName,
+      elapsedSeconds: workout.elapsed,
+      exercises: workout.exercises,
+      currentIdx,
+      finished: exerciseFinished,
+      kind,
+    }));
+    setCoachOpen(true);
+  }, [workout.routineName, workout.elapsed, workout.exercises, currentIdx, exerciseFinished]);
+  // Quick mid-set help (top bar + rest card).
+  const openCoach = useCallback(() => openCoachWith('live'), [openCoachWith]);
+  // End-of-session review (finish confirmation). Opens the coach and lets it
+  // auto-review the workout; the session stays active so any advice can still
+  // be acted on before the user actually saves.
+  const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
   // Track keyboard height while the custom-exercise form is open. iOS Modal
   // does not auto-resize. On Android we still need the height so the sheet's
@@ -647,6 +677,15 @@ export default function ActiveWorkoutScreen() {
     if (currentIdx >= updated.length) setCurrentIdx(Math.max(0, updated.length - 1));
   };
 
+  // Leave the workout screen. After a reload/deep-link this screen can be the
+  // only route in the stack, where router.back() dispatches GO_BACK with no
+  // target (a dev warning, and a no-op close in production). Fall back to the
+  // dashboard when there's nothing to go back to.
+  const leaveWorkout = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(app)');
+  };
+
   // Cancel workout
   const handleCancel = () => {
     setShowCancelAlert(true);
@@ -655,7 +694,7 @@ export default function ActiveWorkoutScreen() {
   const confirmCancel = () => {
     setShowCancelAlert(false);
     workout.finishWorkout();
-    router.back();
+    leaveWorkout();
   };
 
   // Finish workout
@@ -1023,6 +1062,19 @@ export default function ActiveWorkoutScreen() {
                     ? `Rest’s up — tap “Done”, or just log set ${nextSetNum} whenever you’re ready.`
                     : `Recovering before set ${nextSetNum}. Tap “Skip rest” to end it early and start now.`}
                 </Text>
+
+                {/* Rest is prime dead-time — surface the coach right where the
+                    user is already thinking about the next set. */}
+                <TouchableOpacity
+                  onPress={openCoach}
+                  style={[styles.restCoachBtn, { borderColor: C.primaryBorder }]}
+                  activeOpacity={0.7}
+                >
+                  <Feather name="zap" size={12} color={C.accentText} />
+                  <Text style={[styles.restCoachBtnText, { color: C.accentText }]}>
+                    Ask Coach about this set
+                  </Text>
+                </TouchableOpacity>
               </Animated.View>
             )}
 
@@ -1223,7 +1275,10 @@ export default function ActiveWorkoutScreen() {
 
       {/* BOTTOM PROGRESS BAR — sits above nav bar */}
       {exercises.length > 0 && (
-        <View style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}>
+        <View
+          onLayout={(e) => setBottomBarH(e.nativeEvent.layout.height)}
+          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
+        >
           <TouchableOpacity
             onPress={() => goTo(currentIdx - 1)}
             disabled={currentIdx === 0}
@@ -1506,8 +1561,12 @@ export default function ActiveWorkoutScreen() {
           { label: 'Volume', value: `${totalVolume}kg` },
         ]}
         buttons={[
-          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
           { text: 'Finish', style: 'primary', onPress: confirmFinish },
+          {
+            text: 'Review with Coach',
+            onPress: () => { setShowFinishAlert(false); openCoachReview(); },
+          },
+          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
         ]}
         onClose={() => setShowFinishAlert(false)}
       />
@@ -1533,13 +1592,43 @@ export default function ActiveWorkoutScreen() {
           style: 'primary',
           onPress: () => {
             setShowErrorAlert('');
-            router.back();
+            leaveWorkout();
           },
         }]}
         onClose={() => {
           setShowErrorAlert('');
-          router.back();
+          leaveWorkout();
         }}
+      />
+
+      {/* Floating Coach button — always present (independent of the exercise
+          list, so it shows on blank workouts too) and thumb-reachable, without
+          crowding the header. Sits just above the bottom progress bar when
+          there are exercises, else above the nav. */}
+      <TouchableOpacity
+        onPress={openCoach}
+        accessibilityLabel="Ask Coach Drona about this workout"
+        activeOpacity={0.85}
+        style={[
+          styles.coachFab,
+          {
+            bottom: 64 + insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 16),
+            backgroundColor: Colors.primary,
+          },
+        ]}
+      >
+        <Feather name="zap" size={15} color={Colors.primaryFg} />
+        <Text style={styles.coachFabText}>Coach</Text>
+      </TouchableOpacity>
+
+      {/* In-workout AI coach — reuses the full Coach Drona sheet (access gate,
+          streaming chat, citations) but opens straight to chat with the live
+          session injected as context. */}
+      <AICoachModal
+        visible={coachOpen}
+        onClose={() => setCoachOpen(false)}
+        initialScreen="chat"
+        workoutContext={coachContext}
       />
 
       {/* Bottom navigation — always visible */}
@@ -1595,10 +1684,25 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   finishBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-
   // Pills
   pillsScroll: { flexGrow: 0 },
   pillsContainer: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
+
+  // Floating Coach button — absolute, bottom-right, always present (independent
+  // of the exercise list, so it shows on blank workouts too). Distinct elevated
+  // pill so it reads as the AI assistant, not another lime action button.
+  coachFab: {
+    position: 'absolute',
+    right: Spacing.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: Radius.full,
+    ...Shadow.elevated,
+  },
+  coachFabText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1685,6 +1789,18 @@ const styles = StyleSheet.create({
   skipRestBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   restTrack: { height: 6, borderRadius: 3, marginTop: 14, overflow: 'hidden', flexDirection: 'row' },
   restHint: { fontSize: 11, marginTop: 10, lineHeight: 15 },
+  restCoachBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  restCoachBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
 
   // Previous session
   prevSection: { marginBottom: Spacing.xl },
