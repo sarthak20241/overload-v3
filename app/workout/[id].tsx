@@ -84,6 +84,9 @@ export default function ActiveWorkoutScreen() {
   // when the user opens the coach (see openCoach), kept stable for that chat.
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachContext, setCoachContext] = useState<WorkoutCoachContext | null>(null);
+  // Measured height of the bottom progress bar so the floating Coach button can
+  // sit just above it (the bar only renders when there are exercises).
+  const [bottomBarH, setBottomBarH] = useState(0);
 
   const exerciseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -674,6 +677,15 @@ export default function ActiveWorkoutScreen() {
     if (currentIdx >= updated.length) setCurrentIdx(Math.max(0, updated.length - 1));
   };
 
+  // Leave the workout screen. After a reload/deep-link this screen can be the
+  // only route in the stack, where router.back() dispatches GO_BACK with no
+  // target (a dev warning, and a no-op close in production). Fall back to the
+  // dashboard when there's nothing to go back to.
+  const leaveWorkout = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(app)');
+  };
+
   // Cancel workout
   const handleCancel = () => {
     setShowCancelAlert(true);
@@ -682,7 +694,7 @@ export default function ActiveWorkoutScreen() {
   const confirmCancel = () => {
     setShowCancelAlert(false);
     workout.finishWorkout();
-    router.back();
+    leaveWorkout();
   };
 
   // Finish workout
@@ -892,27 +904,15 @@ export default function ActiveWorkoutScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* PINNED COACH CHIP + EXERCISE NAV PILLS.
-          Coach lives here (not the header) so the header stays airy and the
-          chip never scrolls away — it's fixed at the left while the exercise
-          pills scroll beside it. */}
+      {/* EXERCISE NAV PILLS */}
       {exercises.length > 0 && (
-        <View style={styles.pillsRow}>
-          <TouchableOpacity
-            onPress={openCoach}
-            style={[styles.pillsCoachChip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
-            accessibilityLabel="Ask Coach Drona about this workout"
-          >
-            <Feather name="zap" size={13} color={C.accentText} />
-            <Text style={[styles.pillsCoachText, { color: C.accentText }]}>Coach</Text>
-          </TouchableOpacity>
-          <ScrollView
-            ref={pillsScrollRef}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.pillsContainer}
-            style={styles.pillsScroll}
-          >
+        <ScrollView
+          ref={pillsScrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.pillsContainer}
+          style={styles.pillsScroll}
+        >
           {exercises.map((ex, i) => {
             const isCurrent = i === currentIdx;
             const isDone = exerciseFinished[i];
@@ -961,8 +961,7 @@ export default function ActiveWorkoutScreen() {
           >
             <Feather name="plus" size={13} color={C.textMuted} />
           </TouchableOpacity>
-          </ScrollView>
-        </View>
+        </ScrollView>
       )}
 
       {/* MAIN CONTENT */}
@@ -1276,7 +1275,10 @@ export default function ActiveWorkoutScreen() {
 
       {/* BOTTOM PROGRESS BAR — sits above nav bar */}
       {exercises.length > 0 && (
-        <View style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}>
+        <View
+          onLayout={(e) => setBottomBarH(e.nativeEvent.layout.height)}
+          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
+        >
           <TouchableOpacity
             onPress={() => goTo(currentIdx - 1)}
             disabled={currentIdx === 0}
@@ -1590,14 +1592,34 @@ export default function ActiveWorkoutScreen() {
           style: 'primary',
           onPress: () => {
             setShowErrorAlert('');
-            router.back();
+            leaveWorkout();
           },
         }]}
         onClose={() => {
           setShowErrorAlert('');
-          router.back();
+          leaveWorkout();
         }}
       />
+
+      {/* Floating Coach button — always present (independent of the exercise
+          list, so it shows on blank workouts too) and thumb-reachable, without
+          crowding the header. Sits just above the bottom progress bar when
+          there are exercises, else above the nav. */}
+      <TouchableOpacity
+        onPress={openCoach}
+        accessibilityLabel="Ask Coach Drona about this workout"
+        activeOpacity={0.85}
+        style={[
+          styles.coachFab,
+          {
+            bottom: 64 + insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 16),
+            backgroundColor: Colors.primary,
+          },
+        ]}
+      >
+        <Feather name="zap" size={15} color={Colors.primaryFg} />
+        <Text style={styles.coachFabText}>Coach</Text>
+      </TouchableOpacity>
 
       {/* In-workout AI coach — reuses the full Coach Drona sheet (access gate,
           streaming chat, citations) but opens straight to chat with the live
@@ -1662,23 +1684,25 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   finishBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-  // Pills row — fixed Coach chip on the left, scrollable exercise pills filling
-  // the rest. The chip is pinned (outside the ScrollView) so it never scrolls
-  // out of view.
-  pillsRow: { flexDirection: 'row', alignItems: 'center', paddingLeft: Spacing.xl },
-  pillsCoachChip: {
+  // Pills
+  pillsScroll: { flexGrow: 0 },
+  pillsContainer: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
+
+  // Floating Coach button — absolute, bottom-right, always present (independent
+  // of the exercise list, so it shows on blank workouts too). Distinct elevated
+  // pill so it reads as the AI assistant, not another lime action button.
+  coachFab: {
+    position: 'absolute',
+    right: Spacing.xl,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderRadius: Radius.full,
-    borderWidth: 1,
-    marginRight: 8,
+    ...Shadow.elevated,
   },
-  pillsCoachText: { fontSize: 11, fontWeight: FontWeight.bold },
-  pillsScroll: { flex: 1 },
-  pillsContainer: { paddingLeft: 0, paddingRight: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
+  coachFabText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',

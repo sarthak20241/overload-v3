@@ -16,82 +16,126 @@
  * The children render full-screen at the root, above the navigator (incl. tab
  * bar). Mount <PortalProvider> once near the app root, inside the context
  * providers your overlays depend on (Theme, Workout, SafeArea, …).
+ *
+ * Implementation note (the important bit): the registered nodes live in an
+ * external store (a ref + listener set), NOT in PortalProvider's own state.
+ * That's deliberate. A <Portal>'s sync effect runs on every render (children
+ * are fresh elements each render) and writes to the store. If that write
+ * re-rendered PortalProvider, React would re-render the whole navigator
+ * subtree below it — including the <Portal> — whose effect would write again →
+ * infinite "maximum update depth" loop. By keeping the registry in a store and
+ * subscribing ONLY the host (<PortalHost>) to it, a write re-renders just the
+ * host; the provider and the app tree never re-render, so consumers can't be
+ * re-triggered. No loop, regardless of how many portals exist or how often
+ * their owners re-render.
  */
 import React, {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useId,
-  useMemo,
-  useState,
+  useRef,
+  useSyncExternalStore,
 } from 'react';
 import { View, StyleSheet } from 'react-native';
 
-type PortalContextValue = {
+type Nodes = Record<string, React.ReactNode>;
+
+type PortalStore = {
   set: (key: string, node: React.ReactNode) => void;
   remove: (key: string) => void;
+  subscribe: (listener: () => void) => () => void;
+  getSnapshot: () => Nodes;
 };
 
-const PortalContext = createContext<PortalContextValue | null>(null);
+const PortalContext = createContext<PortalStore | null>(null);
+
+function createPortalStore(): PortalStore {
+  // `nodes` is only ever reassigned (never mutated) so getSnapshot returns a
+  // stable reference between writes — required by useSyncExternalStore.
+  let nodes: Nodes = {};
+  const listeners = new Set<() => void>();
+  const emit = () => listeners.forEach((l) => l());
+
+  return {
+    set(key, node) {
+      nodes = { ...nodes, [key]: node };
+      emit();
+    },
+    remove(key) {
+      if (!(key in nodes)) return;
+      const next = { ...nodes };
+      delete next[key];
+      nodes = next;
+      emit();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot() {
+      return nodes;
+    },
+  };
+}
 
 export function PortalProvider({ children }: { children: React.ReactNode }) {
-  const [nodes, setNodes] = useState<Record<string, React.ReactNode>>({});
-
-  const set = useCallback((key: string, node: React.ReactNode) => {
-    setNodes((prev) => ({ ...prev, [key]: node }));
-  }, []);
-
-  const remove = useCallback((key: string) => {
-    setNodes((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-  }, []);
-
-  // Memoize so the context value is referentially stable. Without this, every
-  // `setNodes` re-render produces a new value object → all <Portal> consumers
-  // re-render → their effects call `set` again → infinite update loop.
-  const value = useMemo(() => ({ set, remove }), [set, remove]);
+  // The store lives for the lifetime of the provider. PortalProvider itself
+  // holds NO state, so node changes never re-render it (or `children`).
+  const storeRef = useRef<PortalStore | null>(null);
+  if (storeRef.current === null) storeRef.current = createPortalStore();
 
   return (
-    <PortalContext.Provider value={value}>
+    <PortalContext.Provider value={storeRef.current}>
       {children}
+      {/* Host renders AFTER children so portalled content paints on top of the
+          navigator. It subscribes to the store, so only it re-renders when
+          nodes change. */}
+      <PortalHost store={storeRef.current} />
+    </PortalContext.Provider>
+  );
+}
+
+function PortalHost({ store }: { store: PortalStore }) {
+  const nodes = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  return (
+    <>
       {/*
-        Each portal gets its own absolute-fill host, rendered AFTER `children`
-        so it paints on top of the navigator. `box-none` lets the host itself
-        ignore touches while its children (e.g. a backdrop Pressable) handle
-        them — so when nothing is mounted, touches pass straight through.
+        Each portal gets its own absolute-fill host. `box-none` lets the host
+        itself ignore touches while its children (e.g. a backdrop Pressable)
+        handle them — so when nothing is mounted, touches pass straight through.
       */}
       {Object.entries(nodes).map(([key, node]) => (
         <View key={key} style={StyleSheet.absoluteFill} pointerEvents="box-none">
           {node}
         </View>
       ))}
-    </PortalContext.Provider>
+    </>
   );
 }
 
 export function Portal({ children }: { children: React.ReactNode }) {
-  const ctx = useContext(PortalContext);
+  const store = useContext(PortalContext);
   const key = useId();
 
   // Keep the hosted node in sync with `children` on every render (children are
-  // fresh elements each render, so no dep array).
+  // fresh elements each render, so no dep array). This writes to the store,
+  // which re-renders ONLY <PortalHost> — never this component — so it can't
+  // loop. See the file header for why that separation matters.
   useEffect(() => {
-    ctx?.set(key, children);
+    store?.set(key, children);
   });
 
   // Remove the entry only when this Portal unmounts for good.
   useEffect(() => {
-    return () => ctx?.remove(key);
+    return () => store?.remove(key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fallback when no provider is mounted: render inline so UI is never silently
   // dropped (also keeps <Portal> usable in isolation / tests).
-  if (!ctx) return <>{children}</>;
+  if (!store) return <>{children}</>;
   return null;
 }
