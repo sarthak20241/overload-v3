@@ -16,7 +16,7 @@ import {
   FlatList,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown,
@@ -518,6 +518,11 @@ function RoutineEditorSheet({
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
   const toast = useToast();
+  // SafeAreaView reports zero insets inside a fullScreen RN Modal (separate
+  // native view hierarchy the provider never measures), so the header collided
+  // with the status bar / Dynamic Island. Read the device inset via the hook —
+  // it returns the correct value from the root provider — and pad manually.
+  const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
@@ -800,7 +805,7 @@ function RoutineEditorSheet({
   return (
     <>
       <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
-        <SafeAreaView style={[styles.editorSafe, { backgroundColor: C.elevated }]} edges={['top']}>
+        <View style={[styles.editorSafe, { backgroundColor: C.elevated, paddingTop: insets.top }]}>
           <KeyboardAvoidingView
             style={{ flex: 1 }}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -889,7 +894,7 @@ function RoutineEditorSheet({
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
-        </SafeAreaView>
+        </View>
       </Modal>
 
       {/* Custom Exercise Drawer */}
