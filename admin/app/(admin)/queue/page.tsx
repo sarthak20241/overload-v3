@@ -130,7 +130,7 @@ async function QueueBodyAsync() {
     const supabase = await getSupabaseServerClient();
     const { data, error: queryError } = await supabase
       .from('research_kb_pending')
-      .select('id, source, url, title, authors, journal, pub_year, pub_date, topic_tags, study_design, confidence, trust_score, population, intervention, key_finding, practical_takeaway, license, ingested_at, review_status, reviewed_at, reviewed_by, rejection_reason, source_meta, contradiction_flags')
+      .select('id, source, url, title, authors, journal, pub_year, pub_date, topic_tags, study_design, confidence, trust_score, population, intervention, key_finding, practical_takeaway, license, ingested_at, review_status, reviewed_at, reviewed_by, rejection_reason, source_meta, contradiction_flags, agent_recommendation')
       .eq('review_status', 'pending')
       .order('ingested_at', { ascending: true })
       .limit(100);
