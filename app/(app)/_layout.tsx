@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { Tabs, useRouter, Redirect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -15,6 +15,8 @@ import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getAllRoutines } from '@/lib/mockData';
 import { BottomNav } from '@/components/ui/BottomNav';
+import { Portal } from '@/components/ui/Portal';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import type { Routine } from '@/lib/types';
@@ -25,6 +27,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   const router = useRouter();
   const workout = useWorkout();
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
   // Compute sheet height as absolute pixels rather than '80%' — the percentage
@@ -77,6 +80,16 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
     transform: [{ translateY: translateY.value }],
   }));
 
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
+
   useEffect(() => {
     if (visible) {
       const clerkId = user?.id;
@@ -109,12 +122,8 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   };
 
   return (
-    <Modal
-      visible={render}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-    >
+    <Portal>
+      {render && (
       <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
         <Animated.View
           style={[
@@ -163,7 +172,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
 
             <ScrollView
               style={{ flex: 1 }}
-              contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40, gap: 8 }}
+              contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40 + insets.bottom, gap: 8 }}
               showsVerticalScrollIndicator={false}
             >
               {loading ? (
@@ -197,7 +206,8 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
           </Pressable>
         </Animated.View>
       </Pressable>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
