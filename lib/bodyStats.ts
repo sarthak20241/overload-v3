@@ -79,7 +79,7 @@ export async function saveMeasurements(d: MeasurementsData): Promise<void> {
   await AsyncStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(d));
 }
 
-export async function loadBasicInfo(): Promise<{ goalWeight?: number; weightUnit?: string }> {
+export async function loadBasicInfo(): Promise<{ goalWeight?: number | null; weightUnit?: string }> {
   try {
     const raw = await AsyncStorage.getItem(BASIC_KEY);
     return raw ? JSON.parse(raw) : {};
@@ -88,7 +88,7 @@ export async function loadBasicInfo(): Promise<{ goalWeight?: number; weightUnit
   }
 }
 
-export async function saveBasicInfo(info: { goalWeight?: number; weightUnit?: string }): Promise<void> {
+export async function saveBasicInfo(info: { goalWeight?: number | null; weightUnit?: string }): Promise<void> {
   try {
     const existing = await loadBasicInfo();
     await AsyncStorage.setItem(BASIC_KEY, JSON.stringify({ ...existing, ...info }));

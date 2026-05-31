@@ -325,7 +325,8 @@ export default function ProfileScreen() {
         setHeight(String(profile.height_cm || 178));
         setWeight(String(profile.weight_kg || 78));
         setGoalWeight(String(profile.goal_weight_kg || 75));
-        if (profile.goal_weight_kg) setCtxGoalWeight(profile.goal_weight_kg);
+        // Propagate a cleared goal (null/0) to context too, else it stays stale.
+        setCtxGoalWeight(profile.goal_weight_kg && profile.goal_weight_kg > 0 ? profile.goal_weight_kg : null);
         setBodyFat(String(profile.body_fat_percent || 16));
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
@@ -641,7 +642,8 @@ export default function ProfileScreen() {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
                       const num = parseFloat(v);
-                      if (!isNaN(num) && num > 0) setCtxGoalWeight(num);
+                      // Clearing the field should clear context too, not keep the old goal.
+                      setCtxGoalWeight(!isNaN(num) && num > 0 ? num : null);
                     }}
                     placeholder={weightUnit}
                   />
