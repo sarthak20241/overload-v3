@@ -37,3 +37,7 @@ AuthKey_*.p8
 
 # Reference-only external project (should not live in repo)
 Redesign Gym Workout Tracker UI*/
+
+# Tooling temp / local working dirs (never upload to EAS)
+.claude/worktrees/
+supabase/.temp/
