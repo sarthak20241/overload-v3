@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
-  RefreshControl, Modal, Pressable, TextInput, useWindowDimensions,
+  RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
   Platform, Keyboard,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown, SlideInDown, SlideOutDown, Easing,
@@ -12,6 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import {
@@ -223,10 +224,18 @@ function BottomDrawer({
 }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
   const { C } = useTheme();
   const { height } = useWindowDimensions();
-  const [shown, setShown] = useState(false);
+  const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
 
-  useEffect(() => { if (!visible) setShown(false); }, [visible]);
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   // Track keyboard height on both platforms. On iOS the Modal does not resize,
   // so we lift the sheet via marginBottom. On Android the Activity's adjustResize
@@ -249,19 +258,16 @@ function BottomDrawer({
   }, [visible]);
 
   const sheetMaxHeight = (height - kbHeight) * 0.9;
-  const sheetMarginBottom = Platform.OS === 'ios' ? kbHeight : 0;
+  // Lift above the keyboard on both platforms — rendered in the app's own
+  // window via <Portal>, which isn't auto-resized for the keyboard.
+  const sheetMarginBottom = kbHeight;
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-      onShow={() => setShown(true)}
-    >
+    <Portal>
+      {visible && (
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
         <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
-        {shown && (
+        {(
           <Animated.View
             entering={SlideInDown.duration(320).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
@@ -272,6 +278,8 @@ function BottomDrawer({
                 maxHeight: sheetMaxHeight,
                 backgroundColor: C.elevated,
                 borderColor: C.border,
+                // Flush to the screen bottom now (Portal), so clear the gesture bar.
+                paddingBottom: insets.bottom,
               },
             ]}
           >
@@ -284,7 +292,8 @@ function BottomDrawer({
           </Animated.View>
         )}
       </View>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 

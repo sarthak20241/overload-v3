@@ -5,10 +5,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, Modal, Pressable, ScrollView, Keyboard, Platform,
+  StyleSheet, BackHandler, Pressable, ScrollView, Keyboard, Platform,
 } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
@@ -24,6 +26,7 @@ interface Props {
 
 export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames = [] }: Props) {
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
@@ -74,8 +77,20 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     onClose();
   };
 
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      resetAndClose();
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={resetAndClose}>
+    <Portal>
+      {visible && (
       <Pressable style={[s.backdrop, { backgroundColor: C.overlay }]} onPress={resetAndClose}>
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
@@ -84,8 +99,11 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
             s.sheet,
             {
               backgroundColor: C.elevated,
-              // Lift above the keyboard on iOS — see kbHeight tracking above.
-              marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
+              // Lift above the keyboard (both platforms — rendered in the app's
+              // own window via <Portal>, which isn't auto-resized for the keyboard).
+              marginBottom: kbHeight,
+              // Flush to the screen bottom now, so clear the gesture/nav bar.
+              paddingBottom: insets.bottom,
             },
           ]}
         >
@@ -298,7 +316,8 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
           </Pressable>
         </Animated.View>
       </Pressable>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
