@@ -13,12 +13,30 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getMockWorkouts, mockProfile } from '@/lib/mockData';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo } from '@/lib/xp';
+import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 
 const ROUTINE_COLORS = Colors.routineColors;
+
+// Figma-matched muscle group colors. Module-scoped so consumers get a stable
+// identity across renders.
+const MUSCLE_COLORS: Record<string, string> = {
+  Chest: '#ef4444',
+  Back: '#3b82f6',
+  Shoulders: '#f59e0b',
+  Quads: '#10b981',
+  Hamstrings: '#06b6d4',
+  Biceps: '#a855f7',
+  Triceps: '#ec4899',
+  Calves: '#84cc16',
+  Core: '#f97316',
+  Glutes: '#14b8a6',
+  'Full Body': '#8b5cf6',
+};
 
 function formatDuration(sec: number) {
   const m = Math.floor(sec / 60);
@@ -301,8 +319,48 @@ export default function DashboardScreen() {
 
   // Proactive insights — deterministic detection over the workouts already
   // loaded. Free + instant; tapping a card seeds the (paid) Coach Drona chat.
-  // Volume/muscle trends live on the Analytics tab, not here.
+  // Proactive insights — deterministic detection over the workouts already
+  // loaded. Free + instant; tapping a card seeds the (paid) Coach Drona chat.
   const insights = useMemo(() => detectInsights({ workouts: workouts as any }), [workouts]);
+
+  // Weekly volume trend (last 6 weeks) — powers the Volume chart card.
+  const weeklyTrend = useMemo(() => {
+    const weeks: { volume: number; label: string }[] = [];
+    for (let w = 5; w >= 0; w--) {
+      const start = new Date(now);
+      start.setDate(now.getDate() - (w + 1) * 7);
+      const end = new Date(now);
+      end.setDate(now.getDate() - w * 7);
+      const vol = workouts
+        .filter(wk => {
+          const d = new Date(wk.started_at);
+          return d >= start && d < end;
+        })
+        .reduce((s, wk) => s + (wk.total_volume_kg || 0), 0);
+      const label = w === 0
+        ? 'This wk'
+        : start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      weeks.push({ volume: Math.round(vol), label });
+    }
+    return weeks;
+  }, [workouts]);
+  const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
+  const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
+
+  // Muscle breakdown — powers the Muscles donut card.
+  const muscleData = useMemo(() => {
+    const counts: Record<string, number> = {};
+    workouts.forEach(w => {
+      (w.sets || []).forEach((s: any) => {
+        const mg = s.exercises?.muscle_group || s.muscle_group;
+        if (mg) counts[mg] = (counts[mg] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value, color: MUSCLE_COLORS[name] || '#6b7280' }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+  }, [workouts]);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
@@ -421,20 +479,61 @@ export default function DashboardScreen() {
 
         {/* Stats grid */}
         <View style={styles.statsGrid}>
-          <StatCard
-            icon="activity"
-            label="Workouts"
-            value={weekWorkouts.length}
-            caption="This week"
-            color={Colors.stat.workouts}
-          />
-          <StatCard
-            icon="zap"
-            label="Day streak"
-            value={streak}
-            caption={streak === 0 ? 'Start today' : streak >= 7 ? 'On fire 🔥' : 'Keep it going'}
-            color={Colors.stat.streak}
-          />
+          {/* Volume card with area chart */}
+          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+            <View style={[styles.cardGlow, { backgroundColor: '#3b82f6', opacity: 0.04 }]} />
+            <View style={styles.statHeader}>
+              <Feather name="trending-up" size={12} color="#3b82f6" />
+              <Text style={[styles.statLabel, { color: '#3b82f6' }]}>VOLUME</Text>
+            </View>
+            <View style={styles.statValueRow}>
+              <Text style={[styles.statValue, { color: C.foreground }]}>
+                {totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume}
+              </Text>
+              <Text style={[styles.statSuffix, { color: C.textMuted }]}> kg</Text>
+            </View>
+            {weeklyVolumes.some(v => v > 0) ? (
+              <View style={{ marginTop: 6, marginHorizontal: -4, marginBottom: -4 }}>
+                <MiniAreaChart
+                  data={weeklyVolumes}
+                  labels={weeklyLabels}
+                  width={140}
+                  height={72}
+                  color="#3b82f6"
+                  valueSuffix="kg"
+                  tooltipBgColor={C.elevated}
+                  tooltipTextColor={C.foreground}
+                />
+              </View>
+            ) : (
+              <Text style={[styles.statSub, { color: C.textDim }]}>No data yet</Text>
+            )}
+          </View>
+
+          {/* Muscles card with interactive donut chart */}
+          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+            <View style={[styles.cardGlow, { backgroundColor: '#ec4899', opacity: 0.04 }]} />
+            <View style={styles.statHeader}>
+              <Feather name="activity" size={12} color="#ec4899" />
+              <Text style={[styles.statLabel, { color: '#ec4899' }]}>MUSCLES</Text>
+            </View>
+            {muscleData.length > 0 ? (
+              <View style={{ alignItems: 'center', marginTop: 2 }}>
+                <MiniDonutChart
+                  data={muscleData}
+                  size={100}
+                  thickness={18}
+                  gap={2}
+                  subColor={C.textMuted}
+                />
+              </View>
+            ) : (
+              <>
+                <Text style={[styles.statValue, { color: C.foreground }]}>-</Text>
+                <Text style={[styles.statSub, { color: C.textDim }]}>Track workouts</Text>
+              </>
+            )}
+          </View>
         </View>
 
         {/* Proactive insights — "Coach noticed" */}
@@ -732,8 +831,8 @@ const styles = StyleSheet.create({
     width: '47%',
     borderRadius: Radius.lg,
     borderWidth: 1,
-    padding: Spacing.lg,
-    gap: 6,
+    padding: Spacing.md,
+    gap: 4,
     overflow: 'hidden',
   },
   statIconChip: {
@@ -755,7 +854,7 @@ const styles = StyleSheet.create({
   statHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
   statLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.6, textTransform: 'uppercase' },
   statValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
-  statValue: { fontSize: 28, fontWeight: FontWeight.black, letterSpacing: -0.5 },
+  statValue: { fontSize: 24, fontWeight: FontWeight.black, letterSpacing: -0.5 },
   statSuffix: { fontSize: 10, fontWeight: FontWeight.medium },
   statSub: { fontSize: 10, marginTop: 2 },
   statCaption: { fontSize: 11 },
