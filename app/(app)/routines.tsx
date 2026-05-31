@@ -830,6 +830,16 @@ function RoutineEditorSheet({
               </TouchableOpacity>
             </View>
 
+            {/* Inline validation error. The editor is a full-screen Modal, so a
+                Portal-based ThemedAlert renders BEHIND it (invisible) — show the
+                reminder inline here instead so the user actually sees it. */}
+            {errorMsg ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: Spacing.xl, marginTop: Spacing.md, paddingVertical: 10, paddingHorizontal: 12, borderRadius: Radius.md, backgroundColor: 'rgba(239,68,68,0.12)', borderWidth: 1, borderColor: 'rgba(239,68,68,0.4)' }}>
+                <Feather name="alert-circle" size={14} color="#ef4444" />
+                <Text style={{ color: '#ef4444', fontSize: FontSize.sm, fontWeight: FontWeight.semibold, flex: 1 }}>{errorMsg}</Text>
+              </View>
+            ) : null}
+
             {/* Sheet Body */}
             <ScrollView
               style={{ flex: 1 }}
@@ -842,7 +852,7 @@ function RoutineEditorSheet({
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Routine Name</Text>
                 <TextInput
                   value={name}
-                  onChangeText={setName}
+                  onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -894,20 +904,18 @@ function RoutineEditorSheet({
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
-        </View>
-      </Modal>
 
-      {/* Custom Exercise Drawer */}
-      <Modal
-        visible={showCustomDrawer}
-        transparent
-        animationType="none"
-        onRequestClose={() => setShowCustomDrawer(false)}
-      >
-        <Pressable
-          style={[styles.backdrop, { backgroundColor: C.overlay }]}
-          onPress={() => setShowCustomDrawer(false)}
-        >
+          {/* Custom Exercise Drawer — an in-window overlay INSIDE the editor
+              Modal, NOT a nested <Modal>. iOS can't present a second modal over
+              an already-open one, so the old nested Modal stayed queued
+              (invisible) until the editor was dismissed — that was the "Create
+              Custom does nothing" bug. An overlay renders correctly over the
+              editor. */}
+          {showCustomDrawer && (
+            <Pressable
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay, justifyContent: 'flex-end' }]}
+              onPress={() => setShowCustomDrawer(false)}
+            >
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
@@ -916,8 +924,12 @@ function RoutineEditorSheet({
               {
                 backgroundColor: C.card,
                 borderColor: C.border,
-                // Lift above the keyboard on iOS — see customKbHeight tracking.
-                marginBottom: Platform.OS === 'ios' ? customKbHeight : 0,
+                // Lift above the keyboard on BOTH platforms. The name field
+                // auto-focuses, so the keyboard appears immediately; on Android
+                // this Modal isn't auto-resized, so an iOS-only lift left the
+                // "Add Exercise" button stuck behind the keyboard and
+                // unreachable — testers couldn't add a custom exercise.
+                marginBottom: customKbHeight,
               },
             ]}
           >
@@ -940,7 +952,12 @@ function RoutineEditorSheet({
               {/* Drawer Form */}
               <ScrollView
                 contentContainerStyle={styles.customDrawerBody}
-                keyboardShouldPersistTaps="handled"
+                // "always" (not "handled"): the name field auto-focuses, so the
+                // keyboard is up when the user taps "Add Exercise" at the bottom.
+                // With "handled" the ScrollView ate that first tap (keyboard
+                // dismiss) instead of firing the button — it looked like nothing
+                // happened. "always" delivers the tap straight to the button.
+                keyboardShouldPersistTaps="always"
                 showsVerticalScrollIndicator={false}
               >
                 {/* Exercise Name */}
@@ -1030,7 +1047,8 @@ function RoutineEditorSheet({
                 {/* Confirm Button */}
                 <TouchableOpacity
                   onPress={confirmCustomExercise}
-                  style={styles.customDrawerConfirmBtn}
+                  disabled={!customName.trim()}
+                  style={[styles.customDrawerConfirmBtn, !customName.trim() && { opacity: 0.5 }]}
                   activeOpacity={0.8}
                 >
                   <Feather name="check" size={15} color={Colors.primaryFg} />
@@ -1039,18 +1057,11 @@ function RoutineEditorSheet({
               </ScrollView>
             </Pressable>
           </Animated.View>
-        </Pressable>
+            </Pressable>
+          )}
+        </View>
       </Modal>
 
-      <ThemedAlert
-        visible={!!errorMsg}
-        icon="alert-circle"
-        iconColor="#ef4444"
-        title="Error"
-        message={errorMsg}
-        buttons={[{ text: 'OK', style: 'primary', onPress: () => setErrorMsg('') }]}
-        onClose={() => setErrorMsg('')}
-      />
     </>
   );
 }
