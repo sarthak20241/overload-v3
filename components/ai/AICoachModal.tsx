@@ -719,6 +719,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
 function ChatScreen({
   onBack,
   onSaveRoutine,
+  initialPrompt,
   // When provided, this chat is opened from an ACTIVE workout. The live
   // session (which lives only in memory until the workout is saved, so the
   // coach's DB tools can't see it) is injected as the opening turn of every
@@ -728,6 +729,7 @@ function ChatScreen({
 }: {
   onBack: () => void;
   onSaveRoutine: (name: string) => void;
+  initialPrompt?: string;
   workoutContext?: WorkoutCoachContext | null;
 }) {
   const { C } = useTheme();
@@ -901,6 +903,19 @@ function ChatScreen({
     reviewSentForRef.current = workoutContext;
     handleSend(workoutCoachReviewRequest(workoutContext));
   }, [workoutContext, messages, loading, handleSend]);
+
+  // Insight seeding: when opened from a dashboard "Coach noticed" card, the
+  // card's question rides in as `initialPrompt` and is auto-asked once, exactly
+  // like review mode above. Skipped in workout mode (it has its own seeding).
+  const seededPromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (workoutContext) return;
+    if (!initialPrompt) return;
+    if (seededPromptRef.current === initialPrompt) return;
+    if (loading || messages.length !== 1) return;
+    seededPromptRef.current = initialPrompt;
+    handleSend(initialPrompt);
+  }, [initialPrompt, workoutContext, loading, messages, handleSend]);
 
   // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
   // parent shrinks the sheet and lifts it via marginBottom (both platforms)
@@ -2366,12 +2381,16 @@ export function AICoachModal({
   onClose,
   onRoutineCreated,
   initialScreen = 'menu',
+  initialPrompt,
   workoutContext,
 }: {
   visible: boolean;
   onClose: () => void;
   onRoutineCreated?: () => void;
   initialScreen?: Screen;
+  // When set (from a dashboard insight card), the chat auto-asks this question
+  // once on open. Pass initialScreen="chat" alongside it.
+  initialPrompt?: string;
   // When set, the chat screen runs in in-workout mode: the live session is
   // injected as context, the greeting is tailored, quick-question chips show,
   // and the chat's back arrow closes the sheet (there's no menu detour
@@ -2711,6 +2730,7 @@ export function AICoachModal({
                   // detour mid-workout); otherwise it returns to the menu.
                   onBack={workoutContext ? handleClose : () => setScreen('menu')}
                   onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
+                  initialPrompt={initialPrompt}
                   workoutContext={workoutContext}
                 />
               )}
