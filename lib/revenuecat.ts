@@ -99,6 +99,79 @@ function loadPurchases(): any | null {
   return cachedModule;
 }
 
+// ─── Configuration + identity ────────────────────────────────────────────────
+// Centralized here (not in RevenueCatBridge) so configure ALWAYS happens
+// before logIn — they share one module-scoped flag and one code path. The
+// old bug: configure ran in the bridge's parent effect while logIn ran in a
+// child effect; React flushes child effects FIRST, so for a returning user
+// (Clerk session already hydrated) logIn fired before configure, threw "no
+// singleton instance", was swallowed, and never retried → every purchase got
+// tagged with an anonymous RC id instead of the Clerk id, so the webhook
+// could never match user_profiles.
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { Platform } = require('react-native');
+const RC_IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY ?? '';
+const RC_ANDROID_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY ?? '';
+
+let configured = false;
+
+function getApiKey(): string {
+  if (Platform.OS === 'ios') return RC_IOS_KEY;
+  if (Platform.OS === 'android') return RC_ANDROID_KEY;
+  return '';
+}
+
+/**
+ * Configure the SDK exactly once. Idempotent and safe to call from anywhere.
+ * Returns true if the SDK is ready to use after the call.
+ */
+export function ensureConfigured(): boolean {
+  if (configured) return true;
+  const P = loadPurchases();
+  if (!P) return false;
+  const apiKey = getApiKey();
+  if (!apiKey) return false;
+  try {
+    P.configure({ apiKey });
+    configured = true;
+    return true;
+  } catch (e) {
+    console.warn('[revenuecat] configure failed:', e);
+    return false;
+  }
+}
+
+/**
+ * Make sure the SDK is configured AND logged in as the given Clerk user id.
+ * Call this on auth change (RevenueCatBridge) AND defensively right before a
+ * purchase (Paywall) — the latter guarantees the transaction is attributed to
+ * the Clerk id even if the bridge's logIn somehow didn't land.
+ *
+ * No-ops gracefully when the native module is missing (Expo Go).
+ */
+export async function ensureIdentity(userId: string): Promise<void> {
+  const P = loadPurchases();
+  if (!P || !userId) return;
+  if (!ensureConfigured()) return;
+  try {
+    await P.logIn(userId);
+  } catch (e) {
+    console.warn('[revenuecat] logIn failed:', e);
+  }
+}
+
+/** Revert to an anonymous id on sign-out. */
+export async function logOutRevenueCat(): Promise<void> {
+  const P = loadPurchases();
+  if (!P || !configured) return;
+  try {
+    await P.logOut();
+  } catch (e) {
+    console.warn('[revenuecat] logOut failed:', e);
+  }
+}
+
 /**
  * Quick "can we attempt a purchase?" check used by the UI to swap real
  * buttons for an Expo-Go-friendly message. Returns true only if the native

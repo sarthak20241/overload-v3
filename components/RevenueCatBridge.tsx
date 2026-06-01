@@ -24,61 +24,32 @@
  *     Only purchase / paywall UI is affected.
  */
 import { useEffect, useRef } from 'react';
-import { Platform } from 'react-native';
 import { hasClerkKey } from '@/hooks/useClerkUser';
-
-const RC_IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY ?? '';
-const RC_ANDROID_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY ?? '';
-
-// Module-scoped so a re-mount of <RevenueCatBridge /> never re-configures.
-// RC's configure() is idempotent but logs a warning; we'd rather avoid it.
-let purchasesConfigured = false;
-
-/**
- * Lazy-load react-native-purchases. The module isn't in Expo Go (no native
- * binding) and shouldn't crash dev mode. Returns null if unavailable.
- */
-function loadPurchases(): any | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require('react-native-purchases').default;
-  } catch {
-    return null;
-  }
-}
-
-function getApiKey(): string {
-  if (Platform.OS === 'ios') return RC_IOS_KEY;
-  if (Platform.OS === 'android') return RC_ANDROID_KEY;
-  return '';
-}
+import { ensureConfigured, ensureIdentity, logOutRevenueCat } from '@/lib/revenuecat';
 
 export function RevenueCatBridge() {
-  const Purchases = loadPurchases();
-
-  // Configure on first mount when we have a key + the module is present.
+  // Configure as early as possible so getOfferings() (paywall) works even
+  // before the user signs in. ensureConfigured is idempotent.
   useEffect(() => {
-    if (!Purchases || purchasesConfigured) return;
-    const apiKey = getApiKey();
-    if (!apiKey) return;
-    try {
-      Purchases.configure({ apiKey });
-      purchasesConfigured = true;
-    } catch (e) {
-      console.warn('[RevenueCat] configure failed:', e);
-    }
-  }, [Purchases]);
+    ensureConfigured();
+  }, []);
 
   // Identity sync only when Clerk is configured. In guest mode, RC stays
   // anonymous — there's no Clerk id to tie purchases to.
-  return hasClerkKey ? <ClerkIdentitySync Purchases={Purchases} /> : null;
+  return hasClerkKey ? <ClerkIdentitySync /> : null;
 }
 
 /**
  * Inner component — split out so we can use Clerk hooks behind the
  * conditional. Same pattern ClerkSupabaseBridge uses.
+ *
+ * Crucially, identity goes through ensureIdentity(), which configures the SDK
+ * BEFORE calling logIn in the same code path. That removes the old race where
+ * this child effect (React flushes child effects before parent effects) could
+ * call logIn before the parent had configured the SDK — which left every
+ * purchase tagged with an anonymous RC id.
  */
-function ClerkIdentitySync({ Purchases }: { Purchases: any | null }) {
+function ClerkIdentitySync() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { useAuth } = require('@clerk/clerk-expo');
   const { userId, isLoaded, isSignedIn } = useAuth();
@@ -89,23 +60,19 @@ function ClerkIdentitySync({ Purchases }: { Purchases: any | null }) {
   const lastIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!Purchases || !isLoaded) return;
+    if (!isLoaded) return;
     (async () => {
-      try {
-        if (isSignedIn && userId) {
-          if (lastIdRef.current === userId) return;
-          await Purchases.logIn(userId);
-          lastIdRef.current = userId;
-        } else {
-          if (lastIdRef.current === null) return;
-          await Purchases.logOut();
-          lastIdRef.current = null;
-        }
-      } catch (e) {
-        console.warn('[RevenueCat] identity sync failed:', e);
+      if (isSignedIn && userId) {
+        if (lastIdRef.current === userId) return;
+        await ensureIdentity(userId);
+        lastIdRef.current = userId;
+      } else {
+        if (lastIdRef.current === null) return;
+        await logOutRevenueCat();
+        lastIdRef.current = null;
       }
     })();
-  }, [Purchases, isLoaded, isSignedIn, userId]);
+  }, [isLoaded, isSignedIn, userId]);
 
   return null;
 }

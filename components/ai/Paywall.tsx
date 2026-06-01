@@ -37,11 +37,13 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useToast } from '@/components/ui/Toast';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   getCoachOfferings,
   purchaseCoachPackage,
   restorePurchases,
   isPurchasesAvailable,
+  ensureIdentity,
   PurchasesUnavailableError,
   PurchaseCancelledError,
   type RevenueCatPackage,
@@ -88,6 +90,7 @@ const PLAN_ORDER: PlanKey[] = ['annual', 'monthly', 'founding_lifetime'];
 export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   const { C } = useTheme();
   const toast = useToast();
+  const { user } = useClerkUser();
 
   const [loading, setLoading] = useState(true);
   const [packages, setPackages] = useState<Partial<Record<PlanKey, RevenueCatPackage>>>({});
@@ -151,6 +154,12 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
       if (purchasingPlan) return; // guard double-tap
       setPurchasingPlan(plan);
       try {
+        // Belt-and-suspenders: guarantee the SDK is logged in as the Clerk
+        // user BEFORE the transaction, so the purchase is attributed to the
+        // Clerk id (not an anonymous RC id). Without this, the webhook's
+        // app_user_id wouldn't match user_profiles.clerk_user_id and the
+        // tier would never flip.
+        if (user?.id) await ensureIdentity(user.id);
         await purchaseCoachPackage(pkg);
         // iOS confirmed the transaction; RC webhook will tell our backend
         // to flip the tier. Poll until we see it.
@@ -359,14 +368,14 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
             Subscriptions.{' '}
             <Text
               style={[s.legalLink, { color: C.foreground }]}
-              onPress={() => Linking.openURL('https://overload.app/terms')}
+              onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}
             >
               Terms
             </Text>
             {' · '}
             <Text
               style={[s.legalLink, { color: C.foreground }]}
-              onPress={() => Linking.openURL('https://overload.app/privacy')}
+              onPress={() => Linking.openURL('https://tryoverload.app/privacy.html')}
             >
               Privacy
             </Text>
