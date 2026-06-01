@@ -541,13 +541,14 @@ function RoutineEditorSheet({
   const [customTargetIdx, setCustomTargetIdx] = useState<number | null>(null);
   const [showMuscleDropdown, setShowMuscleDropdown] = useState(false);
 
-  // Keyboard avoidance for the custom-exercise drawer. The drawer's name
-  // input auto-focuses on open, so the keyboard appears immediately and was
-  // covering the inputs + Add Exercise button on iOS. KeyboardAvoidingView
-  // doesn't work inside a transparent Modal on iOS — instead we track the
-  // keyboard height ourselves and lift the sheet via marginBottom (the same
-  // pattern used by analytics.tsx's BottomDrawer).
+  // Keyboard avoidance for the custom-exercise drawer. The name input gets
+  // focused on open, so the keyboard appears immediately and would otherwise
+  // cover the inputs + Add Exercise button. KeyboardAvoidingView doesn't work
+  // inside a transparent Modal on iOS, so we track the keyboard height
+  // ourselves and lift the sheet via marginBottom (the same pattern used by
+  // analytics.tsx's BottomDrawer).
   const [customKbHeight, setCustomKbHeight] = useState(0);
+  const nameInputRef = useRef<TextInput>(null);
   useEffect(() => {
     if (!showCustomDrawer) { setCustomKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -556,7 +557,14 @@ function RoutineEditorSheet({
       setCustomKbHeight(e.endCoordinates?.height ?? 0);
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setCustomKbHeight(0));
-    return () => { showSub.remove(); hideSub.remove(); };
+    // Focus the name field ourselves AFTER the listeners are attached, rather
+    // than via autoFocus. autoFocus raised the keyboard during mount, before
+    // this effect ran, so the first keyboardWillShow fired with no listener
+    // attached and the sheet never lifted: the keyboard covered the inputs
+    // until you manually dismissed and refocused. Deferring the focus a tick
+    // guarantees we catch the show event and lift on the first open.
+    const focusTimer = setTimeout(() => nameInputRef.current?.focus(), 100);
+    return () => { showSub.remove(); hideSub.remove(); clearTimeout(focusTimer); };
   }, [showCustomDrawer]);
 
   const openCustomDrawer = (prefill: string, targetIdx: number) => {
@@ -933,7 +941,10 @@ function RoutineEditorSheet({
               },
             ]}
           >
-            <Pressable>
+            {/* Tapping the sheet chrome (handle, header, padding) dismisses the
+                keyboard. Taps on the inputs and buttons are captured by those
+                children, so they keep working normally. */}
+            <Pressable onPress={() => Keyboard.dismiss()}>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
 
               {/* Drawer Header */}
@@ -952,19 +963,19 @@ function RoutineEditorSheet({
               {/* Drawer Form */}
               <ScrollView
                 contentContainerStyle={styles.customDrawerBody}
-                // "always" (not "handled"): the name field auto-focuses, so the
-                // keyboard is up when the user taps "Add Exercise" at the bottom.
-                // With "handled" the ScrollView ate that first tap (keyboard
-                // dismiss) instead of firing the button — it looked like nothing
-                // happened. "always" delivers the tap straight to the button.
-                keyboardShouldPersistTaps="always"
+                // "handled": a tap on empty space inside the form dismisses the
+                // keyboard, while taps the children handle (the inputs and the
+                // "Add Exercise" button) still fire in a single tap. The sheet
+                // now lifts above the keyboard on open, so the button is no
+                // longer hidden behind it.
+                keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
                 {/* Exercise Name */}
                 <View>
                   <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
-                    autoFocus
+                    ref={nameInputRef}
                     value={customName}
                     onChangeText={setCustomName}
                     placeholder="e.g. Cable Lateral Raise"
