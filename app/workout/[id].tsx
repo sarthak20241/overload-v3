@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
-  StyleSheet, ActivityIndicator, Modal, Pressable,
+  StyleSheet, ActivityIndicator, Pressable, BackHandler,
   Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -18,6 +18,7 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findMockRoutine, addGuestWorkout, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -119,11 +120,10 @@ export default function ActiveWorkoutScreen() {
   // be acted on before the user actually saves.
   const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
-  // Track keyboard height while the custom-exercise form is open. iOS Modal
-  // does not auto-resize. On Android we still need the height so the sheet's
-  // maxHeight can subtract it — useWindowDimensions inside a Modal does not
-  // reliably reflect the resized window, which was leaving the sheet taller
-  // than the visible area and pushing the EXERCISE NAME input off-screen.
+  // Track keyboard height while the custom-exercise form is open. The sheet now
+  // renders via <Portal> (the app's own window), which isn't auto-resized for
+  // the keyboard, so we lift it (marginBottom) and cap its height (maxHeight)
+  // by this amount — otherwise the keyboard covers the EXERCISE NAME input.
   useEffect(() => {
     if (!showCustomForm) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -137,6 +137,19 @@ export default function ActiveWorkoutScreen() {
       hideSub.remove();
     };
   }, [showCustomForm]);
+
+  // <Portal> has no onRequestClose (unlike RN <Modal>), so route the Android
+  // hardware back button to close whichever sheet is open instead of letting it
+  // fall through and leave the workout.
+  useEffect(() => {
+    if (!showAddExercise && !showCustomForm) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showCustomForm) { setShowCustomForm(false); return true; }
+      if (showAddExercise) { setShowAddExercise(false); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [showAddExercise, showCustomForm]);
 
   // Load routine on mount
   useEffect(() => {
@@ -1316,13 +1329,18 @@ export default function ActiveWorkoutScreen() {
         </View>
       )}
 
-      {/* ADD EXERCISE MODAL */}
-      <Modal visible={showAddExercise} transparent animationType="none" onRequestClose={() => setShowAddExercise(false)}>
+      {/* ADD EXERCISE SHEET — rendered via root <Portal> (the app's own window),
+          not RN <Modal>. On Android a <Modal> is a separate Dialog window where
+          Reanimated entering/exiting animations leave touch hit-rects stale, so
+          taps on the list rows and the close button register only
+          intermittently. Same-window Portal keeps hit-testing correct. */}
+      <Portal>
+        {showAddExercise && (
         <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowAddExercise(false)}>
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
-            style={[styles.modalSheet, { backgroundColor: C.elevated }]}
+            style={[styles.modalSheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom }]}
           >
             <Pressable>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
@@ -1384,10 +1402,15 @@ export default function ActiveWorkoutScreen() {
             </Pressable>
           </Animated.View>
         </Pressable>
-      </Modal>
+        )}
+      </Portal>
 
-      {/* CUSTOM EXERCISE FORM */}
-      <Modal visible={showCustomForm} transparent animationType="none" onRequestClose={() => setShowCustomForm(false)}>
+      {/* CUSTOM EXERCISE FORM — rendered via root <Portal>, not RN <Modal>, for
+          the same reason as the Add Exercise sheet: a <Modal>'s separate Android
+          window + Reanimated layout animations make taps on the muscle-group /
+          category chips and the close button register only intermittently. */}
+      <Portal>
+        {showCustomForm && (
         <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowCustomForm(false)}>
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
@@ -1396,10 +1419,10 @@ export default function ActiveWorkoutScreen() {
               styles.modalSheet,
               {
                 backgroundColor: C.elevated,
-                // iOS Modal doesn't auto-resize, so lift the sheet via margin.
-                // Android adjustResize already handles the bottom anchor;
-                // adding margin would push the sheet off the top of the screen.
-                marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
+                // Lift above the keyboard on both platforms — now rendered in the
+                // app's own window via <Portal>, which (unlike a <Modal> window)
+                // isn't auto-resized for the keyboard.
+                marginBottom: kbHeight,
                 maxHeight: (winH - kbHeight) * 0.9,
               },
             ]}
@@ -1533,7 +1556,8 @@ export default function ActiveWorkoutScreen() {
             </Pressable>
           </Animated.View>
         </Pressable>
-      </Modal>
+        )}
+      </Portal>
 
       {/* Themed Alerts */}
       <ThemedAlert
