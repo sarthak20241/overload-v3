@@ -21,21 +21,21 @@ export default function AgentLoading() {
           {Array.from({ length: 6 }).map((_, i) => (
             <div
               key={i}
-              className="rounded-lg border border-border bg-card p-4 flex gap-3"
+              className="rounded-lg border border-border bg-card p-4 flex gap-3 animate-pulse"
               style={{ animationDelay: `${i * 70}ms` }}
             >
               {/* Action chip placeholder (approve/reject/supersede) */}
-              <div className="h-6 w-20 bg-border rounded-md animate-pulse shrink-0" />
+              <div className="h-6 w-20 bg-border rounded-md shrink-0" />
               <div className="flex-1 flex flex-col gap-2">
-                <div className="h-4 w-3/4 bg-border rounded animate-pulse" />
-                <div className="h-3 w-full bg-border rounded animate-pulse opacity-60" />
-                <div className="h-3 w-5/6 bg-border rounded animate-pulse opacity-60" />
+                <div className="h-4 w-3/4 bg-border rounded" />
+                <div className="h-3 w-full bg-border rounded opacity-60" />
+                <div className="h-3 w-5/6 bg-border rounded opacity-60" />
                 <div className="flex gap-1.5 mt-1">
-                  <div className="h-4 w-16 bg-border rounded-full animate-pulse opacity-50" />
-                  <div className="h-4 w-14 bg-border rounded-full animate-pulse opacity-50" />
+                  <div className="h-4 w-16 bg-border rounded-full opacity-50" />
+                  <div className="h-4 w-14 bg-border rounded-full opacity-50" />
                 </div>
               </div>
-              <div className="h-8 w-16 bg-border rounded-md animate-pulse opacity-60 self-start" />
+              <div className="h-8 w-16 bg-border rounded-md opacity-60 self-start" />
             </div>
           ))}
         </div>

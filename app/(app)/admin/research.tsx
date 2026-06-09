@@ -17,7 +17,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, Modal, Pressable, TextInput,
-  Keyboard, Platform, Linking, RefreshControl,
+  Keyboard, Platform, Linking, RefreshControl, useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -345,6 +345,7 @@ function PaperDetailSheet({
   // sheet on iOS, so we track keyboard height ourselves and apply
   // marginBottom to the sheet (matches analytics.tsx BottomDrawer pattern).
   const [kbHeight, setKbHeight] = useState(0);
+  const { height: windowHeight } = useWindowDimensions();
   useEffect(() => {
     if (!paper || !rejectMode) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -375,6 +376,14 @@ function PaperDetailSheet({
               backgroundColor: C.background,
               // Lift above the keyboard on iOS — see kbHeight tracking above.
               marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
+              // Android's Modal isn't resized for the keyboard either, but the
+              // sheet has a fixed 92% height, so pushing it up via marginBottom
+              // would overflow the top. Instead trim its height by the keyboard
+              // inset so the reject input + action bar stay visible (matches
+              // analytics.tsx's BottomDrawer).
+              ...(Platform.OS === 'android' && kbHeight > 0
+                ? { height: Math.max(0, windowHeight * 0.92 - kbHeight) }
+                : null),
             },
           ]}
         >
