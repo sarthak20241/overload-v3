@@ -325,7 +325,7 @@ export default function ProfileScreen() {
         setHeight(String(profile.height_cm || 178));
         setWeight(String(profile.weight_kg || 78));
         setGoalWeight(String(profile.goal_weight_kg || 75));
-        if (profile.goal_weight_kg) setCtxGoalWeight(profile.goal_weight_kg);
+        setCtxGoalWeight(profile.goal_weight_kg > 0 ? profile.goal_weight_kg : null);
         setBodyFat(String(profile.body_fat_percent || 16));
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
@@ -450,6 +450,10 @@ export default function ProfileScreen() {
       setBugCategory('ui');
       setBugModalOpen(false);
       setShowInfoAlert('Bug report submitted — thanks!');
+    } catch (e) {
+      // A rejected/throwing insert (network drop, etc.) skips the { error }
+      // path above — surface it instead of silently swallowing the failure.
+      setShowErrorAlert(`Couldn't send report: ${e instanceof Error ? e.message : 'please try again.'}`);
     } finally {
       setBugSubmitting(false);
     }
@@ -641,7 +645,9 @@ export default function ProfileScreen() {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
                       const num = parseFloat(v);
-                      if (!isNaN(num) && num > 0) setCtxGoalWeight(num);
+                      // Push null when cleared/invalid so the cached goal in
+                      // context doesn't go stale.
+                      setCtxGoalWeight(!isNaN(num) && num > 0 ? num : null);
                     }}
                     placeholder={weightUnit}
                   />

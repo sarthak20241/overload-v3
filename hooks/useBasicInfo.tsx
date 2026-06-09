@@ -35,7 +35,8 @@ export function BasicInfoProvider({ children }: { children: ReactNode }) {
 
   const setGoalWeight = useCallback((v: number | null) => {
     setGoalWeightState(v);
-    if (v !== null) saveBasicInfo({ goalWeight: v });
+    // Persist clears too (v === null) so removing a goal survives a reload.
+    saveBasicInfo({ goalWeight: v });
   }, []);
 
   const setWeightUnit = useCallback((u: WeightUnit) => {

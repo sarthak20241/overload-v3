@@ -88,9 +88,13 @@ export async function loadBasicInfo(): Promise<{ goalWeight?: number; weightUnit
   }
 }
 
-export async function saveBasicInfo(info: { goalWeight?: number; weightUnit?: string }): Promise<void> {
+export async function saveBasicInfo(info: { goalWeight?: number | null; weightUnit?: string }): Promise<void> {
   try {
     const existing = await loadBasicInfo();
-    await AsyncStorage.setItem(BASIC_KEY, JSON.stringify({ ...existing, ...info }));
+    const merged: { goalWeight?: number | null; weightUnit?: string } = { ...existing, ...info };
+    // A null goalWeight means "cleared" — drop the key so it doesn't rehydrate
+    // the old target on next load.
+    if (info.goalWeight === null) delete merged.goalWeight;
+    await AsyncStorage.setItem(BASIC_KEY, JSON.stringify(merged));
   } catch {}
 }
