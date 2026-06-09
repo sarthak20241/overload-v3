@@ -857,10 +857,12 @@ Deno.serve(async (req) => {
   // is actually exposed in the resolved mode's toolkit. Refine and discuss
   // modes both include the matching generate tool, so they can force it;
   // mismatched combos (refine_workout + generate_plan, etc.) get dropped
-  // to null rather than producing an Anthropic 400.
+  // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
+  // exposes no generate_* tool, so a force_tool there must be dropped too —
+  // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
+  // tool_choice for a tool that isn't in `tools` (400).
   const forceToolAllowed =
     !forceTool
-    || mode === 'chat'
     || (mode === 'generate_workout' && forceTool === 'generate_workout')
     || (mode === 'generate_plan' && forceTool === 'generate_plan')
     || (mode === 'refine_workout' && forceTool === 'generate_workout')

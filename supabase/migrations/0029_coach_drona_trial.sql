@@ -75,8 +75,25 @@ begin
     );
   end if;
 
-  insert into coach_trials (clerk_user_id, started_at, expires_at)
-    values (v_user_id, v_now, v_expires);
+  -- The SELECT above is advisory only; it does not close the TOCTOU window
+  -- between two concurrent taps. The clerk_user_id primary key is the real
+  -- guard — catch the loser's unique_violation and return the same
+  -- 'already_trialed' payload the comment promises instead of erroring out.
+  begin
+    insert into coach_trials (clerk_user_id, started_at, expires_at)
+      values (v_user_id, v_now, v_expires);
+  exception when unique_violation then
+    select * into v_existing from coach_trials where clerk_user_id = v_user_id;
+    return jsonb_build_object(
+      'ok', false,
+      'reason', 'already_trialed',
+      'started_at',  v_existing.started_at,
+      'expires_at',  v_existing.expires_at,
+      'ended_at',    v_existing.ended_at,
+      'end_reason',  v_existing.end_reason,
+      'messages_sent', v_existing.messages_sent
+    );
+  end;
 
   return jsonb_build_object(
     'ok', true,

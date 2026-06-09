@@ -106,6 +106,13 @@ begin
     from user_profiles
    where clerk_user_id = p_clerk_user_id;
 
+  if not found then
+    -- No profile row to attach the tier to. Bail BEFORE touching the founding
+    -- counter — otherwise we'd consume a capped slot with a 0-row UPDATE and
+    -- permanently orphan it (the claim is never assigned to any user).
+    return jsonb_build_object('ok', false, 'reason', 'unknown_user');
+  end if;
+
   if v_existing = 'founding_lifetime' then
     -- Lifetime never renews. If Stripe somehow fires a second checkout for
     -- this user, it's a duplicate — don't double-charge the counter.
