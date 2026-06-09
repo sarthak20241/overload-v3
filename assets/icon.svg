@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Overload app icon — dark mode -->
+  <rect width="1024" height="1024" fill="#0a0a0a"/>
+  <text
+    x="512"
+    y="572"
+    text-anchor="middle"
+    font-family="Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif"
+    font-weight="900"
+    font-size="200"
+    letter-spacing="-10"
+    fill="#c8ff00">overload</text>
+</svg>

@@ -17,7 +17,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, Modal, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, Linking, RefreshControl,
+  Keyboard, Platform, Linking, RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -338,6 +338,24 @@ function PaperDetailSheet({
     setSupersedeTargets(new Set());
   }, [paper?.id]);
 
+  // Keyboard avoidance for the reject-reason input. The input autofocuses
+  // when reject mode is entered, which immediately pops the iOS keyboard
+  // and (without intervention) covers the input + Confirm Reject button.
+  // KeyboardAvoidingView nested in a transparent Modal doesn't lift the
+  // sheet on iOS, so we track keyboard height ourselves and apply
+  // marginBottom to the sheet (matches analytics.tsx BottomDrawer pattern).
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    if (!paper || !rejectMode) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [paper, rejectMode]);
+
   if (!paper) return null;
 
   const meta = paper.source_meta ?? {};
@@ -351,7 +369,14 @@ function PaperDetailSheet({
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
-          style={[s.sheet, { backgroundColor: C.background }]}
+          style={[
+            s.sheet,
+            {
+              backgroundColor: C.background,
+              // Lift above the keyboard on iOS — see kbHeight tracking above.
+              marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
+            },
+          ]}
         >
           <View style={[s.handleWrap]}>
             <View style={[s.handle, { backgroundColor: C.handle ?? C.border }]} />
@@ -445,11 +470,10 @@ function PaperDetailSheet({
             )}
           </ScrollView>
 
-          {/* Action bar */}
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            keyboardVerticalOffset={0}
-          >
+          {/* Action bar — keyboard avoidance is handled at the sheet level
+              (marginBottom: kbHeight on iOS), not via KeyboardAvoidingView,
+              because KAV inside a transparent Modal is unreliable on iOS. */}
+          <View>
             {rejectMode ? (
               <View style={[s.actionBar, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
                 <TextInput
@@ -516,7 +540,7 @@ function PaperDetailSheet({
                 </TouchableOpacity>
               </View>
             )}
-          </KeyboardAvoidingView>
+          </View>
         </Animated.View>
       </View>
     </Modal>

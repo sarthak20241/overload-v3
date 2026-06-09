@@ -1,0 +1,307 @@
+/**
+ * Thin wrapper around `react-native-purchases` that gracefully degrades when
+ * the native module isn't available (Expo Go, dev preview, etc.). Callers get
+ * a uniform API — no try/catch sprinkled everywhere, no "is RC configured?"
+ * checks at every call site.
+ *
+ * Mirrors the lazy-require pattern in components/RevenueCatBridge.tsx so the
+ * module stays loadable on web / dev tooling that doesn't ship the native
+ * binding.
+ *
+ * Mapping to RevenueCat dashboard:
+ *   - `monthly`           — package identifier for the monthly subscription
+ *   - `annual`            — package identifier for the annual subscription
+ *   - `founding_lifetime` — package identifier for the one-time founding deal
+ * These must match the package identifiers you set under
+ * `Project → Products → Packages` in the RC dashboard. The default Expo
+ * convention is `$rc_monthly`, `$rc_annual`, and a custom identifier for
+ * the lifetime — we accept either via PACKAGE_ID_MAP below.
+ *
+ * The hook surface returns RC's raw shapes for now (CustomerInfo, Package,
+ * Offering). The Paywall component knows how to render them. If we end up
+ * with more callers we can normalize into our own shape.
+ */
+
+// Loosely-typed RC bindings. The real types live in react-native-purchases;
+// duplicating them here would just rot. The Paywall consumes these via
+// runtime property access; mistakes surface immediately in the UI.
+type RCPackage = {
+  identifier: string;
+  packageType: string; // 'MONTHLY' | 'ANNUAL' | 'LIFETIME' | 'CUSTOM' | ...
+  product: {
+    identifier: string;
+    title?: string;
+    description?: string;
+    priceString: string;
+    price: number;
+    currencyCode: string;
+  };
+};
+export type { RCPackage as RevenueCatPackage };
+
+export type RevenueCatOffering = {
+  identifier: string;
+  serverDescription?: string;
+  availablePackages: RCPackage[];
+};
+
+export type RevenueCatCustomerInfo = {
+  entitlements: {
+    active: Record<string, { isActive: boolean; productIdentifier: string }>;
+  };
+};
+
+// Our app's canonical product slugs. We map RC's package identifiers into
+// these so the Paywall + downstream code don't have to know about RC's
+// `$rc_*` convention.
+export type PlanKey = 'monthly' | 'annual' | 'founding_lifetime';
+
+// RC's package identifiers (left) → our slugs (right). Some are conventional
+// ($rc_monthly etc.) and some are custom. Add both forms so we tolerate the
+// dashboard being configured either way.
+const PACKAGE_ID_MAP: Record<string, PlanKey> = {
+  '$rc_monthly': 'monthly',
+  '$rc_annual': 'annual',
+  '$rc_lifetime': 'founding_lifetime',
+  'monthly': 'monthly',
+  'annual': 'annual',
+  'founding_lifetime': 'founding_lifetime',
+  'lifetime': 'founding_lifetime',
+};
+
+// Fallback when the identifier isn't recognized: match on RC's packageType.
+// RC's standard types are MONTHLY, ANNUAL, LIFETIME, plus weekly/two-month/etc.
+// — the three we care about all map cleanly. CUSTOM packages have no
+// standard type, so they must use a recognized identifier above.
+function packageTypeToPlanKey(packageType: string | undefined): PlanKey | null {
+  switch (packageType) {
+    case 'MONTHLY': return 'monthly';
+    case 'ANNUAL': return 'annual';
+    case 'LIFETIME': return 'founding_lifetime';
+    default: return null;
+  }
+}
+
+function packageToPlanKey(pkg: RCPackage): PlanKey | null {
+  return PACKAGE_ID_MAP[pkg.identifier] ?? packageTypeToPlanKey(pkg.packageType);
+}
+
+let cachedModule: any | null | undefined;
+
+function loadPurchases(): any | null {
+  if (cachedModule !== undefined) return cachedModule;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    cachedModule = require('react-native-purchases').default;
+  } catch {
+    cachedModule = null;
+  }
+  return cachedModule;
+}
+
+// ─── Configuration + identity ────────────────────────────────────────────────
+// Centralized here (not in RevenueCatBridge) so configure ALWAYS happens
+// before logIn — they share one module-scoped flag and one code path. The
+// old bug: configure ran in the bridge's parent effect while logIn ran in a
+// child effect; React flushes child effects FIRST, so for a returning user
+// (Clerk session already hydrated) logIn fired before configure, threw "no
+// singleton instance", was swallowed, and never retried → every purchase got
+// tagged with an anonymous RC id instead of the Clerk id, so the webhook
+// could never match user_profiles.
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { Platform } = require('react-native');
+const RC_IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY ?? '';
+const RC_ANDROID_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY ?? '';
+
+let configured = false;
+
+function getApiKey(): string {
+  if (Platform.OS === 'ios') return RC_IOS_KEY;
+  if (Platform.OS === 'android') return RC_ANDROID_KEY;
+  return '';
+}
+
+/**
+ * Configure the SDK exactly once. Idempotent and safe to call from anywhere.
+ * Returns true if the SDK is ready to use after the call.
+ */
+export function ensureConfigured(): boolean {
+  if (configured) return true;
+  const P = loadPurchases();
+  if (!P) return false;
+  const apiKey = getApiKey();
+  if (!apiKey) return false;
+  try {
+    P.configure({ apiKey });
+    configured = true;
+    return true;
+  } catch (e) {
+    console.warn('[revenuecat] configure failed:', e);
+    return false;
+  }
+}
+
+/**
+ * Make sure the SDK is configured AND logged in as the given Clerk user id.
+ * Call this on auth change (RevenueCatBridge) AND defensively right before a
+ * purchase (Paywall) — the latter guarantees the transaction is attributed to
+ * the Clerk id even if the bridge's logIn somehow didn't land.
+ *
+ * No-ops gracefully when the native module is missing (Expo Go).
+ */
+export async function ensureIdentity(userId: string): Promise<void> {
+  const P = loadPurchases();
+  if (!P || !userId) return;
+  if (!ensureConfigured()) return;
+  try {
+    await P.logIn(userId);
+  } catch (e) {
+    console.warn('[revenuecat] logIn failed:', e);
+  }
+}
+
+/** Revert to an anonymous id on sign-out. */
+export async function logOutRevenueCat(): Promise<void> {
+  const P = loadPurchases();
+  if (!P || !configured) return;
+  try {
+    await P.logOut();
+  } catch (e) {
+    console.warn('[revenuecat] logOut failed:', e);
+  }
+}
+
+/**
+ * Quick "can we attempt a purchase?" check used by the UI to swap real
+ * buttons for an Expo-Go-friendly message. Returns true only if the native
+ * module loaded AND `Purchases.configure()` has been called (which the
+ * RevenueCatBridge does at app boot).
+ */
+export function isPurchasesAvailable(): boolean {
+  const P = loadPurchases();
+  if (!P) return false;
+  try {
+    // RC returns a Promise<boolean>; we only care about the sync presence
+    // of the function. The async check happens implicitly inside getOfferings.
+    return typeof P.getOfferings === 'function';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns the current offering's packages, normalized into our PlanKey
+ * slugs. Returns `null` if the SDK isn't available (Expo Go) or if there's
+ * no current offering (RC dashboard hasn't been configured yet).
+ *
+ * The Paywall component should render a graceful "Purchases unavailable"
+ * card when this returns null.
+ */
+export async function getCoachOfferings(): Promise<{
+  byPlan: Partial<Record<PlanKey, RCPackage>>;
+  raw: RevenueCatOffering | null;
+} | null> {
+  const P = loadPurchases();
+  if (!P) return null;
+  try {
+    const offerings = await P.getOfferings();
+    const current: RevenueCatOffering | null = offerings?.current ?? null;
+    const byPlan: Partial<Record<PlanKey, RCPackage>> = {};
+
+    // First, pull every plan we can find from the current offering. This is
+    // the canonical source.
+    if (current) {
+      for (const pkg of current.availablePackages ?? []) {
+        const slug = packageToPlanKey(pkg);
+        if (slug && !byPlan[slug]) byPlan[slug] = pkg;
+      }
+    }
+
+    // Second pass: fill in any missing plans by walking ALL other offerings.
+    // Why: the user can split products across offerings (e.g. a separate
+    // "founding" offering with the lifetime tier, while "default" only has
+    // the subscriptions). Without this fallback, the lifetime card would
+    // render with no price even though the product exists in RC.
+    //
+    // We only borrow plans that the current offering didn't already
+    // provide, so the current offering remains the source of truth for
+    // overlapping packages (e.g. annual at a promo rate vs. standard).
+    const allOfferings: Record<string, RevenueCatOffering> = (offerings?.all ?? {}) as any;
+    for (const offering of Object.values(allOfferings)) {
+      if (current && offering.identifier === current.identifier) continue;
+      for (const pkg of offering.availablePackages ?? []) {
+        const slug = packageToPlanKey(pkg);
+        if (slug && !byPlan[slug]) byPlan[slug] = pkg;
+      }
+    }
+
+    return { byPlan, raw: current };
+  } catch (e) {
+    console.warn('[revenuecat] getOfferings failed:', e);
+    return null;
+  }
+}
+
+/**
+ * Initiates the IAP flow for the given package. Resolves with CustomerInfo
+ * on a successful purchase; throws on cancellation, payment failure, or
+ * SDK unavailability. The caller is responsible for telling the user what
+ * happened (toast for failure, polling get_coach_access_status for success).
+ *
+ * IMPORTANT: A successful resolve here does NOT mean the user's tier in
+ * Supabase has flipped yet — that's the RC webhook's job. The caller must
+ * poll get_coach_access_status until state changes (typically 2-5s).
+ */
+export async function purchaseCoachPackage(
+  pkg: RCPackage,
+): Promise<RevenueCatCustomerInfo> {
+  const P = loadPurchases();
+  if (!P) {
+    throw new PurchasesUnavailableError(
+      'In-app purchases require a development build. Sign up via TestFlight ' +
+      'or wait for the App Store release.',
+    );
+  }
+  try {
+    const result = await P.purchasePackage(pkg);
+    // RC v6+ returns { customerInfo, productIdentifier }
+    // RC v5 returned CustomerInfo directly. Tolerate both.
+    return result?.customerInfo ?? result;
+  } catch (e: any) {
+    if (e?.userCancelled || e?.code === 'PURCHASE_CANCELLED') {
+      throw new PurchaseCancelledError();
+    }
+    throw e;
+  }
+}
+
+/**
+ * Restores a previous purchase — Apple HIG requires a "Restore Purchases"
+ * affordance on any paywall. Returns the customer's entitlements so the UI
+ * can show a confirmation.
+ */
+export async function restorePurchases(): Promise<RevenueCatCustomerInfo | null> {
+  const P = loadPurchases();
+  if (!P) return null;
+  try {
+    return await P.restorePurchases();
+  } catch (e) {
+    console.warn('[revenuecat] restore failed:', e);
+    throw e;
+  }
+}
+
+export class PurchasesUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PurchasesUnavailableError';
+  }
+}
+
+export class PurchaseCancelledError extends Error {
+  constructor() {
+    super('User cancelled');
+    this.name = 'PurchaseCancelledError';
+  }
+}

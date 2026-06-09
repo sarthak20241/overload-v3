@@ -10,7 +10,6 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
@@ -26,7 +25,7 @@ function useWarmUpBrowser() {
 const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-type Mode = 'login' | 'register' | 'forgot' | 'verify';
+type Mode = 'login' | 'register' | 'forgot' | 'verify' | 'reset';
 
 function GoogleIcon() {
   return (
@@ -89,7 +88,6 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [appleLoading, setAppleLoading] = useState(false);
-  const [showResetSent, setShowResetSent] = useState(false);
   const [error, setError] = useState('');
 
   // Single derived flag that any auth handler should respect. Each per-button
@@ -113,44 +111,89 @@ export default function AuthScreen() {
     }
   }, [clerkLoaded, isSignedIn, router]);
 
+  // Misconfigured build: EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY is missing, so no
+  // ClerkProvider was mounted at the root. Render an explicit error screen
+  // with no auth form, no SSO buttons, and no "Continue as guest" fallthrough
+  // — the entire screen is informational. We hit this on a TestFlight build
+  // where EAS env vars weren't configured: the form rendered, every Clerk
+  // call was skipped, and `router.replace('/(app)')` ran anyway, letting
+  // any email+password into the app as a fake guest. Failing loudly here
+  // means future misconfigurations surface as a visible error, not a silent
+  // bypass. Placed AFTER every hook so React's rules-of-hooks ordering is
+  // preserved across renders (hasClerkKey is a build-time constant so the
+  // branch taken never changes between mounts).
+  if (!hasClerkKey) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: C.background }]}>
+        <View style={styles.misconfigContainer}>
+          <Text style={[styles.logoText, { color: C.foreground }]}>
+            OVER<Text style={{ color: C.accentText }}>LOAD</Text>
+          </Text>
+          <View style={[styles.misconfigCard, { backgroundColor: C.elevated, borderColor: 'rgba(239,68,68,0.30)' }]}>
+            <Feather name="alert-triangle" size={32} color="#f87171" />
+            <Text style={[styles.misconfigTitle, { color: C.foreground }]}>
+              Build misconfigured
+            </Text>
+            <Text style={[styles.misconfigBody, { color: C.textMuted }]}>
+              This build is missing required authentication keys. Please contact{' '}
+              <Text style={{ color: C.accentText, fontWeight: FontWeight.semibold }}>
+                support@tryoverload.app
+              </Text>
+              .
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   const handleSubmit = async () => {
-    if (hasClerkKey && (!signInLoaded || !signUpLoaded)) return;
+    // Belt-and-suspenders against the bypass we hit on TestFlight: a build
+    // shipped without EAS env vars had hasClerkKey === false, every mode
+    // branch below skipped its Clerk block, and the unconditional
+    // `router.replace('/(app)')` calls handed any email+password through
+    // into the app with no real session. The screen now renders an error
+    // placeholder above this function (so this is unreachable from the UI),
+    // but we refuse here too so a hot-reload or upstream regression can't
+    // re-open the hole.
+    if (!hasClerkKey) {
+      setError('This build is misconfigured — please contact support@tryoverload.app');
+      return;
+    }
+    if (!signInLoaded || !signUpLoaded) return;
     if (authBusy) return;
     setError('');
     setLoading(true);
 
     try {
       if (mode === 'login') {
-        if (hasClerkKey) {
-          const result = await signIn!.create({ identifier: email, password });
-          if (result.status !== 'complete' || !result.createdSessionId) {
-            throw new Error('Sign-in needs another step. Please try again.');
-          }
-          await setSignInActive!({ session: result.createdSessionId });
+        const result = await signIn!.create({ identifier: email, password });
+        if (result.status !== 'complete' || !result.createdSessionId) {
+          throw new Error('Sign-in needs another step. Please try again.');
         }
+        await setSignInActive!({ session: result.createdSessionId });
         router.replace('/(app)');
       } else if (mode === 'register') {
         if (!name.trim()) throw new Error('Please enter your name');
-        if (password.length < 6) throw new Error('Password must be at least 6 characters');
-        if (hasClerkKey) {
-          const parts = name.trim().split(/\s+/);
-          const firstName = parts[0];
-          const lastName = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
-          const result = await signUp!.create({ emailAddress: email, password, firstName, lastName });
-          if (result.status === 'complete' && result.createdSessionId) {
-            await setSignUpActive!({ session: result.createdSessionId });
-            router.replace('/(app)');
-          } else {
-            // Email verification required — send code and switch to verify mode.
-            await signUp!.prepareEmailAddressVerification({ strategy: 'email_code' });
-            setCode('');
-            setMode('verify');
-          }
-        } else {
+        // Matches Clerk's instance-side minimum (Configure → User & authentication
+        // → Password → Minimum password length = 8). Keeping these in sync means
+        // the app rejects too-short passwords locally instead of round-tripping
+        // to Clerk only to surface the same error.
+        if (password.length < 8) throw new Error('Password must be at least 8 characters');
+        const parts = name.trim().split(/\s+/);
+        const firstName = parts[0];
+        const lastName = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
+        const result = await signUp!.create({ emailAddress: email, password, firstName, lastName });
+        if (result.status === 'complete' && result.createdSessionId) {
+          await setSignUpActive!({ session: result.createdSessionId });
           router.replace('/(app)');
+        } else {
+          // Email verification required — send code and switch to verify mode.
+          await signUp!.prepareEmailAddressVerification({ strategy: 'email_code' });
+          setCode('');
+          setMode('verify');
         }
       } else if (mode === 'verify') {
-        if (!hasClerkKey) return;
         if (!code.trim()) throw new Error('Enter the 6-digit code from your email');
         const result = await signUp!.attemptEmailAddressVerification({ code: code.trim() });
         if (result.status !== 'complete' || !result.createdSessionId) {
@@ -158,11 +201,32 @@ export default function AuthScreen() {
         }
         await setSignUpActive!({ session: result.createdSessionId });
         router.replace('/(app)');
-      } else {
-        if (hasClerkKey) {
-          await signIn!.create({ strategy: 'reset_password_email_code', identifier: email });
+      } else if (mode === 'forgot') {
+        // Step 1 of Clerk's reset_password_email_code flow: create the
+        // sign-in attempt, which emails the user a 6-digit code. Move to the
+        // 'reset' step where they enter that code + a new password — the old
+        // flow stopped here and bounced to login, so the reset never finished.
+        if (!email.trim()) throw new Error('Enter your email');
+        await signIn!.create({ strategy: 'reset_password_email_code', identifier: email });
+        setCode('');
+        setPassword('');
+        setMode('reset');
+      } else if (mode === 'reset') {
+        // Step 2: verify the code AND set the new password in one call.
+        // attemptFirstFactor returns status 'complete' with a session on
+        // success, which logs the user straight in.
+        if (!code.trim()) throw new Error('Enter the 6-digit code from your email');
+        if (password.length < 8) throw new Error('New password must be at least 8 characters');
+        const result = await signIn!.attemptFirstFactor({
+          strategy: 'reset_password_email_code',
+          code: code.trim(),
+          password,
+        });
+        if (result.status !== 'complete' || !result.createdSessionId) {
+          throw new Error('Reset failed. Check the code and try again.');
         }
-        setShowResetSent(true);
+        await setSignInActive!({ session: result.createdSessionId });
+        router.replace('/(app)');
       }
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Something went wrong');
@@ -176,8 +240,19 @@ export default function AuthScreen() {
     setError('');
     try {
       await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
-      setShowResetSent(false);
       setError('');
+    } catch (err: any) {
+      setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
+    }
+  };
+
+  // Re-send the password-reset code (used from the 'reset' step). Re-creates
+  // the sign-in attempt, which dispatches a fresh email_code.
+  const handleResendResetCode = async () => {
+    if (!hasClerkKey || !signIn) return;
+    setError('');
+    try {
+      await signIn.create({ strategy: 'reset_password_email_code', identifier: email });
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
     }
@@ -340,7 +415,17 @@ export default function AuthScreen() {
               <View style={{ marginBottom: Spacing.xxl }}>
                 <Text style={[styles.sectionTitle, { color: C.foreground }]}>Reset Password</Text>
                 <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
-                  We'll send a reset link to your email
+                  We'll email you a 6-digit reset code
+                </Text>
+              </View>
+            )}
+
+            {/* Reset header (enter code + new password) */}
+            {mode === 'reset' && (
+              <View style={{ marginBottom: Spacing.xxl }}>
+                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Set a New Password</Text>
+                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                  Enter the 6-digit code we sent to {email || 'your email'} and choose a new password
                 </Text>
               </View>
             )}
@@ -401,7 +486,12 @@ export default function AuthScreen() {
                   styles.googleBtn,
                   {
                     borderColor: C.border,
-                    backgroundColor: C.glowBg,
+                    // Solid muted fill (not the near-transparent glowBg) so
+                    // the Google button has the same visual weight as the
+                    // solid-black Apple button — keeps the two SSO options
+                    // looking like a unified pair instead of one solid,
+                    // one ghost.
+                    backgroundColor: C.muted,
                   },
                   // Dim only when *another* auth flow holds the lock —
                   // mirrors the Apple button so the visual cue is consistent.
@@ -440,13 +530,16 @@ export default function AuthScreen() {
                   placeholderTextColor={C.textMuted}
                   value={name}
                   onChangeText={setName}
+                  textContentType="name"
+                  autoComplete="name"
+                  accessibilityLabel="Your name"
                   style={[styles.input, { color: C.foreground }]}
                 />
               </View>
             )}
 
             {/* Email */}
-            {mode !== 'verify' && (
+            {mode !== 'verify' && mode !== 'reset' && (
               <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
                 <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
                 <TextInput
@@ -456,21 +549,48 @@ export default function AuthScreen() {
                   onChangeText={setEmail}
                   keyboardType="email-address"
                   autoCapitalize="none"
+                  textContentType="emailAddress"
+                  autoComplete="email"
+                  accessibilityLabel="Email address"
                   style={[styles.input, { color: C.foreground }]}
                 />
               </View>
             )}
 
+            {/* Verification code (reset) — shown above the new password so the
+                step reads top-to-bottom: code first, then the new password. */}
+            {mode === 'reset' && (
+              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  placeholder="123456"
+                  placeholderTextColor={C.textMuted}
+                  value={code}
+                  onChangeText={setCode}
+                  keyboardType="number-pad"
+                  autoCapitalize="none"
+                  maxLength={6}
+                  textContentType="oneTimeCode"
+                  autoComplete="sms-otp"
+                  accessibilityLabel="Reset code"
+                  style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
+                />
+              </View>
+            )}
+
             {/* Password */}
-            {(mode === 'login' || mode === 'register') && (
+            {(mode === 'login' || mode === 'register' || mode === 'reset') && (
               <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
                 <Feather name="lock" size={15} color={C.textMuted} style={styles.inputIcon} />
                 <TextInput
-                  placeholder="Password"
+                  placeholder={mode === 'reset' ? 'New password' : 'Password'}
                   placeholderTextColor={C.textMuted}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPass}
+                  textContentType={mode === 'register' || mode === 'reset' ? 'newPassword' : 'password'}
+                  autoComplete={mode === 'register' || mode === 'reset' ? 'password-new' : 'password'}
+                  accessibilityLabel={mode === 'reset' ? 'New password' : 'Password'}
                   style={[styles.input, { color: C.foreground }]}
                 />
                 <TouchableOpacity onPress={() => setShowPass(!showPass)} style={styles.eyeBtn}>
@@ -491,6 +611,9 @@ export default function AuthScreen() {
                   keyboardType="number-pad"
                   autoCapitalize="none"
                   maxLength={6}
+                  textContentType="oneTimeCode"
+                  autoComplete="sms-otp"
+                  accessibilityLabel="Verification code"
                   style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
                 />
               </View>
@@ -529,7 +652,8 @@ export default function AuthScreen() {
                     {mode === 'login' ? 'Sign In'
                       : mode === 'register' ? 'Create Account'
                       : mode === 'verify' ? 'Verify Email'
-                      : 'Send Reset Email'}
+                      : mode === 'reset' ? 'Reset Password'
+                      : 'Send Reset Code'}
                   </Text>
                   <Feather name="arrow-right" size={15} color={Colors.primaryFg} />
                 </>
@@ -544,6 +668,18 @@ export default function AuthScreen() {
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => { setMode('register'); setError(''); setCode(''); }}>
                   <Text style={[styles.forgotText, { color: C.textMuted }]}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Reset: resend code + back to login */}
+            {mode === 'reset' && (
+              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                <TouchableOpacity onPress={handleResendResetCode}>
+                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); }}>
+                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -573,20 +709,6 @@ export default function AuthScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
-
-    <ThemedAlert
-      visible={showResetSent}
-      icon="mail"
-      iconColor={Colors.primary}
-      title="Reset Email Sent!"
-      message="Check your inbox for a reset link."
-      buttons={[{
-        text: 'OK',
-        style: 'primary',
-        onPress: () => { setShowResetSent(false); setMode('login'); },
-      }]}
-      onClose={() => { setShowResetSent(false); setMode('login'); }}
-    />
     </>
   );
 }
@@ -649,9 +771,11 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: Radius.xl,
     borderWidth: 1,
-    marginBottom: Spacing.lg,
+    // Matched to appleBtn so the two SSO options share identical geometry.
+    marginBottom: Spacing.md,
   },
-  googleText: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  // Matched to appleText so both SSO buttons read with the same weight.
+  googleText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   appleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -712,4 +836,32 @@ const styles = StyleSheet.create({
     color: Colors.primaryFg,
   },
   guestText: { fontSize: FontSize.base },
+  // Misconfigured-build error screen. Centered card with the same
+  // border-radius / padding scale as the auth card so it reads as part of
+  // the same surface, plus a red-tinted border to mark it as a fault state.
+  misconfigContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.xxl,
+  },
+  misconfigCard: {
+    borderRadius: Radius.xxl,
+    borderWidth: 1,
+    padding: Spacing.xxl,
+    alignItems: 'center',
+    gap: Spacing.md,
+    maxWidth: 360,
+  },
+  misconfigTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    textAlign: 'center',
+  },
+  misconfigBody: {
+    fontSize: FontSize.sm,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
 });

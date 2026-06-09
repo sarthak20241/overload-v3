@@ -1,0 +1,10 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/reference/configuration
+#
+# By default CodeRabbit only auto-reviews PRs targeting the default branch (main).
+# This repo funnels work through integration branches (e.g. fix/auth-button-consistency)
+# before it reaches main, so those PRs were being skipped. Add fix/* as review bases
+# (this is in addition to the default branch, which is always reviewed).
+reviews:
+  auto_review:
+    base_branches:
+      - "fix/.*"

@@ -8,9 +8,12 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
+import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { hydrateGuestStore } from '@/lib/mockData';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
+import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { ToastProvider } from '@/components/ui/Toast';
+import { PortalProvider } from '@/components/ui/Portal';
 
 // Required for OAuth flows to complete when the auth session returns.
 // Must run at app boot, before any auth screen mounts.
@@ -37,16 +40,26 @@ function AppInner() {
   const { C } = useTheme();
   return (
     <ToastProvider>
-      <WorkoutProvider>
-        <StatusBar style={C.statusBar} />
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="(app)" options={{ headerShown: false }} />
-          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-          <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
-          <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
-        </Stack>
-      </WorkoutProvider>
+      <BasicInfoProvider>
+        <WorkoutProvider>
+          {/*
+            PortalProvider sits inside every context provider our overlays need
+            (Theme, Workout, Toast, SafeArea, Clerk) but wraps the navigator, so
+            portalled sheets render ON TOP of the tabs in the app's own window —
+            flush to the bottom on Android, unlike a separate-window <Modal>.
+          */}
+          <PortalProvider>
+            <StatusBar style={C.statusBar} />
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" options={{ headerShown: false }} />
+              <Stack.Screen name="(app)" options={{ headerShown: false }} />
+              <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+              <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
+              <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
+            </Stack>
+          </PortalProvider>
+        </WorkoutProvider>
+      </BasicInfoProvider>
     </ToastProvider>
   );
 }
@@ -75,6 +88,7 @@ export default function RootLayout() {
   return (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
       <ClerkSupabaseBridge />
+      <RevenueCatBridge />
       <AppContent />
     </ClerkProvider>
   );

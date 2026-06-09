@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
-  RefreshControl, Modal, Pressable, TextInput, useWindowDimensions,
+  RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
   Platform, Keyboard,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown, SlideInDown, SlideOutDown, Easing,
@@ -12,6 +12,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { Portal } from '@/components/ui/Portal';
+import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import {
   getMockWorkouts, getMockWeightLog, getMockBodyFatLog,
@@ -21,7 +23,7 @@ import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
-  loadMeasurements, saveMeasurements, loadBasicInfo,
+  loadMeasurements, saveMeasurements,
   type WeightEntry, type BodyFatEntry, type MeasurementEntry, type MeasurementsData,
 } from '@/lib/bodyStats';
 
@@ -222,10 +224,18 @@ function BottomDrawer({
 }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
   const { C } = useTheme();
   const { height } = useWindowDimensions();
-  const [shown, setShown] = useState(false);
+  const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
 
-  useEffect(() => { if (!visible) setShown(false); }, [visible]);
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   // Track keyboard height on both platforms. On iOS the Modal does not resize,
   // so we lift the sheet via marginBottom. On Android the Activity's adjustResize
@@ -248,19 +258,16 @@ function BottomDrawer({
   }, [visible]);
 
   const sheetMaxHeight = (height - kbHeight) * 0.9;
-  const sheetMarginBottom = Platform.OS === 'ios' ? kbHeight : 0;
+  // Lift above the keyboard on both platforms — rendered in the app's own
+  // window via <Portal>, which isn't auto-resized for the keyboard.
+  const sheetMarginBottom = kbHeight;
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-      onShow={() => setShown(true)}
-    >
+    <Portal>
+      {visible && (
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
         <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
-        {shown && (
+        {(
           <Animated.View
             entering={SlideInDown.duration(320).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
@@ -271,6 +278,8 @@ function BottomDrawer({
                 maxHeight: sheetMaxHeight,
                 backgroundColor: C.elevated,
                 borderColor: C.border,
+                // Flush to the screen bottom now (Portal), so clear the gesture bar.
+                paddingBottom: insets.bottom,
               },
             ]}
           >
@@ -283,7 +292,8 @@ function BottomDrawer({
           </Animated.View>
         )}
       </View>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
@@ -601,12 +611,18 @@ function MeasurementHistoryDrawer({
                     <TouchableOpacity
                       onPress={() => setConfirmId(null)}
                       style={[styles.mConfirmBtn, { backgroundColor: C.closeBtn }]}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel delete"
                     >
                       <Feather name="x" size={12} color={C.foreground} />
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() => { onDelete(entry.id); setConfirmId(null); }}
                       style={[styles.mConfirmBtn, { backgroundColor: 'rgba(239,68,68,0.20)' }]}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Confirm delete measurement"
                     >
                       <Feather name="trash-2" size={12} color="#ef4444" />
                     </TouchableOpacity>
@@ -615,6 +631,9 @@ function MeasurementHistoryDrawer({
                   <TouchableOpacity
                     onPress={() => setConfirmId(entry.id)}
                     style={[styles.mConfirmBtn, { backgroundColor: 'transparent' }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Delete measurement"
                   >
                     <Feather name="trash-2" size={12} color={C.textDim} />
                   </TouchableOpacity>
@@ -1087,8 +1106,9 @@ export default function AnalyticsScreen() {
   // Body stats
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
-  const [goalWeight, setGoalWeight] = useState<number | null>(null);
-  const [weightUnit, setWeightUnit] = useState('kg');
+  const { goalWeight: ctxGoal, weightUnit } = useBasicInfo();
+  // In guest mode fall back to mock goal so the demo chart still shows a target line
+  const goalWeight = ctxGoal ?? (isSupabaseConfigured ? null : mockBasicInfo.goalWeight);
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   const [addBfOpen, setAddBfOpen] = useState(false);
 
@@ -1120,17 +1140,9 @@ export default function AnalyticsScreen() {
     if (!isSupabaseConfigured) {
       loadWeightLog().then((wl) => setWeightLog(wl.length ? wl : getMockWeightLog()));
       loadBodyFatLog().then((bf) => setBodyFatLog(bf.length ? bf : getMockBodyFatLog()));
-      loadBasicInfo().then((info) => {
-        setGoalWeight(info.goalWeight ?? mockBasicInfo.goalWeight);
-        setWeightUnit(info.weightUnit ?? mockBasicInfo.weightUnit);
-      });
     } else {
       loadWeightLog().then(setWeightLog);
       loadBodyFatLog().then(setBodyFatLog);
-      loadBasicInfo().then((info) => {
-        if (info.goalWeight) setGoalWeight(info.goalWeight);
-        if (info.weightUnit) setWeightUnit(info.weightUnit);
-      });
     }
   }, [fetchData]);
 
@@ -1251,7 +1263,7 @@ export default function AnalyticsScreen() {
     if (weekVolume > 0) stats.push(`Weekly volume is ${weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : weekVolume}kg. Try adding one more set per exercise next week.`);
     if (pr) stats.push(`Your current PR on ${selectedExercise} is ${pr}kg. Aim for a small 2.5kg increase next session.`);
     if (avgDurationMin > 0) stats.push(`Your average session is ${avgDurationMin} minutes — balanced for hypertrophy and recovery.`);
-    if (stats.length === 0) stats.push('Log a few workouts to unlock personalized coaching insights.');
+    if (stats.length === 0) stats.push('Log a few workouts to unlock personalized insights from Coach Drona.');
     setInsights(stats);
     setAiLoading(false);
   };
@@ -1308,8 +1320,7 @@ export default function AnalyticsScreen() {
                     <Feather name="star" size={15} color={C.accentText} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.aiTitle, { color: C.foreground }]}>AI Coaching Insights</Text>
-                    <Text style={[styles.aiSub, { color: C.textMuted }]}>Powered by Gemini</Text>
+                    <Text style={[styles.aiTitle, { color: C.foreground }]}>Insights from Coach Drona</Text>
                   </View>
                   {aiLoading ? (
                     <ActivityIndicator color={C.accentText} size="small" />

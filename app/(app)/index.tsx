@@ -16,9 +16,27 @@ import { getLevelInfo } from '@/lib/xp';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { InsightsStrip } from '@/components/insights/InsightsStrip';
+import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 
 const ROUTINE_COLORS = Colors.routineColors;
+
+// Figma-matched muscle group colors. Module-scoped so consumers get a stable
+// identity across renders.
+const MUSCLE_COLORS: Record<string, string> = {
+  Chest: '#ef4444',
+  Back: '#3b82f6',
+  Shoulders: '#f59e0b',
+  Quads: '#10b981',
+  Hamstrings: '#06b6d4',
+  Biceps: '#a855f7',
+  Triceps: '#ec4899',
+  Calves: '#84cc16',
+  Core: '#f97316',
+  Glutes: '#14b8a6',
+  'Full Body': '#8b5cf6',
+};
 
 function formatDuration(sec: number) {
   const m = Math.floor(sec / 60);
@@ -32,29 +50,25 @@ function formatDate(iso: string) {
 }
 
 function StatCard({
-  icon, label, value, suffix, sub, color,
+  icon, label, value, caption, color,
 }: {
   icon: React.ComponentProps<typeof Feather>['name'];
   label: string;
   value: string | number;
-  suffix?: string;
-  sub?: string;
+  caption: string;
   color: string;
 }) {
   const { C } = useTheme();
   return (
     <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
       {/* Subtle radial glow */}
-      <View style={[styles.cardGlow, { backgroundColor: color, opacity: 0.04 }]} />
-      <View style={styles.statHeader}>
-        <Feather name={icon} size={12} color={color} />
-        <Text style={[styles.statLabel, { color }]}>{label.toUpperCase()}</Text>
+      <View style={[styles.cardGlow, { backgroundColor: color, opacity: 0.05 }]} />
+      <View style={[styles.statIconChip, { backgroundColor: `${color}22` }]}>
+        <Feather name={icon} size={16} color={color} />
       </View>
-      <View style={styles.statValueRow}>
-        <Text style={[styles.statValue, { color: C.foreground }]}>{value}</Text>
-        {suffix && <Text style={[styles.statSuffix, { color: C.textMuted }]}> {suffix}</Text>}
-      </View>
-      {sub && <Text style={[styles.statSub, { color: C.textDim }]}>{sub}</Text>}
+      <Text style={[styles.statValue, { color: C.foreground }]}>{value}</Text>
+      <Text style={[styles.statLabel, { color: C.textSecondary }]}>{label}</Text>
+      <Text style={[styles.statCaption, { color: C.textDim }]}>{caption}</Text>
     </View>
   );
 }
@@ -206,33 +220,44 @@ export default function DashboardScreen() {
     }).catch(() => setLoading(false));
   }, [user?.id]);
 
-  // Compute stats
+  // Compute stats. Memoized so we don't reprocess every workout on every
+  // re-render — useWorkout's timer ticks 60×/min while a workout is active.
   const now = new Date();
-  const weekAgo = new Date(now);
-  weekAgo.setDate(now.getDate() - 7);
-  const weekWorkouts = workouts.filter(w => new Date(w.started_at) >= weekAgo);
+  const { streak, totalVolume, avgDuration, totalSets, totalReps, recentWorkouts, weekWorkouts } = useMemo(() => {
+    const _now = new Date();
+    const weekAgo = new Date(_now);
+    weekAgo.setDate(_now.getDate() - 7);
+    const _weekWorkouts = workouts.filter(w => new Date(w.started_at) >= weekAgo);
 
-  let streak = 0;
-  const sortedDays = [...new Set(workouts.map(w => new Date(w.started_at).toDateString()))];
-  const checkDate = new Date(now);
-  for (let i = 0; i < 365; i++) {
-    const ds = checkDate.toDateString();
-    if (sortedDays.includes(ds)) {
-      streak++;
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else if (i === 0) {
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else break;
-  }
+    let _streak = 0;
+    const sortedDays = new Set(workouts.map(w => new Date(w.started_at).toDateString()));
+    const checkDate = new Date(_now);
+    for (let i = 0; i < 365; i++) {
+      const ds = checkDate.toDateString();
+      if (sortedDays.has(ds)) {
+        _streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else if (i === 0) {
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else break;
+    }
 
-  const totalVolume = weekWorkouts.reduce((sum, w) => sum + (w.total_volume_kg || 0), 0);
-  const avgDuration = weekWorkouts.length > 0
-    ? Math.floor(weekWorkouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / weekWorkouts.length / 60)
-    : 0;
-  const totalSets = workouts.reduce((s, w) => s + (w.sets?.length || 0), 0);
-  const totalReps = workouts.reduce((s, w) => s + (w.sets?.reduce((r: number, set: any) => r + set.reps, 0) || 0), 0);
-
-  const recentWorkouts = workouts.slice(0, 3);
+    const _totalVolume = _weekWorkouts.reduce((sum, w) => sum + (w.total_volume_kg || 0), 0);
+    const _avgDuration = _weekWorkouts.length > 0
+      ? Math.floor(_weekWorkouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / _weekWorkouts.length / 60)
+      : 0;
+    const _totalSets = workouts.reduce((s, w) => s + (w.sets?.length || 0), 0);
+    const _totalReps = workouts.reduce((s, w) => s + (w.sets?.reduce((r: number, set: any) => r + set.reps, 0) || 0), 0);
+    return {
+      streak: _streak,
+      totalVolume: _totalVolume,
+      avgDuration: _avgDuration,
+      totalSets: _totalSets,
+      totalReps: _totalReps,
+      recentWorkouts: workouts.slice(0, 3),
+      weekWorkouts: _weekWorkouts,
+    };
+  }, [workouts]);
 
   // Expanded workout id (tap to expand)
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -288,8 +313,17 @@ export default function DashboardScreen() {
   // AI Coach state
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
   const [aiCoachInitialScreen, setAiCoachInitialScreen] = useState<'menu' | 'chat' | 'plan' | 'workout'>('menu');
+  // Set when an insight card is tapped — seeds the chat with that insight's
+  // question. Cleared (undefined) for every other coach entry point.
+  const [aiCoachPrompt, setAiCoachPrompt] = useState<string | undefined>(undefined);
 
-  // Weekly volume trend (last 6 weeks)
+  // Proactive insights — deterministic detection over the workouts already
+  // loaded. Free + instant; tapping a card seeds the (paid) Coach Drona chat.
+  // Proactive insights — deterministic detection over the workouts already
+  // loaded. Free + instant; tapping a card seeds the (paid) Coach Drona chat.
+  const insights = useMemo(() => detectInsights({ workouts: workouts as any }), [workouts]);
+
+  // Weekly volume trend (last 6 weeks) — powers the Volume chart card.
   const weeklyTrend = useMemo(() => {
     const weeks: { volume: number; label: string }[] = [];
     for (let w = 5; w >= 0; w--) {
@@ -310,25 +344,10 @@ export default function DashboardScreen() {
     }
     return weeks;
   }, [workouts]);
-  const weeklyVolumes = weeklyTrend.map(w => w.volume);
-  const weeklyLabels = weeklyTrend.map(w => w.label);
+  const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
+  const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
 
-  // Muscle breakdown
-  // Figma-matched muscle group colors
-  const MUSCLE_COLORS: Record<string, string> = {
-    Chest: '#ef4444',
-    Back: '#3b82f6',
-    Shoulders: '#f59e0b',
-    Quads: '#10b981',
-    Hamstrings: '#06b6d4',
-    Biceps: '#a855f7',
-    Triceps: '#ec4899',
-    Calves: '#84cc16',
-    Core: '#f97316',
-    Glutes: '#14b8a6',
-    'Full Body': '#8b5cf6',
-  };
-
+  // Muscle breakdown — powers the Muscles donut card.
   const muscleData = useMemo(() => {
     const counts: Record<string, number> = {};
     workouts.forEach(w => {
@@ -342,10 +361,6 @@ export default function DashboardScreen() {
       .sort((a, b) => b.value - a.value)
       .slice(0, 6);
   }, [workouts]);
-
-  const topMuscle = muscleData[0];
-  const muscleTotal = muscleData.reduce((s, d) => s + d.value, 0);
-  const topMusclePct = topMuscle && muscleTotal > 0 ? Math.round((topMuscle.value / muscleTotal) * 100) : 0;
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
@@ -392,7 +407,7 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TouchableOpacity
             activeOpacity={0.85}
-            onPress={() => { setAiCoachInitialScreen('menu'); setAiCoachOpen(true); }}
+            onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen('menu'); setAiCoachOpen(true); }}
             style={[styles.aiCoachCard, { borderColor: aiBorderColor }]}
           >
             {/* Background gradient */}
@@ -420,7 +435,7 @@ export default function DashboardScreen() {
               {/* Text */}
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>AI Coach</Text>
+                  <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>Coach Drona</Text>
                   <LinearGradient
                     colors={['#a855f7', '#3b82f6']}
                     start={{ x: 0, y: 0 }}
@@ -431,7 +446,7 @@ export default function DashboardScreen() {
                   </LinearGradient>
                 </View>
                 <Text style={[styles.aiCoachSub, { color: C.textMuted }]}>
-                  Your personal coach who knows every rep, every PR
+                  Your coach. Knows every rep, every PR.
                 </Text>
               </View>
 
@@ -450,7 +465,7 @@ export default function DashboardScreen() {
               ]).map(({ icon, label, screen }) => (
                 <TouchableOpacity
                   key={label}
-                  onPress={() => { setAiCoachInitialScreen(screen); setAiCoachOpen(true); }}
+                  onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen(screen); setAiCoachOpen(true); }}
                   style={[styles.aiChip, { backgroundColor: aiChipBg, borderColor: aiChipBorder }]}
                   activeOpacity={0.7}
                 >
@@ -464,21 +479,6 @@ export default function DashboardScreen() {
 
         {/* Stats grid */}
         <View style={styles.statsGrid}>
-          <StatCard
-            icon="activity"
-            label="Workouts"
-            value={weekWorkouts.length}
-            suffix="this week"
-            color={Colors.stat.workouts}
-          />
-          <StatCard
-            icon="zap"
-            label="Streak"
-            value={streak}
-            suffix={streak === 1 ? 'day' : 'days'}
-            sub={streak === 0 ? 'Start today!' : streak >= 7 ? 'On fire!' : 'Keep going!'}
-            color={Colors.stat.streak}
-          />
           {/* Volume card with area chart */}
           <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
             <View style={[styles.cardGlow, { backgroundColor: '#3b82f6', opacity: 0.04 }]} />
@@ -534,23 +534,17 @@ export default function DashboardScreen() {
               </>
             )}
           </View>
-          <StatCard
-            icon="clock"
-            label="Avg Duration"
-            value={avgDuration}
-            suffix="min"
-            sub="per workout"
-            color={Colors.stat.duration}
-          />
-          <StatCard
-            icon="check-square"
-            label="Sets"
-            value={totalSets}
-            suffix="sets"
-            sub={`${totalReps} reps total`}
-            color={Colors.stat.sets}
-          />
         </View>
+
+        {/* Proactive insights — "Coach noticed" */}
+        <InsightsStrip
+          insights={insights}
+          onAsk={(insight) => {
+            setAiCoachPrompt(insight.coachPrompt);
+            setAiCoachInitialScreen('chat');
+            setAiCoachOpen(true);
+          }}
+        />
 
         {/* Recent Workouts */}
         <View style={styles.section}>
@@ -571,6 +565,9 @@ export default function DashboardScreen() {
                   onPress={() => router.push('/(app)/history')}
                   style={[styles.viewAllBtn, { backgroundColor: C.primaryMuted }]}
                   activeOpacity={0.7}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="View all workouts"
                 >
                   <Feather name="chevron-right" size={12} color={C.accentText} />
                 </TouchableOpacity>
@@ -767,6 +764,7 @@ export default function DashboardScreen() {
         visible={aiCoachOpen}
         onClose={() => setAiCoachOpen(false)}
         initialScreen={aiCoachInitialScreen}
+        initialPrompt={aiCoachPrompt}
         onRoutineCreated={() => {}}
       />
     </SafeAreaView>
@@ -837,6 +835,14 @@ const styles = StyleSheet.create({
     gap: 4,
     overflow: 'hidden',
   },
+  statIconChip: {
+    width: 38,
+    height: 38,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
   cardGlow: {
     position: 'absolute',
     top: -20,
@@ -846,11 +852,12 @@ const styles = StyleSheet.create({
     borderRadius: 40,
   },
   statHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  statLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.5 },
+  statLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.6, textTransform: 'uppercase' },
   statValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
   statValue: { fontSize: 24, fontWeight: FontWeight.black, letterSpacing: -0.5 },
   statSuffix: { fontSize: 10, fontWeight: FontWeight.medium },
   statSub: { fontSize: 10, marginTop: 2 },
+  statCaption: { fontSize: 11 },
   // Section
   section: { paddingHorizontal: Spacing.xl },
   card: {

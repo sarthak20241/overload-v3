@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy Policy — Overload</title>
+  <meta name="description" content="Privacy policy for the Overload fitness tracking app." />
+  <link rel="stylesheet" href="/_legal.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="brand">
+      <div class="dot"></div>
+      <div class="name">Overload</div>
+    </header>
+
+    <h1>Privacy Policy</h1>
+    <p class="meta">Effective date: 25 May 2026 · Last updated: 25 May 2026</p>
+
+    <p>
+      This policy explains what data the Overload mobile app
+      (the "App") collects, why, and how you control it. Overload is a
+      personal workout tracker — the data we handle is the data you choose
+      to log.
+    </p>
+
+    <div class="callout">
+      <strong>Plain summary.</strong> Overload stores your account (email),
+      workouts, routines, body stats, and AI Coach conversations. We do not
+      sell your data. We do not run third-party advertising or analytics
+      trackers. You can delete your account at any time from inside the
+      app — it wipes your data.
+    </div>
+
+    <h2>1. Who we are</h2>
+    <p>
+      The App is operated by <strong>Sarthak Kumar</strong>
+      ("we", "us"). Contact: <a href="mailto:support@tryoverload.app">support@tryoverload.app</a>.
+    </p>
+
+    <h2>2. What we collect</h2>
+    <h3>Account data</h3>
+    <ul>
+      <li>Email address and authentication identifiers (via <a href="https://clerk.com/legal/privacy">Clerk</a>, our auth provider).</li>
+      <li>If you sign in with Apple or Google, we receive the identifiers those providers return — typically email + a stable user ID. We never receive your password.</li>
+    </ul>
+    <h3>Fitness data you log</h3>
+    <ul>
+      <li>Workouts, exercises, sets, reps, weight, duration, notes.</li>
+      <li>Routines you create.</li>
+      <li>Body stats you choose to enter (e.g. weight, goal weight, unit preference).</li>
+    </ul>
+    <h3>AI Coach interactions</h3>
+    <ul>
+      <li>The messages you send to the AI Coach and the responses returned.</li>
+      <li>Coach prompts include a summary of your recent workouts so it can answer in context.</li>
+    </ul>
+    <h3>Device + diagnostic data</h3>
+    <ul>
+      <li>App version, OS version, device model — used to investigate crashes and bugs.</li>
+      <li>Bug reports you submit voluntarily through the Profile screen.</li>
+    </ul>
+    <p><strong>We do not collect:</strong> location, contacts, photos, microphone, camera, advertising IDs, or health-app data.</p>
+
+    <h2>3. How we use it</h2>
+    <ul>
+      <li>To provide the app's features (track workouts, render analytics, answer Coach questions).</li>
+      <li>To keep you signed in across devices.</li>
+      <li>To investigate and fix bugs you report or that crash the app.</li>
+      <li>To improve the product over time.</li>
+    </ul>
+    <p>
+      We do <em>not</em> use your data for advertising, profiling, or sale
+      to third parties.
+    </p>
+
+    <h2>4. Who we share it with</h2>
+    <p>We use the following processors. They handle data on our behalf under their own privacy commitments:</p>
+    <ul>
+      <li><strong>Clerk</strong> — authentication (<a href="https://clerk.com/legal/privacy">privacy policy</a>).</li>
+      <li><strong>Supabase</strong> — database + storage (<a href="https://supabase.com/privacy">privacy policy</a>).</li>
+      <li><strong>Anthropic</strong> — AI Coach inference, when you use the Coach (<a href="https://www.anthropic.com/legal/privacy">privacy policy</a>). Anthropic does not train on customer API content.</li>
+      <li><strong>Voyage AI</strong> — embeddings used by the Coach for context retrieval (<a href="https://www.voyageai.com/privacy/">privacy policy</a>).</li>
+      <li><strong>Expo (EAS)</strong> — over-the-air updates + crash diagnostics (<a href="https://expo.dev/privacy">privacy policy</a>).</li>
+      <li><strong>RevenueCat</strong> — subscription + in-app purchase management, when you buy a paid plan (<a href="https://www.revenuecat.com/privacy">privacy policy</a>). Receives your account identifier to attribute purchases to your account.</li>
+      <li><strong>Apple / Google</strong> — sign-in, app distribution, and payment processing for paid plans.</li>
+    </ul>
+    <p>We do not share or sell your data for advertising.</p>
+
+    <h2>5. Where data is stored</h2>
+    <p>
+      Account + fitness data is stored in Supabase Postgres (region
+      <strong>us-east-1</strong>). Auth state is stored in
+      Clerk. AI Coach inference runs through Anthropic's API.
+    </p>
+
+    <h2>6. How long we keep it</h2>
+    <ul>
+      <li>While your account exists, we keep your data.</li>
+      <li>When you delete your account from inside the app (Profile → Delete Account), we wipe your Supabase rows and ask Clerk to delete your account.</li>
+      <li>Backups may persist briefly (up to 30 days) until they roll off.</li>
+    </ul>
+
+    <h2>7. Your rights</h2>
+    <p>You can:</p>
+    <ul>
+      <li><strong>Access</strong> — see your data inside the app at any time.</li>
+      <li><strong>Correct</strong> — edit any of it inside the app.</li>
+      <li><strong>Delete</strong> — Profile → Delete Account permanently removes your data.</li>
+      <li><strong>Export</strong> — email <a href="mailto:support@tryoverload.app">support@tryoverload.app</a> and we will send your data within 30 days.</li>
+      <li><strong>Object / Restrict</strong> — email us; if you're in the EU/UK/California you have additional rights under GDPR / CCPA which we honor.</li>
+    </ul>
+
+    <h2>8. Security</h2>
+    <p>
+      Tokens are stored in the device's secure enclave (iOS Keychain /
+      Android Keystore). All network traffic uses HTTPS. Supabase
+      Row-Level-Security policies scope every row to your user ID so no
+      other user can read your data. We are a small team — no system is
+      perfect — and we will notify affected users in the event of a breach.
+    </p>
+
+    <h2>9. Children</h2>
+    <p>
+      Overload is not directed to children under 13 (or under 16 in the
+      EU/UK). We do not knowingly collect their data. If you believe a
+      child has signed up, email us and we will delete the account.
+    </p>
+
+    <h2>10. Changes</h2>
+    <p>
+      If we materially change this policy we will update the "Last updated"
+      date and notify users inside the app on next launch. Continued use
+      after changes constitutes acceptance.
+    </p>
+
+    <h2>11. Contact</h2>
+    <p>
+      Questions? <a href="mailto:support@tryoverload.app">support@tryoverload.app</a>
+    </p>
+
+    <footer>
+      <a href="/">Home</a>
+      <a href="/terms.html">Terms</a>
+      <a href="/support.html">Support</a>
+    </footer>
+  </div>
+</body>
+</html>

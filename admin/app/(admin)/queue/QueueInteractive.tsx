@@ -10,10 +10,10 @@
 
 import { useState, useMemo, useTransition, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import type { PendingPaper, ContradictionFlag } from '@/lib/types';
+import type { PendingPaper, ContradictionFlag, AgentRecommendation } from '@/lib/types';
 import {
   Search, X, Check, ExternalLink, AlertCircle, ChevronRight,
-  AlertTriangle, Replace, Pencil,
+  AlertTriangle, Replace, Pencil, Bot,
 } from 'lucide-react';
 import {
   approvePendingWithSupersede, rejectPending,
@@ -64,6 +64,28 @@ function timeSince(iso: string | null): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+// Agent verdict styling. 'add' = the agent would keep it (approve/coexist/
+// supersede); 'skip' = the agent would reject it. Advisory only — the human
+// still decides. We color skip amber rather than full danger so it reads as
+// "the agent is wary" not "this is broken".
+function agentVerdictStyle(verdict: 'add' | 'skip'): string {
+  return verdict === 'add'
+    ? 'text-primary border-primary-muted bg-primary-subtle'
+    : 'text-[#d29800] border-[#d2980033] bg-[#d298001a]';
+}
+
+function AgentVerdictPill({ rec }: { rec: AgentRecommendation }) {
+  return (
+    <span
+      className={'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wide tabular-nums ' + agentVerdictStyle(rec.verdict)}
+      title={`Auto-review agent: ${rec.verdict} (confidence ${rec.confidence.toFixed(2)})`}
+    >
+      <Bot size={10} />
+      {rec.verdict}
+    </span>
+  );
 }
 
 export function QueueInteractive({ papers }: Props) {
@@ -308,6 +330,7 @@ function PaperCard({
             </span>
           );
         })()}
+        {paper.agent_recommendation && <AgentVerdictPill rec={paper.agent_recommendation} />}
         <span className="ml-auto text-text-muted">{timeSince(paper.ingested_at)}</span>
       </div>
       <h3 className="text-sm text-fg font-medium leading-snug line-clamp-2">
@@ -370,7 +393,7 @@ function DetailPanel({
   }, []);
 
   return (
-    <aside className="w-[440px] border-l border-border bg-bg-elevated flex flex-col h-screen">
+    <aside className="w-[440px] border-l border-border bg-bg-elevated flex flex-col h-full min-h-0">
       {/* Header */}
       <div className="px-5 py-4 border-b border-border flex items-start gap-3">
         <div className="flex-1 min-w-0">
@@ -414,6 +437,12 @@ function DetailPanel({
             Open source{doi ? ` (DOI: ${doi.slice(0, 40)})` : pmid ? ` (PMID: ${pmid})` : ''}
           </a>
         )}
+
+        {/* Advisory auto-review recommendation. The SAME Sonnet agent the cron
+            uses, run in advisory mode — its verdict + reasoning, but YOU make
+            the final approve/reject call below. Surfaced high so it frames the
+            distillation the reviewer is about to read. */}
+        {paper.agent_recommendation && <AgentRecommendationCard rec={paper.agent_recommendation} />}
 
         {/*
           Phase 3: Possible Conflicts — surfaced above the distillation so
@@ -580,6 +609,51 @@ function DetailPanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+/**
+ * Advisory auto-review card. Renders the curated ingester's agent verdict
+ * (add / skip) with confidence, the agent's rationale, any analytics flags,
+ * and a downgrade note when a supersede guardrail fired. Purely informational
+ * — the Approve/Reject buttons below remain the human's final decision.
+ */
+function AgentRecommendationCard({ rec }: { rec: AgentRecommendation }) {
+  const isAdd = rec.verdict === 'add';
+  const accent = isAdd ? 'border-primary-muted bg-primary-subtle' : 'border-[#d2980040] bg-[#d298001a]';
+  return (
+    <div className={'p-3 rounded-md border ' + accent}>
+      <div className="flex items-center gap-2 mb-2">
+        <Bot size={13} className={isAdd ? 'text-primary' : 'text-[#d29800]'} />
+        <span className="text-[10px] uppercase tracking-widest text-text-muted">Auto-review agent</span>
+        <span className={'ml-auto px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ' + agentVerdictStyle(rec.verdict)}>
+          {isAdd ? 'recommends add' : 'recommends skip'}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 mb-2 text-[10px] text-text-muted tabular-nums">
+        <span>action: <span className="text-fg font-medium">{rec.action}</span></span>
+        <span>·</span>
+        <span>confidence {rec.confidence.toFixed(2)}</span>
+      </div>
+      <p className="text-xs text-fg/90 leading-relaxed whitespace-pre-line">{rec.rationale}</p>
+      {rec.downgrade_reason && (
+        <div className="mt-2 text-[11px] text-[#d29800] leading-relaxed">
+          Guardrail: {rec.downgrade_reason}
+        </div>
+      )}
+      {rec.flags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {rec.flags.map((f) => (
+            <span key={f} className="px-1.5 py-0.5 rounded-full bg-bg-elevated border border-border text-[10px] text-text-muted">
+              {f}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="mt-2 pt-2 border-t border-border/50 text-[10px] text-text-muted italic">
+        Advisory only — your Approve / Reject below is the final call.
+      </div>
+    </div>
   );
 }
 

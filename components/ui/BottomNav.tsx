@@ -25,7 +25,14 @@ function NavButton({
 }: { icon: React.ComponentProps<typeof Feather>['name']; label: string; active: boolean; onPress: () => void }) {
   const { C } = useTheme();
   return (
-    <TouchableOpacity style={styles.navItem} onPress={onPress} activeOpacity={0.7}>
+    <TouchableOpacity
+      style={styles.navItem}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityRole="tab"
+      accessibilityLabel={`${label} tab`}
+      accessibilityState={{ selected: active }}
+    >
       <Feather
         name={icon}
         size={22}
@@ -253,6 +260,12 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
               },
             ]}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={
+              !workout.isActive ? 'Start workout'
+              : workout.isPaused ? 'Resume workout'
+              : isOnWorkout ? 'Pause workout' : 'Open active workout'
+            }
           >
             <Feather name={getCenterIcon()} size={22} color={getCenterIconColor()} />
             {/* Active dot indicator when away from workout page */}

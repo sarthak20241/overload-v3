@@ -11,11 +11,12 @@ import {
   TextInput,
   Pressable,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   FlatList,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown,
@@ -517,6 +518,11 @@ function RoutineEditorSheet({
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
   const toast = useToast();
+  // SafeAreaView reports zero insets inside a fullScreen RN Modal (separate
+  // native view hierarchy the provider never measures), so the header collided
+  // with the status bar / Dynamic Island. Read the device inset via the hook —
+  // it returns the correct value from the root provider — and pad manually.
+  const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
@@ -534,6 +540,32 @@ function RoutineEditorSheet({
   const [customRest, setCustomRest] = useState('90');
   const [customTargetIdx, setCustomTargetIdx] = useState<number | null>(null);
   const [showMuscleDropdown, setShowMuscleDropdown] = useState(false);
+
+  // Keyboard avoidance for the custom-exercise drawer. The name input gets
+  // focused on open, so the keyboard appears immediately and would otherwise
+  // cover the inputs + Add Exercise button. KeyboardAvoidingView doesn't work
+  // inside a transparent Modal on iOS, so we track the keyboard height
+  // ourselves and lift the sheet via marginBottom (the same pattern used by
+  // analytics.tsx's BottomDrawer).
+  const [customKbHeight, setCustomKbHeight] = useState(0);
+  const nameInputRef = useRef<TextInput>(null);
+  useEffect(() => {
+    if (!showCustomDrawer) { setCustomKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setCustomKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setCustomKbHeight(0));
+    // Focus the name field ourselves AFTER the listeners are attached, rather
+    // than via autoFocus. autoFocus raised the keyboard during mount, before
+    // this effect ran, so the first keyboardWillShow fired with no listener
+    // attached and the sheet never lifted: the keyboard covered the inputs
+    // until you manually dismissed and refocused. Deferring the focus a tick
+    // guarantees we catch the show event and lift on the first open.
+    const focusTimer = setTimeout(() => nameInputRef.current?.focus(), 100);
+    return () => { showSub.remove(); hideSub.remove(); clearTimeout(focusTimer); };
+  }, [showCustomDrawer]);
 
   const openCustomDrawer = (prefill: string, targetIdx: number) => {
     setCustomName(prefill);
@@ -780,8 +812,13 @@ function RoutineEditorSheet({
 
   return (
     <>
-      <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
-        <SafeAreaView style={[styles.editorSafe, { backgroundColor: C.elevated }]} edges={['top']}>
+      <Modal
+        visible={visible}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={handleClose}
+      >
+        <View style={[styles.editorSafe, { backgroundColor: C.elevated, paddingTop: insets.top }]}>
           <KeyboardAvoidingView
             style={{ flex: 1 }}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -806,6 +843,16 @@ function RoutineEditorSheet({
               </TouchableOpacity>
             </View>
 
+            {/* Inline validation error. The editor is a full-screen Modal, so a
+                Portal-based ThemedAlert renders BEHIND it (invisible) — show the
+                reminder inline here instead so the user actually sees it. */}
+            {errorMsg ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: Spacing.xl, marginTop: Spacing.md, paddingVertical: 10, paddingHorizontal: 12, borderRadius: Radius.md, backgroundColor: 'rgba(239,68,68,0.12)', borderWidth: 1, borderColor: 'rgba(239,68,68,0.4)' }}>
+                <Feather name="alert-circle" size={14} color="#ef4444" />
+                <Text style={{ color: '#ef4444', fontSize: FontSize.sm, fontWeight: FontWeight.semibold, flex: 1 }}>{errorMsg}</Text>
+              </View>
+            ) : null}
+
             {/* Sheet Body */}
             <ScrollView
               style={{ flex: 1 }}
@@ -818,7 +865,7 @@ function RoutineEditorSheet({
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Routine Name</Text>
                 <TextInput
                   value={name}
-                  onChangeText={setName}
+                  onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -870,26 +917,39 @@ function RoutineEditorSheet({
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
-        </SafeAreaView>
-      </Modal>
 
-      {/* Custom Exercise Drawer */}
-      <Modal
-        visible={showCustomDrawer}
-        transparent
-        animationType="none"
-        onRequestClose={() => setShowCustomDrawer(false)}
-      >
-        <Pressable
-          style={[styles.backdrop, { backgroundColor: C.overlay }]}
-          onPress={() => setShowCustomDrawer(false)}
-        >
+          {/* Custom Exercise Drawer — an in-window overlay INSIDE the editor
+              Modal, NOT a nested <Modal>. iOS can't present a second modal over
+              an already-open one, so the old nested Modal stayed queued
+              (invisible) until the editor was dismissed — that was the "Create
+              Custom does nothing" bug. An overlay renders correctly over the
+              editor. */}
+          {showCustomDrawer && (
+            <Pressable
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay, justifyContent: 'flex-end' }]}
+              onPress={() => setShowCustomDrawer(false)}
+            >
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
-            style={[styles.customDrawer, { backgroundColor: C.card, borderColor: C.border }]}
+            style={[
+              styles.customDrawer,
+              {
+                backgroundColor: C.card,
+                borderColor: C.border,
+                // Lift above the keyboard on BOTH platforms. The name field
+                // auto-focuses, so the keyboard appears immediately; on Android
+                // this Modal isn't auto-resized, so an iOS-only lift left the
+                // "Add Exercise" button stuck behind the keyboard and
+                // unreachable — testers couldn't add a custom exercise.
+                marginBottom: customKbHeight,
+              },
+            ]}
           >
-            <Pressable>
+            {/* Tapping the sheet chrome (handle, header, padding) dismisses the
+                keyboard. Taps on the inputs and buttons are captured by those
+                children, so they keep working normally. */}
+            <Pressable onPress={() => Keyboard.dismiss()}>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
 
               {/* Drawer Header */}
@@ -908,6 +968,11 @@ function RoutineEditorSheet({
               {/* Drawer Form */}
               <ScrollView
                 contentContainerStyle={styles.customDrawerBody}
+                // "handled": a tap on empty space inside the form dismisses the
+                // keyboard, while taps the children handle (the inputs and the
+                // "Add Exercise" button) still fire in a single tap. The sheet
+                // now lifts above the keyboard on open, so the button is no
+                // longer hidden behind it.
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
@@ -915,7 +980,7 @@ function RoutineEditorSheet({
                 <View>
                   <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
-                    autoFocus
+                    ref={nameInputRef}
                     value={customName}
                     onChangeText={setCustomName}
                     placeholder="e.g. Cable Lateral Raise"
@@ -998,7 +1063,8 @@ function RoutineEditorSheet({
                 {/* Confirm Button */}
                 <TouchableOpacity
                   onPress={confirmCustomExercise}
-                  style={styles.customDrawerConfirmBtn}
+                  disabled={!customName.trim()}
+                  style={[styles.customDrawerConfirmBtn, !customName.trim() && { opacity: 0.5 }]}
                   activeOpacity={0.8}
                 >
                   <Feather name="check" size={15} color={Colors.primaryFg} />
@@ -1007,18 +1073,11 @@ function RoutineEditorSheet({
               </ScrollView>
             </Pressable>
           </Animated.View>
-        </Pressable>
+            </Pressable>
+          )}
+        </View>
       </Modal>
 
-      <ThemedAlert
-        visible={!!errorMsg}
-        icon="alert-circle"
-        iconColor="#ef4444"
-        title="Error"
-        message={errorMsg}
-        buttons={[{ text: 'OK', style: 'primary', onPress: () => setErrorMsg('') }]}
-        onClose={() => setErrorMsg('')}
-      />
     </>
   );
 }

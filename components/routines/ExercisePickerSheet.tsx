@@ -2,13 +2,16 @@
  * Bottom-sheet exercise picker with search, muscle group tabs,
  * and custom exercise creation. Matches Figma design.
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, Modal, Pressable, ScrollView,
+  StyleSheet, BackHandler, Pressable, ScrollView, Keyboard, Platform,
+  useWindowDimensions,
 } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
@@ -24,12 +27,32 @@ interface Props {
 
 export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames = [] }: Props) {
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
   const [customName, setCustomName] = useState('');
   const [customMuscle, setCustomMuscle] = useState('Chest');
   const [customCategory, setCustomCategory] = useState('Barbell');
+
+  // Keyboard avoidance: the custom-exercise form autofocuses the name input,
+  // and the library view has a search input — both bring the keyboard up and
+  // (on iOS, inside a transparent Modal) end up covering the inputs and the
+  // "Create & Add" button. KeyboardAvoidingView doesn't help here (Modal
+  // doesn't resize on iOS), so we track keyboard height and lift the sheet
+  // via marginBottom — same pattern as analytics.tsx's BottomDrawer.
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    if (!visible) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [visible]);
 
   const filtered = useMemo(() => {
     let list = searchExercises(search);
@@ -56,13 +79,40 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     onClose();
   };
 
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      resetAndClose();
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={resetAndClose}>
+    <Portal>
+      {visible && (
       <Pressable style={[s.backdrop, { backgroundColor: C.overlay }]} onPress={resetAndClose}>
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
-          style={[s.sheet, { backgroundColor: C.elevated }]}
+          style={[
+            s.sheet,
+            {
+              backgroundColor: C.elevated,
+              // Lift above the keyboard (both platforms — rendered in the app's
+              // own window via <Portal>, which isn't auto-resized for the keyboard).
+              marginBottom: kbHeight,
+              // Clamp against the keyboard-reduced viewport too — the static
+              // maxHeight: '90%' is relative to the full window, so without this
+              // the lifted sheet can run off the top on smaller screens (same
+              // guard analytics.tsx's BottomDrawer uses).
+              maxHeight: (windowHeight - kbHeight) * 0.9,
+              // Flush to the screen bottom now, so clear the gesture/nav bar.
+              paddingBottom: insets.bottom,
+            },
+          ]}
         >
           <Pressable>
             <View style={[s.handle, { backgroundColor: C.handle }]} />
@@ -273,7 +323,8 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
           </Pressable>
         </Animated.View>
       </Pressable>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 

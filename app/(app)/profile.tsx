@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, ActivityIndicator, Modal, Pressable, KeyboardAvoidingView, Platform,
+  TextInput, ActivityIndicator, Modal, Pressable, Keyboard, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -19,9 +20,10 @@ import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import {
-  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog, saveBasicInfo,
+  loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
+import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { setGuestMode } from '@/lib/guestMode';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 
@@ -210,7 +212,11 @@ export default function ProfileScreen() {
   const [weight, setWeight] = useState('78');
   const [goalWeight, setGoalWeight] = useState('75');
   const [bodyFat, setBodyFat] = useState('16');
-  const [weightUnit, setWeightUnit] = useState<WeightUnit>('kg');
+  const {
+    weightUnit,
+    setWeightUnit,
+    setGoalWeight: setCtxGoalWeight,
+  } = useBasicInfo();
   const [heightUnit, setHeightUnit] = useState<HeightUnit>('cm');
   const [totalXP, setTotalXP] = useState(0);
   const [totalWorkouts, setTotalWorkouts] = useState(0);
@@ -234,6 +240,23 @@ export default function ProfileScreen() {
   const [bugDescription, setBugDescription] = useState('');
   const [bugCategory, setBugCategory] = useState<'ui' | 'data' | 'crash' | 'performance' | 'other'>('ui');
   const [bugSubmitting, setBugSubmitting] = useState(false);
+
+  // Keyboard avoidance for the bug-report sheet. On iOS, KeyboardAvoidingView
+  // nested inside a transparent <Modal> doesn't lift the sheet — the parent
+  // Modal does not resize for the keyboard, so the inputs and Submit button
+  // remain hidden behind it. We track keyboard height ourselves and apply
+  // marginBottom to the sheet (the proven pattern from analytics.tsx).
+  const [bugKbHeight, setBugKbHeight] = useState(0);
+  useEffect(() => {
+    if (!bugModalOpen) { setBugKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setBugKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setBugKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [bugModalOpen]);
 
   const userName = user?.firstName || user?.fullName || 'Athlete';
   const isGuest = !user;
@@ -282,6 +305,7 @@ export default function ProfileScreen() {
         setHeight(String(p.height_cm));
         setWeight(String(p.weight_kg));
         setGoalWeight(String(p.goal_weight_kg));
+        setCtxGoalWeight(p.goal_weight_kg);
         setBodyFat(String(p.body_fat_percent));
         setTotalXP(p.xp);
         setJoinDate(new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
@@ -301,6 +325,8 @@ export default function ProfileScreen() {
         setHeight(String(profile.height_cm || 178));
         setWeight(String(profile.weight_kg || 78));
         setGoalWeight(String(profile.goal_weight_kg || 75));
+        // Propagate a cleared goal (null/0) to context too, else it stays stale.
+        setCtxGoalWeight(profile.goal_weight_kg && profile.goal_weight_kg > 0 ? profile.goal_weight_kg : null);
         setBodyFat(String(profile.body_fat_percent || 16));
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
@@ -405,12 +431,26 @@ export default function ProfileScreen() {
     if (!bugTitle.trim()) return;
     setBugSubmitting(true);
     try {
-      // Persist locally for now — could be hooked to a backend later.
+      if (isSupabaseConfigured) {
+        const { error } = await supabase.from('bug_reports').insert({
+          user_id: user?.id ?? null,
+          title: bugTitle.trim(),
+          description: bugDescription.trim() || null,
+          category: bugCategory,
+          app_version: Constants.expoConfig?.version ?? null,
+          platform: Platform.OS,
+          os_version: String(Platform.Version),
+        });
+        if (error) {
+          setShowErrorAlert(`Couldn't send report: ${error.message}`);
+          return;
+        }
+      }
       setBugTitle('');
       setBugDescription('');
       setBugCategory('ui');
       setBugModalOpen(false);
-      setShowInfoAlert('Bug report submitted!');
+      setShowInfoAlert('Bug report submitted — thanks!');
     } finally {
       setBugSubmitting(false);
     }
@@ -576,12 +616,15 @@ export default function ProfileScreen() {
                   <MiniSegmented
                     options={['kg', 'lbs'] as WeightUnit[]}
                     value={weightUnit}
-                    onChange={(v) => { setWeightUnit(v); saveBasicInfo({ weightUnit: v }); }}
+                    onChange={(v) => setWeightUnit(v)}
                   />
                   <TouchableOpacity
                     onPress={logWeight}
                     activeOpacity={0.85}
                     style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Log current weight"
                   >
                     <Feather name="plus" size={12} color={Colors.primaryFg} />
                   </TouchableOpacity>
@@ -599,7 +642,8 @@ export default function ProfileScreen() {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
                       const num = parseFloat(v);
-                      if (!isNaN(num) && num > 0) saveBasicInfo({ goalWeight: num });
+                      // Clearing the field should clear context too, not keep the old goal.
+                      setCtxGoalWeight(!isNaN(num) && num > 0 ? num : null);
                     }}
                     placeholder={weightUnit}
                   />
@@ -630,6 +674,9 @@ export default function ProfileScreen() {
                     onPress={logBodyFat}
                     activeOpacity={0.85}
                     style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Log body fat percentage"
                   >
                     <Feather name="plus" size={12} color={Colors.primaryFg} />
                   </TouchableOpacity>
@@ -662,7 +709,7 @@ export default function ProfileScreen() {
           <View style={styles.section}>
             <SectionLabel icon="zap">TRAINING PROFILE</SectionLabel>
             <Text style={[styles.coachHint, { color: C.textMuted }]}>
-              Helps the AI Coach tailor recommendations to your goals and experience.
+              Helps Coach Drona tailor recommendations to your goals and experience.
             </Text>
 
             {/* Goal — horizontal scroll because 5 options */}
@@ -952,18 +999,17 @@ export default function ProfileScreen() {
           style={[styles.modalBackdrop, { backgroundColor: C.overlay }]}
         >
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setBugModalOpen(false)} />
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={{ width: '100%' }}
+          <Animated.View
+            entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
+            exiting={SlideOutDown.duration(200)}
+            style={[styles.bugSheet, {
+              backgroundColor: C.elevated,
+              borderTopColor: C.borderSubtle,
+              // Lift above the keyboard on iOS (Android's adjustResize handles
+              // it on its own). See bugKbHeight tracking above for context.
+              marginBottom: Platform.OS === 'ios' ? bugKbHeight : 0,
+            }]}
           >
-            <Animated.View
-              entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
-              exiting={SlideOutDown.duration(200)}
-              style={[styles.bugSheet, {
-                backgroundColor: C.elevated,
-                borderTopColor: C.borderSubtle,
-              }]}
-            >
               <View style={styles.bugHandle}>
                 <View style={[styles.bugHandleBar, { backgroundColor: C.handle }]} />
               </View>
@@ -1059,8 +1105,7 @@ export default function ProfileScreen() {
                   </>
                 )}
               </TouchableOpacity>
-            </Animated.View>
-          </KeyboardAvoidingView>
+          </Animated.View>
         </Animated.View>
       </Modal>
 

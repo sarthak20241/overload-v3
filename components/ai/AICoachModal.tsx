@@ -7,14 +7,17 @@
  */
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Modal, Pressable,
-  TextInput, ScrollView, FlatList, KeyboardAvoidingView, Platform,
-  ActivityIndicator, Linking,
+  View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable,
+  TextInput, ScrollView, FlatList, Keyboard, Platform,
+  ActivityIndicator, Linking, useWindowDimensions,
 } from 'react-native';
 import Animated, {
   SlideInDown, SlideOutDown, FadeIn, FadeInDown, Easing,
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
@@ -22,6 +25,16 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/mockData';
 import { useToast } from '@/components/ui/Toast';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { CoachAccessGate } from './CoachAccessGate';
+import { Paywall } from './Paywall';
+import type { WorkoutCoachContext } from '@/lib/workoutCoach';
+import {
+  workoutCoachOpener,
+  workoutCoachStarter,
+  workoutCoachSuggestions,
+  workoutCoachReviewRequest,
+} from '@/lib/workoutCoach';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout';
@@ -300,7 +313,7 @@ const SESSION_OPTIONS = ['30-45 min', '45-60 min', '60-75 min', '75-90 min'];
  * canned mock text as if it were a real model response.
  */
 export class AICoachUnavailableError extends Error {
-  constructor(message = 'AI Coach is currently unavailable. Please try again later.') {
+  constructor(message = 'Coach Drona is currently unavailable. Try again in a moment.') {
     super(message);
     this.name = 'AICoachUnavailableError';
   }
@@ -335,7 +348,7 @@ async function callAICoach(
               : JSON.stringify(body);
           }
         } catch { /* fall through */ }
-        throw new AICoachUnavailableError(`AI Coach error: ${detail}`);
+        throw new AICoachUnavailableError(`Coach Drona error: ${detail}`);
       }
       if (data?.response) {
         return {
@@ -347,7 +360,7 @@ async function callAICoach(
     } catch (err: any) {
       if (err instanceof AICoachUnavailableError) throw err;
       throw new AICoachUnavailableError(
-        err?.message ? `AI Coach error: ${err.message}` : undefined
+        err?.message ? `Coach Drona error: ${err.message}` : undefined
       );
     }
   }
@@ -380,6 +393,15 @@ interface StreamingOptions {
   // When set, forces tool_choice on that tool — used for Generate Workout /
   // Generate Plan flows so output is guaranteed structured.
   forceTool?: 'generate_workout' | 'generate_plan';
+  // Conversational refine / discuss sessions. The backend exposes both
+  // the read toolkit and the matching terminal tool, but leaves
+  // tool_choice auto so the model can probe priorities first and only
+  // emit the structured output once the user has confirmed. 'refine_*'
+  // iterates on an existing workout/plan; 'discuss_*' designs a new one
+  // from scratch (no recap assumption — different system-prompt branch).
+  // (Caller still listens via onStructured for the final emission — same
+  // as the forceTool path.)
+  mode?: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan';
 }
 
 function callAICoachStreaming(
@@ -450,6 +472,7 @@ function callAICoachStreaming(
           messages,
           stream: true,
           ...(options.forceTool ? { force_tool: options.forceTool } : {}),
+          ...(options.mode ? { mode: options.mode } : {}),
         }),
         signal: controller.signal,
       });
@@ -598,7 +621,7 @@ function getMockResponse(userMsg: string): string {
   if (lower.includes('nutrition') || lower.includes('diet') || lower.includes('eat')) {
     return "For muscle building, aim for 1.6-2.2g protein per kg bodyweight daily. Focus on whole foods, stay hydrated, and time your meals around your training. Pre-workout: carbs + protein. Post-workout: protein + carbs within 2 hours.";
   }
-  return "Great question! As your AI coach, I can help with workout programming, nutrition advice, recovery tips, and tracking your progress. What specific area would you like to focus on?";
+  return "I can help with programming, nutrition, recovery, and progression. What do you want to work on?";
 }
 
 // ─── Dropdown Picker ─────────────────────────────────────────────────────────
@@ -654,7 +677,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
   const { C } = useTheme();
 
   const options: { screen: Screen; icon: string; title: string; sub: string }[] = [
-    { screen: 'chat', icon: 'message-circle', title: 'Chat with AI Coach', sub: 'Talk progress, PRs, plateaus, or anything on your mind' },
+    { screen: 'chat', icon: 'message-circle', title: 'Chat with Coach Drona', sub: 'Talk progress, PRs, plateaus, or anything on your mind' },
     { screen: 'plan', icon: 'calendar', title: 'Generate Workout Plan', sub: 'Multi-day program tailored to your goals' },
     { screen: 'workout', icon: 'activity', title: 'Generate a Workout', sub: 'Single session designed for today' },
   ];
@@ -667,7 +690,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
           <SparkleIcon size={28} color={C.accentText} />
         </View>
         <Text style={[s.menuTitle, { color: C.foreground }]}>What would you like to do?</Text>
-        <Text style={[s.menuSub, { color: C.mutedFg }]}>Your AI-powered fitness assistant</Text>
+        <Text style={[s.menuSub, { color: C.mutedFg }]}>Your strength training coach</Text>
       </View>
 
       {/* Option cards */}
@@ -694,7 +717,22 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
 }
 
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
-function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRoutine: (name: string) => void }) {
+function ChatScreen({
+  onBack,
+  onSaveRoutine,
+  initialPrompt,
+  // When provided, this chat is opened from an ACTIVE workout. The live
+  // session (which lives only in memory until the workout is saved, so the
+  // coach's DB tools can't see it) is injected as the opening turn of every
+  // request, the greeting is tailored to where the user is, and quick-question
+  // chips are shown. Null/undefined \u2192 ordinary coach chat.
+  workoutContext,
+}: {
+  onBack: () => void;
+  onSaveRoutine: (name: string) => void;
+  initialPrompt?: string;
+  workoutContext?: WorkoutCoachContext | null;
+}) {
   const { C } = useTheme();
   const supabase = useSupabaseClient();
   // Clerk getToken \u2014 used directly to authenticate the streaming SSE fetch.
@@ -702,13 +740,24 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
   const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: "Hey there! \u{1F4AA} I'm your AI Coach. Ask me anything about training, nutrition, recovery \u2014 or say \"create a workout\" and I'll build one for you right here!",
-    },
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [
+    workoutContext
+      ? { id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }
+      : {
+          id: '1',
+          role: 'assistant',
+          content: "I'm Coach Drona. Ask me anything about your training, recovery, or progression. Or say \"create a workout\" and I'll build one for you.",
+        },
   ]);
+  // Re-seed the chat whenever a fresh workout snapshot arrives (the user
+  // reopened the coach after logging more sets). Identity is stable within a
+  // single open \u2014 the workout screen snapshots once per open \u2014 so this only
+  // fires on a genuine reopen, never wiping an in-progress conversation.
+  useEffect(() => {
+    if (!workoutContext) return;
+    setMessages([{ id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
+    setInput('');
+  }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -723,8 +772,8 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
     };
   }, []);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
+  const handleSend = useCallback(async (override?: string) => {
+    const text = (override ?? input).trim();
     if (!text || loading) return;
 
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
@@ -740,7 +789,15 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
 
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
-    const allMessages = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
+    // In workout mode, prepend the live session as a synthetic user turn so
+    // the coach can see what's happening right now (the in-progress sets only
+    // exist in memory — its DB tools can't reach them). The visible assistant
+    // starter follows it, so turns stay validly alternating. Otherwise the
+    // conversation is sent as-is.
+    const turns = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
+    const allMessages = workoutContext
+      ? [{ role: 'user' as const, content: workoutCoachOpener(workoutContext) }, ...turns]
+      : turns;
 
     // Demo / fallback path: hit only when the live coach is unreachable.
     //   - !isSupabaseConfigured: guest/demo build, no backend at all.
@@ -761,7 +818,7 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
       } catch (err: any) {
         const errText = err instanceof AICoachUnavailableError
           ? err.message
-          : 'AI Coach is currently unavailable. Please try again later.';
+          : 'Coach Drona is currently unavailable. Try again in a moment.';
         setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: errText } : m));
       }
       setLoading(false);
@@ -826,26 +883,56 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`AI Coach error: ${errStr}`);
+        typewriter.fail(`Coach Drona error: ${errStr}`);
         setLoading(false);
         streamRef.current = null;
       },
     });
-  }, [input, loading, messages, supabase, getToken]);
+  }, [input, loading, messages, supabase, getToken, workoutContext]);
 
+  // Review mode: auto-ask the coach for a session review once the chat opens,
+  // so the user doesn't have to type. Fires exactly once per snapshot — the
+  // ref latches the snapshot we've already kicked off, and the
+  // `messages.length === 1` guard means we only fire while just the starter is
+  // present (right after the reset effect above runs). A genuine reopen brings
+  // a new snapshot object, which clears the latch and reviews afresh.
+  const reviewSentForRef = useRef<WorkoutCoachContext | null>(null);
+  useEffect(() => {
+    if (workoutContext?.kind !== 'review') return;
+    if (reviewSentForRef.current === workoutContext) return;
+    if (loading || messages.length !== 1) return;
+    reviewSentForRef.current = workoutContext;
+    handleSend(workoutCoachReviewRequest(workoutContext));
+  }, [workoutContext, messages, loading, handleSend]);
+
+  // Insight seeding: when opened from a dashboard "Coach noticed" card, the
+  // card's question rides in as `initialPrompt` and is auto-asked once, exactly
+  // like review mode above. Skipped in workout mode (it has its own seeding).
+  const seededPromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (workoutContext) return;
+    if (!initialPrompt) return;
+    if (seededPromptRef.current === initialPrompt) return;
+    if (loading || messages.length !== 1) return;
+    seededPromptRef.current = initialPrompt;
+    handleSend(initialPrompt);
+  }, [initialPrompt, workoutContext, loading, messages, handleSend]);
+
+  // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
+  // parent shrinks the sheet and lifts it via marginBottom (both platforms)
+  // so the input naturally sits above the keyboard. No KeyboardAvoidingView
+  // here (it doesn't work reliably inside a transparent Modal).
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={{ flex: 1 }}
-      keyboardVerticalOffset={0}
-    >
+    <View style={{ flex: 1 }}>
       {/* Header */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} />
-        <Text style={[s.screenTitle, { color: C.foreground }]}>Chat with Coach</Text>
+        <Text style={[s.screenTitle, { color: C.foreground }]}>
+          {workoutContext ? 'Coach Drona · Live session' : 'Chat with Coach Drona'}
+        </Text>
       </View>
 
       {/* Messages */}
@@ -854,6 +941,7 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
         style={{ flex: 1 }}
         contentContainerStyle={s.chatMessages}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {messages.map((msg) => (
           <View
@@ -887,22 +975,49 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
         ))}
       </ScrollView>
 
+      {/* Quick-question chips (workout mode only). Shown until the user's
+          first turn — a single tap beats typing mid-set. Hidden once the
+          conversation is underway to keep the sheet clean. */}
+      {workoutContext && workoutContext.kind === 'live' && messages.length <= 1 && !loading && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          // flexGrow:0 stops the horizontal ScrollView from expanding to fill
+          // the column's vertical space (which would stretch the chips into
+          // tall ovals). It then hugs the chip height.
+          style={s.suggestionScroll}
+          contentContainerStyle={s.suggestionRow}
+        >
+          {workoutCoachSuggestions(workoutContext).map((sugg) => (
+            <TouchableOpacity
+              key={sugg}
+              onPress={() => handleSend(sugg)}
+              style={[s.suggestionChip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
+              activeOpacity={0.7}
+            >
+              <Text style={[s.suggestionChipText, { color: C.accentText }]}>{sugg}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
       {/* Input */}
       <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
         <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Ask your coach anything..."
+            placeholder={workoutContext ? 'Ask about this set, a swap, form…' : 'Ask Coach Drona anything...'}
             placeholderTextColor={C.textMuted}
             style={[s.chatInput, { color: C.foreground }]}
             multiline
             maxLength={500}
-            onSubmitEditing={handleSend}
+            onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
           <TouchableOpacity
-            onPress={handleSend}
+            onPress={() => handleSend()}
             disabled={!input.trim() || loading}
             style={[
               s.sendBtn,
@@ -913,7 +1028,7 @@ function ChatScreen({ onBack, onSaveRoutine }: { onBack: () => void; onSaveRouti
           </TouchableOpacity>
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -1029,11 +1144,9 @@ function planToText(p: GeneratedPlan): string {
 // ─── Generate Plan Screen ────────────────────────────────────────────────────
 function GeneratePlanScreen({
   onBack,
-  onChatWithCoach,
   onSaveRoutines,
 }: {
   onBack: () => void;
-  onChatWithCoach: () => void;
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
 }) {
   const { C } = useTheme();
@@ -1046,11 +1159,28 @@ function GeneratePlanScreen({
   const [sessionLength, setSessionLength] = useState('45-60 min');
   const [level, setLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
   const [loading, setLoading] = useState(false);
+  // Kept for back-compat with the runGeneration signature; the inline
+  // refine UI it used to drive has been replaced by the conversational
+  // RefineChatScreen, so `refining` only ever transitions to true now
+  // if a future caller passes isRefine=true to runGeneration.
   const [refining, setRefining] = useState(false);
   const [coachIntent, setCoachIntent] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedPlan | null>(null);
-  const [refineInput, setRefineInput] = useState('');
+  // Toggled by the "Refine with AI" button on the result view. When true
+  // (and result is non-null), we mount RefineChatScreen instead of the
+  // result card. The chat hands back the updated plan via onRefined,
+  // at which point we clear this flag and the result card re-renders
+  // with the refined version.
+  const [showRefineChat, setShowRefineChat] = useState(false);
+  // Toggled by the "Or chat with Coach Drona to refine" button on the
+  // form view. When true (and result is null), we mount RefineChatScreen
+  // in 'discuss' kind so the user can talk through the plan with Coach
+  // Drona before generation. When Drona emits generate_plan, the same
+  // onRefined callback flows into the result card with the Save button.
+  // Reuses the refine machinery — same backend mode, same structured
+  // output handling — just a different opener and starter.
+  const [showDiscussChat, setShowDiscussChat] = useState(false);
   // Conversation history (carries across refinements). Stored in a ref so
   // mid-stream callbacks read the latest value without re-binding.
   const conversationRef = useRef<{ role: string; content: string }[]>([]);
@@ -1184,25 +1314,64 @@ function GeneratePlanScreen({
     await runGeneration(conversationRef.current, false);
   };
 
-  const handleRefine = async () => {
-    const text = refineInput.trim();
-    if (!text || refining || loading) return;
-    setRefineInput('');
-    const next = [...conversationRef.current, { role: 'user', content: text }];
-    conversationRef.current = next;
-    await runGeneration(next, true);
-  };
+  // ── Discuss chat (pre-generate conversational) ──────────────────────────
+  // Mounted instead of the form when the user taps "Or chat with Coach
+  // Drona to refine" without having generated a plan yet. Coach Drona
+  // probes priorities, can pull training data, and on user confirmation
+  // emits generate_plan. The structured output flows into setResult via
+  // onRefined, dropping the user on the result card with the Save All
+  // Routines button — same finish line as form-based generation.
+  if (!result && showDiscussChat) {
+    return (
+      <RefineChatScreen
+        kind="discuss"
+        mode="refine_plan"
+        onBack={() => setShowDiscussChat(false)}
+        onRefined={(next) => {
+          const p = next as GeneratedPlan;
+          setResult(p);
+          setShowDiscussChat(false);
+          // Seed the conversation ref so a follow-up "Refine with AI"
+          // from the result card has the just-built plan as the assistant
+          // turn it can reason about.
+          conversationRef.current = [
+            { role: 'assistant', content: planToText(p) },
+          ];
+        }}
+      />
+    );
+  }
+
+  // ── Refine chat (conversational) ────────────────────────────────────────
+  // Same pattern as GenerateWorkoutScreen — mounted instead of the
+  // result card when the user taps "Refine with AI". Each visit seeds
+  // the chat with the CURRENT plan so re-entering refine after a
+  // successful iteration uses the refined version as context.
+  if (result && showRefineChat) {
+    return (
+      <RefineChatScreen
+        kind="refine"
+        mode="refine_plan"
+        plan={result}
+        onBack={() => setShowRefineChat(false)}
+        onRefined={(next) => {
+          setResult(next as GeneratedPlan);
+          setShowRefineChat(false);
+        }}
+      />
+    );
+  }
 
   // ── Result view ─────────────────────────────────────────────────────────
+  // No KeyboardAvoidingView here — there is no TextInput on this screen,
+  // and the parent AICoachModal already handles iOS keyboard avoidance
+  // for any chat sub-screens via its sheet's marginBottom.
   if (result) {
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
+      <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => { setResult(null); conversationRef.current = []; }}
+            onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
           >
             <Feather name="arrow-left" size={16} color={C.foreground} />
@@ -1263,39 +1432,22 @@ function GeneratePlanScreen({
           )}
         </ScrollView>
 
+        {/*
+          Action row: "Refine with AI" (secondary) opens RefineChatScreen
+          to iterate on the plan conversationally; "Save All Routines"
+          (primary) commits each day as a routine. Stacked vertically in
+          the same s.refineWrap container the inline refine input used
+          to live inside.
+        */}
         <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
-          <View style={[s.refineInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
-            <Feather name="message-circle" size={14} color={C.textMuted} style={{ marginLeft: 4, marginBottom: 10 }} />
-            <TextInput
-              value={refineInput}
-              onChangeText={setRefineInput}
-              placeholder={refining ? 'Refining…' : 'Refine: e.g. "drop to 3 days" or "more pulling"'}
-              placeholderTextColor={C.textMuted}
-              style={[s.refineInput, { color: C.foreground }]}
-              multiline
-              maxLength={300}
-              editable={!refining}
-              onSubmitEditing={handleRefine}
-              blurOnSubmit
-            />
-            <TouchableOpacity
-              onPress={handleRefine}
-              disabled={!refineInput.trim() || refining}
-              style={[
-                s.sendBtn,
-                {
-                  backgroundColor: refineInput.trim() && !refining ? Colors.primary : C.muted,
-                  marginBottom: 2,
-                },
-              ]}
-            >
-              {refining ? (
-                <ActivityIndicator size="small" color={C.textMuted} />
-              ) : (
-                <Feather name="send" size={14} color={refineInput.trim() ? Colors.primaryFg : C.textMuted} />
-              )}
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            onPress={() => setShowRefineChat(true)}
+            disabled={refining}
+            style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
+          >
+            <Feather name="message-circle" size={14} color={C.mutedFg} />
+            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Refine with AI</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => onSaveRoutines(result.workouts)}
             disabled={refining}
@@ -1305,11 +1457,12 @@ function GeneratePlanScreen({
             <Text style={s.primaryBtnText}>Save All Routines</Text>
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     );
   }
 
-  // ── Loading state (first generation only — refinement shows over the card)
+  // ── Loading state (first generation only — refinement now happens in a
+  // separate RefineChatScreen mounted via showRefineChat, not over the card).
   if (loading) {
     return (
       <View style={{ flex: 1 }}>
@@ -1322,7 +1475,7 @@ function GeneratePlanScreen({
         </View>
         <View style={s.loadingWrap}>
           <ActivityIndicator size="small" color={C.accentText} />
-          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach is designing your plan</Text>
+          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach Drona is designing your plan</Text>
           <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
             {coachIntent || 'Reviewing your training history and matching split, volume, and progression…'}
           </Text>
@@ -1420,13 +1573,17 @@ function GeneratePlanScreen({
           <Text style={s.primaryBtnText}>Generate Plan</Text>
         </TouchableOpacity>
 
-        {/* Chat alternative */}
+        {/* Chat alternative — opens the discuss flow (RefineChatScreen in
+            discuss kind). Coach Drona probes priorities, optionally pulls
+            training data, and emits generate_plan on confirmation — at
+            which point the user lands on the result card with the Save
+            All Routines button. */}
         <TouchableOpacity
-          onPress={onChatWithCoach}
+          onPress={() => setShowDiscussChat(true)}
           style={[s.secondaryBtn, { backgroundColor: C.muted }]}
         >
           <Feather name="message-circle" size={14} color={C.mutedFg} />
-          <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Or chat with coach to refine</Text>
+          <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Or chat with Coach Drona to refine</Text>
         </TouchableOpacity>
       </ScrollView>
     </View>
@@ -1436,11 +1593,9 @@ function GeneratePlanScreen({
 // ─── Generate Workout Screen ─────────────────────────────────────────────────
 function GenerateWorkoutScreen({
   onBack,
-  onChatWithCoach,
   onSaveRoutine,
 }: {
   onBack: () => void;
-  onChatWithCoach: () => void;
   onSaveRoutine: (workout: GeneratedWorkout) => void;
 }) {
   const { C } = useTheme();
@@ -1452,11 +1607,25 @@ function GenerateWorkoutScreen({
   const [duration, setDuration] = useState('45 min');
   const [equipment, setEquipment] = useState('Full Gym');
   const [loading, setLoading] = useState(false);
+  // Kept for back-compat with the runGeneration signature; the inline
+  // refine UI it used to drive has been replaced by the conversational
+  // RefineChatScreen, so `refining` only ever transitions to true now
+  // if a future caller passes isRefine=true to runGeneration.
   const [refining, setRefining] = useState(false);
   const [coachIntent, setCoachIntent] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
   const [result, setResult] = useState<GeneratedWorkout | null>(null);
-  const [refineInput, setRefineInput] = useState('');
+  // Toggled by the "Refine with AI" button on the result view. When true
+  // (and result is non-null), we mount RefineChatScreen instead of the
+  // result card. The chat hands back the updated workout via onRefined,
+  // at which point we clear this flag and the result card re-renders
+  // with the refined version.
+  const [showRefineChat, setShowRefineChat] = useState(false);
+  // Pre-generate discuss flow — see GeneratePlanScreen for the rationale.
+  // Lets the user talk through the workout with Coach Drona before any
+  // structured output exists, ending at the same Save Routine button as
+  // form-based generation.
+  const [showDiscussChat, setShowDiscussChat] = useState(false);
   // Conversation history (carries across refinements). A ref so async
   // streaming callbacks read the latest value without re-binding on each turn.
   const conversationRef = useRef<{ role: string; content: string }[]>([]);
@@ -1565,25 +1734,59 @@ function GenerateWorkoutScreen({
     await runGeneration(conversationRef.current, false);
   };
 
-  const handleRefine = async () => {
-    const text = refineInput.trim();
-    if (!text || refining || loading) return;
-    setRefineInput('');
-    const next = [...conversationRef.current, { role: 'user', content: text }];
-    conversationRef.current = next;
-    await runGeneration(next, true);
-  };
+  // ── Discuss chat (pre-generate conversational) ──────────────────────────
+  // Mounted instead of the form when the user taps "Or chat with Coach
+  // Drona to refine" without having generated a workout yet. Same machine
+  // as the refine chat — Coach Drona probes priorities and emits
+  // generate_workout on confirmation. The structured output drops the
+  // user on the result card with the Save Routine button.
+  if (!result && showDiscussChat) {
+    return (
+      <RefineChatScreen
+        kind="discuss"
+        mode="refine_workout"
+        onBack={() => setShowDiscussChat(false)}
+        onRefined={(next) => {
+          const w = next as GeneratedWorkout;
+          setResult(w);
+          setShowDiscussChat(false);
+          conversationRef.current = [
+            { role: 'assistant', content: workoutToText(w) },
+          ];
+        }}
+      />
+    );
+  }
+
+  // ── Refine chat (conversational) ────────────────────────────────────────
+  // Mounted instead of the result card whenever the user taps "Refine
+  // with AI". The chat seeds itself with the CURRENT workout (so
+  // re-entering refine after a successful iteration uses the refined
+  // version as context, not the original). On successful refine, the
+  // result state is replaced and we pop back to the card.
+  if (result && showRefineChat) {
+    return (
+      <RefineChatScreen
+        kind="refine"
+        mode="refine_workout"
+        workout={result}
+        onBack={() => setShowRefineChat(false)}
+        onRefined={(next) => {
+          setResult(next as GeneratedWorkout);
+          setShowRefineChat(false);
+        }}
+      />
+    );
+  }
 
   // ── Result view ─────────────────────────────────────────────────────────
+  // No KeyboardAvoidingView — see GeneratePlanScreen for rationale.
   if (result) {
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
+      <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
           <TouchableOpacity
-            onPress={() => { setResult(null); conversationRef.current = []; }}
+            onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
           >
             <Feather name="arrow-left" size={16} color={C.foreground} />
@@ -1601,39 +1804,23 @@ function GenerateWorkoutScreen({
           )}
         </ScrollView>
 
+        {/*
+          Action row: "Refine with AI" (secondary) opens RefineChatScreen
+          to iterate conversationally; "Save as Routine" (primary)
+          commits the current workout. Stacked vertically — the same
+          s.refineWrap container the inline refine input used to live
+          inside, so spacing/borders stay consistent with the prior
+          layout.
+        */}
         <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
-          <View style={[s.refineInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
-            <Feather name="message-circle" size={14} color={C.textMuted} style={{ marginLeft: 4, marginBottom: 10 }} />
-            <TextInput
-              value={refineInput}
-              onChangeText={setRefineInput}
-              placeholder={refining ? 'Refining…' : 'Refine: e.g. "swap squat for hack squat" or "shorter"'}
-              placeholderTextColor={C.textMuted}
-              style={[s.refineInput, { color: C.foreground }]}
-              multiline
-              maxLength={300}
-              editable={!refining}
-              onSubmitEditing={handleRefine}
-              blurOnSubmit
-            />
-            <TouchableOpacity
-              onPress={handleRefine}
-              disabled={!refineInput.trim() || refining}
-              style={[
-                s.sendBtn,
-                {
-                  backgroundColor: refineInput.trim() && !refining ? Colors.primary : C.muted,
-                  marginBottom: 2,
-                },
-              ]}
-            >
-              {refining ? (
-                <ActivityIndicator size="small" color={C.textMuted} />
-              ) : (
-                <Feather name="send" size={14} color={refineInput.trim() ? Colors.primaryFg : C.textMuted} />
-              )}
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            onPress={() => setShowRefineChat(true)}
+            disabled={refining}
+            style={[s.secondaryBtn, { backgroundColor: C.muted }, refining && { opacity: 0.6 }]}
+          >
+            <Feather name="message-circle" size={14} color={C.mutedFg} />
+            <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Refine with AI</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => onSaveRoutine(result)}
             disabled={refining}
@@ -1643,7 +1830,7 @@ function GenerateWorkoutScreen({
             <Text style={s.primaryBtnText}>Save as Routine</Text>
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     );
   }
 
@@ -1660,7 +1847,7 @@ function GenerateWorkoutScreen({
         </View>
         <View style={s.loadingWrap}>
           <ActivityIndicator size="small" color={C.accentText} />
-          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach is designing your workout</Text>
+          <Text style={[s.loadingHeader, { color: C.foreground }]}>Coach Drona is designing your workout</Text>
           <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
             {coachIntent || 'Pulling your training data and matching exercises…'}
           </Text>
@@ -1751,15 +1938,447 @@ function GenerateWorkoutScreen({
           <Text style={s.primaryBtnText}>Generate Workout</Text>
         </TouchableOpacity>
 
-        {/* Chat alternative */}
+        {/* Chat alternative — opens the discuss flow. See the matching
+            block in GeneratePlanScreen. */}
         <TouchableOpacity
-          onPress={onChatWithCoach}
+          onPress={() => setShowDiscussChat(true)}
           style={[s.secondaryBtn, { backgroundColor: C.muted }]}
         >
           <Feather name="message-circle" size={14} color={C.mutedFg} />
-          <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Or chat with coach first</Text>
+          <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Or chat with Coach Drona first</Text>
         </TouchableOpacity>
       </ScrollView>
+    </View>
+  );
+}
+
+// ─── Pure-affirmative detector (refine safety net) ───────────────────────────
+// True when the user's message is essentially "yes — go". Used by
+// RefineChatScreen to set forceTool on the next stream, which guarantees
+// the model emits the refined workout/plan via tool_use instead of writing
+// it as text in the chat (which would be unsaveable). Conservative on
+// purpose: we DON'T want to match "yes but bump volume" or "yes, change
+// the bench to incline" — those are still substantive turns and the model
+// should be free to chat or refine without being forced. So we require
+// the cleaned text to be a short stand-alone affirmation.
+function isPureAffirmative(text: string): boolean {
+  // Strip trailing punctuation and lowercase. Keep length budget tight —
+  // anything past ~30 chars is almost certainly carrying additional intent
+  // beyond the affirmation.
+  const clean = text.trim().toLowerCase().replace(/[.!?,]+$/, '');
+  if (clean.length === 0 || clean.length > 30) return false;
+  const patterns: RegExp[] = [
+    /^yes$/,
+    /^yeah$/,
+    /^yep$/,
+    /^yup$/,
+    /^sure$/,
+    /^ok$/,
+    /^okay$/,
+    /^go$/,
+    /^go ahead$/,
+    /^do it$/,
+    /^let'?s do it$/,
+    /^let'?s go$/,
+    /^sounds good$/,
+    /^looks good$/,
+    /^perfect$/,
+    /^great$/,
+    /^alright$/,
+    /^please$/,
+    /^yes please$/,
+    /^yes go ahead$/,
+    /^go for it$/,
+    /^proceed$/,
+    /^definitely$/,
+    /^absolutely$/,
+    /^confirm$/,
+    // "build" / "build it" family — common in discuss flows where the user
+    // is approving the proposed structure and asking for the build. Mirror
+    // each variant for yes/yeah/yep/yup + build to catch typical phrasings
+    // like "yep build", "yes build it", "yeah build it now".
+    /^build$/,
+    /^build it$/,
+    /^build it now$/,
+    /^build the (plan|workout)$/,
+    /^build it please$/,
+    /^(yes|yeah|yep|yup|ok|okay|sure) build$/,
+    /^(yes|yeah|yep|yup|ok|okay|sure) build it$/,
+    /^(yes|yeah|yep|yup|ok|okay|sure) build it now$/,
+    /^(yes|yeah|yep|yup|ok|okay|sure)[, ]+(go|do it|build it)$/,
+    /^make it$/,
+    /^create it$/,
+    /^let'?s build$/,
+    /^let'?s build it$/,
+    /^confirmed$/,
+    /^finalize$/,
+    /^finalise$/,
+    /^generate$/,
+    /^generate it$/,
+    /^generate the (plan|workout)$/,
+  ];
+  return patterns.some(p => p.test(clean));
+}
+
+// ─── Refine Chat Screen ──────────────────────────────────────────────────────
+// Conversational refinement of a just-generated workout or plan. Opens from
+// the result view's "Refine with AI" button. Seeds the chat with a tailored
+// starter asking what's not quite working, then lets the user iterate via
+// normal chat turns. The backend (refine_workout / refine_plan modes) is
+// instructed to probe priorities, optionally pull training data, and ASK
+// EXPLICIT CONFIRMATION before emitting the refined structured output. When
+// the model finally calls generate_workout / generate_plan, we hand the new
+// result back to the parent screen, which dismisses the chat and updates
+// the result card.
+//
+// State design: the chat is intentionally short-lived. Each visit gets a
+// fresh conversation seeded with the CURRENT state of the workout/plan —
+// re-opening refine after a successful round trip starts a new chat with
+// the refined workout as context, not the original. This matches user
+// intent ("refine the thing I'm looking at right now") and keeps the
+// conversation focused on the next round of changes.
+function RefineChatScreen({
+  kind = 'refine',
+  mode,
+  workout,
+  plan,
+  onBack,
+  onRefined,
+}: {
+  // 'refine' — iterating on an already-generated workout/plan (workout or
+  // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
+  // workout/plan exists, to clarify priorities; on confirmation she emits
+  // the terminal tool and the same onRefined callback fires with the newly
+  // generated structured output. Both kinds use the same backend mode
+  // (refine_workout / refine_plan) because refine modes already expose
+  // both read tools and the matching terminal tool — exactly what discuss
+  // needs.
+  kind?: 'refine' | 'discuss';
+  mode: 'refine_workout' | 'refine_plan';
+  workout?: GeneratedWorkout;
+  plan?: GeneratedPlan;
+  onBack: () => void;
+  // Caller updates its `result` state with this and pops back to the
+  // result view. The parent decides whether to remount the chat (next
+  // "Refine with AI" tap) with the new state as context.
+  onRefined: (next: GeneratedWorkout | GeneratedPlan) => void;
+}) {
+  const { C } = useTheme();
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
+  const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
+
+  // Pre-compute the recap and the tailored starter. These live as the
+  // first two conversation turns (synthetic user recap, then assistant
+  // starter) so the model sees the live state on every request. We keep
+  // them out of `messages` to avoid rendering the verbose recap inside
+  // the chat UI — the user already sees the workout/plan card on the
+  // screen they came from, no need to duplicate it.
+  // In 'discuss' kind there's no existing workout/plan, so recap is null
+  // and the synthetic opener is reframed as "discuss before build" instead
+  // of "here's the recap, refine it."
+  const recapText = kind === 'discuss'
+    ? null
+    : (mode === 'refine_plan'
+        ? planToText(plan!)
+        : workoutToText(workout!));
+
+  const starterText = (() => {
+    if (kind === 'discuss') {
+      return mode === 'refine_plan'
+        ? "I'm Coach Drona. Let's talk through your plan before I build it. Tell me what matters most — goal, days per week, session length, exercise preferences, recovery, equipment, anything else on your mind. When you're set, I'll build it."
+        : "I'm Coach Drona. Let's talk through your workout before I build it. Tell me what you're after — target muscles, intensity, equipment, time you've got, anything else. When you're set, I'll build it.";
+    }
+    return mode === 'refine_plan'
+      ? (plan!.split_type
+          ? `You're looking at "${plan!.name}" — a ${plan!.split_type} structure${plan!.days_per_week ? ` over ${plan!.days_per_week} days/week` : ''}. Before I tweak it: what's not quite hitting the mark? Could be the split, volume per session, exercise selection, time, equipment, or recovery between sessions.`
+          : `You're looking at "${plan!.name}". Before I tweak it: what's not quite hitting the mark? Could be the structure, volume, exercises, time, equipment, or recovery.`)
+      : (workout!.focus
+          ? `You're looking at "${workout!.name}" — ${workout!.focus.toLowerCase()}. Before I tweak it: what's not quite right? Could be exercise selection, volume, sets or reps, rest, time, or something specific you want different.`
+          : `You're looking at "${workout!.name}". Before I tweak it: what's not quite right? Exercise selection, volume, sets or reps, rest, time — what's on your mind?`);
+  })();
+
+  // Messages rendered in the chat. Starts with just the assistant
+  // starter; the recap is sent as a synthetic user message at the API
+  // layer but never displayed in the UI.
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { id: 'starter', role: 'assistant', content: starterText },
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  // Stable abort handle — refine turns can run long when the model
+  // decides to fetch the user's volume series before proposing changes.
+  const streamRef = useRef<{ abort: () => void } | null>(null);
+  // Latch so onRefined fires exactly once per stream even when the
+  // structured payload arrives in BOTH the live `structured` event and
+  // the `done` fallback. Without this, a clean stream would double-fire
+  // (caller pops twice → likely a no-op the second time but unsafe).
+  const refinedFiredRef = useRef(false);
+  // Buffer for the live `structured` payload. We do NOT pop the screen the
+  // instant it arrives — that would unmount RefineChatScreen mid-stream and
+  // the cleanup effect above would abort the still-running request, killing
+  // the promised "finish the closing text, then transition" flow. Instead we
+  // stash it here and apply it from onDone's typewriter-finish callback.
+  const pendingStructuredRef = useRef<{ name: string; input: Record<string, unknown> } | null>(null);
+  useEffect(() => {
+    return () => {
+      streamRef.current?.abort();
+      streamRef.current = null;
+    };
+  }, []);
+
+  // Translate a terminal-tool emission into the right shape and hand it
+  // up. Guards against double-fire (live + done) and against tool-name
+  // mismatch (the model picking generate_workout in refine_plan mode is
+  // theoretically possible — we just ignore it).
+  const handleStructured = useCallback((name: string, input: Record<string, unknown>) => {
+    if (refinedFiredRef.current) return;
+    if (mode === 'refine_workout' && name === 'generate_workout') {
+      refinedFiredRef.current = true;
+      onRefined(structuredToWorkout(input));
+    } else if (mode === 'refine_plan' && name === 'generate_plan') {
+      refinedFiredRef.current = true;
+      onRefined(structuredToPlan(input));
+    }
+  }, [mode, onRefined]);
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
+    const assistantId = (Date.now() + 1).toString();
+    const placeholder: ChatMessage = {
+      id: assistantId, role: 'assistant', content: '',
+      thinkingPhase: 'Thinking',
+    };
+    setMessages(prev => [...prev, userMsg, placeholder]);
+    setInput('');
+    setLoading(true);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+
+    // Build the API conversation. Order matters: the synthetic opener
+    // (user) primes the model with the live state and intent; the starter
+    // (assistant) is what the user actually saw on the screen; the rest
+    // of `messages` is the real chat history (excluding the seeded
+    // starter, which is already represented); then the new user turn.
+    // The synthetic opener differs by kind: refine pastes the existing
+    // plan/workout as a recap; discuss explicitly tells the model there's
+    // nothing yet and to probe before emitting the terminal tool.
+    // For discuss kind, the system-prompt DISCUSS_BEHAVIOR carries the full
+    // probe-propose-confirm-emit policy — so the synthetic opener stays
+    // short and just states the intent. Stuffing instructions into the
+    // user turn risks the model treating them as user-supplied (and
+    // therefore optional) overrides. For refine kind, the opener carries
+    // the recap because the model needs the live state of the workout/plan.
+    const syntheticOpener = kind === 'discuss'
+      ? (mode === 'refine_plan'
+          ? "I want to build a new training plan. Let's discuss what should be in it before you write it."
+          : "I want to build a new workout. Let's discuss what should be in it before you write it.")
+      : `Here's the current ${mode === 'refine_plan' ? 'plan' : 'workout'} you generated for me. I'd like to refine it.\n\n${recapText}`;
+
+    const apiMessages = [
+      { role: 'user' as const, content: syntheticOpener },
+      { role: 'assistant' as const, content: starterText },
+      ...messages.slice(1).map((m) => ({ role: m.role, content: m.content })),
+      { role: userMsg.role, content: userMsg.content },
+    ];
+
+    // Safety net for over-conversational models: if this turn is a pure
+    // affirmation ("yes", "go ahead", "do it", etc.) AND the user has
+    // already had at least one substantive turn in this chat, force the
+    // terminal tool on the next stream. Without this, the model
+    // sometimes ignores the system prompt and writes the refined workout
+    // as text in the chat — which the user can't save. The first-user-
+    // turn guard prevents forcing when the user opens refine and
+    // immediately types "yes" (no priorities expressed yet → forcing
+    // would just regenerate the same workout). messages[0] is the
+    // assistant starter, so prior user turns = users-in-history > 0
+    // BEFORE we added userMsg.
+    const priorUserTurns = messages.filter((m) => m.role === 'user').length;
+    const shouldForceTool = isPureAffirmative(text) && priorUserTurns >= 1;
+    // The terminal tool the model will call for THIS mode (refine/discuss
+    // both map plan→generate_plan, workout→generate_workout).
+    const wantsPlan = mode === 'refine_plan';
+    const forceToolName: 'generate_workout' | 'generate_plan' =
+      wantsPlan ? 'generate_plan' : 'generate_workout';
+    // The mode actually sent to the edge function: discuss kind translates
+    // to discuss_* (different system-prompt branch with no recap
+    // assumption — fixes the "no access to tool" hallucination the model
+    // produced when refine_plan was used with no recap). Refine kind
+    // passes the mode through unchanged.
+    const effectiveMode: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+      kind === 'discuss'
+        ? (wantsPlan ? 'discuss_plan' : 'discuss_workout')
+        : mode;
+
+    // Guest / no-Clerk: degrade to a notice in-chat. We can't refine
+    // without the live coach. The Generate screens have their own mock
+    // result so the user still gets to demo the rest of the flow.
+    if (!isSupabaseConfigured || !getToken) {
+      setTimeout(() => {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId
+            ? { ...m, content: 'Refine needs the live coach. Sign in to iterate on your workout.' }
+            : m
+        ));
+        setLoading(false);
+      }, 400);
+      return;
+    }
+
+    let token: string | null = null;
+    try { token = await getToken(); } catch { token = null; }
+    if (!token) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
+      ));
+      setLoading(false);
+      return;
+    }
+
+    streamRef.current?.abort();
+    const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    streamRef.current = callAICoachStreaming(apiMessages, token, {
+      onDelta: (chunk) => typewriter.append(chunk),
+      onStatus: (phase, payload) => {
+        let label = 'Thinking';
+        if (phase === 'tool_use') {
+          const tools = Array.isArray((payload as { tools?: unknown }).tools)
+            ? ((payload as { tools: string[] }).tools)
+            : [];
+          if (tools.some(t => t.includes('exercise_history'))) label = 'Looking up your sets';
+          else if (tools.some(t => t.includes('recent_workouts'))) label = 'Pulling your recent workouts';
+          else if (tools.some(t => t.includes('workout_detail'))) label = 'Reviewing that workout';
+          else if (tools.some(t => t.includes('muscle_volume'))) label = 'Checking your volume trends';
+          else if (tools.some(t => t.includes('query_sql'))) label = 'Querying your training data';
+          else label = 'Checking your data';
+        } else if (phase === 'refining') {
+          label = 'Thinking';
+        }
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId && m.content === '' ? { ...m, thinkingPhase: label } : m
+        ));
+      },
+      onStructured: ({ name, input }) => {
+        // Model emitted the refined output. Buffer it — do NOT pop here, or
+        // we'd unmount the screen mid-stream and abort the request. The
+        // transition happens from the typewriter-finish callback below, after
+        // the assistant's closing text has landed on screen.
+        pendingStructuredRef.current = { name, input };
+      },
+      onDone: ({ structured }) => {
+        typewriter.finish(() => {
+          setLoading(false);
+          streamRef.current = null;
+          // Now that the closing text has finished animating, apply the
+          // structured payload — preferring the buffered live event, falling
+          // back to the one on the `done` frame (e.g. if the live event was
+          // missed mid-stream reconnect). Idempotent thanks to refinedFiredRef.
+          const finalStructured = pendingStructuredRef.current ?? structured;
+          if (finalStructured) {
+            handleStructured(finalStructured.name, finalStructured.input);
+          }
+          pendingStructuredRef.current = null;
+        });
+      },
+      onError: (errStr) => {
+        typewriter.fail(`Coach Drona error: ${errStr}`);
+        setLoading(false);
+        streamRef.current = null;
+      },
+    }, {
+      mode: effectiveMode,
+      // forceTool is the escape hatch for pure-affirmative turns —
+      // guarantees the model emits structured output instead of writing
+      // the refined workout as text in the chat. Backend accepts both
+      // `mode` (system prompt + toolkit) and `force_tool` (tool_choice)
+      // simultaneously when the forced tool is in the mode's toolkit,
+      // which is true for all refine_*+generate_* and discuss_*+generate_*
+      // combinations.
+      ...(shouldForceTool ? { forceTool: forceToolName } : {}),
+    });
+  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured]);
+
+  // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
+  // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
+  // which is unreliable inside a transparent Modal on iOS.
+  return (
+    <View style={{ flex: 1 }}>
+      {/* Header */}
+      <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
+        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+          <Feather name="arrow-left" size={16} color={C.foreground} />
+        </TouchableOpacity>
+        <SparkleIcon size={16} color={C.accentText} />
+        <Text style={[s.screenTitle, { color: C.foreground }]}>
+          {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_plan' ? 'Plan' : 'Workout'}
+        </Text>
+      </View>
+
+      {/* Messages */}
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={s.chatMessages}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {messages.map((msg) => (
+          <View
+            key={msg.id}
+            style={[
+              s.chatBubble,
+              msg.role === 'user'
+                ? [s.userBubble, { backgroundColor: Colors.primary }]
+                : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
+            ]}
+          >
+            {msg.role === 'assistant' && msg.content === '' ? (
+              <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
+            ) : msg.role === 'assistant' ? (
+              <MessageContent
+                content={msg.content}
+                citations={msg.citations}
+                textColor={C.foreground}
+              />
+            ) : (
+              <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+            )}
+            {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+              <CitationList citations={msg.citations} />
+            )}
+          </View>
+        ))}
+      </ScrollView>
+
+      {/* Input */}
+      <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
+        <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+          <TextInput
+            value={input}
+            onChangeText={setInput}
+            placeholder="Tell me what to change…"
+            placeholderTextColor={C.textMuted}
+            style={[s.chatInput, { color: C.foreground }]}
+            multiline
+            maxLength={500}
+            onSubmitEditing={handleSend}
+            blurOnSubmit
+          />
+          <TouchableOpacity
+            onPress={handleSend}
+            disabled={!input.trim() || loading}
+            style={[
+              s.sendBtn,
+              { backgroundColor: input.trim() ? Colors.primary : C.muted },
+            ]}
+          >
+            <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 }
@@ -1770,30 +2389,130 @@ export function AICoachModal({
   onClose,
   onRoutineCreated,
   initialScreen = 'menu',
+  initialPrompt,
+  workoutContext,
 }: {
   visible: boolean;
   onClose: () => void;
   onRoutineCreated?: () => void;
   initialScreen?: Screen;
+  // When set (from a dashboard insight card), the chat auto-asks this question
+  // once on open. Pass initialScreen="chat" alongside it.
+  initialPrompt?: string;
+  // When set, the chat screen runs in in-workout mode: the live session is
+  // injected as context, the greeting is tailored, quick-question chips show,
+  // and the chat's back arrow closes the sheet (there's no menu detour
+  // mid-workout). Callers pass initialScreen="chat" alongside this.
+  workoutContext?: WorkoutCoachContext | null;
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [screen, setScreen] = useState<Screen>(initialScreen);
+  // Phase 3 gate. Calls get_coach_access_status. Cached at the hook layer
+  // so opening/closing the modal is free after the first fetch. While
+  // loading, render the gate's spinner instead of the menu — flashing a
+  // menu the user can't use would be worse than waiting 100ms.
+  const { access, loading: accessLoading, refresh: refreshAccess } = useCoachAccess();
+  const accessAllowed = !accessLoading
+    && (access.state === 'paid' || access.state === 'trialing');
+  // Manual paywall — opened by the upgrade banner on trialing users' menu.
+  // Closing returns to the menu; a successful purchase calls refreshAccess
+  // (state → 'paid') which makes the banner disappear on the next render.
+  const [showPaywall, setShowPaywall] = useState(false);
+  // Reset paywall flag whenever the modal closes/reopens, so stale state
+  // from a previous session doesn't auto-show it the next time around.
+  useEffect(() => {
+    if (!visible) setShowPaywall(false);
+  }, [visible]);
   // Sub-frame double-tap guard — modal closes immediately on save, so the
   // visible-button block goes away fast, but the close animation leaves a tiny
   // window where a second tap could fire before React re-renders.
   const inFlightRef = useRef(false);
 
+  // Keyboard avoidance for the modal sheet. A transparent <Modal> does NOT
+  // resize when the keyboard appears — on iOS the modal never resizes, and on
+  // Android this sheet lives inside a <Modal> (a separate window) which, under
+  // SDK 54's always-on edge-to-edge, the activity's adjustResize never reaches.
+  // So a nested KeyboardAvoidingView would just add padding BELOW the visible
+  // window and the input would stay hidden behind the keyboard. The reliable
+  // fix (already used by analytics.tsx's BottomDrawer) is to track keyboard
+  // height ourselves and physically lift the sheet via marginBottom + cap its
+  // height to (winH - kbHeight) so the top doesn't get pushed off-screen.
+  const { height: winH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    if (!visible) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKbHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [visible]);
+  // Sheet sizing: when keyboard is up, cap height to the available space
+  // above it (minus a small top buffer) so the sheet doesn't overflow the
+  // viewport. When keyboard is down, fall back to the original 92% height.
+  // Lift by the keyboard height on BOTH platforms. The old code only lifted
+  // on iOS, assuming Android's adjustResize would shift the input up — but
+  // this sheet lives inside a React Native <Modal> (a separate window) and,
+  // with edge-to-edge always on in SDK 54, that window is never resized for
+  // the keyboard. The sheet is bottom-anchored, so without the lift the input
+  // stays pinned behind the keyboard and the user can't see what they type.
+  const sheetHeight = kbHeight > 0
+    ? Math.max(winH - kbHeight - 40, winH * 0.5)
+    : winH * 0.92;
+  const sheetMarginBottom = kbHeight;
+
   useEffect(() => {
     if (visible) setScreen(initialScreen);
   }, [visible, initialScreen]);
+
+  const router = useRouter();
 
   const handleClose = () => {
     setScreen('menu');
     onClose();
   };
+
+  // Sign-in path for the gate's unauthenticated state. Close the coach sheet,
+  // then route to the auth screen so the blocked flow is actually completable
+  // (otherwise the gate's only CTA just dismisses — a dead end). When Clerk
+  // isn't configured there's no auth screen to reach, so just close.
+  const handleRequestSignIn = () => {
+    handleClose();
+    if (hasClerkKey) router.push('/(auth)');
+  };
+
+  // <Portal> has no onRequestClose, so route the Android hardware back button.
+  // Mirror the on-screen affordances instead of always closing the whole
+  // sheet: from chat/plan/workout the visible back arrow returns to the menu,
+  // so hardware back should too — otherwise Android back throws away the
+  // user's in-progress form or conversation. Re-subscribes when the relevant
+  // state changes so the handler never acts on a stale screen.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // Gate or menu owns the modal → close it entirely (nothing to lose).
+      if (!accessAllowed || screen === 'menu') { handleClose(); return true; }
+      // Paywall overlay (trialing upgrade) → dismiss back to the menu.
+      if (showPaywall) { setShowPaywall(false); return true; }
+      // Chat opened from an active workout has no menu to return to — its
+      // back arrow closes, so match that.
+      if (screen === 'chat' && workoutContext) { handleClose(); return true; }
+      // chat / plan / workout → step back to the menu.
+      setScreen('menu');
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, accessAllowed, screen, showPaywall, workoutContext]);
 
   const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
     const clerkId = user?.id;
@@ -1928,69 +2647,143 @@ export function AICoachModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
-      {/*
-        Backdrop layout: a flex column that pushes the modal sheet to the
-        bottom. The top ~8% is a separate Pressable that handles the
-        "tap-to-close" affordance (menu screen only). The modal sheet itself
-        is a plain View — NOTHING wraps the screen content, so ScrollViews
-        inside (chat history, workout/plan result) receive pan gestures
-        without an outer Pressable competing for the touch responder.
-        (Previously a `<Pressable style={{flex:1}}>` wrapped the screens to
-        block taps from bubbling to the backdrop Pressable, but that's what
-        was eating scroll-from-the-middle gestures.)
-      */}
+    <Portal>
+      {visible && (
+        /*
+          Rendered in the app's own window via <Portal>, not RN's <Modal> (a
+          separate Android Dialog window that edge-to-edge insets by the nav
+          bar, leaving a gap below bottom sheets). Backdrop is a flex column
+          pushing the sheet to the bottom; the top region is a separate
+          Pressable for tap-to-close (menu/gate only). The sheet itself is a
+          plain View so inner ScrollViews keep their pan gestures.
+        */
       <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
         <Pressable
           style={{ flex: 1 }}
-          onPress={screen === 'menu' ? handleClose : undefined}
+          // Backdrop closes on menu OR while the gate owns the modal —
+          // neither has user input that could be lost. Chat/plan/workout
+          // screens keep the tap inert so accidental backdrop hits don't
+          // throw away mid-conversation state.
+          onPress={(screen === 'menu' || !accessAllowed) ? handleClose : undefined}
         />
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
-          style={[s.modalContainer, { backgroundColor: C.background }]}
+          style={[
+            s.modalContainer,
+            {
+              backgroundColor: C.background,
+              height: sheetHeight,
+              marginBottom: sheetMarginBottom,
+              // Flush to the screen bottom now (portal, not a nav-bar-inset
+              // Modal window), so pad content past the gesture/nav bar.
+              paddingBottom: insets.bottom,
+            },
+          ]}
         >
-          {/* Close/handle for menu */}
-          {screen === 'menu' && (
-            <View style={s.menuHeader}>
-              <TouchableOpacity
-                onPress={handleClose}
-                style={[s.closeCircle, { backgroundColor: C.muted }]}
-              >
-                <Feather name="x" size={16} color={C.foreground} />
-              </TouchableOpacity>
-              <View style={s.menuHeaderTitle}>
-                <SparkleIcon size={16} color={C.accentText} />
-                <Text style={[s.menuHeaderText, { color: C.foreground }]}>AI Coach</Text>
-              </View>
-              <View style={{ width: 32 }} />
-            </View>
-          )}
+          {/*
+            Gate first. When the user isn't paid/trialing the gate owns the
+            entire modal body — including its own header — and the menu
+            header + screen dispatch below are skipped. When the gate is
+            cleared (paid/trialing), we fall through to the existing flow.
+          */}
+          {!accessAllowed ? (
+            <CoachAccessGate
+              access={access}
+              loading={accessLoading}
+              refresh={refreshAccess}
+              supabase={supabase}
+              onClose={handleClose}
+              onRequestSignIn={hasClerkKey ? handleRequestSignIn : undefined}
+            />
+          ) : showPaywall ? (
+            /* Upgrade path for trialing users — owns the modal body
+               while open. Close returns to the menu; a successful purchase
+               flips access.state to 'paid' and we drop back to the menu
+               on the next render. */
+            <Paywall
+              supabase={supabase}
+              onClose={() => setShowPaywall(false)}
+              onPurchased={async () => {
+                await refreshAccess();
+                setShowPaywall(false);
+              }}
+            />
+          ) : (
+            <>
+              {/* Close/handle for menu */}
+              {screen === 'menu' && (
+                <View style={s.menuHeader}>
+                  <TouchableOpacity
+                    onPress={handleClose}
+                    style={[s.closeCircle, { backgroundColor: C.muted }]}
+                  >
+                    <Feather name="x" size={16} color={C.foreground} />
+                  </TouchableOpacity>
+                  <View style={s.menuHeaderTitle}>
+                    <SparkleIcon size={16} color={C.accentText} />
+                    <Text style={[s.menuHeaderText, { color: C.foreground }]}>Coach Drona</Text>
+                  </View>
+                  <View style={{ width: 32 }} />
+                </View>
+              )}
 
-          {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
-          {screen === 'chat' && (
-            <ChatScreen
-              onBack={() => setScreen('menu')}
-              onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
-            />
-          )}
-          {screen === 'plan' && (
-            <GeneratePlanScreen
-              onBack={() => setScreen('menu')}
-              onChatWithCoach={() => setScreen('chat')}
-              onSaveRoutines={handleSaveRoutines}
-            />
-          )}
-          {screen === 'workout' && (
-            <GenerateWorkoutScreen
-              onBack={() => setScreen('menu')}
-              onChatWithCoach={() => setScreen('chat')}
-              onSaveRoutine={handleSaveRoutine}
-            />
+              {/* Upgrade affordance for trialing users. Sits between the
+                  header and the option cards — non-intrusive, but visible
+                  every time they open the menu so converting before the
+                  trial ends feels natural. Hidden for 'paid' users (no
+                  upgrade path) and for non-menu screens (avoid clutter
+                  during chat/plan/workout sessions). */}
+              {screen === 'menu' && access.state === 'trialing' && (
+                <TouchableOpacity
+                  onPress={() => setShowPaywall(true)}
+                  style={[s.upgradeBanner, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
+                  activeOpacity={0.85}
+                >
+                  <View style={s.upgradeBannerLeft}>
+                    <Feather name="zap" size={14} color={C.accentText} />
+                    <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
+                      {typeof access.daysLeft === 'number'
+                        ? `Trial · ${Math.max(0, Math.ceil(access.daysLeft))} day${Math.ceil(access.daysLeft) === 1 ? '' : 's'} left`
+                        : 'Trial active'}
+                    </Text>
+                  </View>
+                  <View style={s.upgradeBannerRight}>
+                    <Text style={[s.upgradeBannerCta, { color: C.accentText }]}>Upgrade</Text>
+                    <Feather name="chevron-right" size={14} color={C.accentText} />
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
+              {screen === 'chat' && (
+                <ChatScreen
+                  // In workout mode the back arrow closes the sheet (no menu
+                  // detour mid-workout); otherwise it returns to the menu.
+                  onBack={workoutContext ? handleClose : () => setScreen('menu')}
+                  onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
+                  initialPrompt={initialPrompt}
+                  workoutContext={workoutContext}
+                />
+              )}
+              {screen === 'plan' && (
+                <GeneratePlanScreen
+                  onBack={() => setScreen('menu')}
+                  onSaveRoutines={handleSaveRoutines}
+                />
+              )}
+              {screen === 'workout' && (
+                <GenerateWorkoutScreen
+                  onBack={() => setScreen('menu')}
+                  onSaveRoutine={handleSaveRoutine}
+                />
+              )}
+            </>
           )}
         </Animated.View>
       </View>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
@@ -2000,7 +2793,8 @@ const s = StyleSheet.create({
   modalContainer: {
     borderTopLeftRadius: Radius.xxl,
     borderTopRightRadius: Radius.xxl,
-    height: '92%',
+    // height is set dynamically by AICoachModal to react to the on-screen
+    // keyboard (see kbHeight tracking there). Do NOT add a static height here.
     overflow: 'hidden',
   },
 
@@ -2022,6 +2816,39 @@ const s = StyleSheet.create({
   },
   menuHeaderText: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,
+  },
+
+  // Upgrade banner — appears between the menu header and the option cards
+  // for trialing users only. Tapping opens the in-modal paywall.
+  upgradeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: Spacing.xl,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.md,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+  },
+  upgradeBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  upgradeBannerText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  upgradeBannerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  upgradeBannerCta: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
   },
 
   // Menu content
@@ -2203,6 +3030,27 @@ const s = StyleSheet.create({
   sendBtn: {
     width: 36, height: 36, borderRadius: 18,
     alignItems: 'center', justifyContent: 'center',
+  },
+
+  // In-workout quick-question chips (above the input, workout mode only)
+  suggestionScroll: {
+    flexGrow: 0,
+  },
+  suggestionRow: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
+    gap: 8,
+    alignItems: 'center',
+  },
+  suggestionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  suggestionChipText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
   },
 
   // Forms

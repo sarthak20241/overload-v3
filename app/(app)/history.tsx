@@ -620,34 +620,45 @@ export default function HistoryScreen() {
     setCalMonth(now.getMonth());
   };
 
-  // Filter by search and selected date
-  const filtered = workouts.filter((w) => {
-    const matchSearch = !search.trim() ||
-      w.name.toLowerCase().includes(search.trim().toLowerCase()) ||
-      w.exercises?.some(e => e.name.toLowerCase().includes(search.trim().toLowerCase()));
+  // Filter by search and selected date, then group by month.
+  // Memoized so per-keystroke filtering doesn't reprocess the full list +
+  // O(n) lookups inside the group reducer on every render.
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return workouts.filter((w) => {
+      const matchSearch = !q ||
+        w.name.toLowerCase().includes(q) ||
+        w.exercises?.some(e => e.name.toLowerCase().includes(q));
 
-    const matchDate = !selectedDate ||
-      isSameDay(new Date(w.started_at), selectedDate);
+      const matchDate = !selectedDate ||
+        isSameDay(new Date(w.started_at), selectedDate);
 
-    return matchSearch && matchDate;
-  });
+      return matchSearch && matchDate;
+    });
+  }, [workouts, search, selectedDate]);
 
-  // Group by month
-  const grouped: { key: string; label: string; items: WorkoutRaw[] }[] = [];
-  filtered.forEach((w) => {
-    const d = new Date(w.started_at);
-    const key = `${d.getFullYear()}-${d.getMonth()}`;
-    const label = `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
-    const existing = grouped.find((g) => g.key === key);
-    if (existing) {
-      existing.items.push(w);
-    } else {
-      grouped.push({ key, label, items: [w] });
+  const grouped = useMemo(() => {
+    const out: { key: string; label: string; items: WorkoutRaw[] }[] = [];
+    const byKey = new Map<string, { key: string; label: string; items: WorkoutRaw[] }>();
+    for (const w of filtered) {
+      const d = new Date(w.started_at);
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`, items: [] };
+        byKey.set(key, g);
+        out.push(g);
+      }
+      g.items.push(w);
     }
-  });
+    return out;
+  }, [filtered]);
 
   // Summary stats
-  const totalVolume = workouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0);
+  const totalVolume = useMemo(
+    () => workouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0),
+    [workouts],
+  );
   const totalWorkouts = workouts.length;
 
   return (
@@ -710,6 +721,9 @@ export default function HistoryScreen() {
               <TouchableOpacity
                 onPress={() => setSelectedDate(null)}
                 style={[styles.dateFilterClose, { backgroundColor: C.accentText }]}
+                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                accessibilityRole="button"
+                accessibilityLabel="Clear date filter"
               >
                 <Feather name="x" size={10} color={Colors.primaryFg} />
               </TouchableOpacity>

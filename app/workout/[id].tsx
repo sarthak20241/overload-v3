@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
-  StyleSheet, ActivityIndicator, Modal, Pressable,
+  StyleSheet, ActivityIndicator, Pressable, BackHandler,
   Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -18,12 +18,15 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findMockRoutine, addGuestWorkout, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { getXpForWorkout } from '@/lib/xp';
 import { MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
+import { AICoachModal } from '@/components/ai/AICoachModal';
+import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
 const AMBER = '#fbbf24';
 const WORKOUT_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Other'] as const;
@@ -66,6 +69,10 @@ export default function ActiveWorkoutScreen() {
   const [customRest, setCustomRest] = useState('90');
   const [exerciseTimer, setExerciseTimer] = useState(0);
   const [restTimer, setRestTimer] = useState(0);
+  // True from the moment a set is logged until the user either logs the next
+  // set or taps "Skip rest". Drives the dedicated rest card so rest can be
+  // ended without being forced to log a set just to clear the timer.
+  const [isResting, setIsResting] = useState(false);
   const [exerciseStarted, setExerciseStarted] = useState<boolean[]>([]);
   const [exerciseFinished, setExerciseFinished] = useState<boolean[]>([]);
   // Alert states
@@ -74,6 +81,13 @@ export default function ActiveWorkoutScreen() {
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   const [finishSetCount, setFinishSetCount] = useState(0);
+  // In-workout coach. `coachContext` is a snapshot of the live session taken
+  // when the user opens the coach (see openCoach), kept stable for that chat.
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachContext, setCoachContext] = useState<WorkoutCoachContext | null>(null);
+  // Measured height of the bottom progress bar so the floating Coach button can
+  // sit just above it (the bar only renders when there are exercises).
+  const [bottomBarH, setBottomBarH] = useState(0);
 
   const exerciseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -85,11 +99,31 @@ export default function ActiveWorkoutScreen() {
   const currentEx = exercises[currentIdx];
   const prevSets = currentEx?.previousSets;
 
-  // Track keyboard height while the custom-exercise form is open. iOS Modal
-  // does not auto-resize. On Android we still need the height so the sheet's
-  // maxHeight can subtract it — useWindowDimensions inside a Modal does not
-  // reliably reflect the resized window, which was leaving the sheet taller
-  // than the visible area and pushing the EXERCISE NAME input off-screen.
+  // Snapshot the live session and open the coach. Taking the snapshot here
+  // (rather than passing live state) keeps the chat's context stable for the
+  // session — reopening after logging more sets refreshes it.
+  const openCoachWith = useCallback((kind: 'live' | 'review') => {
+    setCoachContext(buildWorkoutCoachContext({
+      routineName: workout.routineName,
+      elapsedSeconds: workout.elapsed,
+      exercises: workout.exercises,
+      currentIdx,
+      finished: exerciseFinished,
+      kind,
+    }));
+    setCoachOpen(true);
+  }, [workout.routineName, workout.elapsed, workout.exercises, currentIdx, exerciseFinished]);
+  // Quick mid-set help (top bar + rest card).
+  const openCoach = useCallback(() => openCoachWith('live'), [openCoachWith]);
+  // End-of-session review (finish confirmation). Opens the coach and lets it
+  // auto-review the workout; the session stays active so any advice can still
+  // be acted on before the user actually saves.
+  const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
+
+  // Track keyboard height while the custom-exercise form is open. The sheet now
+  // renders via <Portal> (the app's own window), which isn't auto-resized for
+  // the keyboard, so we lift it (marginBottom) and cap its height (maxHeight)
+  // by this amount — otherwise the keyboard covers the EXERCISE NAME input.
   useEffect(() => {
     if (!showCustomForm) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -103,6 +137,19 @@ export default function ActiveWorkoutScreen() {
       hideSub.remove();
     };
   }, [showCustomForm]);
+
+  // <Portal> has no onRequestClose (unlike RN <Modal>), so route the Android
+  // hardware back button to close whichever sheet is open instead of letting it
+  // fall through and leave the workout.
+  useEffect(() => {
+    if (!showAddExercise && !showCustomForm) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showCustomForm) { setShowCustomForm(false); return true; }
+      if (showAddExercise) { setShowAddExercise(false); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [showAddExercise, showCustomForm]);
 
   // Load routine on mount
   useEffect(() => {
@@ -261,6 +308,7 @@ export default function ActiveWorkoutScreen() {
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     lastSetTimeRef.current = Date.now();
     setRestTimer(0);
+    setIsResting(true);
     restTimerRef.current = setInterval(() => {
       if (lastSetTimeRef.current) {
         setRestTimer(Math.floor((Date.now() - lastSetTimeRef.current) / 1000));
@@ -273,6 +321,7 @@ export default function ActiveWorkoutScreen() {
     restTimerRef.current = null;
     lastSetTimeRef.current = null;
     setRestTimer(0);
+    setIsResting(false);
   }, []);
 
   useEffect(() => {
@@ -410,6 +459,12 @@ export default function ActiveWorkoutScreen() {
       return next;
     });
     stopExerciseTimer();
+    stopRestTimer();
+  };
+
+  // End the current rest period early. Lets the user signal "ready for the next
+  // set" without having to log a set just to clear the running rest timer.
+  const handleSkipRest = () => {
     stopRestTimer();
   };
 
@@ -635,6 +690,15 @@ export default function ActiveWorkoutScreen() {
     if (currentIdx >= updated.length) setCurrentIdx(Math.max(0, updated.length - 1));
   };
 
+  // Leave the workout screen. After a reload/deep-link this screen can be the
+  // only route in the stack, where router.back() dispatches GO_BACK with no
+  // target (a dev warning, and a no-op close in production). Fall back to the
+  // dashboard when there's nothing to go back to.
+  const leaveWorkout = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(app)');
+  };
+
   // Cancel workout
   const handleCancel = () => {
     setShowCancelAlert(true);
@@ -643,7 +707,7 @@ export default function ActiveWorkoutScreen() {
   const confirmCancel = () => {
     setShowCancelAlert(false);
     workout.finishWorkout();
-    router.back();
+    leaveWorkout();
   };
 
   // Finish workout
@@ -791,10 +855,17 @@ export default function ActiveWorkoutScreen() {
   const isStarted = exerciseStarted[currentIdx];
   const isFinished = exerciseFinished[currentIdx];
 
-  // Rest timer turns neon when rest exceeds recommended rest time
-  const restColor = currentEx && restTimer > 0
-    ? restTimer >= (currentEx.sets[0]?.reps ? 90 : 90) ? Colors.primary : C.textMuted
-    : C.textDim;
+  // Rest timer: `restTimer` counts up since the last logged set. We present it
+  // as a countdown against the exercise's recommended rest (restSeconds). A
+  // restSeconds of 0 means "no target", so we just show elapsed rest instead.
+  const restTarget = currentEx?.restSeconds ?? 0;
+  const restRemaining = restTarget - restTimer;
+  const restDone = restTarget > 0 && restRemaining <= 0;
+  const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
+  const nextSetNum = currentEx ? currentEx.sets.filter(s => s.completed).length + 1 : 1;
+  const restDisplay = restTarget > 0
+    ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
+    : fmt(restTimer);
 
   const filteredLibrary = searchExercises(exerciseSearch);
 
@@ -949,22 +1020,74 @@ export default function ActiveWorkoutScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Exercise & Rest Timers */}
+            {/* Exercise timer */}
             {isStarted && !isFinished && (
               <Animated.View entering={FadeIn} style={[styles.timersRow, { backgroundColor: C.muted }]}>
                 <View style={styles.timerBlock}>
                   <Text style={[styles.timerValue, { color: C.accentText }]}>{fmt(exerciseTimer)}</Text>
                   <Text style={[styles.timerLabel, { color: C.textDim }]}>ELAPSED</Text>
                 </View>
-                {currentEx.sets.some(s => s.completed) && (
-                  <>
-                    <View style={[styles.timerDivider, { backgroundColor: C.border }]} />
-                    <View style={styles.timerBlock}>
-                      <Text style={[styles.timerValue, { color: restColor }]}>{fmt(restTimer)}</Text>
-                      <Text style={[styles.timerLabel, { color: C.textDim }]}>REST</Text>
+              </Animated.View>
+            )}
+
+            {/* Rest timer — appears right after a set is logged. Counts down the
+                exercise's recommended rest and can be ended early with "Skip
+                rest", so the user no longer has to log the next set just to
+                clear a running rest timer. */}
+            {isStarted && !isFinished && isResting && (
+              <Animated.View
+                entering={FadeIn}
+                exiting={FadeOut}
+                style={[styles.restCard, { backgroundColor: C.card, borderColor: restDone ? Colors.primary : C.primaryBorder }]}
+              >
+                <View style={styles.restCardTop}>
+                  <View>
+                    <View style={styles.restCardLabelRow}>
+                      <Feather name="clock" size={12} color={restDone ? Colors.primary : C.textMuted} />
+                      <Text style={[styles.restCardLabel, { color: restDone ? Colors.primary : C.textMuted }]}>
+                        {restDone ? 'Rest complete' : 'Resting'}
+                      </Text>
                     </View>
-                  </>
+                    <Text style={[styles.restCardValue, { color: restDone ? Colors.primary : C.foreground }]}>
+                      {restDisplay}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={handleSkipRest}
+                    style={[styles.skipRestBtn, { backgroundColor: restDone ? Colors.primary : C.muted }]}
+                  >
+                    <Feather name="skip-forward" size={13} color={restDone ? Colors.primaryFg : C.mutedFg} />
+                    <Text style={[styles.skipRestBtnText, { color: restDone ? Colors.primaryFg : C.mutedFg }]}>
+                      {restDone ? 'Done' : 'Skip rest'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {restTarget > 0 && (
+                  <View style={[styles.restTrack, { backgroundColor: C.muted }]}>
+                    <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
+                    <View style={{ flex: 100 - restPct }} />
+                  </View>
                 )}
+
+                <Text style={[styles.restHint, { color: C.textDim }]}>
+                  {restDone
+                    ? `Rest’s up — tap “Done”, or just log set ${nextSetNum} whenever you’re ready.`
+                    : `Recovering before set ${nextSetNum}. Tap “Skip rest” to end it early and start now.`}
+                </Text>
+
+                {/* Rest is prime dead-time — surface the coach right where the
+                    user is already thinking about the next set. */}
+                <TouchableOpacity
+                  onPress={openCoach}
+                  style={[styles.restCoachBtn, { borderColor: C.primaryBorder }]}
+                  activeOpacity={0.7}
+                >
+                  <Feather name="zap" size={12} color={C.accentText} />
+                  <Text style={[styles.restCoachBtnText, { color: C.accentText }]}>
+                    Ask Coach about this set
+                  </Text>
+                </TouchableOpacity>
               </Animated.View>
             )}
 
@@ -1165,7 +1288,10 @@ export default function ActiveWorkoutScreen() {
 
       {/* BOTTOM PROGRESS BAR — sits above nav bar */}
       {exercises.length > 0 && (
-        <View style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}>
+        <View
+          onLayout={(e) => setBottomBarH(e.nativeEvent.layout.height)}
+          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
+        >
           <TouchableOpacity
             onPress={() => goTo(currentIdx - 1)}
             disabled={currentIdx === 0}
@@ -1203,13 +1329,18 @@ export default function ActiveWorkoutScreen() {
         </View>
       )}
 
-      {/* ADD EXERCISE MODAL */}
-      <Modal visible={showAddExercise} transparent animationType="none" onRequestClose={() => setShowAddExercise(false)}>
+      {/* ADD EXERCISE SHEET — rendered via root <Portal> (the app's own window),
+          not RN <Modal>. On Android a <Modal> is a separate Dialog window where
+          Reanimated entering/exiting animations leave touch hit-rects stale, so
+          taps on the list rows and the close button register only
+          intermittently. Same-window Portal keeps hit-testing correct. */}
+      <Portal>
+        {showAddExercise && (
         <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowAddExercise(false)}>
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
-            style={[styles.modalSheet, { backgroundColor: C.elevated }]}
+            style={[styles.modalSheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom }]}
           >
             <Pressable>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
@@ -1271,10 +1402,15 @@ export default function ActiveWorkoutScreen() {
             </Pressable>
           </Animated.View>
         </Pressable>
-      </Modal>
+        )}
+      </Portal>
 
-      {/* CUSTOM EXERCISE FORM */}
-      <Modal visible={showCustomForm} transparent animationType="none" onRequestClose={() => setShowCustomForm(false)}>
+      {/* CUSTOM EXERCISE FORM — rendered via root <Portal>, not RN <Modal>, for
+          the same reason as the Add Exercise sheet: a <Modal>'s separate Android
+          window + Reanimated layout animations make taps on the muscle-group /
+          category chips and the close button register only intermittently. */}
+      <Portal>
+        {showCustomForm && (
         <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowCustomForm(false)}>
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
@@ -1283,10 +1419,10 @@ export default function ActiveWorkoutScreen() {
               styles.modalSheet,
               {
                 backgroundColor: C.elevated,
-                // iOS Modal doesn't auto-resize, so lift the sheet via margin.
-                // Android adjustResize already handles the bottom anchor;
-                // adding margin would push the sheet off the top of the screen.
-                marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
+                // Lift above the keyboard on both platforms — now rendered in the
+                // app's own window via <Portal>, which (unlike a <Modal> window)
+                // isn't auto-resized for the keyboard.
+                marginBottom: kbHeight,
                 maxHeight: (winH - kbHeight) * 0.9,
               },
             ]}
@@ -1420,7 +1556,8 @@ export default function ActiveWorkoutScreen() {
             </Pressable>
           </Animated.View>
         </Pressable>
-      </Modal>
+        )}
+      </Portal>
 
       {/* Themed Alerts */}
       <ThemedAlert
@@ -1448,8 +1585,12 @@ export default function ActiveWorkoutScreen() {
           { label: 'Volume', value: `${totalVolume}kg` },
         ]}
         buttons={[
-          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
           { text: 'Finish', style: 'primary', onPress: confirmFinish },
+          {
+            text: 'Review with Coach',
+            onPress: () => { setShowFinishAlert(false); openCoachReview(); },
+          },
+          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
         ]}
         onClose={() => setShowFinishAlert(false)}
       />
@@ -1475,13 +1616,43 @@ export default function ActiveWorkoutScreen() {
           style: 'primary',
           onPress: () => {
             setShowErrorAlert('');
-            router.back();
+            leaveWorkout();
           },
         }]}
         onClose={() => {
           setShowErrorAlert('');
-          router.back();
+          leaveWorkout();
         }}
+      />
+
+      {/* Floating Coach button — always present (independent of the exercise
+          list, so it shows on blank workouts too) and thumb-reachable, without
+          crowding the header. Sits just above the bottom progress bar when
+          there are exercises, else above the nav. */}
+      <TouchableOpacity
+        onPress={openCoach}
+        accessibilityLabel="Ask Coach Drona about this workout"
+        activeOpacity={0.85}
+        style={[
+          styles.coachFab,
+          {
+            bottom: 64 + insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 16),
+            backgroundColor: Colors.primary,
+          },
+        ]}
+      >
+        <Feather name="zap" size={15} color={Colors.primaryFg} />
+        <Text style={styles.coachFabText}>Coach</Text>
+      </TouchableOpacity>
+
+      {/* In-workout AI coach — reuses the full Coach Drona sheet (access gate,
+          streaming chat, citations) but opens straight to chat with the live
+          session injected as context. */}
+      <AICoachModal
+        visible={coachOpen}
+        onClose={() => setCoachOpen(false)}
+        initialScreen="chat"
+        workoutContext={coachContext}
       />
 
       {/* Bottom navigation — always visible */}
@@ -1537,10 +1708,25 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   finishBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-
   // Pills
   pillsScroll: { flexGrow: 0 },
   pillsContainer: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.sm, gap: 8 },
+
+  // Floating Coach button — absolute, bottom-right, always present (independent
+  // of the exercise list, so it shows on blank workouts too). Distinct elevated
+  // pill so it reads as the AI assistant, not another lime action button.
+  coachFab: {
+    position: 'absolute',
+    right: Spacing.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: Radius.full,
+    ...Shadow.elevated,
+  },
+  coachFabText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1604,7 +1790,41 @@ const styles = StyleSheet.create({
   timerBlock: { alignItems: 'flex-start' },
   timerValue: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
   timerLabel: { fontSize: 9, fontWeight: FontWeight.medium, textTransform: 'uppercase', letterSpacing: 2, marginTop: 2 },
-  timerDivider: { width: 1, height: 20, borderRadius: 1 },
+
+  // Rest timer card
+  restCard: {
+    borderRadius: Radius.xxl,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: Spacing.xl,
+  },
+  restCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  restCardLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 3 },
+  restCardLabel: { fontSize: 10, fontWeight: FontWeight.semibold, textTransform: 'uppercase', letterSpacing: 1.5 },
+  restCardValue: { fontSize: FontSize.xxxl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
+  skipRestBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: Radius.xl,
+  },
+  skipRestBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  restTrack: { height: 6, borderRadius: 3, marginTop: 14, overflow: 'hidden', flexDirection: 'row' },
+  restHint: { fontSize: 11, marginTop: 10, lineHeight: 15 },
+  restCoachBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  restCoachBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
 
   // Previous session
   prevSection: { marginBottom: Spacing.xl },

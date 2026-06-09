@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048" width="2048" height="2048">
+  <!-- Splash icon: just the wordmark on transparent.
+       Expo composes this over the splash backgroundColor (#0a0a0a). -->
+  <text
+    x="1024"
+    y="1108"
+    text-anchor="middle"
+    font-family="Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif"
+    font-weight="900"
+    font-size="280"
+    letter-spacing="-14"
+    fill="#c8ff00">overload</text>
+</svg>

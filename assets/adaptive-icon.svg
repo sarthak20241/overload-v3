@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Android adaptive icon foreground.
+       Android applies a circular/squircle mask; safe zone is the inner ~66%
+       (a 660×660 circle centered at 512,512). Text is sized to fit the safe zone. -->
+  <text
+    x="512"
+    y="566"
+    text-anchor="middle"
+    font-family="Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif"
+    font-weight="900"
+    font-size="148"
+    letter-spacing="-7.4"
+    fill="#c8ff00">overload</text>
+</svg>

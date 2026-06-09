@@ -23,7 +23,11 @@ if (!CLERK_ISSUER) {
   );
 }
 
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+// Uniform daily cap for Drona access — applies to every paid tier AND every
+// active trial. 30 messages per rolling 24h. Mirror this in
+// get_coach_access_status() (v_daily_limit) so the client and server agree
+// on what counts as "limit hit."
+const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_MAX = 30;
 const PREVIEW_MAX_CHARS = 200;
 const MODEL = "claude-sonnet-4-20250514";
@@ -672,6 +676,52 @@ Deno.serve(async (req) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // 3.5 Drona access gate. Reads the user's current state via
+  // get_coach_access_status() — paid / trialing / trial_ended / eligible_for_trial.
+  //
+  // We REQUIRE either paid or trialing here. Free users (eligible_for_trial /
+  // trial_ended) get a 402 with the state in the body, and the client renders
+  // a paywall or "Start Free Trial" CTA based on the returned state instead
+  // of ever hitting this function.
+  //
+  // Why we don't auto-start the trial here: it's a UX decision the client
+  // should make explicitly (user taps "Start Free Trial"), not a side effect
+  // of opening the chat. The client calls start_coach_trial() separately
+  // when the user opts in, then re-attempts the chat.
+  //
+  // Daily usage limit (paid AND trial alike) is enforced by the rate-limit
+  // check above, which counts requests in the rolling 24h window. No
+  // per-state branching here.
+  try {
+    const { data: accessData, error: accessErr } = await userClient.rpc(
+      "get_coach_access_status",
+    );
+    if (accessErr) {
+      // Treat as no access — fail-closed. The error is logged for diagnosis.
+      console.log("[ai-coach] access status rpc error:", accessErr.message);
+      trace.status = "internal_error";
+      trace.error_message = `access_status_failed: ${accessErr.message}`;
+      return respond({ error: "Access check failed" }, 500);
+    }
+    const state = (accessData as { state?: string } | null)?.state ?? "unauthenticated";
+    if (state !== "paid" && state !== "trialing") {
+      // 402 Payment Required. The client switches on `state` to render the
+      // right surface: 'eligible_for_trial' → trial-start CTA; 'trial_ended'
+      // → paywall; 'unauthenticated' → re-auth.
+      trace.status = "unauthorized";
+      trace.error_message = `no_drona_access:${state}`;
+      return respond(
+        { error: "drona_access_required", state, details: accessData },
+        402,
+      );
+    }
+  } catch (e) {
+    console.log("[ai-coach] access status check threw:", String(e));
+    trace.status = "internal_error";
+    trace.error_message = `access_status_threw: ${String(e).slice(0, 200)}`;
+    return respond({ error: "Access check failed" }, 500);
+  }
+
   // 4. Fetch pre-computed user_context (tier 1).
   let userContext: unknown = null;
   try {
@@ -773,12 +823,54 @@ Deno.serve(async (req) => {
   // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
   // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
   // single terminal tool and force tool_choice on it.
+  //
+  // Refine-flow routing: client sets `mode` to 'refine_workout' |
+  // 'refine_plan'. We expose the read toolkit AND the matching terminal
+  // tool. tool_choice is auto by default — the model decides whether to
+  // chat (probing priorities) or emit the refined structured output. The
+  // confirmation gate is enforced by REFINE_BEHAVIOR in the system prompt.
+  //
+  // Escape hatch: in refine mode the client MAY ALSO send `force_tool` to
+  // force the terminal tool on the next turn. This is used when the
+  // client detects an affirmative user reply (e.g. "yes, go ahead") and
+  // wants to guarantee the model emits structured output instead of
+  // writing the workout as text. The terminal tool is part of the refine
+  // toolkit, so tool_choice can name it.
   const rawForceTool = (body as { force_tool?: unknown }).force_tool;
   const forceTool: 'generate_workout' | 'generate_plan' | null =
     rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
       ? rawForceTool
       : null;
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' = forceTool ?? 'chat';
+  const rawMode = (body as { mode?: unknown }).mode;
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
+    rawMode === 'chat'
+    || rawMode === 'refine_workout' || rawMode === 'refine_plan'
+    || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
+      ? rawMode
+      : null;
+  // Resolution order: explicit `mode` wins, otherwise derive from
+  // `force_tool` (back-compat with existing generate flows that only send
+  // force_tool), otherwise default to 'chat'.
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+    explicitMode ?? forceTool ?? 'chat';
+  // Cross-mode compatibility check: only honor force_tool when the tool
+  // is actually exposed in the resolved mode's toolkit. Refine and discuss
+  // modes both include the matching generate tool, so they can force it;
+  // mismatched combos (refine_workout + generate_plan, etc.) get dropped
+  // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
+  // exposes no generate_* tool, so a force_tool there must be dropped too —
+  // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
+  // tool_choice for a tool that isn't in `tools` (400).
+  const forceToolAllowed =
+    !forceTool
+    || (mode === 'generate_workout' && forceTool === 'generate_workout')
+    || (mode === 'generate_plan' && forceTool === 'generate_plan')
+    || (mode === 'refine_workout' && forceTool === 'generate_workout')
+    || (mode === 'refine_plan' && forceTool === 'generate_plan')
+    || (mode === 'discuss_workout' && forceTool === 'generate_workout')
+    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
+  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
+    forceToolAllowed ? forceTool : null;
 
   const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
   trace.model = MODEL;
@@ -797,18 +889,31 @@ Deno.serve(async (req) => {
 
     // Pick the right output budget. Multi-day plans easily push 2k+ tokens
     // of JSON tool input — leaving this at CHAT_MAX_TOKENS makes plan
-    // generation silently fail at the cap.
-    const maxTokens = forceTool === 'generate_plan'
-      ? GENERATE_PLAN_MAX_TOKENS
-      : forceTool === 'generate_workout'
-        ? GENERATE_WORKOUT_MAX_TOKENS
-        : CHAT_MAX_TOKENS;
+    // generation silently fail at the cap. Refine modes use the same
+    // generate-sized budget because a refine session ends with an emission
+    // of the matching terminal tool, which carries the same JSON payload
+    // as a fresh generate — even though the back-and-forth chat turns are
+    // short (Anthropic bills actual output, so the larger ceiling is free
+    // when unused).
+    const maxTokens =
+      forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
+        ? GENERATE_PLAN_MAX_TOKENS
+        : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
+          ? GENERATE_WORKOUT_MAX_TOKENS
+          : CHAT_MAX_TOKENS;
 
     // Headers flush as soon as we return; body fills asynchronously.
     (async () => {
       try {
-        sse.write("status", { phase: forceTool ? `generating_${forceTool === 'generate_workout' ? 'workout' : 'plan'}` : "thinking" });
-        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, forceTool, maxTokens);
+        const statusPhase = effectiveForceTool
+          ? `generating_${effectiveForceTool === 'generate_workout' ? 'workout' : 'plan'}`
+          : mode === 'refine_workout' || mode === 'refine_plan'
+            ? 'refining'
+            : mode === 'discuss_workout' || mode === 'discuss_plan'
+              ? 'discussing'
+              : 'thinking';
+        sse.write("status", { phase: statusPhase });
+        const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens);
 
         // Citations: same regex as non-streaming path
         const refs = new Set<number>();
@@ -847,7 +952,9 @@ Deno.serve(async (req) => {
           status: "success",
           metadata: {
             user_id: userId,
-            mode: forceTool ?? "chat",
+            // Use the resolved mode so refine sessions show as 'refine_*'
+            // instead of bucketed under 'chat'. Helps cost-page breakdowns.
+            mode,
             message_count: incomingMessages.length,
             tool_calls: trace.tool_calls,
             citation_count: citations.length,
@@ -855,6 +962,11 @@ Deno.serve(async (req) => {
             stream: true,
           },
         });
+
+        // Trial usage is no longer tracked separately — daily limit (paid or
+        // trial) is enforced by the rate-limit table at the top of the handler.
+        // Clients call get_coach_access_status to read messages_today /
+        // daily_limit / messages_left. Nothing to do here on success.
 
         sse.write("done", {
           citations,
@@ -885,7 +997,7 @@ Deno.serve(async (req) => {
           latency_ms: Date.now() - startedAtMs,
           status: "error",
           error_message: `stream_threw: ${String(e)}`.slice(0, 200),
-          metadata: { user_id: userId, mode: forceTool ?? "chat", stream: true },
+          metadata: { user_id: userId, mode, stream: true },
         });
       } finally {
         trace.http_status = 200;
@@ -910,11 +1022,15 @@ Deno.serve(async (req) => {
     content: m.content,
   }));
 
-  const nonStreamMaxTokens = forceTool === 'generate_plan'
-    ? GENERATE_PLAN_MAX_TOKENS
-    : forceTool === 'generate_workout'
-      ? GENERATE_WORKOUT_MAX_TOKENS
-      : CHAT_MAX_TOKENS;
+  // Same budget logic as the streaming branch — refine modes get the
+  // generate-sized ceiling because the session ends with an emission of
+  // the matching terminal tool.
+  const nonStreamMaxTokens =
+    forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
+      ? GENERATE_PLAN_MAX_TOKENS
+      : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
+        ? GENERATE_WORKOUT_MAX_TOKENS
+        : CHAT_MAX_TOKENS;
 
   let totalInput = 0;
   let totalOutput = 0;
@@ -928,8 +1044,10 @@ Deno.serve(async (req) => {
       // Force the matching terminal tool ONLY on the first iteration so
       // follow-up turns (after we've appended tool_results) are free to
       // either chat or call another tool. Identical to streaming behavior.
-      const toolChoice = (forceTool && iter === 0)
-        ? { type: "tool" as const, name: forceTool }
+      // Use effectiveForceTool here so refine modes (which set it to null
+      // even when forceTool was technically present) never auto-force.
+      const toolChoice = (effectiveForceTool && iter === 0)
+        ? { type: "tool" as const, name: effectiveForceTool }
         : undefined;
       const apiResult = await callAnthropic({
         model: MODEL,
@@ -1080,7 +1198,7 @@ Deno.serve(async (req) => {
     status: "success",
     metadata: {
       user_id: userId,
-      mode: forceTool ?? "chat",
+      mode,
       message_count: incomingMessages.length,
       tool_calls: trace.tool_calls,
       citation_count: citations.length,
@@ -1088,6 +1206,9 @@ Deno.serve(async (req) => {
       stream: false,
     },
   });
+
+  // Trial usage is no longer tracked separately — uniform daily limit (paid
+  // or trial) is enforced by the rate-limit table at the top of the handler.
 
   return respond(
     {

@@ -46,6 +46,39 @@ npx tsx tools/research-ingest/run.ts --dry-run --max-papers=5
 npx tsx tools/research-ingest/run.ts --max-papers=10
 ```
 
+## Curated ingestion (owner-driven, manual) — `curated.ts`
+
+`run.ts` is the nightly query/trending firehose. `curated.ts` is the opposite:
+a deliberate, hand-shaped batch of the best, most-trustable evidence across the
+topics the KB is thin on (diet / sleep / cardio) plus a few landmark
+strength/hypertrophy reviews. It runs every paper through the **exact same**
+pipeline (relevance → Haiku distill+tag → Voyage HyDE embed → plagiarism guard
+→ trust v2 → contradictions → land in `research_kb_pending`).
+
+Sourcing is targeted Europe PMC queries (`CURATION_PLAN`), each scoped to
+high-evidence study types and a per-bucket exercise-science **anchor** (so a
+bare topic keyword can't drag in a clinical paper) plus an off-domain disease
+**exclusion** — every candidate is a live API result, so no hand-typed
+(hallucinatable) identifiers.
+
+After landing, it runs the SAME Sonnet auto-review agent (`shared/agent-review.ts`)
+in **advisory mode**: instead of applying the decision, it writes the agent's
+verdict (`add`/`skip`) + reasoning into `research_kb_pending.agent_recommendation`
+(migration `0032`). The human reviews in the admin queue with the agent's call
+in front of them and makes the final approve/reject. Nothing is auto-promoted.
+
+```bash
+npx tsx tools/research-ingest/curated.ts --fetch-only   # FREE preview: list candidates, no LLM/DB
+npx tsx tools/research-ingest/curated.ts --dry-run       # distill + score + print, NO DB writes
+npx tsx tools/research-ingest/curated.ts                 # real run: land in pending + advisory review
+npx tsx tools/research-ingest/curated.ts --only=sleep    # one bucket/topic (label substring)
+npx tsx tools/research-ingest/curated.ts --no-review     # skip the advisory Sonnet pass
+npx tsx tools/research-ingest/curated.ts --max=20        # global cap on candidates processed
+```
+
+To widen coverage later, add specs to `CURATION_PLAN` and (if a new area) a
+matching `DOMAIN_ANCHORS` entry. Always eyeball `--fetch-only` first.
+
 ## Production run (GitHub Actions)
 
 Triggered nightly at `0 3 * * *` UTC via `.github/workflows/research-ingest.yml`.

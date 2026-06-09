@@ -24,6 +24,30 @@ export interface ContradictionFlag {
   rationale: string;
 }
 
+/**
+ * Advisory auto-review recommendation (migration 0032). Written by the
+ * curated ingester (tools/research-ingest/curated.ts): the SAME Sonnet
+ * auto-review agent that the nightly cron uses, but run in advisory mode —
+ * it records its verdict + reasoning instead of applying it, so the human
+ * reviewer decides with the agent's call in front of them. Null for rows
+ * that were never agent-reviewed in advisory mode (e.g. nightly-cron rows).
+ */
+export interface AgentRecommendation {
+  /** Convenience roll-up: 'skip' when action='reject', else 'add'. */
+  verdict: 'add' | 'skip';
+  /** Final action after code-enforced guardrails. */
+  action: 'approve' | 'reject' | 'supersede' | 'coexist';
+  /** What the agent originally proposed (diverges from action when a guardrail fired). */
+  proposed_action: 'approve' | 'reject' | 'supersede' | 'coexist';
+  confidence: number;                 // 0..1
+  rationale: string;                  // 3-5 sentences across the 5 dimensions
+  flags: string[];                    // short analytics tokens
+  downgrade_reason: string | null;    // non-null when a guardrail downgraded the action
+  superseded_kb_ids: string[];
+  model: string;
+  reviewed_at: string;
+}
+
 export interface PendingPaper {
   id: string;
   source: string;
@@ -50,6 +74,8 @@ export interface PendingPaper {
   source_meta: Record<string, unknown> | null;
   /** Phase 3 contradiction detection — null if none surfaced. */
   contradiction_flags: ContradictionFlag[] | null;
+  /** Advisory agent recommendation — null if not agent-reviewed. */
+  agent_recommendation: AgentRecommendation | null;
 }
 
 export interface ResearchKbEntry {

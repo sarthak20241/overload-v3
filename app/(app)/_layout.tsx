@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { Tabs, useRouter, Redirect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -15,7 +15,9 @@ import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getAllRoutines } from '@/lib/mockData';
 import { BottomNav } from '@/components/ui/BottomNav';
-import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
+import { Portal } from '@/components/ui/Portal';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import type { Routine } from '@/lib/types';
 
@@ -25,6 +27,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   const router = useRouter();
   const workout = useWorkout();
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
   const { user } = useClerkUser();
   const supabase = useSupabaseClient();
   // Compute sheet height as absolute pixels rather than '80%' — the percentage
@@ -77,6 +80,16 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
     transform: [{ translateY: translateY.value }],
   }));
 
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
+
   useEffect(() => {
     if (visible) {
       const clerkId = user?.id;
@@ -109,12 +122,8 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   };
 
   return (
-    <Modal
-      visible={render}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-    >
+    <Portal>
+      {render && (
       <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
         <Animated.View
           style={[
@@ -163,7 +172,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
 
             <ScrollView
               style={{ flex: 1 }}
-              contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40, gap: 8 }}
+              contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40 + insets.bottom, gap: 8 }}
               showsVerticalScrollIndicator={false}
             >
               {loading ? (
@@ -197,7 +206,8 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
           </Pressable>
         </Animated.View>
       </Pressable>
-    </Modal>
+      )}
+    </Portal>
   );
 }
 
@@ -208,12 +218,21 @@ export default function AppLayout() {
 
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
-  // yet) or a returning guest (AsyncStorage flag hasn't loaded yet).
-  if (hasClerkKey && (!isLoaded || !guestLoaded)) return null;
+  // yet) or a returning guest (AsyncStorage flag hasn't loaded yet). The
+  // original `hasClerkKey &&` short-circuit here treated a missing Clerk key
+  // as auto-passthrough — the same silent-bypass class as the auth screen
+  // bug. useClerkUser already returns isLoaded:true when no key is present,
+  // so this just waits on the guest flag in that case.
+  if (!isLoaded || !guestLoaded) return null;
 
   // Reject everyone who isn't signed in and isn't an explicit guest. Catches
-  // deep links, mid-session sign-out, and stale state restoration.
-  if (hasClerkKey && !isSignedIn && !isGuest) {
+  // deep links, mid-session sign-out, and stale state restoration. With no
+  // Clerk key configured, isSignedIn is always false, so only callers who
+  // explicitly opted into guest mode via setGuestMode(true) pass — a
+  // misconfigured build (e.g. EAS env vars missing on a TestFlight build)
+  // now bounces to /(auth) where the error screen renders, instead of
+  // silently handing out access.
+  if (!isSignedIn && !isGuest) {
     return <Redirect href="/(auth)" />;
   }
 
