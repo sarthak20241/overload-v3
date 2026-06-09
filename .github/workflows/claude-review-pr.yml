@@ -2,8 +2,8 @@ name: Claude Review PR
 
 # Review pull requests as they open / update.
 #
-# FORK SAFETY: GitHub does NOT expose repo secrets (incl. ANTHROPIC_API_KEY) to
-# `pull_request` runs from forked repos, so the action can't authenticate there.
+# FORK SAFETY: GitHub does NOT expose repo secrets (incl. CLAUDE_CODE_OAUTH_TOKEN)
+# to `pull_request` runs from forked repos, so the action can't authenticate there.
 # The `if:` below restricts to same-repo PRs (Claude's own fix branches and
 # collaborator branches), which is exactly where review adds value and where
 # secrets are available.
@@ -45,7 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in
             ${{ github.repository }}.
