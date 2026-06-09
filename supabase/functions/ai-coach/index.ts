@@ -642,41 +642,13 @@ Deno.serve(async (req) => {
   trace.user_id = auth.sub;
   const userId = auth.sub;
 
-  // 2. Rate limit
-  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { count, error: countErr } = await admin
-    .from("ai_coach_rate_limit")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("request_at", sinceIso);
-
-  if (countErr) {
-    trace.status = "internal_error";
-    trace.error_message = `rate_limit_check_failed: ${countErr.message}`;
-    return respond({ error: "Rate limit check failed" }, 500);
-  }
-  if ((count ?? 0) >= RATE_LIMIT_MAX) {
-    trace.status = "rate_limited";
-    trace.error_message = `count=${count} cap=${RATE_LIMIT_MAX}`;
-    return respond({ error: "Rate limit exceeded", retry_after_seconds: 60 * 60 }, 429);
-  }
-
-  const { error: logErr } = await admin
-    .from("ai_coach_rate_limit")
-    .insert({ user_id: userId });
-  if (logErr) {
-    trace.status = "internal_error";
-    trace.error_message = `rate_limit_log_failed: ${logErr.message}`;
-    return respond({ error: "Rate limit log failed" }, 500);
-  }
-
-  // 3. User-JWT client for both user_context fetch and tool execution.
+  // 2. User-JWT client for the access gate, user_context fetch, and tools.
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader! } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // 3.5 Drona access gate. Reads the user's current state via
+  // 3. Drona access gate. Reads the user's current state via
   // get_coach_access_status() — paid / trialing / trial_ended / eligible_for_trial.
   //
   // We REQUIRE either paid or trialing here. Free users (eligible_for_trial /
@@ -689,9 +661,10 @@ Deno.serve(async (req) => {
   // of opening the chat. The client calls start_coach_trial() separately
   // when the user opts in, then re-attempts the chat.
   //
-  // Daily usage limit (paid AND trial alike) is enforced by the rate-limit
-  // check above, which counts requests in the rolling 24h window. No
-  // per-state branching here.
+  // This gate runs BEFORE the rate-limit count+insert below so a locked-out
+  // (eligible_for_trial / trial_ended) user can't burn today's quota just by
+  // hitting this endpoint — otherwise those denied requests would count
+  // against them if they started a trial later the same day.
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -720,6 +693,51 @@ Deno.serve(async (req) => {
     trace.status = "internal_error";
     trace.error_message = `access_status_threw: ${String(e).slice(0, 200)}`;
     return respond({ error: "Access check failed" }, 500);
+  }
+
+  // 3.5 Rate limit (paid AND trial alike): rolling 24h window, counted only
+  // now that access is confirmed so denied requests never consume quota.
+  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
+  const { count, error: countErr } = await admin
+    .from("ai_coach_rate_limit")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .gte("request_at", sinceIso);
+
+  if (countErr) {
+    trace.status = "internal_error";
+    trace.error_message = `rate_limit_check_failed: ${countErr.message}`;
+    return respond({ error: "Rate limit check failed" }, 500);
+  }
+  if ((count ?? 0) >= RATE_LIMIT_MAX) {
+    trace.status = "rate_limited";
+    trace.error_message = `count=${count} cap=${RATE_LIMIT_MAX}`;
+    // Rolling window: the user can retry once the OLDEST counted request ages
+    // out of it. Derive the hint from that row rather than a fixed 1h value
+    // (the window is 24h, so 3600s would tell clients to retry ~23h early).
+    let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+    const { data: oldest } = await admin
+      .from("ai_coach_rate_limit")
+      .select("request_at")
+      .eq("user_id", userId)
+      .gte("request_at", sinceIso)
+      .order("request_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (oldest?.request_at) {
+      const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
+      retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
+    }
+    return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+  }
+
+  const { error: logErr } = await admin
+    .from("ai_coach_rate_limit")
+    .insert({ user_id: userId });
+  if (logErr) {
+    trace.status = "internal_error";
+    trace.error_message = `rate_limit_log_failed: ${logErr.message}`;
+    return respond({ error: "Rate limit log failed" }, 500);
   }
 
   // 4. Fetch pre-computed user_context (tier 1).

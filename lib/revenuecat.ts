@@ -236,6 +236,12 @@ export async function getCoachOfferings(): Promise<{
       }
     }
 
+    // Honor the null contract: if neither the current offering nor any
+    // fallback offering yielded a usable package, RC isn't configured yet —
+    // return null so callers' `if (!offerings)` path renders the
+    // "Purchases unavailable" card instead of an empty offering set.
+    if (Object.keys(byPlan).length === 0) return null;
+
     return { byPlan, raw: current };
   } catch (e) {
     console.warn('[revenuecat] getOfferings failed:', e);
