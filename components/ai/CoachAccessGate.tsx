@@ -69,6 +69,10 @@ export interface CoachAccessGateProps {
   refresh: () => Promise<void>;
   supabase: SupabaseClient;
   onClose: () => void;
+  // Routes the user to the auth screen from the unauthenticated state. When
+  // omitted (e.g. Clerk isn't configured) the sign-in screen falls back to a
+  // plain close so the card is never a hard dead end.
+  onRequestSignIn?: () => void;
   // Phase 4 will pass an onOpenPaywall here; for now the stub renders inline.
 }
 
@@ -90,6 +94,7 @@ function GateBody({
   refresh,
   supabase,
   onClose,
+  onRequestSignIn,
 }: CoachAccessGateProps & { screen: Exclude<GateScreen, 'allow'> }) {
   const { C } = useTheme();
   const [starting, setStarting] = useState(false);
@@ -200,12 +205,28 @@ function GateBody({
             <Text style={[s.cardBody, { color: C.mutedFg }]}>
               Drona learns from your training history. Sign in to start a 7-day free trial.
             </Text>
-            <TouchableOpacity
-              style={[s.primaryBtn, { backgroundColor: Colors.primary }]}
-              onPress={onClose}
-            >
-              <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Close</Text>
-            </TouchableOpacity>
+            {onRequestSignIn ? (
+              <>
+                <TouchableOpacity
+                  style={[s.primaryBtn, { backgroundColor: Colors.primary }]}
+                  onPress={onRequestSignIn}
+                >
+                  <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Sign in</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.secondaryLink} onPress={onClose}>
+                  <Text style={[s.secondaryLinkText, { color: C.mutedFg }]}>Not now</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              // No auth screen reachable (e.g. Clerk unconfigured) — keep the
+              // close affordance rather than a button that goes nowhere.
+              <TouchableOpacity
+                style={[s.primaryBtn, { backgroundColor: Colors.primary }]}
+                onPress={onClose}
+              >
+                <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Close</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 

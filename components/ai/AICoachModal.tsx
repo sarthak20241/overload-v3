@@ -16,6 +16,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -2114,6 +2115,12 @@ function RefineChatScreen({
   // the `done` fallback. Without this, a clean stream would double-fire
   // (caller pops twice → likely a no-op the second time but unsafe).
   const refinedFiredRef = useRef(false);
+  // Buffer for the live `structured` payload. We do NOT pop the screen the
+  // instant it arrives — that would unmount RefineChatScreen mid-stream and
+  // the cleanup effect above would abort the still-running request, killing
+  // the promised "finish the closing text, then transition" flow. Instead we
+  // stash it here and apply it from onDone's typewriter-finish callback.
+  const pendingStructuredRef = useRef<{ name: string; input: Record<string, unknown> } | null>(null);
   useEffect(() => {
     return () => {
       streamRef.current?.abort();
@@ -2255,24 +2262,25 @@ function RefineChatScreen({
         ));
       },
       onStructured: ({ name, input }) => {
-        // Model emitted the refined output. We don't immediately tear
-        // down the chat — we let the assistant's text turn finish
-        // streaming so the user sees the closing "Got it, putting it
-        // together" message land before the screen transitions. Final
-        // pop happens in onDone (or in the typewriter's finish callback
-        // below) once refinedFiredRef has been set here.
-        handleStructured(name, input);
+        // Model emitted the refined output. Buffer it — do NOT pop here, or
+        // we'd unmount the screen mid-stream and abort the request. The
+        // transition happens from the typewriter-finish callback below, after
+        // the assistant's closing text has landed on screen.
+        pendingStructuredRef.current = { name, input };
       },
       onDone: ({ structured }) => {
         typewriter.finish(() => {
           setLoading(false);
           streamRef.current = null;
-          // Defensive: handle structured ONLY here if the live event was
-          // missed (e.g. mid-stream reconnect). Idempotent thanks to
-          // refinedFiredRef.
-          if (structured) {
-            handleStructured(structured.name, structured.input);
+          // Now that the closing text has finished animating, apply the
+          // structured payload — preferring the buffered live event, falling
+          // back to the one on the `done` frame (e.g. if the live event was
+          // missed mid-stream reconnect). Idempotent thanks to refinedFiredRef.
+          const finalStructured = pendingStructuredRef.current ?? structured;
+          if (finalStructured) {
+            handleStructured(finalStructured.name, finalStructured.input);
           }
+          pendingStructuredRef.current = null;
         });
       },
       onError: (errStr) => {
@@ -2466,22 +2474,45 @@ export function AICoachModal({
     if (visible) setScreen(initialScreen);
   }, [visible, initialScreen]);
 
+  const router = useRouter();
+
   const handleClose = () => {
     setScreen('menu');
     onClose();
   };
 
-  // <Portal> has no onRequestClose, so route the Android hardware back button
-  // to close the sheet while it's open.
+  // Sign-in path for the gate's unauthenticated state. Close the coach sheet,
+  // then route to the auth screen so the blocked flow is actually completable
+  // (otherwise the gate's only CTA just dismisses — a dead end). When Clerk
+  // isn't configured there's no auth screen to reach, so just close.
+  const handleRequestSignIn = () => {
+    handleClose();
+    if (hasClerkKey) router.push('/(auth)');
+  };
+
+  // <Portal> has no onRequestClose, so route the Android hardware back button.
+  // Mirror the on-screen affordances instead of always closing the whole
+  // sheet: from chat/plan/workout the visible back arrow returns to the menu,
+  // so hardware back should too — otherwise Android back throws away the
+  // user's in-progress form or conversation. Re-subscribes when the relevant
+  // state changes so the handler never acts on a stale screen.
   useEffect(() => {
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      handleClose();
+      // Gate or menu owns the modal → close it entirely (nothing to lose).
+      if (!accessAllowed || screen === 'menu') { handleClose(); return true; }
+      // Paywall overlay (trialing upgrade) → dismiss back to the menu.
+      if (showPaywall) { setShowPaywall(false); return true; }
+      // Chat opened from an active workout has no menu to return to — its
+      // back arrow closes, so match that.
+      if (screen === 'chat' && workoutContext) { handleClose(); return true; }
+      // chat / plan / workout → step back to the menu.
+      setScreen('menu');
       return true;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [visible, accessAllowed, screen, showPaywall, workoutContext]);
 
   const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
     const clerkId = user?.id;
@@ -2663,6 +2694,7 @@ export function AICoachModal({
               refresh={refreshAccess}
               supabase={supabase}
               onClose={handleClose}
+              onRequestSignIn={hasClerkKey ? handleRequestSignIn : undefined}
             />
           ) : showPaywall ? (
             /* Upgrade path for trialing users — owns the modal body
