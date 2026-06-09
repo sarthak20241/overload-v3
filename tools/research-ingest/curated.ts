@@ -432,27 +432,30 @@ async function main() {
   if (opts.max && candidates.length > opts.max) candidates = candidates.slice(0, opts.max);
   log.info('curated', `${candidates.length} unique candidates after cross-spec dedupe`);
 
-  const client = makeServiceClient();
+  // ── 2. Relevance filter (local, no DB) ──────────────────────────────────────
+  const relevantCandidates = candidates.filter((p) => isRelevant(p.title, p.abstract));
+  log.info('curated', `${relevantCandidates.length} pass relevance (dropped ${candidates.length - relevantCandidates.length})`);
 
-  // ── 2. DB dedupe (skip anything already in kb or pending) ───────────────────
-  const dedupeFlags = await mapPool(candidates, 5, (p) => isAlreadyIngested(client, p.url));
-  const fresh = candidates.filter((_, i) => !dedupeFlags[i]);
-  log.info('curated', `${fresh.length} fresh (skipped ${candidates.length - fresh.length} already in kb/pending)`);
-
-  // ── 3. Relevance filter ─────────────────────────────────────────────────────
-  const relevant = fresh.filter((p) => isRelevant(p.title, p.abstract));
-  log.info('curated', `${relevant.length} pass relevance (dropped ${fresh.length - relevant.length})`);
-
+  // ── 2b. Fetch-only preview ──────────────────────────────────────────────────
+  // Bail out BEFORE creating the service client or touching the DB so the
+  // advertised preview mode runs in a fresh/local env with no Supabase creds.
   if (opts.fetchOnly) {
     console.log('\n── Candidate preview (fetch-only) ──');
-    for (const p of relevant) {
+    for (const p of relevantCandidates) {
       const m = (p.source_meta ?? {}) as Record<string, unknown>;
       console.log(`• [${m.ingest_bucket}/${m.ingest_topic}] ${p.pub_year ?? '????'} — ${p.title}`);
       console.log(`    ${p.journal ?? 'unknown journal'} · cited ${m.cited_by_count ?? '?'} · ${p.url}`);
     }
-    console.log(`\n${relevant.length} candidates would proceed to distillation.`);
+    console.log(`\n${relevantCandidates.length} candidates would proceed to distillation.`);
     process.exit(0);
   }
+
+  const client = makeServiceClient();
+
+  // ── 3. DB dedupe (skip anything already in kb or pending) ───────────────────
+  const dedupeFlags = await mapPool(relevantCandidates, 5, (p) => isAlreadyIngested(client, p.url));
+  const relevant = relevantCandidates.filter((_, i) => !dedupeFlags[i]);
+  log.info('curated', `${relevant.length} fresh (skipped ${relevantCandidates.length - relevant.length} already in kb/pending)`);
 
   if (relevant.length === 0) { log.info('curated', 'nothing to process'); process.exit(0); }
 
@@ -468,8 +471,9 @@ async function main() {
 
   for (let i = 0; i < relevant.length; i++) {
     const paper = relevant[i];
-    // Throttle between papers. Skipped in dry-run (no Voyage call there).
-    if (i > 0 && !opts.dryRun) await sleep(INTER_PAPER_DELAY_MS);
+    // Throttle between papers — dry-run now also runs the Voyage/Semantic
+    // Scholar scoring + safety stages, so it needs the same inter-paper spacing.
+    if (i > 0) await sleep(INTER_PAPER_DELAY_MS);
 
     // Distill (Haiku) — structured fields + topic tags.
     let dist: Distillation;
@@ -478,14 +482,6 @@ async function main() {
     } catch (e) {
       log.reject('curated', 'distill-failed', { url: paper.url, error: String(e).slice(0, 160) });
       bump('rejected_distillation');
-      continue;
-    }
-
-    if (opts.dryRun) {
-      log.info('curated', '[DRY] would land', {
-        title: paper.title.slice(0, 90), study_design: dist.study_design, tags: dist.topic_tags,
-      });
-      bump('would_add');
       continue;
     }
 
@@ -528,6 +524,22 @@ async function main() {
     let flags: ContradictionFlag[] = [];
     try { flags = await findConflicts(client, paper, dist, hydeEmb); }
     catch (e) { log.warn('curated', 'findConflicts threw; continuing', { url: paper.url, error: String(e).slice(0, 160) }); }
+
+    // Dry-run stops here: every distill + score + safety stage above has run
+    // (so the no-write mode actually exercises the live pipeline), but we skip
+    // the pending insert and the downstream advisory review.
+    if (opts.dryRun) {
+      log.info('curated', '[DRY] would land (scored, not written)', {
+        title: paper.title.slice(0, 90),
+        study_design: dist.study_design,
+        tags: dist.topic_tags,
+        trust,
+        plagiarism_sim: sim.toFixed(3),
+        contradiction_flags: flags.length,
+      });
+      bump('would_add');
+      continue;
+    }
 
     // Land in pending.
     let pendingId: string;
