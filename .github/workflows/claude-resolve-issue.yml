@@ -25,7 +25,7 @@ jobs:
   resolve:
     if: contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     permissions:
       contents: write        # create the fix branch + push commits
       pull-requests: write   # open the PR
@@ -80,5 +80,5 @@ jobs:
           # Cost cap. Raise --max-turns if real fixes need more room. Pin a model
           # with e.g. --model claude-sonnet-4-6 if you want predictable spend.
           claude_args: |
-            --max-turns 50
+            --max-turns 150
             --allowedTools "Bash(gh:*),Bash(git:*),Edit,Write,Read,Glob,Grep"

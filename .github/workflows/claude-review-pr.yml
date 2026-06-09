@@ -28,7 +28,7 @@ jobs:
   review:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 55
     permissions:
       contents: read
       pull-requests: write   # post the review / comments
@@ -61,5 +61,5 @@ jobs:
             Open with a one-line verdict, then bullet the concrete findings. If
             the change looks good, say so briefly rather than inventing nits.
           claude_args: |
-            --max-turns 25
+            --max-turns 120
             --allowedTools "Bash(gh:*),Read,Glob,Grep"
