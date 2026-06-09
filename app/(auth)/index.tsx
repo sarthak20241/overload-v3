@@ -10,7 +10,6 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
@@ -26,7 +25,7 @@ function useWarmUpBrowser() {
 const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-type Mode = 'login' | 'register' | 'forgot' | 'verify';
+type Mode = 'login' | 'register' | 'forgot' | 'verify' | 'reset';
 
 function GoogleIcon() {
   return (
@@ -89,7 +88,6 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [appleLoading, setAppleLoading] = useState(false);
-  const [showResetSent, setShowResetSent] = useState(false);
   const [error, setError] = useState('');
 
   // Single derived flag that any auth handler should respect. Each per-button
@@ -203,9 +201,32 @@ export default function AuthScreen() {
         }
         await setSignUpActive!({ session: result.createdSessionId });
         router.replace('/(app)');
-      } else {
+      } else if (mode === 'forgot') {
+        // Step 1 of Clerk's reset_password_email_code flow: create the
+        // sign-in attempt, which emails the user a 6-digit code. Move to the
+        // 'reset' step where they enter that code + a new password — the old
+        // flow stopped here and bounced to login, so the reset never finished.
+        if (!email.trim()) throw new Error('Enter your email');
         await signIn!.create({ strategy: 'reset_password_email_code', identifier: email });
-        setShowResetSent(true);
+        setCode('');
+        setPassword('');
+        setMode('reset');
+      } else if (mode === 'reset') {
+        // Step 2: verify the code AND set the new password in one call.
+        // attemptFirstFactor returns status 'complete' with a session on
+        // success, which logs the user straight in.
+        if (!code.trim()) throw new Error('Enter the 6-digit code from your email');
+        if (password.length < 8) throw new Error('New password must be at least 8 characters');
+        const result = await signIn!.attemptFirstFactor({
+          strategy: 'reset_password_email_code',
+          code: code.trim(),
+          password,
+        });
+        if (result.status !== 'complete' || !result.createdSessionId) {
+          throw new Error('Reset failed. Check the code and try again.');
+        }
+        await setSignInActive!({ session: result.createdSessionId });
+        router.replace('/(app)');
       }
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Something went wrong');
@@ -219,8 +240,19 @@ export default function AuthScreen() {
     setError('');
     try {
       await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
-      setShowResetSent(false);
       setError('');
+    } catch (err: any) {
+      setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
+    }
+  };
+
+  // Re-send the password-reset code (used from the 'reset' step). Re-creates
+  // the sign-in attempt, which dispatches a fresh email_code.
+  const handleResendResetCode = async () => {
+    if (!hasClerkKey || !signIn) return;
+    setError('');
+    try {
+      await signIn.create({ strategy: 'reset_password_email_code', identifier: email });
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
     }
@@ -383,7 +415,17 @@ export default function AuthScreen() {
               <View style={{ marginBottom: Spacing.xxl }}>
                 <Text style={[styles.sectionTitle, { color: C.foreground }]}>Reset Password</Text>
                 <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
-                  We'll send a reset link to your email
+                  We'll email you a 6-digit reset code
+                </Text>
+              </View>
+            )}
+
+            {/* Reset header (enter code + new password) */}
+            {mode === 'reset' && (
+              <View style={{ marginBottom: Spacing.xxl }}>
+                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Set a New Password</Text>
+                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                  Enter the 6-digit code we sent to {email || 'your email'} and choose a new password
                 </Text>
               </View>
             )}
@@ -497,7 +539,7 @@ export default function AuthScreen() {
             )}
 
             {/* Email */}
-            {mode !== 'verify' && (
+            {mode !== 'verify' && mode !== 'reset' && (
               <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
                 <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
                 <TextInput
@@ -515,19 +557,40 @@ export default function AuthScreen() {
               </View>
             )}
 
+            {/* Verification code (reset) — shown above the new password so the
+                step reads top-to-bottom: code first, then the new password. */}
+            {mode === 'reset' && (
+              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  placeholder="123456"
+                  placeholderTextColor={C.textMuted}
+                  value={code}
+                  onChangeText={setCode}
+                  keyboardType="number-pad"
+                  autoCapitalize="none"
+                  maxLength={6}
+                  textContentType="oneTimeCode"
+                  autoComplete="sms-otp"
+                  accessibilityLabel="Reset code"
+                  style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
+                />
+              </View>
+            )}
+
             {/* Password */}
-            {(mode === 'login' || mode === 'register') && (
+            {(mode === 'login' || mode === 'register' || mode === 'reset') && (
               <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
                 <Feather name="lock" size={15} color={C.textMuted} style={styles.inputIcon} />
                 <TextInput
-                  placeholder="Password"
+                  placeholder={mode === 'reset' ? 'New password' : 'Password'}
                   placeholderTextColor={C.textMuted}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPass}
-                  textContentType={mode === 'register' ? 'newPassword' : 'password'}
-                  autoComplete={mode === 'register' ? 'password-new' : 'password'}
-                  accessibilityLabel="Password"
+                  textContentType={mode === 'register' || mode === 'reset' ? 'newPassword' : 'password'}
+                  autoComplete={mode === 'register' || mode === 'reset' ? 'password-new' : 'password'}
+                  accessibilityLabel={mode === 'reset' ? 'New password' : 'Password'}
                   style={[styles.input, { color: C.foreground }]}
                 />
                 <TouchableOpacity onPress={() => setShowPass(!showPass)} style={styles.eyeBtn}>
@@ -589,7 +652,8 @@ export default function AuthScreen() {
                     {mode === 'login' ? 'Sign In'
                       : mode === 'register' ? 'Create Account'
                       : mode === 'verify' ? 'Verify Email'
-                      : 'Send Reset Email'}
+                      : mode === 'reset' ? 'Reset Password'
+                      : 'Send Reset Code'}
                   </Text>
                   <Feather name="arrow-right" size={15} color={Colors.primaryFg} />
                 </>
@@ -604,6 +668,18 @@ export default function AuthScreen() {
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => { setMode('register'); setError(''); setCode(''); }}>
                   <Text style={[styles.forgotText, { color: C.textMuted }]}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Reset: resend code + back to login */}
+            {mode === 'reset' && (
+              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                <TouchableOpacity onPress={handleResendResetCode}>
+                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); }}>
+                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -633,20 +709,6 @@ export default function AuthScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
-
-    <ThemedAlert
-      visible={showResetSent}
-      icon="mail"
-      iconColor={Colors.primary}
-      title="Reset Email Sent!"
-      message="Check your inbox for a reset link."
-      buttons={[{
-        text: 'OK',
-        style: 'primary',
-        onPress: () => { setShowResetSent(false); setMode('login'); },
-      }]}
-      onClose={() => { setShowResetSent(false); setMode('login'); }}
-    />
     </>
   );
 }
