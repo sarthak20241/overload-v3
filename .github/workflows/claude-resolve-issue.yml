@@ -5,10 +5,12 @@ name: Claude Resolve Issue
 # PUBLIC-REPO GUARD: this repo is public, so anyone can open an issue. The job
 # `if:` below only runs for issues opened by the OWNER, an org MEMBER, or an
 # invited COLLABORATOR. Issues from strangers (NONE / CONTRIBUTOR / FIRST_TIMER)
-# are ignored, so random public issues can never burn API credits or smuggle in
+# are ignored, so random public issues can never burn plan usage or smuggle in
 # prompt-injection instructions.
 #
-# Requires the ANTHROPIC_API_KEY repo secret (already configured).
+# Auth: uses the CLAUDE_CODE_OAUTH_TOKEN repo secret (a Claude Pro/Max
+# subscription token from `claude setup-token`), so runs draw on the Max plan
+# instead of API credits.
 
 on:
   issues:
@@ -40,7 +42,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             You are triaging and attempting to RESOLVE a newly opened GitHub issue.
 
