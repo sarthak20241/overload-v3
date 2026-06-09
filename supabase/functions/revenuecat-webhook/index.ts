@@ -244,7 +244,7 @@ async function handleSubscriptionStart(event: RcEvent): Promise<void> {
     ? new Date(event.expiration_at_ms).toISOString()
     : null;
 
-  const { error } = await admin
+  const { data, error } = await admin
     .from("user_profiles")
     .update({
       tier,
@@ -255,11 +255,22 @@ async function handleSubscriptionStart(event: RcEvent): Promise<void> {
       purchase_provider: storeToProvider(event.store),
       purchase_id: event.original_transaction_id ?? event.transaction_id ?? null,
     })
-    .eq("clerk_user_id", event.app_user_id);
+    .eq("clerk_user_id", event.app_user_id)
+    .select("clerk_user_id");
 
   if (error) {
     console.error("[revenuecat] subscription start update failed:", error.message);
     throw new Error(`profile update failed: ${error.message}`);
+  }
+  if (!data || data.length === 0) {
+    // Supabase reports error===null even when the filter matched 0 rows. A
+    // purchase can arrive before the client has synced its Clerk id into
+    // user_profiles, so app_user_id won't match yet. Returning 200 here would
+    // silently drop the entitlement; throw instead so RevenueCat retries.
+    console.error(
+      `[revenuecat] subscription start matched 0 user_profiles rows for app_user_id=${event.app_user_id} — forcing retry`,
+    );
+    throw new Error(`no user_profiles row for app_user_id=${event.app_user_id}`);
   }
 
   // Trial conversion (if applicable). No-op if the user never trialed.
@@ -335,15 +346,24 @@ async function handleRenewal(event: RcEvent): Promise<void> {
   if (!event.app_user_id || !event.expiration_at_ms) return;
 
   const expiresAt = new Date(event.expiration_at_ms).toISOString();
-  const { error } = await admin
+  const { data, error } = await admin
     .from("user_profiles")
     .update({
       tier_expires_at: expiresAt,
       // Keep tier and provider as-is. RC handles provider stability across renewals.
     })
-    .eq("clerk_user_id", event.app_user_id);
+    .eq("clerk_user_id", event.app_user_id)
+    .select("clerk_user_id");
 
   if (error) throw new Error(`renewal update failed: ${error.message}`);
+  if (!data || data.length === 0) {
+    // 0 rows → the grant never landed; force RevenueCat to retry rather than
+    // silently leaving the subscription unextended.
+    console.error(
+      `[revenuecat] renewal matched 0 user_profiles rows for app_user_id=${event.app_user_id} — forcing retry`,
+    );
+    throw new Error(`no user_profiles row for app_user_id=${event.app_user_id}`);
+  }
   console.log(`[revenuecat] renewed: ${tier} expires=${expiresAt} user=${event.app_user_id}`);
 }
 
@@ -363,12 +383,20 @@ async function handleExpiration(event: RcEvent): Promise<void> {
     return;
   }
 
-  const { error } = await admin
+  const { data, error } = await admin
     .from("user_profiles")
     .update({ tier: "free", tier_expires_at: null })
-    .eq("clerk_user_id", event.app_user_id);
+    .eq("clerk_user_id", event.app_user_id)
+    .select("clerk_user_id");
 
   if (error) throw new Error(`expiration downgrade failed: ${error.message}`);
+  if (!data || data.length === 0) {
+    // Best-effort downgrade: no matching row means there's nothing to downgrade
+    // (e.g. the account was deleted). Don't throw — that would make RevenueCat
+    // retry this no-op forever.
+    console.warn(`[revenuecat] expiration matched 0 rows for user=${event.app_user_id} — nothing to downgrade`);
+    return;
+  }
   console.log(`[revenuecat] expired → free: user=${event.app_user_id}`);
 }
 
@@ -380,7 +408,7 @@ async function handleRefund(event: RcEvent): Promise<void> {
   // refund-and-resell abuse. Operationally, if you need to reopen a slot
   // (e.g., legitimate fraud reversal), do it with a one-off SQL update and
   // document the reason.
-  const { error } = await admin
+  const { data, error } = await admin
     .from("user_profiles")
     .update({
       tier: "free",
@@ -389,8 +417,15 @@ async function handleRefund(event: RcEvent): Promise<void> {
       purchase_provider: null,
       purchase_id: null,
     })
-    .eq("clerk_user_id", event.app_user_id);
+    .eq("clerk_user_id", event.app_user_id)
+    .select("clerk_user_id");
 
   if (error) throw new Error(`refund downgrade failed: ${error.message}`);
+  if (!data || data.length === 0) {
+    // Best-effort downgrade (see handleExpiration) — no row to downgrade, so
+    // don't force an endless retry.
+    console.warn(`[revenuecat] refund matched 0 rows for user=${event.app_user_id} — nothing to downgrade`);
+    return;
+  }
   console.log(`[revenuecat] refunded → free: user=${event.app_user_id}`);
 }

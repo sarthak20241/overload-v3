@@ -89,9 +89,20 @@ begin
   end if;
 
   -- Mutual exclusion: any existing lifetime blocks a second lifetime claim.
+  -- Lock the profile row FOR UPDATE so two concurrent claims for the SAME user
+  -- — even for DIFFERENT lifetime tiers — serialize here. Without the lock,
+  -- both could read "no lifetime yet", lock different founding_tier_claims
+  -- rows, and each consume a separate cap for one user.
   select tier into v_existing
     from user_profiles
-   where clerk_user_id = p_clerk_user_id;
+   where clerk_user_id = p_clerk_user_id
+     for update;
+
+  if not found then
+    -- No profile row to grant the tier to. Bail BEFORE consuming a capped
+    -- slot, otherwise the slot is burned without granting any entitlement.
+    return jsonb_build_object('ok', false, 'reason', 'unknown_user');
+  end if;
 
   if v_existing in ('founding_lifetime', 'appsumo_lifetime') then
     return jsonb_build_object(
@@ -272,6 +283,13 @@ begin
            purchase_provider = v_provider,
            purchase_id       = 'code:' || p_code
      where clerk_user_id = v_user_id;
+
+    if not found then
+      -- No profile row to grant the tier to. Do NOT fall through to consume
+      -- the code below — that would permanently burn it without granting
+      -- access. Let the user retry or contact support.
+      return jsonb_build_object('ok', false, 'reason', 'unknown_user');
+    end if;
   end if;
 
   -- Mark the code consumed. After this point the same code can't be reused.
