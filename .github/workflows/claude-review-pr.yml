@@ -1,0 +1,65 @@
+name: Claude Review PR
+
+# Review pull requests as they open / update.
+#
+# FORK SAFETY: GitHub does NOT expose repo secrets (incl. ANTHROPIC_API_KEY) to
+# `pull_request` runs from forked repos, so the action can't authenticate there.
+# The `if:` below restricts to same-repo PRs (Claude's own fix branches and
+# collaborator branches), which is exactly where review adds value and where
+# secrets are available.
+#
+# NOTE on chaining with Claude Resolve Issue: a PR opened by the resolve job
+# uses the built-in GITHUB_TOKEN, and GitHub intentionally does NOT trigger
+# further workflow runs from GITHUB_TOKEN actions. So this review will NOT
+# auto-fire on the bot's initial PR-open. It WILL run when a human pushes to the
+# branch (synchronize) or reopens it. To review the bot's PR on demand, comment
+# "@claude review this PR" (handled by claude-mention.yml). For fully hands-off
+# chaining, swap GITHUB_TOKEN for a GitHub App token when opening the PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write   # post the review / comments
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}.
+
+            Inspect the diff and assess correctness, likely bugs, security
+            issues, and clear quality problems. Be concise and specific; prefer
+            pointing at exact files/lines over general advice. Do NOT approve or
+            merge.
+
+            Get the diff:   gh pr diff ${{ github.event.pull_request.number }}
+            Post a summary: gh pr comment ${{ github.event.pull_request.number }} --body "..."
+
+            Open with a one-line verdict, then bullet the concrete findings. If
+            the change looks good, say so briefly rather than inventing nits.
+          claude_args: |
+            --max-turns 25
+            --allowedTools "Bash(gh:*),Read,Glob,Grep"
