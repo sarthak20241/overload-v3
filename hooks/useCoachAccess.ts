@@ -22,12 +22,13 @@
  *   cache → re-fetched → useEffect re-fired with the new client → repeat
  *   forever. The UI never left the loading state.
  *
- *   The fix here: cache at module scope, NOT keyed by client. The hook fires
- *   its RPC exactly once per mount (`useEffect(..., [])`) and reads supabase
- *   through a ref so the lazy `getToken` inside still sees the latest Clerk
- *   token at request time. Auth changes are handled explicitly by
- *   `resetCoachAccessCache()` — called on sign-out (or by `refresh()`) — so
- *   the next mount starts fresh.
+ *   The fix here: cache at module scope, tagged with the Clerk user id it was
+ *   fetched for (NOT keyed by client). The hook reads supabase through a ref so
+ *   the lazy `getToken` inside still sees the latest Clerk token at request
+ *   time, and re-runs its RPC whenever the authenticated user id changes — so a
+ *   sign-in/sign-out automatically invalidates a previous (or guest) user's
+ *   value instead of silently reusing it. `resetCoachAccessCache()` still
+ *   forces a fresh fetch on the next mount (e.g. from `refresh()`).
  *
  * Not a security boundary. The edge function (supabase/functions/ai-coach)
  * re-checks `get_coach_access_status` on every request and returns 402 if
@@ -35,6 +36,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSupabaseClient } from '@/lib/supabase';
+import { useClerkUser } from '@/hooks/useClerkUser';
 
 export type CoachAccessState =
   | 'unauthenticated'
@@ -65,10 +67,12 @@ export interface UseCoachAccessReturn {
 const UNAUTH: CoachAccess = { state: 'unauthenticated' };
 const UNKNOWN: CoachAccess = { state: 'unknown' };
 
-// Module-scope cache. Single value shared across all mounts of the hook.
-// Cleared by resetCoachAccessCache() — call this from the Clerk sign-out
-// path (or anywhere auth changes) so the next mount re-fetches.
-let cachedAccess: CoachAccess | null = null;
+// Module-scope cache, keyed to the auth session it was fetched for. Because
+// AICoachModal keeps this hook mounted even while hidden, an un-keyed global
+// would hand a previous (or guest) user's access state to the next signed-in
+// user until something manually reset it. Tagging the cache with the Clerk
+// user id lets us detect an auth change and refetch automatically.
+let cachedAccess: { userId: string | null; access: CoachAccess } | null = null;
 
 export function resetCoachAccessCache(): void {
   cachedAccess = null;
@@ -100,16 +104,24 @@ export function useCoachAccess(): UseCoachAccessReturn {
   const supabaseRef = useRef(supabase);
   supabaseRef.current = supabase;
 
-  const [access, setAccess] = useState<CoachAccess>(cachedAccess ?? UNKNOWN);
-  const [loading, setLoading] = useState<boolean>(cachedAccess === null);
+  // Identify the current auth session so the cache can't leak across users.
+  const { user } = useClerkUser();
+  const userId = user?.id ?? null;
+
+  const cacheForUser = cachedAccess?.userId === userId ? cachedAccess.access : null;
+  const [access, setAccess] = useState<CoachAccess>(cacheForUser ?? UNKNOWN);
+  const [loading, setLoading] = useState<boolean>(cacheForUser === null);
 
   useEffect(() => {
-    if (cachedAccess !== null) {
-      // Cache populated by a previous mount in this session — short-circuit.
-      setAccess(cachedAccess);
+    if (cachedAccess?.userId === userId) {
+      // Cache populated for THIS user by a previous mount — short-circuit.
+      setAccess(cachedAccess.access);
       setLoading(false);
       return;
     }
+    // Auth changed (or first fetch): drop any stale value and refetch.
+    cachedAccess = null;
+    setLoading(true);
     let cancelled = false;
     (async () => {
       try {
@@ -124,7 +136,7 @@ export function useCoachAccess(): UseCoachAccessReturn {
           setAccess(UNAUTH);
         } else {
           const next = normalize(data);
-          cachedAccess = next;
+          cachedAccess = { userId, access: next };
           setAccess(next);
         }
       } catch {
@@ -138,7 +150,7 @@ export function useCoachAccess(): UseCoachAccessReturn {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Fire once per mount; read supabase via ref.
+  }, [userId]); // Refire when the authenticated user changes.
 
   const refresh = useCallback(async (): Promise<void> => {
     // Manual invalidation. Used after starting a trial, after a purchase
@@ -154,12 +166,12 @@ export function useCoachAccess(): UseCoachAccessReturn {
         return;
       }
       const next = normalize(data);
-      cachedAccess = next;
+      cachedAccess = { userId, access: next };
       setAccess(next);
     } catch {
       setAccess(UNAUTH);
     }
-  }, []);
+  }, [userId]);
 
   return { access, loading, refresh };
 }

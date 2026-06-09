@@ -812,7 +812,12 @@ function RoutineEditorSheet({
 
   return (
     <>
-      <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
+      <Modal
+        visible={visible}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={handleClose}
+      >
         <View style={[styles.editorSafe, { backgroundColor: C.elevated, paddingTop: insets.top }]}>
           <KeyboardAvoidingView
             style={{ flex: 1 }}

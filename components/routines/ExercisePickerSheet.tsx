@@ -6,6 +6,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, BackHandler, Pressable, ScrollView, Keyboard, Platform,
+  useWindowDimensions,
 } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -27,6 +28,7 @@ interface Props {
 export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames = [] }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
@@ -102,6 +104,11 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
               // Lift above the keyboard (both platforms — rendered in the app's
               // own window via <Portal>, which isn't auto-resized for the keyboard).
               marginBottom: kbHeight,
+              // Clamp against the keyboard-reduced viewport too — the static
+              // maxHeight: '90%' is relative to the full window, so without this
+              // the lifted sheet can run off the top on smaller screens (same
+              // guard analytics.tsx's BottomDrawer uses).
+              maxHeight: (windowHeight - kbHeight) * 0.9,
               // Flush to the screen bottom now, so clear the gesture/nav bar.
               paddingBottom: insets.bottom,
             },

@@ -190,7 +190,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         setVerifying(false);
       }
     },
-    [packages, purchasingPlan, waitForTierFlip, toast, onClose, onPurchased],
+    [packages, purchasingPlan, waitForTierFlip, toast, onClose, onPurchased, user],
   );
 
   const handleRestore = useCallback(async () => {
