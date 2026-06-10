@@ -7,7 +7,6 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
-  Modal,
   TextInput,
   Pressable,
   KeyboardAvoidingView,
@@ -207,12 +206,28 @@ function RoutineDetailSheet({
   onEdit: () => void;
 }) {
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
+
+  // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
+  // hardware back button to dismiss the sheet while it's open.
+  useEffect(() => {
+    if (!routine) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [routine, onClose]);
+
   if (!routine) return null;
 
   const sortedExercises = [...routine.routine_exercises].sort((a, b) => a.order - b.order);
 
   return (
-    <Modal visible={routine !== null} transparent animationType="none" onRequestClose={onClose}>
+    // Rendered via the root <Portal>, not RN <Modal> — on Android edge-to-edge
+    // a <Modal> is a separate Dialog window inset by the system nav bar, so a
+    // bottom sheet floats above it with a gap (see components/ui/Portal.tsx).
+    <Portal>
       <View style={styles.backdrop}>
         <Pressable
           style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
@@ -221,7 +236,12 @@ function RoutineDetailSheet({
         <Animated.View
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(200)}
-          style={[styles.detailSheet, { backgroundColor: C.card, borderColor: C.border }]}
+          style={[styles.detailSheet, {
+            backgroundColor: C.card,
+            borderColor: C.border,
+            // Flush with the screen bottom now, so pad past the gesture bar.
+            paddingBottom: insets.bottom + Spacing.md,
+          }]}
         >
             <View style={[styles.handle, { backgroundColor: C.handle }]} />
 
@@ -307,7 +327,7 @@ function RoutineDetailSheet({
             </View>
         </Animated.View>
       </View>
-    </Modal>
+    </Portal>
   );
 }
 
@@ -1128,16 +1148,36 @@ function RoutineMenuModal({
   onDelete: () => void;
 }) {
   const { C } = useTheme();
+  const insets = useSafeAreaInsets();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
+  // hardware back button to dismiss the menu while it's open.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   return (
     <>
-      <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+      {/* Rendered via the root <Portal>, not RN <Modal> — on Android
+          edge-to-edge a <Modal> is a separate Dialog window inset by the
+          system nav bar, so a bottom sheet floats above it with a gap. */}
+      <Portal>
+        {visible && (
         <Pressable style={[styles.backdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
-            style={[styles.menuSheet, { backgroundColor: C.elevated }]}
+            style={[styles.menuSheet, {
+              backgroundColor: C.elevated,
+              // Flush with the screen bottom now, so pad past the gesture bar.
+              paddingBottom: insets.bottom + Spacing.md,
+            }]}
           >
             <Pressable>
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
@@ -1167,7 +1207,8 @@ function RoutineMenuModal({
             </Pressable>
           </Animated.View>
         </Pressable>
-      </Modal>
+        )}
+      </Portal>
 
       <ThemedAlert
         visible={showDeleteConfirm}
