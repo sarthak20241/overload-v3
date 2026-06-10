@@ -328,6 +328,7 @@ interface GuestWorkout {
   duration_seconds: number;
   total_volume_kg: number;
   routine_id: string | null;
+  notes?: string;
   workout_sets: { id: string }[];
   exercises?: GuestWorkoutExercise[];
 }

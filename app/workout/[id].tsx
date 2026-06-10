@@ -15,7 +15,7 @@ import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { findMockRoutine, addGuestWorkout, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
+import { findMockRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
@@ -37,6 +37,42 @@ function fmt(seconds: number) {
   const s = seconds % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+// Post-save offer to bring the source routine in line with what the session
+// actually contained (exercises added or removed mid-workout). Built by
+// buildDbRoutineSyncOffer / buildGuestRoutineSyncOffer after the workout
+// saves; applied by applyRoutineSync if the user accepts.
+interface RoutineSyncOffer {
+  mode: 'db' | 'guest';
+  routineId: string;
+  routineName: string;
+  addedNames: string[];
+  removedNames: string[];
+  /** mode 'db': routine_exercises PKs to delete. */
+  removedRowIds: string[];
+  /** mode 'db': rows to insert into routine_exercises. */
+  insertRows: Record<string, unknown>[];
+  /** mode 'guest': full replacement routine_exercises for the guest store. */
+  guestExercises: any[] | null;
+}
+
+// Human copy for the routine sync prompt — reads like a coach suggestion, not
+// a data diff. e.g. "You added Cable Fly this session. Want it in “Shoulder”
+// for next time?"
+function buildRoutineSyncMessage(offer: RoutineSyncOffer): string {
+  const list = (names: string[]) =>
+    names.length <= 1
+      ? names[0] ?? ''
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  const { routineName, addedNames, removedNames } = offer;
+  if (addedNames.length > 0 && removedNames.length === 0) {
+    return `You added ${list(addedNames)} this session. Want ${addedNames.length === 1 ? 'it' : 'them'} in “${routineName}” for next time?`;
+  }
+  if (removedNames.length > 0 && addedNames.length === 0) {
+    return `You skipped ${list(removedNames)} this session. Take ${removedNames.length === 1 ? 'it' : 'them'} out of “${routineName}” too?`;
+  }
+  return `Make “${routineName}” match today's workout? We'll add ${list(addedNames)} and remove ${list(removedNames)}.`;
 }
 
 export default function ActiveWorkoutScreen() {
@@ -81,6 +117,19 @@ export default function ActiveWorkoutScreen() {
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   const [finishSetCount, setFinishSetCount] = useState(0);
+  // Finish sheet for blank workouts ("New Workout" sessions with no routine):
+  // lets the user name the session before it lands in history, add notes, and
+  // optionally save the performed exercises as a reusable routine. Routine
+  // workouts keep the lighter confirm alert since they already have a name.
+  const [showFinishSheet, setShowFinishSheet] = useState(false);
+  const [finishName, setFinishName] = useState('');
+  const [finishNotes, setFinishNotes] = useState('');
+  const [saveAsRoutine, setSaveAsRoutine] = useState(false);
+  const [routineNameInput, setRoutineNameInput] = useState('');
+  // Post-save offer to sync the source routine when the session's exercise
+  // list deviated from it. Non-null renders the "Update Routine?" alert;
+  // navigation to history is deferred until the user answers.
+  const [routineSync, setRoutineSync] = useState<RoutineSyncOffer | null>(null);
   // In-workout coach. `coachContext` is a snapshot of the live session taken
   // when the user opens the coach (see openCoach), kept stable for that chat.
   const [coachOpen, setCoachOpen] = useState(false);
@@ -120,12 +169,13 @@ export default function ActiveWorkoutScreen() {
   // be acted on before the user actually saves.
   const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
-  // Track keyboard height while the custom-exercise form is open. The sheet now
-  // renders via <Portal> (the app's own window), which isn't auto-resized for
-  // the keyboard, so we lift it (marginBottom) and cap its height (maxHeight)
-  // by this amount — otherwise the keyboard covers the EXERCISE NAME input.
+  // Track keyboard height while the custom-exercise form or the finish sheet
+  // is open. These sheets render via <Portal> (the app's own window), which
+  // isn't auto-resized for the keyboard, so we lift them (marginBottom) and cap
+  // their height (maxHeight) by this amount — otherwise the keyboard covers the
+  // text inputs.
   useEffect(() => {
-    if (!showCustomForm) { setKbHeight(0); return; }
+    if (!showCustomForm && !showFinishSheet) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const showSub = Keyboard.addListener(showEvt, (e) => {
@@ -136,20 +186,21 @@ export default function ActiveWorkoutScreen() {
       showSub.remove();
       hideSub.remove();
     };
-  }, [showCustomForm]);
+  }, [showCustomForm, showFinishSheet]);
 
   // <Portal> has no onRequestClose (unlike RN <Modal>), so route the Android
   // hardware back button to close whichever sheet is open instead of letting it
   // fall through and leave the workout.
   useEffect(() => {
-    if (!showAddExercise && !showCustomForm) return;
+    if (!showAddExercise && !showCustomForm && !showFinishSheet) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showFinishSheet) { setShowFinishSheet(false); return true; }
       if (showCustomForm) { setShowCustomForm(false); return true; }
       if (showAddExercise) { setShowAddExercise(false); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [showAddExercise, showCustomForm]);
+  }, [showAddExercise, showCustomForm, showFinishSheet]);
 
   // Load routine on mount
   useEffect(() => {
@@ -710,6 +761,26 @@ export default function ActiveWorkoutScreen() {
     leaveWorkout();
   };
 
+  // Suggest a legible default name for a blank workout from what was actually
+  // trained, so even a no-edit save reads well in history ("Chest & Back"
+  // instead of "New Workout"). Falls back to time of day when muscle groups
+  // are unknown.
+  const suggestWorkoutName = () => {
+    const groups = Array.from(new Set(
+      exercises
+        .filter(e => e.sets.some(s => s.completed))
+        .map(e => e.exercise.muscle_group)
+        .filter((g): g is string => !!g && g !== 'Other')
+    ));
+    const hour = new Date().getHours();
+    const timeOfDay = hour < 12 ? 'Morning' : hour < 17 ? 'Afternoon' : 'Evening';
+    if (groups.length === 1) return `${groups[0]} Day`;
+    if (groups.length === 2) return `${groups[0]} & ${groups[1]}`;
+    if (groups.length === 3) return `${groups[0]}, ${groups[1]} & ${groups[2]}`;
+    if (groups.length >= 4) return 'Full Body';
+    return `${timeOfDay} Workout`;
+  };
+
   // Finish workout
   const handleFinishWorkout = () => {
     const count = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
@@ -718,26 +789,330 @@ export default function ActiveWorkoutScreen() {
       return;
     }
     setFinishSetCount(count);
-    setShowFinishAlert(true);
+    if (workout.routineId === 'new') {
+      // Blank workout: open the naming/save sheet instead of the bare confirm.
+      setFinishName(suggestWorkoutName());
+      setFinishNotes('');
+      setSaveAsRoutine(false);
+      setRoutineNameInput('');
+      setShowFinishSheet(true);
+    } else {
+      setShowFinishAlert(true);
+    }
   };
 
-  const confirmFinish = async () => {
+  const toggleSaveAsRoutine = () => {
+    const next = !saveAsRoutine;
+    // Seed the routine name from the workout name the first time it's enabled.
+    if (next && !routineNameInput.trim()) setRoutineNameInput(finishName.trim());
+    setSaveAsRoutine(next);
+  };
+
+  // Create a routine from the exercises performed this session: sets = what was
+  // actually completed, rep range = the min/max reps logged, rest carried over.
+  // Returns the new routine id (so the workout can link to it) or null on
+  // failure — callers treat failure as non-fatal so the workout itself still saves.
+  const createRoutineFromSession = async (name: string): Promise<string | null> => {
+    const performed = exercises.filter(e => e.sets.some(s => s.completed));
+    if (performed.length === 0) return null;
+    const buildRow = (ex: ActiveWorkoutExercise) => {
+      const reps = ex.sets.filter(s => s.completed).map(s => s.reps);
+      return {
+        sets: reps.length,
+        reps_min: Math.min(...reps),
+        reps_max: Math.max(...reps),
+        rest_seconds: ex.restSeconds ?? 90,
+      };
+    };
+
+    // Branch on isSupabaseConfigured alone — the same test confirmFinish uses
+    // for the workout itself — so the routine id handed back always matches
+    // the store the workout saves to (a guest-r id must never reach Postgres).
+    const clerkId = user?.id;
+    if (!isSupabaseConfigured) {
+      const routineId = `guest-r-${Date.now()}`;
+      addGuestRoutine({
+        id: routineId,
+        user_id: 'guest',
+        name,
+        description: 'Saved from a logged workout',
+        color: undefined as any,
+        created_at: new Date().toISOString(),
+        routine_exercises: performed.map((ex, i) => ({
+          id: `gre-${Date.now()}-${i}`,
+          exercise_id: ex.exercise.id,
+          order: i,
+          ...buildRow(ex),
+          exercises: {
+            id: ex.exercise.id,
+            name: ex.exercise.name,
+            muscle_group: ex.exercise.muscle_group || 'Other',
+            category: ex.exercise.category || 'Custom',
+          },
+        })),
+      } as any);
+      return routineId;
+    }
+
+    try {
+      // Exercises still on a temp id never resolved to a DB row (see
+      // reconcileExerciseRow) and can't be linked. If nothing is linkable,
+      // skip creating an empty routine.
+      const linkable = performed.filter(ex => !String(ex.exercise.id).startsWith('temp-'));
+      if (linkable.length === 0) return null;
+
+      const { data: routineRow, error: routineErr } = await supabase
+        .from('routines')
+        .insert({ user_id: clerkId, name, description: 'Saved from a logged workout' })
+        .select()
+        .single();
+      if (routineErr || !routineRow) throw routineErr;
+
+      const { error: linksErr } = await supabase.from('routine_exercises').insert(
+        linkable.map((ex, i) => ({
+          routine_id: routineRow.id,
+          exercise_id: ex.exercise.id,
+          order: i,
+          ...buildRow(ex),
+        }))
+      );
+      if (linksErr) throw linksErr;
+      return routineRow.id as string;
+    } catch {
+      return null;
+    }
+  };
+
+  // ---- Post-save routine sync -------------------------------------------
+  // When a workout started from a routine, the user may have added or removed
+  // exercises mid-session. After the workout saves, diff the final session
+  // list against the routine and offer to update the routine to match.
+  // Comparison is by exercise name (case-insensitive): re-adding the same
+  // movement under a different DB row or an unresolved temp id shouldn't
+  // read as a change.
+
+  const normExName = (s: string) => s.trim().toLowerCase();
+
+  // Session exercises deduped by name — the same movement added twice still
+  // maps to a single routine entry.
+  const dedupeSessionExercises = (exs: ActiveWorkoutExercise[]) => {
+    const seen = new Set<string>();
+    return exs.filter(e => {
+      const key = normExName(e.exercise.name);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  // Sets for a routine entry created from a session exercise: what was
+  // actually performed when sets were logged, else the configured target.
+  const sessionSetCount = (ex: ActiveWorkoutExercise) => {
+    const done = ex.sets.filter(s => s.completed).length;
+    return done > 0 ? done : ex.targetSets;
+  };
+
+  const buildGuestRoutineSyncOffer = (): RoutineSyncOffer | null => {
+    const rid = workout.routineId;
+    if (!rid || rid === 'new') return null;
+    // Hardcoded sample routines are read-only; only user-created guest
+    // routines can be updated in place.
+    if (!getGuestRoutines().some(r => r.id === rid)) return null;
+    const routine = findMockRoutine(rid);
+    if (!routine) return null;
+
+    const sessionExs = dedupeSessionExercises(exercises);
+    const sessionNames = new Set(sessionExs.map(e => normExName(e.exercise.name)));
+    const routineNames = new Set(routine.routine_exercises.map(re => normExName(re.exercises?.name || '')));
+
+    const added = sessionExs.filter(e => !routineNames.has(normExName(e.exercise.name)));
+    const kept = routine.routine_exercises.filter(re => sessionNames.has(normExName(re.exercises?.name || '')));
+    const removed = routine.routine_exercises.filter(re => !sessionNames.has(normExName(re.exercises?.name || '')));
+    if (added.length === 0 && removed.length === 0) return null;
+
+    const nextOrder = routine.routine_exercises.reduce((m, re) => Math.max(m, (re.order ?? 0) + 1), 0);
+    const guestExercises = [
+      ...kept,
+      ...added.map((ex, i) => ({
+        id: `gre-${Date.now()}-${i}`,
+        order: nextOrder + i,
+        sets: sessionSetCount(ex),
+        reps_min: ex.repsMin,
+        reps_max: ex.repsMax,
+        rest_seconds: ex.restSeconds ?? 90,
+        exercises: {
+          id: ex.exercise.id,
+          name: ex.exercise.name,
+          muscle_group: ex.exercise.muscle_group || 'Other',
+          category: ex.exercise.category || 'Custom',
+        },
+      })),
+    ];
+
+    return {
+      mode: 'guest',
+      routineId: rid,
+      routineName: routine.name,
+      addedNames: added.map(e => e.exercise.name),
+      removedNames: removed.map(re => re.exercises?.name || 'Unknown'),
+      removedRowIds: [],
+      insertRows: [],
+      guestExercises,
+    };
+  };
+
+  const buildDbRoutineSyncOffer = async (): Promise<RoutineSyncOffer | null> => {
+    const rid = workout.routineId;
+    if (!rid || rid === 'new') return null;
+    // Re-fetch the routine as it exists right now — it may have been edited
+    // (or deleted) since the workout started. Missing routine → no offer.
+    const { data: routineRow, error } = await supabase
+      .from('routines')
+      .select('id, name, routine_exercises(id, "order", exercises(id, name))')
+      .eq('id', rid)
+      .maybeSingle();
+    if (error || !routineRow) return null;
+
+    const routineExs: any[] = (routineRow as any).routine_exercises || [];
+    // Exercises still on a temp id never resolved to a real DB row and can't
+    // be linked into routine_exercises, so they sit out of the diff (their
+    // sets were skipped by the save for the same reason).
+    const sessionExs = dedupeSessionExercises(
+      exercises.filter(e => !String(e.exercise.id).startsWith('temp-'))
+    );
+    const sessionNames = new Set(sessionExs.map(e => normExName(e.exercise.name)));
+    const routineNames = new Set(routineExs.map(re => normExName(re.exercises?.name || '')));
+
+    const added = sessionExs.filter(e => !routineNames.has(normExName(e.exercise.name)));
+    const removed = routineExs.filter(re => !sessionNames.has(normExName(re.exercises?.name || '')));
+    if (added.length === 0 && removed.length === 0) return null;
+
+    const nextOrder = routineExs.reduce((m, re) => Math.max(m, (re.order ?? 0) + 1), 0);
+
+    return {
+      mode: 'db',
+      routineId: rid,
+      routineName: (routineRow as any).name || workout.routineName,
+      addedNames: added.map(e => e.exercise.name),
+      removedNames: removed.map(re => re.exercises?.name || 'Unknown'),
+      removedRowIds: removed.map(re => re.id),
+      insertRows: added.map((ex, i) => ({
+        routine_id: rid,
+        exercise_id: ex.exercise.id,
+        sets: sessionSetCount(ex),
+        reps_min: ex.repsMin,
+        reps_max: ex.repsMax,
+        rest_seconds: ex.restSeconds ?? 90,
+        order: nextOrder + i,
+      })),
+      guestExercises: null,
+    };
+  };
+
+  const applyRoutineSync = async (offer: RoutineSyncOffer) => {
+    if (offer.mode === 'guest') {
+      const routine = findMockRoutine(offer.routineId);
+      if (!routine || !offer.guestExercises) throw new Error('Routine not found');
+      const ok = updateGuestRoutine({ ...routine, routine_exercises: offer.guestExercises });
+      if (!ok) throw new Error('Routine is read-only');
+      return;
+    }
+    // Targeted row ops (rather than the editor's delete-all + reinsert) so
+    // untouched entries keep their coach notes and ordering.
+    if (offer.removedRowIds.length > 0) {
+      const { error } = await supabase
+        .from('routine_exercises')
+        .delete()
+        .in('id', offer.removedRowIds);
+      if (error) throw error;
+    }
+    if (offer.insertRows.length > 0) {
+      const { error } = await supabase.from('routine_exercises').insert(offer.insertRows);
+      if (error) throw error;
+    }
+  };
+
+  // Runs after navigating away, so completion is reported via global toasts
+  // (same pattern as the routine editor's save).
+  const runRoutineSync = (offer: RoutineSyncOffer) => {
+    toast.info(`Updating “${offer.routineName}”…`);
+    applyRoutineSync(offer)
+      .then(() => toast.success(`“${offer.routineName}” updated`))
+      .catch(() => {
+        toast.error(`Couldn't update “${offer.routineName}”`, {
+          action: { label: 'Retry', onPress: () => runRoutineSync(offer) },
+        });
+      });
+  };
+
+  const confirmRoutineSync = () => {
+    const offer = routineSync;
+    if (!offer) return;
+    setRoutineSync(null);
+    router.replace('/(app)/history');
+    runRoutineSync(offer);
+  };
+
+  const declineRoutineSync = () => {
+    setRoutineSync(null);
+    router.replace('/(app)/history');
+  };
+
+  // Save from the blank-workout finish sheet.
+  const handleSheetSave = () => {
+    if (saving) return;
+    const name = finishName.trim();
+    if (!name) return;
+    void confirmFinish({
+      name,
+      notes: finishNotes,
+      routineNameToSave: saveAsRoutine ? (routineNameInput.trim() || name) : undefined,
+    });
+  };
+
+  const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string }) => {
     setShowFinishAlert(false);
+    setShowFinishSheet(false);
+    Keyboard.dismiss();
     setSaving(true);
     toast.info('Saving workout…');
     try {
+      const workoutName = opts?.name?.trim() || workout.routineName;
+      const workoutNotes = opts?.notes?.trim() || null;
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
       const vol = allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0);
+
+      // Create the routine first (when requested) so the workout row can link
+      // to it — that link is what feeds "previous session" the next time the
+      // routine is started. Failure here is non-fatal: the workout still saves.
+      let linkedRoutineId = workout.routineId === 'new' ? null : workout.routineId;
+      let routineCreated = false;
+      let routineFailed = false;
+      if (opts?.routineNameToSave) {
+        const createdId = await createRoutineFromSession(opts.routineNameToSave);
+        if (createdId) {
+          linkedRoutineId = createdId;
+          routineCreated = true;
+        } else {
+          routineFailed = true;
+        }
+      }
+      const finishToast = () => {
+        if (routineCreated) toast.success('Workout saved · routine created');
+        else if (routineFailed) toast.error("Workout saved, but the routine couldn't be created");
+        else toast.success('Workout saved');
+      };
 
       if (!isSupabaseConfigured) {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
-          name: workout.routineName,
+          name: workoutName,
           started_at: new Date(Date.now() - workout.elapsed * 1000).toISOString(),
           finished_at: new Date().toISOString(),
           duration_seconds: workout.elapsed,
           total_volume_kg: vol,
-          routine_id: workout.routineId === 'new' ? null : workout.routineId,
+          routine_id: linkedRoutineId,
+          notes: workoutNotes ?? undefined,
           workout_sets: allCompleted.map((_, i) => ({ id: `gs-${Date.now()}-${i}` })),
           exercises: exercises
             .filter(e => e.sets.some(s => s.completed))
@@ -746,9 +1121,15 @@ export default function ActiveWorkoutScreen() {
               sets: e.sets.filter(s => s.completed).map(s => ({ weight_kg: s.weight_kg, reps: s.reps })),
             })),
         });
+        // Built before finishWorkout() clears the active session.
+        const guestOffer = buildGuestRoutineSyncOffer();
         workout.finishWorkout();
+        finishToast();
+        if (guestOffer) {
+          setRoutineSync(guestOffer);
+          return;
+        }
         router.replace('/(app)/history');
-        toast.success('Workout saved');
         return;
       }
 
@@ -769,8 +1150,9 @@ export default function ActiveWorkoutScreen() {
         .from('workouts')
         .insert({
           // user_id omitted — default `auth.jwt()->>'sub'` fills it server-side.
-          routine_id: workout.routineId === 'new' ? null : workout.routineId,
-          name: workout.routineName,
+          routine_id: linkedRoutineId,
+          name: workoutName,
+          notes: workoutNotes,
           started_at: startedAtIso,
           // finished_at left null on purpose — set in step 3.
         })
@@ -835,9 +1217,23 @@ export default function ActiveWorkoutScreen() {
         }
       }
 
+      // Offer to sync the source routine if the session added or removed
+      // exercises. Built before finishWorkout() clears the active session;
+      // best-effort — a failure here never blocks finishing.
+      let syncOffer: RoutineSyncOffer | null = null;
+      try {
+        syncOffer = await buildDbRoutineSyncOffer();
+      } catch {
+        syncOffer = null;
+      }
+
       workout.finishWorkout();
+      finishToast();
+      if (syncOffer) {
+        setRoutineSync(syncOffer);
+        return;
+      }
       router.replace('/(app)/history');
-      toast.success('Workout saved');
     } catch (err: any) {
       setShowErrorAlert(err?.message || 'Failed to save workout');
       toast.hide();
@@ -1559,6 +1955,165 @@ export default function ActiveWorkoutScreen() {
         )}
       </Portal>
 
+      {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
+          other sheets. Lets the user name the session (pre-filled from the
+          muscle groups trained) so history stays legible, jot optional notes,
+          and one-tap save the performed exercises as a reusable routine. */}
+      <Portal>
+        {showFinishSheet && (
+        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowFinishSheet(false)}>
+          <Animated.View
+            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
+            exiting={SlideOutDown.duration(200)}
+            style={[
+              styles.modalSheet,
+              {
+                backgroundColor: C.elevated,
+                // Same keyboard handling as the custom-exercise sheet: <Portal>
+                // windows aren't auto-resized for the IME, so lift and cap.
+                marginBottom: kbHeight,
+                maxHeight: (winH - kbHeight) * 0.9,
+              },
+            ]}
+          >
+            <Pressable style={{ flexShrink: 1 }}>
+              <View style={[styles.handle, { backgroundColor: C.handle }]} />
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: C.foreground }]}>Finish Workout</Text>
+                <TouchableOpacity onPress={() => setShowFinishSheet(false)} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
+                  <Feather name="x" size={15} color={C.foreground} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={{ flexGrow: 0, flexShrink: 1 }}
+                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+              >
+                {/* Session summary */}
+                <View style={styles.finishStatsRow}>
+                  {[
+                    { label: 'Sets', value: String(finishSetCount) },
+                    { label: 'Duration', value: `${Math.floor(workout.elapsed / 60)}m` },
+                    { label: 'Volume', value: `${totalVolume}kg` },
+                  ].map((s) => (
+                    <View key={s.label} style={[styles.finishStatCard, { backgroundColor: C.muted }]}>
+                      <Text style={[styles.finishStatValue, { color: C.foreground }]}>{s.value}</Text>
+                      <Text style={[styles.finishStatLabel, { color: C.textMuted }]}>{s.label}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Workout name — pre-filled suggestion, selectTextOnFocus so
+                    replacing it is a single tap + type */}
+                <Text style={[styles.formLabel, { color: C.textDim }]}>WORKOUT NAME</Text>
+                <TextInput
+                  value={finishName}
+                  onChangeText={setFinishName}
+                  placeholder="e.g. Push Day"
+                  placeholderTextColor={C.textMuted}
+                  selectTextOnFocus
+                  returnKeyType="done"
+                  style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                />
+
+                {/* Notes */}
+                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>NOTES (OPTIONAL)</Text>
+                <TextInput
+                  value={finishNotes}
+                  onChangeText={setFinishNotes}
+                  placeholder="How did it go?"
+                  placeholderTextColor={C.textMuted}
+                  multiline
+                  style={[styles.formInput, styles.finishNotesInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                />
+
+                {/* Save as routine */}
+                <TouchableOpacity
+                  onPress={toggleSaveAsRoutine}
+                  activeOpacity={0.8}
+                  style={[
+                    styles.routineToggle,
+                    {
+                      backgroundColor: saveAsRoutine ? C.primarySubtle : C.muted,
+                      borderColor: saveAsRoutine ? C.primaryBorder : C.border,
+                    },
+                  ]}
+                >
+                  <View style={[styles.routineToggleIcon, { backgroundColor: saveAsRoutine ? Colors.primary : C.elevated }]}>
+                    <Feather name="repeat" size={14} color={saveAsRoutine ? Colors.primaryFg : C.textMuted} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.routineToggleTitle, { color: C.foreground }]}>Save as routine</Text>
+                    <Text style={[styles.routineToggleSub, { color: C.textMuted }]}>
+                      Repeat this workout anytime from Routines
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.routineCheckbox,
+                      {
+                        borderColor: saveAsRoutine ? Colors.primary : C.border,
+                        backgroundColor: saveAsRoutine ? Colors.primary : 'transparent',
+                      },
+                    ]}
+                  >
+                    {saveAsRoutine && <Feather name="check" size={12} color={Colors.primaryFg} />}
+                  </View>
+                </TouchableOpacity>
+
+                {saveAsRoutine && (
+                  <Animated.View entering={FadeIn.duration(200)}>
+                    <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>ROUTINE NAME</Text>
+                    <TextInput
+                      value={routineNameInput}
+                      onChangeText={setRoutineNameInput}
+                      placeholder={finishName.trim() || 'Routine name'}
+                      placeholderTextColor={C.textMuted}
+                      selectTextOnFocus
+                      returnKeyType="done"
+                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                    />
+                  </Animated.View>
+                )}
+              </ScrollView>
+
+              <View style={[styles.formFooter, { borderTopColor: C.borderSubtle, paddingBottom: Math.max(insets.bottom, Spacing.xl) }]}>
+                <TouchableOpacity
+                  onPress={handleSheetSave}
+                  disabled={!finishName.trim() || saving}
+                  style={[
+                    styles.formSaveBtn,
+                    { backgroundColor: Colors.primary, opacity: finishName.trim() && !saving ? 1 : 0.4 },
+                  ]}
+                >
+                  {saving ? (
+                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                  ) : (
+                    <>
+                      <Feather name="check" size={15} color={Colors.primaryFg} />
+                      <Text style={styles.formSaveBtnText}>
+                        {saveAsRoutine ? 'Save Workout & Routine' : 'Save Workout'}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                {/* Carry over the coach-review affordance the confirm alert had */}
+                <TouchableOpacity
+                  onPress={() => { setShowFinishSheet(false); openCoachReview(); }}
+                  style={styles.reviewCoachLink}
+                >
+                  <Feather name="zap" size={12} color={C.accentText} />
+                  <Text style={[styles.reviewCoachLinkText, { color: C.accentText }]}>Review with Coach first</Text>
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </Animated.View>
+        </Pressable>
+        )}
+      </Portal>
+
       {/* Themed Alerts */}
       <ThemedAlert
         visible={showCancelAlert}
@@ -1585,7 +2140,7 @@ export default function ActiveWorkoutScreen() {
           { label: 'Volume', value: `${totalVolume}kg` },
         ]}
         buttons={[
-          { text: 'Finish', style: 'primary', onPress: confirmFinish },
+          { text: 'Finish', style: 'primary', onPress: () => { void confirmFinish(); } },
           {
             text: 'Review with Coach',
             onPress: () => { setShowFinishAlert(false); openCoachReview(); },
@@ -1603,6 +2158,23 @@ export default function ActiveWorkoutScreen() {
         message="Log at least one set before finishing."
         buttons={[{ text: 'OK', style: 'primary', onPress: () => setShowNoSetsAlert(false) }]}
         onClose={() => setShowNoSetsAlert(false)}
+      />
+
+      {/* Post-save offer: the session's exercises deviated from the source
+          routine, so offer to bring the routine in line with what was done.
+          Shown after the workout is already saved; both answers land on
+          history, accepting also applies the add/remove sync. */}
+      <ThemedAlert
+        visible={!!routineSync}
+        icon="refresh-cw"
+        iconColor={Colors.primary}
+        title="Update Routine?"
+        message={routineSync ? buildRoutineSyncMessage(routineSync) : ''}
+        buttons={[
+          { text: 'Update Routine', style: 'primary', onPress: confirmRoutineSync },
+          { text: 'No Thanks', onPress: declineRoutineSync },
+        ]}
+        onClose={declineRoutineSync}
       />
 
       <ThemedAlert
@@ -2054,4 +2626,60 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Colors.primaryFg,
   },
+
+  // Finish sheet (blank workouts)
+  finishStatsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: Spacing.lg,
+  },
+  finishStatCard: {
+    flex: 1,
+    padding: 12,
+    borderRadius: Radius.xl,
+    alignItems: 'center',
+  },
+  finishStatValue: { fontSize: FontSize.lg, fontWeight: FontWeight.black },
+  finishStatLabel: { fontSize: 10, marginTop: 2 },
+  finishNotesInput: {
+    height: undefined,
+    minHeight: 64,
+    paddingVertical: 10,
+    textAlignVertical: 'top',
+  },
+  routineToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: Spacing.lg,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    marginTop: Spacing.xl,
+  },
+  routineToggleIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  routineToggleTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  routineToggleSub: { fontSize: FontSize.xs, marginTop: 2 },
+  routineCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewCoachLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    marginTop: 2,
+  },
+  reviewCoachLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
 });
