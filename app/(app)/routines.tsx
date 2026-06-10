@@ -14,6 +14,8 @@ import {
   Keyboard,
   Platform,
   FlatList,
+  BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -34,6 +36,7 @@ import { mockRoutines, getAllRoutines, addGuestRoutine, updateGuestRoutine, remo
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { Portal } from '@/components/ui/Portal';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
 
@@ -523,6 +526,7 @@ function RoutineEditorSheet({
   // with the status bar / Dynamic Island. Read the device inset via the hook —
   // it returns the correct value from the root provider — and pad manually.
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
@@ -566,6 +570,25 @@ function RoutineEditorSheet({
     const focusTimer = setTimeout(() => nameInputRef.current?.focus(), 100);
     return () => { showSub.remove(); hideSub.remove(); clearTimeout(focusTimer); };
   }, [showCustomDrawer]);
+
+  // The editor renders via <Portal> (the main app window) instead of a native
+  // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
+  // window, and RN's Keyboard events fire only for the main activity window —
+  // so the custom-exercise drawer's keyboard listener never fired inside the
+  // Modal, customKbHeight stayed 0, and the IME covered the inputs. In the main
+  // window the listener works and the drawer lifts. <Portal> has no
+  // onRequestClose, so wire the Android hardware back button ourselves: close
+  // the custom drawer first if it's open, otherwise dismiss the editor.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showCustomDrawer) { setShowCustomDrawer(false); return true; }
+      handleClose();
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, showCustomDrawer]);
 
   const openCustomDrawer = (prefill: string, targetIdx: number) => {
     setCustomName(prefill);
@@ -811,14 +834,14 @@ function RoutineEditorSheet({
   };
 
   return (
-    <>
-      <Modal
-        visible={visible}
-        animationType="slide"
-        presentationStyle="fullScreen"
-        onRequestClose={handleClose}
-      >
-        <View style={[styles.editorSafe, { backgroundColor: C.elevated, paddingTop: insets.top }]}>
+    <Portal>
+      {visible && (
+        <Animated.View
+          entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
+          exiting={SlideOutDown.duration(250)}
+          style={[StyleSheet.absoluteFill, styles.editorSafe, { backgroundColor: C.elevated, paddingTop: insets.top }]}
+        >
+
           <KeyboardAvoidingView
             style={{ flex: 1 }}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -924,11 +947,19 @@ function RoutineEditorSheet({
               (invisible) until the editor was dismissed — that was the "Create
               Custom does nothing" bug. An overlay renders correctly over the
               editor. */}
+          {/* Custom Exercise Drawer — its OWN <Portal> node, a sibling overlay
+              in the SAME main window as the editor (which is also a Portal).
+              This mirrors analytics' BottomDrawer, the keyboard-lift pattern
+              that works on Android here. Nesting the drawer inside the editor's
+              absolute-fill subtree defeated Android's keyboard handling, so the
+              IME covered the inputs. */}
+          <Portal>
           {showCustomDrawer && (
-            <Pressable
-              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay, justifyContent: 'flex-end' }]}
-              onPress={() => setShowCustomDrawer(false)}
-            >
+            <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+              <Pressable
+                style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]}
+                onPress={() => setShowCustomDrawer(false)}
+              />
           <Animated.View
             entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutDown.duration(200)}
@@ -937,12 +968,12 @@ function RoutineEditorSheet({
               {
                 backgroundColor: C.card,
                 borderColor: C.border,
-                // Lift above the keyboard on BOTH platforms. The name field
-                // auto-focuses, so the keyboard appears immediately; on Android
-                // this Modal isn't auto-resized, so an iOS-only lift left the
-                // "Add Exercise" button stuck behind the keyboard and
-                // unreachable — testers couldn't add a custom exercise.
+                // Lift above the keyboard via marginBottom, and cap the height
+                // to the space that remains above it. customKbHeight comes from
+                // the keyboard listener effect above.
                 marginBottom: customKbHeight,
+                maxHeight: (windowHeight - customKbHeight) * 0.85,
+                paddingBottom: insets.bottom,
               },
             ]}
           >
@@ -1073,12 +1104,12 @@ function RoutineEditorSheet({
               </ScrollView>
             </Pressable>
           </Animated.View>
-            </Pressable>
+            </View>
           )}
-        </View>
-      </Modal>
-
-    </>
+          </Portal>
+        </Animated.View>
+      )}
+    </Portal>
   );
 }
 
