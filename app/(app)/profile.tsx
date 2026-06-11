@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, ActivityIndicator, Modal, Pressable, Keyboard, Platform,
+  TextInput, ActivityIndicator, BackHandler, Pressable, Keyboard, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown, useSharedValue, useAnimatedStyle, withTiming,
@@ -19,6 +19,7 @@ import { mockProfile, getMockWorkouts } from '@/lib/mockData';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
+import { Portal } from '@/components/ui/Portal';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   type WeightEntry, type BodyFatEntry,
@@ -241,11 +242,11 @@ export default function ProfileScreen() {
   const [bugCategory, setBugCategory] = useState<'ui' | 'data' | 'crash' | 'performance' | 'other'>('ui');
   const [bugSubmitting, setBugSubmitting] = useState(false);
 
-  // Keyboard avoidance for the bug-report sheet. On iOS, KeyboardAvoidingView
-  // nested inside a transparent <Modal> doesn't lift the sheet — the parent
-  // Modal does not resize for the keyboard, so the inputs and Submit button
-  // remain hidden behind it. We track keyboard height ourselves and apply
-  // marginBottom to the sheet (the proven pattern from analytics.tsx).
+  // Keyboard avoidance for the bug-report sheet. It renders via <Portal> (the
+  // app's own window), which isn't auto-resized for the keyboard, so we track
+  // keyboard height ourselves and apply marginBottom to the sheet (the proven
+  // pattern from analytics.tsx).
+  const insets = useSafeAreaInsets();
   const [bugKbHeight, setBugKbHeight] = useState(0);
   useEffect(() => {
     if (!bugModalOpen) { setBugKbHeight(0); return; }
@@ -256,6 +257,17 @@ export default function ProfileScreen() {
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setBugKbHeight(0));
     return () => { showSub.remove(); hideSub.remove(); };
+  }, [bugModalOpen]);
+
+  // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
+  // hardware back button to dismiss the sheet while it's open.
+  useEffect(() => {
+    if (!bugModalOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setBugModalOpen(false);
+      return true;
+    });
+    return () => sub.remove();
   }, [bugModalOpen]);
 
   const userName = user?.firstName || user?.fullName || 'Athlete';
@@ -995,8 +1007,12 @@ export default function ProfileScreen() {
         </ScrollView>
       </SafeAreaView>
 
-      {/* ─── Bug Report Bottom Sheet ─── */}
-      <Modal visible={bugModalOpen} transparent animationType="none" onRequestClose={() => setBugModalOpen(false)}>
+      {/* ─── Bug Report Bottom Sheet ───
+          Rendered via the root <Portal>, not RN <Modal> — on Android
+          edge-to-edge a <Modal> is a separate Dialog window inset by the
+          system nav bar, so a bottom sheet floats above it with a gap. */}
+      <Portal>
+        {bugModalOpen && (
         <Animated.View
           entering={FadeIn.duration(200)}
           exiting={FadeOut.duration(150)}
@@ -1009,9 +1025,12 @@ export default function ProfileScreen() {
             style={[styles.bugSheet, {
               backgroundColor: C.elevated,
               borderTopColor: C.borderSubtle,
-              // Lift above the keyboard on iOS (Android's adjustResize handles
-              // it on its own). See bugKbHeight tracking above for context.
-              marginBottom: Platform.OS === 'ios' ? bugKbHeight : 0,
+              // Lift above the keyboard on both platforms — the portal window
+              // isn't auto-resized. See bugKbHeight tracking above for context.
+              marginBottom: bugKbHeight,
+              // Flush with the screen bottom now, so pad past the home
+              // indicator / gesture bar.
+              paddingBottom: insets.bottom + 24,
             }]}
           >
               <View style={styles.bugHandle}>
@@ -1111,7 +1130,8 @@ export default function ProfileScreen() {
               </TouchableOpacity>
           </Animated.View>
         </Animated.View>
-      </Modal>
+        )}
+      </Portal>
 
       <ThemedAlert
         visible={showSignOutAlert}

@@ -16,11 +16,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Modal, Pressable, TextInput,
-  Keyboard, Platform, Linking, RefreshControl, useWindowDimensions,
+  ActivityIndicator, BackHandler, Pressable, TextInput,
+  Keyboard, Platform, Linking, RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown, SlideInDown, SlideOutDown, Easing,
@@ -29,6 +29,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
+import { Portal } from '@/components/ui/Portal';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Phase 3 contradiction detection. Set on pending rows by the ingest worker
@@ -339,13 +340,13 @@ function PaperDetailSheet({
   }, [paper?.id]);
 
   // Keyboard avoidance for the reject-reason input. The input autofocuses
-  // when reject mode is entered, which immediately pops the iOS keyboard
-  // and (without intervention) covers the input + Confirm Reject button.
-  // KeyboardAvoidingView nested in a transparent Modal doesn't lift the
-  // sheet on iOS, so we track keyboard height ourselves and apply
-  // marginBottom to the sheet (matches analytics.tsx BottomDrawer pattern).
+  // when reject mode is entered, which immediately pops the keyboard and
+  // (without intervention) covers the input + Confirm Reject button. The
+  // sheet renders via <Portal> (the app's own window), which isn't
+  // auto-resized for the keyboard, so we track keyboard height ourselves and
+  // apply marginBottom to the sheet (matches analytics.tsx BottomDrawer).
+  const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
-  const { height: windowHeight } = useWindowDimensions();
   useEffect(() => {
     if (!paper || !rejectMode) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -357,6 +358,19 @@ function PaperDetailSheet({
     return () => { showSub.remove(); hideSub.remove(); };
   }, [paper, rejectMode]);
 
+  // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
+  // hardware back button: leave reject mode first if it's active, otherwise
+  // dismiss the sheet.
+  useEffect(() => {
+    if (!paper) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (rejectMode) { setRejectMode(false); setRejectReason(''); return true; }
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [paper, rejectMode, onClose]);
+
   if (!paper) return null;
 
   const meta = paper.source_meta ?? {};
@@ -364,7 +378,10 @@ function PaperDetailSheet({
   const pmid = typeof meta.pmid === 'string' ? meta.pmid : undefined;
 
   return (
-    <Modal visible={paper !== null} transparent animationType="none" onRequestClose={onClose}>
+    // Rendered via the root <Portal>, not RN <Modal> — on Android edge-to-edge
+    // a <Modal> is a separate Dialog window inset by the system nav bar, so a
+    // bottom sheet floats above it with a gap (see components/ui/Portal.tsx).
+    <Portal>
       <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
         <Pressable style={{ flex: 1 }} onPress={onClose} />
         <Animated.View
@@ -374,16 +391,12 @@ function PaperDetailSheet({
             s.sheet,
             {
               backgroundColor: C.background,
-              // Lift above the keyboard on iOS — see kbHeight tracking above.
-              marginBottom: Platform.OS === 'ios' ? kbHeight : 0,
-              // Android's Modal isn't resized for the keyboard either, but the
-              // sheet has a fixed 92% height, so pushing it up via marginBottom
-              // would overflow the top. Instead trim its height by the keyboard
-              // inset so the reject input + action bar stay visible (matches
-              // analytics.tsx's BottomDrawer).
-              ...(Platform.OS === 'android' && kbHeight > 0
-                ? { height: Math.max(0, windowHeight * 0.92 - kbHeight) }
-                : null),
+              // Lift above the keyboard on both platforms — the portal window
+              // isn't auto-resized. See kbHeight tracking above.
+              marginBottom: kbHeight,
+              // Flush with the screen bottom now, so pad the action bar past
+              // the home indicator / gesture bar.
+              paddingBottom: insets.bottom,
             },
           ]}
         >
@@ -480,8 +493,8 @@ function PaperDetailSheet({
           </ScrollView>
 
           {/* Action bar — keyboard avoidance is handled at the sheet level
-              (marginBottom: kbHeight on iOS), not via KeyboardAvoidingView,
-              because KAV inside a transparent Modal is unreliable on iOS. */}
+              (marginBottom: kbHeight), not via KeyboardAvoidingView, because
+              the portal window isn't auto-resized for the keyboard. */}
           <View>
             {rejectMode ? (
               <View style={[s.actionBar, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
@@ -552,7 +565,7 @@ function PaperDetailSheet({
           </View>
         </Animated.View>
       </View>
-    </Modal>
+    </Portal>
   );
 }
 
