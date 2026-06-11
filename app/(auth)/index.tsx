@@ -490,7 +490,10 @@ export default function AuthScreen() {
                     // the Google button has the same visual weight as the
                     // solid-black Apple button — keeps the two SSO options
                     // looking like a unified pair instead of one solid,
-                    // one ghost.
+                    // one ghost. Theme-aware on purpose: the app renders in
+                    // dark mode (useTheme defaults to 'dark'), and the label
+                    // uses C.foreground — pinning the fill to a light token
+                    // here produces white-on-cream text.
                     backgroundColor: C.muted,
                   },
                   // Dim only when *another* auth flow holds the lock —
