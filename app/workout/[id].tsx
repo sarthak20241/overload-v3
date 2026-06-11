@@ -139,6 +139,10 @@ export default function ActiveWorkoutScreen() {
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
+  const mainScrollRef = useRef<ScrollView>(null);
+  // True while the weight/reps inputs are focused — gates the keyboard-show
+  // auto-scroll so other inputs (finish sheet, picker) don't trigger it.
+  const setLoggerFocusedRef = useRef(false);
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
@@ -165,23 +169,33 @@ export default function ActiveWorkoutScreen() {
   // be acted on before the user actually saves.
   const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
-  // Track keyboard height while the finish sheet is open. It renders via
-  // <Portal> (the app's own window), which isn't auto-resized for the
-  // keyboard, so we lift it (marginBottom) and cap its height (maxHeight) by
-  // this amount — otherwise the keyboard covers the text inputs.
+  // Track keyboard height for the whole screen. Two consumers:
+  // - The finish sheet renders via <Portal> (the app's own window), which
+  //   isn't auto-resized for the keyboard, so it lifts via marginBottom and
+  //   caps its height by this amount.
+  // - The set logger's weight/reps inputs: Android edge-to-edge disables the
+  //   old adjustResize behavior, so the window does NOT shrink and the
+  //   focused input stays buried under the IME. We pad the main scroll
+  //   content by the keyboard height and scroll the input card (the last
+  //   content in the started view) into view ourselves. iOS is covered by
+  //   automaticallyAdjustKeyboardInsets on the ScrollView instead.
   useEffect(() => {
-    if (!showFinishSheet) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const showSub = Keyboard.addListener(showEvt, (e) => {
       setKbHeight(e.endCoordinates?.height ?? 0);
+      // Wait a tick so the padding from setKbHeight is laid out, then bring
+      // the input card + Log Set button above the keyboard.
+      if (Platform.OS === 'android' && setLoggerFocusedRef.current) {
+        setTimeout(() => mainScrollRef.current?.scrollToEnd({ animated: true }), 80);
+      }
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
     return () => {
       showSub.remove();
       hideSub.remove();
     };
-  }, [showFinishSheet]);
+  }, []);
 
   // <Portal> has no onRequestClose (unlike RN <Modal>), so route the Android
   // hardware back button to close the finish sheet instead of letting it fall
@@ -1341,8 +1355,16 @@ export default function ActiveWorkoutScreen() {
 
       {/* MAIN CONTENT */}
       <ScrollView
+        ref={mainScrollRef}
         style={styles.mainScroll}
-        contentContainerStyle={styles.mainContent}
+        contentContainerStyle={[
+          styles.mainContent,
+          // Android edge-to-edge: the window doesn't resize for the IME, so
+          // make room for the keyboard ourselves; the keyboard-show listener
+          // then scrolls the set logger into view. iOS pads via
+          // automaticallyAdjustKeyboardInsets below.
+          Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight },
+        ]}
         showsVerticalScrollIndicator={false}
         // With the keyboard open after typing a weight/rep, taps on "Log Set"
         // and the +/− steppers must land on the first tap — the default
@@ -1351,7 +1373,6 @@ export default function ActiveWorkoutScreen() {
         // iOS only: insets the scroll content by the keyboard height and
         // scrolls the focused field into view. Once a few sets are logged the
         // input card sits in the lower half of the screen, under the keyboard.
-        // Android already handles this via the Activity's adjustResize.
         automaticallyAdjustKeyboardInsets
       >
         {exercises.length === 0 ? (
@@ -1540,6 +1561,8 @@ export default function ActiveWorkoutScreen() {
                           keyboardType="decimal-pad"
                           style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
                           selectTextOnFocus
+                          onFocus={() => { setLoggerFocusedRef.current = true; }}
+                          onBlur={() => { setLoggerFocusedRef.current = false; }}
                         />
                         <TouchableOpacity
                           onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))}
@@ -1569,6 +1592,8 @@ export default function ActiveWorkoutScreen() {
                           keyboardType="number-pad"
                           style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
                           selectTextOnFocus
+                          onFocus={() => { setLoggerFocusedRef.current = true; }}
+                          onBlur={() => { setLoggerFocusedRef.current = false; }}
                         />
                         <TouchableOpacity
                           onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))}
