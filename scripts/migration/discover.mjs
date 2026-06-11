@@ -22,7 +22,8 @@ function loadEnvFile(path) {
       const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/i);
       if (!m) continue;
       let [, k, v] = m;
-      v = v.trim().replace(/^["']|["']$/g, '');
+      // Strip only matching surrounding quotes (don't pair a leading " with a trailing ').
+      v = v.trim().replace(/^(["'])(.*)\1$/, '$2');
       if (!(k in process.env)) process.env[k] = v;
     }
   } catch { /* file optional */ }
@@ -51,6 +52,8 @@ function buildUserQuery() {
   return ors.length ? { $or: ors } : null;
 }
 
+// NOTE: hard slice for readability — output may be truncated mid-structure and
+// is NOT guaranteed to be valid JSON. It's a human inspection aid only.
 const trim = (doc) => JSON.stringify(doc, null, 2).slice(0, 4000);
 
 async function main() {
@@ -70,6 +73,8 @@ async function main() {
 
     for (const { name: coll } of collections) {
       const c = db.collection(coll);
+      // Approximate — estimatedDocumentCount() reads collection metadata and may
+      // be stale after an unclean shutdown. Good enough for a discovery pass.
       const count = await c.estimatedDocumentCount();
       console.log(`\n--- ${name}.${coll}  (~${count} docs) ---`);
 
@@ -79,6 +84,7 @@ async function main() {
       if (userQuery) {
         const matches = await c.find(userQuery).limit(5).toArray();
         if (matches.length) {
+          console.warn('>>> PII: treat the following matched documents as sensitive — do not paste into tickets/logs.');
           console.log(`>>> ${matches.length} match(es) for target users:`);
           for (const m of matches) console.log(trim(m));
         }
