@@ -39,7 +39,6 @@
         "appleTeamId": "JSA76PM8YB"
       },
       "android": {
-        "serviceAccountKeyPath": "./google-service-account.json",
         "track": "internal",
         "changesNotSentForReview": false
       }
