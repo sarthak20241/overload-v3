@@ -2099,13 +2099,15 @@ export default function ActiveWorkoutScreen() {
                     </>
                   )}
                 </TouchableOpacity>
-                {/* Carry over the coach-review affordance the confirm alert had */}
+                {/* Same affordance as the routine-workout finish alert, styled
+                    to match its muted full-width button so both finish flows
+                    present the coach review identically. */}
                 <TouchableOpacity
                   onPress={() => { setShowFinishSheet(false); openCoachReview(); }}
-                  style={styles.reviewCoachLink}
+                  style={[styles.reviewCoachBtn, { backgroundColor: C.muted }]}
+                  activeOpacity={0.75}
                 >
-                  <Feather name="zap" size={12} color={C.accentText} />
-                  <Text style={[styles.reviewCoachLinkText, { color: C.accentText }]}>Review with Coach first</Text>
+                  <Text style={[styles.reviewCoachBtnText, { color: C.foreground }]}>Review with Coach</Text>
                 </TouchableOpacity>
               </View>
             </Pressable>
@@ -2673,13 +2675,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  reviewCoachLink: {
-    flexDirection: 'row',
+  // Mirrors ThemedAlert's default (muted) action button so the coach-review
+  // action looks the same in both finish flows; marginTop matches the alert's
+  // 12px button gap.
+  reviewCoachBtn: {
+    paddingVertical: 14,
+    borderRadius: Radius.xl,
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    marginTop: 2,
+    marginTop: 12,
   },
-  reviewCoachLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+  reviewCoachBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
 });
