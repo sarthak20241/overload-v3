@@ -29,7 +29,11 @@ function loadEnvFile(path) {
       v = v.trim().replace(/^(["'])(.*)\1$/, '$2');
       if (!(k in process.env)) process.env[k] = v;
     }
-  } catch { /* file optional */ }
+  } catch (err) {
+    // Only a missing file is optional; surface real errors (e.g. EACCES) so a
+    // readable-but-broken .env.migration doesn't masquerade as "not set".
+    if (err.code !== 'ENOENT') throw err;
+  }
 }
 loadEnvFile(new URL('.env.migration', import.meta.url).pathname);
 
@@ -98,9 +102,9 @@ async function main() {
             console.warn('>>> PII: treat the following matched documents as sensitive — do not paste into tickets/logs.');
             // If we hit the sample cap, report the true count so a large
             // workout history isn't silently under-reported during discovery.
-            const total = matches.length < SAMPLE_LIMIT
-              ? matches.length
-              : await c.countDocuments(userQuery);
+            const total = matches.length >= SAMPLE_LIMIT
+              ? await c.countDocuments(userQuery)
+              : matches.length;
             console.warn(`>>> ${total} match(es) for target users (showing up to ${SAMPLE_LIMIT}):`);
             for (const m of matches) console.warn(trim(m));
           }

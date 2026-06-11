@@ -22,6 +22,12 @@ migration cannot connect to Atlas from inside a default web session. To run the
    host's outbound IP. If the egress IP is dynamic, temporarily allow
    `0.0.0.0/0`, then tighten afterward.
 
+**Atlas role:** `discover.mjs` calls `admin.listDatabases()`, which needs a role
+granting `listDatabases` on the cluster (e.g. `readAnyDatabase@admin`). If the
+user only has read on one database, either grant that role or pin the database
+in the URI (`...mongodb.net/<dbname>`) and adapt the script to skip the admin
+listing.
+
 If direct connect proves impractical (HTTP-only proxy, no raw TCP), fall back
 to: you run `discover.mjs` / a `mongodump` where both DBs are reachable and
 share the JSON, and the transform + Supabase load happens from that export.
