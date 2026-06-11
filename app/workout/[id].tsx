@@ -23,13 +23,12 @@ import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { getXpForWorkout } from '@/lib/xp';
-import { MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
+import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
 const AMBER = '#fbbf24';
-const WORKOUT_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Other'] as const;
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -93,16 +92,6 @@ export default function ActiveWorkoutScreen() {
   const [inputReps, setInputReps] = useState('10');
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
-  const [exerciseSearch, setExerciseSearch] = useState('');
-  // Custom exercise form
-  const [showCustomForm, setShowCustomForm] = useState(false);
-  const [customName, setCustomName] = useState('');
-  const [customMuscle, setCustomMuscle] = useState('Other');
-  const [customCategory, setCustomCategory] = useState('Other');
-  const [customSets, setCustomSets] = useState('3');
-  const [customRepsMin, setCustomRepsMin] = useState('8');
-  const [customRepsMax, setCustomRepsMax] = useState('12');
-  const [customRest, setCustomRest] = useState('90');
   const [exerciseTimer, setExerciseTimer] = useState(0);
   const [restTimer, setRestTimer] = useState(0);
   // True from the moment a set is logged until the user either logs the next
@@ -169,13 +158,12 @@ export default function ActiveWorkoutScreen() {
   // be acted on before the user actually saves.
   const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
-  // Track keyboard height while the custom-exercise form or the finish sheet
-  // is open. These sheets render via <Portal> (the app's own window), which
-  // isn't auto-resized for the keyboard, so we lift them (marginBottom) and cap
-  // their height (maxHeight) by this amount — otherwise the keyboard covers the
-  // text inputs.
+  // Track keyboard height while the finish sheet is open. It renders via
+  // <Portal> (the app's own window), which isn't auto-resized for the
+  // keyboard, so we lift it (marginBottom) and cap its height (maxHeight) by
+  // this amount — otherwise the keyboard covers the text inputs.
   useEffect(() => {
-    if (!showCustomForm && !showFinishSheet) { setKbHeight(0); return; }
+    if (!showFinishSheet) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const showSub = Keyboard.addListener(showEvt, (e) => {
@@ -186,21 +174,20 @@ export default function ActiveWorkoutScreen() {
       showSub.remove();
       hideSub.remove();
     };
-  }, [showCustomForm, showFinishSheet]);
+  }, [showFinishSheet]);
 
   // <Portal> has no onRequestClose (unlike RN <Modal>), so route the Android
-  // hardware back button to close whichever sheet is open instead of letting it
-  // fall through and leave the workout.
+  // hardware back button to close the finish sheet instead of letting it fall
+  // through and leave the workout. The add-exercise picker handles its own
+  // back button internally.
   useEffect(() => {
-    if (!showAddExercise && !showCustomForm && !showFinishSheet) return;
+    if (!showFinishSheet) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (showFinishSheet) { setShowFinishSheet(false); return true; }
-      if (showCustomForm) { setShowCustomForm(false); return true; }
-      if (showAddExercise) { setShowAddExercise(false); return true; }
-      return false;
+      setShowFinishSheet(false);
+      return true;
     });
     return () => sub.remove();
-  }, [showAddExercise, showCustomForm, showFinishSheet]);
+  }, [showFinishSheet]);
 
   // Load routine on mount
   useEffect(() => {
@@ -617,57 +604,30 @@ export default function ActiveWorkoutScreen() {
     setExerciseStarted(prev => [...prev, false]);
     setExerciseFinished(prev => [...prev, false]);
     setShowAddExercise(false);
-    setExerciseSearch('');
     setTimeout(() => setCurrentIdx(exercises.length), 100);
 
     void reconcileExerciseRow(ex, tempId);
   };
 
-  // Open custom-create form, optionally pre-filled with the search query
-  const openCustomForm = (prefillName?: string) => {
-    setCustomName(prefillName || '');
-    setCustomMuscle('Other');
-    setCustomCategory('Other');
-    setCustomSets('3');
-    setCustomRepsMin('8');
-    setCustomRepsMax('12');
-    setCustomRest('90');
-    setShowAddExercise(false);
-    setShowCustomForm(true);
-  };
-
-  // Create a custom exercise and add it to the workout
-  const addCustomExercise = () => {
-    const name = customName.trim();
-    if (!name) {
-      setShowErrorAlert('Exercise name is required');
-      return;
-    }
-    const targetSets = Math.max(1, parseInt(customSets) || 3);
-    const repsMin = Math.max(1, parseInt(customRepsMin) || 8);
-    const repsMaxRaw = parseInt(customRepsMax) || repsMin;
-    const repsMax = Math.max(repsMin, repsMaxRaw);
-    const restSeconds = Math.max(0, parseInt(customRest) || 90);
-
+  // Create a custom exercise (def + set/rep/rest targets from the picker's
+  // custom form) and add it to the workout
+  const addCustomExercise = (def: ExerciseDef, details: CustomExerciseDetails) => {
     // Optimistic: temp id + default sets, close modal instantly. Reconcile fetches
     // the real exercise row and previous-set defaults in the background.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const def: ExerciseDef = { name, muscle_group: customMuscle, category: customCategory };
     const newEx: ActiveWorkoutExercise = {
-      exercise: { id: tempId, name, muscle_group: customMuscle, category: customCategory },
-      sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: repsMin, completed: false })),
+      exercise: { id: tempId, name: def.name, muscle_group: def.muscle_group, category: def.category },
+      sets: Array.from({ length: details.sets }, () => ({ weight_kg: 0, reps: details.repsMin, completed: false })),
       notes: '',
-      targetSets,
-      repsMin,
-      repsMax,
-      restSeconds,
+      targetSets: details.sets,
+      repsMin: details.repsMin,
+      repsMax: details.repsMax,
+      restSeconds: details.restSeconds,
     };
     workout.updateExercises(prev => [...prev, newEx]);
     setExerciseStarted(prev => [...prev, false]);
     setExerciseFinished(prev => [...prev, false]);
-    setShowCustomForm(false);
-    setExerciseSearch('');
-    setCustomName('');
+    setShowAddExercise(false);
     setTimeout(() => setCurrentIdx(exercises.length), 100);
 
     void reconcileExerciseRow(def, tempId);
@@ -1263,8 +1223,6 @@ export default function ActiveWorkoutScreen() {
     ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
     : fmt(restTimer);
 
-  const filteredLibrary = searchExercises(exerciseSearch);
-
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
@@ -1725,235 +1683,16 @@ export default function ActiveWorkoutScreen() {
         </View>
       )}
 
-      {/* ADD EXERCISE SHEET — rendered via root <Portal> (the app's own window),
-          not RN <Modal>. On Android a <Modal> is a separate Dialog window where
-          Reanimated entering/exiting animations leave touch hit-rects stale, so
-          taps on the list rows and the close button register only
-          intermittently. Same-window Portal keeps hit-testing correct. */}
-      <Portal>
-        {showAddExercise && (
-        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowAddExercise(false)}>
-          <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[styles.modalSheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom }]}
-          >
-            <Pressable>
-              <View style={[styles.handle, { backgroundColor: C.handle }]} />
-              <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: C.foreground }]}>Add Exercise</Text>
-                <TouchableOpacity onPress={() => setShowAddExercise(false)} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
-                  <Feather name="x" size={15} color={C.foreground} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.lg }}>
-                <View style={[styles.searchBox, { backgroundColor: C.muted, borderColor: C.border }]}>
-                  <Feather name="search" size={15} color={C.textMuted} />
-                  <TextInput
-                    placeholder="Search exercises..."
-                    placeholderTextColor={C.textMuted}
-                    value={exerciseSearch}
-                    onChangeText={setExerciseSearch}
-                    style={[styles.searchInput, { color: C.foreground }]}
-                  />
-                </View>
-              </View>
-
-              <ScrollView
-                style={{ maxHeight: 400 }}
-                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40, gap: 6 }}
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-              >
-                {/* Create Custom Exercise */}
-                <TouchableOpacity
-                  onPress={() => openCustomForm(exerciseSearch.trim() || '')}
-                  style={[styles.createCustomItem, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
-                >
-                  <View style={[styles.createCustomIcon, { backgroundColor: C.primarySubtle }]}>
-                    <Feather name="plus" size={14} color={C.accentText} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.libraryName, { color: C.foreground }]}>
-                      {exerciseSearch.trim() ? `Create "${exerciseSearch.trim()}"` : 'Create Custom Exercise'}
-                    </Text>
-                    <Text style={[styles.libraryMuscle, { color: C.textMuted }]}>Set name, muscle group, sets & reps</Text>
-                  </View>
-                </TouchableOpacity>
-                {filteredLibrary.map((ex) => (
-                  <TouchableOpacity
-                    key={ex.name}
-                    onPress={() => addExercise(ex)}
-                    style={[styles.libraryItem, { backgroundColor: C.muted, borderColor: C.border }]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.libraryName, { color: C.foreground }]}>{ex.name}</Text>
-                      <Text style={[styles.libraryMuscle, { color: C.textMuted }]}>{ex.muscle_group} · {ex.category}</Text>
-                    </View>
-                    <Feather name="plus" size={14} color={C.accentText} />
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </Pressable>
-          </Animated.View>
-        </Pressable>
-        )}
-      </Portal>
-
-      {/* CUSTOM EXERCISE FORM — rendered via root <Portal>, not RN <Modal>, for
-          the same reason as the Add Exercise sheet: a <Modal>'s separate Android
-          window + Reanimated layout animations make taps on the muscle-group /
-          category chips and the close button register only intermittently. */}
-      <Portal>
-        {showCustomForm && (
-        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowCustomForm(false)}>
-          <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[
-              styles.modalSheet,
-              {
-                backgroundColor: C.elevated,
-                // Lift above the keyboard on both platforms — now rendered in the
-                // app's own window via <Portal>, which (unlike a <Modal> window)
-                // isn't auto-resized for the keyboard.
-                marginBottom: kbHeight,
-                maxHeight: (winH - kbHeight) * 0.9,
-              },
-            ]}
-          >
-            <Pressable style={{ flexShrink: 1 }}>
-              <View style={[styles.handle, { backgroundColor: C.handle }]} />
-              <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: C.foreground }]}>Create Exercise</Text>
-                <TouchableOpacity onPress={() => setShowCustomForm(false)} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
-                  <Feather name="x" size={15} color={C.foreground} />
-                </TouchableOpacity>
-              </View>
-              <ScrollView
-                style={{ flexGrow: 0, flexShrink: 1 }}
-                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
-                showsVerticalScrollIndicator={true}
-                keyboardShouldPersistTaps="handled"
-              >
-                {/* Name */}
-                <Text style={[styles.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
-                <TextInput
-                  value={customName}
-                  onChangeText={setCustomName}
-                  placeholder="e.g. Cable Crossover"
-                  placeholderTextColor={C.textMuted}
-                  style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                />
-
-                {/* Muscle Group */}
-                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
-                <View style={styles.chipRow}>
-                  {WORKOUT_MUSCLE_GROUPS.map(mg => {
-                    const active = customMuscle === mg;
-                    return (
-                      <TouchableOpacity
-                        key={mg}
-                        onPress={() => setCustomMuscle(mg)}
-                        style={[
-                          styles.chip,
-                          {
-                            backgroundColor: active ? Colors.primary : C.muted,
-                            borderColor: active ? Colors.primary : C.border,
-                          },
-                        ]}
-                      >
-                        <Text style={[styles.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mg}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                {/* Category */}
-                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>CATEGORY</Text>
-                <View style={styles.chipRow}>
-                  {CATEGORIES.map(cat => {
-                    const active = customCategory === cat;
-                    return (
-                      <TouchableOpacity
-                        key={cat}
-                        onPress={() => setCustomCategory(cat)}
-                        style={[
-                          styles.chip,
-                          {
-                            backgroundColor: active ? Colors.primary : C.muted,
-                            borderColor: active ? Colors.primary : C.border,
-                          },
-                        ]}
-                      >
-                        <Text style={[styles.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{cat}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                {/* Sets / Reps / Rest */}
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.lg }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>SETS</Text>
-                    <TextInput
-                      value={customSets}
-                      onChangeText={setCustomSets}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>REST (S)</Text>
-                    <TextInput
-                      value={customRest}
-                      onChangeText={setCustomRest}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.md }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>REPS MIN</Text>
-                    <TextInput
-                      value={customRepsMin}
-                      onChangeText={setCustomRepsMin}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>REPS MAX</Text>
-                    <TextInput
-                      value={customRepsMax}
-                      onChangeText={setCustomRepsMax}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                </View>
-              </ScrollView>
-
-              <View style={[styles.formFooter, { borderTopColor: C.borderSubtle, paddingBottom: Math.max(insets.bottom, Spacing.xl) }]}>
-                <TouchableOpacity
-                  onPress={addCustomExercise}
-                  disabled={!customName.trim()}
-                  style={[
-                    styles.formSaveBtn,
-                    { backgroundColor: Colors.primary, opacity: customName.trim() ? 1 : 0.4 },
-                  ]}
-                >
-                  <Feather name="check" size={15} color={Colors.primaryFg} />
-                  <Text style={styles.formSaveBtnText}>Add Exercise</Text>
-                </TouchableOpacity>
-              </View>
-            </Pressable>
-          </Animated.View>
-        </Pressable>
-        )}
-      </Portal>
+      {/* ADD EXERCISE — the shared bottom-sheet picker (same surface as the
+          routine editor): search, muscle filter pills, and the custom-exercise
+          form. Custom creations come back with set/rep/rest targets via the
+          second onSelect argument. */}
+      <ExercisePickerSheet
+        visible={showAddExercise}
+        onClose={() => setShowAddExercise(false)}
+        onSelect={(ex, custom) => (custom ? addCustomExercise(ex, custom) : addExercise(ex))}
+        selectedNames={exercises.map((e) => e.exercise.name)}
+      />
 
       {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
           other sheets. Lets the user name the session (pre-filled from the
@@ -2539,45 +2278,7 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.lg,
-    height: 44,
-  },
-  searchInput: { flex: 1, fontSize: FontSize.base },
-  libraryItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.lg,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-  },
-  libraryName: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  libraryMuscle: { fontSize: FontSize.xs, marginTop: 2 },
-
-  // Create custom row
-  createCustomItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: Spacing.lg,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    marginBottom: 6,
-  },
-  createCustomIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Custom form
+  // Finish sheet form fields
   formLabel: {
     fontSize: 10,
     fontWeight: FontWeight.semibold,
@@ -2591,21 +2292,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     borderWidth: 1,
     fontSize: FontSize.base,
-    fontWeight: FontWeight.semibold,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-  },
-  chipText: {
-    fontSize: 11,
     fontWeight: FontWeight.semibold,
   },
   formFooter: {
