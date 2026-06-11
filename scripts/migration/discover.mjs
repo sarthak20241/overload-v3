@@ -89,9 +89,11 @@ async function main() {
         if (userQuery) {
           const matches = await c.find(userQuery).limit(5).toArray();
           if (matches.length) {
+            // Route PII to stderr (console.warn) so piping stdout to a file
+            // does not silently capture raw user documents without the warning.
             console.warn('>>> PII: treat the following matched documents as sensitive — do not paste into tickets/logs.');
-            console.log(`>>> ${matches.length} match(es) for target users:`);
-            for (const m of matches) console.log(trim(m));
+            console.warn(`>>> ${matches.length} match(es) for target users:`);
+            for (const m of matches) console.warn(trim(m));
           }
         }
       }
