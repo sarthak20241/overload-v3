@@ -35,6 +35,10 @@ npm install                                  # mongodb driver
 node discover.mjs                            # read-only: maps DB + shows the 2 users' docs
 ```
 
+> **PII warning:** `discover.mjs` prints raw matched documents (user emails,
+> etc.) to stdout. Treat that output as sensitive — do **not** paste it into
+> tickets, PRs, chat logs, or CI output.
+
 `discover.mjs` writes nothing. It prints each collection's shape and any
 documents matching the target users so we can design the field mapping into:
 
@@ -50,7 +54,11 @@ document shape is known.
 
 ## Target users
 
-- `rana.sankalp99@gmail.com` (rana_sankalp99)
-- `tushar19212@iiitd.ac.in` (tushar19212)
+Two users were specified by the migration requester (matched by email /
+username). Their real identifiers live only in the local, gitignored
+`.env.migration` (`MIGRATE_USERS`) — they are intentionally **not** committed to
+the repo.
 
-After completion, **rotate the Atlas password** — it was shared in chat.
+**Rotate the Atlas password now** — it was shared in chat during setup, so it
+should be considered exposed for as long as it remains valid; don't wait for the
+migration to finish.

@@ -19,10 +19,10 @@ import { MongoClient } from 'mongodb';
 function loadEnvFile(path) {
   try {
     for (const line of readFileSync(path, 'utf8').split('\n')) {
-      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/i);
       if (!m) continue;
       let [, k, v] = m;
-      v = v.replace(/^["']|["']$/g, '');
+      v = v.trim().replace(/^["']|["']$/g, '');
       if (!(k in process.env)) process.env[k] = v;
     }
   } catch { /* file optional */ }
