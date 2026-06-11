@@ -87,7 +87,6 @@ export default function ActiveWorkoutScreen() {
   const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
-  const [currentIdx, setCurrentIdx] = useState(0);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
   const [saving, setSaving] = useState(false);
@@ -98,8 +97,11 @@ export default function ActiveWorkoutScreen() {
   // set or taps "Skip rest". Drives the dedicated rest card so rest can be
   // ended without being forced to log a set just to clear the timer.
   const [isResting, setIsResting] = useState(false);
-  const [exerciseStarted, setExerciseStarted] = useState<boolean[]>([]);
-  const [exerciseFinished, setExerciseFinished] = useState<boolean[]>([]);
+  // Per-exercise started/finished flags and the open exercise index live in
+  // the workout context so they persist when this screen unmounts on tab
+  // switches (previously local state, which reset completed exercises back to
+  // grey and snapped the view back to the first exercise on return).
+  const { exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished, currentIdx, setCurrentIdx } = workout;
   // Alert states
   const [showCancelAlert, setShowCancelAlert] = useState(false);
   const [showFinishAlert, setShowFinishAlert] = useState(false);
@@ -192,9 +194,10 @@ export default function ActiveWorkoutScreen() {
   // Load routine on mount
   useEffect(() => {
     if (workout.isActive) {
+      // Session already running (e.g. returning to this screen after a tab
+      // switch). Started/finished flags live in the context and are already
+      // in sync — don't reset them or completed exercises revert to grey.
       setLoading(false);
-      setExerciseStarted(exercises.map(() => false));
-      setExerciseFinished(exercises.map(() => false));
       return;
     }
 
@@ -306,9 +309,8 @@ export default function ActiveWorkoutScreen() {
             };
           });
 
+        // startWorkout seeds the started/finished flags (all false) in context.
         workout.startWorkout(routine.id, routine.name, activeExs);
-        setExerciseStarted(activeExs.map(() => false));
-        setExerciseFinished(activeExs.map(() => false));
 
         if (activeExs.length > 0 && activeExs[0].previousSets?.[0]) {
           setInputWeight(String(activeExs[0].previousSets[0].weight_kg));
@@ -1336,6 +1338,15 @@ export default function ActiveWorkoutScreen() {
         style={styles.mainScroll}
         contentContainerStyle={styles.mainContent}
         showsVerticalScrollIndicator={false}
+        // With the keyboard open after typing a weight/rep, taps on "Log Set"
+        // and the +/− steppers must land on the first tap — the default
+        // ("never") swallows that tap to dismiss the keyboard.
+        keyboardShouldPersistTaps="handled"
+        // iOS only: insets the scroll content by the keyboard height and
+        // scrolls the focused field into view. Once a few sets are logged the
+        // input card sits in the lower half of the screen, under the keyboard.
+        // Android already handles this via the Activity's adjustResize.
+        automaticallyAdjustKeyboardInsets
       >
         {exercises.length === 0 ? (
           <View style={styles.emptyState}>
