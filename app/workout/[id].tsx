@@ -22,7 +22,9 @@ import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 import { getXpForWorkout } from '@/lib/xp';
+import { roundVolume } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -82,6 +84,9 @@ export default function ActiveWorkoutScreen() {
   const { height: winH } = useWindowDimensions();
   const workout = useWorkout();
   const { user } = useClerkUser();
+  // Guests (no Clerk session) hit Supabase as the anon role, where RLS rejects
+  // every write - route all their reads/writes to the local guest store.
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [kbHeight, setKbHeight] = useState(0);
@@ -645,8 +650,9 @@ export default function ActiveWorkoutScreen() {
   // existing .filter on `temp-` ids will skip it to avoid FK violations, so we
   // surface a toast so the user knows those sets won't persist.
   const reconcileExerciseRow = async (def: ExerciseDef, tempId: string) => {
-    if (!isSupabaseConfigured) {
-      // Guest mode still wants the previous-sets pre-fill from mockData.
+    if (isGuestSession) {
+      // Guests save sets by exercise name into the local store, so no DB row
+      // is needed - but they still want the previous-sets pre-fill from mockData.
       const prev = await fetchPreviousSetsForExercise(null, def.name);
       if (!prev || prev.length === 0) return;
       workout.updateExercises(prevExs => prevExs.map(e => {
@@ -787,11 +793,11 @@ export default function ActiveWorkoutScreen() {
       };
     };
 
-    // Branch on isSupabaseConfigured alone — the same test confirmFinish uses
-    // for the workout itself — so the routine id handed back always matches
-    // the store the workout saves to (a guest-r id must never reach Postgres).
+    // Branch on the same guest test confirmFinish uses for the workout itself,
+    // so the routine id handed back always matches the store the workout saves
+    // to (a guest-r id must never reach Postgres).
     const clerkId = user?.id;
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       const routineId = `guest-r-${Date.now()}`;
       addGuestRoutine({
         id: routineId,
@@ -1042,7 +1048,7 @@ export default function ActiveWorkoutScreen() {
       const workoutName = opts?.name?.trim() || workout.routineName;
       const workoutNotes = opts?.notes?.trim() || null;
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
-      const vol = allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0);
+      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0));
 
       // Create the routine first (when requested) so the workout row can link
       // to it — that link is what feeds "previous session" the next time the
@@ -1065,7 +1071,7 @@ export default function ActiveWorkoutScreen() {
         else toast.success('Workout saved');
       };
 
-      if (!isSupabaseConfigured) {
+      if (isGuestSession) {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
           name: workoutName,
@@ -1206,9 +1212,9 @@ export default function ActiveWorkoutScreen() {
 
   // Computed
   const completedSets = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
-  const totalVolume = exercises
+  const totalVolume = roundVolume(exercises
     .flatMap(e => e.sets.filter(s => s.completed).map(s => s.weight_kg * s.reps))
-    .reduce((a, b) => a + b, 0);
+    .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
   const isStarted = exerciseStarted[currentIdx];
   const isFinished = exerciseFinished[currentIdx];
@@ -1615,7 +1621,7 @@ export default function ActiveWorkoutScreen() {
                 </View>
                 <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
                 <Text style={[styles.finishedSub, { color: C.textMuted }]}>
-                  {currentEx.sets.filter(s => s.completed).length} sets · {currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0)} kg total volume
+                  {currentEx.sets.filter(s => s.completed).length} sets · {roundVolume(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
                 </Text>
                 <TouchableOpacity
                   onPress={() => {

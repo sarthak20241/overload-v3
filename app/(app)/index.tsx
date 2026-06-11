@@ -9,7 +9,8 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { useSupabaseClient } from '@/lib/supabase';
+import { roundVolume } from '@/lib/format';
 import { getMockWorkouts, mockProfile } from '@/lib/mockData';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo } from '@/lib/xp';
@@ -19,6 +20,7 @@ import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -180,6 +182,7 @@ export default function DashboardScreen() {
   const aiChipBorder = isDark ? 'rgba(168,85,247,0.30)' : 'rgba(168,85,247,0.12)';
   const aiChipFg = isDark ? C.foreground : C.textSecondary;
   const { user } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [loading, setLoading] = useState(true);
@@ -190,7 +193,7 @@ export default function DashboardScreen() {
   const userName = user?.firstName || user?.fullName || user?.emailAddresses?.[0]?.emailAddress?.split('@')[0] || 'Athlete';
 
   useEffect(() => {
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       setWorkouts(getMockWorkouts() as any[]);
       setUserXP(mockProfile.xp);
       setLoading(false);
@@ -218,7 +221,7 @@ export default function DashboardScreen() {
       setUserXP((pData as any)?.xp || 0);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   // Compute stats. Memoized so we don't reprocess every workout on every
   // re-render — useWorkout's timer ticks 60×/min while a workout is active.
@@ -667,7 +670,7 @@ export default function DashboardScreen() {
                             </View>
                             {w.total_volume_kg ? (
                               <Text style={[styles.workoutVolume, { color: C.textMuted }]}>
-                                {w.total_volume_kg}kg
+                                {roundVolume(w.total_volume_kg)}kg
                               </Text>
                             ) : null}
                             {delta !== undefined && Math.round(delta) !== 0 && (

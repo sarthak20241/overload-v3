@@ -25,7 +25,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { setGuestMode } from '@/lib/guestMode';
+import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 
 type Gender = 'M' | 'F' | 'O';
@@ -193,6 +193,7 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { C, mode, toggleTheme } = useTheme();
   const { user, signOut: clerkSignOut } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
@@ -291,10 +292,11 @@ export default function ProfileScreen() {
       ? Math.max(0, Math.min(1, 1 - currentDelta / totalDelta))
       : (Math.abs(current - goal) < 0.5 ? 1 : 0);
     const diff = current - goal;
+    const amount = Math.round(Math.abs(diff) * 10) / 10;
     let label = '';
     if (Math.abs(diff) < 0.5) label = 'At goal!';
-    else if (diff > 0) label = `${diff.toFixed(1)} to lose`;
-    else label = `${Math.abs(diff).toFixed(1)} to gain`;
+    else if (diff > 0) label = `${amount} ${weightUnit} to lose`;
+    else label = `${amount} ${weightUnit} to gain`;
     return { pct, label };
   })();
 
@@ -311,7 +313,7 @@ export default function ProfileScreen() {
 
   const loadProfile = async () => {
     try {
-      if (!isSupabaseConfigured) {
+      if (isGuestSession) {
         const p = mockProfile;
         setGender(p.gender as Gender);
         setHeight(String(p.height_cm));
@@ -906,6 +908,29 @@ export default function ProfileScreen() {
                 <Feather name="chevron-right" size={14} color={C.textDim} />
               </TouchableOpacity>
             </View>
+          </View>
+
+          {/* ─── Training ─── */}
+          <View style={styles.section}>
+            <SectionLabel icon="book-open">TRAINING</SectionLabel>
+            <TouchableOpacity
+              // typed-routes hasn't regenerated for /exercises yet — cast is
+              // fine, route exists at runtime (same as /admin/research).
+              onPress={() => router.push('/exercises' as any)}
+              activeOpacity={0.85}
+              style={[styles.accountBtn, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+            >
+              <View style={[styles.rowIcon, { backgroundColor: `${Colors.primary}22` }]}>
+                <Feather name="edit-3" size={11} color={C.accentText} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>My Exercises</Text>
+                <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>
+                  Browse the library, edit the ones you made
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={14} color={C.textMuted} />
+            </TouchableOpacity>
           </View>
 
           {/* ─── Admin Tools (admin users only) ─── */}

@@ -13,11 +13,13 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { useSupabaseClient } from '@/lib/supabase';
 import { getMockWorkoutsForHistory, removeGuestWorkout } from '@/lib/mockData';
+import { roundVolume } from '@/lib/format';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -86,7 +88,7 @@ function formatDateShort(iso: string) {
 function formatVolume(kg?: number) {
   if (!kg) return '—';
   if (kg >= 1000) return `${(kg / 1000).toFixed(1)}k kg`;
-  return `${kg} kg`;
+  return `${roundVolume(kg)} kg`;
 }
 
 function isSameDay(d1: Date, d2: Date) {
@@ -498,6 +500,7 @@ function SkeletonCards() {
 export default function HistoryScreen() {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
@@ -515,7 +518,7 @@ export default function HistoryScreen() {
   const searchBarY = useRef(0);
 
   const fetchWorkouts = useCallback(async () => {
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       setWorkouts(getMockWorkoutsForHistory() as WorkoutRaw[]);
       return;
     }
@@ -545,7 +548,7 @@ export default function HistoryScreen() {
       };
     });
     setWorkouts(transformed);
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   useEffect(() => {
     fetchWorkouts().finally(() => setLoading(false));
@@ -566,7 +569,7 @@ export default function HistoryScreen() {
     const previous = workouts;
     setWorkouts((prev) => prev.filter((w) => w.id !== id));
 
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       // Persist the delete in the guest store so it stays gone after the next
       // fetchWorkouts() (which reads from getMockWorkoutsForHistory).
       // Hardcoded sample workouts return false and aren't removable — by design.
@@ -674,7 +677,7 @@ export default function HistoryScreen() {
           <Text style={[styles.headerStat, { color: C.textMuted }]}>
             {totalVolume >= 1000
               ? `${Math.round(totalVolume / 1000)}t`
-              : `${totalVolume}kg`}{' '}
+              : `${roundVolume(totalVolume)}kg`}{' '}
             total volume
           </Text>
         </View>

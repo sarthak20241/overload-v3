@@ -14,13 +14,15 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { useSupabaseClient } from '@/lib/supabase';
+import { roundVolume } from '@/lib/format';
 import {
   getMockWorkouts, getMockWeightLog, getMockBodyFatLog,
   getMockMeasurements, mockBasicInfo,
 } from '@/lib/mockData';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   loadMeasurements, saveMeasurements,
@@ -784,6 +786,7 @@ function LogMeasurementsDrawer({
 
 function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
   const { C } = useTheme();
+  const isGuestSession = useIsGuestSession();
   const [data, setData] = useState<MeasurementsData>({ entries: [], unit: 'cm' });
   const [selectedKey, setSelectedKey] = useState<MeasurementKey>('chest');
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -792,13 +795,13 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
 
   useEffect(() => {
     loadMeasurements().then((m) => {
-      if (!isSupabaseConfigured && m.entries.length === 0) {
+      if (isGuestSession && m.entries.length === 0) {
         setData(getMockMeasurements());
       } else {
         setData(m);
       }
     });
-  }, []);
+  }, [isGuestSession]);
 
   const update = async (next: MeasurementsData) => {
     setData(next);
@@ -1088,6 +1091,7 @@ function get7DayDuration(workouts: WorkoutRaw[]): { data: number[]; labels: stri
 export default function AnalyticsScreen() {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { width: winWidth } = useWindowDimensions();
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
@@ -1108,13 +1112,13 @@ export default function AnalyticsScreen() {
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   const { goalWeight: ctxGoal, weightUnit } = useBasicInfo();
   // In guest mode fall back to mock goal so the demo chart still shows a target line
-  const goalWeight = ctxGoal ?? (isSupabaseConfigured ? null : mockBasicInfo.goalWeight);
+  const goalWeight = ctxGoal ?? (isGuestSession ? mockBasicInfo.goalWeight : null);
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   const [addBfOpen, setAddBfOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     let list: WorkoutRaw[];
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       list = getMockWorkouts() as any[];
     } else {
       const sinceIso = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
@@ -1133,24 +1137,24 @@ export default function AnalyticsScreen() {
       list.flatMap((w) => w.workout_sets || []).map((s) => s.exercises?.name).filter(Boolean) as string[]
     )];
     setSelectedExercise((prev) => prev || all[0] || '');
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   useEffect(() => {
     fetchData().finally(() => setLoading(false));
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       loadWeightLog().then((wl) => setWeightLog(wl.length ? wl : getMockWeightLog()));
       loadBodyFatLog().then((bf) => setBodyFatLog(bf.length ? bf : getMockBodyFatLog()));
     } else {
       loadWeightLog().then(setWeightLog);
       loadBodyFatLog().then(setBodyFatLog);
     }
-  }, [fetchData]);
+  }, [fetchData, isGuestSession]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchData();
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       setWeightLog(wl.length ? wl : getMockWeightLog());
       setBodyFatLog(bfl.length ? bfl : getMockBodyFatLog());
     } else {
@@ -1158,12 +1162,12 @@ export default function AnalyticsScreen() {
       setBodyFatLog(bfl);
     }
     setRefreshing(false);
-  }, [fetchData]);
+  }, [fetchData, isGuestSession]);
 
   // ── Stats ──
   const weekStart = getWeekStart();
   const weekWorkouts = workouts.filter((w) => new Date(w.started_at) >= weekStart);
-  const weekVolume = weekWorkouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0);
+  const weekVolume = roundVolume(weekWorkouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0));
   const avgDurationMin = workouts.length > 0
     ? Math.round(workouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / workouts.length / 60)
     : 0;
