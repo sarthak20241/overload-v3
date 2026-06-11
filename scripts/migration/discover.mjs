@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+// Discovery pass for the circle-rate -> Overload migration.
+//
+// This does NOT write anything anywhere. It connects to the source MongoDB,
+// maps out databases/collections, and surfaces the documents belonging to the
+// users we intend to migrate, so we can design an accurate transform into the
+// Supabase `workouts` / `workout_sets` schema.
+//
+// Usage (after egress to *.mongodb.net:27017 is allowed and Atlas Network
+// Access permits this host's IP):
+//   cd scripts/migration && npm install && node discover.mjs
+//
+// Reads MONGO_URI and MIGRATE_USERS from .env.migration (or the real env).
+
+import { readFileSync } from 'node:fs';
+import { MongoClient } from 'mongodb';
+
+// --- tiny .env loader (no dependency) -------------------------------------
+function loadEnvFile(path) {
+  try {
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
+      if (!m) continue;
+      let [, k, v] = m;
+      v = v.replace(/^["']|["']$/g, '');
+      if (!(k in process.env)) process.env[k] = v;
+    }
+  } catch { /* file optional */ }
+}
+loadEnvFile(new URL('.env.migration', import.meta.url).pathname);
+
+const MONGO_URI = process.env.MONGO_URI;
+const TARGETS = (process.env.MIGRATE_USERS || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+if (!MONGO_URI) {
+  console.error('MONGO_URI not set. Copy .env.migration.example -> .env.migration.');
+  process.exit(1);
+}
+
+// Field names commonly used to identify a user across schemas.
+const ID_FIELDS = ['email', 'userEmail', 'user_email', 'username', 'userName',
+  'user_name', 'handle', 'phone', 'mobile', 'name'];
+
+function buildUserQuery() {
+  const ors = [];
+  for (const t of TARGETS) {
+    const rx = new RegExp(`^${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    for (const f of ID_FIELDS) ors.push({ [f]: rx });
+  }
+  return ors.length ? { $or: ors } : null;
+}
+
+const trim = (doc) => JSON.stringify(doc, null, 2).slice(0, 4000);
+
+async function main() {
+  const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 15000 });
+  await client.connect();
+  console.log('Connected.\n');
+
+  const admin = client.db().admin();
+  const { databases } = await admin.listDatabases();
+  const userQuery = buildUserQuery();
+
+  for (const { name } of databases) {
+    if (['admin', 'local', 'config'].includes(name)) continue;
+    const db = client.db(name);
+    const collections = await db.listCollections().toArray();
+    console.log(`\n===== DB: ${name} (${collections.length} collections) =====`);
+
+    for (const { name: coll } of collections) {
+      const c = db.collection(coll);
+      const count = await c.estimatedDocumentCount();
+      console.log(`\n--- ${name}.${coll}  (~${count} docs) ---`);
+
+      const sample = await c.findOne();
+      if (sample) console.log('sample keys:', Object.keys(sample).join(', '));
+
+      if (userQuery) {
+        const matches = await c.find(userQuery).limit(5).toArray();
+        if (matches.length) {
+          console.log(`>>> ${matches.length} match(es) for target users:`);
+          for (const m of matches) console.log(trim(m));
+        }
+      }
+    }
+  }
+
+  await client.close();
+  console.log('\nDone. No data was modified.');
+}
+
+main().catch((err) => { console.error('ERROR:', err.message); process.exit(1); });
