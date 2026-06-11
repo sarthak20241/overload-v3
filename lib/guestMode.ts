@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useState } from 'react';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { isSupabaseConfigured } from '@/lib/supabase';
 
 const GUEST_MODE_KEY = 'guest_mode_v1';
 
@@ -22,6 +24,21 @@ export async function setGuestMode(active: boolean): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Session-level guest check for data routing, distinct from useGuestMode (the
+ * explicit "Continue as guest" flag, which only drives navigation).
+ *
+ * This answers: "is there an authenticated Supabase session to read/write?"
+ * Without a Clerk user there is no JWT, the Supabase client runs as the anon
+ * role, and RLS rejects every write - so all data paths must use the local
+ * guest store (lib/mockData.ts) instead. True when Supabase is unconfigured
+ * (dev builds without env vars) or when no Clerk user is signed in.
+ */
+export function useIsGuestSession(): boolean {
+  const { user } = useClerkUser();
+  return !isSupabaseConfigured || !user?.id;
 }
 
 export function useGuestMode(): { isGuest: boolean; isLoaded: boolean } {

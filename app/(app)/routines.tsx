@@ -27,8 +27,9 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
-import { mockRoutines, getAllRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine } from '@/lib/mockData';
+import { supabase, useSupabaseClient } from '@/lib/supabase';
+import { mockRoutines, getAllRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findMockRoutine } from '@/lib/mockData';
+import { useIsGuestSession } from '@/lib/guestMode';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -71,6 +72,9 @@ interface EditorExercise {
   id: string;
   name: string;
   muscleGroup: string;
+  /** Equipment category from the picker (custom creations choose one);
+   *  undefined for hand-typed rows — findOrCreateExercise falls back to 'Other'. */
+  category?: string;
   targetSets: number;
   targetReps: string;
   restSeconds: number;
@@ -468,6 +472,7 @@ function RoutineEditorSheet({
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   // SafeAreaView reports zero insets inside a fullScreen RN Modal (separate
@@ -510,7 +515,7 @@ function RoutineEditorSheet({
       setExercises((prev) =>
         prev.map((e, i) => {
           if (i !== pickerTargetIdx) return e;
-          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group };
+          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category };
           // Custom creations carry set/rep/rest targets from the form; library
           // picks keep whatever the card already has.
           if (custom) {
@@ -547,7 +552,30 @@ function RoutineEditorSheet({
   }, [visible, editingRoutine?.id]);
 
   const loadExistingExercises = async (routineId: string) => {
-    if (!isSupabaseConfigured) return;
+    if (isGuestSession) {
+      // Guest routines live in the local store - hydrate the editor from there
+      // instead of querying Supabase (a guest-r/mock-r id is not a valid uuid,
+      // so the query below would error and silently blank the editor).
+      const routine = findMockRoutine(routineId);
+      const rows = routine?.routine_exercises || [];
+      setExercises(
+        rows.length > 0
+          ? rows.map((re: any) => ({
+              id: re.exercises?.id || re.exercise_id || re.id,
+              name: re.exercises?.name || '',
+              muscleGroup: re.exercises?.muscle_group || '',
+              category: re.exercises?.category || undefined,
+              targetSets: re.sets || 3,
+              targetReps: re.reps_min === re.reps_max
+                ? String(re.reps_min)
+                : `${re.reps_min}-${re.reps_max}`,
+              restSeconds: re.rest_seconds || 90,
+              notes: re.note || '',
+            }))
+          : [newExercise()]
+      );
+      return;
+    }
     const { data } = await supabase
       .from('routine_exercises')
       .select('*, exercises(*)')
@@ -559,6 +587,7 @@ function RoutineEditorSheet({
           id: re.exercise_id || re.id,
           name: re.exercises?.name || '',
           muscleGroup: re.exercises?.muscle_group || '',
+          category: re.exercises?.category || undefined,
           targetSets: re.sets || 3,
           targetReps: re.reps_min === re.reps_max
             ? String(re.reps_min)
@@ -587,7 +616,7 @@ function RoutineEditorSheet({
     const { trimmedName, trimmedDescription, validExercises, editingId } = snapshot;
 
     // Guest mode: no Supabase / no Clerk id — persist locally only.
-    if (!isSupabaseConfigured || !clerkId) {
+    if (isGuestSession || !clerkId) {
       const routineId = editingId || `guest-r-${Date.now()}`;
       const routineExercises = validExercises.map((ex, i) => {
         const [repsMin, repsMax] = parseReps(ex.targetReps);
@@ -1012,13 +1041,14 @@ async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
 
   if (existing && existing.length > 0) return existing[0].id;
 
-  // Create new exercise
+  // Create new exercise. created_by is filled by the column default (the
+  // caller's JWT sub), so the row is private to this user.
   const { data: created, error } = await supabase
     .from('exercises')
     .insert({
       name: ex.name.trim(),
       muscle_group: ex.muscleGroup || 'Other',
-      category: 'Other',
+      category: ex.category || 'Other',
     })
     .select('id')
     .single();
@@ -1032,6 +1062,7 @@ export default function RoutinesScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
@@ -1045,7 +1076,7 @@ export default function RoutinesScreen() {
 
   const fetchRoutines = useCallback(async () => {
     const clerkId = user?.id;
-    if (!isSupabaseConfigured || !clerkId) {
+    if (isGuestSession || !clerkId) {
       setRoutines(getAllRoutines() as unknown as RoutineRaw[]);
       return;
     }
@@ -1055,7 +1086,7 @@ export default function RoutinesScreen() {
       .eq('user_id', clerkId)
       .order('created_at', { ascending: false });
     setRoutines((data as RoutineRaw[]) || []);
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   useEffect(() => {
     fetchRoutines().finally(() => setLoading(false));
@@ -1076,7 +1107,7 @@ export default function RoutinesScreen() {
     const previous = routines;
     setRoutines((prev) => prev.filter((r) => r.id !== id));
 
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       // Persist the delete in the guest store so it stays gone after the next
       // fetchRoutines() (which reads from getAllRoutines). Hardcoded
       // mockRoutines return false here and aren't removable — that's by design.
@@ -1126,6 +1157,15 @@ export default function RoutinesScreen() {
           <Text style={[styles.screenTitle, { color: C.foreground }]}>Routines</Text>
         </View>
         <View style={styles.headerRight}>
+          <TouchableOpacity
+            // typed-routes hasn't regenerated for /exercises yet — cast is
+            // fine, route exists at runtime (same as /admin/research).
+            onPress={() => router.push('/exercises' as any)}
+            style={[styles.libBtn, { backgroundColor: C.muted, borderColor: C.border }]}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Feather name="book-open" size={14} color={C.foreground} />
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setAiCoachOpen(true)}
             style={[styles.aiBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
@@ -1261,6 +1301,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   newBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  libBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+  },
 
   // List
   listContent: {

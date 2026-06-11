@@ -44,6 +44,10 @@ create table if not exists exercises (
   name text not null,
   muscle_group text not null,
   category text not null default 'Other',
+  -- Owner (Clerk user id). Null = global library row visible to everyone.
+  -- Client inserts never pass this — the default tags the row with the
+  -- caller's JWT sub; seed/service-role inserts get null.
+  created_by text default (auth.jwt()->>'sub'),
   created_at timestamptz not null default now()
 );
 
@@ -175,6 +179,10 @@ drop policy if exists "own workout_sets update" on workout_sets;
 drop policy if exists "own workout_sets delete" on workout_sets;
 drop policy if exists "exercises read all" on exercises;
 drop policy if exists "exercises insert authenticated" on exercises;
+drop policy if exists "exercises read global or own" on exercises;
+drop policy if exists "exercises insert own" on exercises;
+drop policy if exists "exercises update own" on exercises;
+drop policy if exists "exercises delete own" on exercises;
 
 -- user_profiles
 create policy "own profile select" on user_profiles
@@ -251,10 +259,17 @@ create policy "own workout_sets delete" on workout_sets
     select 1 from workouts w where w.id = workout_sets.workout_id
                               and w.user_id = auth.jwt()->>'sub'));
 
--- exercises (shared catalog: anyone can read; authenticated users can add)
-create policy "exercises read all" on exercises for select using (true);
-create policy "exercises insert authenticated" on exercises
-  for insert to authenticated with check (true);
+-- exercises (global catalog rows have created_by null and are visible to all;
+-- user-created rows are private to their creator — see 0036)
+create policy "exercises read global or own" on exercises
+  for select using (created_by is null or created_by = auth.jwt()->>'sub');
+create policy "exercises insert own" on exercises
+  for insert to authenticated with check (created_by = auth.jwt()->>'sub');
+create policy "exercises update own" on exercises
+  for update to authenticated using (created_by = auth.jwt()->>'sub')
+                              with check (created_by = auth.jwt()->>'sub');
+create policy "exercises delete own" on exercises
+  for delete to authenticated using (created_by = auth.jwt()->>'sub');
 
 -- ─── Row-Level Security (Phase 0) ───────────────────────────────────────────
 -- RLS gates every per-user table by Clerk subject claim. The Clerk JWT is

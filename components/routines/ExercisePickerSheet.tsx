@@ -16,6 +16,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
+import { useSupabaseClient, isSupabaseConfigured } from '@/lib/supabase';
 
 // Custom exercises can be tagged beyond the library's lifting groups — the
 // routine editor's old custom drawer offered these, so keep parity.
@@ -43,6 +44,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
+  const supabase = useSupabaseClient();
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
@@ -62,6 +64,51 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   // via marginBottom — same pattern as analytics.tsx's BottomDrawer.
   const [kbHeight, setKbHeight] = useState(0);
   const searchInputRef = useRef<TextInput>(null);
+
+  // The user's own custom exercises, fetched fresh on every open. RLS scopes
+  // the query to rows this user created (plus global rows, which the
+  // created_by filter excludes), so a custom exercise made in one routine or
+  // workout is reusable everywhere the picker opens.
+  const [customExercises, setCustomExercises] = useState<ExerciseDef[]>([]);
+  useEffect(() => {
+    if (!visible || !isSupabaseConfigured) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('exercises')
+        .select('name, muscle_group, category')
+        .not('created_by', 'is', null)
+        .order('created_at', { ascending: false });
+      if (cancelled || !data) return;
+      const seen = new Set(EXERCISE_LIBRARY.map(e => e.name.toLowerCase()));
+      const own: ExerciseDef[] = [];
+      for (const row of data) {
+        const key = row.name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        own.push({ name: row.name, muscle_group: row.muscle_group, category: row.category });
+      }
+      setCustomExercises(own);
+    })();
+    return () => { cancelled = true; };
+  }, [visible, supabase]);
+
+  // Customs list first so they're the first thing seen on open.
+  const library = useMemo(
+    () => [...customExercises, ...EXERCISE_LIBRARY],
+    [customExercises]
+  );
+  const customNames = useMemo(
+    () => new Set(customExercises.map(e => e.name.toLowerCase())),
+    [customExercises]
+  );
+  // Customs can be tagged Cardio/Other, which aren't library filter pills —
+  // surface those groups so filtered customs stay reachable.
+  const muscleOptions = useMemo(() => {
+    const extras = [...new Set(customExercises.map(e => e.muscle_group))]
+      .filter(mg => !(MUSCLE_GROUPS as readonly string[]).includes(mg));
+    return [...MUSCLE_GROUPS, ...extras];
+  }, [customExercises]);
   useEffect(() => {
     if (!visible) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -70,13 +117,10 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       setKbHeight(e.endCoordinates?.height ?? 0);
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
-    // Focus the search field AFTER the listeners are attached (not autoFocus):
-    // autoFocus raises the keyboard during mount, before this effect runs, so
-    // the first keyboardWillShow would fire with no listener attached and the
-    // sheet wouldn't lift. Deferring a tick guarantees we catch the event —
-    // same pattern as the routine editor's custom drawer.
-    const focusTimer = setTimeout(() => searchInputRef.current?.focus(), 100);
-    return () => { showSub.remove(); hideSub.remove(); clearTimeout(focusTimer); };
+    // No auto-focus: the keyboard should only come up when the user taps the
+    // search bar themselves. The listeners above are attached on open, so the
+    // sheet still lifts whenever that manual focus happens.
+    return () => { showSub.remove(); hideSub.remove(); };
   }, [visible]);
 
   // Reset on every close, not just resetAndClose(): selecting an exercise
@@ -93,10 +137,10 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   }, [visible]);
 
   const filtered = useMemo(() => {
-    let list = searchExercises(search);
+    let list = searchExercises(search, library);
     if (muscleFilter) list = list.filter(e => e.muscle_group === muscleFilter);
     return list;
-  }, [search, muscleFilter]);
+  }, [search, muscleFilter, library]);
 
   const handleSelectExercise = (ex: ExerciseDef) => {
     onSelect(ex);
@@ -122,6 +166,15 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     const repsMin = Math.max(1, parseInt(customRepsMin, 10) || 8);
     const repsMax = Math.max(repsMin, parseInt(customRepsMax, 10) || repsMin);
     const restSeconds = Math.max(0, parseInt(customRest, 10) || 90);
+    // Optimistically remember the new custom so it shows on the next open
+    // even before the consumer's background insert lands.
+    setCustomExercises(prev => {
+      const key = trimmed.toLowerCase();
+      const exists = prev.some(e => e.name.toLowerCase() === key)
+        || EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === key);
+      if (exists) return prev;
+      return [{ name: trimmed, muscle_group: customMuscle, category: customCategory }, ...prev];
+    });
     onSelect(
       { name: trimmed, muscle_group: customMuscle, category: customCategory },
       { sets, repsMin, repsMax, restSeconds }
@@ -182,7 +235,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   {showCustom ? 'Create Exercise' : 'Add Exercise'}
                 </Text>
                 <Text style={[s.subtitle, { color: C.mutedFg }]}>
-                  {showCustom ? 'Set name, muscle group, sets & reps' : `${EXERCISE_LIBRARY.length} exercises available`}
+                  {showCustom ? 'Set name, muscle group, sets & reps' : `${library.length} exercises available`}
                 </Text>
               </View>
               <TouchableOpacity onPress={resetAndClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
@@ -356,7 +409,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                       !muscleFilter && { color: Colors.primaryFg },
                     ]}>All</Text>
                   </TouchableOpacity>
-                  {MUSCLE_GROUPS.map(mg => (
+                  {muscleOptions.map(mg => (
                     <TouchableOpacity
                       key={mg}
                       onPress={() => setMuscleFilter(muscleFilter === mg ? null : mg)}
@@ -393,7 +446,14 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                         activeOpacity={0.7}
                       >
                         <View style={s.exerciseInfo}>
-                          <Text style={[s.exerciseName, { color: C.foreground }]}>{item.name}</Text>
+                          <View style={s.exerciseNameRow}>
+                            <Text style={[s.exerciseName, { color: C.foreground }]}>{item.name}</Text>
+                            {customNames.has(item.name.toLowerCase()) && (
+                              <View style={[s.customTag, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
+                                <Text style={[s.customTagText, { color: C.accentText }]}>Custom</Text>
+                              </View>
+                            )}
+                          </View>
                           <Text style={[s.exerciseMeta, { color: C.textMuted }]}>
                             {item.muscle_group} · {item.category}
                           </Text>
@@ -458,7 +518,10 @@ const s = StyleSheet.create({
   filterPillText: { fontSize: 11, fontWeight: FontWeight.semibold },
   exerciseRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1 },
   exerciseInfo: { flex: 1 },
-  exerciseName: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  exerciseNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  exerciseName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, flexShrink: 1 },
+  customTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full, borderWidth: 1 },
+  customTagText: { fontSize: 10, fontWeight: FontWeight.semibold },
   exerciseMeta: { fontSize: FontSize.sm, marginTop: 2 },
   emptyText: { fontSize: FontSize.sm },
   customBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: Radius.xl, borderWidth: 1 },
