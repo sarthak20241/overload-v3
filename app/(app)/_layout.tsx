@@ -247,6 +247,11 @@ export default function AppLayout() {
         <Tabs.Screen name="analytics" />
         <Tabs.Screen name="profile" />
         {/*
+          Exercise Library management screen. Hidden from the bottom nav —
+          reached via the Routines header book icon or Profile > My Exercises.
+        */}
+        <Tabs.Screen name="exercises" options={{ href: null }} />
+        {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link
           (`/admin/research`) or the "Admin Tools" button rendered for
