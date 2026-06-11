@@ -16,6 +16,9 @@ import { readFileSync } from 'node:fs';
 import { MongoClient } from 'mongodb';
 
 // --- tiny .env loader (no dependency) -------------------------------------
+// Minimal KEY=VALUE parser. Inline trailing comments (KEY=val # note) are NOT
+// supported — the value runs to end of line. Use a whole-line `#` comment or
+// quote the value.
 function loadEnvFile(path) {
   try {
     for (const line of readFileSync(path, 'utf8').split('\n')) {
@@ -61,38 +64,41 @@ async function main() {
   await client.connect();
   console.log('Connected.\n');
 
-  const admin = client.db().admin();
-  const { databases } = await admin.listDatabases();
-  const userQuery = buildUserQuery();
+  // Ensure the connection is always closed, even if discovery throws partway.
+  try {
+    const admin = client.db().admin();
+    const { databases } = await admin.listDatabases();
+    const userQuery = buildUserQuery();
 
-  for (const { name } of databases) {
-    if (['admin', 'local', 'config'].includes(name)) continue;
-    const db = client.db(name);
-    const collections = await db.listCollections().toArray();
-    console.log(`\n===== DB: ${name} (${collections.length} collections) =====`);
+    for (const { name } of databases) {
+      if (['admin', 'local', 'config'].includes(name)) continue;
+      const db = client.db(name);
+      const collections = await db.listCollections().toArray();
+      console.log(`\n===== DB: ${name} (${collections.length} collections) =====`);
 
-    for (const { name: coll } of collections) {
-      const c = db.collection(coll);
-      // Approximate — estimatedDocumentCount() reads collection metadata and may
-      // be stale after an unclean shutdown. Good enough for a discovery pass.
-      const count = await c.estimatedDocumentCount();
-      console.log(`\n--- ${name}.${coll}  (~${count} docs) ---`);
+      for (const { name: coll } of collections) {
+        const c = db.collection(coll);
+        // Approximate — estimatedDocumentCount() reads collection metadata and may
+        // be stale after an unclean shutdown. Good enough for a discovery pass.
+        const count = await c.estimatedDocumentCount();
+        console.log(`\n--- ${name}.${coll}  (~${count} docs) ---`);
 
-      const sample = await c.findOne();
-      if (sample) console.log('sample keys:', Object.keys(sample).join(', '));
+        const sample = await c.findOne();
+        if (sample) console.log('sample keys:', Object.keys(sample).join(', '));
 
-      if (userQuery) {
-        const matches = await c.find(userQuery).limit(5).toArray();
-        if (matches.length) {
-          console.warn('>>> PII: treat the following matched documents as sensitive — do not paste into tickets/logs.');
-          console.log(`>>> ${matches.length} match(es) for target users:`);
-          for (const m of matches) console.log(trim(m));
+        if (userQuery) {
+          const matches = await c.find(userQuery).limit(5).toArray();
+          if (matches.length) {
+            console.warn('>>> PII: treat the following matched documents as sensitive — do not paste into tickets/logs.');
+            console.log(`>>> ${matches.length} match(es) for target users:`);
+            for (const m of matches) console.log(trim(m));
+          }
         }
       }
     }
+  } finally {
+    await client.close();
   }
-
-  await client.close();
   console.log('\nDone. No data was modified.');
 }
 
