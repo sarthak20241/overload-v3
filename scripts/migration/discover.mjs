@@ -42,6 +42,10 @@ if (!MONGO_URI) {
   process.exit(1);
 }
 
+// Max matched documents printed per collection (the true count is still
+// reported when this cap is hit, so large histories aren't under-reported).
+const SAMPLE_LIMIT = 5;
+
 // Field names commonly used to identify a user across schemas.
 const ID_FIELDS = ['email', 'userEmail', 'user_email', 'username', 'userName',
   'user_name', 'handle', 'phone', 'mobile', 'name'];
@@ -87,12 +91,17 @@ async function main() {
         if (sample) console.log('sample keys:', Object.keys(sample).join(', '));
 
         if (userQuery) {
-          const matches = await c.find(userQuery).limit(5).toArray();
+          const matches = await c.find(userQuery).limit(SAMPLE_LIMIT).toArray();
           if (matches.length) {
             // Route PII to stderr (console.warn) so piping stdout to a file
             // does not silently capture raw user documents without the warning.
             console.warn('>>> PII: treat the following matched documents as sensitive — do not paste into tickets/logs.');
-            console.warn(`>>> ${matches.length} match(es) for target users:`);
+            // If we hit the sample cap, report the true count so a large
+            // workout history isn't silently under-reported during discovery.
+            const total = matches.length < SAMPLE_LIMIT
+              ? matches.length
+              : await c.countDocuments(userQuery);
+            console.warn(`>>> ${total} match(es) for target users (showing up to ${SAMPLE_LIMIT}):`);
             for (const m of matches) console.warn(trim(m));
           }
         }
@@ -104,4 +113,4 @@ async function main() {
   console.log('\nDone. No data was modified.');
 }
 
-main().catch((err) => { console.error('ERROR:', err.message); process.exit(1); });
+main().catch((err) => { console.error('ERROR:', err); process.exit(1); });
