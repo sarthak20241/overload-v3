@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   TextInput, ActivityIndicator, BackHandler, Pressable, Keyboard, Platform,
@@ -375,38 +375,58 @@ export default function ProfileScreen() {
     }
   };
 
-  const logWeight = async () => {
-    const num = parseFloat(weight);
-    if (isNaN(num) || num <= 0) {
-      setShowErrorAlert('Enter a valid weight first');
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
-    const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
-    const updated = latest && latest.date.slice(0, 10) === today
-      ? [...weightLog.slice(0, -1), entry]
-      : [...weightLog, entry];
-    setWeightLog(updated);
-    await saveWeightLog(updated);
-    setShowInfoAlert('Weight logged');
+  // Weight / body fat edits auto-log to the local history (one entry per day,
+  // today's is replaced). Debounced so partial values mid-typing ("7" on the
+  // way to "78") never land in the log. The transient "Logged" flash on the
+  // row is the user's confirmation — there is no explicit log button.
+  const [loggedFlash, setLoggedFlash] = useState<'weight' | 'bodyFat' | null>(null);
+  const weightLogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bodyFatLogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
+    if (bodyFatLogTimer.current) clearTimeout(bodyFatLogTimer.current);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+  }, []);
+
+  const flashLogged = (which: 'weight' | 'bodyFat') => {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setLoggedFlash(which);
+    flashTimer.current = setTimeout(() => setLoggedFlash(null), 1800);
   };
 
-  const logBodyFat = async () => {
-    const num = parseFloat(bodyFat);
-    if (isNaN(num) || num <= 0 || num > 60) {
-      setShowErrorAlert('Enter a valid body fat %');
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
-    const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
-    const updated = latest && latest.date.slice(0, 10) === today
-      ? [...bodyFatLog.slice(0, -1), entry]
-      : [...bodyFatLog, entry];
-    setBodyFatLog(updated);
-    await saveBodyFatLog(updated);
-    setShowInfoAlert('Body fat logged');
+  const scheduleWeightLog = (v: string) => {
+    if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
+    weightLogTimer.current = setTimeout(async () => {
+      const num = parseFloat(v);
+      if (isNaN(num) || num <= 0) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+      const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
+      const updated = latest && latest.date.slice(0, 10) === today
+        ? [...weightLog.slice(0, -1), entry]
+        : [...weightLog, entry];
+      setWeightLog(updated);
+      await saveWeightLog(updated);
+      flashLogged('weight');
+    }, 900);
+  };
+
+  const scheduleBodyFatLog = (v: string) => {
+    if (bodyFatLogTimer.current) clearTimeout(bodyFatLogTimer.current);
+    bodyFatLogTimer.current = setTimeout(async () => {
+      const num = parseFloat(v);
+      if (isNaN(num) || num <= 0 || num > 60) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+      const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
+      const updated = latest && latest.date.slice(0, 10) === today
+        ? [...bodyFatLog.slice(0, -1), entry]
+        : [...bodyFatLog, entry];
+      setBodyFatLog(updated);
+      await saveBodyFatLog(updated);
+      flashLogged('bodyFat');
+    }, 900);
   };
 
   const handleSignOut = () => setShowSignOutAlert(true);
@@ -489,6 +509,11 @@ export default function ProfileScreen() {
         <ScrollView
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          // iOS only: insets the scroll content by the keyboard height and
+          // scrolls the focused field into view. Android already handles this
+          // via the Activity's adjustResize (main window only — Portal sheets
+          // still track keyboard height manually, see bugKbHeight).
+          automaticallyAdjustKeyboardInsets
           contentContainerStyle={{ paddingBottom: 120 }}
         >
           {/* ─── Hero / Avatar ─── */}
@@ -614,16 +639,26 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              {/* Weight */}
+              {/* Weight — edits auto-log; the label flashes "Logged" as confirmation */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="anchor" color={ROW_ICON_COLORS.weight} />
-                <Text style={[styles.infoLabel, { color: C.foreground }]}>Weight</Text>
+                <RowIcon
+                  name={loggedFlash === 'weight' ? 'check' : 'anchor'}
+                  color={loggedFlash === 'weight' ? Colors.success : ROW_ICON_COLORS.weight}
+                />
+                <Animated.Text
+                  key={loggedFlash === 'weight' ? 'weight-logged' : 'weight-label'}
+                  entering={FadeIn.duration(200)}
+                  style={[styles.infoLabel, { color: loggedFlash === 'weight' ? Colors.success : C.foreground }]}
+                >
+                  {loggedFlash === 'weight' ? 'Logged' : 'Weight'}
+                </Animated.Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={weight}
                     onChangeText={(v) => {
                       setWeight(v);
                       persistField({ weight_kg: parseFloat(v) || null });
+                      scheduleWeightLog(v);
                     }}
                     placeholder={weightUnit === 'kg' ? '75' : '165'}
                   />
@@ -632,16 +667,6 @@ export default function ProfileScreen() {
                     value={weightUnit}
                     onChange={(v) => setWeightUnit(v)}
                   />
-                  <TouchableOpacity
-                    onPress={logWeight}
-                    activeOpacity={0.85}
-                    style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Log current weight"
-                  >
-                    <Feather name="plus" size={12} color={Colors.primaryFg} />
-                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -669,31 +694,31 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              {/* Body Fat */}
+              {/* Body Fat — edits auto-log; the label flashes "Logged" as confirmation */}
               <View style={styles.infoRow}>
-                <RowIcon name="percent" color={ROW_ICON_COLORS.bodyFat} />
-                <Text style={[styles.infoLabel, { color: C.foreground }]}>Body Fat</Text>
+                <RowIcon
+                  name={loggedFlash === 'bodyFat' ? 'check' : 'percent'}
+                  color={loggedFlash === 'bodyFat' ? Colors.success : ROW_ICON_COLORS.bodyFat}
+                />
+                <Animated.Text
+                  key={loggedFlash === 'bodyFat' ? 'bodyfat-logged' : 'bodyfat-label'}
+                  entering={FadeIn.duration(200)}
+                  style={[styles.infoLabel, { color: loggedFlash === 'bodyFat' ? Colors.success : C.foreground }]}
+                >
+                  {loggedFlash === 'bodyFat' ? 'Logged' : 'Body Fat'}
+                </Animated.Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={bodyFat}
                     onChangeText={(v) => {
                       setBodyFat(v);
                       persistField({ body_fat_percent: parseFloat(v) || null });
+                      scheduleBodyFatLog(v);
                     }}
                     placeholder="%"
                     width={56}
                   />
                   <Text style={[styles.unitSuffix, { color: C.textDim }]}>%</Text>
-                  <TouchableOpacity
-                    onPress={logBodyFat}
-                    activeOpacity={0.85}
-                    style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Log body fat percentage"
-                  >
-                    <Feather name="plus" size={12} color={Colors.primaryFg} />
-                  </TouchableOpacity>
                 </View>
               </View>
             </View>
@@ -1297,12 +1322,6 @@ const styles = StyleSheet.create({
     borderRadius: 8, borderWidth: 1, minWidth: 38, alignItems: 'center',
   },
   expPillText: { fontSize: 10, fontWeight: FontWeight.semibold },
-
-  // Plus add button
-  plusBtn: {
-    width: 28, height: 28, borderRadius: 8,
-    alignItems: 'center', justifyContent: 'center',
-  },
 
   // Goal progress
   goalLegendRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
