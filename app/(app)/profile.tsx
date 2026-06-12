@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   TextInput, ActivityIndicator, BackHandler, Pressable, Keyboard, Platform,
@@ -15,7 +15,8 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { mockProfile, getMockWorkouts } from '@/lib/mockData';
+import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
+import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -25,7 +26,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { setGuestMode } from '@/lib/guestMode';
+import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 
 type Gender = 'M' | 'F' | 'O';
@@ -192,7 +193,8 @@ function InlineNumberInput({
 export default function ProfileScreen() {
   const router = useRouter();
   const { C, mode, toggleTheme } = useTheme();
-  const { user, signOut: clerkSignOut } = useClerkUser();
+  const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
@@ -202,17 +204,23 @@ export default function ProfileScreen() {
     // Clear the guest flag too — sign-out should always land on /(auth),
     // regardless of how the user originally got into /(app).
     await setGuestMode(false);
+    // Drop the picker's cached customs list: it's keyed by user id (so it
+    // can't leak across accounts), but there's no reason to keep the old
+    // account's rows allocated past the session.
+    invalidateCustomExercisesCache();
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [gender, setGender] = useState<Gender | ''>('M');
-  const [height, setHeight] = useState('178');
-  const [weight, setWeight] = useState('78');
-  const [goalWeight, setGoalWeight] = useState('75');
-  const [bodyFat, setBodyFat] = useState('16');
+  // All stats start unset — new users (guest or signed-in) see empty inputs
+  // with placeholders, never demo values.
+  const [gender, setGender] = useState<Gender | ''>('');
+  const [height, setHeight] = useState('');
+  const [weight, setWeight] = useState('');
+  const [goalWeight, setGoalWeight] = useState('');
+  const [bodyFat, setBodyFat] = useState('');
   const {
     weightUnit,
     setWeightUnit,
@@ -291,17 +299,23 @@ export default function ProfileScreen() {
       ? Math.max(0, Math.min(1, 1 - currentDelta / totalDelta))
       : (Math.abs(current - goal) < 0.5 ? 1 : 0);
     const diff = current - goal;
+    const amount = Math.round(Math.abs(diff) * 10) / 10;
     let label = '';
     if (Math.abs(diff) < 0.5) label = 'At goal!';
-    else if (diff > 0) label = `${diff.toFixed(1)} to lose`;
-    else label = `${Math.abs(diff).toFixed(1)} to gain`;
+    else if (diff > 0) label = `${amount} ${weightUnit} to lose`;
+    else label = `${amount} ${weightUnit} to gain`;
     return { pct, label };
   })();
 
+  // Don't load until Clerk hydrates: mid-hydration isGuestSession reads true,
+  // which would flash a signed-in user's profile with empty guest values.
+  // Re-runs when Clerk settles or the session identity changes.
   useEffect(() => {
+    if (!clerkLoaded) return;
     loadProfile();
     loadLogs();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clerkLoaded, isGuestSession, user?.id]);
 
   const loadLogs = async () => {
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
@@ -310,18 +324,42 @@ export default function ProfileScreen() {
   };
 
   const loadProfile = async () => {
+    // Reset everything this function can populate before branching — it
+    // re-runs when the session identity changes (sign-out to guest, account
+    // switch), and the guest / no-profile-row paths below don't overwrite
+    // every field, so stale values from the previous user would linger.
+    setGender('');
+    setHeight('');
+    setWeight('');
+    setGoalWeight('');
+    setCtxGoalWeight(null);
+    setBodyFat('');
+    setTotalXP(0);
+    setTotalWorkouts(0);
+    setJoinDate('');
+    setCoachGoal('');
+    setExperienceLevel('');
+    setWeeklyTargetSessions('');
+    setTrainingAgeMonths('');
+    setBirthYear('');
     try {
-      if (!isSupabaseConfigured) {
-        const p = mockProfile;
-        setGender(p.gender as Gender);
-        setHeight(String(p.height_cm));
-        setWeight(String(p.weight_kg));
-        setGoalWeight(String(p.goal_weight_kg));
-        setCtxGoalWeight(p.goal_weight_kg);
-        setBodyFat(String(p.body_fat_percent));
-        setTotalXP(p.xp);
-        setJoinDate(new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
-        setTotalWorkouts(getMockWorkouts().length);
+      if (isGuestSession) {
+        // Guests are new users without an account — no profile row, no demo
+        // values. Stats they set or earn live in the local guest store;
+        // anything they haven't set stays unset.
+        const p = getGuestProfile();
+        setGender((p.gender || '') as Gender | '');
+        setHeight(p.height_cm ? String(p.height_cm) : '');
+        setWeight(p.weight_kg ? String(p.weight_kg) : '');
+        setGoalWeight(p.goal_weight_kg ? String(p.goal_weight_kg) : '');
+        setCtxGoalWeight(p.goal_weight_kg && p.goal_weight_kg > 0 ? p.goal_weight_kg : null);
+        setBodyFat(p.body_fat_percent ? String(p.body_fat_percent) : '');
+        setCoachGoal((p.goal as CoachGoal | null) || '');
+        setExperienceLevel((p.experience_level as ExperienceLevel | null) || '');
+        setWeeklyTargetSessions(p.weekly_target_sessions != null ? String(p.weekly_target_sessions) : '');
+        setTrainingAgeMonths(p.training_age_months != null ? String(p.training_age_months) : '');
+        setBirthYear(p.date_of_birth ? String(new Date(p.date_of_birth).getFullYear()) : '');
+        setTotalWorkouts(getGuestWorkouts().length);
         return;
       }
       const clerkId = user?.id;
@@ -333,13 +371,14 @@ export default function ProfileScreen() {
         : supabase.from('workouts').select('*', { count: 'exact', head: true });
       const [{ data: profile }, { count }] = await Promise.all([profileQuery, countQuery]);
       if (profile) {
-        setGender((profile.gender || 'M') as Gender);
-        setHeight(String(profile.height_cm || 178));
-        setWeight(String(profile.weight_kg || 78));
-        setGoalWeight(String(profile.goal_weight_kg || 75));
+        // Unset fields stay empty (placeholder shows) — no demo fallbacks.
+        setGender((profile.gender || '') as Gender | '');
+        setHeight(profile.height_cm ? String(profile.height_cm) : '');
+        setWeight(profile.weight_kg ? String(profile.weight_kg) : '');
+        setGoalWeight(profile.goal_weight_kg ? String(profile.goal_weight_kg) : '');
         // Propagate a cleared goal (null/0) to context too, else it stays stale.
         setCtxGoalWeight(profile.goal_weight_kg && profile.goal_weight_kg > 0 ? profile.goal_weight_kg : null);
-        setBodyFat(String(profile.body_fat_percent || 16));
+        setBodyFat(profile.body_fat_percent ? String(profile.body_fat_percent) : '');
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
         setCoachGoal((profile.goal as CoachGoal | null) || '');
@@ -356,7 +395,12 @@ export default function ProfileScreen() {
     }
   };
 
-  const persistField = async (patch: Record<string, unknown>) => {
+  const persistField = async (patch: Partial<GuestProfile>) => {
+    if (isGuestSession) {
+      // Guest edits live on this device until they create an account.
+      updateGuestProfile(patch);
+      return;
+    }
     const clerkId = user?.id;
     if (!clerkId || !isSupabaseConfigured) return;
     setSaving(true);
@@ -373,38 +417,58 @@ export default function ProfileScreen() {
     }
   };
 
-  const logWeight = async () => {
-    const num = parseFloat(weight);
-    if (isNaN(num) || num <= 0) {
-      setShowErrorAlert('Enter a valid weight first');
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
-    const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
-    const updated = latest && latest.date.slice(0, 10) === today
-      ? [...weightLog.slice(0, -1), entry]
-      : [...weightLog, entry];
-    setWeightLog(updated);
-    await saveWeightLog(updated);
-    setShowInfoAlert('Weight logged');
+  // Weight / body fat edits auto-log to the local history (one entry per day,
+  // today's is replaced). Debounced so partial values mid-typing ("7" on the
+  // way to "78") never land in the log. The transient "Logged" flash on the
+  // row is the user's confirmation — there is no explicit log button.
+  const [loggedFlash, setLoggedFlash] = useState<'weight' | 'bodyFat' | null>(null);
+  const weightLogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bodyFatLogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
+    if (bodyFatLogTimer.current) clearTimeout(bodyFatLogTimer.current);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+  }, []);
+
+  const flashLogged = (which: 'weight' | 'bodyFat') => {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setLoggedFlash(which);
+    flashTimer.current = setTimeout(() => setLoggedFlash(null), 1800);
   };
 
-  const logBodyFat = async () => {
-    const num = parseFloat(bodyFat);
-    if (isNaN(num) || num <= 0 || num > 60) {
-      setShowErrorAlert('Enter a valid body fat %');
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
-    const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
-    const updated = latest && latest.date.slice(0, 10) === today
-      ? [...bodyFatLog.slice(0, -1), entry]
-      : [...bodyFatLog, entry];
-    setBodyFatLog(updated);
-    await saveBodyFatLog(updated);
-    setShowInfoAlert('Body fat logged');
+  const scheduleWeightLog = (v: string) => {
+    if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
+    weightLogTimer.current = setTimeout(async () => {
+      const num = parseFloat(v);
+      if (isNaN(num) || num <= 0) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+      const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
+      const updated = latest && latest.date.slice(0, 10) === today
+        ? [...weightLog.slice(0, -1), entry]
+        : [...weightLog, entry];
+      setWeightLog(updated);
+      await saveWeightLog(updated);
+      flashLogged('weight');
+    }, 900);
+  };
+
+  const scheduleBodyFatLog = (v: string) => {
+    if (bodyFatLogTimer.current) clearTimeout(bodyFatLogTimer.current);
+    bodyFatLogTimer.current = setTimeout(async () => {
+      const num = parseFloat(v);
+      if (isNaN(num) || num <= 0 || num > 60) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+      const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
+      const updated = latest && latest.date.slice(0, 10) === today
+        ? [...bodyFatLog.slice(0, -1), entry]
+        : [...bodyFatLog, entry];
+      setBodyFatLog(updated);
+      await saveBodyFatLog(updated);
+      flashLogged('bodyFat');
+    }, 900);
   };
 
   const handleSignOut = () => setShowSignOutAlert(true);
@@ -491,6 +555,11 @@ export default function ProfileScreen() {
         <ScrollView
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          // iOS only: insets the scroll content by the keyboard height and
+          // scrolls the focused field into view. Android already handles this
+          // via the Activity's adjustResize (main window only — Portal sheets
+          // still track keyboard height manually, see bugKbHeight).
+          automaticallyAdjustKeyboardInsets
           contentContainerStyle={{ paddingBottom: 120 }}
         >
           {/* ─── Hero / Avatar ─── */}
@@ -616,16 +685,26 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              {/* Weight */}
+              {/* Weight — edits auto-log; the label flashes "Logged" as confirmation */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="anchor" color={ROW_ICON_COLORS.weight} />
-                <Text style={[styles.infoLabel, { color: C.foreground }]}>Weight</Text>
+                <RowIcon
+                  name={loggedFlash === 'weight' ? 'check' : 'anchor'}
+                  color={loggedFlash === 'weight' ? Colors.success : ROW_ICON_COLORS.weight}
+                />
+                <Animated.Text
+                  key={loggedFlash === 'weight' ? 'weight-logged' : 'weight-label'}
+                  entering={FadeIn.duration(200)}
+                  style={[styles.infoLabel, { color: loggedFlash === 'weight' ? Colors.success : C.foreground }]}
+                >
+                  {loggedFlash === 'weight' ? 'Logged' : 'Weight'}
+                </Animated.Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={weight}
                     onChangeText={(v) => {
                       setWeight(v);
                       persistField({ weight_kg: parseFloat(v) || null });
+                      scheduleWeightLog(v);
                     }}
                     placeholder={weightUnit === 'kg' ? '75' : '165'}
                   />
@@ -634,16 +713,6 @@ export default function ProfileScreen() {
                     value={weightUnit}
                     onChange={(v) => setWeightUnit(v)}
                   />
-                  <TouchableOpacity
-                    onPress={logWeight}
-                    activeOpacity={0.85}
-                    style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Log current weight"
-                  >
-                    <Feather name="plus" size={12} color={Colors.primaryFg} />
-                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -671,31 +740,31 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              {/* Body Fat */}
+              {/* Body Fat — edits auto-log; the label flashes "Logged" as confirmation */}
               <View style={styles.infoRow}>
-                <RowIcon name="percent" color={ROW_ICON_COLORS.bodyFat} />
-                <Text style={[styles.infoLabel, { color: C.foreground }]}>Body Fat</Text>
+                <RowIcon
+                  name={loggedFlash === 'bodyFat' ? 'check' : 'percent'}
+                  color={loggedFlash === 'bodyFat' ? Colors.success : ROW_ICON_COLORS.bodyFat}
+                />
+                <Animated.Text
+                  key={loggedFlash === 'bodyFat' ? 'bodyfat-logged' : 'bodyfat-label'}
+                  entering={FadeIn.duration(200)}
+                  style={[styles.infoLabel, { color: loggedFlash === 'bodyFat' ? Colors.success : C.foreground }]}
+                >
+                  {loggedFlash === 'bodyFat' ? 'Logged' : 'Body Fat'}
+                </Animated.Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={bodyFat}
                     onChangeText={(v) => {
                       setBodyFat(v);
                       persistField({ body_fat_percent: parseFloat(v) || null });
+                      scheduleBodyFatLog(v);
                     }}
                     placeholder="%"
                     width={56}
                   />
                   <Text style={[styles.unitSuffix, { color: C.textDim }]}>%</Text>
-                  <TouchableOpacity
-                    onPress={logBodyFat}
-                    activeOpacity={0.85}
-                    style={[styles.plusBtn, { backgroundColor: Colors.primary }]}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Log body fat percentage"
-                  >
-                    <Feather name="plus" size={12} color={Colors.primaryFg} />
-                  </TouchableOpacity>
                 </View>
               </View>
             </View>
@@ -910,6 +979,29 @@ export default function ProfileScreen() {
                 <Feather name="chevron-right" size={14} color={C.textDim} />
               </TouchableOpacity>
             </View>
+          </View>
+
+          {/* ─── Training ─── */}
+          <View style={styles.section}>
+            <SectionLabel icon="book-open">TRAINING</SectionLabel>
+            <TouchableOpacity
+              // typed-routes hasn't regenerated for /exercises yet — cast is
+              // fine, route exists at runtime (same as /admin/research).
+              onPress={() => router.push('/exercises' as any)}
+              activeOpacity={0.85}
+              style={[styles.accountBtn, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+            >
+              <View style={[styles.rowIcon, { backgroundColor: `${Colors.primary}22` }]}>
+                <Feather name="edit-3" size={11} color={C.accentText} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>My Exercises</Text>
+                <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>
+                  Browse the library, edit the ones you made
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={14} color={C.textMuted} />
+            </TouchableOpacity>
           </View>
 
           {/* ─── Admin Tools (admin users only) ─── */}
@@ -1276,12 +1368,6 @@ const styles = StyleSheet.create({
     borderRadius: 8, borderWidth: 1, minWidth: 38, alignItems: 'center',
   },
   expPillText: { fontSize: 10, fontWeight: FontWeight.semibold },
-
-  // Plus add button
-  plusBtn: {
-    width: 28, height: 28, borderRadius: 8,
-    alignItems: 'center', justifyContent: 'center',
-  },
 
   // Goal progress
   goalLegendRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },

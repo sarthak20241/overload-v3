@@ -13,7 +13,7 @@ import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { getAllRoutines } from '@/lib/mockData';
+import { getGuestRoutines } from '@/lib/guestStore';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { Portal } from '@/components/ui/Portal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -94,9 +94,14 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
     if (visible) {
       const clerkId = user?.id;
       if (!isSupabaseConfigured || !clerkId) {
-        setRoutines(getAllRoutines() as any[]);
+        setRoutines(getGuestRoutines() as any[]);
+        setLoading(false);
         return;
       }
+      // Clear stale entries before reloading — on a failed refresh the old
+      // list would otherwise stay tappable and could navigate to a workout
+      // for a routine that no longer exists.
+      setRoutines([]);
       setLoading(true);
       supabase
         .from('routines')
@@ -107,7 +112,10 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
           setRoutines((data as any[]) || []);
           setLoading(false);
         })
-        .catch(() => setLoading(false));
+        .catch(() => {
+          setRoutines([]);
+          setLoading(false);
+        });
     }
   }, [visible, user?.id]);
 
@@ -246,6 +254,11 @@ export default function AppLayout() {
         <Tabs.Screen name="history" />
         <Tabs.Screen name="analytics" />
         <Tabs.Screen name="profile" />
+        {/*
+          Exercise Library management screen. Hidden from the bottom nav —
+          reached via the Routines header book icon or Profile > My Exercises.
+        */}
+        <Tabs.Screen name="exercises" options={{ href: null }} />
         {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link

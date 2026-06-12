@@ -9,7 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
 import { BasicInfoProvider } from '@/hooks/useBasicInfo';
-import { hydrateGuestStore } from '@/lib/mockData';
+import { hydrateGuestStore } from '@/lib/guestStore';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { ToastProvider } from '@/components/ui/Toast';

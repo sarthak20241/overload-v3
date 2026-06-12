@@ -44,8 +44,21 @@ create table if not exists exercises (
   name text not null,
   muscle_group text not null,
   category text not null default 'Other',
+  -- Owner (Clerk user id). Null = global library row visible to everyone.
+  -- Client inserts never pass this — the default tags the row with the
+  -- caller's JWT sub; seed/service-role inserts get null.
+  created_by text default (auth.jwt()->>'sub'),
   created_at timestamptz not null default now()
 );
+
+-- Idempotent re-apply: on databases where exercises already existed the
+-- create-if-not-exists block above never adds created_by, and the ownership
+-- policies below would reference a missing column. Mirror it explicitly
+-- (same pattern as routine_exercises.note).
+alter table exercises
+  add column if not exists created_by text;
+alter table exercises
+  alter column created_by set default (auth.jwt()->>'sub');
 
 -- ─── Routines ───────────────────────────────────────────────────────────────
 create table if not exists routines (
@@ -126,6 +139,19 @@ create index if not exists idx_workout_sets_workout on workout_sets(workout_id);
 create index if not exists idx_workout_sets_exercise on workout_sets(exercise_id);
 create index if not exists idx_ai_coach_rl_recent on ai_coach_rate_limit(user_id, request_at desc);
 
+-- One exercise per name per owner (migration 0037, which also dedupes
+-- pre-existing rows — run it before re-applying this file to an old DB).
+-- Two partial indexes because global library rows (created_by null) and user
+-- customs are separate scopes: a custom may shadow a library name, but no
+-- scope may hold the same name twice. This also makes the seed block's
+-- ON CONFLICT DO NOTHING below genuinely idempotent.
+create unique index if not exists uq_exercises_owner_name
+  on exercises (lower(name), created_by)
+  where created_by is not null;
+create unique index if not exists uq_exercises_global_name
+  on exercises (lower(name))
+  where created_by is null;
+
 -- ─── RLS Policies ───────────────────────────────────────────────────────────
 -- Auth model: Clerk is configured as a third-party auth provider in Supabase
 -- (Authentication → Sign In / Up → Third-party Auth). Verified Clerk JWTs
@@ -175,6 +201,10 @@ drop policy if exists "own workout_sets update" on workout_sets;
 drop policy if exists "own workout_sets delete" on workout_sets;
 drop policy if exists "exercises read all" on exercises;
 drop policy if exists "exercises insert authenticated" on exercises;
+drop policy if exists "exercises read global or own" on exercises;
+drop policy if exists "exercises insert own" on exercises;
+drop policy if exists "exercises update own" on exercises;
+drop policy if exists "exercises delete own" on exercises;
 
 -- user_profiles
 create policy "own profile select" on user_profiles
@@ -251,10 +281,17 @@ create policy "own workout_sets delete" on workout_sets
     select 1 from workouts w where w.id = workout_sets.workout_id
                               and w.user_id = auth.jwt()->>'sub'));
 
--- exercises (shared catalog: anyone can read; authenticated users can add)
-create policy "exercises read all" on exercises for select using (true);
-create policy "exercises insert authenticated" on exercises
-  for insert to authenticated with check (true);
+-- exercises (global catalog rows have created_by null and are visible to all;
+-- user-created rows are private to their creator — see 0036)
+create policy "exercises read global or own" on exercises
+  for select using (created_by is null or created_by = auth.jwt()->>'sub');
+create policy "exercises insert own" on exercises
+  for insert to authenticated with check (created_by = auth.jwt()->>'sub');
+create policy "exercises update own" on exercises
+  for update to authenticated using (created_by = auth.jwt()->>'sub')
+                              with check (created_by = auth.jwt()->>'sub');
+create policy "exercises delete own" on exercises
+  for delete to authenticated using (created_by = auth.jwt()->>'sub');
 
 -- ─── Row-Level Security (Phase 0) ───────────────────────────────────────────
 -- RLS gates every per-user table by Clerk subject claim. The Clerk JWT is
@@ -282,8 +319,9 @@ alter table routines enable row level security;
 alter table routine_exercises enable row level security;
 alter table workouts enable row level security;
 alter table workout_sets enable row level security;
--- exercises is a global catalog; readable by all authed users, no per-user
--- write policy (admin-only via service role).
+-- exercises: global catalog rows (created_by null) are readable by everyone;
+-- user-created rows are private to their creator. See the ownership-aware
+-- policies above ("exercises read global or own" etc.) and migration 0036.
 alter table exercises enable row level security;
 
 -- user_profiles: a user can read/write their own row.
@@ -345,11 +383,10 @@ create policy "workout_sets_self" on workout_sets
     )
   );
 
--- exercises: read-only for all authenticated users.
+-- NOTE: no blanket "exercises_read" policy here. Policies are PERMISSIVE (OR'd
+-- together), so a read-all policy would negate "exercises read global or own"
+-- and expose every user's custom exercises.
 drop policy if exists "exercises_read" on exercises;
-create policy "exercises_read" on exercises
-  for select
-  using (current_clerk_user_id() is not null);
 
 -- ─── User Stats Materialized Views (Phase 1) ───────────────────────────────
 -- Power the AI Coach's <user_context> block. Refreshed when a workout finishes

@@ -10,11 +10,8 @@ import {
   TextInput,
   Pressable,
   KeyboardAvoidingView,
-  Keyboard,
   Platform,
-  FlatList,
   BackHandler,
-  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -30,17 +27,17 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { isSupabaseConfigured, supabase, useSupabaseClient } from '@/lib/supabase';
-import { mockRoutines, getAllRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine } from '@/lib/mockData';
+import { supabase, useSupabaseClient } from '@/lib/supabase';
+import { getGuestRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findGuestRoutine } from '@/lib/guestStore';
+import { useIsGuestSession } from '@/lib/guestMode';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Portal } from '@/components/ui/Portal';
-import { EXERCISE_LIBRARY, MUSCLE_GROUPS, searchExercises } from '@/lib/exercises';
+import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import type { ExerciseDef } from '@/lib/exercises';
 
 const ROUTINE_COLORS = Colors.routineColors;
-const CUSTOM_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Cardio', 'Other'] as const;
 
 interface RoutineExerciseRaw {
   exercise_id: string;
@@ -75,6 +72,9 @@ interface EditorExercise {
   id: string;
   name: string;
   muscleGroup: string;
+  /** Equipment category from the picker (custom creations choose one);
+   *  undefined for hand-typed rows — findOrCreateExercise falls back to 'Other'. */
+  category?: string;
   targetSets: number;
   targetReps: string;
   restSeconds: number;
@@ -331,84 +331,22 @@ function RoutineDetailSheet({
   );
 }
 
-// ─── Inline Exercise Picker ──────────────────────────────────────────────────
-function InlineExercisePicker({
-  onSelect,
-  onClose,
-  onCreateCustom,
-}: {
-  onSelect: (ex: ExerciseDef) => void;
-  onClose: () => void;
-  onCreateCustom: (prefill: string) => void;
-}) {
-  const { C } = useTheme();
-  const [search, setSearch] = useState('');
-  const filtered = searchExercises(search);
-
-  return (
-    <View style={[styles.pickerContainer, { backgroundColor: C.card, borderColor: C.border }]}>
-      <View style={[styles.pickerSearchRow, { borderBottomColor: C.borderLight }]}>
-        <Feather name="search" size={13} color={C.textMuted} />
-        <TextInput
-          autoFocus
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search exercises..."
-          placeholderTextColor={C.textMuted}
-          style={[styles.pickerSearchInput, { color: C.foreground }]}
-        />
-        <TouchableOpacity onPress={onClose}>
-          <Feather name="x" size={13} color={C.textMuted} />
-        </TouchableOpacity>
-      </View>
-      <ScrollView style={styles.pickerList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-        {/* Create Custom — always visible at the top */}
-        <TouchableOpacity
-          onPress={() => {
-            onCreateCustom(search);
-            onClose();
-          }}
-          style={[styles.pickerItem, { borderBottomWidth: 1, borderBottomColor: C.borderSubtle }]}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Feather name="plus" size={13} color={Colors.primary} />
-            <Text style={[styles.pickerItemName, { color: C.foreground }]}>
-              {search.trim() ? `Create "${search.trim()}"` : 'Create Custom Exercise'}
-            </Text>
-          </View>
-        </TouchableOpacity>
-        {filtered.map((ex) => (
-          <TouchableOpacity
-            key={ex.name}
-            onPress={() => onSelect(ex)}
-            style={styles.pickerItem}
-          >
-            <Text style={[styles.pickerItemName, { color: C.foreground }]}>{ex.name}</Text>
-            <Text style={[styles.pickerItemMuscle, { color: C.textMuted }]}>{ex.muscle_group}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-    </View>
-  );
-}
-
 // ─── Exercise Editor Card ────────────────────────────────────────────────────
 function ExerciseEditorCard({
   exercise,
   onChange,
   onRemove,
-  onCreateCustom,
+  onOpenPicker,
   index,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
   onRemove: () => void;
-  onCreateCustom: (prefill: string) => void;
+  onOpenPicker: () => void;
   index: number;
 }) {
   const { C } = useTheme();
   const [expanded, setExpanded] = useState(index === 0);
-  const [showPicker, setShowPicker] = useState(false);
 
   return (
     <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
@@ -446,31 +384,26 @@ function ExerciseEditorCard({
       {/* Expandable body */}
       {expanded && (
         <View style={[styles.editorBody, { borderTopColor: C.borderSubtle }]}>
-          {/* Exercise picker */}
+          {/* Exercise picker — opens the bottom-sheet library. The inline
+              dropdown it replaces expanded downward into the IME, so the
+              results were hidden behind the keyboard while typing. */}
           <View>
             <Text style={[styles.editorLabel, { color: C.textMuted }]}>Exercise</Text>
-            {showPicker ? (
-              <InlineExercisePicker
-                onSelect={(ex) => {
-                  onChange({ ...exercise, name: ex.name, muscleGroup: ex.muscle_group });
-                  setShowPicker(false);
-                }}
-                onClose={() => setShowPicker(false)}
-                onCreateCustom={(prefill) => {
-                  setShowPicker(false);
-                  onCreateCustom(prefill);
-                }}
-              />
-            ) : (
-              <TouchableOpacity
-                onPress={() => setShowPicker(true)}
-                style={[styles.editorInput, { backgroundColor: C.card, borderColor: C.border }]}
+            <TouchableOpacity
+              onPress={onOpenPicker}
+              style={[
+                styles.editorInput,
+                { backgroundColor: C.card, borderColor: C.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+              ]}
+            >
+              <Text
+                style={[styles.editorInputText, { color: exercise.name ? C.foreground : C.textMuted, flex: 1 }]}
+                numberOfLines={1}
               >
-                <Text style={[styles.editorInputText, { color: exercise.name ? C.foreground : C.textMuted }]}>
-                  {exercise.name || 'Select exercise...'}
-                </Text>
-              </TouchableOpacity>
-            )}
+                {exercise.name || 'Select exercise...'}
+              </Text>
+              <Feather name="chevron-down" size={14} color={C.textMuted} />
+            </TouchableOpacity>
           </View>
 
           {/* Sets / Reps / Rest row */}
@@ -539,6 +472,7 @@ function RoutineEditorSheet({
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   // SafeAreaView reports zero insets inside a fullScreen RN Modal (separate
@@ -546,7 +480,6 @@ function RoutineEditorSheet({
   // with the status bar / Dynamic Island. Read the device inset via the hook —
   // it returns the correct value from the root provider — and pad manually.
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exercises, setExercises] = useState<EditorExercise[]>([newExercise()]);
@@ -555,91 +488,49 @@ function RoutineEditorSheet({
   // disabled-button render state; just block reentry.
   const inFlightRef = useRef(false);
 
-  // Custom exercise drawer state
-  const [showCustomDrawer, setShowCustomDrawer] = useState(false);
-  const [customName, setCustomName] = useState('');
-  const [customMuscle, setCustomMuscle] = useState('Other');
-  const [customSets, setCustomSets] = useState('3');
-  const [customReps, setCustomReps] = useState('8-12');
-  const [customRest, setCustomRest] = useState('90');
-  const [customTargetIdx, setCustomTargetIdx] = useState<number | null>(null);
-  const [showMuscleDropdown, setShowMuscleDropdown] = useState(false);
-
-  // Keyboard avoidance for the custom-exercise drawer. The name input gets
-  // focused on open, so the keyboard appears immediately and would otherwise
-  // cover the inputs + Add Exercise button. KeyboardAvoidingView doesn't work
-  // inside a transparent Modal on iOS, so we track the keyboard height
-  // ourselves and lift the sheet via marginBottom (the same pattern used by
-  // analytics.tsx's BottomDrawer).
-  const [customKbHeight, setCustomKbHeight] = useState(0);
-  const nameInputRef = useRef<TextInput>(null);
-  useEffect(() => {
-    if (!showCustomDrawer) { setCustomKbHeight(0); return; }
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvt, (e) => {
-      setCustomKbHeight(e.endCoordinates?.height ?? 0);
-    });
-    const hideSub = Keyboard.addListener(hideEvt, () => setCustomKbHeight(0));
-    // Focus the name field ourselves AFTER the listeners are attached, rather
-    // than via autoFocus. autoFocus raised the keyboard during mount, before
-    // this effect ran, so the first keyboardWillShow fired with no listener
-    // attached and the sheet never lifted: the keyboard covered the inputs
-    // until you manually dismissed and refocused. Deferring the focus a tick
-    // guarantees we catch the show event and lift on the first open.
-    const focusTimer = setTimeout(() => nameInputRef.current?.focus(), 100);
-    return () => { showSub.remove(); hideSub.remove(); clearTimeout(focusTimer); };
-  }, [showCustomDrawer]);
+  // Which exercise card the bottom-sheet picker is choosing for (null = closed).
+  // The sheet handles its own search, keyboard lift, and custom creation.
+  const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
   // window, and RN's Keyboard events fire only for the main activity window —
-  // so the custom-exercise drawer's keyboard listener never fired inside the
-  // Modal, customKbHeight stayed 0, and the IME covered the inputs. In the main
-  // window the listener works and the drawer lifts. <Portal> has no
-  // onRequestClose, so wire the Android hardware back button ourselves: close
-  // the custom drawer first if it's open, otherwise dismiss the editor.
+  // so keyboard listeners never fired inside the Modal and the IME covered
+  // the inputs. In the main window the listeners work and sheets lift.
+  // <Portal> has no onRequestClose, so wire the Android hardware back button
+  // ourselves. The exercise picker registers its own back handler while open
+  // (registered later, so it runs first); this one only dismisses the editor.
   useEffect(() => {
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (showCustomDrawer) { setShowCustomDrawer(false); return true; }
       handleClose();
       return true;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, showCustomDrawer]);
+  }, [visible]);
 
-  const openCustomDrawer = (prefill: string, targetIdx: number) => {
-    setCustomName(prefill);
-    setCustomMuscle('Other');
-    setCustomSets('3');
-    setCustomReps('8-12');
-    setCustomRest('90');
-    setCustomTargetIdx(targetIdx);
-    setShowCustomDrawer(true);
-  };
-
-  const confirmCustomExercise = () => {
-    if (!customName.trim()) {
-      setErrorMsg('Exercise name is required');
-      return;
+  const handlePickExercise = (ex: ExerciseDef, custom?: CustomExerciseDetails) => {
+    if (pickerTargetIdx !== null) {
+      setExercises((prev) =>
+        prev.map((e, i) => {
+          if (i !== pickerTargetIdx) return e;
+          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category };
+          // Custom creations carry set/rep/rest targets from the form; library
+          // picks keep whatever the card already has.
+          if (custom) {
+            next.targetSets = custom.sets;
+            next.targetReps =
+              custom.repsMin === custom.repsMax
+                ? String(custom.repsMin)
+                : `${custom.repsMin}-${custom.repsMax}`;
+            next.restSeconds = custom.restSeconds;
+          }
+          return next;
+        })
+      );
     }
-    const newEx: EditorExercise = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: customName.trim(),
-      muscleGroup: customMuscle,
-      targetSets: Math.max(1, Number(customSets) || 3),
-      targetReps: customReps || '8-12',
-      restSeconds: Math.max(0, Number(customRest) || 90),
-      notes: '',
-    };
-    if (customTargetIdx !== null) {
-      setExercises((prev) => prev.map((e, i) => (i === customTargetIdx ? newEx : e)));
-    } else {
-      setExercises((prev) => [...prev, newEx]);
-    }
-    setShowCustomDrawer(false);
+    setPickerTargetIdx(null);
   };
 
   // Reset state when opening
@@ -661,7 +552,35 @@ function RoutineEditorSheet({
   }, [visible, editingRoutine?.id]);
 
   const loadExistingExercises = async (routineId: string) => {
-    if (!isSupabaseConfigured) return;
+    if (isGuestSession) {
+      // Guest routines live in the local store - hydrate the editor from there
+      // instead of querying Supabase (a guest-r/mock-r id is not a valid uuid,
+      // so the query below would error and silently blank the editor).
+      const routine = findGuestRoutine(routineId);
+      if (!routine) {
+        // Stale/unknown guest routine id — surface it instead of silently
+        // showing a blank exercise card.
+        console.warn(`[routines] guest routine not found for id ${routineId}, opening empty editor`);
+      }
+      const rows = routine?.routine_exercises || [];
+      setExercises(
+        rows.length > 0
+          ? rows.map((re: any) => ({
+              id: re.exercises?.id || re.exercise_id || re.id,
+              name: re.exercises?.name || '',
+              muscleGroup: re.exercises?.muscle_group || '',
+              category: re.exercises?.category || undefined,
+              targetSets: re.sets || 3,
+              targetReps: re.reps_min === re.reps_max
+                ? String(re.reps_min)
+                : `${re.reps_min}-${re.reps_max}`,
+              restSeconds: re.rest_seconds || 90,
+              notes: re.note || '',
+            }))
+          : [newExercise()]
+      );
+      return;
+    }
     const { data } = await supabase
       .from('routine_exercises')
       .select('*, exercises(*)')
@@ -673,6 +592,7 @@ function RoutineEditorSheet({
           id: re.exercise_id || re.id,
           name: re.exercises?.name || '',
           muscleGroup: re.exercises?.muscle_group || '',
+          category: re.exercises?.category || undefined,
           targetSets: re.sets || 3,
           targetReps: re.reps_min === re.reps_max
             ? String(re.reps_min)
@@ -701,7 +621,7 @@ function RoutineEditorSheet({
     const { trimmedName, trimmedDescription, validExercises, editingId } = snapshot;
 
     // Guest mode: no Supabase / no Clerk id — persist locally only.
-    if (!isSupabaseConfigured || !clerkId) {
+    if (isGuestSession || !clerkId) {
       const routineId = editingId || `guest-r-${Date.now()}`;
       const routineExercises = validExercises.map((ex, i) => {
         const [repsMin, repsMax] = parseReps(ex.targetReps);
@@ -731,9 +651,9 @@ function RoutineEditorSheet({
         routine_exercises: routineExercises,
       };
       if (editingId) {
-        // Try in-place update first; if the id belongs to a hardcoded mockRoutine
-        // (read-only sample data, updateGuestRoutine returns false), fall back
-        // to creating a new guest copy so the user's edits aren't silently lost.
+        // Try in-place update first; if the id is stale (not in the guest
+        // store, updateGuestRoutine returns false), fall back to creating a
+        // new guest copy so the user's edits aren't silently lost.
         if (!updateGuestRoutine(guestRoutine)) {
           addGuestRoutine({ ...guestRoutine, id: `guest-r-${Date.now()}` });
         }
@@ -944,7 +864,7 @@ function RoutineEditorSheet({
                         setExercises((prev) => prev.map((e, idx) => (idx === i ? updated : e)))
                       }
                       onRemove={() => setExercises((prev) => prev.filter((_, idx) => idx !== i))}
-                      onCreateCustom={(prefill) => openCustomDrawer(prefill, i)}
+                      onOpenPicker={() => setPickerTargetIdx(i)}
                     />
                   ))}
                 </View>
@@ -961,172 +881,18 @@ function RoutineEditorSheet({
             </ScrollView>
           </KeyboardAvoidingView>
 
-          {/* Custom Exercise Drawer — an in-window overlay INSIDE the editor
-              Modal, NOT a nested <Modal>. iOS can't present a second modal over
-              an already-open one, so the old nested Modal stayed queued
-              (invisible) until the editor was dismissed — that was the "Create
-              Custom does nothing" bug. An overlay renders correctly over the
-              editor. */}
-          {/* Custom Exercise Drawer — its OWN <Portal> node, a sibling overlay
-              in the SAME main window as the editor (which is also a Portal).
-              This mirrors analytics' BottomDrawer, the keyboard-lift pattern
-              that works on Android here. Nesting the drawer inside the editor's
-              absolute-fill subtree defeated Android's keyboard handling, so the
-              IME covered the inputs. */}
-          <Portal>
-          {showCustomDrawer && (
-            <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-              <Pressable
-                style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]}
-                onPress={() => setShowCustomDrawer(false)}
-              />
-          <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[
-              styles.customDrawer,
-              {
-                backgroundColor: C.card,
-                borderColor: C.border,
-                // Lift above the keyboard via marginBottom, and cap the height
-                // to the space that remains above it. customKbHeight comes from
-                // the keyboard listener effect above.
-                marginBottom: customKbHeight,
-                maxHeight: (windowHeight - customKbHeight) * 0.85,
-                paddingBottom: insets.bottom,
-              },
-            ]}
-          >
-            {/* Tapping the sheet chrome (handle, header, padding) dismisses the
-                keyboard. Taps on the inputs and buttons are captured by those
-                children, so they keep working normally. */}
-            <Pressable onPress={() => Keyboard.dismiss()}>
-              <View style={[styles.handle, { backgroundColor: C.handle }]} />
-
-              {/* Drawer Header */}
-              <View style={[styles.customDrawerHeader, { borderBottomColor: C.borderLight }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <View style={[styles.customDrawerIcon, { backgroundColor: C.primaryMuted }]}>
-                    <Feather name="activity" size={14} color={C.accentText} />
-                  </View>
-                  <Text style={[styles.customDrawerTitle, { color: C.foreground }]}>Create Custom Exercise</Text>
-                </View>
-                <TouchableOpacity onPress={() => setShowCustomDrawer(false)}>
-                  <Feather name="x" size={16} color={C.textMuted} />
-                </TouchableOpacity>
-              </View>
-
-              {/* Drawer Form */}
-              <ScrollView
-                contentContainerStyle={styles.customDrawerBody}
-                // "handled": a tap on empty space inside the form dismisses the
-                // keyboard, while taps the children handle (the inputs and the
-                // "Add Exercise" button) still fire in a single tap. The sheet
-                // now lifts above the keyboard on open, so the button is no
-                // longer hidden behind it.
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-              >
-                {/* Exercise Name */}
-                <View>
-                  <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
-                  <TextInput
-                    ref={nameInputRef}
-                    value={customName}
-                    onChangeText={setCustomName}
-                    placeholder="e.g. Cable Lateral Raise"
-                    placeholderTextColor={C.textMuted}
-                    style={[styles.customDrawerInput, { backgroundColor: C.muted, color: C.foreground }]}
-                  />
-                </View>
-
-                {/* Muscle Group dropdown */}
-                <View style={styles.customDrawerRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>MUSCLE GROUP</Text>
-                    <TouchableOpacity
-                      onPress={() => setShowMuscleDropdown(!showMuscleDropdown)}
-                      style={[styles.customDrawerInput, styles.dropdownBtn, { backgroundColor: C.muted }]}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.dropdownBtnText, { color: C.mutedFg }]}>{customMuscle}</Text>
-                      <Feather name={showMuscleDropdown ? 'chevron-up' : 'chevron-down'} size={14} color={C.textMuted} />
-                    </TouchableOpacity>
-                    {showMuscleDropdown && (
-                      <View style={[styles.dropdownList, { backgroundColor: C.muted, borderColor: C.border }]}>
-                        <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                          {CUSTOM_MUSCLE_GROUPS.map((mg) => (
-                            <TouchableOpacity
-                              key={mg}
-                              onPress={() => { setCustomMuscle(mg); setShowMuscleDropdown(false); }}
-                              style={[
-                                styles.dropdownItem,
-                                customMuscle === mg && { backgroundColor: C.primaryMuted },
-                              ]}
-                            >
-                              <Text style={[styles.dropdownItemText, { color: customMuscle === mg ? C.accentText : C.foreground }]}>
-                                {mg}
-                              </Text>
-                              {customMuscle === mg && (
-                                <Feather name="check" size={13} color={C.accentText} />
-                              )}
-                            </TouchableOpacity>
-                          ))}
-                        </ScrollView>
-                      </View>
-                    )}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>TARGET SETS</Text>
-                    <TextInput
-                      value={customSets}
-                      onChangeText={setCustomSets}
-                      keyboardType="number-pad"
-                      style={[styles.customDrawerInput, { backgroundColor: C.muted, color: C.mutedFg }]}
-                      textAlign="center"
-                    />
-                  </View>
-                </View>
-
-                {/* Reps + Rest row */}
-                <View style={styles.customDrawerRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>TARGET REPS</Text>
-                    <TextInput
-                      value={customReps}
-                      onChangeText={setCustomReps}
-                      style={[styles.customDrawerInput, { backgroundColor: C.muted, color: C.mutedFg }]}
-                      textAlign="center"
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.customDrawerLabel, { color: C.textDim }]}>REST SECONDS</Text>
-                    <TextInput
-                      value={customRest}
-                      onChangeText={setCustomRest}
-                      keyboardType="number-pad"
-                      style={[styles.customDrawerInput, { backgroundColor: C.muted, color: C.mutedFg }]}
-                      textAlign="center"
-                    />
-                  </View>
-                </View>
-
-                {/* Confirm Button */}
-                <TouchableOpacity
-                  onPress={confirmCustomExercise}
-                  disabled={!customName.trim()}
-                  style={[styles.customDrawerConfirmBtn, !customName.trim() && { opacity: 0.5 }]}
-                  activeOpacity={0.8}
-                >
-                  <Feather name="check" size={15} color={Colors.primaryFg} />
-                  <Text style={styles.customDrawerConfirmText}>Add Exercise</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </Pressable>
-          </Animated.View>
-            </View>
-          )}
-          </Portal>
+          {/* Exercise Picker — shared bottom-sheet library (search, muscle
+              filters, custom creation). It renders in its OWN <Portal> node, a
+              sibling overlay in the SAME main window as the editor (also a
+              Portal): nesting overlays inside the editor's absolute-fill
+              subtree defeated Android's keyboard handling, and a nested native
+              <Modal> never presents on iOS over an already-open one. */}
+          <ExercisePickerSheet
+            visible={pickerTargetIdx !== null}
+            onClose={() => setPickerTargetIdx(null)}
+            onSelect={handlePickExercise}
+            selectedNames={exercises.map((e) => e.name).filter(Boolean)}
+          />
         </Animated.View>
       )}
     </Portal>
@@ -1268,38 +1034,54 @@ function parseReps(reps: string): [number, number] {
 }
 
 async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
-  // First try to find existing exercise by name. Avoid .single() — it errors when 0 or >1
-  // rows match. The `exercises` table has no UNIQUE(name) constraint, so a stray duplicate
-  // would force this branch to throw and we'd fall through to insert another copy.
-  const { data: existing } = await supabase
-    .from('exercises')
-    .select('id')
-    .ilike('name', ex.name.trim())
-    .order('created_at', { ascending: true })
-    .limit(1);
+  const name = ex.name.trim();
+  // Find by name first. Avoid .single() — it errors when 0 or >1 rows match;
+  // the oldest row is the canonical one (it's the row migration 0037 kept
+  // when deduping). Global library rows sort before customs, so a library
+  // match wins over creating a same-named private copy.
+  const findByName = async () => {
+    const { data } = await supabase
+      .from('exercises')
+      .select('id')
+      .ilike('name', name)
+      .order('created_at', { ascending: true })
+      .limit(1);
+    return data && data.length > 0 ? data[0].id : null;
+  };
 
-  if (existing && existing.length > 0) return existing[0].id;
+  const existingId = await findByName();
+  if (existingId) return existingId;
 
-  // Create new exercise
+  // Create new exercise. created_by is filled by the column default (the
+  // caller's JWT sub), so the row is private to this user.
   const { data: created, error } = await supabase
     .from('exercises')
     .insert({
-      name: ex.name.trim(),
+      name,
       muscle_group: ex.muscleGroup || 'Other',
-      category: 'Other',
+      category: ex.category || 'Other',
     })
     .select('id')
     .single();
 
-  if (error) throw error;
-  return created.id;
+  if (!error) return created.id;
+
+  // 23505 unique violation: another session created this exercise between our
+  // find and insert (unique index from migration 0037). The row we lost to is
+  // exactly the one we wanted — re-select it.
+  if (error.code === '23505') {
+    const winnerId = await findByName();
+    if (winnerId) return winnerId;
+  }
+  throw error;
 }
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function RoutinesScreen() {
   const router = useRouter();
   const { C } = useTheme();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
@@ -1313,8 +1095,8 @@ export default function RoutinesScreen() {
 
   const fetchRoutines = useCallback(async () => {
     const clerkId = user?.id;
-    if (!isSupabaseConfigured || !clerkId) {
-      setRoutines(getAllRoutines() as unknown as RoutineRaw[]);
+    if (isGuestSession || !clerkId) {
+      setRoutines(getGuestRoutines() as unknown as RoutineRaw[]);
       return;
     }
     const { data } = await supabase
@@ -1323,11 +1105,15 @@ export default function RoutinesScreen() {
       .eq('user_id', clerkId)
       .order('created_at', { ascending: false });
     setRoutines((data as RoutineRaw[]) || []);
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   useEffect(() => {
+    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+    // signed-in user would flash the (likely empty) guest list on cold launch.
+    // Hold the spinner until Clerk settles; the effect re-runs when it does.
+    if (!clerkLoaded) return;
     fetchRoutines().finally(() => setLoading(false));
-  }, [fetchRoutines]);
+  }, [fetchRoutines, clerkLoaded]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -1344,10 +1130,9 @@ export default function RoutinesScreen() {
     const previous = routines;
     setRoutines((prev) => prev.filter((r) => r.id !== id));
 
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       // Persist the delete in the guest store so it stays gone after the next
-      // fetchRoutines() (which reads from getAllRoutines). Hardcoded
-      // mockRoutines return false here and aren't removable — that's by design.
+      // fetchRoutines() (which reads from getGuestRoutines).
       removeGuestRoutine(id);
       toast.success(`Deleted “${target.name}”`);
       return;
@@ -1394,6 +1179,15 @@ export default function RoutinesScreen() {
           <Text style={[styles.screenTitle, { color: C.foreground }]}>Routines</Text>
         </View>
         <View style={styles.headerRight}>
+          <TouchableOpacity
+            // typed-routes hasn't regenerated for /exercises yet — cast is
+            // fine, route exists at runtime (same as /admin/research).
+            onPress={() => router.push('/exercises' as any)}
+            style={[styles.libBtn, { backgroundColor: C.muted, borderColor: C.border }]}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Feather name="book-open" size={14} color={C.foreground} />
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setAiCoachOpen(true)}
             style={[styles.aiBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
@@ -1529,6 +1323,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   newBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  libBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+  },
 
   // List
   listContent: {
@@ -1813,38 +1615,6 @@ const styles = StyleSheet.create({
     fontSize: FontSize.base,
   },
 
-  // Inline Exercise Picker
-  pickerContainer: {
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  pickerSearchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-  },
-  pickerSearchInput: {
-    flex: 1,
-    fontSize: FontSize.base,
-    padding: 0,
-  },
-  pickerList: {
-    maxHeight: 192,
-  },
-  pickerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
-  },
-  pickerItemName: { fontSize: FontSize.base },
-  pickerItemMuscle: { fontSize: FontSize.xs },
-
   // Add Exercise Button
   addExerciseBtn: {
     flexDirection: 'row',
@@ -1860,95 +1630,6 @@ const styles = StyleSheet.create({
   addExerciseBtnText: {
     fontSize: FontSize.base,
     fontWeight: FontWeight.medium,
-  },
-
-  // Custom Exercise Drawer
-  customDrawer: {
-    borderTopLeftRadius: Radius.xxl,
-    borderTopRightRadius: Radius.xxl,
-    borderTopWidth: 1,
-    maxHeight: '80%',
-  },
-  customDrawerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-  },
-  customDrawerIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  customDrawerTitle: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.bold,
-  },
-  customDrawerBody: {
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.lg,
-    paddingBottom: 48,
-    gap: 16,
-  },
-  customDrawerLabel: {
-    fontSize: 10,
-    fontWeight: FontWeight.semibold,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
-  customDrawerInput: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 12,
-    borderRadius: Radius.xl,
-    fontSize: FontSize.base,
-  },
-  customDrawerRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  dropdownBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  dropdownBtnText: {
-    fontSize: FontSize.base,
-  },
-  dropdownList: {
-    marginTop: 4,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  dropdownItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 10,
-  },
-  dropdownItemText: {
-    fontSize: FontSize.base,
-  },
-  customDrawerConfirmBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: Radius.xl,
-    backgroundColor: Colors.primary,
-    marginTop: 8,
-  },
-  customDrawerConfirmText: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.black,
-    color: Colors.primaryFg,
   },
 
   // Routine Detail Sheet

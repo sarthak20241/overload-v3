@@ -23,7 +23,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { addGuestRoutine } from '@/lib/mockData';
+import { addGuestRoutine } from '@/lib/guestStore';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate } from './CoachAccessGate';
@@ -2561,20 +2561,28 @@ export function AICoachModal({
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
     await Promise.all(workout.exercises.map(async (ex, i) => {
-      const { data: existingEx } = await supabase
-        .from('exercises')
-        .select('id')
-        .eq('name', ex.name)
-        .single();
+      // Case-insensitive find, oldest row first — .single() would error when a
+      // global library row and a same-named custom both match (legal scopes
+      // under migration 0037's unique indexes).
+      const findByName = async () => {
+        const { data } = await supabase
+          .from('exercises')
+          .select('id')
+          .ilike('name', ex.name)
+          .order('created_at', { ascending: true })
+          .limit(1);
+        return data?.[0]?.id;
+      };
 
-      let exerciseId = existingEx?.id;
+      let exerciseId = await findByName();
       if (!exerciseId) {
-        const { data: newEx } = await supabase
+        const { data: newEx, error: insErr } = await supabase
           .from('exercises')
           .insert({ name: ex.name, muscle_group: 'Other', category: 'Other' })
           .select('id')
           .single();
-        exerciseId = newEx?.id;
+        // 23505: lost the create race to another session — take the winner.
+        exerciseId = newEx?.id ?? (insErr?.code === '23505' ? await findByName() : undefined);
       }
       if (!exerciseId) return;
 

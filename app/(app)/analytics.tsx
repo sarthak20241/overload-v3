@@ -14,13 +14,12 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import {
-  getMockWorkouts, getMockWeightLog, getMockBodyFatLog,
-  getMockMeasurements, mockBasicInfo,
-} from '@/lib/mockData';
+import { useSupabaseClient } from '@/lib/supabase';
+import { roundVolume } from '@/lib/format';
+import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   loadMeasurements, saveMeasurements,
@@ -791,13 +790,7 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
-    loadMeasurements().then((m) => {
-      if (!isSupabaseConfigured && m.entries.length === 0) {
-        setData(getMockMeasurements());
-      } else {
-        setData(m);
-      }
-    });
+    loadMeasurements().then(setData);
   }, []);
 
   const update = async (next: MeasurementsData) => {
@@ -1087,7 +1080,8 @@ function get7DayDuration(workouts: WorkoutRaw[]): { data: number[]; labels: stri
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function AnalyticsScreen() {
   const { C } = useTheme();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { width: winWidth } = useWindowDimensions();
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
@@ -1107,15 +1101,14 @@ export default function AnalyticsScreen() {
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   const { goalWeight: ctxGoal, weightUnit } = useBasicInfo();
-  // In guest mode fall back to mock goal so the demo chart still shows a target line
-  const goalWeight = ctxGoal ?? (isSupabaseConfigured ? null : mockBasicInfo.goalWeight);
+  const goalWeight = ctxGoal ?? null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   const [addBfOpen, setAddBfOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     let list: WorkoutRaw[];
-    if (!isSupabaseConfigured) {
-      list = getMockWorkouts() as any[];
+    if (isGuestSession) {
+      list = getGuestWorkoutsDetailed() as any[];
     } else {
       const sinceIso = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
       let q = supabase
@@ -1133,37 +1126,31 @@ export default function AnalyticsScreen() {
       list.flatMap((w) => w.workout_sets || []).map((s) => s.exercises?.name).filter(Boolean) as string[]
     )];
     setSelectedExercise((prev) => prev || all[0] || '');
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   useEffect(() => {
+    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+    // signed-in user would flash empty guest analytics on cold launch.
+    // Hold the spinner until Clerk settles; the effect re-runs when it does.
+    if (!clerkLoaded) return;
     fetchData().finally(() => setLoading(false));
-    if (!isSupabaseConfigured) {
-      loadWeightLog().then((wl) => setWeightLog(wl.length ? wl : getMockWeightLog()));
-      loadBodyFatLog().then((bf) => setBodyFatLog(bf.length ? bf : getMockBodyFatLog()));
-    } else {
-      loadWeightLog().then(setWeightLog);
-      loadBodyFatLog().then(setBodyFatLog);
-    }
-  }, [fetchData]);
+    loadWeightLog().then(setWeightLog);
+    loadBodyFatLog().then(setBodyFatLog);
+  }, [fetchData, clerkLoaded]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchData();
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
-    if (!isSupabaseConfigured) {
-      setWeightLog(wl.length ? wl : getMockWeightLog());
-      setBodyFatLog(bfl.length ? bfl : getMockBodyFatLog());
-    } else {
-      setWeightLog(wl);
-      setBodyFatLog(bfl);
-    }
+    setWeightLog(wl);
+    setBodyFatLog(bfl);
     setRefreshing(false);
   }, [fetchData]);
 
   // ── Stats ──
   const weekStart = getWeekStart();
   const weekWorkouts = workouts.filter((w) => new Date(w.started_at) >= weekStart);
-  const weekVolume = weekWorkouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0);
+  const weekVolume = roundVolume(weekWorkouts.reduce((s, w) => s + (w.total_volume_kg || 0), 0));
   const avgDurationMin = workouts.length > 0
     ? Math.round(workouts.reduce((s, w) => s + (w.duration_seconds || 0), 0) / workouts.length / 60)
     : 0;

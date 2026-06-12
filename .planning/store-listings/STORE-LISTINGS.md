@@ -142,7 +142,7 @@ Answer "no" to "Does this app use the AppTrackingTransparency framework?"
 - Test Account credentials: leave blank if anyone-can-test, or provide a
   guest account if the reviewer asks.
 - Demo account for App Review: most reviewers won't sign up — give them
-  a working account they can sign into. Create a `reviewer@overload.app`
+  a working account they can sign into. Create a `reviewer@tryoverload.app`
   test account in Clerk + Supabase before submission.
 
 ---

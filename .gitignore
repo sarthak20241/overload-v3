@@ -41,3 +41,6 @@ Redesign Gym Workout Tracker UI*/
 # Tooling temp / local working dirs (never upload to EAS)
 .claude/worktrees/
 supabase/.temp/
+
+# One-off data migration workspace (contains user data dumps)
+migration/

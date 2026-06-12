@@ -15,21 +15,22 @@ import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { findMockRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
+import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 import { getXpForWorkout } from '@/lib/xp';
-import { MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
+import { roundVolume } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
+import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
 const AMBER = '#fbbf24';
-const WORKOUT_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Other'] as const;
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -82,35 +83,30 @@ export default function ActiveWorkoutScreen() {
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
   const workout = useWorkout();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
+  // Guests (no Clerk session) hit Supabase as the anon role, where RLS rejects
+  // every write - route all their reads/writes to the local guest store.
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
-  const [currentIdx, setCurrentIdx] = useState(0);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
-  const [exerciseSearch, setExerciseSearch] = useState('');
-  // Custom exercise form
-  const [showCustomForm, setShowCustomForm] = useState(false);
-  const [customName, setCustomName] = useState('');
-  const [customMuscle, setCustomMuscle] = useState('Other');
-  const [customCategory, setCustomCategory] = useState('Other');
-  const [customSets, setCustomSets] = useState('3');
-  const [customRepsMin, setCustomRepsMin] = useState('8');
-  const [customRepsMax, setCustomRepsMax] = useState('12');
-  const [customRest, setCustomRest] = useState('90');
   const [exerciseTimer, setExerciseTimer] = useState(0);
   const [restTimer, setRestTimer] = useState(0);
   // True from the moment a set is logged until the user either logs the next
   // set or taps "Skip rest". Drives the dedicated rest card so rest can be
   // ended without being forced to log a set just to clear the timer.
   const [isResting, setIsResting] = useState(false);
-  const [exerciseStarted, setExerciseStarted] = useState<boolean[]>([]);
-  const [exerciseFinished, setExerciseFinished] = useState<boolean[]>([]);
+  // Per-exercise started/finished flags and the open exercise index live in
+  // the workout context so they persist when this screen unmounts on tab
+  // switches (previously local state, which reset completed exercises back to
+  // grey and snapped the view back to the first exercise on return).
+  const { exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished, currentIdx, setCurrentIdx } = workout;
   // Alert states
   const [showCancelAlert, setShowCancelAlert] = useState(false);
   const [showFinishAlert, setShowFinishAlert] = useState(false);
@@ -143,6 +139,14 @@ export default function ActiveWorkoutScreen() {
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
+  const mainScrollRef = useRef<ScrollView>(null);
+  // Which keyboard-sensitive input on the main scroll is focused — gates the
+  // keyboard-show auto-scroll so the finish sheet / picker inputs don't
+  // trigger it. 'logger' scrolls to the measured input card position;
+  // 'notes' is the last content, so scrollToEnd is exact for it.
+  const kbScrollTargetRef = useRef<'logger' | 'notes' | null>(null);
+  const inputCardRef = useRef<View>(null);
+  const scrollYRef = useRef<number>(0);
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
@@ -152,6 +156,7 @@ export default function ActiveWorkoutScreen() {
   // (rather than passing live state) keeps the chat's context stable for the
   // session — reopening after logging more sets refreshes it.
   const openCoachWith = useCallback((kind: 'live' | 'review') => {
+    Keyboard.dismiss();
     setCoachContext(buildWorkoutCoachContext({
       routineName: workout.routineName,
       elapsedSeconds: workout.elapsed,
@@ -169,47 +174,83 @@ export default function ActiveWorkoutScreen() {
   // be acted on before the user actually saves.
   const openCoachReview = useCallback(() => openCoachWith('review'), [openCoachWith]);
 
-  // Track keyboard height while the custom-exercise form or the finish sheet
-  // is open. These sheets render via <Portal> (the app's own window), which
-  // isn't auto-resized for the keyboard, so we lift them (marginBottom) and cap
-  // their height (maxHeight) by this amount — otherwise the keyboard covers the
-  // text inputs.
+  // Track keyboard height for the whole screen. Two consumers:
+  // - The finish sheet renders via <Portal> (the app's own window), which
+  //   isn't auto-resized for the keyboard, so it lifts via marginBottom and
+  //   caps its height by this amount.
+  // - The set logger's weight/reps inputs: Android edge-to-edge disables the
+  //   old adjustResize behavior, so the window does NOT shrink and the
+  //   focused input stays buried under the IME. We pad the main scroll
+  //   content by the keyboard height and scroll the input card (the last
+  //   content in the started view) into view ourselves. iOS is covered by
+  //   automaticallyAdjustKeyboardInsets on the ScrollView instead.
   useEffect(() => {
-    if (!showCustomForm && !showFinishSheet) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const showSub = Keyboard.addListener(showEvt, (e) => {
       setKbHeight(e.endCoordinates?.height ?? 0);
+      // Wait a tick so the padding from setKbHeight is laid out, then bring
+      // the focused input above the keyboard.
+      const target = kbScrollTargetRef.current;
+      const kbTop = e.endCoordinates?.screenY ?? 0;
+      if (Platform.OS === 'android' && target) {
+        setTimeout(() => {
+          const scroll = mainScrollRef.current;
+          if (!scroll) return;
+          if (target === 'notes') {
+            // Notes are the last content — end of scroll is exact.
+            scroll.scrollToEnd({ animated: true });
+            return;
+          }
+          // Set logger: measure the card in absolute window coordinates and
+          // scroll just far enough to lift it above the keyboard. (Layout
+          // offsets are relative to the card's parent wrapper, not the scroll
+          // content, so they can't be used directly.)
+          inputCardRef.current?.measureInWindow((_x, y, _w, h) => {
+            const overlap = y + h + 12 - kbTop;
+            if (overlap > 0) {
+              scroll.scrollTo({ y: scrollYRef.current + overlap, animated: true });
+            }
+          });
+        }, 80);
+      }
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
     return () => {
       showSub.remove();
       hideSub.remove();
     };
-  }, [showCustomForm, showFinishSheet]);
+  }, []);
 
   // <Portal> has no onRequestClose (unlike RN <Modal>), so route the Android
-  // hardware back button to close whichever sheet is open instead of letting it
-  // fall through and leave the workout.
+  // hardware back button to close the finish sheet instead of letting it fall
+  // through and leave the workout. The add-exercise picker handles its own
+  // back button internally.
   useEffect(() => {
-    if (!showAddExercise && !showCustomForm && !showFinishSheet) return;
+    if (!showFinishSheet) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (showFinishSheet) { setShowFinishSheet(false); return true; }
-      if (showCustomForm) { setShowCustomForm(false); return true; }
-      if (showAddExercise) { setShowAddExercise(false); return true; }
-      return false;
+      setShowFinishSheet(false);
+      return true;
     });
     return () => sub.remove();
-  }, [showAddExercise, showCustomForm, showFinishSheet]);
+  }, [showFinishSheet]);
 
   // Load routine on mount
   useEffect(() => {
     if (workout.isActive) {
+      // Session already running (e.g. returning to this screen after a tab
+      // switch). Started/finished flags live in the context and are already
+      // in sync — don't reset them or completed exercises revert to grey.
       setLoading(false);
-      setExerciseStarted(exercises.map(() => false));
-      setExerciseFinished(exercises.map(() => false));
       return;
     }
+    // Wait for Clerk to hydrate before deciding guest vs signed-in. During
+    // hydration user?.id is still undefined, so isGuestSession reads true and
+    // a signed-in user's deep link / cold open would look up their Supabase
+    // routine in the guest store, miss, and bounce out with "Routine not
+    // found". The effect re-runs when clerkLoaded flips; the spinner from the
+    // initial `loading` state covers the gap.
+    if (!clerkLoaded) return;
 
     const load = async () => {
       if (id === 'new') {
@@ -219,10 +260,8 @@ export default function ActiveWorkoutScreen() {
       }
       try {
         let routine: any = null;
-        const clerkId = user?.id;
-        const isGuest = !isSupabaseConfigured || !clerkId;
-        if (isGuest) {
-          routine = findMockRoutine(id!);
+        if (isGuestSession) {
+          routine = findGuestRoutine(id!);
         } else {
           const { data } = await supabase
             .from('routines')
@@ -240,7 +279,7 @@ export default function ActiveWorkoutScreen() {
         // Build previous performance map — for each exercise, find the most recent
         // completed workout that contained it (across all routines).
         let prevPerf: Record<string, { weight_kg: number; reps: number }[]> = {};
-        if (isGuest) {
+        if (isGuestSession) {
           prevPerf = getPreviousPerformance(routine.id);
         } else {
           const exIdToName = new Map<string, string>();
@@ -319,9 +358,8 @@ export default function ActiveWorkoutScreen() {
             };
           });
 
+        // startWorkout seeds the started/finished flags (all false) in context.
         workout.startWorkout(routine.id, routine.name, activeExs);
-        setExerciseStarted(activeExs.map(() => false));
-        setExerciseFinished(activeExs.map(() => false));
 
         if (activeExs.length > 0 && activeExs[0].previousSets?.[0]) {
           setInputWeight(String(activeExs[0].previousSets[0].weight_kg));
@@ -334,7 +372,7 @@ export default function ActiveWorkoutScreen() {
       }
     };
     load();
-  }, [id]);
+  }, [id, clerkLoaded]);
 
   // Exercise timer
   const startExerciseTimer = useCallback(() => {
@@ -574,24 +612,32 @@ export default function ActiveWorkoutScreen() {
 
   // Resolve an exercise to a real DB row (look up by name or insert) so workout_sets.exercise_id is a valid FK.
   // Returns the resolved Exercise row, or null if Supabase is unconfigured / the call fails.
-  // NOTE: uses limit(1) + order rather than maybeSingle() — `exercises` has no UNIQUE(name) constraint,
-  // so historical duplicates would make maybeSingle() return null and silently insert another duplicate.
+  // NOTE: case-insensitive find with limit(1) + order, matching the unique index from
+  // migration 0037 (lower(name) per owner scope) — the oldest row is the canonical one.
   const resolveExerciseRow = async (lib: ExerciseDef): Promise<Exercise | null> => {
     if (!isSupabaseConfigured) return null;
     try {
-      const { data: existing } = await supabase
-        .from('exercises')
-        .select('*')
-        .eq('name', lib.name)
-        .order('created_at', { ascending: true })
-        .limit(1);
-      if (existing && existing.length > 0) return existing[0] as Exercise;
-      const { data: inserted } = await supabase
+      const findByName = async () => {
+        const { data } = await supabase
+          .from('exercises')
+          .select('*')
+          .ilike('name', lib.name)
+          .order('created_at', { ascending: true })
+          .limit(1);
+        return data && data.length > 0 ? (data[0] as Exercise) : null;
+      };
+      const existing = await findByName();
+      if (existing) return existing;
+      const { data: inserted, error } = await supabase
         .from('exercises')
         .insert({ name: lib.name, muscle_group: lib.muscle_group, category: lib.category })
         .select()
         .single();
-      return (inserted as Exercise) ?? null;
+      if (!error) return (inserted as Exercise) ?? null;
+      // 23505: lost the create race to another session — the winner's row is
+      // the one we want.
+      if (error.code === '23505') return await findByName();
+      return null;
     } catch {
       return null;
     }
@@ -617,57 +663,30 @@ export default function ActiveWorkoutScreen() {
     setExerciseStarted(prev => [...prev, false]);
     setExerciseFinished(prev => [...prev, false]);
     setShowAddExercise(false);
-    setExerciseSearch('');
     setTimeout(() => setCurrentIdx(exercises.length), 100);
 
     void reconcileExerciseRow(ex, tempId);
   };
 
-  // Open custom-create form, optionally pre-filled with the search query
-  const openCustomForm = (prefillName?: string) => {
-    setCustomName(prefillName || '');
-    setCustomMuscle('Other');
-    setCustomCategory('Other');
-    setCustomSets('3');
-    setCustomRepsMin('8');
-    setCustomRepsMax('12');
-    setCustomRest('90');
-    setShowAddExercise(false);
-    setShowCustomForm(true);
-  };
-
-  // Create a custom exercise and add it to the workout
-  const addCustomExercise = () => {
-    const name = customName.trim();
-    if (!name) {
-      setShowErrorAlert('Exercise name is required');
-      return;
-    }
-    const targetSets = Math.max(1, parseInt(customSets) || 3);
-    const repsMin = Math.max(1, parseInt(customRepsMin) || 8);
-    const repsMaxRaw = parseInt(customRepsMax) || repsMin;
-    const repsMax = Math.max(repsMin, repsMaxRaw);
-    const restSeconds = Math.max(0, parseInt(customRest) || 90);
-
+  // Create a custom exercise (def + set/rep/rest targets from the picker's
+  // custom form) and add it to the workout
+  const addCustomExercise = (def: ExerciseDef, details: CustomExerciseDetails) => {
     // Optimistic: temp id + default sets, close modal instantly. Reconcile fetches
     // the real exercise row and previous-set defaults in the background.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const def: ExerciseDef = { name, muscle_group: customMuscle, category: customCategory };
     const newEx: ActiveWorkoutExercise = {
-      exercise: { id: tempId, name, muscle_group: customMuscle, category: customCategory },
-      sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: repsMin, completed: false })),
+      exercise: { id: tempId, name: def.name, muscle_group: def.muscle_group, category: def.category },
+      sets: Array.from({ length: details.sets }, () => ({ weight_kg: 0, reps: details.repsMin, completed: false })),
       notes: '',
-      targetSets,
-      repsMin,
-      repsMax,
-      restSeconds,
+      targetSets: details.sets,
+      repsMin: details.repsMin,
+      repsMax: details.repsMax,
+      restSeconds: details.restSeconds,
     };
     workout.updateExercises(prev => [...prev, newEx]);
     setExerciseStarted(prev => [...prev, false]);
     setExerciseFinished(prev => [...prev, false]);
-    setShowCustomForm(false);
-    setExerciseSearch('');
-    setCustomName('');
+    setShowAddExercise(false);
     setTimeout(() => setCurrentIdx(exercises.length), 100);
 
     void reconcileExerciseRow(def, tempId);
@@ -683,8 +702,10 @@ export default function ActiveWorkoutScreen() {
   // existing .filter on `temp-` ids will skip it to avoid FK violations, so we
   // surface a toast so the user knows those sets won't persist.
   const reconcileExerciseRow = async (def: ExerciseDef, tempId: string) => {
-    if (!isSupabaseConfigured) {
-      // Guest mode still wants the previous-sets pre-fill from mockData.
+    if (isGuestSession) {
+      // Guests save sets by exercise name into the local store, so no DB row
+      // is needed - but they still want the previous-sets pre-fill from the
+      // guest store.
       const prev = await fetchPreviousSetsForExercise(null, def.name);
       if (!prev || prev.length === 0) return;
       workout.updateExercises(prevExs => prevExs.map(e => {
@@ -752,6 +773,9 @@ export default function ActiveWorkoutScreen() {
 
   // Cancel workout
   const handleCancel = () => {
+    // The logger keyboard may still be up; the confirm drawer has no inputs,
+    // so drop it rather than let the drawer open underneath it.
+    Keyboard.dismiss();
     setShowCancelAlert(true);
   };
 
@@ -783,6 +807,9 @@ export default function ActiveWorkoutScreen() {
 
   // Finish workout
   const handleFinishWorkout = () => {
+    // Same as cancel: don't let the finish sheet/alert open under a keyboard
+    // left up by the set logger.
+    Keyboard.dismiss();
     const count = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
     if (count === 0) {
       setShowNoSetsAlert(true);
@@ -801,12 +828,11 @@ export default function ActiveWorkoutScreen() {
     }
   };
 
-  const toggleSaveAsRoutine = () => {
-    const next = !saveAsRoutine;
-    // Seed the routine name from the workout name the first time it's enabled.
-    if (next && !routineNameInput.trim()) setRoutineNameInput(finishName.trim());
-    setSaveAsRoutine(next);
-  };
+  // The routine name input is deliberately not pre-filled: while it stays
+  // empty it tracks the workout name (live placeholder + fallback at save),
+  // so renaming the workout after enabling the toggle still names the routine
+  // correctly. Pre-filling froze the suggestion and dropped later renames.
+  const toggleSaveAsRoutine = () => setSaveAsRoutine(v => !v);
 
   // Create a routine from the exercises performed this session: sets = what was
   // actually completed, rep range = the min/max reps logged, rest carried over.
@@ -825,11 +851,11 @@ export default function ActiveWorkoutScreen() {
       };
     };
 
-    // Branch on isSupabaseConfigured alone — the same test confirmFinish uses
-    // for the workout itself — so the routine id handed back always matches
-    // the store the workout saves to (a guest-r id must never reach Postgres).
+    // Branch on the same guest test confirmFinish uses for the workout itself,
+    // so the routine id handed back always matches the store the workout saves
+    // to (a guest-r id must never reach Postgres).
     const clerkId = user?.id;
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       const routineId = `guest-r-${Date.now()}`;
       addGuestRoutine({
         id: routineId,
@@ -918,7 +944,7 @@ export default function ActiveWorkoutScreen() {
     // Hardcoded sample routines are read-only; only user-created guest
     // routines can be updated in place.
     if (!getGuestRoutines().some(r => r.id === rid)) return null;
-    const routine = findMockRoutine(rid);
+    const routine = findGuestRoutine(rid);
     if (!routine) return null;
 
     const sessionExs = dedupeSessionExercises(exercises);
@@ -1011,7 +1037,7 @@ export default function ActiveWorkoutScreen() {
 
   const applyRoutineSync = async (offer: RoutineSyncOffer) => {
     if (offer.mode === 'guest') {
-      const routine = findMockRoutine(offer.routineId);
+      const routine = findGuestRoutine(offer.routineId);
       if (!routine || !offer.guestExercises) throw new Error('Routine not found');
       const ok = updateGuestRoutine({ ...routine, routine_exercises: offer.guestExercises });
       if (!ok) throw new Error('Routine is read-only');
@@ -1080,7 +1106,7 @@ export default function ActiveWorkoutScreen() {
       const workoutName = opts?.name?.trim() || workout.routineName;
       const workoutNotes = opts?.notes?.trim() || null;
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
-      const vol = allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0);
+      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0));
 
       // Create the routine first (when requested) so the workout row can link
       // to it — that link is what feeds "previous session" the next time the
@@ -1103,7 +1129,7 @@ export default function ActiveWorkoutScreen() {
         else toast.success('Workout saved');
       };
 
-      if (!isSupabaseConfigured) {
+      if (isGuestSession) {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
           name: workoutName,
@@ -1118,6 +1144,8 @@ export default function ActiveWorkoutScreen() {
             .filter(e => e.sets.some(s => s.completed))
             .map(e => ({
               name: e.exercise.name,
+              muscle_group: e.exercise.muscle_group,
+              category: e.exercise.category,
               sets: e.sets.filter(s => s.completed).map(s => ({ weight_kg: s.weight_kg, reps: s.reps })),
             })),
         });
@@ -1244,9 +1272,9 @@ export default function ActiveWorkoutScreen() {
 
   // Computed
   const completedSets = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
-  const totalVolume = exercises
+  const totalVolume = roundVolume(exercises
     .flatMap(e => e.sets.filter(s => s.completed).map(s => s.weight_kg * s.reps))
-    .reduce((a, b) => a + b, 0);
+    .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
   const isStarted = exerciseStarted[currentIdx];
   const isFinished = exerciseFinished[currentIdx];
@@ -1262,8 +1290,6 @@ export default function ActiveWorkoutScreen() {
   const restDisplay = restTarget > 0
     ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
     : fmt(restTimer);
-
-  const filteredLibrary = searchExercises(exerciseSearch);
 
   if (loading) {
     return (
@@ -1365,7 +1391,7 @@ export default function ActiveWorkoutScreen() {
             );
           })}
           <TouchableOpacity
-            onPress={() => setShowAddExercise(true)}
+            onPress={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
             style={[styles.addPill, { borderColor: C.border }]}
           >
             <Feather name="plus" size={13} color={C.textMuted} />
@@ -1375,9 +1401,29 @@ export default function ActiveWorkoutScreen() {
 
       {/* MAIN CONTENT */}
       <ScrollView
+        ref={mainScrollRef}
         style={styles.mainScroll}
-        contentContainerStyle={styles.mainContent}
+        contentContainerStyle={[
+          styles.mainContent,
+          // Android edge-to-edge: the window doesn't resize for the IME, so
+          // make room for the keyboard ourselves; the keyboard-show listener
+          // then scrolls the set logger into view. iOS pads via
+          // automaticallyAdjustKeyboardInsets below.
+          Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight },
+        ]}
         showsVerticalScrollIndicator={false}
+        // The keyboard-show handler scrolls relative to the current offset,
+        // so keep it tracked here.
+        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={16}
+        // With the keyboard open after typing a weight/rep, taps on "Log Set"
+        // and the +/− steppers must land on the first tap — the default
+        // ("never") swallows that tap to dismiss the keyboard.
+        keyboardShouldPersistTaps="handled"
+        // iOS only: insets the scroll content by the keyboard height and
+        // scrolls the focused field into view. Once a few sets are logged the
+        // input card sits in the lower half of the screen, under the keyboard.
+        automaticallyAdjustKeyboardInsets
       >
         {exercises.length === 0 ? (
           <View style={styles.emptyState}>
@@ -1547,7 +1593,7 @@ export default function ActiveWorkoutScreen() {
             {isStarted && !isFinished && (
               <Animated.View entering={FadeIn} style={styles.inputArea}>
                 {/* Input Card */}
-                <View style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                <View ref={inputCardRef} style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                   <View style={styles.inputRow}>
                     {/* Weight */}
                     <View style={styles.inputGroup}>
@@ -1565,6 +1611,8 @@ export default function ActiveWorkoutScreen() {
                           keyboardType="decimal-pad"
                           style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
                           selectTextOnFocus
+                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { kbScrollTargetRef.current = null; }}
                         />
                         <TouchableOpacity
                           onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))}
@@ -1594,6 +1642,8 @@ export default function ActiveWorkoutScreen() {
                           keyboardType="number-pad"
                           style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
                           selectTextOnFocus
+                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { kbScrollTargetRef.current = null; }}
                         />
                         <TouchableOpacity
                           onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))}
@@ -1646,7 +1696,7 @@ export default function ActiveWorkoutScreen() {
                 </View>
                 <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
                 <Text style={[styles.finishedSub, { color: C.textMuted }]}>
-                  {currentEx.sets.filter(s => s.completed).length} sets · {currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0)} kg total volume
+                  {currentEx.sets.filter(s => s.completed).length} sets · {roundVolume(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
                 </Text>
                 <TouchableOpacity
                   onPress={() => {
@@ -1677,6 +1727,8 @@ export default function ActiveWorkoutScreen() {
               multiline
               numberOfLines={2}
               style={[styles.notesInput, { backgroundColor: C.muted, color: C.mutedFg }]}
+              onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
+              onBlur={() => { kbScrollTargetRef.current = null; }}
             />
           </>
         )}
@@ -1725,235 +1777,16 @@ export default function ActiveWorkoutScreen() {
         </View>
       )}
 
-      {/* ADD EXERCISE SHEET — rendered via root <Portal> (the app's own window),
-          not RN <Modal>. On Android a <Modal> is a separate Dialog window where
-          Reanimated entering/exiting animations leave touch hit-rects stale, so
-          taps on the list rows and the close button register only
-          intermittently. Same-window Portal keeps hit-testing correct. */}
-      <Portal>
-        {showAddExercise && (
-        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowAddExercise(false)}>
-          <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[styles.modalSheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom }]}
-          >
-            <Pressable>
-              <View style={[styles.handle, { backgroundColor: C.handle }]} />
-              <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: C.foreground }]}>Add Exercise</Text>
-                <TouchableOpacity onPress={() => setShowAddExercise(false)} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
-                  <Feather name="x" size={15} color={C.foreground} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.lg }}>
-                <View style={[styles.searchBox, { backgroundColor: C.muted, borderColor: C.border }]}>
-                  <Feather name="search" size={15} color={C.textMuted} />
-                  <TextInput
-                    placeholder="Search exercises..."
-                    placeholderTextColor={C.textMuted}
-                    value={exerciseSearch}
-                    onChangeText={setExerciseSearch}
-                    style={[styles.searchInput, { color: C.foreground }]}
-                  />
-                </View>
-              </View>
-
-              <ScrollView
-                style={{ maxHeight: 400 }}
-                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 40, gap: 6 }}
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-              >
-                {/* Create Custom Exercise */}
-                <TouchableOpacity
-                  onPress={() => openCustomForm(exerciseSearch.trim() || '')}
-                  style={[styles.createCustomItem, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
-                >
-                  <View style={[styles.createCustomIcon, { backgroundColor: C.primarySubtle }]}>
-                    <Feather name="plus" size={14} color={C.accentText} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.libraryName, { color: C.foreground }]}>
-                      {exerciseSearch.trim() ? `Create "${exerciseSearch.trim()}"` : 'Create Custom Exercise'}
-                    </Text>
-                    <Text style={[styles.libraryMuscle, { color: C.textMuted }]}>Set name, muscle group, sets & reps</Text>
-                  </View>
-                </TouchableOpacity>
-                {filteredLibrary.map((ex) => (
-                  <TouchableOpacity
-                    key={ex.name}
-                    onPress={() => addExercise(ex)}
-                    style={[styles.libraryItem, { backgroundColor: C.muted, borderColor: C.border }]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.libraryName, { color: C.foreground }]}>{ex.name}</Text>
-                      <Text style={[styles.libraryMuscle, { color: C.textMuted }]}>{ex.muscle_group} · {ex.category}</Text>
-                    </View>
-                    <Feather name="plus" size={14} color={C.accentText} />
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </Pressable>
-          </Animated.View>
-        </Pressable>
-        )}
-      </Portal>
-
-      {/* CUSTOM EXERCISE FORM — rendered via root <Portal>, not RN <Modal>, for
-          the same reason as the Add Exercise sheet: a <Modal>'s separate Android
-          window + Reanimated layout animations make taps on the muscle-group /
-          category chips and the close button register only intermittently. */}
-      <Portal>
-        {showCustomForm && (
-        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowCustomForm(false)}>
-          <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[
-              styles.modalSheet,
-              {
-                backgroundColor: C.elevated,
-                // Lift above the keyboard on both platforms — now rendered in the
-                // app's own window via <Portal>, which (unlike a <Modal> window)
-                // isn't auto-resized for the keyboard.
-                marginBottom: kbHeight,
-                maxHeight: (winH - kbHeight) * 0.9,
-              },
-            ]}
-          >
-            <Pressable style={{ flexShrink: 1 }}>
-              <View style={[styles.handle, { backgroundColor: C.handle }]} />
-              <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: C.foreground }]}>Create Exercise</Text>
-                <TouchableOpacity onPress={() => setShowCustomForm(false)} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
-                  <Feather name="x" size={15} color={C.foreground} />
-                </TouchableOpacity>
-              </View>
-              <ScrollView
-                style={{ flexGrow: 0, flexShrink: 1 }}
-                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
-                showsVerticalScrollIndicator={true}
-                keyboardShouldPersistTaps="handled"
-              >
-                {/* Name */}
-                <Text style={[styles.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
-                <TextInput
-                  value={customName}
-                  onChangeText={setCustomName}
-                  placeholder="e.g. Cable Crossover"
-                  placeholderTextColor={C.textMuted}
-                  style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                />
-
-                {/* Muscle Group */}
-                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
-                <View style={styles.chipRow}>
-                  {WORKOUT_MUSCLE_GROUPS.map(mg => {
-                    const active = customMuscle === mg;
-                    return (
-                      <TouchableOpacity
-                        key={mg}
-                        onPress={() => setCustomMuscle(mg)}
-                        style={[
-                          styles.chip,
-                          {
-                            backgroundColor: active ? Colors.primary : C.muted,
-                            borderColor: active ? Colors.primary : C.border,
-                          },
-                        ]}
-                      >
-                        <Text style={[styles.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mg}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                {/* Category */}
-                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>CATEGORY</Text>
-                <View style={styles.chipRow}>
-                  {CATEGORIES.map(cat => {
-                    const active = customCategory === cat;
-                    return (
-                      <TouchableOpacity
-                        key={cat}
-                        onPress={() => setCustomCategory(cat)}
-                        style={[
-                          styles.chip,
-                          {
-                            backgroundColor: active ? Colors.primary : C.muted,
-                            borderColor: active ? Colors.primary : C.border,
-                          },
-                        ]}
-                      >
-                        <Text style={[styles.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{cat}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                {/* Sets / Reps / Rest */}
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.lg }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>SETS</Text>
-                    <TextInput
-                      value={customSets}
-                      onChangeText={setCustomSets}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>REST (S)</Text>
-                    <TextInput
-                      value={customRest}
-                      onChangeText={setCustomRest}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.md }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>REPS MIN</Text>
-                    <TextInput
-                      value={customRepsMin}
-                      onChangeText={setCustomRepsMin}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.formLabel, { color: C.textDim }]}>REPS MAX</Text>
-                    <TextInput
-                      value={customRepsMax}
-                      onChangeText={setCustomRepsMax}
-                      keyboardType="number-pad"
-                      style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
-                    />
-                  </View>
-                </View>
-              </ScrollView>
-
-              <View style={[styles.formFooter, { borderTopColor: C.borderSubtle, paddingBottom: Math.max(insets.bottom, Spacing.xl) }]}>
-                <TouchableOpacity
-                  onPress={addCustomExercise}
-                  disabled={!customName.trim()}
-                  style={[
-                    styles.formSaveBtn,
-                    { backgroundColor: Colors.primary, opacity: customName.trim() ? 1 : 0.4 },
-                  ]}
-                >
-                  <Feather name="check" size={15} color={Colors.primaryFg} />
-                  <Text style={styles.formSaveBtnText}>Add Exercise</Text>
-                </TouchableOpacity>
-              </View>
-            </Pressable>
-          </Animated.View>
-        </Pressable>
-        )}
-      </Portal>
+      {/* ADD EXERCISE — the shared bottom-sheet picker (same surface as the
+          routine editor): search, muscle filter pills, and the custom-exercise
+          form. Custom creations come back with set/rep/rest targets via the
+          second onSelect argument. */}
+      <ExercisePickerSheet
+        visible={showAddExercise}
+        onClose={() => setShowAddExercise(false)}
+        onSelect={(ex, custom) => (custom ? addCustomExercise(ex, custom) : addExercise(ex))}
+        selectedNames={exercises.map((e) => e.exercise.name)}
+      />
 
       {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
           other sheets. Lets the user name the session (pre-filled from the
@@ -2541,45 +2374,7 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.lg,
-    height: 44,
-  },
-  searchInput: { flex: 1, fontSize: FontSize.base },
-  libraryItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.lg,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-  },
-  libraryName: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  libraryMuscle: { fontSize: FontSize.xs, marginTop: 2 },
-
-  // Create custom row
-  createCustomItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: Spacing.lg,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    marginBottom: 6,
-  },
-  createCustomIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Custom form
+  // Finish sheet form fields
   formLabel: {
     fontSize: 10,
     fontWeight: FontWeight.semibold,
@@ -2593,21 +2388,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     borderWidth: 1,
     fontSize: FontSize.base,
-    fontWeight: FontWeight.semibold,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-  },
-  chipText: {
-    fontSize: 11,
     fontWeight: FontWeight.semibold,
   },
   formFooter: {

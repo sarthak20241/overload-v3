@@ -13,11 +13,13 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { getMockWorkoutsForHistory, removeGuestWorkout } from '@/lib/mockData';
+import { useSupabaseClient } from '@/lib/supabase';
+import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
+import { roundVolume } from '@/lib/format';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -86,7 +88,7 @@ function formatDateShort(iso: string) {
 function formatVolume(kg?: number) {
   if (!kg) return '—';
   if (kg >= 1000) return `${(kg / 1000).toFixed(1)}k kg`;
-  return `${kg} kg`;
+  return `${roundVolume(kg)} kg`;
 }
 
 function isSameDay(d1: Date, d2: Date) {
@@ -497,7 +499,8 @@ function SkeletonCards() {
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function HistoryScreen() {
   const { C } = useTheme();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
+  const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
@@ -515,8 +518,8 @@ export default function HistoryScreen() {
   const searchBarY = useRef(0);
 
   const fetchWorkouts = useCallback(async () => {
-    if (!isSupabaseConfigured) {
-      setWorkouts(getMockWorkoutsForHistory() as WorkoutRaw[]);
+    if (isGuestSession) {
+      setWorkouts(getGuestWorkouts() as unknown as WorkoutRaw[]);
       return;
     }
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
@@ -545,11 +548,15 @@ export default function HistoryScreen() {
       };
     });
     setWorkouts(transformed);
-  }, [user?.id]);
+  }, [user?.id, isGuestSession]);
 
   useEffect(() => {
+    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+    // signed-in user would flash an empty guest history on cold launch.
+    // Hold the spinner until Clerk settles; the effect re-runs when it does.
+    if (!clerkLoaded) return;
     fetchWorkouts().finally(() => setLoading(false));
-  }, [fetchWorkouts]);
+  }, [fetchWorkouts, clerkLoaded]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -566,11 +573,16 @@ export default function HistoryScreen() {
     const previous = workouts;
     setWorkouts((prev) => prev.filter((w) => w.id !== id));
 
-    if (!isSupabaseConfigured) {
+    if (isGuestSession) {
       // Persist the delete in the guest store so it stays gone after the next
-      // fetchWorkouts() (which reads from getMockWorkoutsForHistory).
-      // Hardcoded sample workouts return false and aren't removable — by design.
-      removeGuestWorkout(id);
+      // fetchWorkouts() (which reads from getGuestWorkouts). A false return
+      // means the id wasn't in the store — roll the optimistic delete back
+      // instead of letting the row silently reappear on the next refresh.
+      if (!removeGuestWorkout(id)) {
+        setWorkouts(previous);
+        toast.error("Couldn't delete workout");
+        return;
+      }
       toast.success('Workout deleted');
       return;
     }
@@ -674,7 +686,7 @@ export default function HistoryScreen() {
           <Text style={[styles.headerStat, { color: C.textMuted }]}>
             {totalVolume >= 1000
               ? `${Math.round(totalVolume / 1000)}t`
-              : `${totalVolume}kg`}{' '}
+              : `${roundVolume(totalVolume)}kg`}{' '}
             total volume
           </Text>
         </View>

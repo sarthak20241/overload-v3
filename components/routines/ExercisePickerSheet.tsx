@@ -2,7 +2,7 @@
  * Bottom-sheet exercise picker with search, muscle group tabs,
  * and custom exercise creation. Matches Figma design.
  */
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, BackHandler, Pressable, ScrollView, Keyboard, Platform,
@@ -16,11 +16,65 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
+import { useSupabaseClient, isSupabaseConfigured } from '@/lib/supabase';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
+import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
+
+// Custom exercises can be tagged beyond the library's lifting groups — the
+// routine editor's old custom drawer offered these, so keep parity.
+const CUSTOM_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Cardio', 'Other'] as const;
+
+// Generous ceiling on per-exercise set targets (10x10 GVT still fits).
+const MAX_CUSTOM_SETS = 20;
+
+// Module-level cache of the user's custom exercises so reopening the picker
+// shows them instantly and rapid open/close cycles don't refire the query.
+// A fetch still runs in the background when the cache is older than the TTL.
+// Keyed by Clerk user id: the module outlives sign-out, so without the key a
+// freshly signed-in user (or a guest) would inherit the previous account's
+// private list for up to the TTL.
+let customExercisesCache: { userId: string; rows: ExerciseDef[]; at: number } | null = null;
+const CUSTOM_CACHE_TTL_MS = 30_000;
+
+// Drop the cache after a mutation elsewhere (e.g. the My Exercises screen
+// renames or deletes a custom) so the picker can't serve the stale list for
+// the rest of the TTL.
+export function invalidateCustomExercisesCache() {
+  customExercisesCache = null;
+}
+
+// Drop rows whose names collide with the built-in library (or each other) —
+// the FlatList keys by name and the library is always appended, so a custom
+// named after a library exercise would otherwise render twice.
+function dedupeAgainstLibrary(
+  rows: { name: string; muscle_group: string; category: string }[]
+): ExerciseDef[] {
+  const seen = new Set(EXERCISE_LIBRARY.map(e => e.name.toLowerCase()));
+  const own: ExerciseDef[] = [];
+  for (const row of rows) {
+    const key = row.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    own.push({ name: row.name, muscle_group: row.muscle_group, category: row.category });
+  }
+  return own;
+}
+
+/** Set/rep/rest targets collected by the custom-exercise form. Passed as the
+ * second onSelect argument only for custom creations — library picks leave it
+ * undefined and the consumer keeps its own defaults. */
+export interface CustomExerciseDetails {
+  sets: number;
+  repsMin: number;
+  repsMax: number;
+  restSeconds: number;
+}
 
 interface Props {
   visible: boolean;
   onClose: () => void;
-  onSelect: (exercise: ExerciseDef) => void;
+  onSelect: (exercise: ExerciseDef, custom?: CustomExerciseDetails) => void;
   /** Already-added exercise names (to show check mark) */
   selectedNames?: string[];
 }
@@ -29,12 +83,20 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
+  const supabase = useSupabaseClient();
+  const { user } = useClerkUser();
+  const isGuest = useIsGuestSession();
+  const userId = user?.id ?? null;
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
   const [customName, setCustomName] = useState('');
-  const [customMuscle, setCustomMuscle] = useState('Chest');
-  const [customCategory, setCustomCategory] = useState('Barbell');
+  const [customMuscle, setCustomMuscle] = useState('Other');
+  const [customCategory, setCustomCategory] = useState('Other');
+  const [customSets, setCustomSets] = useState('3');
+  const [customRepsMin, setCustomRepsMin] = useState('8');
+  const [customRepsMax, setCustomRepsMax] = useState('12');
+  const [customRest, setCustomRest] = useState('90');
 
   // Keyboard avoidance: the custom-exercise form autofocuses the name input,
   // and the library view has a search input — both bring the keyboard up and
@@ -43,6 +105,69 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   // doesn't resize on iOS), so we track keyboard height and lift the sheet
   // via marginBottom — same pattern as analytics.tsx's BottomDrawer.
   const [kbHeight, setKbHeight] = useState(0);
+  const searchInputRef = useRef<TextInput>(null);
+
+  // The user's own custom exercises, fetched fresh on every open. RLS scopes
+  // the query to rows this user created (plus global rows, which the
+  // created_by filter excludes), so a custom exercise made in one routine or
+  // workout is reusable everywhere the picker opens. Guests read the local
+  // guest store instead — they have no Supabase session to query.
+  const [customExercises, setCustomExercises] = useState<ExerciseDef[]>(() => {
+    // Only seed from the cache when it was written by this same signed-in
+    // user — never hand a guest (or a different account) someone else's list.
+    const cached = customExercisesCache;
+    return !isGuest && cached && cached.userId === userId ? cached.rows : [];
+  });
+  useEffect(() => {
+    if (!visible) return;
+    // Guest sessions never touch the signed-in cache: read the local store
+    // synchronously and bail before any of the cache/fetch logic below.
+    if (isGuest) {
+      setCustomExercises(dedupeAgainstLibrary(getGuestExercises()));
+      return;
+    }
+    if (!isSupabaseConfigured || !userId) return;
+    // Serve the cache immediately — but only this user's; a previous
+    // account's cache is treated as empty. Skip the refetch while fresh.
+    if (customExercisesCache) {
+      if (customExercisesCache.userId === userId) {
+        setCustomExercises(customExercisesCache.rows);
+        if (Date.now() - customExercisesCache.at < CUSTOM_CACHE_TTL_MS) return;
+      } else {
+        setCustomExercises([]);
+      }
+    }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('exercises')
+        .select('name, muscle_group, category')
+        .not('created_by', 'is', null)
+        .order('created_at', { ascending: false });
+      if (cancelled || !data) return;
+      const own = dedupeAgainstLibrary(data);
+      customExercisesCache = { userId, rows: own, at: Date.now() };
+      setCustomExercises(own);
+    })();
+    return () => { cancelled = true; };
+  }, [visible, supabase, isGuest, userId]);
+
+  // Customs list first so they're the first thing seen on open.
+  const library = useMemo(
+    () => [...customExercises, ...EXERCISE_LIBRARY],
+    [customExercises]
+  );
+  const customNames = useMemo(
+    () => new Set(customExercises.map(e => e.name.toLowerCase())),
+    [customExercises]
+  );
+  // Customs can be tagged Cardio/Other, which aren't library filter pills —
+  // surface those groups so filtered customs stay reachable.
+  const muscleOptions = useMemo(() => {
+    const extras = [...new Set(customExercises.map(e => e.muscle_group))]
+      .filter(mg => !(MUSCLE_GROUPS as readonly string[]).includes(mg));
+    return [...MUSCLE_GROUPS, ...extras];
+  }, [customExercises]);
   useEffect(() => {
     if (!visible) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -51,25 +176,77 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       setKbHeight(e.endCoordinates?.height ?? 0);
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    // No auto-focus: the keyboard should only come up when the user taps the
+    // search bar themselves. The listeners above are attached on open, so the
+    // sheet still lifts whenever that manual focus happens.
     return () => { showSub.remove(); hideSub.remove(); };
   }, [visible]);
 
+  // Reset on every close, not just resetAndClose(): selecting an exercise
+  // closes the sheet from the parent (visible -> false), which would otherwise
+  // leave the previous search/filter behind for the next open.
+  useEffect(() => {
+    if (!visible) {
+      setSearch('');
+      setMuscleFilter(null);
+      setShowCustom(false);
+      setCustomName('');
+      Keyboard.dismiss();
+    }
+  }, [visible]);
+
   const filtered = useMemo(() => {
-    let list = searchExercises(search);
+    let list = searchExercises(search, library);
     if (muscleFilter) list = list.filter(e => e.muscle_group === muscleFilter);
     return list;
-  }, [search, muscleFilter]);
+  }, [search, muscleFilter, library]);
 
   const handleSelectExercise = (ex: ExerciseDef) => {
     onSelect(ex);
   };
 
+  // Enter the custom form with fresh defaults, carrying the search text over —
+  // "hey" with no matches becomes the custom exercise's prefilled name.
+  const openCustomForm = () => {
+    setCustomName(search.trim());
+    setCustomMuscle('Other');
+    setCustomCategory('Other');
+    setCustomSets('3');
+    setCustomRepsMin('8');
+    setCustomRepsMax('12');
+    setCustomRest('90');
+    setShowCustom(true);
+  };
+
   const handleCreateCustom = () => {
     const trimmed = customName.trim();
     if (!trimmed) return;
-    onSelect({ name: trimmed, muscle_group: customMuscle, category: customCategory });
-    setCustomName('');
-    setShowCustom(false);
+    // Cap sets: consumers render one row per set (Array.from({ length: sets })),
+    // so an unbounded paste like "9999" would freeze the workout screen.
+    const sets = Math.min(MAX_CUSTOM_SETS, Math.max(1, parseInt(customSets, 10) || 3));
+    const repsMin = Math.max(1, parseInt(customRepsMin, 10) || 8);
+    const repsMax = Math.max(repsMin, parseInt(customRepsMax, 10) || repsMin);
+    const restSeconds = Math.max(0, parseInt(customRest, 10) || 90);
+    // Optimistically remember the new custom (state + cache) so it shows on
+    // the next open even before the consumer's background insert lands.
+    const key = trimmed.toLowerCase();
+    const exists = customExercises.some(e => e.name.toLowerCase() === key)
+      || EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === key);
+    if (!exists) {
+      const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory };
+      setCustomExercises(prev => [row, ...prev]);
+      if (isGuest) {
+        // No Supabase insert happens downstream for guests — persist to the
+        // local store so the custom survives restarts (dedupes internally).
+        addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory });
+      } else if (customExercisesCache && customExercisesCache.userId === userId) {
+        customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
+      }
+    }
+    onSelect(
+      { name: trimmed, muscle_group: customMuscle, category: customCategory },
+      { sets, repsMin, repsMax, restSeconds }
+    );
   };
 
   const resetAndClose = () => {
@@ -79,16 +256,18 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     onClose();
   };
 
-  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  // <Portal> has no onRequestClose, so wire the Android hardware back button:
+  // pop the custom form back to the library first, then dismiss the sheet.
   useEffect(() => {
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showCustom) { setShowCustom(false); return true; }
       resetAndClose();
       return true;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [visible, showCustom]);
 
   return (
     <Portal>
@@ -114,17 +293,17 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
             },
           ]}
         >
-          <Pressable>
+          <Pressable style={{ flexShrink: 1 }}>
             <View style={[s.handle, { backgroundColor: C.handle }]} />
 
             {/* Header */}
             <View style={s.header}>
               <View>
                 <Text style={[s.title, { color: C.foreground }]}>
-                  {showCustom ? 'Custom Exercise' : 'Add Exercise'}
+                  {showCustom ? 'Create Exercise' : 'Add Exercise'}
                 </Text>
                 <Text style={[s.subtitle, { color: C.mutedFg }]}>
-                  {showCustom ? 'Create your own exercise' : `${EXERCISE_LIBRARY.length} exercises available`}
+                  {showCustom ? 'Set name, muscle group, sets & reps' : `${library.length} exercises available`}
                 </Text>
               </View>
               <TouchableOpacity onPress={resetAndClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
@@ -133,85 +312,128 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
             </View>
 
             {showCustom ? (
-              /* ── Custom Exercise Form ── */
-              <View style={s.body}>
-                <Text style={[s.label, { color: C.mutedFg }]}>Exercise Name</Text>
-                <TextInput
-                  value={customName}
-                  onChangeText={setCustomName}
-                  placeholder="e.g. Cable Lateral Raise"
-                  placeholderTextColor={C.textMuted}
-                  autoFocus
-                  style={[s.input, { backgroundColor: C.inputBg, color: C.foreground, borderColor: C.border }]}
-                />
+              /* ── Custom Exercise Form — mirrors the active workout screen's
+                    "Create Exercise" sheet: wrapped chip rows, set/rep/rest
+                    targets, pinned save button. ── */
+              <>
+                <ScrollView
+                  style={{ flexGrow: 0, flexShrink: 1 }}
+                  contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
+                  showsVerticalScrollIndicator={true}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {/* Name */}
+                  <Text style={[s.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
+                  <TextInput
+                    value={customName}
+                    onChangeText={setCustomName}
+                    placeholder="e.g. Cable Crossover"
+                    placeholderTextColor={C.textMuted}
+                    style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                  />
 
-                <Text style={[s.label, { color: C.mutedFg, marginTop: 16 }]}>Muscle Group</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                  {/* Muscle Group */}
+                  <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
                   <View style={s.chipRow}>
-                    {MUSCLE_GROUPS.map(mg => (
-                      <TouchableOpacity
-                        key={mg}
-                        onPress={() => setCustomMuscle(mg)}
-                        style={[
-                          s.chip,
-                          { borderColor: C.border },
-                          customMuscle === mg && { backgroundColor: Colors.primary, borderColor: Colors.primary },
-                        ]}
-                      >
-                        <Text style={[
-                          s.chipText,
-                          { color: C.mutedFg },
-                          customMuscle === mg && { color: Colors.primaryFg },
-                        ]}>
-                          {mg}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
+                    {CUSTOM_MUSCLE_GROUPS.map(mg => {
+                      const active = customMuscle === mg;
+                      return (
+                        <TouchableOpacity
+                          key={mg}
+                          onPress={() => setCustomMuscle(mg)}
+                          style={[
+                            s.chip,
+                            {
+                              backgroundColor: active ? Colors.primary : C.muted,
+                              borderColor: active ? Colors.primary : C.border,
+                            },
+                          ]}
+                        >
+                          <Text style={[s.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mg}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {/* Category */}
+                  <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>CATEGORY</Text>
+                  <View style={s.chipRow}>
+                    {CATEGORIES.map(cat => {
+                      const active = customCategory === cat;
+                      return (
+                        <TouchableOpacity
+                          key={cat}
+                          onPress={() => setCustomCategory(cat)}
+                          style={[
+                            s.chip,
+                            {
+                              backgroundColor: active ? Colors.primary : C.muted,
+                              borderColor: active ? Colors.primary : C.border,
+                            },
+                          ]}
+                        >
+                          <Text style={[s.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{cat}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {/* Sets / Rest */}
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.lg }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.formLabel, { color: C.textDim }]}>SETS</Text>
+                      <TextInput
+                        value={customSets}
+                        onChangeText={setCustomSets}
+                        keyboardType="number-pad"
+                        style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.formLabel, { color: C.textDim }]}>REST (S)</Text>
+                      <TextInput
+                        value={customRest}
+                        onChangeText={setCustomRest}
+                        keyboardType="number-pad"
+                        style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                      />
+                    </View>
+                  </View>
+
+                  {/* Reps Min / Max */}
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.md }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.formLabel, { color: C.textDim }]}>REPS MIN</Text>
+                      <TextInput
+                        value={customRepsMin}
+                        onChangeText={setCustomRepsMin}
+                        keyboardType="number-pad"
+                        style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.formLabel, { color: C.textDim }]}>REPS MAX</Text>
+                      <TextInput
+                        value={customRepsMax}
+                        onChangeText={setCustomRepsMax}
+                        keyboardType="number-pad"
+                        style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
+                      />
+                    </View>
                   </View>
                 </ScrollView>
 
-                <Text style={[s.label, { color: C.mutedFg }]}>Category</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
-                  <View style={s.chipRow}>
-                    {CATEGORIES.map(cat => (
-                      <TouchableOpacity
-                        key={cat}
-                        onPress={() => setCustomCategory(cat)}
-                        style={[
-                          s.chip,
-                          { borderColor: C.border },
-                          customCategory === cat && { backgroundColor: Colors.primary, borderColor: Colors.primary },
-                        ]}
-                      >
-                        <Text style={[
-                          s.chipText,
-                          { color: C.mutedFg },
-                          customCategory === cat && { color: Colors.primaryFg },
-                        ]}>
-                          {cat}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
-
-                <View style={s.customActions}>
-                  <TouchableOpacity onPress={() => setShowCustom(false)} style={[s.backBtn, { backgroundColor: C.muted }]}>
-                    <Feather name="arrow-left" size={14} color={C.foreground} />
-                    <Text style={[s.backBtnText, { color: C.foreground }]}>Back</Text>
-                  </TouchableOpacity>
+                <View style={[s.formFooter, { borderTopColor: C.borderSubtle }]}>
                   <TouchableOpacity
                     onPress={handleCreateCustom}
                     disabled={!customName.trim()}
-                    style={[s.addBtn, { backgroundColor: customName.trim() ? Colors.primary : C.muted }]}
+                    style={[s.formSaveBtn, { backgroundColor: Colors.primary, opacity: customName.trim() ? 1 : 0.4 }]}
                   >
-                    <Feather name="plus" size={14} color={customName.trim() ? Colors.primaryFg : C.textMuted} />
-                    <Text style={[s.addBtnText, { color: customName.trim() ? Colors.primaryFg : C.textMuted }]}>
-                      Create & Add
-                    </Text>
+                    <Feather name="check" size={15} color={Colors.primaryFg} />
+                    <Text style={s.formSaveBtnText}>Add Exercise</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
+              </>
             ) : (
               /* ── Exercise Library ── */
               <>
@@ -220,6 +442,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   <View style={[s.searchBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
                     <Feather name="search" size={14} color={C.textMuted} />
                     <TextInput
+                      ref={searchInputRef}
                       value={search}
                       onChangeText={setSearch}
                       placeholder="Search exercises..."
@@ -254,7 +477,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                       !muscleFilter && { color: Colors.primaryFg },
                     ]}>All</Text>
                   </TouchableOpacity>
-                  {MUSCLE_GROUPS.map(mg => (
+                  {muscleOptions.map(mg => (
                     <TouchableOpacity
                       key={mg}
                       onPress={() => setMuscleFilter(muscleFilter === mg ? null : mg)}
@@ -277,6 +500,9 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                 <FlatList
                   data={filtered}
                   keyExtractor={(item) => item.name}
+                  // Single tap selects even while the keyboard is up — without
+                  // this the first tap only dismisses the keyboard.
+                  keyboardShouldPersistTaps="handled"
                   style={{ maxHeight: 340 }}
                   contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 20 }}
                   renderItem={({ item }) => {
@@ -288,7 +514,14 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                         activeOpacity={0.7}
                       >
                         <View style={s.exerciseInfo}>
-                          <Text style={[s.exerciseName, { color: C.foreground }]}>{item.name}</Text>
+                          <View style={s.exerciseNameRow}>
+                            <Text style={[s.exerciseName, { color: C.foreground }]}>{item.name}</Text>
+                            {customNames.has(item.name.toLowerCase()) && (
+                              <View style={[s.customTag, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
+                                <Text style={[s.customTagText, { color: C.accentText }]}>Custom</Text>
+                              </View>
+                            )}
+                          </View>
                           <Text style={[s.exerciseMeta, { color: C.textMuted }]}>
                             {item.muscle_group} · {item.category}
                           </Text>
@@ -311,7 +544,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                 {/* Create custom button */}
                 <View style={{ paddingHorizontal: Spacing.xl, paddingBottom: 30 }}>
                   <TouchableOpacity
-                    onPress={() => setShowCustom(true)}
+                    onPress={openCustomForm}
                     style={[s.customBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
                   >
                     <Feather name="edit-3" size={14} color={C.accentText} />
@@ -336,17 +569,16 @@ const s = StyleSheet.create({
   title: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   subtitle: { fontSize: FontSize.sm, marginTop: 2 },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  body: { paddingHorizontal: Spacing.xl, paddingBottom: 30 },
-  label: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
-  input: { borderWidth: 1, borderRadius: Radius.lg, paddingHorizontal: 16, paddingVertical: 12, fontSize: FontSize.base },
-  chipRow: { flexDirection: 'row', gap: 6 },
-  chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: Radius.full, borderWidth: 1 },
-  chipText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  customActions: { flexDirection: 'row', gap: 10 },
-  backBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14, borderRadius: Radius.xl },
-  backBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  addBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14, borderRadius: Radius.xl },
-  addBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  // Custom form — values copied from the active workout screen's
+  // "Create Exercise" sheet so the two read as the same surface.
+  formLabel: { fontSize: 10, fontWeight: FontWeight.semibold, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 6 },
+  formInput: { height: 44, paddingHorizontal: Spacing.md, borderRadius: Radius.lg, borderWidth: 1, fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: Radius.full, borderWidth: 1 },
+  chipText: { fontSize: 11, fontWeight: FontWeight.semibold },
+  formFooter: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.md, borderTopWidth: 1 },
+  formSaveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 48, borderRadius: Radius.xl },
+  formSaveBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
   searchWrap: { marginBottom: 10 },
   searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: Radius.lg, paddingHorizontal: 12, paddingVertical: 10 },
   searchInput: { flex: 1, fontSize: FontSize.base, padding: 0 },
@@ -354,7 +586,10 @@ const s = StyleSheet.create({
   filterPillText: { fontSize: 11, fontWeight: FontWeight.semibold },
   exerciseRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1 },
   exerciseInfo: { flex: 1 },
-  exerciseName: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  exerciseNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  exerciseName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, flexShrink: 1 },
+  customTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full, borderWidth: 1 },
+  customTagText: { fontSize: 10, fontWeight: FontWeight.semibold },
   exerciseMeta: { fontSize: FontSize.sm, marginTop: 2 },
   emptyText: { fontSize: FontSize.sm },
   customBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: Radius.xl, borderWidth: 1 },
