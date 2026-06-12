@@ -31,6 +31,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { getGuestExercises, updateGuestExercise, removeGuestExercise } from '@/lib/guestStore';
+import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES } from '@/lib/exercises';
 import { Portal } from '@/components/ui/Portal';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -212,6 +213,9 @@ export default function ExerciseLibraryScreen() {
         ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory }
         : r
     ));
+    // The picker caches the signed-in customs list for a short TTL — drop it
+    // so the renamed exercise can't show under its old name there.
+    invalidateCustomExercisesCache();
     toast.success(`Updated “${trimmed}”`);
     closeEdit();
   };
@@ -252,6 +256,9 @@ export default function ExerciseLibraryScreen() {
       }
     }
     setRows(prev => prev.filter(r => r.id !== target.id));
+    // Mirror the optimistic-add path: the picker's cached customs list must
+    // not keep serving the deleted exercise for the rest of its TTL.
+    invalidateCustomExercisesCache();
     toast.success(`Deleted “${target.name}”`);
   };
 

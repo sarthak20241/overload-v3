@@ -83,7 +83,7 @@ export default function ActiveWorkoutScreen() {
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
   const workout = useWorkout();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
   // Guests (no Clerk session) hit Supabase as the anon role, where RLS rejects
   // every write - route all their reads/writes to the local guest store.
   const isGuestSession = useIsGuestSession();
@@ -244,6 +244,13 @@ export default function ActiveWorkoutScreen() {
       setLoading(false);
       return;
     }
+    // Wait for Clerk to hydrate before deciding guest vs signed-in. During
+    // hydration user?.id is still undefined, so isGuestSession reads true and
+    // a signed-in user's deep link / cold open would look up their Supabase
+    // routine in the guest store, miss, and bounce out with "Routine not
+    // found". The effect re-runs when clerkLoaded flips; the spinner from the
+    // initial `loading` state covers the gap.
+    if (!clerkLoaded) return;
 
     const load = async () => {
       if (id === 'new') {
@@ -365,7 +372,7 @@ export default function ActiveWorkoutScreen() {
       }
     };
     load();
-  }, [id]);
+  }, [id, clerkLoaded]);
 
   // Exercise timer
   const startExerciseTimer = useCallback(() => {

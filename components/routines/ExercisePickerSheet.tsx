@@ -37,6 +37,13 @@ const MAX_CUSTOM_SETS = 20;
 let customExercisesCache: { userId: string; rows: ExerciseDef[]; at: number } | null = null;
 const CUSTOM_CACHE_TTL_MS = 30_000;
 
+// Drop the cache after a mutation elsewhere (e.g. the My Exercises screen
+// renames or deletes a custom) so the picker can't serve the stale list for
+// the rest of the TTL.
+export function invalidateCustomExercisesCache() {
+  customExercisesCache = null;
+}
+
 // Drop rows whose names collide with the built-in library (or each other) —
 // the FlatList keys by name and the library is always appended, so a custom
 // named after a library exercise would otherwise render twice.
