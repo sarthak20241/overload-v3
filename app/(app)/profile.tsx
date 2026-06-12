@@ -16,6 +16,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
+import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -203,6 +204,10 @@ export default function ProfileScreen() {
     // Clear the guest flag too — sign-out should always land on /(auth),
     // regardless of how the user originally got into /(app).
     await setGuestMode(false);
+    // Drop the picker's cached customs list: it's keyed by user id (so it
+    // can't leak across accounts), but there's no reason to keep the old
+    // account's rows allocated past the session.
+    invalidateCustomExercisesCache();
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);

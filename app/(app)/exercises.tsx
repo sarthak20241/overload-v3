@@ -177,11 +177,16 @@ export default function ExerciseLibraryScreen() {
     if (!editTarget || saving) return;
     const trimmed = editName.trim();
     if (!trimmed) return;
-    const clash = rows.some(
+    const clash = rows.find(
       r => r.id !== editTarget.id && r.name.toLowerCase() === trimmed.toLowerCase()
     );
     if (clash) {
-      toast.error('You already have an exercise with that name');
+      // Library rows clash too — tell the user which kind they hit.
+      toast.error(
+        clash.created_by === null
+          ? `“${clash.name}” is already in the exercise library`
+          : 'You already have an exercise with that name'
+      );
       return;
     }
     setSaving(true);
@@ -243,11 +248,9 @@ export default function ExerciseLibraryScreen() {
     setDeleteUsage({ routines: re.count ?? 0, sets: ws.count ?? 0 });
   };
 
-  const handleDelete = async () => {
-    const target = deleteTarget;
-    if (!target) return;
-    setDeleteTarget(null);
-    closeEdit();
+  // Parameterized worker so the error toast's Retry doesn't depend on the
+  // already-dismissed dialog state — same pattern as history's performDelete.
+  const performDelete = async (target: DbExercise) => {
     if (isGuest) {
       if (!removeGuestExercise(target.id)) {
         toast.error(`Couldn't delete “${target.name}”, try again`);
@@ -256,7 +259,9 @@ export default function ExerciseLibraryScreen() {
     } else {
       const { error } = await supabase.from('exercises').delete().eq('id', target.id);
       if (error) {
-        toast.error(`Couldn't delete “${target.name}”, try again`);
+        toast.error(`Couldn't delete “${target.name}”`, {
+          action: { label: 'Retry', onPress: () => performDelete(target) },
+        });
         return;
       }
     }
@@ -265,6 +270,14 @@ export default function ExerciseLibraryScreen() {
     // not keep serving the deleted exercise for the rest of its TTL.
     invalidateCustomExercisesCache();
     toast.success(`Deleted “${target.name}”`);
+  };
+
+  const handleDelete = () => {
+    const target = deleteTarget;
+    if (!target) return;
+    setDeleteTarget(null);
+    closeEdit();
+    void performDelete(target);
   };
 
   const renderRow = (ex: DbExercise, isCustom: boolean) => (

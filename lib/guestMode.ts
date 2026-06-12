@@ -35,6 +35,17 @@ export async function setGuestMode(active: boolean): Promise<void> {
  * role, and RLS rejects every write - so all data paths must use the local
  * guest store (lib/guestStore.ts) instead. True when Supabase is unconfigured
  * (dev builds without env vars) or when no Clerk user is signed in.
+ *
+ * CAVEAT: this also reads true while Clerk is still hydrating on cold launch,
+ * before a signed-in user's session is restored. Never branch a data fetch on
+ * it without first gating on Clerk readiness, or signed-in users get routed
+ * to the (likely empty) guest store:
+ *
+ *   const { isLoaded: clerkLoaded } = useClerkUser();
+ *   useEffect(() => {
+ *     if (!clerkLoaded) return; // spinner covers this window
+ *     ...fetch using isGuestSession...
+ *   }, [clerkLoaded, ...]);
  */
 export function useIsGuestSession(): boolean {
   const { user } = useClerkUser();
