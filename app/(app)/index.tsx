@@ -11,9 +11,9 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume } from '@/lib/format';
-import { getMockWorkouts, mockProfile } from '@/lib/mockData';
+import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
-import { getLevelInfo } from '@/lib/xp';
+import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -194,8 +194,13 @@ export default function DashboardScreen() {
 
   useEffect(() => {
     if (isGuestSession) {
-      setWorkouts(getMockWorkouts() as any[]);
-      setUserXP(mockProfile.xp);
+      // Guests have no profile row, so derive XP from their logged workouts
+      // with the same formula the backend uses.
+      const guestWorkouts = getGuestWorkoutsDetailed();
+      setWorkouts(guestWorkouts as any[]);
+      setUserXP(guestWorkouts.reduce(
+        (xp, w) => xp + getXpForWorkout(w.workout_sets.length, w.total_volume_kg), 0
+      ));
       setLoading(false);
       return;
     }

@@ -297,8 +297,9 @@ alter table routines enable row level security;
 alter table routine_exercises enable row level security;
 alter table workouts enable row level security;
 alter table workout_sets enable row level security;
--- exercises is a global catalog; readable by all authed users, no per-user
--- write policy (admin-only via service role).
+-- exercises: global catalog rows (created_by null) are readable by everyone;
+-- user-created rows are private to their creator. See the ownership-aware
+-- policies above ("exercises read global or own" etc.) and migration 0036.
 alter table exercises enable row level security;
 
 -- user_profiles: a user can read/write their own row.
@@ -360,11 +361,10 @@ create policy "workout_sets_self" on workout_sets
     )
   );
 
--- exercises: read-only for all authenticated users.
+-- NOTE: no blanket "exercises_read" policy here. Policies are PERMISSIVE (OR'd
+-- together), so a read-all policy would negate "exercises read global or own"
+-- and expose every user's custom exercises.
 drop policy if exists "exercises_read" on exercises;
-create policy "exercises_read" on exercises
-  for select
-  using (current_clerk_user_id() is not null);
 
 -- ─── User Stats Materialized Views (Phase 1) ───────────────────────────────
 -- Power the AI Coach's <user_context> block. Refreshed when a workout finishes

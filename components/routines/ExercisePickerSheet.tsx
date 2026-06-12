@@ -22,6 +22,15 @@ import { useSupabaseClient, isSupabaseConfigured } from '@/lib/supabase';
 // routine editor's old custom drawer offered these, so keep parity.
 const CUSTOM_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Cardio', 'Other'] as const;
 
+// Generous ceiling on per-exercise set targets (10x10 GVT still fits).
+const MAX_CUSTOM_SETS = 20;
+
+// Module-level cache of the user's custom exercises so reopening the picker
+// shows them instantly and rapid open/close cycles don't refire the query.
+// A fetch still runs in the background when the cache is older than the TTL.
+let customExercisesCache: { rows: ExerciseDef[]; at: number } | null = null;
+const CUSTOM_CACHE_TTL_MS = 30_000;
+
 /** Set/rep/rest targets collected by the custom-exercise form. Passed as the
  * second onSelect argument only for custom creations — library picks leave it
  * undefined and the consumer keeps its own defaults. */
@@ -69,9 +78,16 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   // the query to rows this user created (plus global rows, which the
   // created_by filter excludes), so a custom exercise made in one routine or
   // workout is reusable everywhere the picker opens.
-  const [customExercises, setCustomExercises] = useState<ExerciseDef[]>([]);
+  const [customExercises, setCustomExercises] = useState<ExerciseDef[]>(
+    customExercisesCache?.rows ?? []
+  );
   useEffect(() => {
     if (!visible || !isSupabaseConfigured) return;
+    // Serve the cache immediately; skip the refetch entirely while it's fresh.
+    if (customExercisesCache) {
+      setCustomExercises(customExercisesCache.rows);
+      if (Date.now() - customExercisesCache.at < CUSTOM_CACHE_TTL_MS) return;
+    }
     let cancelled = false;
     (async () => {
       const { data } = await supabase
@@ -88,6 +104,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
         seen.add(key);
         own.push({ name: row.name, muscle_group: row.muscle_group, category: row.category });
       }
+      customExercisesCache = { rows: own, at: Date.now() };
       setCustomExercises(own);
     })();
     return () => { cancelled = true; };
@@ -162,19 +179,24 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const handleCreateCustom = () => {
     const trimmed = customName.trim();
     if (!trimmed) return;
-    const sets = Math.max(1, parseInt(customSets, 10) || 3);
+    // Cap sets: consumers render one row per set (Array.from({ length: sets })),
+    // so an unbounded paste like "9999" would freeze the workout screen.
+    const sets = Math.min(MAX_CUSTOM_SETS, Math.max(1, parseInt(customSets, 10) || 3));
     const repsMin = Math.max(1, parseInt(customRepsMin, 10) || 8);
     const repsMax = Math.max(repsMin, parseInt(customRepsMax, 10) || repsMin);
     const restSeconds = Math.max(0, parseInt(customRest, 10) || 90);
-    // Optimistically remember the new custom so it shows on the next open
-    // even before the consumer's background insert lands.
-    setCustomExercises(prev => {
-      const key = trimmed.toLowerCase();
-      const exists = prev.some(e => e.name.toLowerCase() === key)
-        || EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === key);
-      if (exists) return prev;
-      return [{ name: trimmed, muscle_group: customMuscle, category: customCategory }, ...prev];
-    });
+    // Optimistically remember the new custom (state + cache) so it shows on
+    // the next open even before the consumer's background insert lands.
+    const key = trimmed.toLowerCase();
+    const exists = customExercises.some(e => e.name.toLowerCase() === key)
+      || EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === key);
+    if (!exists) {
+      const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory };
+      setCustomExercises(prev => [row, ...prev]);
+      if (customExercisesCache) {
+        customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
+      }
+    }
     onSelect(
       { name: trimmed, muscle_group: customMuscle, category: customCategory },
       { sets, repsMin, repsMax, restSeconds }

@@ -15,7 +15,7 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { mockProfile, getMockWorkouts } from '@/lib/mockData';
+import { getGuestWorkouts } from '@/lib/guestStore';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -209,11 +209,13 @@ export default function ProfileScreen() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [gender, setGender] = useState<Gender | ''>('M');
-  const [height, setHeight] = useState('178');
-  const [weight, setWeight] = useState('78');
-  const [goalWeight, setGoalWeight] = useState('75');
-  const [bodyFat, setBodyFat] = useState('16');
+  // All stats start unset — new users (guest or signed-in) see empty inputs
+  // with placeholders, never demo values.
+  const [gender, setGender] = useState<Gender | ''>('');
+  const [height, setHeight] = useState('');
+  const [weight, setWeight] = useState('');
+  const [goalWeight, setGoalWeight] = useState('');
+  const [bodyFat, setBodyFat] = useState('');
   const {
     weightUnit,
     setWeightUnit,
@@ -300,10 +302,14 @@ export default function ProfileScreen() {
     return { pct, label };
   })();
 
+  // Re-run when the session identity settles: the first render can be treated
+  // as guest before Clerk hydrates, which would otherwise pin mock profile
+  // values for the whole session.
   useEffect(() => {
     loadProfile();
     loadLogs();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGuestSession, user?.id]);
 
   const loadLogs = async () => {
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
@@ -314,16 +320,10 @@ export default function ProfileScreen() {
   const loadProfile = async () => {
     try {
       if (isGuestSession) {
-        const p = mockProfile;
-        setGender(p.gender as Gender);
-        setHeight(String(p.height_cm));
-        setWeight(String(p.weight_kg));
-        setGoalWeight(String(p.goal_weight_kg));
-        setCtxGoalWeight(p.goal_weight_kg);
-        setBodyFat(String(p.body_fat_percent));
-        setTotalXP(p.xp);
-        setJoinDate(new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
-        setTotalWorkouts(getMockWorkouts().length);
+        // Guests are new users without an account — no profile row, no demo
+        // values. Stats they can earn locally (workout count) come from the
+        // guest store; everything else stays unset.
+        setTotalWorkouts(getGuestWorkouts().length);
         return;
       }
       const clerkId = user?.id;
@@ -335,13 +335,14 @@ export default function ProfileScreen() {
         : supabase.from('workouts').select('*', { count: 'exact', head: true });
       const [{ data: profile }, { count }] = await Promise.all([profileQuery, countQuery]);
       if (profile) {
-        setGender((profile.gender || 'M') as Gender);
-        setHeight(String(profile.height_cm || 178));
-        setWeight(String(profile.weight_kg || 78));
-        setGoalWeight(String(profile.goal_weight_kg || 75));
+        // Unset fields stay empty (placeholder shows) — no demo fallbacks.
+        setGender((profile.gender || '') as Gender | '');
+        setHeight(profile.height_cm ? String(profile.height_cm) : '');
+        setWeight(profile.weight_kg ? String(profile.weight_kg) : '');
+        setGoalWeight(profile.goal_weight_kg ? String(profile.goal_weight_kg) : '');
         // Propagate a cleared goal (null/0) to context too, else it stays stale.
         setCtxGoalWeight(profile.goal_weight_kg && profile.goal_weight_kg > 0 ? profile.goal_weight_kg : null);
-        setBodyFat(String(profile.body_fat_percent || 16));
+        setBodyFat(profile.body_fat_percent ? String(profile.body_fat_percent) : '');
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
         setCoachGoal((profile.goal as CoachGoal | null) || '');

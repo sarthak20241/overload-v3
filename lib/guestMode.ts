@@ -33,7 +33,7 @@ export async function setGuestMode(active: boolean): Promise<void> {
  * This answers: "is there an authenticated Supabase session to read/write?"
  * Without a Clerk user there is no JWT, the Supabase client runs as the anon
  * role, and RLS rejects every write - so all data paths must use the local
- * guest store (lib/mockData.ts) instead. True when Supabase is unconfigured
+ * guest store (lib/guestStore.ts) instead. True when Supabase is unconfigured
  * (dev builds without env vars) or when no Clerk user is signed in.
  */
 export function useIsGuestSession(): boolean {

@@ -15,7 +15,7 @@ import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { findMockRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/mockData';
+import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
 import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
@@ -254,7 +254,7 @@ export default function ActiveWorkoutScreen() {
       try {
         let routine: any = null;
         if (isGuestSession) {
-          routine = findMockRoutine(id!);
+          routine = findGuestRoutine(id!);
         } else {
           const { data } = await supabase
             .from('routines')
@@ -689,7 +689,8 @@ export default function ActiveWorkoutScreen() {
   const reconcileExerciseRow = async (def: ExerciseDef, tempId: string) => {
     if (isGuestSession) {
       // Guests save sets by exercise name into the local store, so no DB row
-      // is needed - but they still want the previous-sets pre-fill from mockData.
+      // is needed - but they still want the previous-sets pre-fill from the
+      // guest store.
       const prev = await fetchPreviousSetsForExercise(null, def.name);
       if (!prev || prev.length === 0) return;
       workout.updateExercises(prevExs => prevExs.map(e => {
@@ -928,7 +929,7 @@ export default function ActiveWorkoutScreen() {
     // Hardcoded sample routines are read-only; only user-created guest
     // routines can be updated in place.
     if (!getGuestRoutines().some(r => r.id === rid)) return null;
-    const routine = findMockRoutine(rid);
+    const routine = findGuestRoutine(rid);
     if (!routine) return null;
 
     const sessionExs = dedupeSessionExercises(exercises);
@@ -1021,7 +1022,7 @@ export default function ActiveWorkoutScreen() {
 
   const applyRoutineSync = async (offer: RoutineSyncOffer) => {
     if (offer.mode === 'guest') {
-      const routine = findMockRoutine(offer.routineId);
+      const routine = findGuestRoutine(offer.routineId);
       if (!routine || !offer.guestExercises) throw new Error('Routine not found');
       const ok = updateGuestRoutine({ ...routine, routine_exercises: offer.guestExercises });
       if (!ok) throw new Error('Routine is read-only');

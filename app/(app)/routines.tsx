@@ -28,7 +28,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { supabase, useSupabaseClient } from '@/lib/supabase';
-import { mockRoutines, getAllRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findMockRoutine } from '@/lib/mockData';
+import { getGuestRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findGuestRoutine } from '@/lib/guestStore';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -556,7 +556,12 @@ function RoutineEditorSheet({
       // Guest routines live in the local store - hydrate the editor from there
       // instead of querying Supabase (a guest-r/mock-r id is not a valid uuid,
       // so the query below would error and silently blank the editor).
-      const routine = findMockRoutine(routineId);
+      const routine = findGuestRoutine(routineId);
+      if (!routine) {
+        // Stale/unknown guest routine id — surface it instead of silently
+        // showing a blank exercise card.
+        console.warn(`[routines] guest routine not found for id ${routineId}, opening empty editor`);
+      }
       const rows = routine?.routine_exercises || [];
       setExercises(
         rows.length > 0
@@ -646,9 +651,9 @@ function RoutineEditorSheet({
         routine_exercises: routineExercises,
       };
       if (editingId) {
-        // Try in-place update first; if the id belongs to a hardcoded mockRoutine
-        // (read-only sample data, updateGuestRoutine returns false), fall back
-        // to creating a new guest copy so the user's edits aren't silently lost.
+        // Try in-place update first; if the id is stale (not in the guest
+        // store, updateGuestRoutine returns false), fall back to creating a
+        // new guest copy so the user's edits aren't silently lost.
         if (!updateGuestRoutine(guestRoutine)) {
           addGuestRoutine({ ...guestRoutine, id: `guest-r-${Date.now()}` });
         }
@@ -1077,7 +1082,7 @@ export default function RoutinesScreen() {
   const fetchRoutines = useCallback(async () => {
     const clerkId = user?.id;
     if (isGuestSession || !clerkId) {
-      setRoutines(getAllRoutines() as unknown as RoutineRaw[]);
+      setRoutines(getGuestRoutines() as unknown as RoutineRaw[]);
       return;
     }
     const { data } = await supabase
@@ -1109,8 +1114,7 @@ export default function RoutinesScreen() {
 
     if (isGuestSession) {
       // Persist the delete in the guest store so it stays gone after the next
-      // fetchRoutines() (which reads from getAllRoutines). Hardcoded
-      // mockRoutines return false here and aren't removable — that's by design.
+      // fetchRoutines() (which reads from getGuestRoutines).
       removeGuestRoutine(id);
       toast.success(`Deleted “${target.name}”`);
       return;

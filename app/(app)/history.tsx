@@ -14,7 +14,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
-import { getMockWorkoutsForHistory, removeGuestWorkout } from '@/lib/mockData';
+import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
 import { roundVolume } from '@/lib/format';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -519,7 +519,7 @@ export default function HistoryScreen() {
 
   const fetchWorkouts = useCallback(async () => {
     if (isGuestSession) {
-      setWorkouts(getMockWorkoutsForHistory() as WorkoutRaw[]);
+      setWorkouts(getGuestWorkouts() as unknown as WorkoutRaw[]);
       return;
     }
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
@@ -571,9 +571,14 @@ export default function HistoryScreen() {
 
     if (isGuestSession) {
       // Persist the delete in the guest store so it stays gone after the next
-      // fetchWorkouts() (which reads from getMockWorkoutsForHistory).
-      // Hardcoded sample workouts return false and aren't removable — by design.
-      removeGuestWorkout(id);
+      // fetchWorkouts() (which reads from getGuestWorkouts). A false return
+      // means the id wasn't in the store — roll the optimistic delete back
+      // instead of letting the row silently reappear on the next refresh.
+      if (!removeGuestWorkout(id)) {
+        setWorkouts(previous);
+        toast.error("Couldn't delete workout");
+        return;
+      }
       toast.success('Workout deleted');
       return;
     }

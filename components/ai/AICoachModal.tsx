@@ -23,7 +23,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { addGuestRoutine } from '@/lib/mockData';
+import { addGuestRoutine } from '@/lib/guestStore';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate } from './CoachAccessGate';

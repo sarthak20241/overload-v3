@@ -13,7 +13,7 @@ import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { getAllRoutines } from '@/lib/mockData';
+import { getGuestRoutines } from '@/lib/guestStore';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { Portal } from '@/components/ui/Portal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -94,7 +94,7 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
     if (visible) {
       const clerkId = user?.id;
       if (!isSupabaseConfigured || !clerkId) {
-        setRoutines(getAllRoutines() as any[]);
+        setRoutines(getGuestRoutines() as any[]);
         return;
       }
       setLoading(true);

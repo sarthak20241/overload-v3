@@ -15,6 +15,7 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  BackHandler,
   Pressable,
   Keyboard,
   Platform,
@@ -140,6 +141,19 @@ export default function ExerciseLibraryScreen() {
     setEditTarget(null);
     Keyboard.dismiss();
   };
+
+  // <Portal> has no onRequestClose, so wire the Android hardware back button
+  // to dismiss the edit sheet — same pattern as ExercisePickerSheet. The
+  // delete ThemedAlert registers its own handler while open, which runs first.
+  useEffect(() => {
+    if (!editTarget) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeEdit();
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editTarget]);
 
   const handleSave = async () => {
     if (!editTarget || saving) return;
