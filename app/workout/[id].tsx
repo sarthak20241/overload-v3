@@ -140,9 +140,12 @@ export default function ActiveWorkoutScreen() {
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
   const mainScrollRef = useRef<ScrollView>(null);
-  // True while the weight/reps inputs are focused — gates the keyboard-show
-  // auto-scroll so other inputs (finish sheet, picker) don't trigger it.
-  const setLoggerFocusedRef = useRef(false);
+  // Which keyboard-sensitive input on the main scroll is focused — gates the
+  // keyboard-show auto-scroll so the finish sheet / picker inputs don't
+  // trigger it. 'logger' scrolls to the measured input card position;
+  // 'notes' is the last content, so scrollToEnd is exact for it.
+  const kbScrollTargetRef = useRef<'logger' | 'notes' | null>(null);
+  const inputCardRef = useRef<View>(null);
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
@@ -185,9 +188,26 @@ export default function ActiveWorkoutScreen() {
     const showSub = Keyboard.addListener(showEvt, (e) => {
       setKbHeight(e.endCoordinates?.height ?? 0);
       // Wait a tick so the padding from setKbHeight is laid out, then bring
-      // the input card + Log Set button above the keyboard.
-      if (Platform.OS === 'android' && setLoggerFocusedRef.current) {
-        setTimeout(() => mainScrollRef.current?.scrollToEnd({ animated: true }), 80);
+      // the focused input above the keyboard.
+      const target = kbScrollTargetRef.current;
+      if (Platform.OS === 'android' && target) {
+        setTimeout(() => {
+          const scroll = mainScrollRef.current;
+          if (!scroll) return;
+          if (target === 'notes') {
+            // Notes are the last content — end of scroll is exact.
+            scroll.scrollToEnd({ animated: true });
+            return;
+          }
+          // Set logger: scroll to the card's measured position. It is NOT the
+          // last content (Finish Exercise + notes follow), so scrollToEnd
+          // overshoots and pushes the card off the top.
+          inputCardRef.current?.measureLayout(
+            scroll.getInnerViewNode() as any,
+            (_x, y) => scroll.scrollTo({ y: Math.max(0, y - 12), animated: true }),
+            () => {}
+          );
+        }, 80);
       }
     });
     const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
@@ -1543,7 +1563,7 @@ export default function ActiveWorkoutScreen() {
             {isStarted && !isFinished && (
               <Animated.View entering={FadeIn} style={styles.inputArea}>
                 {/* Input Card */}
-                <View style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                <View ref={inputCardRef} style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                   <View style={styles.inputRow}>
                     {/* Weight */}
                     <View style={styles.inputGroup}>
@@ -1561,8 +1581,8 @@ export default function ActiveWorkoutScreen() {
                           keyboardType="decimal-pad"
                           style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
                           selectTextOnFocus
-                          onFocus={() => { setLoggerFocusedRef.current = true; }}
-                          onBlur={() => { setLoggerFocusedRef.current = false; }}
+                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { kbScrollTargetRef.current = null; }}
                         />
                         <TouchableOpacity
                           onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))}
@@ -1592,8 +1612,8 @@ export default function ActiveWorkoutScreen() {
                           keyboardType="number-pad"
                           style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
                           selectTextOnFocus
-                          onFocus={() => { setLoggerFocusedRef.current = true; }}
-                          onBlur={() => { setLoggerFocusedRef.current = false; }}
+                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { kbScrollTargetRef.current = null; }}
                         />
                         <TouchableOpacity
                           onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))}
@@ -1677,6 +1697,8 @@ export default function ActiveWorkoutScreen() {
               multiline
               numberOfLines={2}
               style={[styles.notesInput, { backgroundColor: C.muted, color: C.mutedFg }]}
+              onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
+              onBlur={() => { kbScrollTargetRef.current = null; }}
             />
           </>
         )}
