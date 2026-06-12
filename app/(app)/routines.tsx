@@ -1080,7 +1080,7 @@ async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
 export default function RoutinesScreen() {
   const router = useRouter();
   const { C } = useTheme();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
@@ -1108,8 +1108,12 @@ export default function RoutinesScreen() {
   }, [user?.id, isGuestSession]);
 
   useEffect(() => {
+    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+    // signed-in user would flash the (likely empty) guest list on cold launch.
+    // Hold the spinner until Clerk settles; the effect re-runs when it does.
+    if (!clerkLoaded) return;
     fetchRoutines().finally(() => setLoading(false));
-  }, [fetchRoutines]);
+  }, [fetchRoutines, clerkLoaded]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);

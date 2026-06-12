@@ -1080,7 +1080,7 @@ function get7DayDuration(workouts: WorkoutRaw[]): { data: number[]; labels: stri
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function AnalyticsScreen() {
   const { C } = useTheme();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { width: winWidth } = useWindowDimensions();
@@ -1129,10 +1129,14 @@ export default function AnalyticsScreen() {
   }, [user?.id, isGuestSession]);
 
   useEffect(() => {
+    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+    // signed-in user would flash empty guest analytics on cold launch.
+    // Hold the spinner until Clerk settles; the effect re-runs when it does.
+    if (!clerkLoaded) return;
     fetchData().finally(() => setLoading(false));
     loadWeightLog().then(setWeightLog);
     loadBodyFatLog().then(setBodyFatLog);
-  }, [fetchData]);
+  }, [fetchData, clerkLoaded]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);

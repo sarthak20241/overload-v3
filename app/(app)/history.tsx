@@ -499,7 +499,7 @@ function SkeletonCards() {
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function HistoryScreen() {
   const { C } = useTheme();
-  const { user } = useClerkUser();
+  const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
@@ -551,8 +551,12 @@ export default function HistoryScreen() {
   }, [user?.id, isGuestSession]);
 
   useEffect(() => {
+    // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
+    // signed-in user would flash an empty guest history on cold launch.
+    // Hold the spinner until Clerk settles; the effect re-runs when it does.
+    if (!clerkLoaded) return;
     fetchWorkouts().finally(() => setLoading(false));
-  }, [fetchWorkouts]);
+  }, [fetchWorkouts, clerkLoaded]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);

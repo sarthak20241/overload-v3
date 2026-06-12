@@ -529,7 +529,14 @@ export default function ExerciseLibraryScreen() {
         }
         buttons={[
           { text: 'Keep It', style: 'default' },
-          { text: 'Delete', style: 'destructive', onPress: handleDelete },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: handleDelete,
+            // Hold the destructive action until the usage counts are in, so
+            // the user can't skip past the concrete "erases N sets" warning.
+            disabled: deleteUsage === null,
+          },
         ]}
         onClose={() => setDeleteTarget(null)}
       />

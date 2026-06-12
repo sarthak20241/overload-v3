@@ -192,7 +192,7 @@ function InlineNumberInput({
 export default function ProfileScreen() {
   const router = useRouter();
   const { C, mode, toggleTheme } = useTheme();
-  const { user, signOut: clerkSignOut } = useClerkUser();
+  const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   // Admin status determines whether the "Admin Tools" section renders.
@@ -302,14 +302,15 @@ export default function ProfileScreen() {
     return { pct, label };
   })();
 
-  // Re-run when the session identity settles: the first render can be treated
-  // as guest before Clerk hydrates, which would otherwise pin mock profile
-  // values for the whole session.
+  // Don't load until Clerk hydrates: mid-hydration isGuestSession reads true,
+  // which would flash a signed-in user's profile with empty guest values.
+  // Re-runs when Clerk settles or the session identity changes.
   useEffect(() => {
+    if (!clerkLoaded) return;
     loadProfile();
     loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isGuestSession, user?.id]);
+  }, [clerkLoaded, isGuestSession, user?.id]);
 
   const loadLogs = async () => {
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);

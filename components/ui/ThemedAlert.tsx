@@ -44,6 +44,8 @@ export interface AlertButton {
   /** 'default' = muted bg, 'destructive' = red bg, 'primary' = accent bg */
   style?: 'default' | 'destructive' | 'primary';
   onPress?: () => void;
+  /** Render dimmed and ignore presses — e.g. while a precondition loads. */
+  disabled?: boolean;
 }
 
 export interface AlertStat {
@@ -182,11 +184,16 @@ export function ThemedAlert({
               return (
                 <TouchableOpacity
                   key={i}
+                  disabled={btn.disabled}
                   onPress={() => {
                     btn.onPress?.();
                     if (!btn.onPress) onClose();
                   }}
-                  style={[styles.button, stacked && styles.buttonStacked, { backgroundColor: bgColor }]}
+                  style={[
+                    styles.button,
+                    stacked && styles.buttonStacked,
+                    { backgroundColor: bgColor, opacity: btn.disabled ? 0.4 : 1 },
+                  ]}
                   activeOpacity={0.75}
                 >
                   <Text style={[styles.buttonText, { color: textColor }]}>
