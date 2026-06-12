@@ -3,9 +3,9 @@
  *
  * A guest is just a new user who hasn't signed up yet — they start with a
  * clean slate (no sample routines, workouts, or stats) and everything they
- * create lives only on this device. Routines and workouts persist to
- * AsyncStorage so "Continue as guest" work survives an app restart. Nothing
- * here ever touches Supabase.
+ * create lives only on this device. Routines, workouts, custom exercises,
+ * and profile stats persist to AsyncStorage so "Continue as guest" work
+ * survives an app restart. Nothing here ever touches Supabase.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { EXERCISE_LIBRARY } from '@/lib/exercises';
@@ -13,6 +13,7 @@ import { EXERCISE_LIBRARY } from '@/lib/exercises';
 const GUEST_ROUTINES_KEY = 'guest_routines_v1';
 const GUEST_WORKOUTS_KEY = 'guest_workouts_v1';
 const GUEST_EXERCISES_KEY = 'guest_exercises_v1';
+const GUEST_PROFILE_KEY = 'guest_profile_v1';
 
 // --- Types ---
 export interface GuestRoutineExercise {
@@ -65,6 +66,25 @@ export interface GuestExercise {
   muscle_group: string;
   category: string;
   created_at: string;
+}
+
+/**
+ * Profile fields a guest can edit on the profile screen. Keys mirror the
+ * `user_profiles` columns so the screen reads either source with the same
+ * field names. All optional — a guest starts with a clean slate and only
+ * fields they actually set are stored; null means explicitly cleared.
+ */
+export interface GuestProfile {
+  gender?: string | null;
+  height_cm?: number | null;
+  weight_kg?: number | null;
+  goal_weight_kg?: number | null;
+  body_fat_percent?: number | null;
+  goal?: string | null;
+  experience_level?: string | null;
+  weekly_target_sessions?: number | null;
+  training_age_months?: number | null;
+  date_of_birth?: string | null;
 }
 
 // --- Guest routine store (AsyncStorage-backed, never sent to Supabase) ---
@@ -233,6 +253,28 @@ export function removeGuestExercise(id: string): boolean {
   return true;
 }
 
+// --- Guest profile store (AsyncStorage-backed, never sent to Supabase) ---
+// A single object rather than a list: the body stats and coach context a
+// guest sets on the profile screen.
+let _guestProfile: GuestProfile = {};
+
+async function persistGuestProfile() {
+  try {
+    await AsyncStorage.setItem(GUEST_PROFILE_KEY, JSON.stringify(_guestProfile));
+  } catch {
+    // Persistence failures shouldn't break the in-memory flow.
+  }
+}
+
+export function getGuestProfile(): GuestProfile {
+  return _guestProfile;
+}
+
+export function updateGuestProfile(patch: Partial<GuestProfile>) {
+  _guestProfile = { ..._guestProfile, ...patch };
+  void persistGuestProfile();
+}
+
 // Merge persisted items under whatever is already in memory. Anything in
 // memory was written before hydration finished, i.e. it's newest — it keeps
 // its place at the front (matching the unshift ordering) and wins on id
@@ -256,10 +298,11 @@ export function hydrateGuestStore(): Promise<void> {
   if (_hydratePromise) return _hydratePromise;
   _hydratePromise = (async () => {
     try {
-      const [routinesRaw, workoutsRaw, exercisesRaw] = await Promise.all([
+      const [routinesRaw, workoutsRaw, exercisesRaw, profileRaw] = await Promise.all([
         AsyncStorage.getItem(GUEST_ROUTINES_KEY),
         AsyncStorage.getItem(GUEST_WORKOUTS_KEY),
         AsyncStorage.getItem(GUEST_EXERCISES_KEY),
+        AsyncStorage.getItem(GUEST_PROFILE_KEY),
       ]);
       if (routinesRaw) {
         const parsed = JSON.parse(routinesRaw) as GuestRoutine[];
@@ -272,6 +315,16 @@ export function hydrateGuestStore(): Promise<void> {
       if (exercisesRaw) {
         const parsed = JSON.parse(exercisesRaw) as GuestExercise[];
         if (mergePersisted(_guestExercises, parsed)) void persistGuestExercises();
+      }
+      if (profileRaw) {
+        const parsed = JSON.parse(profileRaw) as GuestProfile;
+        // Field-level take on mergePersisted's rule: anything already in
+        // memory was written before hydration finished, i.e. it's newest and
+        // wins; disk fills the rest. Re-persist after such writes — they
+        // snapshotted the profile without the older disk fields.
+        const hadPreHydrationWrites = Object.keys(_guestProfile).length > 0;
+        _guestProfile = { ...parsed, ..._guestProfile };
+        if (hadPreHydrationWrites) void persistGuestProfile();
       }
     } catch {
       // First-launch / corrupt data → start fresh.

@@ -15,7 +15,7 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { getGuestWorkouts } from '@/lib/guestStore';
+import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -339,8 +339,20 @@ export default function ProfileScreen() {
     try {
       if (isGuestSession) {
         // Guests are new users without an account — no profile row, no demo
-        // values. Stats they can earn locally (workout count) come from the
-        // guest store; everything else stays unset.
+        // values. Stats they set or earn live in the local guest store;
+        // anything they haven't set stays unset.
+        const p = getGuestProfile();
+        setGender((p.gender || '') as Gender | '');
+        setHeight(p.height_cm ? String(p.height_cm) : '');
+        setWeight(p.weight_kg ? String(p.weight_kg) : '');
+        setGoalWeight(p.goal_weight_kg ? String(p.goal_weight_kg) : '');
+        setCtxGoalWeight(p.goal_weight_kg && p.goal_weight_kg > 0 ? p.goal_weight_kg : null);
+        setBodyFat(p.body_fat_percent ? String(p.body_fat_percent) : '');
+        setCoachGoal((p.goal as CoachGoal | null) || '');
+        setExperienceLevel((p.experience_level as ExperienceLevel | null) || '');
+        setWeeklyTargetSessions(p.weekly_target_sessions != null ? String(p.weekly_target_sessions) : '');
+        setTrainingAgeMonths(p.training_age_months != null ? String(p.training_age_months) : '');
+        setBirthYear(p.date_of_birth ? String(new Date(p.date_of_birth).getFullYear()) : '');
         setTotalWorkouts(getGuestWorkouts().length);
         return;
       }
@@ -377,7 +389,12 @@ export default function ProfileScreen() {
     }
   };
 
-  const persistField = async (patch: Record<string, unknown>) => {
+  const persistField = async (patch: Partial<GuestProfile>) => {
+    if (isGuestSession) {
+      // Guest edits live on this device until they create an account.
+      updateGuestProfile(patch);
+      return;
+    }
     const clerkId = user?.id;
     if (!clerkId || !isSupabaseConfigured) return;
     setSaving(true);
