@@ -204,7 +204,12 @@ export default function ExerciseLibraryScreen() {
         .eq('id', editTarget.id);
       setSaving(false);
       if (error) {
-        toast.error("Couldn't save those changes, try again");
+        // 23505: the clash check above raced — another session took this name
+        // first and the unique index (migration 0037) rejected the rename.
+        // Retrying won't help, so say what's actually wrong.
+        toast.error(error.code === '23505'
+          ? 'You already have an exercise with that name'
+          : "Couldn't save those changes, try again");
         return;
       }
     }

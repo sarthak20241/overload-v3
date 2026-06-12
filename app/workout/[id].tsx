@@ -612,24 +612,32 @@ export default function ActiveWorkoutScreen() {
 
   // Resolve an exercise to a real DB row (look up by name or insert) so workout_sets.exercise_id is a valid FK.
   // Returns the resolved Exercise row, or null if Supabase is unconfigured / the call fails.
-  // NOTE: uses limit(1) + order rather than maybeSingle() — `exercises` has no UNIQUE(name) constraint,
-  // so historical duplicates would make maybeSingle() return null and silently insert another duplicate.
+  // NOTE: case-insensitive find with limit(1) + order, matching the unique index from
+  // migration 0037 (lower(name) per owner scope) — the oldest row is the canonical one.
   const resolveExerciseRow = async (lib: ExerciseDef): Promise<Exercise | null> => {
     if (!isSupabaseConfigured) return null;
     try {
-      const { data: existing } = await supabase
-        .from('exercises')
-        .select('*')
-        .eq('name', lib.name)
-        .order('created_at', { ascending: true })
-        .limit(1);
-      if (existing && existing.length > 0) return existing[0] as Exercise;
-      const { data: inserted } = await supabase
+      const findByName = async () => {
+        const { data } = await supabase
+          .from('exercises')
+          .select('*')
+          .ilike('name', lib.name)
+          .order('created_at', { ascending: true })
+          .limit(1);
+        return data && data.length > 0 ? (data[0] as Exercise) : null;
+      };
+      const existing = await findByName();
+      if (existing) return existing;
+      const { data: inserted, error } = await supabase
         .from('exercises')
         .insert({ name: lib.name, muscle_group: lib.muscle_group, category: lib.category })
         .select()
         .single();
-      return (inserted as Exercise) ?? null;
+      if (!error) return (inserted as Exercise) ?? null;
+      // 23505: lost the create race to another session — the winner's row is
+      // the one we want.
+      if (error.code === '23505') return await findByName();
+      return null;
     } catch {
       return null;
     }

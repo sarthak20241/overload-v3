@@ -139,6 +139,19 @@ create index if not exists idx_workout_sets_workout on workout_sets(workout_id);
 create index if not exists idx_workout_sets_exercise on workout_sets(exercise_id);
 create index if not exists idx_ai_coach_rl_recent on ai_coach_rate_limit(user_id, request_at desc);
 
+-- One exercise per name per owner (migration 0037, which also dedupes
+-- pre-existing rows — run it before re-applying this file to an old DB).
+-- Two partial indexes because global library rows (created_by null) and user
+-- customs are separate scopes: a custom may shadow a library name, but no
+-- scope may hold the same name twice. This also makes the seed block's
+-- ON CONFLICT DO NOTHING below genuinely idempotent.
+create unique index if not exists uq_exercises_owner_name
+  on exercises (lower(name), created_by)
+  where created_by is not null;
+create unique index if not exists uq_exercises_global_name
+  on exercises (lower(name))
+  where created_by is null;
+
 -- ─── RLS Policies ───────────────────────────────────────────────────────────
 -- Auth model: Clerk is configured as a third-party auth provider in Supabase
 -- (Authentication → Sign In / Up → Third-party Auth). Verified Clerk JWTs

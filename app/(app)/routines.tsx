@@ -1034,32 +1034,46 @@ function parseReps(reps: string): [number, number] {
 }
 
 async function findOrCreateExercise(ex: EditorExercise): Promise<string> {
-  // First try to find existing exercise by name. Avoid .single() — it errors when 0 or >1
-  // rows match. The `exercises` table has no UNIQUE(name) constraint, so a stray duplicate
-  // would force this branch to throw and we'd fall through to insert another copy.
-  const { data: existing } = await supabase
-    .from('exercises')
-    .select('id')
-    .ilike('name', ex.name.trim())
-    .order('created_at', { ascending: true })
-    .limit(1);
+  const name = ex.name.trim();
+  // Find by name first. Avoid .single() — it errors when 0 or >1 rows match;
+  // the oldest row is the canonical one (it's the row migration 0037 kept
+  // when deduping). Global library rows sort before customs, so a library
+  // match wins over creating a same-named private copy.
+  const findByName = async () => {
+    const { data } = await supabase
+      .from('exercises')
+      .select('id')
+      .ilike('name', name)
+      .order('created_at', { ascending: true })
+      .limit(1);
+    return data && data.length > 0 ? data[0].id : null;
+  };
 
-  if (existing && existing.length > 0) return existing[0].id;
+  const existingId = await findByName();
+  if (existingId) return existingId;
 
   // Create new exercise. created_by is filled by the column default (the
   // caller's JWT sub), so the row is private to this user.
   const { data: created, error } = await supabase
     .from('exercises')
     .insert({
-      name: ex.name.trim(),
+      name,
       muscle_group: ex.muscleGroup || 'Other',
       category: ex.category || 'Other',
     })
     .select('id')
     .single();
 
-  if (error) throw error;
-  return created.id;
+  if (!error) return created.id;
+
+  // 23505 unique violation: another session created this exercise between our
+  // find and insert (unique index from migration 0037). The row we lost to is
+  // exactly the one we wanted — re-select it.
+  if (error.code === '23505') {
+    const winnerId = await findByName();
+    if (winnerId) return winnerId;
+  }
+  throw error;
 }
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
