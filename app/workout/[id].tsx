@@ -146,6 +146,7 @@ export default function ActiveWorkoutScreen() {
   // 'notes' is the last content, so scrollToEnd is exact for it.
   const kbScrollTargetRef = useRef<'logger' | 'notes' | null>(null);
   const inputCardRef = useRef<View>(null);
+  const scrollYRef = useRef<number>(0);
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
@@ -155,6 +156,7 @@ export default function ActiveWorkoutScreen() {
   // (rather than passing live state) keeps the chat's context stable for the
   // session — reopening after logging more sets refreshes it.
   const openCoachWith = useCallback((kind: 'live' | 'review') => {
+    Keyboard.dismiss();
     setCoachContext(buildWorkoutCoachContext({
       routineName: workout.routineName,
       elapsedSeconds: workout.elapsed,
@@ -190,6 +192,7 @@ export default function ActiveWorkoutScreen() {
       // Wait a tick so the padding from setKbHeight is laid out, then bring
       // the focused input above the keyboard.
       const target = kbScrollTargetRef.current;
+      const kbTop = e.endCoordinates?.screenY ?? 0;
       if (Platform.OS === 'android' && target) {
         setTimeout(() => {
           const scroll = mainScrollRef.current;
@@ -199,14 +202,16 @@ export default function ActiveWorkoutScreen() {
             scroll.scrollToEnd({ animated: true });
             return;
           }
-          // Set logger: scroll to the card's measured position. It is NOT the
-          // last content (Finish Exercise + notes follow), so scrollToEnd
-          // overshoots and pushes the card off the top.
-          inputCardRef.current?.measureLayout(
-            scroll.getInnerViewNode() as any,
-            (_x, y) => scroll.scrollTo({ y: Math.max(0, y - 12), animated: true }),
-            () => {}
-          );
+          // Set logger: measure the card in absolute window coordinates and
+          // scroll just far enough to lift it above the keyboard. (Layout
+          // offsets are relative to the card's parent wrapper, not the scroll
+          // content, so they can't be used directly.)
+          inputCardRef.current?.measureInWindow((_x, y, _w, h) => {
+            const overlap = y + h + 12 - kbTop;
+            if (overlap > 0) {
+              scroll.scrollTo({ y: scrollYRef.current + overlap, animated: true });
+            }
+          });
         }, 80);
       }
     });
@@ -248,9 +253,7 @@ export default function ActiveWorkoutScreen() {
       }
       try {
         let routine: any = null;
-        const clerkId = user?.id;
-        const isGuest = !isSupabaseConfigured || !clerkId;
-        if (isGuest) {
+        if (isGuestSession) {
           routine = findMockRoutine(id!);
         } else {
           const { data } = await supabase
@@ -269,7 +272,7 @@ export default function ActiveWorkoutScreen() {
         // Build previous performance map — for each exercise, find the most recent
         // completed workout that contained it (across all routines).
         let prevPerf: Record<string, { weight_kg: number; reps: number }[]> = {};
-        if (isGuest) {
+        if (isGuestSession) {
           prevPerf = getPreviousPerformance(routine.id);
         } else {
           const exIdToName = new Map<string, string>();
@@ -754,6 +757,9 @@ export default function ActiveWorkoutScreen() {
 
   // Cancel workout
   const handleCancel = () => {
+    // The logger keyboard may still be up; the confirm drawer has no inputs,
+    // so drop it rather than let the drawer open underneath it.
+    Keyboard.dismiss();
     setShowCancelAlert(true);
   };
 
@@ -785,6 +791,9 @@ export default function ActiveWorkoutScreen() {
 
   // Finish workout
   const handleFinishWorkout = () => {
+    // Same as cancel: don't let the finish sheet/alert open under a keyboard
+    // left up by the set logger.
+    Keyboard.dismiss();
     const count = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
     if (count === 0) {
       setShowNoSetsAlert(true);
@@ -1364,7 +1373,7 @@ export default function ActiveWorkoutScreen() {
             );
           })}
           <TouchableOpacity
-            onPress={() => setShowAddExercise(true)}
+            onPress={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
             style={[styles.addPill, { borderColor: C.border }]}
           >
             <Feather name="plus" size={13} color={C.textMuted} />
@@ -1385,6 +1394,10 @@ export default function ActiveWorkoutScreen() {
           Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight },
         ]}
         showsVerticalScrollIndicator={false}
+        // The keyboard-show handler scrolls relative to the current offset,
+        // so keep it tracked here.
+        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={16}
         // With the keyboard open after typing a weight/rep, taps on "Log Set"
         // and the +/− steppers must land on the first tap — the default
         // ("never") swallows that tap to dismiss the keyboard.
