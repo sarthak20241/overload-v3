@@ -24,12 +24,6 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["expo", "start", "--web"],
       "port": 19006
-    },
-    {
-      "name": "Coach Mockup",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "4040", "--directory", "/tmp/mockup_preview"],
-      "port": 4040
     }
   ]
 }
