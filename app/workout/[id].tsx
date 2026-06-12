@@ -803,12 +803,11 @@ export default function ActiveWorkoutScreen() {
     }
   };
 
-  const toggleSaveAsRoutine = () => {
-    const next = !saveAsRoutine;
-    // Seed the routine name from the workout name the first time it's enabled.
-    if (next && !routineNameInput.trim()) setRoutineNameInput(finishName.trim());
-    setSaveAsRoutine(next);
-  };
+  // The routine name input is deliberately not pre-filled: while it stays
+  // empty it tracks the workout name (live placeholder + fallback at save),
+  // so renaming the workout after enabling the toggle still names the routine
+  // correctly. Pre-filling froze the suggestion and dropped later renames.
+  const toggleSaveAsRoutine = () => setSaveAsRoutine(v => !v);
 
   // Create a routine from the exercises performed this session: sets = what was
   // actually completed, rep range = the min/max reps logged, rest carried over.
