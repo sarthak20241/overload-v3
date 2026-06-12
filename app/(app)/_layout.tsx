@@ -95,8 +95,13 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
       const clerkId = user?.id;
       if (!isSupabaseConfigured || !clerkId) {
         setRoutines(getGuestRoutines() as any[]);
+        setLoading(false);
         return;
       }
+      // Clear stale entries before reloading — on a failed refresh the old
+      // list would otherwise stay tappable and could navigate to a workout
+      // for a routine that no longer exists.
+      setRoutines([]);
       setLoading(true);
       supabase
         .from('routines')
@@ -107,7 +112,10 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
           setRoutines((data as any[]) || []);
           setLoading(false);
         })
-        .catch(() => setLoading(false));
+        .catch(() => {
+          setRoutines([]);
+          setLoading(false);
+        });
     }
   }, [visible, user?.id]);
 

@@ -12,6 +12,7 @@ import { EXERCISE_LIBRARY } from '@/lib/exercises';
 
 const GUEST_ROUTINES_KEY = 'guest_routines_v1';
 const GUEST_WORKOUTS_KEY = 'guest_workouts_v1';
+const GUEST_EXERCISES_KEY = 'guest_exercises_v1';
 
 // --- Types ---
 export interface GuestRoutineExercise {
@@ -39,6 +40,9 @@ export interface GuestRoutine {
 
 interface GuestWorkoutExercise {
   name: string;
+  /** Optional because already-persisted v1 data predates these fields. */
+  muscle_group?: string;
+  category?: string;
   sets: { weight_kg: number; reps: number }[];
 }
 
@@ -53,6 +57,14 @@ export interface GuestWorkout {
   notes?: string;
   workout_sets: { id: string }[];
   exercises?: GuestWorkoutExercise[];
+}
+
+export interface GuestExercise {
+  id: string;
+  name: string;
+  muscle_group: string;
+  category: string;
+  created_at: string;
 }
 
 // --- Guest routine store (AsyncStorage-backed, never sent to Supabase) ---
@@ -134,8 +146,9 @@ export function getGuestWorkouts() {
  * analytics screens, matching the shape Supabase returns for signed-in users
  * (`workouts.workout_sets[].exercises`). Guest workouts persist their set
  * detail grouped per exercise (see GuestWorkoutExercise); this expands it
- * back into flat set rows, resolving muscle group / category by library name
- * (custom exercises fall back to 'Other').
+ * back into flat set rows, preferring the muscle group / category stored on
+ * the workout, then resolving by library name (old v1 data without either
+ * falls back to 'Other').
  */
 export function getGuestWorkoutsDetailed() {
   return _guestWorkouts.map(w => {
@@ -145,8 +158,8 @@ export function getGuestWorkoutsDetailed() {
       const meta = {
         id: `${w.id}-ex-${ei}`,
         name: ex.name,
-        muscle_group: lib?.muscle_group || 'Other',
-        category: lib?.category || 'Other',
+        muscle_group: ex.muscle_group || lib?.muscle_group || 'Other',
+        category: ex.category || lib?.category || 'Other',
       };
       return ex.sets.map((s, si) => ({
         id: `${w.id}-set-${ei}-${si}`,
@@ -162,6 +175,77 @@ export function getGuestWorkoutsDetailed() {
   });
 }
 
+// --- Guest custom-exercise store (AsyncStorage-backed, never sent to Supabase) ---
+const _guestExercises: GuestExercise[] = [];
+
+async function persistGuestExercises() {
+  try {
+    await AsyncStorage.setItem(GUEST_EXERCISES_KEY, JSON.stringify(_guestExercises));
+  } catch {
+    // Persistence failures shouldn't break the in-memory flow.
+  }
+}
+
+export function getGuestExercises(): GuestExercise[] {
+  return _guestExercises;
+}
+
+// Add a custom guest exercise, deduping case-insensitively by name. A name
+// already in EXERCISE_LIBRARY returns null — the caller should skip creation,
+// the library entry already covers it. A name already in the guest store
+// returns that existing entry unchanged.
+export function addGuestExercise(ex: { name: string; muscle_group: string; category: string }): GuestExercise | null {
+  const name = ex.name.trim();
+  const lower = name.toLowerCase();
+  if (EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === lower)) return null;
+  const existing = _guestExercises.find(e => e.name.toLowerCase() === lower);
+  if (existing) return existing;
+  const created: GuestExercise = {
+    id: `guest-e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    muscle_group: ex.muscle_group,
+    category: ex.category,
+    created_at: new Date().toISOString(),
+  };
+  _guestExercises.unshift(created);
+  void persistGuestExercises();
+  return created;
+}
+
+// Patch a guest exercise in-place. Returns false when the id isn't in the store.
+export function updateGuestExercise(
+  id: string,
+  patch: Partial<Pick<GuestExercise, 'name' | 'muscle_group' | 'category'>>
+): boolean {
+  const idx = _guestExercises.findIndex(e => e.id === id);
+  if (idx < 0) return false;
+  _guestExercises[idx] = { ..._guestExercises[idx], ...patch };
+  void persistGuestExercises();
+  return true;
+}
+
+// Remove a guest exercise by id. Returns false when the id isn't in the store.
+export function removeGuestExercise(id: string): boolean {
+  const idx = _guestExercises.findIndex(e => e.id === id);
+  if (idx < 0) return false;
+  _guestExercises.splice(idx, 1);
+  void persistGuestExercises();
+  return true;
+}
+
+// Merge persisted items under whatever is already in memory. Anything in
+// memory was written before hydration finished, i.e. it's newest — it keeps
+// its place at the front (matching the unshift ordering) and wins on id
+// collisions. Returns true when memory held pre-hydration writes, so the
+// caller can re-persist: those writes snapshotted the store without the
+// older disk content.
+function mergePersisted<T extends { id: string }>(memory: T[], persisted: T[]): boolean {
+  const hadPreHydrationWrites = memory.length > 0;
+  const inMemory = new Set(memory.map(item => item.id));
+  memory.push(...persisted.filter(item => !inMemory.has(item.id)));
+  return hadPreHydrationWrites;
+}
+
 // Hydrate guest stores from AsyncStorage. Call once on app boot before
 // rendering screens that read from these stores. Idempotent — safe to call
 // multiple times.
@@ -172,17 +256,22 @@ export function hydrateGuestStore(): Promise<void> {
   if (_hydratePromise) return _hydratePromise;
   _hydratePromise = (async () => {
     try {
-      const [routinesRaw, workoutsRaw] = await Promise.all([
+      const [routinesRaw, workoutsRaw, exercisesRaw] = await Promise.all([
         AsyncStorage.getItem(GUEST_ROUTINES_KEY),
         AsyncStorage.getItem(GUEST_WORKOUTS_KEY),
+        AsyncStorage.getItem(GUEST_EXERCISES_KEY),
       ]);
       if (routinesRaw) {
         const parsed = JSON.parse(routinesRaw) as GuestRoutine[];
-        _guestRoutines.splice(0, _guestRoutines.length, ...parsed);
+        if (mergePersisted(_guestRoutines, parsed)) void persistGuestRoutines();
       }
       if (workoutsRaw) {
         const parsed = JSON.parse(workoutsRaw) as GuestWorkout[];
-        _guestWorkouts.splice(0, _guestWorkouts.length, ...parsed);
+        if (mergePersisted(_guestWorkouts, parsed)) void persistGuestWorkouts();
+      }
+      if (exercisesRaw) {
+        const parsed = JSON.parse(exercisesRaw) as GuestExercise[];
+        if (mergePersisted(_guestExercises, parsed)) void persistGuestExercises();
       }
     } catch {
       // First-launch / corrupt data → start fresh.

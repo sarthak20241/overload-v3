@@ -3,8 +3,9 @@
  *
  * Library rows (created_by null in the DB, mirrored by lib/exercises.ts) are
  * read-only. The user's custom rows can be renamed, re-tagged, or deleted.
- * Hidden tab route (like admin/research) — reached from the Routines header
- * book icon and Profile > My Exercises.
+ * For guests, customs live in the local guest store (lib/guestStore.ts)
+ * instead of Supabase. Hidden tab route (like admin/research) — reached from
+ * the Routines header book icon and Profile > My Exercises.
  */
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
@@ -27,7 +28,9 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
+import { useSupabaseClient } from '@/lib/supabase';
+import { useIsGuestSession } from '@/lib/guestMode';
+import { getGuestExercises, updateGuestExercise, removeGuestExercise } from '@/lib/guestStore';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES } from '@/lib/exercises';
 import { Portal } from '@/components/ui/Portal';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -50,6 +53,7 @@ export default function ExerciseLibraryScreen() {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const supabase = useSupabaseClient();
+  const isGuest = useIsGuestSession();
   const toast = useToast();
 
   const [rows, setRows] = useState<DbExercise[]>([]);
@@ -80,15 +84,28 @@ export default function ExerciseLibraryScreen() {
   }, [editTarget]);
 
   const fetchExercises = useCallback(async () => {
-    if (!isSupabaseConfigured) {
-      // Guest mode: static library only, nothing to manage.
-      setRows(EXERCISE_LIBRARY.map((e, i) => ({
-        id: `lib-${i}`,
-        name: e.name,
-        muscle_group: e.muscle_group,
-        category: e.category,
-        created_by: null,
-      })));
+    if (isGuest) {
+      // Guest mode: customs come from the local guest store, then the static
+      // library. created_by 'guest' marks them editable — library rows stay null.
+      const guestCustoms: DbExercise[] = [...getGuestExercises()]
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .map(e => ({
+          id: e.id,
+          name: e.name,
+          muscle_group: e.muscle_group,
+          category: e.category,
+          created_by: 'guest',
+        }));
+      setRows([
+        ...guestCustoms,
+        ...EXERCISE_LIBRARY.map((e, i) => ({
+          id: `lib-${i}`,
+          name: e.name,
+          muscle_group: e.muscle_group,
+          category: e.category,
+          created_by: null,
+        })),
+      ]);
       setLoading(false);
       return;
     }
@@ -98,7 +115,7 @@ export default function ExerciseLibraryScreen() {
       .order('created_at', { ascending: false });
     if (!error && data) setRows(data as DbExercise[]);
     setLoading(false);
-  }, [supabase]);
+  }, [supabase, isGuest]);
 
   useEffect(() => { fetchExercises(); }, [fetchExercises]);
 
@@ -167,14 +184,28 @@ export default function ExerciseLibraryScreen() {
       return;
     }
     setSaving(true);
-    const { error } = await supabase
-      .from('exercises')
-      .update({ name: trimmed, muscle_group: editMuscle, category: editCategory })
-      .eq('id', editTarget.id);
-    setSaving(false);
-    if (error) {
-      toast.error("Couldn't save those changes, try again");
-      return;
+    if (isGuest) {
+      // Guest customs live on-device — patch the guest store directly.
+      const ok = updateGuestExercise(editTarget.id, {
+        name: trimmed,
+        muscle_group: editMuscle,
+        category: editCategory,
+      });
+      setSaving(false);
+      if (!ok) {
+        toast.error("Couldn't save those changes, try again");
+        return;
+      }
+    } else {
+      const { error } = await supabase
+        .from('exercises')
+        .update({ name: trimmed, muscle_group: editMuscle, category: editCategory })
+        .eq('id', editTarget.id);
+      setSaving(false);
+      if (error) {
+        toast.error("Couldn't save those changes, try again");
+        return;
+      }
     }
     setRows(prev => prev.map(r =>
       r.id === editTarget.id
@@ -190,6 +221,12 @@ export default function ExerciseLibraryScreen() {
   const askDelete = async (ex: DbExercise) => {
     setDeleteUsage(null);
     setDeleteTarget(ex);
+    if (isGuest) {
+      // Guest routines and workouts embed exercises by value, so deleting the
+      // catalog entry doesn't cascade into anything — no usage to count.
+      setDeleteUsage({ routines: 0, sets: 0 });
+      return;
+    }
     const [re, ws] = await Promise.all([
       supabase.from('routine_exercises').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
       supabase.from('workout_sets').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
@@ -202,10 +239,17 @@ export default function ExerciseLibraryScreen() {
     if (!target) return;
     setDeleteTarget(null);
     closeEdit();
-    const { error } = await supabase.from('exercises').delete().eq('id', target.id);
-    if (error) {
-      toast.error(`Couldn't delete “${target.name}”, try again`);
-      return;
+    if (isGuest) {
+      if (!removeGuestExercise(target.id)) {
+        toast.error(`Couldn't delete “${target.name}”, try again`);
+        return;
+      }
+    } else {
+      const { error } = await supabase.from('exercises').delete().eq('id', target.id);
+      if (error) {
+        toast.error(`Couldn't delete “${target.name}”, try again`);
+        return;
+      }
     }
     setRows(prev => prev.filter(r => r.id !== target.id));
     toast.success(`Deleted “${target.name}”`);
@@ -464,7 +508,9 @@ export default function ExerciseLibraryScreen() {
         title={`Delete “${deleteTarget?.name}”?`}
         message={
           deleteUsage
-            ? deleteUsage.routines === 0 && deleteUsage.sets === 0
+            ? isGuest
+              ? 'Your routines and logged workouts keep their own copy, so nothing else changes.'
+              : deleteUsage.routines === 0 && deleteUsage.sets === 0
               ? "You haven't logged anything with this exercise yet, so it goes quietly."
               : `It comes out of ${deleteUsage.routines} routine${deleteUsage.routines === 1 ? '' : 's'} and erases ${deleteUsage.sets} logged set${deleteUsage.sets === 1 ? '' : 's'}. That history is gone for good.`
             : 'Checking where this exercise is used...'

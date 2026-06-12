@@ -1129,6 +1129,8 @@ export default function ActiveWorkoutScreen() {
             .filter(e => e.sets.some(s => s.completed))
             .map(e => ({
               name: e.exercise.name,
+              muscle_group: e.exercise.muscle_group,
+              category: e.exercise.category,
               sets: e.sets.filter(s => s.completed).map(s => ({ weight_kg: s.weight_kg, reps: s.reps })),
             })),
         });

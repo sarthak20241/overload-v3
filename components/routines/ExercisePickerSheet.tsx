@@ -17,6 +17,9 @@ import { useTheme } from '@/hooks/useTheme';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
 import type { ExerciseDef } from '@/lib/exercises';
 import { useSupabaseClient, isSupabaseConfigured } from '@/lib/supabase';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { useIsGuestSession } from '@/lib/guestMode';
+import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
 
 // Custom exercises can be tagged beyond the library's lifting groups — the
 // routine editor's old custom drawer offered these, so keep parity.
@@ -28,8 +31,28 @@ const MAX_CUSTOM_SETS = 20;
 // Module-level cache of the user's custom exercises so reopening the picker
 // shows them instantly and rapid open/close cycles don't refire the query.
 // A fetch still runs in the background when the cache is older than the TTL.
-let customExercisesCache: { rows: ExerciseDef[]; at: number } | null = null;
+// Keyed by Clerk user id: the module outlives sign-out, so without the key a
+// freshly signed-in user (or a guest) would inherit the previous account's
+// private list for up to the TTL.
+let customExercisesCache: { userId: string; rows: ExerciseDef[]; at: number } | null = null;
 const CUSTOM_CACHE_TTL_MS = 30_000;
+
+// Drop rows whose names collide with the built-in library (or each other) —
+// the FlatList keys by name and the library is always appended, so a custom
+// named after a library exercise would otherwise render twice.
+function dedupeAgainstLibrary(
+  rows: { name: string; muscle_group: string; category: string }[]
+): ExerciseDef[] {
+  const seen = new Set(EXERCISE_LIBRARY.map(e => e.name.toLowerCase()));
+  const own: ExerciseDef[] = [];
+  for (const row of rows) {
+    const key = row.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    own.push({ name: row.name, muscle_group: row.muscle_group, category: row.category });
+  }
+  return own;
+}
 
 /** Set/rep/rest targets collected by the custom-exercise form. Passed as the
  * second onSelect argument only for custom creations — library picks leave it
@@ -54,6 +77,9 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const supabase = useSupabaseClient();
+  const { user } = useClerkUser();
+  const isGuest = useIsGuestSession();
+  const userId = user?.id ?? null;
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
@@ -77,16 +103,32 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   // The user's own custom exercises, fetched fresh on every open. RLS scopes
   // the query to rows this user created (plus global rows, which the
   // created_by filter excludes), so a custom exercise made in one routine or
-  // workout is reusable everywhere the picker opens.
-  const [customExercises, setCustomExercises] = useState<ExerciseDef[]>(
-    customExercisesCache?.rows ?? []
-  );
+  // workout is reusable everywhere the picker opens. Guests read the local
+  // guest store instead — they have no Supabase session to query.
+  const [customExercises, setCustomExercises] = useState<ExerciseDef[]>(() => {
+    // Only seed from the cache when it was written by this same signed-in
+    // user — never hand a guest (or a different account) someone else's list.
+    const cached = customExercisesCache;
+    return !isGuest && cached && cached.userId === userId ? cached.rows : [];
+  });
   useEffect(() => {
-    if (!visible || !isSupabaseConfigured) return;
-    // Serve the cache immediately; skip the refetch entirely while it's fresh.
+    if (!visible) return;
+    // Guest sessions never touch the signed-in cache: read the local store
+    // synchronously and bail before any of the cache/fetch logic below.
+    if (isGuest) {
+      setCustomExercises(dedupeAgainstLibrary(getGuestExercises()));
+      return;
+    }
+    if (!isSupabaseConfigured || !userId) return;
+    // Serve the cache immediately — but only this user's; a previous
+    // account's cache is treated as empty. Skip the refetch while fresh.
     if (customExercisesCache) {
-      setCustomExercises(customExercisesCache.rows);
-      if (Date.now() - customExercisesCache.at < CUSTOM_CACHE_TTL_MS) return;
+      if (customExercisesCache.userId === userId) {
+        setCustomExercises(customExercisesCache.rows);
+        if (Date.now() - customExercisesCache.at < CUSTOM_CACHE_TTL_MS) return;
+      } else {
+        setCustomExercises([]);
+      }
     }
     let cancelled = false;
     (async () => {
@@ -96,19 +138,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
         .not('created_by', 'is', null)
         .order('created_at', { ascending: false });
       if (cancelled || !data) return;
-      const seen = new Set(EXERCISE_LIBRARY.map(e => e.name.toLowerCase()));
-      const own: ExerciseDef[] = [];
-      for (const row of data) {
-        const key = row.name.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        own.push({ name: row.name, muscle_group: row.muscle_group, category: row.category });
-      }
-      customExercisesCache = { rows: own, at: Date.now() };
+      const own = dedupeAgainstLibrary(data);
+      customExercisesCache = { userId, rows: own, at: Date.now() };
       setCustomExercises(own);
     })();
     return () => { cancelled = true; };
-  }, [visible, supabase]);
+  }, [visible, supabase, isGuest, userId]);
 
   // Customs list first so they're the first thing seen on open.
   const library = useMemo(
@@ -193,7 +228,11 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     if (!exists) {
       const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory };
       setCustomExercises(prev => [row, ...prev]);
-      if (customExercisesCache) {
+      if (isGuest) {
+        // No Supabase insert happens downstream for guests — persist to the
+        // local store so the custom survives restarts (dedupes internally).
+        addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory });
+      } else if (customExercisesCache && customExercisesCache.userId === userId) {
         customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
       }
     }

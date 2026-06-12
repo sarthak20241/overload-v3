@@ -318,6 +318,24 @@ export default function ProfileScreen() {
   };
 
   const loadProfile = async () => {
+    // Reset everything this function can populate before branching — it
+    // re-runs when the session identity changes (sign-out to guest, account
+    // switch), and the guest / no-profile-row paths below don't overwrite
+    // every field, so stale values from the previous user would linger.
+    setGender('');
+    setHeight('');
+    setWeight('');
+    setGoalWeight('');
+    setCtxGoalWeight(null);
+    setBodyFat('');
+    setTotalXP(0);
+    setTotalWorkouts(0);
+    setJoinDate('');
+    setCoachGoal('');
+    setExperienceLevel('');
+    setWeeklyTargetSessions('');
+    setTrainingAgeMonths('');
+    setBirthYear('');
     try {
       if (isGuestSession) {
         // Guests are new users without an account — no profile row, no demo

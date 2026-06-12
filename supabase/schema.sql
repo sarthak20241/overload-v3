@@ -51,6 +51,15 @@ create table if not exists exercises (
   created_at timestamptz not null default now()
 );
 
+-- Idempotent re-apply: on databases where exercises already existed the
+-- create-if-not-exists block above never adds created_by, and the ownership
+-- policies below would reference a missing column. Mirror it explicitly
+-- (same pattern as routine_exercises.note).
+alter table exercises
+  add column if not exists created_by text;
+alter table exercises
+  alter column created_by set default (auth.jwt()->>'sub');
+
 -- ─── Routines ───────────────────────────────────────────────────────────────
 create table if not exists routines (
   id uuid primary key default uuid_generate_v4(),
