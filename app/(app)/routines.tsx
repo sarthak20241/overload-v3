@@ -27,6 +27,7 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { supabase, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findGuestRoutine } from '@/lib/guestStore';
 import { useIsGuestSession } from '@/lib/guestMode';
@@ -337,12 +338,14 @@ function ExerciseEditorCard({
   onChange,
   onRemove,
   onOpenPicker,
+  onFieldFocus,
   index,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
   onRemove: () => void;
   onOpenPicker: () => void;
+  onFieldFocus?: () => void;
   index: number;
 }) {
   const { C } = useTheme();
@@ -413,6 +416,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.targetSets)}
                 onChangeText={(v) => onChange({ ...exercise, targetSets: Math.max(1, Math.min(10, Number(v) || 0)) })}
+                onFocus={onFieldFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -423,6 +427,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={exercise.targetReps}
                 onChangeText={(v) => onChange({ ...exercise, targetReps: v })}
+                onFocus={onFieldFocus}
                 placeholder="8-12"
                 placeholderTextColor={C.textMuted}
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -434,6 +439,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.restSeconds)}
                 onChangeText={(v) => onChange({ ...exercise, restSeconds: Math.max(0, Number(v) || 0) })}
+                onFocus={onFieldFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -447,6 +453,7 @@ function ExerciseEditorCard({
             <TextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
+              onFocus={onFieldFocus}
               placeholder="Form tip or reminder..."
               placeholderTextColor={C.textMuted}
               style={[styles.editorInput, styles.editorInputText, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -491,6 +498,13 @@ function RoutineEditorSheet({
   // Which exercise card the bottom-sheet picker is choosing for (null = closed).
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
+
+  // Keep the focused field above the keyboard on Android: SDK 54 edge-to-edge
+  // stops the window resizing for the IME, so the KeyboardAvoidingView below
+  // (behavior=undefined on Android) is a no-op and lower inputs stay buried.
+  // Disabled while the picker is open — it tracks the keyboard itself.
+  const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
+    useKeyboardAwareScroll(pickerTargetIdx === null);
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
@@ -818,8 +832,18 @@ function RoutineEditorSheet({
 
             {/* Sheet Body */}
             <ScrollView
+              ref={scrollRef}
+              {...scrollProps}
               style={{ flex: 1 }}
-              contentContainerStyle={styles.sheetBody}
+              contentContainerStyle={[
+                styles.sheetBody,
+                // Android edge-to-edge: make room for the IME ourselves; the
+                // keyboard-show handler then lifts the focused field into view.
+                // The extra headroom keeps the scroll from clamping before the
+                // field clears the keyboard. iOS is covered by the
+                // KeyboardAvoidingView wrapper.
+                Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
+              ]}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
@@ -829,6 +853,7 @@ function RoutineEditorSheet({
                 <TextInput
                   value={name}
                   onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
+                  onFocus={scrollFocusedIntoView}
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -841,6 +866,7 @@ function RoutineEditorSheet({
                 <TextInput
                   value={description}
                   onChangeText={setDescription}
+                  onFocus={scrollFocusedIntoView}
                   placeholder="Brief description..."
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -865,6 +891,7 @@ function RoutineEditorSheet({
                       }
                       onRemove={() => setExercises((prev) => prev.filter((_, idx) => idx !== i))}
                       onOpenPicker={() => setPickerTargetIdx(i)}
+                      onFieldFocus={scrollFocusedIntoView}
                     />
                   ))}
                 </View>

@@ -28,6 +28,7 @@ import {
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
+import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -167,13 +168,16 @@ function GenderPills({
 
 // ─── Inline number input used in info rows ───────────────────────────────────
 function InlineNumberInput({
-  value, onChangeText, placeholder, width = 70,
-}: { value: string; onChangeText: (v: string) => void; placeholder?: string; width?: number }) {
+  value, onChangeText, placeholder, width = 70, onFocus,
+}: { value: string; onChangeText: (v: string) => void; placeholder?: string; width?: number; onFocus?: () => void }) {
   const { C } = useTheme();
   return (
     <TextInput
       value={value}
       onChangeText={onChangeText}
+      // Re-lift the field when focus moves here while the keyboard is already
+      // up (Android edge-to-edge doesn't auto-scroll; see useKeyboardAwareScroll).
+      onFocus={onFocus}
       placeholder={placeholder}
       placeholderTextColor={C.textDim}
       keyboardType="numeric"
@@ -255,6 +259,11 @@ export default function ProfileScreen() {
   // keyboard height ourselves and apply marginBottom to the sheet (the proven
   // pattern from analytics.tsx).
   const insets = useSafeAreaInsets();
+  // Keep the focused field above the keyboard in the main scroll. Disabled
+  // while the bug sheet is open — it renders in a <Portal> and tracks the
+  // keyboard itself, so this would just scroll the hidden background.
+  const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
+    useKeyboardAwareScroll(!bugModalOpen);
   const [bugKbHeight, setBugKbHeight] = useState(0);
   useEffect(() => {
     if (!bugModalOpen) { setBugKbHeight(0); return; }
@@ -549,14 +558,20 @@ export default function ProfileScreen() {
     <>
       <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
         <ScrollView
+          ref={scrollRef}
+          {...scrollProps}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           // iOS only: insets the scroll content by the keyboard height and
-          // scrolls the focused field into view. Android already handles this
-          // via the Activity's adjustResize (main window only — Portal sheets
-          // still track keyboard height manually, see bugKbHeight).
+          // scrolls the focused field into view. Android edge-to-edge (SDK 54)
+          // no longer resizes the window for the IME, so we pad the content by
+          // the keyboard height below and scroll the focused field up ourselves
+          // (see useKeyboardAwareScroll).
           automaticallyAdjustKeyboardInsets
-          contentContainerStyle={{ paddingBottom: 120 }}
+          contentContainerStyle={[
+            { paddingBottom: 120 },
+            Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
+          ]}
         >
           {/* ─── Hero / Avatar ─── */}
           <Animated.View entering={FadeInDown.duration(400)} style={styles.hero}>
@@ -667,6 +682,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={height}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setHeight(v);
                       persistField({ height_cm: parseFloat(v) || null });
@@ -697,6 +713,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={weight}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setWeight(v);
                       persistField({ weight_kg: parseFloat(v) || null });
@@ -719,6 +736,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={goalWeight}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
@@ -752,6 +770,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={bodyFat}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setBodyFat(v);
                       persistField({ body_fat_percent: parseFloat(v) || null });
@@ -877,6 +896,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={weeklyTargetSessions}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setWeeklyTargetSessions(v);
                       const n = parseInt(v, 10);
@@ -895,6 +915,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={trainingAgeMonths}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setTrainingAgeMonths(v);
                       const n = parseInt(v, 10);
@@ -913,6 +934,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={birthYear}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setBirthYear(v);
                       const y = parseInt(v, 10);
