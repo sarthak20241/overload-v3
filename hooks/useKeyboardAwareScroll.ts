@@ -4,6 +4,12 @@ import {
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 
+// Gap left between the focused field's bottom edge and the keyboard's top.
+// Android leaves Gboard's toolbar/suggestion strip OUT of the reported keyboard
+// height, so a small gap lands the field half-behind that strip. ~60px clears a
+// typical strip and still reads as "just above the keyboard".
+const ABOVE_KEYBOARD = 60;
+
 /**
  * Keeps the focused TextInput visible above the software keyboard inside a
  * plain ScrollView.
@@ -45,8 +51,8 @@ export function useKeyboardAwareScroll(enabled: boolean = true) {
   const pendingScrollRef = useRef(false);
   const [kbHeight, setKbHeight] = useState(0);
 
-  // Lift the currently focused input just above the keyboard. Android-only and
-  // a no-op until the keyboard is up (kbTopRef known); iOS handles itself.
+  // Lift the currently focused input clear of the keyboard. Android-only and a
+  // no-op until the keyboard is up (kbTopRef known); iOS handles itself.
   const performScroll = useCallback(() => {
     if (Platform.OS !== 'android') return;
     const kbTop = kbTopRef.current;
@@ -55,9 +61,10 @@ export function useKeyboardAwareScroll(enabled: boolean = true) {
     const focused = TextInput.State.currentlyFocusedInput?.();
     if (!scroll || !focused?.measureInWindow) return;
     focused.measureInWindow((_x, y, _w, h) => {
-      // How far the field's bottom edge sits below the keyboard's top edge,
-      // plus 24px breathing room. Positive => scroll up by that much.
-      const overlap = y + h + 24 - kbTop;
+      // How far the field's bottom edge sits below the target line (keyboard top
+      // minus the toolbar gap). Positive => scroll up by exactly that much, so
+      // the field lands just above the keyboard. Negative => already clear.
+      const overlap = y + h + ABOVE_KEYBOARD - kbTop;
       if (overlap > 0) scroll.scrollTo({ y: scrollYRef.current + overlap, animated: true });
     });
   }, []);
