@@ -21,6 +21,10 @@ import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { getPendingWorkouts } from '@/lib/syncQueue';
+import { pendingToDashboardWorkout, pendingXp } from '@/lib/pendingAdapters';
+import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -184,6 +188,7 @@ export default function DashboardScreen() {
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const { pendingCount } = useSync();
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [loading, setLoading] = useState(true);
   const [userXP, setUserXP] = useState(0);
@@ -209,28 +214,87 @@ export default function DashboardScreen() {
       return;
     }
     const clerkId = user?.id;
-    // Only fetch last 90 days to cap payload size; stats derived client-side need recent history only.
-    const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-    let workoutsQ = supabase
-      .from('workouts')
-      .select('*, workout_sets(*, exercises(*))')
-      .gte('started_at', sinceIso)
-      .order('started_at', { ascending: false });
-    let profileQ = supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
-    if (clerkId) {
-      workoutsQ = workoutsQ.eq('user_id', clerkId);
-      profileQ = supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle();
-    }
-    Promise.all([workoutsQ, profileQ]).then(([{ data: wData }, { data: pData }]) => {
-      const normalized = ((wData as any[]) || []).map((w: any) => ({
-        ...w,
-        sets: w.workout_sets ?? w.sets ?? [],
-      }));
-      setWorkouts(normalized as any[]);
-      setUserXP((pData as any)?.xp || 0);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [user?.id, isGuestSession, clerkLoaded]);
+    let cancelled = false;
+
+    // Merge not-yet-synced workouts (saved locally, still in the flush queue) on
+    // top of a base list, deduped against rows already on the server by
+    // client_id. Returns the merged rows + the XP those pending workouts add.
+    const withPending = (base: any[]) => {
+      const serverClientIds = new Set(
+        base.map((w: any) => w?.client_id).filter(Boolean),
+      );
+      const pending = clerkId
+        ? getPendingWorkouts(clerkId).filter((e) => !serverClientIds.has(e.clientId))
+        : [];
+      const rows = [...pending.map(pendingToDashboardWorkout), ...base];
+      // Exclude entries already credited server-side (phase 'done', briefly
+      // still in the queue) so we don't double-count their XP with the freshly
+      // fetched server total.
+      const xp = pending.reduce((sum, e) => sum + (e.phase === 'done' ? 0 : pendingXp(e)), 0);
+      return { rows, xp };
+    };
+
+    (async () => {
+      await hydrateCache(clerkId);
+      // Cache-first paint so the dashboard renders last-known data instantly and
+      // works with no signal. Merge pending even with no cache yet (fresh login),
+      // so a just-finished offline workout shows immediately; but don't flash an
+      // empty state for a fresh online user with nothing to show.
+      const cachedW = readCache<any[]>('dashboardWorkouts', clerkId);
+      const cachedXp = readCache<number>('profileXp', clerkId) ?? 0;
+      const { rows: cachedRows, xp: cachedPendXp } = withPending(cachedW ?? []);
+      if (!cancelled) {
+        if (cachedW || cachedRows.length > 0) {
+          setWorkouts(cachedRows as any[]);
+          setUserXP(cachedXp + cachedPendXp);
+        }
+        // Clear the spinner after the cache read regardless; the fetch below
+        // revalidates in the background and must not hold the spinner (offline
+        // it hangs, which left the dashboard spinning forever).
+        setLoading(false);
+      }
+
+      // Only fetch last 90 days to cap payload size; stats derived client-side need recent history only.
+      const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      let workoutsQ = supabase
+        .from('workouts')
+        .select('*, workout_sets(*, exercises(*))')
+        .gte('started_at', sinceIso)
+        .order('started_at', { ascending: false });
+      let profileQ = supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
+      if (clerkId) {
+        workoutsQ = workoutsQ.eq('user_id', clerkId);
+        profileQ = supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle();
+      }
+      try {
+        const [wRes, pRes] = await Promise.all([workoutsQ, profileQ]);
+        if (cancelled) return;
+        // A failed/unauthenticated request must NOT overwrite the cache (it would
+        // wipe the dashboard to empty). Throw so the catch keeps the cached view.
+        if (wRes.error || pRes.error) throw wRes.error || pRes.error;
+        const wData = wRes.data;
+        const pData = pRes.data;
+        const normalized = ((wData as any[]) || []).map((w: any) => ({
+          ...w,
+          sets: w.workout_sets ?? w.sets ?? [],
+        }));
+        const xp = (pData as any)?.xp || 0;
+        writeCache('dashboardWorkouts', clerkId, normalized);
+        writeCache('profileXp', clerkId, xp);
+        const { rows, xp: pendXp } = withPending(normalized);
+        setWorkouts(rows as any[]);
+        setUserXP(xp + pendXp);
+        setLoading(false);
+      } catch {
+        // Offline / fetch failed — keep whatever the cache painted; never hang.
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
 
   // Compute stats. Memoized so we don't reprocess every workout on every
   // re-render — useWorkout's timer ticks 60×/min while a workout is active.

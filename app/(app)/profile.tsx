@@ -27,6 +27,10 @@ import {
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
+import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
+import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
+import { useSync } from '@/components/SyncProvider';
+import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 
@@ -200,10 +204,26 @@ export default function ProfileScreen() {
   const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const { pendingCount } = useSync();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
   const { isAdmin } = useAdminCheck();
   const signOut = async () => {
+    const prevUserId = user?.id;
+    // Best-effort: push any queued workouts before the JWT drops. The queue is
+    // keyed per user, so anything that still can't sync (offline) is parked
+    // under this account and flushes the next time they sign in here — not lost.
+    if (prevUserId && (getPendingCount(prevUserId) > 0 || getPendingRoutineCount(prevUserId) > 0)) {
+      try {
+        await Promise.race([
+          (async () => {
+            await flushRoutineQueue(supabase, prevUserId);
+            await flushQueue(supabase, prevUserId);
+          })(),
+          new Promise((r) => setTimeout(r, 3000)),
+        ]);
+      } catch {}
+    }
     try { await clerkSignOut(); } catch {}
     // Clear the guest flag too — sign-out should always land on /(auth),
     // regardless of how the user originally got into /(app).
@@ -212,6 +232,9 @@ export default function ProfileScreen() {
     // can't leak across accounts), but there's no reason to keep the old
     // account's rows allocated past the session.
     invalidateCustomExercisesCache();
+    // Drop this user's read cache (per-user keyed; clears stale data so the
+    // next account never paints from it). The sync queue stays parked per user.
+    if (prevUserId) await clearUserCache(prevUserId);
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -324,7 +347,7 @@ export default function ProfileScreen() {
     loadProfile();
     loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clerkLoaded, isGuestSession, user?.id]);
+  }, [clerkLoaded, isGuestSession, user?.id, pendingCount]);
 
   const loadLogs = async () => {
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
@@ -372,14 +395,7 @@ export default function ProfileScreen() {
         return;
       }
       const clerkId = user?.id;
-      const profileQuery = clerkId
-        ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
-        : supabase.from('user_profiles').select('*').limit(1).maybeSingle();
-      const countQuery = clerkId
-        ? supabase.from('workouts').select('*', { count: 'exact', head: true }).eq('user_id', clerkId)
-        : supabase.from('workouts').select('*', { count: 'exact', head: true });
-      const [{ data: profile }, { count }] = await Promise.all([profileQuery, countQuery]);
-      if (profile) {
+      const applyProfileRow = (profile: any) => {
         // Unset fields stay empty (placeholder shows) — no demo fallbacks.
         setGender((profile.gender || '') as Gender | '');
         setHeight(profile.height_cm ? String(profile.height_cm) : '');
@@ -395,8 +411,40 @@ export default function ProfileScreen() {
         setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
         setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
+      };
+      const profileQuery = clerkId
+        ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
+        : supabase.from('user_profiles').select('*').limit(1).maybeSingle();
+      const countQuery = clerkId
+        ? supabase.from('workouts').select('*', { count: 'exact', head: true }).eq('user_id', clerkId)
+        : supabase.from('workouts').select('*', { count: 'exact', head: true });
+
+      // Cache-first: paint the last-known profile so the screen never hangs on a
+      // full-screen spinner offline, then revalidate in the background.
+      await hydrateCache(clerkId);
+      // Add not-yet-synced workouts to the count so a just-finished offline
+      // workout shows immediately (the server count query can't see them yet).
+      const pendingExtra = clerkId ? getPendingWorkouts(clerkId).length : 0;
+      const cachedProfile = readCache<{ profile: any; count: number }>('profile', clerkId);
+      if (cachedProfile) {
+        if (cachedProfile.profile) applyProfileRow(cachedProfile.profile);
+        setTotalWorkouts((cachedProfile.count || 0) + pendingExtra);
+        setLoading(false);
       }
-      setTotalWorkouts(count || 0);
+      try {
+        const [{ data: profile, error: pErr }, { count, error: cErr }] = await Promise.all([profileQuery, countQuery]);
+        // A failed/unauthenticated request must not reset the screen to empty/0;
+        // throw so the catch keeps the cached values.
+        if (pErr || cErr) throw pErr || cErr;
+        if (profile) applyProfileRow(profile);
+        setTotalWorkouts((count || 0) + pendingExtra);
+        writeCache('profile', clerkId, { profile: profile ?? null, count: count ?? 0 });
+      } catch (e: any) {
+        // Offline — keep the cached values; only surface an error if there was
+        // nothing cached to show.
+        if (!cachedProfile) setShowErrorAlert(e?.message || 'Failed to load profile');
+      }
+      return;
     } catch (err: any) {
       setShowErrorAlert(err?.message || 'Failed to load profile');
     } finally {

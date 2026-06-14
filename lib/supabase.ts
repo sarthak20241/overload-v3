@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { hasClerkKey } from '@/hooks/useClerkUser';
 
@@ -63,17 +63,47 @@ export function useSupabaseClient(): SupabaseClient {
   const { useAuth } = require('@clerk/clerk-expo');
   const { getToken } = useAuth();
 
+  // Keep the latest getToken in a ref so each request reads a fresh token
+  // WITHOUT recreating the client when getToken's identity changes. Clerk's
+  // useAuth returns a new getToken on many renders; the previous
+  // `useMemo(..., [getToken])` therefore handed back a brand-new Supabase client
+  // almost every render. Any effect depending on the client identity then
+  // re-ran every render (SyncProvider's flush, the exercise picker's fetch),
+  // which could spiral into "Maximum update depth exceeded." The client is now
+  // created once and reads the live token via the ref.
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+
   return useMemo(() => {
     return createClient(supabaseUrl, supabaseAnonKey, {
       global: {
         fetch: async (input: RequestInfo | URL, init: RequestInit = {}) => {
-          const token = await getToken();
+          // Bound getToken so an expired token + no network can't hang the
+          // request forever — Clerk otherwise blocks on a token refresh it
+          // can't complete offline. On timeout we send the request without a
+          // token (RLS rejects it quickly) instead of hanging the UI.
+          let token: string | null = null;
+          try {
+            token = await Promise.race([
+              getTokenRef.current(),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+            ]);
+          } catch {
+            token = null;
+          }
+          // No token (offline + expired token, or getToken timed out): FAIL the
+          // request rather than send it unauthenticated. An anon request passes
+          // RLS as "no rows" and returns empty data with NO error — which screens
+          // would then write over their caches, wiping the user's data view (and
+          // resetting XP / workout counts to 0). Throwing makes supabase-js
+          // surface an error so callers keep their cached data instead.
+          if (!token) throw new Error('No auth token available (offline?)');
           const headers = new Headers(init.headers);
-          if (token) headers.set('Authorization', `Bearer ${token}`);
+          headers.set('Authorization', `Bearer ${token}`);
           return fetch(input as any, { ...init, headers });
         },
       },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
-  }, [getToken]);
+  }, []);
 }

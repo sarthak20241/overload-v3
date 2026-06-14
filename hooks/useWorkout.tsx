@@ -1,5 +1,14 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, useMemo, ReactNode, Dispatch, SetStateAction } from 'react';
+import { AppState } from 'react-native';
 import type { ActiveWorkoutExercise } from '@/lib/types';
+import {
+  persistActiveWorkout,
+  clearActiveWorkout,
+  type ActiveWorkoutSnapshot,
+} from '@/lib/activeWorkoutPersistence';
+
+/** Identity metadata stamped onto a persisted session, set at start time. */
+type WorkoutOwnerMeta = { ownerId: string | null; isGuestSession: boolean };
 
 interface WorkoutContextType {
   isActive: boolean;
@@ -21,8 +30,15 @@ interface WorkoutContextType {
   // instead of snapping back to the first one.
   currentIdx: number;
   setCurrentIdx: Dispatch<SetStateAction<number>>;
-  startWorkout: (routineId: string, routineName: string, exercises: ActiveWorkoutExercise[]) => void;
+  startWorkout: (
+    routineId: string,
+    routineName: string,
+    exercises: ActiveWorkoutExercise[],
+    meta?: WorkoutOwnerMeta,
+  ) => void;
   finishWorkout: () => void;
+  /** Restore a persisted session after a crash / OS-kill / swipe-away. */
+  hydrateFromSnapshot: (snap: ActiveWorkoutSnapshot) => void;
   updateExercises: (
     exercisesOrUpdater:
       | ActiveWorkoutExercise[]
@@ -48,6 +64,7 @@ const WorkoutContext = createContext<WorkoutContextType>({
   setCurrentIdx: () => {},
   startWorkout: () => {},
   finishWorkout: () => {},
+  hydrateFromSnapshot: () => {},
   updateExercises: () => {},
   pauseWorkout: () => {},
   resumeWorkout: () => {},
@@ -67,10 +84,15 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef(0);
   const pausedElapsedRef = useRef(0);
+  // Identity stamped at start, carried into every persisted snapshot. Lets the
+  // resume flow tell whose session it is (guest vs a specific signed-in user).
+  const metaRef = useRef<WorkoutOwnerMeta>({ ownerId: null, isGuestSession: false });
 
-  const startWorkout = useCallback((id: string, name: string, exs: ActiveWorkoutExercise[]) => {
+  const startWorkout = useCallback((id: string, name: string, exs: ActiveWorkoutExercise[], meta?: WorkoutOwnerMeta) => {
     const now = Date.now();
     startTimeRef.current = now;
+    pausedElapsedRef.current = 0;
+    metaRef.current = meta ?? { ownerId: null, isGuestSession: false };
     setRoutineId(id);
     setRoutineName(name);
     setExercises(exs);
@@ -79,6 +101,27 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setCurrentIdx(0);
     setElapsed(0);
     setIsPaused(false);
+    setIsActive(true);
+  }, []);
+
+  // Rebuild the WorkoutContext from a persisted snapshot. Restoring the timer
+  // anchor (not `elapsed`) keeps the clock exact — time the app spent killed
+  // counts as elapsed, same as a tab switch. The running-timer effect below
+  // takes over from here when the session isn't paused.
+  const hydrateFromSnapshot = useCallback((snap: ActiveWorkoutSnapshot) => {
+    startTimeRef.current = snap.startTimeEpochMs;
+    pausedElapsedRef.current = snap.pausedElapsedSeconds;
+    metaRef.current = { ownerId: snap.ownerId, isGuestSession: snap.isGuestSession };
+    setRoutineId(snap.routineId);
+    setRoutineName(snap.routineName);
+    setExercises(snap.exercises);
+    setExerciseStarted(snap.exerciseStarted);
+    setExerciseFinished(snap.exerciseFinished);
+    setCurrentIdx(snap.currentIdx);
+    setIsPaused(snap.isPaused);
+    setElapsed(snap.isPaused
+      ? snap.pausedElapsedSeconds
+      : Math.floor((Date.now() - snap.startTimeEpochMs) / 1000));
     setIsActive(true);
   }, []);
 
@@ -93,6 +136,8 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setExerciseFinished([]);
     setCurrentIdx(0);
     if (timerRef.current) clearInterval(timerRef.current);
+    // Drop the crash-recovery snapshot — this session is done (saved or cancelled).
+    clearActiveWorkout();
   }, []);
 
   const updateExercises = useCallback((
@@ -119,6 +164,55 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     }
   }, [isPaused, pauseWorkout, resumeWorkout]);
 
+  // Build a crash-recovery snapshot from current state + the timer refs.
+  // Recreated whenever a persisted field changes, which retriggers the
+  // debounced auto-persist effect below. Reads `routineId` as the resume route
+  // param (it equals the workout screen's `[id]`: a routine id or 'new').
+  const buildSnapshot = useCallback((): ActiveWorkoutSnapshot => ({
+    schema: 1,
+    ownerId: metaRef.current.ownerId,
+    isGuestSession: metaRef.current.isGuestSession,
+    workoutScreenId: routineId ?? 'new',
+    routineId,
+    routineName,
+    exercises,
+    exerciseStarted,
+    exerciseFinished,
+    currentIdx,
+    startTimeEpochMs: startTimeRef.current,
+    isPaused,
+    pausedElapsedSeconds: pausedElapsedRef.current,
+    savedAt: Date.now(),
+  }), [routineId, routineName, exercises, exerciseStarted, exerciseFinished, currentIdx, isPaused]);
+
+  // Always keep a ref to the latest snapshot builder so the once-mounted
+  // AppState listener can persist current state without re-subscribing.
+  const buildSnapshotRef = useRef(buildSnapshot);
+  buildSnapshotRef.current = buildSnapshot;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+
+  // Debounced auto-persist while a workout is active. Fires ~800ms after the
+  // last change to any logged field (sets, flags, current exercise, pause).
+  // `elapsed` is deliberately not a dependency — the timer anchor captures it,
+  // so we don't rewrite the snapshot every second.
+  useEffect(() => {
+    if (!isActive) return;
+    const t = setTimeout(() => persistActiveWorkout(buildSnapshot()), 800);
+    return () => clearTimeout(t);
+  }, [isActive, buildSnapshot]);
+
+  // Kill-safety save: persist immediately when the app backgrounds, before the
+  // OS can reclaim it. This is the write that survives a swipe-away mid-set.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if ((state === 'background' || state === 'inactive') && isActiveRef.current) {
+        persistActiveWorkout(buildSnapshotRef.current());
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     if (isActive && !isPaused) {
       timerRef.current = setInterval(() => {
@@ -134,12 +228,12 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished,
     currentIdx, setCurrentIdx,
-    startWorkout, finishWorkout, updateExercises,
+    startWorkout, finishWorkout, hydrateFromSnapshot, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   }), [
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, currentIdx,
-    startWorkout, finishWorkout, updateExercises,
+    startWorkout, finishWorkout, hydrateFromSnapshot, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   ]);
 

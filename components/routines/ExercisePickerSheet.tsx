@@ -20,6 +20,8 @@ import { useSupabaseClient, isSupabaseConfigured } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
+import { hydrateCache, readCache } from '@/lib/localCache';
+import { saveLocalCustomExercise, type CachedExercise } from '@/lib/exerciseResolve';
 
 // Custom exercises can be tagged beyond the library's lifting groups — the
 // routine editor's old custom drawer offered these, so keep parity.
@@ -127,30 +129,48 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       return;
     }
     if (!isSupabaseConfigured || !userId) return;
-    // Serve the cache immediately — but only this user's; a previous
-    // account's cache is treated as empty. Skip the refetch while fresh.
-    if (customExercisesCache) {
-      if (customExercisesCache.userId === userId) {
-        setCustomExercises(customExercisesCache.rows);
-        if (Date.now() - customExercisesCache.at < CUSTOM_CACHE_TTL_MS) return;
-      } else {
-        setCustomExercises([]);
-      }
-    }
     let cancelled = false;
     (async () => {
-      const { data } = await supabase
-        .from('exercises')
-        .select('name, muscle_group, category')
-        .not('created_by', 'is', null)
-        .order('created_at', { ascending: false });
-      if (cancelled || !data) return;
-      const own = dedupeAgainstLibrary(data);
-      customExercisesCache = { userId, rows: own, at: Date.now() };
-      setCustomExercises(own);
+      // Cache-first so the user's customs (including any created offline) show
+      // instantly and survive no signal. Prefer this user's fresh in-memory
+      // module cache; otherwise seed from the persistent 'exercises' cache that
+      // My Exercises also maintains.
+      const moduleFresh =
+        customExercisesCache?.userId === userId &&
+        Date.now() - customExercisesCache.at < CUSTOM_CACHE_TTL_MS;
+      if (customExercisesCache?.userId === userId) {
+        setCustomExercises(customExercisesCache.rows);
+      } else {
+        await hydrateCache(userId);
+        const cached = readCache<CachedExercise[]>('exercises', userId);
+        setCustomExercises(
+          cached ? dedupeAgainstLibrary(cached.filter((r) => r.created_by !== null)) : [],
+        );
+      }
+      if (moduleFresh) return; // module cache still fresh — skip the refetch
+      try {
+        const { data, error } = await supabase
+          .from('exercises')
+          .select('name, muscle_group, category')
+          .not('created_by', 'is', null)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        if (cancelled || !data) return;
+        // Keep any offline-created customs that haven't synced yet, so this
+        // wholesale refetch doesn't drop them until a server row exists.
+        const serverNames = new Set((data as any[]).map((r) => String(r.name).toLowerCase()));
+        const localCustoms = (readCache<CachedExercise[]>('exercises', userId) ?? [])
+          .filter((r) => typeof r.id === 'string' && r.id.startsWith('local-ex-') && !serverNames.has(r.name.toLowerCase()))
+          .map((r) => ({ name: r.name, muscle_group: r.muscle_group, category: r.category }));
+        const own = dedupeAgainstLibrary([...localCustoms, ...data]);
+        customExercisesCache = { userId, rows: own, at: Date.now() };
+        setCustomExercises(own);
+      } catch {
+        // Offline — keep the cache-seeded customs.
+      }
     })();
     return () => { cancelled = true; };
-  }, [visible, supabase, isGuest, userId]);
+  }, [visible, isGuest, userId]);
 
   // Customs list first so they're the first thing seen on open.
   const library = useMemo(
@@ -239,8 +259,13 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
         // No Supabase insert happens downstream for guests — persist to the
         // local store so the custom survives restarts (dedupes internally).
         addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory });
-      } else if (customExercisesCache && customExercisesCache.userId === userId) {
-        customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
+      } else {
+        // Persist to the durable 'exercises' cache so the custom is reusable
+        // offline (picker + My Exercises) before it syncs to the server.
+        saveLocalCustomExercise(userId, { name: trimmed, muscle_group: customMuscle, category: customCategory });
+        if (customExercisesCache && customExercisesCache.userId === userId) {
+          customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
+        }
       }
     }
     onSelect(

@@ -35,8 +35,13 @@
  * the user isn't paid/trialing. This hook only chooses which UI to render.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
+
+// Persist the last successful access per user so a returning paid/trialing user
+// sees their real state offline instead of being told to sign in.
+const coachAccessKey = (userId: string) => `coach_access_v1::${userId}`;
 
 export type CoachAccessState =
   | 'unauthenticated'
@@ -64,7 +69,6 @@ export interface UseCoachAccessReturn {
   refresh: () => Promise<void>;
 }
 
-const UNAUTH: CoachAccess = { state: 'unauthenticated' };
 const UNKNOWN: CoachAccess = { state: 'unknown' };
 
 // Module-scope cache, keyed to the auth session it was fetched for. Because
@@ -124,24 +128,35 @@ export function useCoachAccess(): UseCoachAccessReturn {
     setLoading(true);
     let cancelled = false;
     (async () => {
+      // Seed from the persisted last-known access so a returning paid/trialing
+      // user isn't told to "sign in" while offline on a cold start.
+      let lastKnown: CoachAccess | null = null;
+      if (userId) {
+        try {
+          const raw = await AsyncStorage.getItem(coachAccessKey(userId));
+          if (raw) lastKnown = JSON.parse(raw) as CoachAccess;
+        } catch {}
+      }
+      if (!cancelled && lastKnown) setAccess(lastKnown);
       try {
         const { data, error } = await supabaseRef.current.rpc(
           'get_coach_access_status',
         );
         if (cancelled) return;
         if (error) {
-          // Network blip / RLS rejection. Fall back to unauthenticated
-          // (safe default — gates the chat) but do NOT cache the error,
-          // so refresh() or a remount can retry.
-          setAccess(UNAUTH);
+          // Network blip / RLS rejection. Fall back to the last-known access
+          // (or UNKNOWN) — never claim a signed-in user is unauthenticated.
+          // The edge function re-checks on every send, so this is UI-only.
+          setAccess(lastKnown ?? UNKNOWN);
         } else {
           const next = normalize(data);
           cachedAccess = { userId, access: next };
           setAccess(next);
+          if (userId) AsyncStorage.setItem(coachAccessKey(userId), JSON.stringify(next)).catch(() => {});
         }
       } catch {
         if (cancelled) return;
-        setAccess(UNAUTH);
+        setAccess(lastKnown ?? UNKNOWN);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -161,15 +176,13 @@ export function useCoachAccess(): UseCoachAccessReturn {
       const { data, error } = await supabaseRef.current.rpc(
         'get_coach_access_status',
       );
-      if (error) {
-        setAccess(UNAUTH);
-        return;
-      }
+      if (error) return; // keep current state on a failed refresh (e.g. offline)
       const next = normalize(data);
       cachedAccess = { userId, access: next };
       setAccess(next);
+      if (userId) AsyncStorage.setItem(coachAccessKey(userId), JSON.stringify(next)).catch(() => {});
     } catch {
-      setAccess(UNAUTH);
+      // Keep the current state on a failed refresh rather than downgrading.
     }
   }, [userId]);
 

@@ -10,8 +10,10 @@ import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
 import { BasicInfoProvider } from '@/hooks/useBasicInfo';
 import { hydrateGuestStore } from '@/lib/guestStore';
+import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
+import { SyncProvider } from '@/components/SyncProvider';
 import { ToastProvider } from '@/components/ui/Toast';
 import { PortalProvider } from '@/components/ui/Portal';
 
@@ -43,21 +45,27 @@ function AppInner() {
       <BasicInfoProvider>
         <WorkoutProvider>
           {/*
+            SyncProvider owns the background flush loop for the offline workout
+            queue; it sits below Clerk/Workout so screens and the OfflineBanner
+            can read sync state.
+
             PortalProvider sits inside every context provider our overlays need
             (Theme, Workout, Toast, SafeArea, Clerk) but wraps the navigator, so
             portalled sheets render ON TOP of the tabs in the app's own window —
             flush to the bottom on Android, unlike a separate-window <Modal>.
           */}
-          <PortalProvider>
-            <StatusBar style={C.statusBar} />
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="index" options={{ headerShown: false }} />
-              <Stack.Screen name="(app)" options={{ headerShown: false }} />
-              <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-              <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
-              <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
-            </Stack>
-          </PortalProvider>
+          <SyncProvider>
+            <PortalProvider>
+              <StatusBar style={C.statusBar} />
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="index" options={{ headerShown: false }} />
+                <Stack.Screen name="(app)" options={{ headerShown: false }} />
+                <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+                <Stack.Screen name="sso-callback" options={{ headerShown: false }} />
+                <Stack.Screen name="workout/[id]" options={{ headerShown: false, presentation: 'card', animation: 'slide_from_right' }} />
+              </Stack>
+            </PortalProvider>
+          </SyncProvider>
         </WorkoutProvider>
       </BasicInfoProvider>
     </ToastProvider>
@@ -67,7 +75,10 @@ function AppInner() {
 function AppContent() {
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    hydrateGuestStore().finally(() => setHydrated(true));
+    // Hydrate local stores before rendering: the guest store (data routing) and
+    // the active-workout snapshot (so a crashed/killed session can be resumed on
+    // first paint).
+    Promise.all([hydrateGuestStore(), hydrateActiveWorkout()]).finally(() => setHydrated(true));
   }, []);
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
