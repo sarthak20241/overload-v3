@@ -186,11 +186,25 @@ function GateBody({
         )}
 
         {screen === 'unknown' && (
-          <View style={s.spinnerWrap}>
-            <ActivityIndicator color={C.foreground} />
-            <Text style={[s.helperText, { color: C.mutedFg, marginTop: Spacing.md }]}>
-              Reconnecting…
+          // Settled (not loading) but access couldn't be resolved — e.g. offline
+          // cold-start with no cached state. Show a retry instead of a perpetual
+          // "Reconnecting…" spinner the user can't escape from.
+          <View style={s.card}>
+            <View style={[s.iconWrap, { backgroundColor: C.muted }]}>
+              <Feather name="wifi-off" size={28} color={C.foreground} />
+            </View>
+            <Text style={[s.cardTitle, { color: C.foreground }]}>
+              Couldn't reach Coach Drona
             </Text>
+            <Text style={[s.cardBody, { color: C.mutedFg }]}>
+              Coach needs a connection. Check your network and try again.
+            </Text>
+            <TouchableOpacity
+              style={[s.primaryBtn, { backgroundColor: Colors.primary }]}
+              onPress={() => { void refresh(); }}
+            >
+              <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Retry</Text>
+            </TouchableOpacity>
           </View>
         )}
 
