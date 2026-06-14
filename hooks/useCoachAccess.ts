@@ -137,7 +137,12 @@ export function useCoachAccess(): UseCoachAccessReturn {
           if (raw) lastKnown = JSON.parse(raw) as CoachAccess;
         } catch {}
       }
-      if (!cancelled && lastKnown) setAccess(lastKnown);
+      if (!cancelled && lastKnown) {
+        // Paint the last-known access immediately and drop the spinner; the RPC
+        // below still refreshes it in the background.
+        setAccess(lastKnown);
+        setLoading(false);
+      }
       try {
         const { data, error } = await supabaseRef.current.rpc(
           'get_coach_access_status',

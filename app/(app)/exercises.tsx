@@ -235,6 +235,17 @@ export default function ExerciseLibraryScreen() {
         toast.error("Couldn't save those changes, try again");
         return;
       }
+    } else if (editTarget.id.startsWith('local-ex-')) {
+      // Unsynced local custom (not on the server yet): a supabase update would
+      // match nothing and the rename would resurrect from cache on next
+      // hydration. Mutate the durable 'exercises' cache in place instead.
+      const cached = readCache<DbExercise[]>('exercises', user?.id) ?? [];
+      writeCache('exercises', user?.id, cached.map(r =>
+        r.id === editTarget.id
+          ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory }
+          : r
+      ));
+      setSaving(false);
     } else {
       const { error } = await supabase
         .from('exercises')
@@ -279,7 +290,13 @@ export default function ExerciseLibraryScreen() {
         supabase.from('routine_exercises').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
         supabase.from('workout_sets').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
       ]);
-      setDeleteUsage({ routines: re.count ?? 0, sets: ws.count ?? 0 });
+      if (re.error || ws.error || re.count == null || ws.count == null) {
+        // Round-tripped but the count failed (RLS / 5xx) — don't claim "nothing
+        // logged"; use the same can't-verify sentinel as the offline branch.
+        setDeleteUsage({ routines: -1, sets: -1 });
+      } else {
+        setDeleteUsage({ routines: re.count, sets: ws.count });
+      }
     } catch {
       // Offline — we can't count usage. Use a sentinel so the dialog doesn't
       // hang on "Checking..." with a permanently disabled Delete button.
@@ -295,6 +312,11 @@ export default function ExerciseLibraryScreen() {
         toast.error(`Couldn't delete “${target.name}”, try again`);
         return;
       }
+    } else if (target.id.startsWith('local-ex-')) {
+      // Unsynced local custom: remove it from the durable cache (a supabase
+      // delete would match nothing and it would resurrect on next hydration).
+      const cached = readCache<DbExercise[]>('exercises', user?.id) ?? [];
+      writeCache('exercises', user?.id, cached.filter(r => r.id !== target.id));
     } else {
       const { error } = await supabase.from('exercises').delete().eq('id', target.id);
       if (error) {

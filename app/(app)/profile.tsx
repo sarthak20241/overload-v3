@@ -355,25 +355,30 @@ export default function ProfileScreen() {
     setBodyFatLog(bfl);
   };
 
+  const lastIdentityRef = useRef<string | null>(null);
   const loadProfile = async () => {
-    // Reset everything this function can populate before branching — it
-    // re-runs when the session identity changes (sign-out to guest, account
-    // switch), and the guest / no-profile-row paths below don't overwrite
-    // every field, so stale values from the previous user would linger.
-    setGender('');
-    setHeight('');
-    setWeight('');
-    setGoalWeight('');
-    setCtxGoalWeight(null);
-    setBodyFat('');
-    setTotalXP(0);
-    setTotalWorkouts(0);
-    setJoinDate('');
-    setCoachGoal('');
-    setExperienceLevel('');
-    setWeeklyTargetSessions('');
-    setTrainingAgeMonths('');
-    setBirthYear('');
+    // Only RESET fields when the session identity actually changed (sign-out to
+    // guest, account switch). loadProfile also re-runs on pendingCount changes;
+    // resetting then would flash every field to empty/0 before the cache
+    // repaints. The cache/network paint below still runs every time.
+    const identity = `${isGuestSession}:${user?.id ?? ''}`;
+    if (lastIdentityRef.current !== identity) {
+      lastIdentityRef.current = identity;
+      setGender('');
+      setHeight('');
+      setWeight('');
+      setGoalWeight('');
+      setCtxGoalWeight(null);
+      setBodyFat('');
+      setTotalXP(0);
+      setTotalWorkouts(0);
+      setJoinDate('');
+      setCoachGoal('');
+      setExperienceLevel('');
+      setWeeklyTargetSessions('');
+      setTrainingAgeMonths('');
+      setBirthYear('');
+    }
     try {
       if (isGuestSession) {
         // Guests are new users without an account — no profile row, no demo

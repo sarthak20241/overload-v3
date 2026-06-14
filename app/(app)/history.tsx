@@ -21,7 +21,7 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
-import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
 import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
 import { useSync } from '@/components/SyncProvider';
@@ -646,6 +646,9 @@ export default function HistoryScreen() {
         const earned = getXpForWorkout(target.workout_sets?.length ?? 0, target.total_volume_kg ?? 0);
         if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
       }
+      // Prune it from the persisted workout caches so an offline reopen of
+      // history/dashboard/analytics doesn't resurrect the deleted workout.
+      evictWorkoutFromCaches(user?.id, id);
       toast.success('Workout deleted');
     } catch {
       setWorkouts(previous);

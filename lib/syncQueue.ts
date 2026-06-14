@@ -239,10 +239,14 @@ export async function flushPendingWorkout(
 
   if (phase === 'workout_inserted') {
     // Exactly-once: skip if sets already landed on a prior attempt.
-    const { count } = await supabase
+    const { count, error: countError } = await supabase
       .from('workout_sets')
       .select('id', { count: 'exact', head: true })
       .eq('workout_id', serverWorkoutId);
+    // Don't treat a FAILED count as "0 sets" — that would re-insert the sets (and
+    // the per-user stats trigger would double-count). Throw so flushQueue parks
+    // and retries instead of blindly inserting.
+    if (countError) throw countError;
     if (!count) {
       const rows = entry.exercises.flatMap((ex) =>
         ex.resolvedExerciseId
@@ -266,10 +270,16 @@ export async function flushPendingWorkout(
   }
 
   if (phase === 'sets_inserted') {
+    // Record the REAL workout end time (start + duration), not the flush-time
+    // clock — an offline workout can sync hours later, and this keeps the server
+    // row consistent with the optimistic local row (lib/pendingAdapters).
+    const finishedAtIso = new Date(
+      Date.parse(entry.startedAtIso) + entry.durationSeconds * 1000,
+    ).toISOString();
     const { error } = await supabase
       .from('workouts')
       .update({
-        finished_at: new Date().toISOString(),
+        finished_at: finishedAtIso,
         duration_seconds: entry.durationSeconds,
         total_volume_kg: entry.totalVolumeKg,
       })

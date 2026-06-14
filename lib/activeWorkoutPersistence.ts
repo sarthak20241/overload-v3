@@ -93,7 +93,14 @@ export function hydrateActiveWorkout(): Promise<void> {
         // not. Only adopt disk state if nothing newer was written in memory
         // first (defensive against any pre-hydration write race).
         const valid =
-          parsed?.schema === SCHEMA_VERSION && Array.isArray(parsed.exercises);
+          parsed?.schema === SCHEMA_VERSION &&
+          Array.isArray(parsed.exercises) &&
+          parsed.exercises.every((ex: any) => ex && Array.isArray(ex.sets)) &&
+          Array.isArray(parsed.exerciseStarted) &&
+          Array.isArray(parsed.exerciseFinished) &&
+          typeof parsed.startTimeEpochMs === 'number' &&
+          Number.isFinite(parsed.startTimeEpochMs) &&
+          typeof parsed.currentIdx === 'number';
         if (valid && _snapshot === null) {
           _snapshot = parsed;
         } else if (!valid) {

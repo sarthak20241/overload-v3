@@ -80,8 +80,8 @@ export function useSupabaseClient(): SupabaseClient {
         fetch: async (input: RequestInfo | URL, init: RequestInit = {}) => {
           // Bound getToken so an expired token + no network can't hang the
           // request forever — Clerk otherwise blocks on a token refresh it
-          // can't complete offline. On timeout we send the request without a
-          // token (RLS rejects it quickly) instead of hanging the UI.
+          // can't complete offline. On timeout we treat it as no token and FAIL
+          // the request (see below) rather than hanging the UI.
           let token: string | null = null;
           try {
             token = await Promise.race([

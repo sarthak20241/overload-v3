@@ -74,6 +74,23 @@ export async function hydrateCache(userId: string | null | undefined): Promise<v
   _hydrated[userId] = true;
 }
 
+/**
+ * Remove a workout id from every workout-list cache (dashboard/history/
+ * analytics) so deleting it doesn't resurrect the row (and its derived stats)
+ * the next time those screens paint from cache offline.
+ */
+export function evictWorkoutFromCaches(
+  userId: string | null | undefined,
+  workoutId: string,
+): void {
+  if (!userId) return;
+  const entities: CacheEntity[] = ['dashboardWorkouts', 'historyWorkouts', 'analyticsWorkouts'];
+  for (const entity of entities) {
+    const cached = readCache<any[]>(entity, userId);
+    if (cached) writeCache(entity, userId, cached.filter((w) => w?.id !== workoutId));
+  }
+}
+
 /** Drop a user's cache from memory + disk (e.g. on sign-out / account switch). */
 export async function clearUserCache(userId: string | null | undefined): Promise<void> {
   if (!userId) return;
