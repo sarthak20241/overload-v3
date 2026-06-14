@@ -98,6 +98,7 @@ function GateBody({
 }: CoachAccessGateProps & { screen: Exclude<GateScreen, 'allow'> }) {
   const { C } = useTheme();
   const [starting, setStarting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Manual paywall open — used by the "See all plans" link on start_trial.
   // For trial_ended we short-circuit to the paywall below without this flag
@@ -200,10 +201,23 @@ function GateBody({
               Coach needs a connection. Check your network and try again.
             </Text>
             <TouchableOpacity
-              style={[s.primaryBtn, { backgroundColor: Colors.primary }]}
-              onPress={() => { void refresh(); }}
+              style={[s.primaryBtn, { backgroundColor: Colors.primary, opacity: retrying ? 0.6 : 1 }]}
+              disabled={retrying}
+              onPress={async () => {
+                if (retrying) return;
+                setRetrying(true);
+                try {
+                  await refresh();
+                } finally {
+                  setRetrying(false);
+                }
+              }}
             >
-              <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Retry</Text>
+              {retrying ? (
+                <ActivityIndicator color={Colors.primaryFg} />
+              ) : (
+                <Text style={[s.primaryBtnText, { color: Colors.primaryFg }]}>Retry</Text>
+              )}
             </TouchableOpacity>
           </View>
         )}
