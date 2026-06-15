@@ -24,6 +24,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getPendingWorkouts } from '@/lib/syncQueue';
 import { pendingToDashboardWorkout, pendingXp } from '@/lib/pendingAdapters';
+import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -226,7 +227,13 @@ export default function DashboardScreen() {
       const pending = clerkId
         ? getPendingWorkouts(clerkId).filter((e) => !serverClientIds.has(e.clientId))
         : [];
-      const rows = [...pending.map(pendingToDashboardWorkout), ...base];
+      // Overlay not-yet-synced edits so an edited synced workout shows its new
+      // volume/sets even after a background revalidate. (XP stays as-is until
+      // the edit itself syncs, same as a pending new workout.)
+      const rows = applyEditsToDashboardRows(clerkId, [
+        ...pending.map(pendingToDashboardWorkout),
+        ...base,
+      ]);
       // Exclude entries already credited server-side (phase 'done', briefly
       // still in the queue) so we don't double-count their XP with the freshly
       // fetched server total.

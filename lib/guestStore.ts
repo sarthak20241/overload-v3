@@ -147,6 +147,17 @@ export function addGuestWorkout(w: GuestWorkout) {
   void persistGuestWorkouts();
 }
 
+// Replace a guest workout in-place, preserving its list position. Returns false
+// when the id isn't in the store (e.g. a stale id) so the editor can surface the
+// failure instead of silently losing the edit. Mirror of updateGuestRoutine.
+export function updateGuestWorkout(w: GuestWorkout) {
+  const idx = _guestWorkouts.findIndex(x => x.id === w.id);
+  if (idx < 0) return false;
+  _guestWorkouts[idx] = w;
+  void persistGuestWorkouts();
+  return true;
+}
+
 // Remove a guest workout by id. Mirror of removeGuestRoutine for the
 // optimistic-delete path in the history screen.
 export function removeGuestWorkout(id: string) {

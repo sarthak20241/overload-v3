@@ -121,6 +121,28 @@ function patchEntry(userId: string, clientId: string, patch: Partial<PendingWork
   void persist(userId);
 }
 
+/**
+ * Edit a not-yet-synced workout in place (name / notes / exercises / volume),
+ * before it ever uploads. Returns false when the entry is no longer queued
+ * (it just synced) so the editor can fall back to the synced-edit path.
+ * Its sets are recomputed by the caller, so XP/volume flow through the normal
+ * flush untouched.
+ */
+export function updatePendingWorkout(
+  userId: string,
+  clientId: string,
+  patch: { name: string; notes: string | null; exercises: PendingExercise[]; totalVolumeKg: number },
+): boolean {
+  const e = _byUser[userId]?.find((x) => x.clientId === clientId);
+  if (!e) return false;
+  e.name = patch.name;
+  e.notes = patch.notes;
+  e.exercises = patch.exercises;
+  e.totalVolumeKg = patch.totalVolumeKg;
+  void persist(userId);
+  return true;
+}
+
 export function removePendingWorkout(userId: string, clientId: string): void {
   const list = _byUser[userId];
   if (!list) return;

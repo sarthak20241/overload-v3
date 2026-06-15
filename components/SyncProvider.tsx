@@ -13,10 +13,12 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { flushQueue, getPendingCount, hydrateSyncQueue } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount, hydrateRoutineQueue } from '@/lib/routineQueue';
+import { flushEditQueue, getPendingEditCount, hydrateEditQueue } from '@/lib/editQueue';
 import { hydrateCache } from '@/lib/localCache';
 
-/** Workouts + routines still waiting to sync for this user. */
-const totalPending = (userId: string) => getPendingCount(userId) + getPendingRoutineCount(userId);
+/** Workouts + routines + workout edits still waiting to sync for this user. */
+const totalPending = (userId: string) =>
+  getPendingCount(userId) + getPendingRoutineCount(userId) + getPendingEditCount(userId);
 
 interface SyncState {
   /** Workouts saved locally but not yet on the server. */
@@ -67,7 +69,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     // Warm the read cache early so screens render last-known data instantly.
     void hydrateCache(userId);
-    Promise.all([hydrateSyncQueue(userId), hydrateRoutineQueue(userId)]).then(() => {
+    Promise.all([
+      hydrateSyncQueue(userId),
+      hydrateRoutineQueue(userId),
+      hydrateEditQueue(userId),
+    ]).then(() => {
       if (!cancelled) setPendingCount(totalPending(userId));
     });
     return () => {
@@ -84,13 +90,18 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     try {
       await hydrateSyncQueue(userId); // no-op once hydrated
       await hydrateRoutineQueue(userId);
+      await hydrateEditQueue(userId);
       // Routines first so a workout that links to a still-pending routine (by its
-      // client-generated id) finds the routine row already inserted.
+      // client-generated id) finds the routine row already inserted. Edits last:
+      // they target already-synced workouts, independent of the other queues.
       const rResult = await flushRoutineQueue(supabaseRef.current, userId);
       const wResult = await flushQueue(supabaseRef.current, userId);
-      const total = rResult.pendingCount + wResult.pendingCount;
+      const eResult = await flushEditQueue(supabaseRef.current, userId);
+      const total = rResult.pendingCount + wResult.pendingCount + eResult.pendingCount;
       setPendingCount(total);
-      setLastError(total > 0 ? (wResult.lastError ?? rResult.lastError) : null);
+      setLastError(
+        total > 0 ? (wResult.lastError ?? eResult.lastError ?? rResult.lastError) : null,
+      );
     } finally {
       flushingRef.current = false;
       setFlushing(false);
