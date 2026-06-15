@@ -14,7 +14,11 @@ import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines } from '@/lib/guestStore';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { mergePendingRoutines } from '@/lib/routineQueue';
 import { BottomNav } from '@/components/ui/BottomNav';
+import { ResumeWorkoutPrompt } from '@/components/workout/ResumeWorkoutPrompt';
+import { OfflineBanner } from '@/components/ui/OfflineBanner';
 import { Portal } from '@/components/ui/Portal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -91,32 +95,45 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   }, [visible, onClose]);
 
   useEffect(() => {
-    if (visible) {
-      const clerkId = user?.id;
-      if (!isSupabaseConfigured || !clerkId) {
-        setRoutines(getGuestRoutines() as any[]);
-        setLoading(false);
-        return;
-      }
-      // Clear stale entries before reloading — on a failed refresh the old
-      // list would otherwise stay tappable and could navigate to a workout
-      // for a routine that no longer exists.
-      setRoutines([]);
-      setLoading(true);
-      supabase
-        .from('routines')
-        .select('*, routine_exercises(*, exercises(*))')
-        .eq('user_id', clerkId)
-        .order('created_at')
-        .then(({ data }) => {
-          setRoutines((data as any[]) || []);
-          setLoading(false);
-        })
-        .catch(() => {
-          setRoutines([]);
-          setLoading(false);
-        });
+    if (!visible) return;
+    const clerkId = user?.id;
+    if (!isSupabaseConfigured || !clerkId) {
+      setRoutines(getGuestRoutines() as any[]);
+      setLoading(false);
+      return;
     }
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      // Cache-first so the routine list shows instantly (and the spinner can't
+      // hang offline). The Routines tab populates this same cache.
+      await hydrateCache(clerkId);
+      const cached = readCache<Routine[]>('routines', clerkId);
+      if (!cancelled && cached) {
+        setRoutines(mergePendingRoutines(cached as any[], clerkId) as any[]);
+        setLoading(false);
+      }
+      try {
+        const { data, error } = await supabase
+          .from('routines')
+          .select('*, routine_exercises(*, exercises(*))')
+          .eq('user_id', clerkId)
+          .order('created_at');
+        if (error) throw error;
+        if (cancelled) return;
+        const rows = (data as any[]) || [];
+        const merged = mergePendingRoutines(rows, clerkId);
+        writeCache('routines', clerkId, merged);
+        setRoutines(merged as any[]);
+        setLoading(false);
+      } catch {
+        // Offline / failed — keep the cached list (or empty); never hang.
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [visible, user?.id]);
 
   const startRoutine = (routine: Routine) => {
@@ -271,6 +288,8 @@ export default function AppLayout() {
 
       <BottomNav onOpenModal={() => setModalOpen(true)} />
       <StartWorkoutModal visible={modalOpen} onClose={() => setModalOpen(false)} />
+      <ResumeWorkoutPrompt />
+      <OfflineBanner />
     </>
   );
 }

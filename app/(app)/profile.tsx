@@ -27,7 +27,12 @@ import {
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
+import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
+import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
+import { useSync } from '@/components/SyncProvider';
+import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
+import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -167,13 +172,16 @@ function GenderPills({
 
 // ─── Inline number input used in info rows ───────────────────────────────────
 function InlineNumberInput({
-  value, onChangeText, placeholder, width = 70,
-}: { value: string; onChangeText: (v: string) => void; placeholder?: string; width?: number }) {
+  value, onChangeText, placeholder, width = 70, onFocus,
+}: { value: string; onChangeText: (v: string) => void; placeholder?: string; width?: number; onFocus?: () => void }) {
   const { C } = useTheme();
   return (
     <TextInput
       value={value}
       onChangeText={onChangeText}
+      // Re-lift the field when focus moves here while the keyboard is already
+      // up (Android edge-to-edge doesn't auto-scroll; see useKeyboardAwareScroll).
+      onFocus={onFocus}
       placeholder={placeholder}
       placeholderTextColor={C.textDim}
       keyboardType="numeric"
@@ -196,10 +204,26 @@ export default function ProfileScreen() {
   const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const { pendingCount } = useSync();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
   const { isAdmin } = useAdminCheck();
   const signOut = async () => {
+    const prevUserId = user?.id;
+    // Best-effort: push any queued workouts before the JWT drops. The queue is
+    // keyed per user, so anything that still can't sync (offline) is parked
+    // under this account and flushes the next time they sign in here — not lost.
+    if (prevUserId && (getPendingCount(prevUserId) > 0 || getPendingRoutineCount(prevUserId) > 0)) {
+      try {
+        await Promise.race([
+          (async () => {
+            await flushRoutineQueue(supabase, prevUserId);
+            await flushQueue(supabase, prevUserId);
+          })(),
+          new Promise((r) => setTimeout(r, 3000)),
+        ]);
+      } catch {}
+    }
     try { await clerkSignOut(); } catch {}
     // Clear the guest flag too — sign-out should always land on /(auth),
     // regardless of how the user originally got into /(app).
@@ -208,6 +232,9 @@ export default function ProfileScreen() {
     // can't leak across accounts), but there's no reason to keep the old
     // account's rows allocated past the session.
     invalidateCustomExercisesCache();
+    // Drop this user's read cache (per-user keyed; clears stale data so the
+    // next account never paints from it). The sync queue stays parked per user.
+    if (prevUserId) await clearUserCache(prevUserId);
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -255,6 +282,11 @@ export default function ProfileScreen() {
   // keyboard height ourselves and apply marginBottom to the sheet (the proven
   // pattern from analytics.tsx).
   const insets = useSafeAreaInsets();
+  // Keep the focused field above the keyboard in the main scroll. Disabled
+  // while the bug sheet is open — it renders in a <Portal> and tracks the
+  // keyboard itself, so this would just scroll the hidden background.
+  const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
+    useKeyboardAwareScroll(!bugModalOpen);
   const [bugKbHeight, setBugKbHeight] = useState(0);
   useEffect(() => {
     if (!bugModalOpen) { setBugKbHeight(0); return; }
@@ -315,7 +347,7 @@ export default function ProfileScreen() {
     loadProfile();
     loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clerkLoaded, isGuestSession, user?.id]);
+  }, [clerkLoaded, isGuestSession, user?.id, pendingCount]);
 
   const loadLogs = async () => {
     const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
@@ -323,25 +355,30 @@ export default function ProfileScreen() {
     setBodyFatLog(bfl);
   };
 
+  const lastIdentityRef = useRef<string | null>(null);
   const loadProfile = async () => {
-    // Reset everything this function can populate before branching — it
-    // re-runs when the session identity changes (sign-out to guest, account
-    // switch), and the guest / no-profile-row paths below don't overwrite
-    // every field, so stale values from the previous user would linger.
-    setGender('');
-    setHeight('');
-    setWeight('');
-    setGoalWeight('');
-    setCtxGoalWeight(null);
-    setBodyFat('');
-    setTotalXP(0);
-    setTotalWorkouts(0);
-    setJoinDate('');
-    setCoachGoal('');
-    setExperienceLevel('');
-    setWeeklyTargetSessions('');
-    setTrainingAgeMonths('');
-    setBirthYear('');
+    // Only RESET fields when the session identity actually changed (sign-out to
+    // guest, account switch). loadProfile also re-runs on pendingCount changes;
+    // resetting then would flash every field to empty/0 before the cache
+    // repaints. The cache/network paint below still runs every time.
+    const identity = `${isGuestSession}:${user?.id ?? ''}`;
+    if (lastIdentityRef.current !== identity) {
+      lastIdentityRef.current = identity;
+      setGender('');
+      setHeight('');
+      setWeight('');
+      setGoalWeight('');
+      setCtxGoalWeight(null);
+      setBodyFat('');
+      setTotalXP(0);
+      setTotalWorkouts(0);
+      setJoinDate('');
+      setCoachGoal('');
+      setExperienceLevel('');
+      setWeeklyTargetSessions('');
+      setTrainingAgeMonths('');
+      setBirthYear('');
+    }
     try {
       if (isGuestSession) {
         // Guests are new users without an account — no profile row, no demo
@@ -363,14 +400,7 @@ export default function ProfileScreen() {
         return;
       }
       const clerkId = user?.id;
-      const profileQuery = clerkId
-        ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
-        : supabase.from('user_profiles').select('*').limit(1).maybeSingle();
-      const countQuery = clerkId
-        ? supabase.from('workouts').select('*', { count: 'exact', head: true }).eq('user_id', clerkId)
-        : supabase.from('workouts').select('*', { count: 'exact', head: true });
-      const [{ data: profile }, { count }] = await Promise.all([profileQuery, countQuery]);
-      if (profile) {
+      const applyProfileRow = (profile: any) => {
         // Unset fields stay empty (placeholder shows) — no demo fallbacks.
         setGender((profile.gender || '') as Gender | '');
         setHeight(profile.height_cm ? String(profile.height_cm) : '');
@@ -386,8 +416,40 @@ export default function ProfileScreen() {
         setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
         setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
+      };
+      const profileQuery = clerkId
+        ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
+        : supabase.from('user_profiles').select('*').limit(1).maybeSingle();
+      const countQuery = clerkId
+        ? supabase.from('workouts').select('*', { count: 'exact', head: true }).eq('user_id', clerkId)
+        : supabase.from('workouts').select('*', { count: 'exact', head: true });
+
+      // Cache-first: paint the last-known profile so the screen never hangs on a
+      // full-screen spinner offline, then revalidate in the background.
+      await hydrateCache(clerkId);
+      // Add not-yet-synced workouts to the count so a just-finished offline
+      // workout shows immediately (the server count query can't see them yet).
+      const pendingExtra = clerkId ? getPendingWorkouts(clerkId).length : 0;
+      const cachedProfile = readCache<{ profile: any; count: number }>('profile', clerkId);
+      if (cachedProfile) {
+        if (cachedProfile.profile) applyProfileRow(cachedProfile.profile);
+        setTotalWorkouts((cachedProfile.count || 0) + pendingExtra);
+        setLoading(false);
       }
-      setTotalWorkouts(count || 0);
+      try {
+        const [{ data: profile, error: pErr }, { count, error: cErr }] = await Promise.all([profileQuery, countQuery]);
+        // A failed/unauthenticated request must not reset the screen to empty/0;
+        // throw so the catch keeps the cached values.
+        if (pErr || cErr) throw pErr || cErr;
+        if (profile) applyProfileRow(profile);
+        setTotalWorkouts((count || 0) + pendingExtra);
+        writeCache('profile', clerkId, { profile: profile ?? null, count: count ?? 0 });
+      } catch (e: any) {
+        // Offline — keep the cached values; only surface an error if there was
+        // nothing cached to show.
+        if (!cachedProfile) setShowErrorAlert(e?.message || 'Failed to load profile');
+      }
+      return;
     } catch (err: any) {
       setShowErrorAlert(err?.message || 'Failed to load profile');
     } finally {
@@ -553,14 +615,20 @@ export default function ProfileScreen() {
     <>
       <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
         <ScrollView
+          ref={scrollRef}
+          {...scrollProps}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           // iOS only: insets the scroll content by the keyboard height and
-          // scrolls the focused field into view. Android already handles this
-          // via the Activity's adjustResize (main window only — Portal sheets
-          // still track keyboard height manually, see bugKbHeight).
+          // scrolls the focused field into view. Android edge-to-edge (SDK 54)
+          // no longer resizes the window for the IME, so we pad the content by
+          // the keyboard height below and scroll the focused field up ourselves
+          // (see useKeyboardAwareScroll).
           automaticallyAdjustKeyboardInsets
-          contentContainerStyle={{ paddingBottom: 120 }}
+          contentContainerStyle={[
+            { paddingBottom: 120 },
+            Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
+          ]}
         >
           {/* ─── Hero / Avatar ─── */}
           <Animated.View entering={FadeInDown.duration(400)} style={styles.hero}>
@@ -671,6 +739,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={height}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setHeight(v);
                       persistField({ height_cm: parseFloat(v) || null });
@@ -701,6 +770,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={weight}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setWeight(v);
                       persistField({ weight_kg: parseFloat(v) || null });
@@ -723,6 +793,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={goalWeight}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setGoalWeight(v);
                       persistField({ goal_weight_kg: parseFloat(v) || null });
@@ -756,6 +827,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={bodyFat}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setBodyFat(v);
                       persistField({ body_fat_percent: parseFloat(v) || null });
@@ -881,6 +953,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={weeklyTargetSessions}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setWeeklyTargetSessions(v);
                       const n = parseInt(v, 10);
@@ -899,6 +972,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={trainingAgeMonths}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setTrainingAgeMonths(v);
                       const n = parseInt(v, 10);
@@ -917,6 +991,7 @@ export default function ProfileScreen() {
                 <View style={styles.infoRight}>
                   <InlineNumberInput
                     value={birthYear}
+                    onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setBirthYear(v);
                       const y = parseInt(v, 10);

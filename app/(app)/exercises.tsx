@@ -30,6 +30,9 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useIsGuestSession } from '@/lib/guestMode';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { mergeLocalCustoms } from '@/lib/exerciseResolve';
 import { getGuestExercises, updateGuestExercise, removeGuestExercise } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES } from '@/lib/exercises';
@@ -55,6 +58,7 @@ export default function ExerciseLibraryScreen() {
   const { height: windowHeight } = useWindowDimensions();
   const supabase = useSupabaseClient();
   const isGuest = useIsGuestSession();
+  const { user } = useClerkUser();
   const toast = useToast();
 
   const [rows, setRows] = useState<DbExercise[]>([]);
@@ -110,23 +114,52 @@ export default function ExerciseLibraryScreen() {
       setLoading(false);
       return;
     }
-    const { data, error } = await supabase
-      .from('exercises')
-      .select('id, name, muscle_group, category, created_by')
-      .order('created_at', { ascending: false });
-    if (!error && data) setRows(data as DbExercise[]);
+    // Cache-first: the user's custom exercises render offline (the static
+    // EXERCISE_LIBRARY already does). Keep the cache on a failed revalidate.
+    await hydrateCache(user?.id);
+    const cached = readCache<DbExercise[]>('exercises', user?.id);
+    if (cached) setRows(cached);
+    // Local-first: clear the spinner after the cache read and revalidate in the
+    // background, so the screen never waits on the network to render.
     setLoading(false);
-  }, [supabase, isGuest]);
+    try {
+      const { data, error } = await supabase
+        .from('exercises')
+        .select('id, name, muscle_group, category, created_by')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      if (data) {
+        // Preserve offline-created customs that haven't synced yet, so this
+        // wholesale revalidate doesn't clobber them out of the cache.
+        const merged = mergeLocalCustoms(data as DbExercise[], user?.id) as DbExercise[];
+        writeCache('exercises', user?.id, merged);
+        setRows(merged);
+      }
+    } catch {
+      // Offline — keep the cached customs.
+    }
+  }, [supabase, isGuest, user?.id]);
 
   useEffect(() => { fetchExercises(); }, [fetchExercises]);
 
-  // RLS already scopes the query to global + own rows; split them here.
-  // Customs keep newest-first (fetch order); library reads better A→Z.
+  // Customs are the user's own rows (created_by set); keep newest-first.
   const customs = useMemo(() => rows.filter(r => r.created_by !== null), [rows]);
-  const library = useMemo(
-    () => rows.filter(r => r.created_by === null).sort((a, b) => a.name.localeCompare(b.name)),
-    [rows]
-  );
+  // The library section is sourced from the bundled EXERCISE_LIBRARY (not the
+  // server's global rows) so it ALWAYS shows offline — same as the exercise
+  // picker. Deduped against the user's customs by name; reads A→Z.
+  const library = useMemo(() => {
+    const customNames = new Set(customs.map((c) => c.name.toLowerCase()));
+    return EXERCISE_LIBRARY
+      .filter((e) => !customNames.has(e.name.toLowerCase()))
+      .map((e, i) => ({
+        id: `lib-${i}`,
+        name: e.name,
+        muscle_group: e.muscle_group,
+        category: e.category,
+        created_by: null as string | null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [customs]);
 
   const matches = useCallback((e: DbExercise) => {
     if (muscleFilter && e.muscle_group !== muscleFilter) return false;
@@ -202,6 +235,17 @@ export default function ExerciseLibraryScreen() {
         toast.error("Couldn't save those changes, try again");
         return;
       }
+    } else if (editTarget.id.startsWith('local-ex-')) {
+      // Unsynced local custom (not on the server yet): a supabase update would
+      // match nothing and the rename would resurrect from cache on next
+      // hydration. Mutate the durable 'exercises' cache in place instead.
+      const cached = readCache<DbExercise[]>('exercises', user?.id) ?? [];
+      writeCache('exercises', user?.id, cached.map(r =>
+        r.id === editTarget.id
+          ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory }
+          : r
+      ));
+      setSaving(false);
     } else {
       const { error } = await supabase
         .from('exercises')
@@ -241,11 +285,23 @@ export default function ExerciseLibraryScreen() {
       setDeleteUsage({ routines: 0, sets: 0 });
       return;
     }
-    const [re, ws] = await Promise.all([
-      supabase.from('routine_exercises').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
-      supabase.from('workout_sets').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
-    ]);
-    setDeleteUsage({ routines: re.count ?? 0, sets: ws.count ?? 0 });
+    try {
+      const [re, ws] = await Promise.all([
+        supabase.from('routine_exercises').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
+        supabase.from('workout_sets').select('id', { count: 'exact', head: true }).eq('exercise_id', ex.id),
+      ]);
+      if (re.error || ws.error || re.count == null || ws.count == null) {
+        // Round-tripped but the count failed (RLS / 5xx) — don't claim "nothing
+        // logged"; use the same can't-verify sentinel as the offline branch.
+        setDeleteUsage({ routines: -1, sets: -1 });
+      } else {
+        setDeleteUsage({ routines: re.count, sets: ws.count });
+      }
+    } catch {
+      // Offline — we can't count usage. Use a sentinel so the dialog doesn't
+      // hang on "Checking..." with a permanently disabled Delete button.
+      setDeleteUsage({ routines: -1, sets: -1 });
+    }
   };
 
   // Parameterized worker so the error toast's Retry doesn't depend on the
@@ -256,6 +312,11 @@ export default function ExerciseLibraryScreen() {
         toast.error(`Couldn't delete “${target.name}”, try again`);
         return;
       }
+    } else if (target.id.startsWith('local-ex-')) {
+      // Unsynced local custom: remove it from the durable cache (a supabase
+      // delete would match nothing and it would resurrect on next hydration).
+      const cached = readCache<DbExercise[]>('exercises', user?.id) ?? [];
+      writeCache('exercises', user?.id, cached.filter(r => r.id !== target.id));
     } else {
       const { error } = await supabase.from('exercises').delete().eq('id', target.id);
       if (error) {
@@ -535,6 +596,8 @@ export default function ExerciseLibraryScreen() {
           deleteUsage
             ? isGuest
               ? 'Your routines and logged workouts keep their own copy, so nothing else changes.'
+              : deleteUsage.routines === -1
+              ? "Can't check where this is used right now. You may be offline."
               : deleteUsage.routines === 0 && deleteUsage.sets === 0
               ? "You haven't logged anything with this exercise yet, so it goes quietly."
               : `It comes out of ${deleteUsage.routines} routine${deleteUsage.routines === 1 ? '' : 's'} and erases ${deleteUsage.sets} logged set${deleteUsage.sets === 1 ? '' : 's'}. That history is gone for good.`

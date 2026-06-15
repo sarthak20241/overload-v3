@@ -16,14 +16,20 @@ import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
-import type { ActiveWorkoutExercise, ActiveSet, Exercise } from '@/lib/types';
+import { getActiveWorkoutSnapshot, clearActiveWorkout } from '@/lib/activeWorkoutPersistence';
+import { resolveExerciseRow } from '@/lib/exerciseResolve';
+import { enqueueWorkout, getPendingWorkouts, newClientId, type PendingWorkout } from '@/lib/syncQueue';
+import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
+import { hydrateCache, readCache } from '@/lib/localCache';
+import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
+import { useSync } from '@/components/SyncProvider';
+import type { ActiveWorkoutExercise, ActiveSet } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
-import { getXpForWorkout } from '@/lib/xp';
 import { roundVolume } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
@@ -31,6 +37,8 @@ import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
 const AMBER = '#fbbf24';
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -89,6 +97,7 @@ export default function ActiveWorkoutScreen() {
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
+  const { flushNow } = useSync();
   const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
@@ -252,9 +261,33 @@ export default function ActiveWorkoutScreen() {
     // initial `loading` state covers the gap.
     if (!clerkLoaded) return;
 
+    // Crash recovery: if a persisted in-progress session exists for this exact
+    // route and user, resume it instead of fetching a fresh routine — otherwise
+    // the sets logged before the crash would be silently overwritten. The
+    // explicit discard choice lives in the launch-time ResumeWorkoutPrompt.
+    const snap = getActiveWorkoutSnapshot();
+    const snapMatches = !!snap && snap.workoutScreenId === id && snap.ownerId === (user?.id ?? null);
+    // Only auto-resume a RECENT snapshot. A stale one (e.g. a session abandoned
+    // hours ago) should not silently resume with last session's sets and a wildly
+    // inflated timer when the user taps the routine for a fresh start; drop it.
+    const snapFresh = !!snap && Date.now() - (snap.savedAt ?? 0) < 3 * 60 * 60 * 1000;
+    if (snapMatches && snapFresh) {
+      workout.hydrateFromSnapshot(snap!);
+      // Restart the open exercise's sub-timer so its ELAPSED readout counts up
+      // instead of sitting frozen at 0 (sub-timers aren't in the snapshot).
+      if (snap!.exerciseStarted[snap!.currentIdx] && !snap!.exerciseFinished[snap!.currentIdx]) {
+        startExerciseTimer();
+      }
+      setLoading(false);
+      return;
+    }
+    if (snapMatches && !snapFresh) {
+      clearActiveWorkout();
+    }
+
     const load = async () => {
       if (id === 'new') {
-        workout.startWorkout('new', 'New Workout', []);
+        workout.startWorkout('new', 'New Workout', [], { ownerId: user?.id ?? null, isGuestSession });
         setLoading(false);
         return;
       }
@@ -263,74 +296,52 @@ export default function ActiveWorkoutScreen() {
         if (isGuestSession) {
           routine = findGuestRoutine(id!);
         } else {
-          const { data } = await supabase
-            .from('routines')
-            .select('*, routine_exercises(*, exercises(*))')
-            .eq('id', id)
-            .single();
-          routine = data;
+          // Starting a workout must not wait on (or hang on) the network. If the
+          // routine is cached (the Routines tab / Start modal cache it), use it
+          // immediately — its structure rarely changes mid-session. Only hit the
+          // network when it isn't cached, bounded so offline can't hang forever.
+          await hydrateCache(user?.id);
+          const cachedRoutine =
+            readCache<any[]>('routines', user?.id)?.find((r) => r.id === id) ?? null;
+          if (cachedRoutine) {
+            routine = cachedRoutine;
+          } else {
+            routine = await Promise.race([
+              (async () => {
+                try {
+                  const { data } = await supabase
+                    .from('routines')
+                    .select('*, routine_exercises(*, exercises(*))')
+                    .eq('id', id)
+                    .single();
+                  return data;
+                } catch {
+                  return null;
+                }
+              })(),
+              sleep(8000).then(() => null),
+            ]);
+          }
         }
 
         if (!routine) {
-          setShowErrorAlert('Routine not found');
+          setShowErrorAlert("Couldn't load this routine. You may be offline.");
           return;
         }
 
-        // Build previous performance map — for each exercise, find the most recent
-        // completed workout that contained it (across all routines).
+        // Previous-performance prefill, computed from LOCAL data only (cached
+        // workouts + the pending queue) so the workout starts instantly with no
+        // network on the critical path. The data is already on the device and
+        // kept fresh by the dashboard/history screens; a just-finished session
+        // is reflected immediately via the pending queue.
         let prevPerf: Record<string, { weight_kg: number; reps: number }[]> = {};
         if (isGuestSession) {
           prevPerf = getPreviousPerformance(routine.id);
         } else {
-          const exIdToName = new Map<string, string>();
-          const exerciseIds: string[] = [];
-          (routine.routine_exercises || []).forEach((re: any) => {
-            if (re.exercises?.id) {
-              exIdToName.set(re.exercises.id, re.exercises.name);
-              exerciseIds.push(re.exercises.id);
-            }
-          });
-
-          if (exerciseIds.length > 0) {
-            const { data: rows } = await supabase
-              .from('workout_sets')
-              .select('exercise_id, weight_kg, reps, "order", workout_id, workouts!inner(finished_at)')
-              .in('exercise_id', exerciseIds)
-              .not('workouts.finished_at', 'is', null);
-
-            if (rows && rows.length > 0) {
-              // Sort client-side by workouts.finished_at DESC. PostgREST's foreignTable
-              // ordering is unreliable here, so we can't trust the row order from the
-              // server — explicitly sort locally so "most recent workout per exercise"
-              // is actually the most recent.
-              const sorted = (rows as any[]).slice().sort((a, b) => {
-                const af = String(a.workouts?.finished_at ?? '');
-                const bf = String(b.workouts?.finished_at ?? '');
-                return bf.localeCompare(af);
-              });
-              // For each exercise, only keep sets from the first (most recent) workout we see.
-              const firstWorkoutPerEx = new Map<string, string>();
-              const grouped: Record<string, { weight_kg: number; reps: number; order: number }[]> = {};
-              for (const r of sorted) {
-                const exId = r.exercise_id as string;
-                if (!firstWorkoutPerEx.has(exId)) firstWorkoutPerEx.set(exId, r.workout_id);
-                if (firstWorkoutPerEx.get(exId) !== r.workout_id) continue;
-                if (!grouped[exId]) grouped[exId] = [];
-                grouped[exId].push({
-                  weight_kg: Number(r.weight_kg),
-                  reps: r.reps,
-                  order: r.order ?? grouped[exId].length,
-                });
-              }
-              for (const [exId, sets] of Object.entries(grouped)) {
-                const name = exIdToName.get(exId);
-                if (!name) continue;
-                prevPerf[name] = sets
-                  .sort((a, b) => a.order - b.order)
-                  .map(({ weight_kg, reps }) => ({ weight_kg, reps }));
-              }
-            }
-          }
+          const names = (routine.routine_exercises || [])
+            .map((re: any) => re.exercises?.name)
+            .filter(Boolean);
+          prevPerf = getLocalPreviousPerformance(user?.id, names);
         }
 
         const activeExs: ActiveWorkoutExercise[] = (routine.routine_exercises || [])
@@ -359,7 +370,7 @@ export default function ActiveWorkoutScreen() {
           });
 
         // startWorkout seeds the started/finished flags (all false) in context.
-        workout.startWorkout(routine.id, routine.name, activeExs);
+        workout.startWorkout(routine.id, routine.name, activeExs, { ownerId: user?.id ?? null, isGuestSession });
 
         if (activeExs.length > 0 && activeExs[0].previousSets?.[0]) {
           setInputWeight(String(activeExs[0].previousSets[0].weight_kg));
@@ -576,6 +587,10 @@ export default function ActiveWorkoutScreen() {
     if (!isSupabaseConfigured || !resolvedId || resolvedId.startsWith('temp-')) {
       return getPreviousPerformanceForExerciseName(name);
     }
+    // Local-first: use the on-device history first (pending queue + cached
+    // workouts); only hit the network when we have nothing locally for it.
+    const local = getLocalPreviousPerformance(user?.id, [name])[name];
+    if (local && local.length > 0) return local;
     try {
       const { data: rows } = await supabase
         .from('workout_sets')
@@ -610,38 +625,9 @@ export default function ActiveWorkoutScreen() {
     }
   };
 
-  // Resolve an exercise to a real DB row (look up by name or insert) so workout_sets.exercise_id is a valid FK.
-  // Returns the resolved Exercise row, or null if Supabase is unconfigured / the call fails.
-  // NOTE: case-insensitive find with limit(1) + order, matching the unique index from
-  // migration 0037 (lower(name) per owner scope) — the oldest row is the canonical one.
-  const resolveExerciseRow = async (lib: ExerciseDef): Promise<Exercise | null> => {
-    if (!isSupabaseConfigured) return null;
-    try {
-      const findByName = async () => {
-        const { data } = await supabase
-          .from('exercises')
-          .select('*')
-          .ilike('name', lib.name)
-          .order('created_at', { ascending: true })
-          .limit(1);
-        return data && data.length > 0 ? (data[0] as Exercise) : null;
-      };
-      const existing = await findByName();
-      if (existing) return existing;
-      const { data: inserted, error } = await supabase
-        .from('exercises')
-        .insert({ name: lib.name, muscle_group: lib.muscle_group, category: lib.category })
-        .select()
-        .single();
-      if (!error) return (inserted as Exercise) ?? null;
-      // 23505: lost the create race to another session — the winner's row is
-      // the one we want.
-      if (error.code === '23505') return await findByName();
-      return null;
-    } catch {
-      return null;
-    }
-  };
+  // resolveExerciseRow now lives in lib/exerciseResolve.ts so the background sync
+  // flusher can reuse it (resolving temp exercises at sync time). It takes the
+  // Supabase client as an argument since it's no longer a closure.
 
   // Add exercise from library
   const addExercise = (ex: ExerciseDef) => {
@@ -698,9 +684,10 @@ export default function ActiveWorkoutScreen() {
   // recording yet — checked via `completed: false` on every set. Already-started
   // exercises keep their in-progress values untouched.
   //
-  // On resolve failure the exercise keeps its temp id — the finish-save's
-  // existing .filter on `temp-` ids will skip it to avoid FK violations, so we
-  // surface a toast so the user knows those sets won't persist.
+  // On resolve failure (offline) the exercise keeps its temp id; its sets are
+  // NOT lost — the finish queues them with the exercise def, and the flusher
+  // resolves it at sync time (and parks the entry with an error if it ever
+  // genuinely can't resolve, rather than dropping the sets silently).
   const reconcileExerciseRow = async (def: ExerciseDef, tempId: string) => {
     if (isGuestSession) {
       // Guests save sets by exercise name into the local store, so no DB row
@@ -725,9 +712,11 @@ export default function ActiveWorkoutScreen() {
       return;
     }
 
-    const resolved = await resolveExerciseRow(def);
+    const resolved = await resolveExerciseRow(supabase, def);
     if (!resolved) {
-      toast.error(`Couldn't link “${def.name}” — its sets won't be saved`);
+      // Offline or a transient failure: the exercise keeps its temp id, but its
+      // sets are no longer lost — the finish queues them and the background
+      // flusher resolves the exercise at sync time. Just skip the prefill here.
       return;
     }
     const prev = await fetchPreviousSetsForExercise(resolved.id, def.name);
@@ -880,33 +869,45 @@ export default function ActiveWorkoutScreen() {
       return routineId;
     }
 
-    try {
-      // Exercises still on a temp id never resolved to a DB row (see
-      // reconcileExerciseRow) and can't be linked. If nothing is linkable,
-      // skip creating an empty routine.
-      const linkable = performed.filter(ex => !String(ex.exercise.id).startsWith('temp-'));
-      if (linkable.length === 0) return null;
-
-      const { data: routineRow, error: routineErr } = await supabase
-        .from('routines')
-        .insert({ user_id: clerkId, name, description: 'Saved from a logged workout' })
-        .select()
-        .single();
-      if (routineErr || !routineRow) throw routineErr;
-
-      const { error: linksErr } = await supabase.from('routine_exercises').insert(
-        linkable.map((ex, i) => ({
-          routine_id: routineRow.id,
-          exercise_id: ex.exercise.id,
+    if (!clerkId) return null;
+    // Local-first: build the routine from the session, optimistically cache it,
+    // and enqueue it. The workout links to its client-generated id; SyncProvider
+    // flushes routines before workouts so the FK resolves. temp exercises are
+    // kept (resolved by name at flush) rather than dropped.
+    const routineId = newClientId();
+    const entry: PendingRoutine = {
+      schema: 1,
+      routineId,
+      ownerId: clerkId,
+      name,
+      description: 'Saved from a logged workout',
+      color: null,
+      createdAtIso: new Date().toISOString(),
+      exercises: performed.map((ex, i) => {
+        const r = buildRow(ex);
+        return {
+          def: {
+            name: ex.exercise.name,
+            muscle_group: ex.exercise.muscle_group || 'Other',
+            category: ex.exercise.category || 'Custom',
+          },
+          resolvedExerciseId: String(ex.exercise.id).startsWith('temp-') ? null : ex.exercise.id,
           order: i,
-          ...buildRow(ex),
-        }))
-      );
-      if (linksErr) throw linksErr;
-      return routineRow.id as string;
-    } catch {
-      return null;
-    }
+          sets: r.sets,
+          reps_min: r.reps_min,
+          reps_max: r.reps_max,
+          rest_seconds: r.rest_seconds,
+          note: null,
+        };
+      }),
+      phase: 'queued',
+      attempts: 0,
+      nextAttemptAt: 0,
+      createdAt: Date.now(),
+    };
+    applyRoutineToCache(clerkId, entry);
+    await enqueueRoutine(clerkId, entry);
+    return routineId;
   };
 
   // ---- Post-save routine sync -------------------------------------------
@@ -991,13 +992,24 @@ export default function ActiveWorkoutScreen() {
     const rid = workout.routineId;
     if (!rid || rid === 'new') return null;
     // Re-fetch the routine as it exists right now — it may have been edited
-    // (or deleted) since the workout started. Missing routine → no offer.
-    const { data: routineRow, error } = await supabase
-      .from('routines')
-      .select('id, name, routine_exercises(id, "order", exercises(id, name))')
-      .eq('id', rid)
-      .maybeSingle();
-    if (error || !routineRow) return null;
+    // (or deleted) since the workout started. Bounded so a degraded connection
+    // can't stall the finish navigation; on timeout we just skip the offer.
+    const routineRow = await Promise.race([
+      (async () => {
+        try {
+          const { data } = await supabase
+            .from('routines')
+            .select('id, name, routine_exercises(id, "order", exercises(id, name))')
+            .eq('id', rid)
+            .maybeSingle();
+          return data;
+        } catch {
+          return null;
+        }
+      })(),
+      sleep(3000).then(() => null),
+    ]);
+    if (!routineRow) return null;
 
     const routineExs: any[] = (routineRow as any).routine_exercises || [];
     // Exercises still on a temp id never resolved to a real DB row and can't
@@ -1096,7 +1108,14 @@ export default function ActiveWorkoutScreen() {
     });
   };
 
+  const finishingRef = useRef(false);
   const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string }) => {
+    // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
+    // the confirm alert's Finish button (which has no disabled state during its
+    // exit animation) could otherwise enqueue the same workout twice with two
+    // different clientIds and double-save it.
+    if (finishingRef.current) return;
+    finishingRef.current = true;
     setShowFinishAlert(false);
     setShowFinishSheet(false);
     Keyboard.dismiss();
@@ -1115,7 +1134,12 @@ export default function ActiveWorkoutScreen() {
       let routineCreated = false;
       let routineFailed = false;
       if (opts?.routineNameToSave) {
-        const createdId = await createRoutineFromSession(opts.routineNameToSave);
+        // Bounded so an offline create can't hang the finish — if it doesn't
+        // resolve quickly we treat it as failed; the workout still saves.
+        const createdId = await Promise.race([
+          createRoutineFromSession(opts.routineNameToSave),
+          sleep(2500).then(() => null),
+        ]);
         if (createdId) {
           linkedRoutineId = createdId;
           routineCreated = true;
@@ -1162,97 +1186,64 @@ export default function ActiveWorkoutScreen() {
       }
 
       const clerkId = user?.id;
+      if (!clerkId) throw new Error('Not signed in');
       const startedAtIso = new Date(Date.now() - workout.elapsed * 1000).toISOString();
 
-      // Three-phase finalize so the workout never appears "finished" without
-      // its sets:
-      //   1. INSERT workouts with finished_at = NULL (a placeholder)
-      //   2. Bulk INSERT workout_sets — fires the per-user stats trigger
-      //      (migration 0008), which recomputes only this user's affected
-      //      lift / volume rows.
-      //   3. UPDATE workouts SET finished_at, duration, total_volume — flips
-      //      the workout to "complete." If steps 2 fails partially, step 3
-      //      doesn't run and the workout stays open so the user can retry
-      //      instead of being left with a finished-but-empty workout.
-      const { data: workoutRow, error: workoutErr } = await supabase
-        .from('workouts')
-        .insert({
-          // user_id omitted — default `auth.jwt()->>'sub'` fills it server-side.
-          routine_id: linkedRoutineId,
-          name: workoutName,
-          notes: workoutNotes,
-          started_at: startedAtIso,
-          // finished_at left null on purpose — set in step 3.
-        })
-        .select()
-        .single();
-      if (workoutErr) throw workoutErr;
-
-      if (workoutRow) {
-        // Defensive: any exercise still carrying a "temp-" id slipped past addExercise's resolver
-        // (e.g. resolveExerciseRow failed due to a transient network error). Skip those rather than
-        // letting an FK violation fail the entire save.
-        const setsToInsert = exercises.flatMap((ex) =>
-          ex.sets
+      // Save locally first, sync in the background. The finished workout is
+      // written to the pending-sync queue and the SyncProvider pushes it to
+      // Supabase — now if we're online, or whenever connectivity returns. This
+      // is what makes finishing on bad gym wifi instant and lossless.
+      //
+      // Exercises still on a temp id are kept (with their library def) instead
+      // of dropped: the flusher resolves them to real rows at sync time, so
+      // their sets survive even when the in-workout resolve failed offline.
+      const pendingExercises = exercises
+        .filter(e => e.sets.some(s => s.completed))
+        .map(e => ({
+          def: {
+            name: e.exercise.name,
+            muscle_group: e.exercise.muscle_group || 'Other',
+            category: e.exercise.category || 'Custom',
+          },
+          resolvedExerciseId: String(e.exercise.id).startsWith('temp-') ? null : e.exercise.id,
+          sets: e.sets
             .filter(s => s.completed)
-            .filter(() => !String(ex.exercise.id).startsWith('temp-'))
-            .map((s, idx) => ({
-              workout_id: workoutRow.id,
-              exercise_id: ex.exercise.id,
-              weight_kg: s.weight_kg,
-              reps: s.reps,
-              completed: true,
-              order: idx,
-            }))
-        );
-        if (setsToInsert.length > 0) {
-          toast.info(`Recording ${setsToInsert.length} ${setsToInsert.length === 1 ? 'set' : 'sets'}…`);
-          const { error: setsErr } = await supabase.from('workout_sets').insert(setsToInsert);
-          if (setsErr) throw setsErr;
-        }
+            .map((s, idx) => ({ weight_kg: s.weight_kg, reps: s.reps, order: idx })),
+        }));
 
-        // Step 3: only mark the workout finished now that sets landed.
-        const { error: finalizeErr } = await supabase
-          .from('workouts')
-          .update({
-            finished_at: new Date().toISOString(),
-            duration_seconds: workout.elapsed,
-            total_volume_kg: vol,
-          })
-          .eq('id', workoutRow.id);
-        if (finalizeErr) throw finalizeErr;
+      const entry: PendingWorkout = {
+        schema: 1,
+        clientId: newClientId(),
+        ownerId: clerkId,
+        name: workoutName,
+        notes: workoutNotes,
+        startedAtIso,
+        durationSeconds: workout.elapsed,
+        totalVolumeKg: vol,
+        linkedRoutineId,
+        exercises: pendingExercises,
+        phase: 'queued',
+        serverWorkoutId: null,
+        attempts: 0,
+        nextAttemptAt: 0,
+        createdAt: Date.now(),
+      };
+      await enqueueWorkout(clerkId, entry);
 
-        // Persist XP earned on this workout to user_profiles so the dashboard level bar advances.
-        if (clerkId) {
-          toast.info('Updating XP…');
-          try {
-            const earnedXp = getXpForWorkout(allCompleted.length, vol);
-            const { data: profileRow } = await supabase
-              .from('user_profiles')
-              .select('xp')
-              .eq('clerk_user_id', clerkId)
-              .maybeSingle();
-            const currentXp = (profileRow as any)?.xp ?? 0;
-            await supabase
-              .from('user_profiles')
-              .upsert(
-                { clerk_user_id: clerkId, xp: currentXp + earnedXp },
-                { onConflict: 'clerk_user_id' }
-              );
-          } catch {
-            // XP persistence failures should not block workout save; logged silently.
-          }
-        }
-      }
+      // Best-effort immediate push, bounded so an offline finish never hangs.
+      await Promise.race([flushNow(), sleep(2500)]);
+      const synced = !getPendingWorkouts(clerkId).some(e => e.clientId === entry.clientId);
 
-      // Offer to sync the source routine if the session added or removed
-      // exercises. Built before finishWorkout() clears the active session;
-      // best-effort — a failure here never blocks finishing.
+      // Offer the routine-sync prompt only when the workout actually reached the
+      // server (online); offline it's deferred and the source routine is left
+      // untouched. Built before finishWorkout() clears routineId.
       let syncOffer: RoutineSyncOffer | null = null;
-      try {
-        syncOffer = await buildDbRoutineSyncOffer();
-      } catch {
-        syncOffer = null;
+      if (synced) {
+        try {
+          syncOffer = await buildDbRoutineSyncOffer();
+        } catch {
+          syncOffer = null;
+        }
       }
 
       workout.finishWorkout();
@@ -1267,6 +1258,7 @@ export default function ActiveWorkoutScreen() {
       toast.hide();
     } finally {
       setSaving(false);
+      finishingRef.current = false;
     }
   };
 

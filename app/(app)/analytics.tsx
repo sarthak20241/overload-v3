@@ -20,6 +20,10 @@ import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { getPendingWorkouts } from '@/lib/syncQueue';
+import { pendingToDashboardWorkout } from '@/lib/pendingAdapters';
+import { useSync } from '@/components/SyncProvider';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   loadMeasurements, saveMeasurements,
@@ -1083,6 +1087,7 @@ export default function AnalyticsScreen() {
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const { pendingCount } = useSync();
   const { width: winWidth } = useWindowDimensions();
   const bigChartWidth = winWidth - Spacing.xl * 2 - Spacing.lg * 2;
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
@@ -1106,26 +1111,56 @@ export default function AnalyticsScreen() {
   const [addBfOpen, setAddBfOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
-    let list: WorkoutRaw[];
-    if (isGuestSession) {
-      list = getGuestWorkoutsDetailed() as any[];
-    } else {
-      const sinceIso = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
-      let q = supabase
-        .from('workouts')
-        .select('*, workout_sets(*, exercises(*))')
-        .gte('started_at', sinceIso)
-        .order('started_at', { ascending: false });
-      if (user?.id) q = q.eq('user_id', user.id);
-      const { data } = await q;
-      list = (data as WorkoutRaw[]) || [];
-    }
-    setWorkouts(list);
+    const apply = (list: WorkoutRaw[]) => {
+      setWorkouts(list);
+      const all = [...new Set(
+        list.flatMap((w) => w.workout_sets || []).map((s) => s.exercises?.name).filter(Boolean) as string[]
+      )];
+      setSelectedExercise((prev) => prev || all[0] || '');
+    };
 
-    const all = [...new Set(
-      list.flatMap((w) => w.workout_sets || []).map((s) => s.exercises?.name).filter(Boolean) as string[]
-    )];
-    setSelectedExercise((prev) => prev || all[0] || '');
+    if (isGuestSession) {
+      apply(getGuestWorkoutsDetailed() as any[]);
+      return;
+    }
+
+    const clerkId = user?.id;
+    // Prepend not-yet-synced workouts so charts include a just-finished offline
+    // session, deduped against server rows by client_id.
+    const withPending = (base: WorkoutRaw[]): WorkoutRaw[] => {
+      const ids = new Set(base.map((w: any) => w?.client_id).filter(Boolean));
+      const pending = clerkId
+        ? getPendingWorkouts(clerkId).filter((e) => !ids.has(e.clientId))
+        : [];
+      return [...pending.map(pendingToDashboardWorkout), ...base] as WorkoutRaw[];
+    };
+
+    await hydrateCache(clerkId);
+    const cached = readCache<WorkoutRaw[]>('analyticsWorkouts', clerkId);
+    // Apply pending even with no cache yet (fresh login), so a just-finished
+    // offline workout appears in the charts immediately.
+    const mergedCached = withPending(cached ?? []);
+    if (cached || mergedCached.length > 0) apply(mergedCached);
+    // Clear the spinner after the cache read; the network revalidation below
+    // runs in the background and must not hold the spinner (offline it hangs).
+    setLoading(false);
+
+    const sinceIso = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+    let q = supabase
+      .from('workouts')
+      .select('*, workout_sets(*, exercises(*))')
+      .gte('started_at', sinceIso)
+      .order('started_at', { ascending: false });
+    if (clerkId) q = q.eq('user_id', clerkId);
+    try {
+      const { data, error } = await q;
+      if (error) throw error;
+      const fresh = (data as WorkoutRaw[]) || [];
+      writeCache('analyticsWorkouts', clerkId, fresh);
+      apply(withPending(fresh));
+    } catch {
+      // Offline — keep the cache-first + pending view.
+    }
   }, [user?.id, isGuestSession]);
 
   useEffect(() => {
@@ -1136,7 +1171,7 @@ export default function AnalyticsScreen() {
     fetchData().finally(() => setLoading(false));
     loadWeightLog().then(setWeightLog);
     loadBodyFatLog().then(setBodyFatLog);
-  }, [fetchData, clerkLoaded]);
+  }, [fetchData, clerkLoaded, pendingCount]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);

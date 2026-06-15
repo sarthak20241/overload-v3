@@ -16,10 +16,15 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
 import { roundVolume } from '@/lib/format';
+import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
+import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
+import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
+import { pendingToHistoryRow } from '@/lib/pendingAdapters';
+import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -503,6 +508,7 @@ export default function HistoryScreen() {
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const toast = useToast();
+  const { pendingCount } = useSync();
   const [workouts, setWorkouts] = useState<WorkoutRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -522,32 +528,63 @@ export default function HistoryScreen() {
       setWorkouts(getGuestWorkouts() as unknown as WorkoutRaw[]);
       return;
     }
+    const clerkId = user?.id;
+
+    // Prepend not-yet-synced workouts (saved locally, still in the flush queue),
+    // deduped against rows already on the server by client_id, so a just-finished
+    // offline workout shows immediately.
+    const withPending = (base: WorkoutRaw[]): WorkoutRaw[] => {
+      const serverClientIds = new Set(
+        base.map((w: any) => w?.client_id).filter(Boolean),
+      );
+      const pending = clerkId
+        ? getPendingWorkouts(clerkId).filter((e) => !serverClientIds.has(e.clientId))
+        : [];
+      return [...pending.map(pendingToHistoryRow), ...base] as WorkoutRaw[];
+    };
+
+    await hydrateCache(clerkId);
+    const cached = readCache<WorkoutRaw[]>('historyWorkouts', clerkId);
+    // Always merge pending on top, even with no cache yet (e.g. a fresh login
+    // that never loaded History online), so a just-finished offline workout
+    // shows immediately instead of waiting for connectivity.
+    setWorkouts(withPending(cached ?? []));
+    // Clear the spinner now that we've painted from cache — the network
+    // revalidation below runs in the background and must not hold the spinner
+    // (offline it can hang, which left the screen spinning forever).
+    setLoading(false);
+
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
       .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, exercises(name))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
-    if (user?.id) q = q.eq('user_id', user.id);
-    const { data } = await q;
-
-    // Transform supabase data to include exercises grouping
-    const transformed = (data || []).map((w: any) => {
-      const exerciseMap: Record<string, ExerciseDetail> = {};
-      (w.workout_sets || []).forEach((s: any) => {
-        const exId = s.exercise_id;
-        if (!exerciseMap[exId]) {
-          exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', sets: [] };
-        }
-        exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed });
+    if (clerkId) q = q.eq('user_id', clerkId);
+    try {
+      const { data, error } = await q;
+      if (error) throw error;
+      // Transform supabase data to include exercises grouping
+      const transformed = (data || []).map((w: any) => {
+        const exerciseMap: Record<string, ExerciseDetail> = {};
+        (w.workout_sets || []).forEach((s: any) => {
+          const exId = s.exercise_id;
+          if (!exerciseMap[exId]) {
+            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', sets: [] };
+          }
+          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed });
+        });
+        return {
+          ...w,
+          exercises: Object.values(exerciseMap),
+          workout_sets: (w.workout_sets || []).map((s: any) => ({ id: s.id })),
+        };
       });
-      return {
-        ...w,
-        exercises: Object.values(exerciseMap),
-        workout_sets: (w.workout_sets || []).map((s: any) => ({ id: s.id })),
-      };
-    });
-    setWorkouts(transformed);
+      writeCache('historyWorkouts', clerkId, transformed);
+      setWorkouts(withPending(transformed));
+    } catch {
+      // Offline / fetch failed — keep the cache-first + pending view; never blank.
+    }
   }, [user?.id, isGuestSession]);
 
   useEffect(() => {
@@ -556,7 +593,7 @@ export default function HistoryScreen() {
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
     if (!clerkLoaded) return;
     fetchWorkouts().finally(() => setLoading(false));
-  }, [fetchWorkouts, clerkLoaded]);
+  }, [fetchWorkouts, clerkLoaded, pendingCount]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -587,11 +624,31 @@ export default function HistoryScreen() {
       return;
     }
 
+    // A not-yet-synced workout lives only in the local queue (its id is the
+    // clientId, not a server row), so drop it there instead of hitting Supabase.
+    const clerkId = user?.id;
+    if (clerkId && getPendingWorkouts(clerkId).some((e) => e.clientId === id)) {
+      removePendingWorkout(clerkId, id);
+      toast.success('Workout deleted');
+      return;
+    }
+
     try {
       let q = supabase.from('workouts').delete().eq('id', id);
       if (user?.id) q = q.eq('user_id', user.id);
       const { error } = await q;
       if (error) throw error;
+      // Refund the XP this workout awarded — xp is a running counter, so a
+      // delete must decrement it (otherwise deleting a synced workout leaves its
+      // XP credited forever). Best-effort; the workout row is already gone.
+      const target = previous.find((w) => w.id === id);
+      if (target) {
+        const earned = getXpForWorkout(target.workout_sets?.length ?? 0, target.total_volume_kg ?? 0);
+        if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
+      }
+      // Prune it from the persisted workout caches so an offline reopen of
+      // history/dashboard/analytics doesn't resurrect the deleted workout.
+      evictWorkoutFromCaches(user?.id, id);
       toast.success('Workout deleted');
     } catch {
       setWorkouts(previous);

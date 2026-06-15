@@ -27,9 +27,14 @@ import Animated, {
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { supabase, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findGuestRoutine } from '@/lib/guestStore';
 import { useIsGuestSession } from '@/lib/guestMode';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { newClientId } from '@/lib/syncQueue';
+import { enqueueRoutine, applyRoutineToCache, mergePendingRoutines, type PendingRoutine } from '@/lib/routineQueue';
+import { useSync } from '@/components/SyncProvider';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -337,12 +342,14 @@ function ExerciseEditorCard({
   onChange,
   onRemove,
   onOpenPicker,
+  onFieldFocus,
   index,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
   onRemove: () => void;
   onOpenPicker: () => void;
+  onFieldFocus?: () => void;
   index: number;
 }) {
   const { C } = useTheme();
@@ -413,6 +420,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.targetSets)}
                 onChangeText={(v) => onChange({ ...exercise, targetSets: Math.max(1, Math.min(10, Number(v) || 0)) })}
+                onFocus={onFieldFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -423,6 +431,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={exercise.targetReps}
                 onChangeText={(v) => onChange({ ...exercise, targetReps: v })}
+                onFocus={onFieldFocus}
                 placeholder="8-12"
                 placeholderTextColor={C.textMuted}
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -434,6 +443,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.restSeconds)}
                 onChangeText={(v) => onChange({ ...exercise, restSeconds: Math.max(0, Number(v) || 0) })}
+                onFocus={onFieldFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -447,6 +457,7 @@ function ExerciseEditorCard({
             <TextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
+              onFocus={onFieldFocus}
               placeholder="Form tip or reminder..."
               placeholderTextColor={C.textMuted}
               style={[styles.editorInput, styles.editorInputText, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -474,6 +485,7 @@ function RoutineEditorSheet({
   const { user } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const { flushNow } = useSync();
   const toast = useToast();
   // SafeAreaView reports zero insets inside a fullScreen RN Modal (separate
   // native view hierarchy the provider never measures), so the header collided
@@ -491,6 +503,13 @@ function RoutineEditorSheet({
   // Which exercise card the bottom-sheet picker is choosing for (null = closed).
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
+
+  // Keep the focused field above the keyboard on Android: SDK 54 edge-to-edge
+  // stops the window resizing for the IME, so the KeyboardAvoidingView below
+  // (behavior=undefined on Android) is a no-op and lower inputs stay buried.
+  // Disabled while the picker is open — it tracks the keyboard itself.
+  const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
+    useKeyboardAwareScroll(pickerTargetIdx === null);
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
@@ -581,31 +600,47 @@ function RoutineEditorSheet({
       );
       return;
     }
-    const { data } = await supabase
-      .from('routine_exercises')
-      .select('*, exercises(*)')
-      .eq('routine_id', routineId)
-      .order('order');
-    if (data && data.length > 0) {
-      setExercises(
-        data.map((re: any) => ({
-          id: re.exercise_id || re.id,
-          name: re.exercises?.name || '',
-          muscleGroup: re.exercises?.muscle_group || '',
-          category: re.exercises?.category || undefined,
-          targetSets: re.sets || 3,
-          targetReps: re.reps_min === re.reps_max
-            ? String(re.reps_min)
-            : `${re.reps_min}-${re.reps_max}`,
-          restSeconds: re.rest_seconds || 90,
-          // The DB column is `note` (singular). `re.notes` was a typo that
-          // silently read undefined, so opening an AI-generated routine in
-          // the editor dropped its coach cues.
-          notes: re.note || re.notes || '',
-        }))
-      );
-    } else {
-      setExercises([newExercise()]);
+    const mapRow = (re: any) => ({
+      id: re.exercise_id || re.exercises?.id || re.id,
+      name: re.exercises?.name || '',
+      muscleGroup: re.exercises?.muscle_group || '',
+      category: re.exercises?.category || undefined,
+      targetSets: re.sets || 3,
+      targetReps: re.reps_min === re.reps_max
+        ? String(re.reps_min)
+        : `${re.reps_min}-${re.reps_max}`,
+      restSeconds: re.rest_seconds || 90,
+      // The DB column is `note` (singular). `re.notes` was a typo that silently
+      // read undefined, so opening an AI-generated routine dropped its cues.
+      notes: re.note || re.notes || '',
+    });
+
+    // Cache-first: hydrate the editor from the cached routine so it is never
+    // blank offline. A blank editor saved over a real routine would wipe its
+    // exercises (performSave deletes + reinserts), so showing the cached rows
+    // protects against that data loss. The 'routines' cache nests
+    // routine_exercises(*, exercises(*)).
+    await hydrateCache(user?.id);
+    const cachedRows: any[] =
+      readCache<any[]>('routines', user?.id)?.find((r) => r.id === routineId)?.routine_exercises ?? [];
+    if (cachedRows.length > 0) setExercises(cachedRows.map(mapRow));
+
+    try {
+      const { data, error } = await supabase
+        .from('routine_exercises')
+        .select('*, exercises(*)')
+        .eq('routine_id', routineId)
+        .order('order');
+      if (error) throw error;
+      if (data && data.length > 0) {
+        setExercises(data.map(mapRow));
+      } else if (cachedRows.length === 0) {
+        setExercises([newExercise()]);
+      }
+    } catch {
+      // Offline — keep the cache-hydrated rows; only fall back to a blank card
+      // when there was no cache (a fresh editor session with no signal).
+      if (cachedRows.length === 0) setExercises([newExercise()]);
     }
   };
 
@@ -663,64 +698,42 @@ function RoutineEditorSheet({
       return;
     }
 
-    if (editingId) {
-      const { error: updErr } = await supabase
-        .from('routines')
-        .update({ name: trimmedName, description: trimmedDescription })
-        .eq('id', editingId);
-      if (updErr) throw updErr;
-
-      // Without this check a failed delete would silently leave stale
-      // routine_exercises attached, and the subsequent inserts below would
-      // result in duplicates rather than the user's intended edit.
-      const { error: delErr } = await supabase
-        .from('routine_exercises')
-        .delete()
-        .eq('routine_id', editingId);
-      if (delErr) throw delErr;
-
-      // Parallelize per-exercise: select-or-create + link insert.
-      await Promise.all(validExercises.map(async (ex, i) => {
-        const exerciseId = await findOrCreateExercise(ex);
-        const [repsMin, repsMax] = parseReps(ex.targetReps);
-        const { error: insErr } = await supabase.from('routine_exercises').insert({
-          routine_id: editingId,
-          exercise_id: exerciseId,
-          sets: ex.targetSets,
-          reps_min: repsMin,
-          reps_max: repsMax,
-          rest_seconds: ex.restSeconds,
+    // Signed-in: local-first. A new routine gets a client-generated id (used as
+    // its primary key on insert, so retries are idempotent and a workout can
+    // link to it before it syncs); an edit reuses the existing id. We
+    // optimistically update the cache and enqueue the write — never delete the
+    // live routine's exercises from the client, so an offline/mid-flight failure
+    // can't wipe them (the flusher replaces them server-side, idempotently).
+    const routineId = editingId || newClientId();
+    const entry: PendingRoutine = {
+      schema: 1,
+      routineId,
+      ownerId: clerkId,
+      name: trimmedName,
+      description: trimmedDescription || null,
+      color: null,
+      createdAtIso: new Date().toISOString(),
+      exercises: validExercises.map((ex, i) => {
+        const [reps_min, reps_max] = parseReps(ex.targetReps);
+        return {
+          def: { name: ex.name, muscle_group: ex.muscleGroup || 'Other', category: ex.category || 'Custom' },
+          resolvedExerciseId: null,
           order: i,
-          // Round-trip the coach cue (from PR #6) so editing an AI-generated
-          // routine and re-saving doesn't silently drop it.
-          note: ex.notes?.trim() ? ex.notes.trim() : null,
-        });
-        if (insErr) throw insErr;
-      }));
-    } else {
-      const { data: routineData, error: routineErr } = await supabase
-        .from('routines')
-        .insert({ user_id: clerkId, name: trimmedName, description: trimmedDescription })
-        .select()
-        .single();
-      if (routineErr) throw routineErr;
-
-      await Promise.all(validExercises.map(async (ex, i) => {
-        const exerciseId = await findOrCreateExercise(ex);
-        const [repsMin, repsMax] = parseReps(ex.targetReps);
-        const { error: insErr } = await supabase.from('routine_exercises').insert({
-          routine_id: routineData.id,
-          exercise_id: exerciseId,
           sets: ex.targetSets,
-          reps_min: repsMin,
-          reps_max: repsMax,
+          reps_min,
+          reps_max,
           rest_seconds: ex.restSeconds,
-          order: i,
           note: ex.notes?.trim() ? ex.notes.trim() : null,
-        });
-        if (insErr) throw insErr;
-      }));
-    }
+        };
+      }),
+      phase: 'queued',
+      attempts: 0,
+      nextAttemptAt: 0,
+      createdAt: Date.now(),
+    };
+    applyRoutineToCache(clerkId, entry);
+    await enqueueRoutine(clerkId, entry);
+    void flushNow();
   };
 
   const runSave = (snapshot: Parameters<typeof performSave>[0]) => {
@@ -818,8 +831,18 @@ function RoutineEditorSheet({
 
             {/* Sheet Body */}
             <ScrollView
+              ref={scrollRef}
+              {...scrollProps}
               style={{ flex: 1 }}
-              contentContainerStyle={styles.sheetBody}
+              contentContainerStyle={[
+                styles.sheetBody,
+                // Android edge-to-edge: make room for the IME ourselves; the
+                // keyboard-show handler then lifts the focused field into view.
+                // The extra headroom keeps the scroll from clamping before the
+                // field clears the keyboard. iOS is covered by the
+                // KeyboardAvoidingView wrapper.
+                Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
+              ]}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
@@ -829,6 +852,7 @@ function RoutineEditorSheet({
                 <TextInput
                   value={name}
                   onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
+                  onFocus={scrollFocusedIntoView}
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -841,6 +865,7 @@ function RoutineEditorSheet({
                 <TextInput
                   value={description}
                   onChangeText={setDescription}
+                  onFocus={scrollFocusedIntoView}
                   placeholder="Brief description..."
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -865,6 +890,7 @@ function RoutineEditorSheet({
                       }
                       onRemove={() => setExercises((prev) => prev.filter((_, idx) => idx !== i))}
                       onOpenPicker={() => setPickerTargetIdx(i)}
+                      onFieldFocus={scrollFocusedIntoView}
                     />
                   ))}
                 </View>
@@ -1083,6 +1109,7 @@ export default function RoutinesScreen() {
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const { pendingCount } = useSync();
   const toast = useToast();
   const [routines, setRoutines] = useState<RoutineRaw[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1099,12 +1126,31 @@ export default function RoutinesScreen() {
       setRoutines(getGuestRoutines() as unknown as RoutineRaw[]);
       return;
     }
-    const { data } = await supabase
-      .from('routines')
-      .select('*, routine_exercises(*, exercises(*))')
-      .eq('user_id', clerkId)
-      .order('created_at', { ascending: false });
-    setRoutines((data as RoutineRaw[]) || []);
+    // Cache-first so routines are available to start a workout with no signal.
+    await hydrateCache(clerkId);
+    const cached = readCache<RoutineRaw[]>('routines', clerkId);
+    // Merge not-yet-synced routine writes on top so an optimistic create/edit
+    // shows immediately and survives offline.
+    if (cached) setRoutines(mergePendingRoutines(cached, clerkId) as RoutineRaw[]);
+    // Clear the spinner after the cache read; the network revalidation below
+    // runs in the background and must not hold the spinner (offline it hangs).
+    setLoading(false);
+    try {
+      const { data, error } = await supabase
+        .from('routines')
+        .select('*, routine_exercises(*, exercises(*))')
+        .eq('user_id', clerkId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      const rows = (data as RoutineRaw[]) || [];
+      // Re-merge pending writes onto the fresh server list and cache the merged
+      // result so the workout screen can start a still-pending routine offline.
+      const merged = mergePendingRoutines(rows, clerkId) as RoutineRaw[];
+      writeCache('routines', clerkId, merged);
+      setRoutines(merged);
+    } catch {
+      // Offline — keep the cached routines instead of blanking the list.
+    }
   }, [user?.id, isGuestSession]);
 
   useEffect(() => {
@@ -1113,7 +1159,7 @@ export default function RoutinesScreen() {
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
     if (!clerkLoaded) return;
     fetchRoutines().finally(() => setLoading(false));
-  }, [fetchRoutines, clerkLoaded]);
+  }, [fetchRoutines, clerkLoaded, pendingCount]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
