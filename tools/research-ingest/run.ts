@@ -558,7 +558,7 @@ async function runAgentReviewPass(
         flags: decision.flags,
         superseded_kb_ids: decision.superseded_kb_ids,
         new_kb_id: newKbId,
-        agent_model: 'claude-sonnet-4-20250514',
+        agent_model: 'claude-sonnet-4-6',
         raw_response: decision.raw_response as object,
       });
       if (lErr) {

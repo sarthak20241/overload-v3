@@ -30,7 +30,7 @@ if (!CLERK_ISSUER) {
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_MAX = 30;
 const PREVIEW_MAX_CHARS = 200;
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 5;
 // Mode-aware token budgets. Chat replies stay tight (the rubric rewards
 // concise coaching prose). Single-workout generation needs ~700–1500 tokens
