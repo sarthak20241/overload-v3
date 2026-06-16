@@ -358,27 +358,47 @@ export interface EditFlushResult {
   lastError: string | null;
 }
 
+// One in-flight flush per user. The XP delta is applied once, when an entry's
+// flush reaches its final phase and is then removed from the queue. If two
+// flushes ran concurrently (e.g. a sign-out flush racing the background one),
+// both could process the same not-yet-removed entry and double-apply the delta.
+// SyncProvider.flushNow already serializes its own path, but the direct
+// sign-out call doesn't — so guard here, where it can't be bypassed.
+const _flushInFlight: Record<string, Promise<EditFlushResult> | undefined> = {};
+
 export async function flushEditQueue(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<EditFlushResult> {
-  const queue = [...getPendingEdits(userId)].sort((a, b) => a.createdAt - b.createdAt);
-  let lastError: string | null = null;
-  for (const entry of queue) {
-    if (entry.nextAttemptAt > Date.now()) continue;
-    try {
-      await flushPendingEdit(supabase, userId, entry);
-    } catch (err: any) {
-      const msg = String(err?.message ?? err);
-      patchEntry(userId, entry.workoutId, {
-        attempts: entry.attempts + 1,
-        lastError: msg,
-        nextAttemptAt: Date.now() + backoffMs(entry.attempts + 1),
-      });
-      lastError = msg;
-      if (!isDataError(err)) break; // transport failure: stop, retry the lot later
-      // data error: park this one, keep going
+  const existing = _flushInFlight[userId];
+  if (existing) return existing;
+
+  const run = (async (): Promise<EditFlushResult> => {
+    const queue = [...getPendingEdits(userId)].sort((a, b) => a.createdAt - b.createdAt);
+    let lastError: string | null = null;
+    for (const entry of queue) {
+      if (entry.nextAttemptAt > Date.now()) continue;
+      try {
+        await flushPendingEdit(supabase, userId, entry);
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        patchEntry(userId, entry.workoutId, {
+          attempts: entry.attempts + 1,
+          lastError: msg,
+          nextAttemptAt: Date.now() + backoffMs(entry.attempts + 1),
+        });
+        lastError = msg;
+        if (!isDataError(err)) break; // transport failure: stop, retry the lot later
+        // data error: park this one, keep going
+      }
     }
+    return { pendingCount: getPendingEditCount(userId), lastError };
+  })();
+
+  _flushInFlight[userId] = run;
+  try {
+    return await run;
+  } finally {
+    if (_flushInFlight[userId] === run) delete _flushInFlight[userId];
   }
-  return { pendingCount: getPendingEditCount(userId), lastError };
 }

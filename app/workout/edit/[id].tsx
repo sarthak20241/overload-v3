@@ -346,8 +346,10 @@ export default function EditWorkoutScreen() {
           totalVolumeKg: newVolume,
         });
         if (!ok) {
-          // It just synced out of the queue — reopen edits it as a synced workout.
-          toast.info('That workout just synced. Reopen it to edit.');
+          // Either it finished syncing (gone from the queue) or its upload is
+          // mid-flight (phase past 'queued') — both unsafe to edit in place.
+          // Once it lands on the server, reopening edits it as a synced workout.
+          toast.info("That workout's still syncing. Give it a moment, then reopen to edit.");
           leave();
           return;
         }
