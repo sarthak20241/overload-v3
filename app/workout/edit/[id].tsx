@@ -28,6 +28,7 @@ type Backend = 'guest' | 'pending' | 'synced';
 // field, partial decimals); they're parsed back to numbers on save.
 interface EditSet { uid: string; weight: string; reps: string }
 interface EditExercise {
+  uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
   name: string;
   muscle_group?: string;
@@ -35,15 +36,19 @@ interface EditExercise {
   sets: EditSet[];
 }
 
-// Stable per-row key. Without it, set rows keyed by array index make React reuse
-// a row's component for a different set when a middle set is removed, shuffling
-// focus / IME state. Each set carries a uid for the duration of the edit.
+// Stable per-row keys. Without them, rows keyed by array index make React reuse
+// a row's component for a different item when a middle one is removed (or two
+// exercises share a name), shuffling focus / IME state. Each set and exercise
+// carries a uid for the duration of the edit.
 let _setSeq = 0;
 const mkSet = (weight: string | number, reps: string | number): EditSet => ({
   uid: `set-${_setSeq++}`,
   weight: String(weight),
   reps: String(reps),
 });
+
+let _exSeq = 0;
+const mkExUid = (): string => `ex-${_exSeq++}`;
 
 function formatDateLong(iso?: string) {
   if (!iso) return '';
@@ -97,6 +102,7 @@ export default function EditWorkoutScreen() {
       let ex = map.get(exId);
       if (!ex) {
         ex = {
+          uid: mkExUid(),
           exerciseId: exId,
           name: s.exercises?.name ?? 'Exercise',
           muscle_group: s.exercises?.muscle_group,
@@ -126,6 +132,7 @@ export default function EditWorkoutScreen() {
           setName(w.name);
           setNotes(w.notes ?? '');
           setExercises((w.exercises ?? []).map((ex) => ({
+            uid: mkExUid(),
             exerciseId: null,
             name: ex.name,
             muscle_group: ex.muscle_group,
@@ -152,6 +159,7 @@ export default function EditWorkoutScreen() {
           setName(pending.name);
           setNotes(pending.notes ?? '');
           setExercises(pending.exercises.map((ex) => ({
+            uid: mkExUid(),
             exerciseId: ex.resolvedExerciseId,
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
@@ -177,6 +185,7 @@ export default function EditWorkoutScreen() {
           setName(existingEdit.name);
           setNotes(existingEdit.notes ?? '');
           setExercises(existingEdit.exercises.map((ex) => ({
+            uid: mkExUid(),
             exerciseId: ex.resolvedExerciseId,
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
@@ -216,6 +225,7 @@ export default function EditWorkoutScreen() {
             setName(cacheRow.name ?? '');
             setNotes(cacheRow.notes ?? '');
             setExercises((cacheRow.exercises ?? []).map((ex: any) => ({
+              uid: mkExUid(),
               exerciseId: null,
               name: ex.name,
               muscle_group: ex.muscle_group,
@@ -268,6 +278,7 @@ export default function EditWorkoutScreen() {
     setExercises((prev) => [
       ...prev,
       {
+        uid: mkExUid(),
         exerciseId: null,
         name: def.name,
         muscle_group: def.muscle_group,
@@ -482,7 +493,7 @@ export default function EditWorkoutScreen() {
             </View>
           ) : (
             exercises.map((ex, ei) => (
-              <View key={`${ex.name}-${ei}`} style={[styles.exerciseCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+              <View key={ex.uid} style={[styles.exerciseCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
                 <View style={styles.exerciseHeader}>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.exerciseName, { color: C.foreground }]} numberOfLines={1}>{ex.name}</Text>

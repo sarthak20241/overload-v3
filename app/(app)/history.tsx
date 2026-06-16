@@ -683,7 +683,8 @@ export default function HistoryScreen() {
       if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
       // Drop any queued edit for this workout so it doesn't flush against a
       // now-deleted row — the INSERT would FK-fail (23503), get misread as a
-      // parkable data error, and retry forever on every reconnect.
+      // parkable data error, and keep retrying on every reconnect (backoff caps
+      // at ~60s, so it never stops on its own).
       if (user?.id) removePendingEdit(user.id, id);
       // Prune it from the persisted workout caches so an offline reopen of
       // history/dashboard/analytics doesn't resurrect the deleted workout.
