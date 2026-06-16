@@ -143,7 +143,7 @@ async function main() {
       flags: d.flags,
       downgrade_reason: d.downgrade_reason,
       superseded_kb_ids: d.superseded_kb_ids,
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       reviewed_at: new Date().toISOString(),
     };
     const { error: upErr } = await client

@@ -163,7 +163,7 @@ export function validateSupersede(
 
 // ── Anthropic call ──────────────────────────────────────────────────────────
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-sonnet-4-6';
 
 const REVIEW_TOOL = {
   name: 'submit_review_decision',
