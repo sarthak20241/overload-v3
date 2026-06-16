@@ -9,6 +9,7 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
@@ -24,6 +25,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
 import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
+import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -328,10 +330,12 @@ function SessionCard({
   workout,
   colorIndex,
   onDelete,
+  onEdit,
 }: {
   workout: WorkoutRaw;
   colorIndex: number;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   const { C } = useTheme();
   const [expanded, setExpanded] = useState(false);
@@ -407,13 +411,26 @@ function SessionCard({
               </TouchableOpacity>
             </View>
           ) : (
-            <TouchableOpacity
-              onPress={() => setDeleteConfirm(true)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={styles.deleteIconBtn}
-            >
-              <Feather name="trash-2" size={13} color={C.textDim} />
-            </TouchableOpacity>
+            <View style={styles.actionIconsRow}>
+              <TouchableOpacity
+                onPress={onEdit}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={styles.deleteIconBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Edit workout"
+              >
+                <Feather name="edit-2" size={13} color={C.textDim} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setDeleteConfirm(true)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={styles.deleteIconBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Delete workout"
+              >
+                <Feather name="trash-2" size={13} color={C.textDim} />
+              </TouchableOpacity>
+            </View>
           )}
           <Feather
             name={expanded ? 'chevron-up' : 'chevron-down'}
@@ -504,6 +521,7 @@ function SkeletonCards() {
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function HistoryScreen() {
   const { C } = useTheme();
+  const router = useRouter();
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
@@ -540,7 +558,12 @@ export default function HistoryScreen() {
       const pending = clerkId
         ? getPendingWorkouts(clerkId).filter((e) => !serverClientIds.has(e.clientId))
         : [];
-      return [...pending.map(pendingToHistoryRow), ...base] as WorkoutRaw[];
+      // Overlay any not-yet-synced edits on top so a revalidate of the server
+      // rows doesn't paint over an edit that hasn't reached Supabase yet.
+      return applyEditsToHistoryRows(clerkId, [
+        ...pending.map(pendingToHistoryRow),
+        ...base,
+      ]) as WorkoutRaw[];
     };
 
     await hydrateCache(clerkId);
@@ -595,6 +618,15 @@ export default function HistoryScreen() {
     fetchWorkouts().finally(() => setLoading(false));
   }, [fetchWorkouts, clerkLoaded, pendingCount]);
 
+  // Re-pull on focus so an edit made on the edit screen (guest / pending /
+  // synced) is reflected the moment the user returns to History. fetchWorkouts
+  // is cache-first, so this paints instantly and revalidates in the background.
+  useFocusEffect(
+    useCallback(() => {
+      if (clerkLoaded) fetchWorkouts();
+    }, [clerkLoaded, fetchWorkouts]),
+  );
+
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchWorkouts();
@@ -640,12 +672,20 @@ export default function HistoryScreen() {
       if (error) throw error;
       // Refund the XP this workout awarded — xp is a running counter, so a
       // delete must decrement it (otherwise deleting a synced workout leaves its
-      // XP credited forever). Best-effort; the workout row is already gone.
+      // XP credited forever). If an edit was still queued, its XP delta never
+      // reached the server, so refund the ORIGINAL baseline (not the edited
+      // values). Best-effort; the workout row is already gone.
       const target = previous.find((w) => w.id === id);
-      if (target) {
-        const earned = getXpForWorkout(target.workout_sets?.length ?? 0, target.total_volume_kg ?? 0);
-        if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
-      }
+      const pendingEdit = user?.id ? getPendingEdit(user.id, id) : null;
+      const refundSets = pendingEdit ? pendingEdit.baseSetCount : (target?.workout_sets?.length ?? 0);
+      const refundVol = pendingEdit ? pendingEdit.baseVolumeKg : (target?.total_volume_kg ?? 0);
+      const earned = getXpForWorkout(refundSets, refundVol);
+      if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
+      // Drop any queued edit for this workout so it doesn't flush against a
+      // now-deleted row — the INSERT would FK-fail (23503), get misread as a
+      // parkable data error, and keep retrying on every reconnect (backoff caps
+      // at ~60s, so it never stops on its own).
+      if (user?.id) removePendingEdit(user.id, id);
       // Prune it from the persisted workout caches so an offline reopen of
       // history/dashboard/analytics doesn't resurrect the deleted workout.
       evictWorkoutFromCaches(user?.id, id);
@@ -871,6 +911,7 @@ export default function HistoryScreen() {
                     workout={workout}
                     colorIndex={wIdx}
                     onDelete={() => handleDelete(workout.id)}
+                    onEdit={() => router.push(`/workout/edit/${workout.id}`)}
                   />
                 ))}
               </View>
@@ -1145,6 +1186,7 @@ const styles = StyleSheet.create({
   wMetaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   wMetaText: { fontSize: FontSize.xs },
   wActions: { alignItems: 'center', gap: 8, marginTop: 2 },
+  actionIconsRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   deleteIconBtn: {
     width: 28,
     height: 28,

@@ -29,6 +29,7 @@ import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
+import { flushEditQueue, getPendingEditCount } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
@@ -213,12 +214,18 @@ export default function ProfileScreen() {
     // Best-effort: push any queued workouts before the JWT drops. The queue is
     // keyed per user, so anything that still can't sync (offline) is parked
     // under this account and flushes the next time they sign in here — not lost.
-    if (prevUserId && (getPendingCount(prevUserId) > 0 || getPendingRoutineCount(prevUserId) > 0)) {
+    if (
+      prevUserId &&
+      (getPendingCount(prevUserId) > 0 ||
+        getPendingRoutineCount(prevUserId) > 0 ||
+        getPendingEditCount(prevUserId) > 0)
+    ) {
       try {
         await Promise.race([
           (async () => {
             await flushRoutineQueue(supabase, prevUserId);
             await flushQueue(supabase, prevUserId);
+            await flushEditQueue(supabase, prevUserId);
           })(),
           new Promise((r) => setTimeout(r, 3000)),
         ]);

@@ -10,6 +10,7 @@
  * dashboard/history screens, so this stays current without a dedicated fetch.
  */
 import { getPendingWorkouts } from '@/lib/syncQueue';
+import { applyEditsToDashboardRows, applyEditsToHistoryRows } from '@/lib/editQueue';
 import { readCache } from '@/lib/localCache';
 
 type Sets = { weight_kg: number; reps: number }[];
@@ -47,11 +48,13 @@ export function getLocalPreviousPerformance(
   }
 
   // 2) Locally cached workouts (analytics 180d ∪ dashboard 90d), deduped by id.
+  //    Overlay not-yet-synced edits so a corrected workout feeds the right
+  //    prefill before the edit reaches the server.
   const seen = new Set<string>();
-  const cachedWorkouts = [
+  const cachedWorkouts = applyEditsToDashboardRows(userId, [
     ...(readCache<any[]>('analyticsWorkouts', userId) ?? []),
     ...(readCache<any[]>('dashboardWorkouts', userId) ?? []),
-  ];
+  ]);
   for (const w of cachedWorkouts) {
     if (w?.id) {
       if (seen.has(w.id)) continue;
@@ -82,7 +85,7 @@ export function getLocalPreviousPerformance(
   // 3) History cache, which stores a different (grouped) shape:
   //    exercises: [{ name, sets: [{ weight_kg, reps, completed }] }]. Covers a
   //    user who has only opened History (deduped against the above by id).
-  for (const w of readCache<any[]>('historyWorkouts', userId) ?? []) {
+  for (const w of applyEditsToHistoryRows(userId, readCache<any[]>('historyWorkouts', userId) ?? [])) {
     if (w?.id) {
       if (seen.has(w.id)) continue;
       seen.add(w.id);

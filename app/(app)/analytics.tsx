@@ -23,6 +23,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getPendingWorkouts } from '@/lib/syncQueue';
 import { pendingToDashboardWorkout } from '@/lib/pendingAdapters';
+import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
@@ -1132,7 +1133,12 @@ export default function AnalyticsScreen() {
       const pending = clerkId
         ? getPendingWorkouts(clerkId).filter((e) => !ids.has(e.clientId))
         : [];
-      return [...pending.map(pendingToDashboardWorkout), ...base] as WorkoutRaw[];
+      // Overlay not-yet-synced edits so charts reflect an edited synced workout
+      // even after a background revalidate of the server rows.
+      return applyEditsToDashboardRows(clerkId, [
+        ...pending.map(pendingToDashboardWorkout),
+        ...base,
+      ]) as WorkoutRaw[];
     };
 
     await hydrateCache(clerkId);

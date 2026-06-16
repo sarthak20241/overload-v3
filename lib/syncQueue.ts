@@ -121,6 +121,34 @@ function patchEntry(userId: string, clientId: string, patch: Partial<PendingWork
   void persist(userId);
 }
 
+/**
+ * Edit a not-yet-uploaded workout in place (name / notes / exercises / volume),
+ * before its background flush begins. Only entries still in the 'queued' phase
+ * are editable: once the flush has started (workout row inserted / sets
+ * uploaded), mutating the entry would desync the server — the flush's
+ * exactly-once set guard skips re-uploading the edited sets while phase 3 still
+ * writes the new volume + XP, leaving old sets with a new total. Returns false
+ * in that case (and when the entry is gone) so the editor defers to the
+ * synced-edit path. Sets are recomputed by the caller, so XP/volume flow through
+ * the normal flush untouched.
+ */
+export function updatePendingWorkout(
+  userId: string,
+  clientId: string,
+  patch: { name: string; notes: string | null; exercises: PendingExercise[]; totalVolumeKg: number },
+): boolean {
+  const e = _byUser[userId]?.find((x) => x.clientId === clientId);
+  // Gone (already synced) or mid-flush (phase past 'queued') — not safe to edit
+  // in place; the caller routes those through the synced-edit queue instead.
+  if (!e || e.phase !== 'queued') return false;
+  e.name = patch.name;
+  e.notes = patch.notes;
+  e.exercises = patch.exercises;
+  e.totalVolumeKg = patch.totalVolumeKg;
+  void persist(userId);
+  return true;
+}
+
 export function removePendingWorkout(userId: string, clientId: string): void {
   const list = _byUser[userId];
   if (!list) return;
