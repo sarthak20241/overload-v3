@@ -25,7 +25,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
 import { getPendingWorkouts, removePendingWorkout } from '@/lib/syncQueue';
 import { pendingToHistoryRow } from '@/lib/pendingAdapters';
-import { applyEditsToHistoryRows } from '@/lib/editQueue';
+import { applyEditsToHistoryRows, getPendingEdit, removePendingEdit } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -672,12 +672,19 @@ export default function HistoryScreen() {
       if (error) throw error;
       // Refund the XP this workout awarded — xp is a running counter, so a
       // delete must decrement it (otherwise deleting a synced workout leaves its
-      // XP credited forever). Best-effort; the workout row is already gone.
+      // XP credited forever). If an edit was still queued, its XP delta never
+      // reached the server, so refund the ORIGINAL baseline (not the edited
+      // values). Best-effort; the workout row is already gone.
       const target = previous.find((w) => w.id === id);
-      if (target) {
-        const earned = getXpForWorkout(target.workout_sets?.length ?? 0, target.total_volume_kg ?? 0);
-        if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
-      }
+      const pendingEdit = user?.id ? getPendingEdit(user.id, id) : null;
+      const refundSets = pendingEdit ? pendingEdit.baseSetCount : (target?.workout_sets?.length ?? 0);
+      const refundVol = pendingEdit ? pendingEdit.baseVolumeKg : (target?.total_volume_kg ?? 0);
+      const earned = getXpForWorkout(refundSets, refundVol);
+      if (earned > 0) supabase.rpc('award_xp', { p_earned: -earned }).then(() => {}, () => {});
+      // Drop any queued edit for this workout so it doesn't flush against a
+      // now-deleted row — the INSERT would FK-fail (23503), get misread as a
+      // parkable data error, and retry forever on every reconnect.
+      if (user?.id) removePendingEdit(user.id, id);
       // Prune it from the persisted workout caches so an offline reopen of
       // history/dashboard/analytics doesn't resurrect the deleted workout.
       evictWorkoutFromCaches(user?.id, id);

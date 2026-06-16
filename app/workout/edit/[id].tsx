@@ -26,7 +26,7 @@ type Backend = 'guest' | 'pending' | 'synced';
 
 // Set/exercise values are edited as strings so typing feels natural (clearing a
 // field, partial decimals); they're parsed back to numbers on save.
-interface EditSet { weight: string; reps: string }
+interface EditSet { uid: string; weight: string; reps: string }
 interface EditExercise {
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
   name: string;
@@ -34,6 +34,16 @@ interface EditExercise {
   category?: string;
   sets: EditSet[];
 }
+
+// Stable per-row key. Without it, set rows keyed by array index make React reuse
+// a row's component for a different set when a middle set is removed, shuffling
+// focus / IME state. Each set carries a uid for the duration of the edit.
+let _setSeq = 0;
+const mkSet = (weight: string | number, reps: string | number): EditSet => ({
+  uid: `set-${_setSeq++}`,
+  weight: String(weight),
+  reps: String(reps),
+});
 
 function formatDateLong(iso?: string) {
   if (!iso) return '';
@@ -95,7 +105,7 @@ export default function EditWorkoutScreen() {
         };
         map.set(exId, ex);
       }
-      ex.sets.push({ weight: String(s.weight_kg ?? 0), reps: String(s.reps ?? 0) });
+      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0));
     }
     return [...map.values()];
   };
@@ -120,7 +130,7 @@ export default function EditWorkoutScreen() {
             name: ex.name,
             muscle_group: ex.muscle_group,
             category: ex.category,
-            sets: ex.sets.map((s) => ({ weight: String(s.weight_kg), reps: String(s.reps) })),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
           setLoading(false);
@@ -146,7 +156,7 @@ export default function EditWorkoutScreen() {
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
-            sets: ex.sets.map((s) => ({ weight: String(s.weight_kg), reps: String(s.reps) })),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
           setLoading(false);
@@ -171,7 +181,7 @@ export default function EditWorkoutScreen() {
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
-            sets: ex.sets.map((s) => ({ weight: String(s.weight_kg), reps: String(s.reps) })),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
           setMeta(cacheMeta);
@@ -210,7 +220,7 @@ export default function EditWorkoutScreen() {
               name: ex.name,
               muscle_group: ex.muscle_group,
               category: ex.category,
-              sets: (ex.sets ?? []).map((s: any) => ({ weight: String(s.weight_kg), reps: String(s.reps) })),
+              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
             setMeta(cacheMeta);
@@ -238,7 +248,7 @@ export default function EditWorkoutScreen() {
     setExercises((prev) => prev.map((ex, i) => {
       if (i !== ei) return ex;
       const last = ex.sets[ex.sets.length - 1];
-      return { ...ex, sets: [...ex.sets, { weight: last?.weight ?? '0', reps: last?.reps ?? '10' }] };
+      return { ...ex, sets: [...ex.sets, mkSet(last?.weight ?? '0', last?.reps ?? '10')] };
     }));
   };
 
@@ -262,7 +272,7 @@ export default function EditWorkoutScreen() {
         name: def.name,
         muscle_group: def.muscle_group,
         category: def.category,
-        sets: Array.from({ length: count }, () => ({ weight: '0', reps })),
+        sets: Array.from({ length: count }, () => mkSet('0', reps)),
       },
     ]);
     setShowAddExercise(false);
@@ -500,7 +510,7 @@ export default function EditWorkoutScreen() {
                 </View>
 
                 {ex.sets.map((s, si) => (
-                  <View key={si} style={styles.setRow}>
+                  <View key={s.uid} style={styles.setRow}>
                     <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
                     <TextInput
                       value={s.weight}
