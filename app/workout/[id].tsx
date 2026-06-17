@@ -1,18 +1,22 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
   StyleSheet, ActivityIndicator, Pressable, BackHandler,
   Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeOut, SlideInRight, SlideInLeft,
   SlideInDown, SlideOutDown, Easing,
+  useSharedValue, useAnimatedStyle, withTiming, withSpring, runOnJS,
 } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { usePreferences } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
@@ -33,6 +37,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { roundVolume } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
+import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
@@ -89,7 +94,7 @@ export default function ActiveWorkoutScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { height: winH } = useWindowDimensions();
+  const { width: winW, height: winH } = useWindowDimensions();
   const workout = useWorkout();
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   // Guests (no Clerk session) hit Supabase as the anon role, where RLS rejects
@@ -98,6 +103,7 @@ export default function ActiveWorkoutScreen() {
   const supabase = useSupabaseClient();
   const toast = useToast();
   const { flushNow } = useSync();
+  const { prefs } = usePreferences();
   const [kbHeight, setKbHeight] = useState(0);
 
   const [loading, setLoading] = useState(!workout.isActive);
@@ -105,6 +111,7 @@ export default function ActiveWorkoutScreen() {
   const [inputReps, setInputReps] = useState('10');
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [exerciseTimer, setExerciseTimer] = useState(0);
   const [restTimer, setRestTimer] = useState(0);
   // True from the moment a set is logged until the user either logs the next
@@ -135,6 +142,15 @@ export default function ActiveWorkoutScreen() {
   // list deviated from it. Non-null renders the "Update Routine?" alert;
   // navigation to history is deferred until the user answers.
   const [routineSync, setRoutineSync] = useState<RoutineSyncOffer | null>(null);
+
+  // Keep the screen awake during a workout when the user has opted in. Tied to
+  // this screen's lifetime: activates on mount (or when the pref flips on) and
+  // always releases the lock on unmount / when the pref is turned off.
+  useEffect(() => {
+    if (!prefs.keepAwake) return;
+    activateKeepAwakeAsync('workout');
+    return () => { deactivateKeepAwake('workout'); };
+  }, [prefs.keepAwake]);
   // In-workout coach. `coachContext` is a snapshot of the live session taken
   // when the user opens the coach (see openCoach), kept stable for that chat.
   const [coachOpen, setCoachOpen] = useState(false);
@@ -159,7 +175,6 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
-  const prevSets = currentEx?.previousSets;
 
   // Snapshot the live session and open the coach. Taking the snapshot here
   // (rather than passing live state) keeps the chat's context stable for the
@@ -739,12 +754,18 @@ export default function ActiveWorkoutScreen() {
     }));
   };
 
-  // Remove exercise
+  // Remove exercise. Removing the last one is allowed — the screen falls back
+  // to its "No exercises yet" empty state, where the user can add another or
+  // cancel out. (Blocking the delete with no feedback just dead-ends them.)
   const removeExercise = () => {
-    if (exercises.length <= 1) return;
+    if (exercises.length === 0) return;
     const updated = exercises.filter((_, i) => i !== currentIdx);
     const newStarted = exerciseStarted.filter((_, i) => i !== currentIdx);
     const newFinished = exerciseFinished.filter((_, i) => i !== currentIdx);
+    // Keep the measured pill frames index-aligned with the exercise list so the
+    // reveal logic can't read a stale frame after a removal.
+    pillLayoutsRef.current.splice(currentIdx, 1);
+    pillLayoutsRef.current.length = updated.length;
     workout.updateExercises(updated);
     setExerciseStarted(newStarted);
     setExerciseFinished(newFinished);
@@ -1268,8 +1289,6 @@ export default function ActiveWorkoutScreen() {
     .flatMap(e => e.sets.filter(s => s.completed).map(s => s.weight_kg * s.reps))
     .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
-  const isStarted = exerciseStarted[currentIdx];
-  const isFinished = exerciseFinished[currentIdx];
 
   // Rest timer: `restTimer` counts up since the last logged set. We present it
   // as a countdown against the exercise's recommended rest (restSeconds). A
@@ -1283,153 +1302,124 @@ export default function ActiveWorkoutScreen() {
     ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
     : fmt(restTimer);
 
-  if (loading) {
+  // ---- Horizontal exercise pager ------------------------------------------
+  // Drag-follow swipe between exercises. `scrollX` (the strip's translateX, in
+  // px) is the SOLE driver of page position and lives on the UI thread, so a
+  // swipe never waits on React. Committing a swipe only moves `currentIdx` to
+  // re-target which page is interactive; it does NOT move the strip (the commit
+  // writes the same offset the release animation already settled on), so the
+  // hand-off is positionally seamless with no flash. Only the centered page is
+  // interactive — the neighbours render the identical body read-only so they
+  // look the same as they slide in.
+  const exercisesRef = useRef(exercises);
+  exercisesRef.current = exercises;
+  const scrollX = useSharedValue(-currentIdx * winW);
+  const startX = useSharedValue(0);
+  const countSV = useSharedValue(exercises.length);
+  useEffect(() => { countSV.value = exercises.length; }, [exercises.length]);
+  // Keep the strip aligned with currentIdx for every NON-gesture change (pill /
+  // arrow taps, auto-advance on finishing an exercise, add / remove). After a
+  // swipe commit this writes the exact offset the release animation already
+  // landed on, so it's a no-op there. Re-aligns on width change (rotation) too.
+  useEffect(() => { scrollX.value = -currentIdx * winW; }, [currentIdx, winW]);
+
+  // ---- Active-pill reveal (top exercise nav strip) -------------------------
+  // Keep the top exercise-pill strip in sync with the open exercise. As the
+  // current index changes (swipe, arrows, or a pill tap) we scroll the strip
+  // just enough to bring the active pill fully into view with a little margin —
+  // a minimal reveal rather than always re-centring, so stepping through
+  // exercises one at a time doesn't make the whole row crawl sideways. Pill
+  // widths vary with the exercise name, so we measure each pill's frame on
+  // layout and scroll in content coordinates, tracking the live scroll offset.
+  const pillLayoutsRef = useRef<{ x: number; width: number }[]>([]);
+  const pillScrollXRef = useRef(0);
+  // Index whose reveal has already been issued, so the currentIdx effect skips a
+  // redundant scroll for a swipe that pre-revealed its target alongside the page
+  // snap (see the gesture's onEnd).
+  const lastRevealedPillRef = useRef(currentIdx);
+  const revealActivePill = useCallback((idx: number) => {
+    lastRevealedPillRef.current = idx;
+    const frame = pillLayoutsRef.current[idx];
+    const scroller = pillsScrollRef.current;
+    if (!frame || !scroller) return;
+    const margin = 48; // breathing room so a sliver of the neighbour stays visible
+    const off = pillScrollXRef.current;
+    const left = frame.x;
+    const right = frame.x + frame.width;
+    // Already comfortably on-screen — leave the strip where the user left it.
+    if (left >= off + margin && right <= off + winW - margin) return;
+    // Otherwise scroll the minimum needed to clear the near edge. ScrollView
+    // clamps the upper bound; we only guard the lower bound.
+    const target = left < off + margin ? left - margin : right - winW + margin;
+    scroller.scrollTo({ x: Math.max(0, target), animated: true });
+  }, [winW]);
+  // Reveal on index change for arrow / pill-tap navigation. Swipes pre-reveal in
+  // the gesture's onEnd (coupled with the page snap) and set lastRevealedPillRef,
+  // so this skips them. On first mount it no-ops (ref seeded to currentIdx); the
+  // per-pill onLayout reveals the initial / resumed exercise once measured.
+  useEffect(() => {
+    if (lastRevealedPillRef.current === currentIdx) return;
+    revealActivePill(currentIdx);
+  }, [currentIdx, revealActivePill]);
+
+  const commitSwipe = useCallback((target: number) => {
+    setCurrentIdx(() => {
+      const max = exercisesRef.current.length - 1;
+      return Math.min(Math.max(target, 0), max);
+    });
+  }, [setCurrentIdx]);
+
+  const pagerPan = useMemo(() => Gesture.Pan()
+    // Claim only clearly-horizontal drags; vertical ones fall through to the
+    // page's own ScrollView.
+    .activeOffsetX([-14, 14])
+    .failOffsetY([-12, 12])
+    .onStart(() => { startX.value = scrollX.value; })
+    .onUpdate((e) => {
+      const W = winW;
+      const minX = -(countSV.value - 1) * W;
+      let next = startX.value + e.translationX;
+      // Rubber-band past the first / last exercise.
+      if (next > 0) next = next * 0.28;
+      else if (next < minX) next = minX + (next - minX) * 0.28;
+      scrollX.value = next;
+    })
+    .onEnd((e) => {
+      const W = winW;
+      const startIdx = Math.round(-startX.value / W);
+      const dragged = scrollX.value - startX.value;
+      const last = countSV.value - 1;
+      const dist = W * 0.22;       // commit once dragged past ~22% of the width
+      const fling = 550;           // …or on a fast flick
+      let target = startIdx;
+      if ((dragged <= -dist || e.velocityX <= -fling) && startIdx < last) target = startIdx + 1;
+      else if ((dragged >= dist || e.velocityX >= fling) && startIdx > 0) target = startIdx - 1;
+      if (target !== startIdx) {
+        // Glide the pill strip in sync with the page snap (rather than after the
+        // swipe commits 230ms later) so the two motions read as one.
+        runOnJS(revealActivePill)(target);
+        scrollX.value = withTiming(-target * W, { duration: 230, easing: Easing.out(Easing.cubic) }, (fin) => {
+          if (fin) runOnJS(commitSwipe)(target);
+        });
+      } else {
+        // Snap back to the current page.
+        scrollX.value = withSpring(-startIdx * W, { damping: 22, stiffness: 220, mass: 0.6, overshootClamping: true });
+      }
+    }),
+  [winW, commitSwipe, revealActivePill]);
+
+  const stripStyle = useAnimatedStyle(() => ({ transform: [{ translateX: scrollX.value }] }));
+
+  // Renders one exercise page. `interactive` is true only for the centered
+  // page (live timers / rest card / input wiring); neighbours render the
+  // same markup read-only so the slide-in looks identical.
+  const renderExerciseBody = (idx: number, interactive: boolean) => {
+    const currentEx = exercises[idx];
+    if (!currentEx) return null;
+    const isStarted = exerciseStarted[idx];
+    const isFinished = exerciseFinished[idx];
+    const prevSets = currentEx.previousSets;
     return (
-      <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
-        <ActivityIndicator color={Colors.primary} size="large" />
-        <BottomNav />
-      </View>
-    );
-  }
-
-  return (
-    <View style={[styles.container, { backgroundColor: C.background }]}>
-      {/* TOP BAR */}
-      <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity onPress={handleCancel} style={styles.cancelBtn}>
-          <Feather name="x" size={14} color={Colors.danger} />
-        </TouchableOpacity>
-
-        <View style={styles.topCenter}>
-          <Text style={[styles.routineName, { color: C.foreground }]} numberOfLines={1}>
-            {workout.routineName}
-          </Text>
-          <View style={styles.timerRow}>
-            <Feather name="clock" size={11} color={workout.isPaused ? AMBER : C.textDim} />
-            <Text style={[styles.timerText, { color: workout.isPaused ? AMBER : C.textMuted }]}>{fmt(workout.elapsed)}</Text>
-            {workout.isPaused && (
-              <View style={styles.pausedBadge}>
-                <Text style={styles.pausedBadgeText}>PAUSED</Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        <TouchableOpacity
-          onPress={handleFinishWorkout}
-          disabled={saving}
-          style={[styles.finishBtn, saving && { opacity: 0.6 }]}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color={Colors.primaryFg} />
-          ) : (
-            <>
-              <Feather name="check" size={12} color={Colors.primaryFg} />
-              <Text style={styles.finishBtnText}>Finish</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      {/* EXERCISE NAV PILLS */}
-      {exercises.length > 0 && (
-        <ScrollView
-          ref={pillsScrollRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.pillsContainer}
-          style={styles.pillsScroll}
-        >
-          {exercises.map((ex, i) => {
-            const isCurrent = i === currentIdx;
-            const isDone = exerciseFinished[i];
-            return (
-              <TouchableOpacity
-                key={`${ex.exercise.id}-${i}`}
-                onPress={() => goTo(i)}
-                style={[
-                  styles.pill,
-                  {
-                    backgroundColor: isCurrent
-                      ? Colors.primary
-                      : isDone
-                        ? C.primarySubtle
-                        : C.muted,
-                    borderColor: isCurrent
-                      ? Colors.primary
-                      : isDone
-                        ? C.primaryBorder
-                        : C.border,
-                  },
-                ]}
-              >
-                {isDone && <Feather name="check" size={10} color={C.accentText} style={{ marginRight: 4 }} />}
-                <Text
-                  style={[
-                    styles.pillText,
-                    {
-                      color: isCurrent
-                        ? Colors.primaryFg
-                        : isDone
-                          ? C.accentText
-                          : C.textMuted,
-                    },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {ex.exercise.name.length > 16 ? ex.exercise.name.slice(0, 14) + '…' : ex.exercise.name}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-          <TouchableOpacity
-            onPress={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
-            style={[styles.addPill, { borderColor: C.border }]}
-          >
-            <Feather name="plus" size={13} color={C.textMuted} />
-          </TouchableOpacity>
-        </ScrollView>
-      )}
-
-      {/* MAIN CONTENT */}
-      <ScrollView
-        ref={mainScrollRef}
-        style={styles.mainScroll}
-        contentContainerStyle={[
-          styles.mainContent,
-          // Android edge-to-edge: the window doesn't resize for the IME, so
-          // make room for the keyboard ourselves; the keyboard-show listener
-          // then scrolls the set logger into view. iOS pads via
-          // automaticallyAdjustKeyboardInsets below.
-          Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight },
-        ]}
-        showsVerticalScrollIndicator={false}
-        // The keyboard-show handler scrolls relative to the current offset,
-        // so keep it tracked here.
-        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
-        scrollEventThrottle={16}
-        // With the keyboard open after typing a weight/rep, taps on "Log Set"
-        // and the +/− steppers must land on the first tap — the default
-        // ("never") swallows that tap to dismiss the keyboard.
-        keyboardShouldPersistTaps="handled"
-        // iOS only: insets the scroll content by the keyboard height and
-        // scrolls the focused field into view. Once a few sets are logged the
-        // input card sits in the lower half of the screen, under the keyboard.
-        automaticallyAdjustKeyboardInsets
-      >
-        {exercises.length === 0 ? (
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyIcon, { backgroundColor: C.muted }]}>
-              <Feather name="target" size={28} color={C.textDim} />
-            </View>
-            <Text style={[styles.emptyTitle, { color: C.foreground }]}>No exercises yet</Text>
-            <Text style={[styles.emptySub, { color: C.textMuted }]}>Add an exercise to get started</Text>
-            <TouchableOpacity onPress={() => setShowAddExercise(true)} style={styles.addExerciseBtn}>
-              <Feather name="plus" size={15} color={Colors.primaryFg} />
-              <Text style={styles.addExerciseBtnText}>Add Exercise</Text>
-            </TouchableOpacity>
-          </View>
-        ) : currentEx && (
           <>
             {/* Exercise Header */}
             <View style={styles.exerciseHeader}>
@@ -1455,7 +1445,7 @@ export default function ActiveWorkoutScreen() {
             </View>
 
             {/* Exercise timer */}
-            {isStarted && !isFinished && (
+            {interactive && isStarted && !isFinished && (
               <Animated.View entering={FadeIn} style={[styles.timersRow, { backgroundColor: C.muted }]}>
                 <View style={styles.timerBlock}>
                   <Text style={[styles.timerValue, { color: C.accentText }]}>{fmt(exerciseTimer)}</Text>
@@ -1468,7 +1458,7 @@ export default function ActiveWorkoutScreen() {
                 exercise's recommended rest and can be ended early with "Skip
                 rest", so the user no longer has to log the next set just to
                 clear a running rest timer. */}
-            {isStarted && !isFinished && isResting && (
+            {interactive && isStarted && !isFinished && isResting && (
               <Animated.View
                 entering={FadeIn}
                 exiting={FadeOut}
@@ -1585,7 +1575,7 @@ export default function ActiveWorkoutScreen() {
             {isStarted && !isFinished && (
               <Animated.View entering={FadeIn} style={styles.inputArea}>
                 {/* Input Card */}
-                <View ref={inputCardRef} style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                <View ref={interactive ? inputCardRef : undefined} style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
                   <View style={styles.inputRow}>
                     {/* Weight */}
                     <View style={styles.inputGroup}>
@@ -1722,9 +1712,199 @@ export default function ActiveWorkoutScreen() {
               onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
               onBlur={() => { kbScrollTargetRef.current = null; }}
             />
+            {renderSettingsLink()}
           </>
-        )}
-      </ScrollView>
+    );
+  };
+
+  // Quiet, low-emphasis entry to workout settings. Lives at the foot of the
+  // session content (and the empty state) rather than the top bar, so it reads
+  // as a secondary aside and never competes with cancel / timer / Finish.
+  const renderSettingsLink = () => (
+    <TouchableOpacity
+      onPress={() => setShowSettings(true)}
+      style={styles.settingsLink}
+      accessibilityLabel="Workout settings"
+    >
+      <Feather name="sliders" size={13} color={C.textMuted} />
+      <Text style={[styles.settingsLinkText, { color: C.textMuted }]}>Workout settings</Text>
+    </TouchableOpacity>
+  );
+
+  if (loading) {
+    return (
+      <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
+        <ActivityIndicator color={Colors.primary} size="large" />
+        <BottomNav />
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.container, { backgroundColor: C.background }]}>
+      {/* TOP BAR */}
+      <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
+        <TouchableOpacity onPress={handleCancel} style={styles.cancelBtn}>
+          <Feather name="x" size={14} color={Colors.danger} />
+        </TouchableOpacity>
+
+        <View style={styles.topCenter}>
+          <Text style={[styles.routineName, { color: C.foreground }]} numberOfLines={1}>
+            {workout.routineName}
+          </Text>
+          <View style={styles.timerRow}>
+            <Feather name="clock" size={11} color={workout.isPaused ? AMBER : C.textDim} />
+            <Text style={[styles.timerText, { color: workout.isPaused ? AMBER : C.textMuted }]}>{fmt(workout.elapsed)}</Text>
+            {workout.isPaused && (
+              <View style={styles.pausedBadge}>
+                <Text style={styles.pausedBadgeText}>PAUSED</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        <TouchableOpacity
+          onPress={handleFinishWorkout}
+          disabled={saving}
+          style={[styles.finishBtn, saving && { opacity: 0.6 }]}
+        >
+          {saving ? (
+            <ActivityIndicator size="small" color={Colors.primaryFg} />
+          ) : (
+            <>
+              <Feather name="check" size={12} color={Colors.primaryFg} />
+              <Text style={styles.finishBtnText}>Finish</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* EXERCISE NAV PILLS */}
+      {exercises.length > 0 && (
+        <ScrollView
+          ref={pillsScrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.pillsContainer}
+          style={styles.pillsScroll}
+          onScroll={(e) => { pillScrollXRef.current = e.nativeEvent.contentOffset.x; }}
+          scrollEventThrottle={16}
+        >
+          {exercises.map((ex, i) => {
+            const isCurrent = i === currentIdx;
+            const isDone = exerciseFinished[i];
+            return (
+              <TouchableOpacity
+                key={`${ex.exercise.id}-${i}`}
+                onPress={() => goTo(i)}
+                onLayout={(e) => {
+                  const firstMeasure = pillLayoutsRef.current[i] === undefined;
+                  pillLayoutsRef.current[i] = { x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width };
+                  // Only the first measurement reveals; later index changes go
+                  // through the effect / onEnd. This stops a width change (e.g.
+                  // the done-check icon appearing) from yanking the strip back
+                  // against a manual scroll.
+                  if (firstMeasure && i === currentIdx) revealActivePill(i);
+                }}
+                style={[
+                  styles.pill,
+                  {
+                    backgroundColor: isCurrent
+                      ? Colors.primary
+                      : isDone
+                        ? C.primarySubtle
+                        : C.muted,
+                    borderColor: isCurrent
+                      ? Colors.primary
+                      : isDone
+                        ? C.primaryBorder
+                        : C.border,
+                  },
+                ]}
+              >
+                {isDone && <Feather name="check" size={10} color={C.accentText} style={{ marginRight: 4 }} />}
+                <Text
+                  style={[
+                    styles.pillText,
+                    {
+                      color: isCurrent
+                        ? Colors.primaryFg
+                        : isDone
+                          ? C.accentText
+                          : C.textMuted,
+                    },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {ex.exercise.name.length > 16 ? ex.exercise.name.slice(0, 14) + '…' : ex.exercise.name}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity
+            onPress={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
+            style={[styles.addPill, { borderColor: C.border }]}
+          >
+            <Feather name="plus" size={13} color={C.textMuted} />
+          </TouchableOpacity>
+        </ScrollView>
+      )}
+
+      {/* MAIN CONTENT — horizontal exercise pager (see renderExerciseBody) */}
+      {exercises.length === 0 ? (
+        <ScrollView
+          style={styles.mainScroll}
+          contentContainerStyle={styles.mainContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.emptyState}>
+            <View style={[styles.emptyIcon, { backgroundColor: C.muted }]}>
+              <Feather name="target" size={28} color={C.textDim} />
+            </View>
+            <Text style={[styles.emptyTitle, { color: C.foreground }]}>No exercises yet</Text>
+            <Text style={[styles.emptySub, { color: C.textMuted }]}>Add an exercise to get started</Text>
+            <TouchableOpacity onPress={() => setShowAddExercise(true)} style={styles.addExerciseBtn}>
+              <Feather name="plus" size={15} color={Colors.primaryFg} />
+              <Text style={styles.addExerciseBtnText}>Add Exercise</Text>
+            </TouchableOpacity>
+            {renderSettingsLink()}
+          </View>
+        </ScrollView>
+      ) : (
+        <GestureDetector gesture={pagerPan}>
+          <View style={styles.pager}>
+            <Animated.View style={[styles.pagerStrip, stripStyle]}>
+              {exercises.map((pageEx, i) => {
+                const isCur = i === currentIdx;
+                return (
+                  <Animated.View
+                    key={`${pageEx.exercise.id}-${i}`}
+                    style={[styles.pagerPage, { width: winW, left: i * winW }]}
+                    pointerEvents={isCur ? 'auto' : 'none'}
+                  >
+                    <ScrollView
+                      ref={isCur ? mainScrollRef : undefined}
+                      style={styles.mainScroll}
+                      contentContainerStyle={[
+                        styles.mainContent,
+                        Platform.OS === 'android' && isCur && kbHeight > 0 && { paddingBottom: kbHeight },
+                      ]}
+                      showsVerticalScrollIndicator={false}
+                      scrollEnabled={isCur}
+                      onScroll={isCur ? (e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; } : undefined}
+                      scrollEventThrottle={16}
+                      keyboardShouldPersistTaps="handled"
+                      automaticallyAdjustKeyboardInsets={isCur}
+                    >
+                      {renderExerciseBody(i, isCur)}
+                    </ScrollView>
+                  </Animated.View>
+                );
+              })}
+            </Animated.View>
+          </View>
+        </GestureDetector>
+      )}
 
       {/* BOTTOM PROGRESS BAR — sits above nav bar */}
       {exercises.length > 0 && (
@@ -1779,6 +1959,8 @@ export default function ActiveWorkoutScreen() {
         onSelect={(ex, custom) => (custom ? addCustomExercise(ex, custom) : addExercise(ex))}
         selectedNames={exercises.map((e) => e.exercise.name)}
       />
+
+      <WorkoutSettingsSheet visible={showSettings} onClose={() => setShowSettings(false)} />
 
       {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
           other sheets. Lets the user name the session (pre-filled from the
@@ -2146,6 +2328,9 @@ const styles = StyleSheet.create({
   // Main
   mainScroll: { flex: 1 },
   mainContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, paddingBottom: 180 },
+  pager: { flex: 1, overflow: 'hidden' },
+  pagerStrip: { flex: 1 },
+  pagerPage: { position: 'absolute', top: 0, bottom: 0 },
 
   // Empty
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
@@ -2162,6 +2347,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   addExerciseBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
+  settingsLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: Spacing.md, marginTop: Spacing.xs },
+  settingsLinkText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
 
   // Exercise header
   exerciseHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: Spacing.xl },
