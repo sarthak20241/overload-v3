@@ -34,6 +34,7 @@ import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
+import { haptics } from '@/lib/haptics';
 import { roundVolume } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
@@ -550,6 +551,7 @@ export default function ActiveWorkoutScreen() {
 
   // Start exercise
   const handleStartExercise = () => {
+    haptics.tap();
     setExerciseStarted(prev => {
       const next = [...prev];
       next[currentIdx] = true;
@@ -562,6 +564,7 @@ export default function ActiveWorkoutScreen() {
   // Log a set
   const handleLogSet = () => {
     if (!currentEx) return;
+    haptics.tap(); // set logged
     const weight = parseFloat(inputWeight) || 0;
     const reps = parseInt(inputReps) || 0;
 
@@ -592,6 +595,7 @@ export default function ActiveWorkoutScreen() {
 
   // Finish current exercise
   const handleFinishExercise = () => {
+    haptics.success();
     setExerciseFinished(prev => {
       const next = [...prev];
       next[currentIdx] = true;
@@ -1585,7 +1589,7 @@ export default function ActiveWorkoutScreen() {
                           onBlur={() => { setEditField((p) => (p === 'weight' ? null : p)); kbScrollTargetRef.current = null; }}
                         />
                         {editField === 'weight' && (
-                          <TouchableOpacity onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
                             <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
                           </TouchableOpacity>
                         )}
@@ -1593,7 +1597,7 @@ export default function ActiveWorkoutScreen() {
 
                       <View style={[styles.colVal, editField === 'reps' && styles.activeCellRow]}>
                         {editField === 'reps' && (
-                          <TouchableOpacity onPress={() => setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1)))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
                             <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
                           </TouchableOpacity>
                         )}
@@ -1607,7 +1611,7 @@ export default function ActiveWorkoutScreen() {
                           onBlur={() => { setEditField((p) => (p === 'reps' ? null : p)); kbScrollTargetRef.current = null; }}
                         />
                         {editField === 'reps' && (
-                          <TouchableOpacity onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String((parseInt(inputReps) || 0) + 1)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
                             <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
                           </TouchableOpacity>
                         )}

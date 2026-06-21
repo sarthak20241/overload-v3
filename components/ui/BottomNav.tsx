@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
+import { haptics } from '@/lib/haptics';
 import { useEffect } from 'react';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
@@ -27,7 +28,7 @@ function NavButton({
   return (
     <TouchableOpacity
       style={styles.navItem}
-      onPress={onPress}
+      onPress={() => { if (!active) haptics.selection(); onPress(); }}
       activeOpacity={0.7}
       accessibilityRole="tab"
       accessibilityLabel={`${label} tab`}

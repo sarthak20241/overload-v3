@@ -276,6 +276,19 @@ Not a checkbox; it is "can a tired person use this between sets."
      signed-in.
    - Static copy sweep.
 3. **P3 — Micro-interactions + haptics (Pillar D).** Install expo-haptics; the crafted feel.
+   STATUS 2026-06-21 (v1 DONE + verified on sim): expo-haptics ~15.0.8 installed; lib/haptics.ts
+   wrapper (lazy/defensive require so it no-ops on a dev client without the native module, no crash;
+   map: tap/tick/selection/success/warning/error). Wired: BottomNav tab change (selection), workout
+   set-complete (tap) + steppers (tick) + start (tap) + finish (success), WorkoutSettingsSheet toggle
+   (selection). Primitives: components/ui/PressableScale.tsx (Reanimated 0.97 press-scale + haptic) and
+   components/ui/AnimatedNumber.tsx (RAF count-up). Applied: dashboard Start button + TodaySuggestionCard
+   (PressableScale), dashboard Volume (AnimatedNumber count-up). Verified on sim: app boots clean, count-
+   up renders, press-scale cards open, tabs switch (haptics no-op on sim/this build, no crash).
+   CAVEAT: expo-haptics is NATIVE -> to FEEL haptics the dev client must be REBUILT (npx expo run:ios or
+   EAS dev build) and run on a physical device (sim has no Taptic Engine). v1 is UNCOMMITTED.
+   P3 REMAINING (task #11): rest-done haptic + rest-card color/pulse; PR celebration (lime pulse + badge);
+   set-commit anim (scale+check); analytics stat-grid roll-ups; history card expand; branded pull-to-
+   refresh; warm empty states (Drona offers to build); coach bolt pulse on new insight.
 4. **P4 — Number/unit formatting system (Pillar C).**
 5. **P5 — Light-mode parity (Pillar E).** Light mode confirmed via screenshots.
 6. **P6 — Accessibility pass (Pillar F).**

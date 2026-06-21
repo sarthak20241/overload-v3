@@ -17,6 +17,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { usePreferences } from '@/hooks/usePreferences';
 import { Portal } from '@/components/ui/Portal';
+import { haptics } from '@/lib/haptics';
 
 // Workout settings live here. This is the home for "complexity on tap" — the
 // table stays clean by default, and anything a power user wants to switch on
@@ -115,7 +116,7 @@ function ToggleRow({ icon, tint, title, subtitle, value, onValueChange }: Toggle
       </View>
       <Switch
         value={value}
-        onValueChange={onValueChange}
+        onValueChange={(v) => { haptics.selection(); onValueChange(v); }}
         trackColor={{ true: Colors.primary, false: C.border }}
         thumbColor={Platform.OS === 'android' ? (value ? Colors.primaryFg : '#f4f4f5') : undefined}
         ios_backgroundColor={C.border}

@@ -1,7 +1,8 @@
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Spacing, Radius, FontSize, FontWeight, IconSize } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { PressableScale } from '@/components/ui/PressableScale';
 
 // Element 2: the coach's suggestion for today, and the dashboard's PRIMARY action
 // (it leads above the coach card). A LEAN row highlighted by a soft lime TINT fill
@@ -47,8 +48,7 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
   const title = isNew ? "Build today's session" : (routine?.name || "Today's session");
 
   return (
-    <TouchableOpacity
-      activeOpacity={0.85}
+    <PressableScale
       onPress={onPress}
       style={[s.card, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
     >
@@ -65,7 +65,7 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
         </View>
       </View>
       <Feather name="chevron-right" size={IconSize.md} color={C.textMuted} />
-    </TouchableOpacity>
+    </PressableScale>
   );
 }
 

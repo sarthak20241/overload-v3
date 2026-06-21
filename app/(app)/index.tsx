@@ -23,6 +23,8 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
+import { PressableScale } from '@/components/ui/PressableScale';
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { getPendingWorkouts } from '@/lib/syncQueue';
 import { pendingToDashboardWorkout, pendingXp } from '@/lib/pendingAdapters';
 import { applyEditsToDashboardRows } from '@/lib/editQueue';
@@ -530,14 +532,13 @@ export default function DashboardScreen() {
           </View>
           <View style={styles.headerRight}>
             {/* Start button */}
-            <TouchableOpacity
+            <PressableScale
               style={styles.startBtn}
-              activeOpacity={0.8}
               onPress={() => router.push('/workout/new')}
             >
               <Feather name="activity" size={16} color={Colors.primaryFg} />
               <Text style={styles.startBtnText}>Start</Text>
-            </TouchableOpacity>
+            </PressableScale>
             {/* Avatar */}
             <TouchableOpacity
               onPress={() => router.push('/(app)/profile')}
@@ -626,9 +627,11 @@ export default function DashboardScreen() {
               <Text style={[styles.statLabel, { color: Colors.stat.volume }]}>VOLUME</Text>
             </View>
             <View style={styles.statValueRow}>
-              <Text style={[styles.statValue, { color: C.foreground }]}>
-                {totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume}
-              </Text>
+              <AnimatedNumber
+                style={[styles.statValue, { color: C.foreground }]}
+                value={totalVolume}
+                format={(n) => (n > 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))}
+              />
               <Text style={[styles.statSuffix, { color: C.textMuted }]}> kg</Text>
             </View>
             {weeklyVolumes.some(v => v > 0) ? (
