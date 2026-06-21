@@ -289,7 +289,13 @@ Not a checkbox; it is "can a tired person use this between sets."
    P3 REMAINING (task #11): rest-done haptic + rest-card color/pulse; PR celebration (lime pulse + badge);
    set-commit anim (scale+check); analytics stat-grid roll-ups; history card expand; branded pull-to-
    refresh; warm empty states (Drona offers to build); coach bolt pulse on new insight.
-4. **P4 — Number/unit formatting system (Pillar C).**
+4. **P4 — Number/unit formatting system (Pillar C).** v1 DONE + committed 7e3e058 (2026-06-21):
+   lib/format abbreviateNumber (k-abbrev, 1 decimal <100k) + formatWeight; unified all NON-workout
+   volume displays (dashboard, analytics, history per-session + all-time which mixed "168t"/"kg");
+   AnimatedNumber now uses tabular figures (count-ups don't wobble); history empty state warmed to
+   coach voice. REMAINING (workout screen, BLOCKED by the other agent in [id].tsx): "Previous: 60kg x
+   8 reps", the live timer tabular figures, save-as-routine meta copy. Also a copy sweep of remaining
+   clinical strings.
 5. **P5 — Light-mode parity (Pillar E).** Light mode confirmed via screenshots.
 6. **P6 — Accessibility pass (Pillar F).**
 7. **P7 — Rhythm and continuity cleanups (Pillar G).**

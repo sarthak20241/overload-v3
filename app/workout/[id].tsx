@@ -8,7 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeIn, FadeOut, SlideInRight, SlideInLeft,
+  FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft,
   SlideInDown, SlideOutDown, Easing,
   useSharedValue, useAnimatedStyle, withTiming, withSpring, runOnJS,
 } from 'react-native-reanimated';
@@ -35,7 +35,7 @@ import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
-import { roundVolume } from '@/lib/format';
+import { roundVolume, abbreviateNumber, formatWeight } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
@@ -121,6 +121,8 @@ export default function ActiveWorkoutScreen() {
   const [loading, setLoading] = useState(!workout.isActive || isSwitchAttempt);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
+  // Briefly true after logging a weight PR, to flash the celebration badge.
+  const [prCelebrate, setPrCelebrate] = useState(false);
   // Which field in the active set row is "open" for adjustment. Null = the row
   // is a clean glance-and-confirm row; tapping a number opens that one field's
   // −/+ (and focuses it for optional typing), leaving the other a plain number.
@@ -486,6 +488,20 @@ export default function ActiveWorkoutScreen() {
     }
   }, [currentIdx]);
 
+  // A success buzz the moment a rest period crosses its target (rest done).
+  const restDoneFiredRef = useRef(false);
+  useEffect(() => {
+    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    if (isResting && target > 0 && restTimer >= target) {
+      if (!restDoneFiredRef.current) {
+        haptics.success();
+        restDoneFiredRef.current = true;
+      }
+    } else {
+      restDoneFiredRef.current = false;
+    }
+  }, [restTimer, isResting, currentIdx, exercises]);
+
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
   // On pause: clear the intervals and remember each elapsed offset.
   // On resume: shift each start-time ref forward by the paused duration so the
@@ -574,9 +590,25 @@ export default function ActiveWorkoutScreen() {
   // Log a set
   const handleLogSet = () => {
     if (!currentEx) return;
-    haptics.tap(); // set logged
     const weight = parseFloat(inputWeight) || 0;
     const reps = parseInt(inputReps) || 0;
+
+    // A weight PR: this set beats the best weight seen on this lift (previous
+    // sessions + earlier sets today). Celebrate it instead of the plain tap.
+    const prevBest = Math.max(
+      0,
+      ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
+      ...currentEx.sets.filter(s => s.completed).map(s => s.weight_kg),
+    );
+    // Only a PR if there's a prior record to beat (don't celebrate a brand-new lift's first set).
+    const isPR = weight > 0 && (currentEx.previousSets?.length ?? 0) > 0 && weight > prevBest;
+    if (isPR) {
+      haptics.success();
+      setPrCelebrate(true);
+      setTimeout(() => setPrCelebrate(false), 2200);
+    } else {
+      haptics.tap(); // set logged
+    }
 
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
@@ -1555,6 +1587,16 @@ export default function ActiveWorkoutScreen() {
                 two different components and inflated the screen height. */}
             {isStarted && (
               <View style={styles.setTable}>
+                {prCelebrate && (
+                  <Animated.View
+                    entering={ZoomIn.duration(260)}
+                    exiting={FadeOut.duration(200)}
+                    style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 5, backgroundColor: Colors.primary, paddingHorizontal: 12, paddingVertical: 5, borderRadius: Radius.full, marginBottom: 10 }}
+                  >
+                    <Feather name="award" size={13} color={Colors.primaryFg} />
+                    <Text style={{ fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg }}>New PR</Text>
+                  </Animated.View>
+                )}
                 <View style={styles.setHeadRow}>
                   <Text style={[styles.setHeadCell, styles.colSet, { color: C.textDim }]}>SET</Text>
                   <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>KG</Text>
@@ -1564,7 +1606,7 @@ export default function ActiveWorkoutScreen() {
 
                 {/* Done sets — settled history, receded. */}
                 {completed.map((s, i) => (
-                  <Animated.View key={i} entering={FadeIn} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
+                  <Animated.View key={i} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
                     <Text style={[styles.setNum, styles.colSet, { color: C.textDim }]}>{i + 1}</Text>
                     <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.weight_kg}</Text>
                     <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.reps}</Text>
@@ -1643,7 +1685,7 @@ export default function ActiveWorkoutScreen() {
                         past last session's set count (or it's a brand-new lift). */}
                     <Text style={[styles.lastTime, { color: C.textMuted }]}>
                       {prevSets && prevSets[doneCount]
-                        ? `Last time: ${prevSets[doneCount].weight_kg} × ${prevSets[doneCount].reps}`
+                        ? `Last time: ${formatWeight(prevSets[doneCount].weight_kg)} × ${prevSets[doneCount].reps}`
                         : prevSets && prevSets.length > 0
                           ? 'Past your last session. Keep going.'
                           : 'First time on this one. Find a weight you own.'}
@@ -1677,7 +1719,7 @@ export default function ActiveWorkoutScreen() {
                 </View>
                 <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
                 <Text style={[styles.finishedSub, { color: C.textMuted }]}>
-                  {currentEx.sets.filter(s => s.completed).length} sets · {roundVolume(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
+                  {currentEx.sets.filter(s => s.completed).length} sets · {abbreviateNumber(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
                 </Text>
                 <TouchableOpacity
                   onPress={() => {
