@@ -409,7 +409,7 @@ function HistoryDrawer({
               <View style={styles.historyRight}>
                 {diff !== 0 && (
                   <View style={[styles.diffBadge, { backgroundColor: diff > 0 ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)' }]}>
-                    <Text style={[styles.diffText, { color: diff > 0 ? '#ef4444' : '#10b981' }]}>
+                    <Text style={[styles.diffText, { color: diff > 0 ? Colors.danger : Colors.success }]}>
                       {diff > 0 ? '+' : ''}{diff.toFixed(1)}
                     </Text>
                   </View>
@@ -467,7 +467,7 @@ function TrendCard({
             {sorted.length === 0 ? null : (
               <>
                 {diff !== 0 && (
-                  <Text style={[styles.diffText, { color: diff > 0 ? '#ef4444' : '#10b981', fontWeight: FontWeight.bold }]}>
+                  <Text style={[styles.diffText, { color: diff > 0 ? Colors.danger : Colors.success, fontWeight: FontWeight.bold }]}>
                     {diff > 0 ? '+' : ''}{diff.toFixed(1)} {unit}
                   </Text>
                 )}
@@ -500,7 +500,7 @@ function TrendCard({
               tooltipTextColor={C.foreground}
             />
             {goal != null && (
-              <Text style={[styles.goalLabel, { color: '#f59e0b' }]}>Goal: {goal} {unit}</Text>
+              <Text style={[styles.goalLabel, { color: Colors.warning }]}>Goal: {goal} {unit}</Text>
             )}
           </View>
         ) : (
@@ -942,7 +942,7 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
                             <Text style={[styles.mDropdownItemLabel, { color: C.foreground }]} numberOfLines={1}>{f.label}</Text>
                             <Text style={[styles.mDropdownItemValue, { color: C.foreground }]}>{v.current}</Text>
                             {v.change !== undefined && v.change !== 0 && (
-                              <Text style={[styles.mDropdownItemChange, { color: v.change > 0 ? '#10b981' : '#ef4444' }]}>
+                              <Text style={[styles.mDropdownItemChange, { color: v.change > 0 ? Colors.success : Colors.danger }]}>
                                 {v.change > 0 ? '+' : ''}{v.change}
                               </Text>
                             )}
@@ -961,16 +961,16 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
             <View style={styles.mStatsRow}>
               {selectedVal.change !== undefined && selectedVal.change !== 0 && (
                 <View style={[styles.mStatBadge, { backgroundColor: selectedVal.change > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                  <Feather name={selectedVal.change > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.change > 0 ? '#10b981' : '#ef4444'} />
-                  <Text style={[styles.mStatBadgeText, { color: selectedVal.change > 0 ? '#10b981' : '#ef4444' }]}>
+                  <Feather name={selectedVal.change > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.change > 0 ? Colors.success : Colors.danger} />
+                  <Text style={[styles.mStatBadgeText, { color: selectedVal.change > 0 ? Colors.success : Colors.danger }]}>
                     {selectedVal.change > 0 ? '+' : ''}{selectedVal.change} last
                   </Text>
                 </View>
               )}
               {selectedVal.totalChange !== undefined && selectedVal.totalChange !== 0 && (
                 <View style={[styles.mStatBadge, { backgroundColor: selectedVal.totalChange > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                  <Feather name={selectedVal.totalChange > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.totalChange > 0 ? '#10b981' : '#ef4444'} />
-                  <Text style={[styles.mStatBadgeText, { color: selectedVal.totalChange > 0 ? '#10b981' : '#ef4444' }]}>
+                  <Feather name={selectedVal.totalChange > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.totalChange > 0 ? Colors.success : Colors.danger} />
+                  <Text style={[styles.mStatBadgeText, { color: selectedVal.totalChange > 0 ? Colors.success : Colors.danger }]}>
                     {selectedVal.totalChange > 0 ? '+' : ''}{selectedVal.totalChange} total
                   </Text>
                 </View>
@@ -1102,6 +1102,10 @@ export default function AnalyticsScreen() {
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [insights, setInsights] = useState<string[]>([]);
+  // True only when `insights` came from a successful real coach call (not the
+  // local fallback). We cache a real read to avoid re-billing, but a fallback
+  // stays retryable.
+  const [insightsFromCoach, setInsightsFromCoach] = useState(false);
 
   // Body stats
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
@@ -1281,20 +1285,89 @@ export default function AnalyticsScreen() {
     await saveBodyFatLog(next);
   };
 
+  // A quick local read in Coach Drona's voice. Used for guests (the coach is
+  // account-gated) and as a fallback if the real call fails. No em dashes.
+  const localInsights = (): string[] => {
+    const out: string[] = [];
+    if (weekWorkouts.length > 0) out.push(`${weekWorkouts.length} sessions in the bag this week. That consistency is what moves the needle.`);
+    if (weekVolume > 0) out.push(`You moved ${weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : weekVolume}kg this week. Add a set somewhere next week and we keep climbing.`);
+    if (pr) out.push(`Your ${selectedExercise} top set sits at ${pr}kg. Next time, chase a clean 2.5kg jump.`);
+    if (avgDurationMin > 0) out.push(`Sessions average ${avgDurationMin} min. That is a solid window for volume and recovery both.`);
+    if (out.length === 0) out.push('Log a few sessions and I will start reading your training for you.');
+    return out;
+  };
+
+  // Strip list markers and normalize dashes from a coach line. A dash BETWEEN
+  // digits is a range ("8–10 reps") and stays a hyphen; a dash used as
+  // punctuation becomes a comma. No em dashes survive.
+  const cleanLine = (raw: string): string =>
+    raw
+      .replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '')
+      .replace(/(\d)\s*[—–]\s*(\d)/g, '$1-$2')
+      .replace(/\s*[—–]\s*/g, ', ')
+      .trim();
+
+  // The edge function returns these as a 200 with body text when it can't
+  // answer; treat them as a failure so we never show an apology as an "insight".
+  const isServerFallback = (t: string): boolean =>
+    /sorry, i couldn't generate/i.test(t) || /hit the tool-call limit/i.test(t);
+
+  // Insights from the real Coach Drona edge function (it injects the user's
+  // training history server-side). A successful real read is cached per session
+  // so re-opening does not re-bill; a fallback stays retryable. Guests (no
+  // coach access) always get the local read.
   const runAnalyze = async () => {
     setInsightsOpen(true);
+    // Skip re-billing only when we already have a REAL coach read this session.
+    if (insights.length > 0 && insightsFromCoach) return;
     setAiLoading(true);
     setInsights([]);
-    await new Promise((r) => setTimeout(r, 1200));
-    const stats: string[] = [];
-    if (weekWorkouts.length > 0) stats.push(`You've completed ${weekWorkouts.length} workouts this week — great consistency.`);
-    if (weekVolume > 0) stats.push(`Weekly volume is ${weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : weekVolume}kg. Try adding one more set per exercise next week.`);
-    if (pr) stats.push(`Your current PR on ${selectedExercise} is ${pr}kg. Aim for a small 2.5kg increase next session.`);
-    if (avgDurationMin > 0) stats.push(`Your average session is ${avgDurationMin} minutes — balanced for hypertrophy and recovery.`);
-    if (stats.length === 0) stats.push('Log a few workouts to unlock personalized insights from Coach Drona.');
-    setInsights(stats);
-    setAiLoading(false);
+
+    if (isGuestSession || !user) {
+      await new Promise((r) => setTimeout(r, 400));
+      setInsightsFromCoach(false);
+      setInsights(localInsights());
+      setAiLoading(false);
+      return;
+    }
+
+    try {
+      const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr ? `, ${selectedExercise} top set ${pr}kg` : ''}.`;
+      const messages = [{
+        role: 'user',
+        content: `${summary} Give me 3 short, specific insights on where my training is right now and what to focus on next. One line each, no intro, no bullets, no dashes.`,
+      }];
+      // Bound the call so a stalled connection can't spin the card forever.
+      const { data, error } = await Promise.race([
+        supabase.functions.invoke('ai-coach', { body: { messages } }),
+        new Promise<{ data: any; error: any }>((_, reject) =>
+          setTimeout(() => reject(new Error('coach timeout')), 25000)),
+      ]);
+      const text = (!error && data?.response) ? String(data.response) : '';
+      const lines = isServerFallback(text)
+        ? []
+        : text.split('\n').map(cleanLine).filter((l) => l.length > 0).slice(0, 4);
+      if (lines.length > 0) {
+        setInsightsFromCoach(true);
+        setInsights(lines);
+      } else {
+        setInsightsFromCoach(false);
+        setInsights(localInsights());
+      }
+    } catch {
+      setInsightsFromCoach(false);
+      setInsights(localInsights());
+    } finally {
+      setAiLoading(false);
+    }
   };
+
+  // Re-enable a fresh coach read when the week's data materially changes, so
+  // the card never shows insights that no longer match the numbers below it.
+  useEffect(() => {
+    setInsights([]);
+    setInsightsFromCoach(false);
+  }, [weekWorkouts.length, weekVolume, avgDurationMin]);
 
   const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
@@ -1549,7 +1622,7 @@ export default function AnalyticsScreen() {
                       <Text style={[styles.prName, { color: C.foreground }]} numberOfLines={1}>{name}</Text>
                       <View style={styles.prRight}>
                         {trend !== 0 && (
-                          <Text style={[styles.prTrend, { color: trend > 0 ? '#10b981' : '#ef4444' }]}>
+                          <Text style={[styles.prTrend, { color: trend > 0 ? Colors.success : Colors.danger }]}>
                             {trend > 0 ? '+' : ''}{trend}kg
                           </Text>
                         )}

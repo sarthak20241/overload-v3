@@ -9,6 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
 import { ThemeProvider, useTheme } from '@/hooks/useTheme';
 import { BasicInfoProvider } from '@/hooks/useBasicInfo';
+import { PreferencesProvider } from '@/hooks/usePreferences';
 import { hydrateGuestStore } from '@/lib/guestStore';
 import { hydrateActiveWorkout } from '@/lib/activeWorkoutPersistence';
 import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
@@ -43,6 +44,7 @@ function AppInner() {
   return (
     <ToastProvider>
       <BasicInfoProvider>
+        <PreferencesProvider>
         <WorkoutProvider>
           {/*
             SyncProvider owns the background flush loop for the offline workout
@@ -68,6 +70,7 @@ function AppInner() {
             </PortalProvider>
           </SyncProvider>
         </WorkoutProvider>
+        </PreferencesProvider>
       </BasicInfoProvider>
     </ToastProvider>
   );

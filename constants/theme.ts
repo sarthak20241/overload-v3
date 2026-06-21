@@ -82,7 +82,9 @@ export const Colors = {
   // Routine / stat accent colors
   routineColors: ['#84cc16', '#06b6d4', '#a855f7', '#f59e0b', '#10b981', '#f97316'],
 
-  // Stat colors (used in dashboard widgets)
+  // Stat colors (used in dashboard widgets). The canonical data-viz palette:
+  // reference these everywhere a metric needs a colour, so e.g. Volume is the
+  // SAME colour on the dashboard and on analytics (it previously diverged).
   stat: {
     workouts: '#84cc16',
     streak: '#f97316',
@@ -92,11 +94,75 @@ export const Colors = {
     sets: '#10b981',
   },
 
+  // Muscle-group accents (dashboard donut + tags). Categorical, theme-independent.
+  // Toned: distinct hues (colour still encodes which muscle) but desaturated to a
+  // cohesive, harmonised set instead of clashing full-saturation primaries.
+  muscle: {
+    Chest: '#e09a9a',
+    Back: '#9bb8e3',
+    Shoulders: '#eccf94',
+    Quads: '#97cbb4',
+    Hamstrings: '#98c9d4',
+    Biceps: '#c3aee0',
+    Triceps: '#e6a8c8',
+    Calves: '#c4dd9a',
+    Core: '#f0b58f',
+    Glutes: '#9fd0c4',
+    'Full Body': '#b6a8e0',
+  } as Record<string, string>,
+
+  // Profile data-field row-icon accents. Categorical.
+  rowIcon: {
+    gender: '#a855f7',
+    height: '#06b6d4',
+    weight: '#10b981',
+    goal: '#f59e0b',
+    bodyFat: '#ef4444',
+    bug: '#f97316',
+    trainingGoal: '#84cc16',
+    experience: '#3b82f6',
+    frequency: '#8b5cf6',
+    trainingAge: '#ec4899',
+    dob: '#14b8a6',
+  },
+
+  // History calendar intensity (lime-green heatmap; alpha by session count).
+  calendar: {
+    base: '#84cc16', // a trained day (opacity scales with intensity)
+    multi: '#a3e635', // 2 sessions
+    max: '#facc15', // 3+ sessions
+  },
+
+  // Paused / warning amber (mini-bar paused badge, workout pause state).
+  paused: '#fbbf24',
+
   // Semantic
   danger: '#ef4444',
   dangerBg: 'rgba(239,68,68,0.10)',
   success: '#10b981',
   warning: '#f59e0b',
+};
+
+// Convert a hex colour + alpha (0–1) to an rgba() string. Use instead of
+// hand-writing rgba() literals or `${hex}33`-style suffixes, so tinted fills
+// stay derived from a single source colour.
+export function colorWithAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Icon size scale — mirrors FontSize so the app's deliberately compact icon
+// convention (11–16px inline, 20–24px standalone) is enforced, not guessed.
+export const IconSize = {
+  xs: 11,
+  sm: 14,
+  md: 16,
+  lg: 20,
+  xl: 24,
 };
 
 export const Spacing = {

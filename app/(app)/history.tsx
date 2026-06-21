@@ -11,8 +11,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
-import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import Animated, { FadeInDown, type SharedValue } from 'react-native-reanimated';
+import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
@@ -242,7 +243,7 @@ function MonthCalendar({
             const intensity = count >= 3 ? 1 : count >= 2 ? 0.8 : count >= 1 ? 0.6 : 0;
 
             const bgColor = hasWorkout
-              ? `rgba(132, 204, 22, ${intensity})`
+              ? colorWithAlpha(Colors.calendar.base, intensity)
               : C.glowBg;
 
             const textColor = hasWorkout
@@ -264,7 +265,7 @@ function MonthCalendar({
                     styles.calDaySquare,
                     { backgroundColor: bgColor },
                     hasWorkout && {
-                      shadowColor: 'rgba(132, 204, 22, 1)',
+                      shadowColor: Colors.calendar.base,
                       shadowOffset: { width: 0, height: 0 },
                       shadowOpacity: intensity * 0.3,
                       shadowRadius: 8,
@@ -295,7 +296,7 @@ function MonthCalendar({
                     <View
                       style={[
                         styles.multiDot,
-                        { backgroundColor: count >= 3 ? '#facc15' : '#a3e635' },
+                        { backgroundColor: count >= 3 ? Colors.calendar.max : Colors.calendar.multi },
                       ]}
                     />
                   )}
@@ -313,11 +314,11 @@ function MonthCalendar({
           <Text style={[styles.legendText, { color: C.textDim }]}>Rest</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendSquare, { backgroundColor: 'rgba(132, 204, 22, 0.6)' }]} />
+          <View style={[styles.legendSquare, { backgroundColor: colorWithAlpha(Colors.calendar.base, 0.6) }]} />
           <Text style={[styles.legendText, { color: C.textDim }]}>Trained</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendSquare, { backgroundColor: 'rgba(132, 204, 22, 1)' }]} />
+          <View style={[styles.legendSquare, { backgroundColor: Colors.calendar.base }]} />
           <Text style={[styles.legendText, { color: C.textDim }]}>Multiple</Text>
         </View>
       </View>
@@ -331,114 +332,166 @@ function SessionCard({
   colorIndex,
   onDelete,
   onEdit,
+  openRowRef,
 }: {
   workout: WorkoutRaw;
   colorIndex: number;
   onDelete: () => void;
   onEdit: () => void;
+  openRowRef: { current: SwipeableMethods | null };
 }) {
   const { C } = useTheme();
   const [expanded, setExpanded] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const swipeRef = useRef<SwipeableMethods>(null);
+  // Tracks the tray's open state so a tap on an open card closes it instead of
+  // toggling the expanded details underneath. (ReanimatedSwipeable also closes
+  // on tap-when-open via box-only pointer events; this JS guard is a
+  // deterministic fallback that doesn't depend on that internal behaviour.)
+  const isOpenRef = useRef(false);
   const dotColor = ROUTINE_COLORS[colorIndex % ROUTINE_COLORS.length];
   const exerciseCount = workout.exercises?.length ?? 0;
+  // If this card unmounts while it owns the shared open-row pointer (deleted or
+  // filtered out by search), drop the dangling reference.
+  useEffect(() => () => {
+    if (openRowRef.current === swipeRef.current) openRowRef.current = null;
+  }, []);
+
+  // Swipe-left reveals Edit + Delete. Edit sits nearer the content; Delete (red)
+  // is at the trailing edge so reaching it takes a fuller, more deliberate pull.
+  // Neither auto-fires — you tap the action, and Delete still routes through the
+  // confirm alert. We close the tray first so it doesn't linger open behind the
+  // edit screen / confirm dialog.
+  const renderRightActions = (
+    _progress: SharedValue<number>,
+    _translation: SharedValue<number>,
+    swipeable: SwipeableMethods,
+  ) => (
+    <View style={styles.swipeActions}>
+      <TouchableOpacity
+        onPress={() => { swipeable.close(); onEdit(); }}
+        style={[styles.swipeBtn, { backgroundColor: C.muted, borderColor: C.borderSubtle }]}
+        accessibilityRole="button"
+        accessibilityLabel="Edit workout"
+      >
+        <Feather name="edit-2" size={14} color={C.mutedFg} />
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => { swipeable.close(); onDelete(); }}
+        style={[styles.swipeBtn, { backgroundColor: Colors.dangerBg, borderColor: 'transparent' }]}
+        accessibilityRole="button"
+        accessibilityLabel="Delete workout"
+      >
+        <Feather name="trash-2" size={14} color={Colors.danger} />
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <View style={[styles.workoutCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
-      <TouchableOpacity
-        activeOpacity={0.8}
-        onPress={() => setExpanded((v) => !v)}
-        style={styles.workoutCardTop}
+      <ReanimatedSwipeable
+        ref={swipeRef}
+        friction={2}
+        rightThreshold={36}
+        overshootRight={false}
+        renderRightActions={renderRightActions}
+        // Only one row open at a time: opening this one closes whichever was open.
+        onSwipeableWillOpen={() => {
+          if (openRowRef.current && openRowRef.current !== swipeRef.current) {
+            openRowRef.current.close();
+          }
+          openRowRef.current = swipeRef.current;
+        }}
+        onSwipeableOpen={() => { isOpenRef.current = true; }}
+        onSwipeableClose={() => {
+          isOpenRef.current = false;
+          // Keep the shared open-row pointer honest after this row closes.
+          if (openRowRef.current === swipeRef.current) openRowRef.current = null;
+        }}
       >
-        {/* Color dot */}
-        <View style={[styles.wDotWrap, { backgroundColor: `${dotColor}15` }]}>
-          <View style={[styles.wDot, { backgroundColor: dotColor }]} />
-        </View>
-
-        {/* Info */}
-        <View style={styles.wInfo}>
-          <Text style={[styles.wName, { color: C.foreground }]} numberOfLines={1}>
-            {workout.name}
-          </Text>
-          <Text style={[styles.wDate, { color: C.textMuted }]}>
-            {formatDateShort(workout.started_at)}
-          </Text>
-          <View style={styles.wMeta}>
-            {workout.duration_seconds ? (
-              <View style={styles.wMetaItem}>
-                <Feather name="clock" size={10} color={C.textSecondary} />
-                <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
-                  {formatDuration(workout.duration_seconds)}
-                </Text>
-              </View>
-            ) : null}
-            {workout.total_volume_kg ? (
-              <View style={styles.wMetaItem}>
-                <Feather name="trending-up" size={10} color={C.textSecondary} />
-                <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
-                  {formatVolume(workout.total_volume_kg)}
-                </Text>
-              </View>
-            ) : null}
-            {exerciseCount > 0 && (
-              <View style={styles.wMetaItem}>
-                <Feather name="activity" size={10} color={C.textSecondary} />
-                <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
-                  {exerciseCount} exercise{exerciseCount !== 1 ? 's' : ''}
-                </Text>
-              </View>
-            )}
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() => {
+            if (isOpenRef.current) { swipeRef.current?.close(); return; }
+            setExpanded((v) => !v);
+          }}
+          style={[styles.workoutCardTop, { backgroundColor: C.card }]}
+          accessibilityRole="button"
+          accessibilityLabel={`${workout.name}, ${formatDateShort(workout.started_at)}${exerciseCount > 0 ? `, ${exerciseCount} exercise${exerciseCount !== 1 ? 's' : ''}` : ''}`}
+          accessibilityHint="Double tap to expand. Use the actions menu to edit or delete."
+          accessibilityState={{ expanded }}
+          // Screen-reader parity for the swipe actions — VoiceOver / TalkBack
+          // expose these via the rotor, so editing / deleting never needs a swipe.
+          accessibilityActions={[
+            { name: 'edit', label: 'Edit workout' },
+            { name: 'delete', label: 'Delete workout' },
+          ]}
+          onAccessibilityAction={(e) => {
+            if (e.nativeEvent.actionName === 'edit') onEdit();
+            else if (e.nativeEvent.actionName === 'delete') onDelete();
+          }}
+        >
+          {/* Color dot */}
+          <View style={[styles.wDotWrap, { backgroundColor: `${dotColor}15` }]}>
+            <View style={[styles.wDot, { backgroundColor: dotColor }]} />
           </View>
-        </View>
 
-        {/* Actions */}
-        <View style={styles.wActions}>
-          {deleteConfirm ? (
-            <View style={styles.deleteConfirmRow}>
-              <TouchableOpacity
-                onPress={() => setDeleteConfirm(false)}
-                style={[styles.deleteConfirmBtn, { backgroundColor: C.muted }]}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Feather name="x" size={11} color={C.foreground} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => { onDelete(); setDeleteConfirm(false); }}
-                style={[styles.deleteConfirmBtn, { backgroundColor: 'rgba(239,68,68,0.2)' }]}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Feather name="trash-2" size={11} color="#f87171" />
-              </TouchableOpacity>
+          {/* Info */}
+          <View style={styles.wInfo}>
+            <Text style={[styles.wName, { color: C.foreground }]} numberOfLines={1}>
+              {workout.name}
+            </Text>
+            <Text style={[styles.wDate, { color: C.textMuted }]}>
+              {formatDateShort(workout.started_at)}
+            </Text>
+            <View style={styles.wMeta}>
+              {workout.duration_seconds ? (
+                <View style={styles.wMetaItem}>
+                  <Feather name="clock" size={10} color={C.textSecondary} />
+                  <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
+                    {formatDuration(workout.duration_seconds)}
+                  </Text>
+                </View>
+              ) : null}
+              {workout.total_volume_kg ? (
+                <View style={styles.wMetaItem}>
+                  <Feather name="trending-up" size={10} color={C.textSecondary} />
+                  <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
+                    {formatVolume(workout.total_volume_kg)}
+                  </Text>
+                </View>
+              ) : null}
+              {exerciseCount > 0 && (
+                <View style={styles.wMetaItem}>
+                  <Feather name="activity" size={10} color={C.textSecondary} />
+                  <Text style={[styles.wMetaText, { color: C.textSecondary }]}>
+                    {exerciseCount} exercise{exerciseCount !== 1 ? 's' : ''}
+                  </Text>
+                </View>
+              )}
             </View>
-          ) : (
-            <View style={styles.actionIconsRow}>
-              <TouchableOpacity
-                onPress={onEdit}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                style={styles.deleteIconBtn}
-                accessibilityRole="button"
-                accessibilityLabel="Edit workout"
-              >
-                <Feather name="edit-2" size={13} color={C.textDim} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => setDeleteConfirm(true)}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                style={styles.deleteIconBtn}
-                accessibilityRole="button"
-                accessibilityLabel="Delete workout"
-              >
-                <Feather name="trash-2" size={13} color={C.textDim} />
-              </TouchableOpacity>
-            </View>
-          )}
-          <Feather
-            name={expanded ? 'chevron-up' : 'chevron-down'}
-            size={14}
-            color={C.textMuted}
-          />
-        </View>
-      </TouchableOpacity>
+          </View>
+
+          {/* A discoverable tap-entry to the same Edit / Delete tray the
+              left-swipe reveals (for anyone who doesn't think to swipe), above
+              the expand chevron. */}
+          <View style={styles.wActions}>
+            <TouchableOpacity
+              onPress={() => swipeRef.current?.openRight()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Edit or delete workout"
+              style={styles.moreBtn}
+            >
+              <Feather name="more-vertical" size={15} color={C.textMuted} />
+            </TouchableOpacity>
+            <Feather
+              name={expanded ? 'chevron-up' : 'chevron-down'}
+              size={14}
+              color={C.textMuted}
+            />
+          </View>
+        </TouchableOpacity>
+      </ReanimatedSwipeable>
 
       {/* Expanded exercise details */}
       {expanded && (
@@ -539,6 +592,8 @@ export default function HistoryScreen() {
   const [calMonth, setCalMonth] = useState(today.getMonth());
 
   const scrollRef = useRef<ScrollView>(null);
+  // The single currently-open swipe row, so opening one closes any other.
+  const openRowRef = useRef<SwipeableMethods | null>(null);
   const searchBarY = useRef(0);
 
   const fetchWorkouts = useCallback(async () => {
@@ -910,6 +965,7 @@ export default function HistoryScreen() {
                     key={workout.id}
                     workout={workout}
                     colorIndex={wIdx}
+                    openRowRef={openRowRef}
                     onDelete={() => handleDelete(workout.id)}
                     onEdit={() => router.push(`/workout/edit/${workout.id}`)}
                   />
@@ -1186,23 +1242,23 @@ const styles = StyleSheet.create({
   wMetaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   wMetaText: { fontSize: FontSize.xs },
   wActions: { alignItems: 'center', gap: 8, marginTop: 2 },
-  actionIconsRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  deleteIconBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  deleteConfirmRow: {
+  moreBtn: { width: 28, height: 24, alignItems: 'center', justifyContent: 'center' },
+  // Swipe-to-reveal action tray (Edit / Delete). Buttons float inset on the
+  // card background as the header slides left.
+  swipeActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    paddingHorizontal: 6,
+    gap: 6,
   },
-  deleteConfirmBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  // Compact round icon buttons that echo the app's round-icon language and keep
+  // the reveal tight (~86px). Icon-only — the swipe and the kebab both make the
+  // intent obvious, and a11y labels carry it for screen readers.
+  swipeBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

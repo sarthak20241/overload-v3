@@ -14,7 +14,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
+import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -41,7 +41,7 @@ import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet'
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
-const AMBER = '#fbbf24';
+// Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -106,9 +106,24 @@ export default function ActiveWorkoutScreen() {
   const { prefs } = usePreferences();
   const [kbHeight, setKbHeight] = useState(0);
 
-  const [loading, setLoading] = useState(!workout.isActive);
+  // A different routine was requested while a session is already live. Every
+  // "start workout" entry point does a bare router.push('/workout/<id>'), but
+  // this screen renders from the workout context (not the route param), so
+  // without this guard the picked routine is silently ignored and the old
+  // session is shown under the new URL. Blank sessions carry routineId 'new',
+  // so starting a routine over one still counts as a switch.
+  const isSwitchAttempt =
+    workout.isActive && workout.routineId != null && workout.routineId !== id;
+
+  // Hold the spinner (rather than flashing the old session) until the switch
+  // prompt below resolves.
+  const [loading, setLoading] = useState(!workout.isActive || isSwitchAttempt);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
+  // Which field in the active set row is "open" for adjustment. Null = the row
+  // is a clean glance-and-confirm row; tapping a number opens that one field's
+  // −/+ (and focuses it for optional typing), leaving the other a plain number.
+  const [editField, setEditField] = useState<null | 'weight' | 'reps'>(null);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -128,6 +143,11 @@ export default function ActiveWorkoutScreen() {
   const [showFinishAlert, setShowFinishAlert] = useState(false);
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
+  // Prompt shown when a second routine is requested mid-session (see
+  // isSwitchAttempt). `reloadKey` bumps to re-run the load effect after the user
+  // discards the current session, so the requested routine loads in place.
+  const [showSwitchAlert, setShowSwitchAlert] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [finishSetCount, setFinishSetCount] = useState(0);
   // Finish sheet for blank workouts ("New Workout" sessions with no routine):
   // lets the user name the session before it lands in history, add notes, and
@@ -262,9 +282,18 @@ export default function ActiveWorkoutScreen() {
   // Load routine on mount
   useEffect(() => {
     if (workout.isActive) {
-      // Session already running (e.g. returning to this screen after a tab
-      // switch). Started/finished flags live in the context and are already
-      // in sync — don't reset them or completed exercises revert to grey.
+      // A second routine was requested while a session is live. Prompt to
+      // finish or discard the current one instead of silently keeping it (the
+      // old bug); discarding re-runs this effect via reloadKey once isActive is
+      // false. Don't reset the in-context started/finished flags here.
+      if (workout.routineId != null && workout.routineId !== id) {
+        setShowSwitchAlert(true);
+        setLoading(false);
+        return;
+      }
+      // Returning to the same active session (e.g. after a tab switch).
+      // Started/finished flags live in the context and are already in sync —
+      // don't reset them or completed exercises revert to grey.
       setLoading(false);
       return;
     }
@@ -398,7 +427,7 @@ export default function ActiveWorkoutScreen() {
       }
     };
     load();
-  }, [id, clerkLoaded]);
+  }, [id, clerkLoaded, reloadKey]);
 
   // Exercise timer
   const startExerciseTimer = useCallback(() => {
@@ -794,6 +823,26 @@ export default function ActiveWorkoutScreen() {
     workout.finishWorkout();
     leaveWorkout();
   };
+
+  // Switch guard (see isSwitchAttempt): the user tapped "start" on a different
+  // routine while one was already in progress.
+  // Keep — abandon the errant push and return to where they were; the active
+  // session stays live in the mini bar. Fall back to its full screen when
+  // there's nothing to go back to (e.g. a cold deep link).
+  const keepCurrentWorkout = useCallback(() => {
+    setShowSwitchAlert(false);
+    if (router.canGoBack()) router.back();
+    else router.replace(`/workout/${workout.routineId}` as any);
+  }, [router, workout.routineId]);
+
+  // Discard — drop the in-progress session, then re-run the load effect (now
+  // that isActive is false) to fetch and start the requested routine in place.
+  const discardAndSwitch = useCallback(() => {
+    setShowSwitchAlert(false);
+    setLoading(true);
+    workout.finishWorkout();
+    setReloadKey((k) => k + 1);
+  }, [workout.finishWorkout]);
 
   // Suggest a legible default name for a blank workout from what was actually
   // trained, so even a no-edit save reads well in history ("Chest & Back"
@@ -1297,7 +1346,6 @@ export default function ActiveWorkoutScreen() {
   const restRemaining = restTarget - restTimer;
   const restDone = restTarget > 0 && restRemaining <= 0;
   const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
-  const nextSetNum = currentEx ? currentEx.sets.filter(s => s.completed).length + 1 : 1;
   const restDisplay = restTarget > 0
     ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
     : fmt(restTimer);
@@ -1419,6 +1467,8 @@ export default function ActiveWorkoutScreen() {
     const isStarted = exerciseStarted[idx];
     const isFinished = exerciseFinished[idx];
     const prevSets = currentEx.previousSets;
+    const completed = currentEx.sets.filter(s => s.completed);
+    const doneCount = completed.length;
     return (
           <>
             {/* Exercise Header */}
@@ -1444,76 +1494,14 @@ export default function ActiveWorkoutScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Exercise timer */}
-            {interactive && isStarted && !isFinished && (
-              <Animated.View entering={FadeIn} style={[styles.timersRow, { backgroundColor: C.muted }]}>
-                <View style={styles.timerBlock}>
-                  <Text style={[styles.timerValue, { color: C.accentText }]}>{fmt(exerciseTimer)}</Text>
-                  <Text style={[styles.timerLabel, { color: C.textDim }]}>ELAPSED</Text>
-                </View>
-              </Animated.View>
-            )}
+            {/* The per-exercise "elapsed" card was retired here: workout-elapsed
+                lives in the top bar and rest lives in the bottom strip, so a
+                third timer was just noise. */}
 
-            {/* Rest timer — appears right after a set is logged. Counts down the
-                exercise's recommended rest and can be ended early with "Skip
-                rest", so the user no longer has to log the next set just to
-                clear a running rest timer. */}
-            {interactive && isStarted && !isFinished && isResting && (
-              <Animated.View
-                entering={FadeIn}
-                exiting={FadeOut}
-                style={[styles.restCard, { backgroundColor: C.card, borderColor: restDone ? Colors.primary : C.primaryBorder }]}
-              >
-                <View style={styles.restCardTop}>
-                  <View>
-                    <View style={styles.restCardLabelRow}>
-                      <Feather name="clock" size={12} color={restDone ? Colors.primary : C.textMuted} />
-                      <Text style={[styles.restCardLabel, { color: restDone ? Colors.primary : C.textMuted }]}>
-                        {restDone ? 'Rest complete' : 'Resting'}
-                      </Text>
-                    </View>
-                    <Text style={[styles.restCardValue, { color: restDone ? Colors.primary : C.foreground }]}>
-                      {restDisplay}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={handleSkipRest}
-                    style={[styles.skipRestBtn, { backgroundColor: restDone ? Colors.primary : C.muted }]}
-                  >
-                    <Feather name="skip-forward" size={13} color={restDone ? Colors.primaryFg : C.mutedFg} />
-                    <Text style={[styles.skipRestBtnText, { color: restDone ? Colors.primaryFg : C.mutedFg }]}>
-                      {restDone ? 'Done' : 'Skip rest'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {restTarget > 0 && (
-                  <View style={[styles.restTrack, { backgroundColor: C.muted }]}>
-                    <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
-                    <View style={{ flex: 100 - restPct }} />
-                  </View>
-                )}
-
-                <Text style={[styles.restHint, { color: C.textDim }]}>
-                  {restDone
-                    ? `Rest’s up — tap “Done”, or just log set ${nextSetNum} whenever you’re ready.`
-                    : `Recovering before set ${nextSetNum}. Tap “Skip rest” to end it early and start now.`}
-                </Text>
-
-                {/* Rest is prime dead-time — surface the coach right where the
-                    user is already thinking about the next set. */}
-                <TouchableOpacity
-                  onPress={openCoach}
-                  style={[styles.restCoachBtn, { borderColor: C.primaryBorder }]}
-                  activeOpacity={0.7}
-                >
-                  <Feather name="zap" size={12} color={C.accentText} />
-                  <Text style={[styles.restCoachBtnText, { color: C.accentText }]}>
-                    Ask Coach about this set
-                  </Text>
-                </TouchableOpacity>
-              </Animated.View>
-            )}
+            {/* Rest now lives in the pinned bottom strip (see bottomBar) instead
+                of a tall in-flow card, so it never inflates the scroll height or
+                buries the input + footer. The input area stays mounted while
+                resting, so the next set is always one tap away. */}
 
             {/* Previous Session */}
             {currentEx.previousSets && currentEx.previousSets.length > 0 && !isStarted && (
@@ -1540,124 +1528,115 @@ export default function ActiveWorkoutScreen() {
               </View>
             )}
 
-            {/* Logged Sets */}
-            {isStarted && currentEx.sets.some(s => s.completed) && (
-              <View style={styles.loggedSection}>
-                <Text style={[styles.sectionLabel, { color: C.textDim }]}>LOGGED</Text>
-                {currentEx.sets.filter(s => s.completed).map((s, i) => {
-                  const diff = prevSets && prevSets[i] ? s.weight_kg - prevSets[i].weight_kg : 0;
-                  return (
-                    <View key={i} style={[styles.loggedSet, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
-                      <Text style={[styles.setIdx, { color: C.accentText }]}>{i + 1}</Text>
-                      <Text style={[styles.setValueBold, { color: C.foreground }]}>
-                        {s.weight_kg}<Text style={[styles.setUnit, { color: C.textDim }]}> kg</Text>
-                      </Text>
-                      <Text style={[styles.setX, { color: C.textDim }]}>×</Text>
-                      <Text style={[styles.setValueBold, { color: C.foreground }]}>{s.reps}</Text>
-                      <View style={{ flex: 1 }} />
-                      {diff !== 0 && (
-                        <Text style={[styles.diffBadge, { color: diff > 0 ? '#34d399' : '#f87171' }]}>
-                          {diff > 0 ? '+' : ''}{diff}kg
-                        </Text>
-                      )}
-                      {!isFinished && (
-                        <TouchableOpacity onPress={() => handleDeleteSet(i)} style={styles.deleteSetBtn}>
-                          <Feather name="x" size={10} color="#ef4444" />
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  );
-                })}
-              </View>
-            )}
+            {/* The set table — one grid, three states (header · done · active).
+                Done sets recede into history; the active set is the bright, tall,
+                tappable row with inline steppers, and its ✓ commits the set.
+                Replaces the old "LOGGED list + separate input card", which read as
+                two different components and inflated the screen height. */}
+            {isStarted && (
+              <View style={styles.setTable}>
+                <View style={styles.setHeadRow}>
+                  <Text style={[styles.setHeadCell, styles.colSet, { color: C.textDim }]}>SET</Text>
+                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>KG</Text>
+                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>REPS</Text>
+                  <View style={styles.colCheck} />
+                </View>
 
-            {/* Input Area (when started and not finished) */}
-            {isStarted && !isFinished && (
-              <Animated.View entering={FadeIn} style={styles.inputArea}>
-                {/* Input Card */}
-                <View ref={interactive ? inputCardRef : undefined} style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-                  <View style={styles.inputRow}>
-                    {/* Weight */}
-                    <View style={styles.inputGroup}>
-                      <Text style={[styles.inputLabel, { color: C.textDim }]}>WEIGHT (KG)</Text>
-                      <View style={styles.inputControls}>
-                        <TouchableOpacity
-                          onPress={() => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5)))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>−</Text>
-                        </TouchableOpacity>
+                {/* Done sets — settled history, receded. */}
+                {completed.map((s, i) => (
+                  <Animated.View key={i} entering={FadeIn} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
+                    <Text style={[styles.setNum, styles.colSet, { color: C.textDim }]}>{i + 1}</Text>
+                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.weight_kg}</Text>
+                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.reps}</Text>
+                    {isFinished ? (
+                      <View style={styles.colCheck}><Feather name="check" size={14} color={C.accentText} /></View>
+                    ) : (
+                      <TouchableOpacity onPress={() => handleDeleteSet(i)} style={styles.colCheck} hitSlop={6} accessibilityLabel={`Delete set ${i + 1}`}>
+                        <Feather name="x" size={12} color={Colors.danger} />
+                      </TouchableOpacity>
+                    )}
+                  </Animated.View>
+                ))}
+
+                {/* Active set — the one bright row asking for a tap. */}
+                {!isFinished && (
+                  <>
+                    <View
+                      ref={interactive ? inputCardRef : undefined}
+                      style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
+                    >
+                      <Text style={[styles.setNum, styles.colSet, { color: C.accentText }]}>{doneCount + 1}</Text>
+
+                      {/* Weight — a plain bright number until tapped; tapping focuses
+                          it (keypad) and reveals its −/+. Reps is untouched. */}
+                      <View style={[styles.colVal, editField === 'weight' && styles.activeCellRow]}>
+                        {editField === 'weight' && (
+                          <TouchableOpacity onPress={() => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5)))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+                          </TouchableOpacity>
+                        )}
                         <TextInput
                           value={inputWeight}
                           onChangeText={setInputWeight}
                           keyboardType="decimal-pad"
-                          style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
+                          style={[editField === 'weight' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'weight' && { backgroundColor: C.muted }]}
                           selectTextOnFocus
-                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { kbScrollTargetRef.current = null; }}
+                          onFocus={() => { setEditField('weight'); kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { setEditField((p) => (p === 'weight' ? null : p)); kbScrollTargetRef.current = null; }}
                         />
-                        <TouchableOpacity
-                          onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>+</Text>
-                        </TouchableOpacity>
+                        {editField === 'weight' && (
+                          <TouchableOpacity onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
-                    </View>
 
-                    {/* Divider */}
-                    <View style={[styles.inputDivider, { backgroundColor: C.borderSubtle }]} />
-
-                    {/* Reps */}
-                    <View style={styles.inputGroup}>
-                      <Text style={[styles.inputLabel, { color: C.textDim }]}>REPS</Text>
-                      <View style={styles.inputControls}>
-                        <TouchableOpacity
-                          onPress={() => setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1)))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>−</Text>
-                        </TouchableOpacity>
+                      <View style={[styles.colVal, editField === 'reps' && styles.activeCellRow]}>
+                        {editField === 'reps' && (
+                          <TouchableOpacity onPress={() => setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1)))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+                          </TouchableOpacity>
+                        )}
                         <TextInput
                           value={inputReps}
                           onChangeText={setInputReps}
                           keyboardType="number-pad"
-                          style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
+                          style={[editField === 'reps' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'reps' && { backgroundColor: C.muted }]}
                           selectTextOnFocus
-                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { kbScrollTargetRef.current = null; }}
+                          onFocus={() => { setEditField('reps'); kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { setEditField((p) => (p === 'reps' ? null : p)); kbScrollTargetRef.current = null; }}
                         />
-                        <TouchableOpacity
-                          onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>+</Text>
-                        </TouchableOpacity>
+                        {editField === 'reps' && (
+                          <TouchableOpacity onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
+
+                      <TouchableOpacity onPress={() => { Keyboard.dismiss(); handleLogSet(); setEditField(null); }} style={[styles.colCheck, styles.commitBtn]} accessibilityLabel={`Log set ${doneCount + 1}`}>
+                        <Feather name="check" size={18} color={Colors.primaryFg} />
+                      </TouchableOpacity>
                     </View>
-                  </View>
 
-                  {/* Previous performance hint */}
-                  {prevSets && prevSets[currentEx.sets.filter(s => s.completed).length] && (
-                    <View style={[styles.prevHint, { backgroundColor: C.muted }]}>
-                      <Text style={[styles.prevHintText, { color: C.textMuted }]}>
-                        Previous: {prevSets[currentEx.sets.filter(s => s.completed).length].weight_kg}kg × {prevSets[currentEx.sets.filter(s => s.completed).length].reps} reps
-                      </Text>
-                    </View>
-                  )}
-                </View>
+                    {/* Always present so the layout never collapses under the
+                        active row. Falls back in Drona's voice once you've gone
+                        past last session's set count (or it's a brand-new lift). */}
+                    <Text style={[styles.lastTime, { color: C.textMuted }]}>
+                      {prevSets && prevSets[doneCount]
+                        ? `Last time: ${prevSets[doneCount].weight_kg} × ${prevSets[doneCount].reps}`
+                        : prevSets && prevSets.length > 0
+                          ? 'Past your last session. Keep going.'
+                          : 'First time on this one. Find a weight you own.'}
+                    </Text>
 
-                <TouchableOpacity onPress={handleLogSet} style={styles.logSetBtn}>
-                  <Feather name="check" size={15} color={Colors.primaryFg} />
-                  <Text style={styles.logSetBtnText}>Log Set {currentEx.sets.filter(s => s.completed).length + 1}</Text>
-                </TouchableOpacity>
-
-                {currentEx.sets.filter(s => s.completed).length > 0 && (
-                  <TouchableOpacity onPress={handleFinishExercise} style={[styles.finishExBtn, { backgroundColor: C.muted }]}>
-                    <Text style={[styles.finishExBtnText, { color: C.mutedFg }]}>Finish Exercise</Text>
-                  </TouchableOpacity>
+                    {doneCount > 0 && (
+                      <TouchableOpacity onPress={handleFinishExercise} style={[styles.finishExBtn, { backgroundColor: C.muted }]}>
+                        <Text style={[styles.finishExBtnText, { color: C.mutedFg }]}>Finish exercise</Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
                 )}
-              </Animated.View>
+              </View>
             )}
 
             {/* Start Exercise Button (when not started) */}
@@ -1698,7 +1677,7 @@ export default function ActiveWorkoutScreen() {
 
             {/* Exercise notes */}
             <TextInput
-              placeholder="Exercise notes..."
+              placeholder="How did that feel? Jot it down."
               placeholderTextColor={C.textMuted}
               value={currentEx.notes}
               onChangeText={(text) => {
@@ -1753,8 +1732,8 @@ export default function ActiveWorkoutScreen() {
             {workout.routineName}
           </Text>
           <View style={styles.timerRow}>
-            <Feather name="clock" size={11} color={workout.isPaused ? AMBER : C.textDim} />
-            <Text style={[styles.timerText, { color: workout.isPaused ? AMBER : C.textMuted }]}>{fmt(workout.elapsed)}</Text>
+            <Feather name="clock" size={11} color={workout.isPaused ? Colors.paused : C.textDim} />
+            <Text style={[styles.timerText, { color: workout.isPaused ? Colors.paused : C.textMuted }]}>{fmt(workout.elapsed)}</Text>
             {workout.isPaused && (
               <View style={styles.pausedBadge}>
                 <Text style={styles.pausedBadgeText}>PAUSED</Text>
@@ -1862,7 +1841,7 @@ export default function ActiveWorkoutScreen() {
               <Feather name="target" size={28} color={C.textDim} />
             </View>
             <Text style={[styles.emptyTitle, { color: C.foreground }]}>No exercises yet</Text>
-            <Text style={[styles.emptySub, { color: C.textMuted }]}>Add an exercise to get started</Text>
+            <Text style={[styles.emptySub, { color: C.textMuted }]}>Pick your first move and let's get to work.</Text>
             <TouchableOpacity onPress={() => setShowAddExercise(true)} style={styles.addExerciseBtn}>
               <Feather name="plus" size={15} color={Colors.primaryFg} />
               <Text style={styles.addExerciseBtnText}>Add Exercise</Text>
@@ -1920,24 +1899,42 @@ export default function ActiveWorkoutScreen() {
             <Feather name="chevron-left" size={18} color={C.mutedFg} />
           </TouchableOpacity>
 
-          <View style={styles.bottomStats}>
-            <View style={styles.bottomStatItem}>
-              <Text style={[styles.bottomStatValue, { color: C.foreground }]}>{completedSets}</Text>
-              <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Sets</Text>
+          {isResting && exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] ? (
+            /* RESTING — the bottom bar morphs into a slim rest strip. Same row,
+               nav arrows still flank it, no tall card stealing the screen. */
+            <View style={styles.restStrip}>
+              <Feather name="clock" size={14} color={restDone ? Colors.primary : C.accentText} />
+              <Text style={[styles.restStripTime, { color: restDone ? Colors.primary : C.foreground }]}>{restDisplay}</Text>
+              <View style={[styles.restStripTrack, { backgroundColor: C.muted }]}>
+                <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
+                <View style={{ flex: 100 - restPct }} />
+              </View>
+              <TouchableOpacity onPress={handleSkipRest} hitSlop={8}>
+                <Text style={[styles.restStripSkip, { color: restDone ? Colors.primary : C.textMuted }]}>
+                  {restDone ? 'Done' : 'Skip'}
+                </Text>
+              </TouchableOpacity>
             </View>
-            <View style={styles.bottomStatItem}>
-              <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
-                {finishedCount}<Text style={{ color: C.textDim, fontWeight: FontWeight.regular }}>/{exercises.length}</Text>
-              </Text>
-              <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Done</Text>
+          ) : (
+            <View style={styles.bottomStats}>
+              <View style={styles.bottomStatItem}>
+                <Text style={[styles.bottomStatValue, { color: C.foreground }]}>{completedSets}</Text>
+                <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Sets</Text>
+              </View>
+              <View style={styles.bottomStatItem}>
+                <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
+                  {finishedCount}<Text style={{ color: C.textDim, fontWeight: FontWeight.regular }}>/{exercises.length}</Text>
+                </Text>
+                <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Done</Text>
+              </View>
+              <View style={styles.bottomStatItem}>
+                <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
+                  {totalVolume}<Text style={[styles.bottomStatUnit, { color: C.textDim }]}>kg</Text>
+                </Text>
+                <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Vol</Text>
+              </View>
             </View>
-            <View style={styles.bottomStatItem}>
-              <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
-                {totalVolume}<Text style={[styles.bottomStatUnit, { color: C.textDim }]}>kg</Text>
-              </Text>
-              <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Vol</Text>
-            </View>
-          </View>
+          )}
 
           <TouchableOpacity
             onPress={() => goTo(currentIdx + 1)}
@@ -2167,6 +2164,25 @@ export default function ActiveWorkoutScreen() {
         onClose={() => setShowNoSetsAlert(false)}
       />
 
+      {/* Switch guard: a different routine was requested mid-session (see
+          isSwitchAttempt). Keep = return to the live session; Discard = drop it
+          and load the requested routine here. Dismissing keeps the session — we
+          never discard on an accidental tap. */}
+      <ThemedAlert
+        visible={showSwitchAlert}
+        icon="alert-triangle"
+        iconColor="#f97316"
+        title="Finish this one first?"
+        message={`You're still in the middle of ${
+          workout.routineName ? `“${workout.routineName}”` : 'a workout'
+        }. Want to keep going, or drop it and start fresh?`}
+        buttons={[
+          { text: 'Keep Going', style: 'primary', onPress: keepCurrentWorkout },
+          { text: 'Discard & Start New', style: 'destructive', onPress: discardAndSwitch },
+        ]}
+        onClose={keepCurrentWorkout}
+      />
+
       {/* Post-save offer: the session's exercises deviated from the source
           routine, so offer to bring the routine in line with what was done.
           Shown after the workout is already saved; both answers land on
@@ -2264,7 +2280,7 @@ const styles = StyleSheet.create({
   timerRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   timerText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   pausedBadge: {
-    backgroundColor: 'rgba(251,191,36,0.12)',
+    backgroundColor: colorWithAlpha(Colors.paused, 0.12),
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -2273,7 +2289,7 @@ const styles = StyleSheet.create({
   pausedBadgeText: {
     fontSize: 9,
     fontWeight: FontWeight.semibold,
-    color: '#fbbf24',
+    color: Colors.paused,
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
@@ -2484,6 +2500,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 14,
     borderRadius: Radius.xl,
+    marginTop: 18,
   },
   finishExBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
 
@@ -2533,6 +2550,28 @@ const styles = StyleSheet.create({
   },
   navArrow: { width: 40, height: 40, borderRadius: Radius.lg, alignItems: 'center', justifyContent: 'center' },
   bottomStats: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20 },
+  restStrip: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: Spacing.md },
+  restStripTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 56 },
+  restStripTrack: { flex: 1, height: 4, borderRadius: 2, overflow: 'hidden', flexDirection: 'row' },
+  restStripSkip: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  // Unified set table (header · done rows · active row) — one shared grid.
+  setTable: { marginBottom: Spacing.xl },
+  setHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
+  setHeadCell: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5, textAlign: 'center' },
+  colSet: { width: 30, textAlign: 'center' },
+  colVal: { flex: 1, alignItems: 'center' },
+  colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
+  setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
+  setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
+  doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
+  setRowActive: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 6, borderRadius: Radius.lg, marginTop: 14 },
+  activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  activeInputPlain: { flex: 1, height: 44, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
+  activeInput: { flex: 1, height: 44, minWidth: 36, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, borderRadius: Radius.sm, fontVariant: ['tabular-nums'] },
+  miniStep: { width: 28, height: 30, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
+  miniStepText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
+  lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },
   bottomStatItem: { alignItems: 'center' },
   bottomStatValue: { fontSize: FontSize.base, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] as any },
   bottomStatLabel: { fontSize: 9, marginTop: 1 },

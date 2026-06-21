@@ -35,29 +35,28 @@ import {
   workoutCoachSuggestions,
   workoutCoachReviewRequest,
 } from '@/lib/workoutCoach';
+import { useCoachConversation } from '@/hooks/useCoachConversation';
+import { ensureActiveConversationId } from '@/lib/coachConversations';
+import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout';
 
-interface Citation {
-  n: number;             // the [N] marker in the response text
-  id: string;            // research_kb row id
-  title: string;
-  authors: string[];
-  year?: number;
-  url?: string;
-}
+// Chat message + citation shapes live in lib/coachConversations.ts so the
+// persistence layer and the UI share one definition. Aliased here to keep the
+// existing call sites (Citation, ChatMessage) unchanged. CoachChatMessage
+// carries the transient `thinkingPhase` (shown instead of a bare spinner while
+// the assistant placeholder waits on first token); it is stripped before any
+// message is persisted.
+type Citation = CoachCitation;
+type ChatMessage = CoachChatMessage;
 
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  citations?: Citation[];
-  // While the assistant placeholder is waiting on first token, we show this
-  // text instead of a bare spinner. Server `status` events update it as the
-  // model moves through phases (initial think → tool calls → drafting).
-  thinkingPhase?: string;
-}
+// Sliding window: cap how many recent turns we resend to the edge function each
+// turn. The whole transcript is persisted locally, but a very long thread would
+// otherwise grow per-turn input tokens without bound (the messages array isn't
+// under a prompt-cache breakpoint). Durable facts from early turns survive in
+// coach memory, so trimming old turns costs little. A no-op for typical chats.
+const MAX_SENT_MESSAGES = 24;
 
 interface CoachReply {
   text: string;
@@ -169,11 +168,21 @@ function ThinkingIndicator({ phase }: { phase: string }) {
 // Parses partial markdown gracefully (an unclosed `**` mid-stream renders as
 // plain text until the closing pair arrives in the next delta).
 function MessageContent({
-  content,
+  content: rawContent,
   citations,
   textColor,
 }: { content: string; citations?: Citation[]; textColor: string }) {
   const { C } = useTheme();
+  // No em dashes in the coach's voice (user preference): the model still emits
+  // them despite the system-prompt rule, so normalize at the render boundary.
+  // Only collapse horizontal space around the em dash ([ \t], NOT \s) so that
+  // newlines survive and paragraph / bullet-list block boundaries are kept.
+  // Em dash -> ", "; en dash -> "-" so rep ranges like "8–10" stay "8-10".
+  // Finally drop a comma left dangling by a trailing em dash.
+  const content = rawContent
+    .replace(/[ \t]*—[ \t]*/g, ', ')
+    .replace(/–/g, '-')
+    .replace(/,\s*$/, '');
   // Token-stream inline parser: handles **bold** and [N] citation markers.
   const renderInline = (text: string): React.ReactNode[] => {
     const out: React.ReactNode[] = [];
@@ -402,6 +411,13 @@ interface StreamingOptions {
   // (Caller still listens via onStructured for the final emission — same
   // as the forceTool path.)
   mode?: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan';
+  // Phase 1 history: when set, the edge function mirrors this turn into the
+  // server-side coach_conversations / coach_conversation_messages rows under
+  // this conversation id. `clientMsgId` (the user message's id) keys the user +
+  // assistant rows for idempotent replay. Omitted for the ephemeral in-workout
+  // chat, which is never persisted.
+  conversationId?: string;
+  clientMsgId?: string;
 }
 
 function callAICoachStreaming(
@@ -473,6 +489,8 @@ function callAICoachStreaming(
           stream: true,
           ...(options.forceTool ? { force_tool: options.forceTool } : {}),
           ...(options.mode ? { mode: options.mode } : {}),
+          ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
+          ...(options.clientMsgId ? { client_msg_id: options.clientMsgId } : {}),
         }),
         signal: controller.signal,
       });
@@ -690,7 +708,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
           <SparkleIcon size={28} color={C.accentText} />
         </View>
         <Text style={[s.menuTitle, { color: C.foreground }]}>What would you like to do?</Text>
-        <Text style={[s.menuSub, { color: C.mutedFg }]}>Your strength training coach</Text>
+        <Text style={[s.menuSub, { color: C.mutedFg }]}>Knows every rep and PR you've logged. Ask, plan, or build.</Text>
       </View>
 
       {/* Option cards */}
@@ -721,16 +739,21 @@ function ChatScreen({
   onBack,
   onSaveRoutine,
   initialPrompt,
+  // Clerk user id (null for guests). Keys the persisted conversation store so
+  // chat survives the sheet unmount and never leaks across accounts.
+  userId,
   // When provided, this chat is opened from an ACTIVE workout. The live
   // session (which lives only in memory until the workout is saved, so the
   // coach's DB tools can't see it) is injected as the opening turn of every
   // request, the greeting is tailored to where the user is, and quick-question
-  // chips are shown. Null/undefined \u2192 ordinary coach chat.
+  // chips are shown. Null/undefined \u2192 ordinary coach chat. Workout chats are
+  // intentionally ephemeral, so persistence is disabled in that mode.
   workoutContext,
 }: {
   onBack: () => void;
   onSaveRoutine: (name: string) => void;
   initialPrompt?: string;
+  userId: string | null;
   workoutContext?: WorkoutCoachContext | null;
 }) {
   const { C } = useTheme();
@@ -740,15 +763,22 @@ function ChatScreen({
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
   const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [
+  // The starter (visible greeting) the chat opens on. Tailored to workout mode.
+  const makeStarter = (): ChatMessage =>
     workoutContext
       ? { id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }
       : {
           id: '1',
           role: 'assistant',
           content: "I'm Coach Drona. Ask me anything about your training, recovery, or progression. Or say \"create a workout\" and I'll build one for you.",
-        },
-  ]);
+        };
+  // Persisted conversation state (lib/coachConversations). Disabled in workout
+  // mode, where the chat is intentionally ephemeral and re-seeded per open.
+  const { messages, setMessages, markStarted, startNewChat } = useCoachConversation({
+    userId,
+    enabled: !workoutContext,
+    makeStarter,
+  });
   // Re-seed the chat whenever a fresh workout snapshot arrives (the user
   // reopened the coach after logging more sets). Identity is stable within a
   // single open \u2014 the workout screen snapshots once per open \u2014 so this only
@@ -776,6 +806,10 @@ function ChatScreen({
     const text = (override ?? input).trim();
     if (!text || loading) return;
 
+    // Lock the persisted conversation to this in-progress one so a late disk
+    // hydrate can't overwrite it with a stale stored conversation.
+    markStarted();
+
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
     // Create an empty placeholder assistant message that streams will fill.
     const assistantId = (Date.now() + 1).toString();
@@ -794,7 +828,11 @@ function ChatScreen({
     // exist in memory — its DB tools can't reach them). The visible assistant
     // starter follows it, so turns stay validly alternating. Otherwise the
     // conversation is sent as-is.
-    const turns = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
+    // Cap the resent history to a sliding window of recent turns (see
+    // MAX_SENT_MESSAGES). No-op for typical chats; bounds tokens on long ones.
+    const turns = [...messages, userMsg]
+      .slice(-MAX_SENT_MESSAGES)
+      .map(m => ({ role: m.role, content: m.content }));
     const allMessages = workoutContext
       ? [{ role: 'user' as const, content: workoutCoachOpener(workoutContext) }, ...turns]
       : turns;
@@ -887,8 +925,13 @@ function ChatScreen({
         setLoading(false);
         streamRef.current = null;
       },
+    }, {
+      // Phase 1: persist this turn server-side under the active conversation
+      // (ordinary chat only; the in-workout chat stays ephemeral, so no id).
+      conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
+      clientMsgId: workoutContext ? undefined : userMsg.id,
     });
-  }, [input, loading, messages, supabase, getToken, workoutContext]);
+  }, [input, loading, messages, supabase, getToken, workoutContext, markStarted, setMessages, userId]);
 
   // Review mode: auto-ask the coach for a session review once the chat opens,
   // so the user doesn't have to type. Fires exactly once per snapshot — the
@@ -933,6 +976,19 @@ function ChatScreen({
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {workoutContext ? 'Coach Drona · Live session' : 'Chat with Coach Drona'}
         </Text>
+        {/* New chat: reset to a fresh conversation. Only in ordinary chat (the
+            workout chat is per-session) and once there's a conversation to
+            clear, so it doesn't clutter an empty greeting. */}
+        {!workoutContext && messages.length > 1 && (
+          <TouchableOpacity
+            onPress={startNewChat}
+            style={[s.newChatBtn, { backgroundColor: C.muted }]}
+            accessibilityLabel="Start a new chat"
+            hitSlop={8}
+          >
+            <Feather name="plus" size={18} color={C.foreground} />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Messages */}
@@ -1220,7 +1276,7 @@ function GeneratePlanScreen({
               name: 'Push Day', note: 'Chest-led, RIR 1-2',
               exercises: [
                 { name: 'Bench Press', sets: 4, reps: '6-8', rest: '120s', note: 'Top set heavy, RIR 1' },
-                { name: 'Incline DB Press', sets: 3, reps: '8-12', rest: '90s', note: 'Hams of the chest — push hard' },
+                { name: 'Incline DB Press', sets: 3, reps: '8-12', rest: '90s', note: 'Hams of the chest, push hard' },
               ],
             },
             {
@@ -2771,6 +2827,7 @@ export function AICoachModal({
                   onBack={workoutContext ? handleClose : () => setScreen('menu')}
                   onSaveRoutine={(name) => handleSaveRoutine({ name, exercises: [] })}
                   initialPrompt={initialPrompt}
+                  userId={user?.id ?? null}
                   workoutContext={workoutContext}
                 />
               )}
@@ -2916,6 +2973,11 @@ const s = StyleSheet.create({
   backBtn: {
     width: 32, height: 32, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
+  },
+  newChatBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
+    marginLeft: 'auto',
   },
   screenTitle: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,

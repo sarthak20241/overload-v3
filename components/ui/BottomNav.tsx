@@ -7,12 +7,12 @@ import Animated, {
   Easing, SlideInUp, SlideOutDown, FadeIn, FadeOut,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
+import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
 import { useEffect } from 'react';
 
-const AMBER = '#fbbf24';
+// Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 function fmt(seconds: number) {
   const m = Math.floor(seconds / 60);
@@ -114,8 +114,8 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
   const getCenterButtonStyle = () => {
     if (workout.isActive && workout.isPaused) {
       return {
-        backgroundColor: AMBER,
-        shadowColor: AMBER,
+        backgroundColor: Colors.paused,
+        shadowColor: Colors.paused,
       };
     }
     return {
@@ -151,8 +151,8 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             {
               bottom: 68 + insets.bottom,
               backgroundColor: C.elevated,
-              borderColor: workout.isPaused ? AMBER : Colors.primary,
-              shadowColor: workout.isPaused ? AMBER : Colors.primary,
+              borderColor: workout.isPaused ? Colors.paused : Colors.primary,
+              shadowColor: workout.isPaused ? Colors.paused : Colors.primary,
               shadowOffset: { width: 0, height: -2 },
               shadowOpacity: 0.25,
               shadowRadius: 10,
@@ -168,7 +168,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
                 styles.miniPauseBtn,
                 {
                   backgroundColor: workout.isPaused
-                    ? 'rgba(251,191,36,0.15)'
+                    ? colorWithAlpha(Colors.paused, 0.15)
                     : Colors.primary,
                 },
               ]}
@@ -176,7 +176,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
               <Feather
                 name={workout.isPaused ? 'play' : 'pause'}
                 size={12}
-                color={workout.isPaused ? AMBER : Colors.primaryFg}
+                color={workout.isPaused ? Colors.paused : Colors.primaryFg}
               />
             </TouchableOpacity>
 
@@ -193,16 +193,16 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
                 <Feather
                   name="clock"
                   size={9}
-                  color={workout.isPaused ? AMBER : C.textMuted}
+                  color={workout.isPaused ? Colors.paused : C.textMuted}
                 />
                 <Text style={[
                   styles.miniBarTime,
-                  { color: workout.isPaused ? AMBER : C.textMuted },
+                  { color: workout.isPaused ? Colors.paused : C.textMuted },
                 ]}>
                   {fmt(workout.elapsed)}
                 </Text>
                 {workout.isPaused && (
-                  <Text style={[styles.pausedBadge, { color: AMBER }]}>PAUSED</Text>
+                  <Text style={[styles.pausedBadge, { color: Colors.paused }]}>PAUSED</Text>
                 )}
                 <Text style={[styles.miniBarDot, { color: C.textDim }]}>·</Text>
                 <Text style={[styles.miniBarTime, { color: C.textMuted }]}>
@@ -274,7 +274,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
                 styles.activeDot,
                 {
                   borderColor: C.navBg,
-                  backgroundColor: workout.isPaused ? AMBER : '#ef4444',
+                  backgroundColor: workout.isPaused ? Colors.paused : '#ef4444',
                 },
               ]} />
             )}

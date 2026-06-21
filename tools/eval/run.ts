@@ -51,7 +51,7 @@ const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY;
 
-const COACH_MODEL = 'claude-sonnet-4-20250514';
+const COACH_MODEL = 'claude-sonnet-4-6';
 const JUDGE_MODEL = process.env.JUDGE_MODEL || 'claude-opus-4-1-20250805';
 const MAX_TOOL_ITERATIONS = 5;
 const RETRIEVAL_TOP_K = 8;

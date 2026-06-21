@@ -21,6 +21,7 @@ import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   type WeightEntry, type BodyFatEntry,
@@ -32,6 +33,7 @@ import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
 import { flushEditQueue, getPendingEditCount } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { clearCoachConversations } from '@/lib/coachConversations';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 
@@ -39,19 +41,7 @@ type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
 type HeightUnit = 'cm' | 'ft';
 
-const ROW_ICON_COLORS = {
-  gender: '#a855f7',
-  height: '#06b6d4',
-  weight: '#10b981',
-  goal: '#f59e0b',
-  bodyFat: '#ef4444',
-  bug: '#f97316',
-  trainingGoal: '#84cc16',
-  experience: '#3b82f6',
-  frequency: '#8b5cf6',
-  trainingAge: '#ec4899',
-  dob: '#14b8a6',
-};
+// Profile row-icon accent colours now live in Colors.rowIcon (constants/theme.ts).
 
 const GOAL_OPTIONS: { value: CoachGoal; label: string }[] = [
   { value: 'hypertrophy', label: 'Hypertrophy' },
@@ -88,9 +78,16 @@ function SectionLabel({
 function RowIcon({
   name, color,
 }: { name: React.ComponentProps<typeof Feather>['name']; color: string }) {
+  // Data-field icon colour is decoration, not information, so render muted and
+  // let lime stay meaningful for active states. The one exception is the brief
+  // "logged" flash, which call sites signal by passing Colors.success.
+  const { C } = useTheme();
+  const isFlash = color === Colors.success;
+  const tint = isFlash ? Colors.success : C.textMuted;
+  const bg = isFlash ? withAlpha(Colors.success, '15') : C.muted;
   return (
-    <View style={[styles.rowIcon, { backgroundColor: withAlpha(color, '15') }]}>
-      <Feather name={name} size={11} color={color} />
+    <View style={[styles.rowIcon, { backgroundColor: bg }]}>
+      <Feather name={name} size={11} color={tint} />
     </View>
   );
 }
@@ -242,6 +239,9 @@ export default function ProfileScreen() {
     // Drop this user's read cache (per-user keyed; clears stale data so the
     // next account never paints from it). The sync queue stays parked per user.
     if (prevUserId) await clearUserCache(prevUserId);
+    // Drop this user's persisted coach conversations so the next account on this
+    // device never sees them (same per-user discipline as the read cache).
+    if (prevUserId) await clearCoachConversations(prevUserId);
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -279,6 +279,7 @@ export default function ProfileScreen() {
 
   // Bug report modal
   const [bugModalOpen, setBugModalOpen] = useState(false);
+  const [showWorkoutSettings, setShowWorkoutSettings] = useState(false);
   const [bugTitle, setBugTitle] = useState('');
   const [bugDescription, setBugDescription] = useState('');
   const [bugCategory, setBugCategory] = useState<'ui' | 'data' | 'crash' | 'performance' | 'other'>('ui');
@@ -595,7 +596,7 @@ export default function ProfileScreen() {
       setBugDescription('');
       setBugCategory('ui');
       setBugModalOpen(false);
-      setShowInfoAlert('Bug report submitted — thanks!');
+      setShowInfoAlert('Bug report submitted. Thanks!');
     } finally {
       setBugSubmitting(false);
     }
@@ -710,8 +711,8 @@ export default function ProfileScreen() {
                   {xpInLevel} / {xpNeeded} XP
                 </Text>
               </View>
-              <View style={[styles.xpTrack, { backgroundColor: withAlpha(tier.color, '12') }]}>
-                <Animated.View style={[styles.xpFill, { backgroundColor: tier.color }, progressStyle]} />
+              <View style={[styles.xpTrack, { backgroundColor: withAlpha(Colors.primary, '12') }]}>
+                <Animated.View style={[styles.xpFill, { backgroundColor: Colors.primary }, progressStyle]} />
               </View>
               <Text style={[styles.xpPercent, { color: C.textDim }]}>
                 {Math.round(levelProgress * 100)}% to next level
@@ -725,7 +726,7 @@ export default function ProfileScreen() {
             <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
               {/* Gender */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="user" color={ROW_ICON_COLORS.gender} />
+                <RowIcon name="user" color={Colors.rowIcon.gender} />
                 <Text style={[styles.infoLabel, { color: C.foreground }]}>Gender</Text>
                 <View style={styles.infoRight}>
                   <GenderPills value={gender} onChange={(v) => {
@@ -737,7 +738,7 @@ export default function ProfileScreen() {
 
               {/* Height */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="bar-chart-2" color={ROW_ICON_COLORS.height} />
+                <RowIcon name="bar-chart-2" color={Colors.rowIcon.height} />
                 <Text style={[styles.infoLabel, { color: C.foreground }]}>Height</Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
@@ -761,7 +762,7 @@ export default function ProfileScreen() {
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
                 <RowIcon
                   name={loggedFlash === 'weight' ? 'check' : 'anchor'}
-                  color={loggedFlash === 'weight' ? Colors.success : ROW_ICON_COLORS.weight}
+                  color={loggedFlash === 'weight' ? Colors.success : Colors.rowIcon.weight}
                 />
                 <Animated.Text
                   key={loggedFlash === 'weight' ? 'weight-logged' : 'weight-label'}
@@ -791,7 +792,7 @@ export default function ProfileScreen() {
 
               {/* Goal */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="target" color={ROW_ICON_COLORS.goal} />
+                <RowIcon name="target" color={Colors.rowIcon.goal} />
                 <Text style={[styles.infoLabel, { color: C.foreground }]}>Goal</Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
@@ -818,7 +819,7 @@ export default function ProfileScreen() {
               <View style={styles.infoRow}>
                 <RowIcon
                   name={loggedFlash === 'bodyFat' ? 'check' : 'percent'}
-                  color={loggedFlash === 'bodyFat' ? Colors.success : ROW_ICON_COLORS.bodyFat}
+                  color={loggedFlash === 'bodyFat' ? Colors.success : Colors.rowIcon.bodyFat}
                 />
                 <Animated.Text
                   key={loggedFlash === 'bodyFat' ? 'bodyfat-logged' : 'bodyfat-label'}
@@ -855,9 +856,9 @@ export default function ProfileScreen() {
                     {weight} → {goalWeight} {weightUnit}
                   </Text>
                 </View>
-                <View style={[styles.goalTrack, { backgroundColor: withAlpha('#f59e0b', '15') }]}>
+                <View style={[styles.goalTrack, { backgroundColor: withAlpha(Colors.primary, '15') }]}>
                   <View style={[styles.goalFill, {
-                    backgroundColor: '#f59e0b',
+                    backgroundColor: Colors.primary,
                     width: `${goalProgress.pct * 100}%`,
                   }]} />
                 </View>
@@ -875,7 +876,7 @@ export default function ProfileScreen() {
             {/* Goal — horizontal scroll because 5 options */}
             <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 8 }]}>
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="target" color={ROW_ICON_COLORS.trainingGoal} />
+                <RowIcon name="target" color={Colors.rowIcon.trainingGoal} />
                 <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Primary goal</Text>
               </View>
               <ScrollView
@@ -916,7 +917,7 @@ export default function ProfileScreen() {
             <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
               {/* Experience */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="award" color={ROW_ICON_COLORS.experience} />
+                <RowIcon name="award" color={Colors.rowIcon.experience} />
                 <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Experience</Text>
                 <View style={{ flexDirection: 'row', gap: 4 }}>
                   {EXPERIENCE_OPTIONS.map((opt) => {
@@ -951,7 +952,7 @@ export default function ProfileScreen() {
 
               {/* Weekly target sessions */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="calendar" color={ROW_ICON_COLORS.frequency} />
+                <RowIcon name="calendar" color={Colors.rowIcon.frequency} />
                 <Text style={[styles.infoLabel, { color: C.foreground }]}>Sessions / week</Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
@@ -970,7 +971,7 @@ export default function ProfileScreen() {
 
               {/* Training age (months) */}
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
-                <RowIcon name="clock" color={ROW_ICON_COLORS.trainingAge} />
+                <RowIcon name="clock" color={Colors.rowIcon.trainingAge} />
                 <Text style={[styles.infoLabel, { color: C.foreground }]}>Training age (mo)</Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
@@ -989,7 +990,7 @@ export default function ProfileScreen() {
 
               {/* Birth year (stored as Jan 1 of that year) */}
               <View style={styles.infoRow}>
-                <RowIcon name="gift" color={ROW_ICON_COLORS.dob} />
+                <RowIcon name="gift" color={Colors.rowIcon.dob} />
                 <Text style={[styles.infoLabel, { color: C.foreground }]}>Birth year</Text>
                 <View style={styles.infoRight}>
                   <InlineNumberInput
@@ -1052,7 +1053,7 @@ export default function ProfileScreen() {
                 activeOpacity={0.7}
                 style={styles.infoRow}
               >
-                <RowIcon name="alert-triangle" color={ROW_ICON_COLORS.bug} />
+                <RowIcon name="alert-triangle" color={Colors.rowIcon.bug} />
                 <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Report a Bug</Text>
                 <Feather name="chevron-right" size={14} color={C.textDim} />
               </TouchableOpacity>
@@ -1062,6 +1063,22 @@ export default function ProfileScreen() {
           {/* ─── Training ─── */}
           <View style={styles.section}>
             <SectionLabel icon="book-open">TRAINING</SectionLabel>
+            <TouchableOpacity
+              onPress={() => setShowWorkoutSettings(true)}
+              activeOpacity={0.85}
+              style={[styles.accountBtn, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: Spacing.sm }]}
+            >
+              <View style={[styles.rowIcon, { backgroundColor: `${Colors.primary}22` }]}>
+                <Feather name="sliders" size={11} color={C.accentText} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Workout Settings</Text>
+                <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>
+                  Tune how logging works for you
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={14} color={C.textMuted} />
+            </TouchableOpacity>
             <TouchableOpacity
               // typed-routes hasn't regenerated for /exercises yet — cast is
               // fine, route exists at runtime (same as /admin/research).
@@ -1177,6 +1194,11 @@ export default function ProfileScreen() {
         </ScrollView>
       </SafeAreaView>
 
+      <WorkoutSettingsSheet
+        visible={showWorkoutSettings}
+        onClose={() => setShowWorkoutSettings(false)}
+      />
+
       {/* ─── Bug Report Bottom Sheet ───
           Rendered via the root <Portal>, not RN <Modal> — on Android
           edge-to-edge a <Modal> is a separate Dialog window inset by the
@@ -1209,8 +1231,8 @@ export default function ProfileScreen() {
 
               <View style={styles.bugHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <View style={[styles.bugIconWrap, { backgroundColor: withAlpha(ROW_ICON_COLORS.bug, '15') }]}>
-                    <Feather name="alert-triangle" size={16} color={ROW_ICON_COLORS.bug} />
+                  <View style={[styles.bugIconWrap, { backgroundColor: withAlpha(Colors.rowIcon.bug, '15') }]}>
+                    <Feather name="alert-triangle" size={16} color={Colors.rowIcon.bug} />
                   </View>
                   <View>
                     <Text style={[styles.bugTitle, { color: C.foreground }]}>Report a Bug</Text>
@@ -1352,7 +1374,7 @@ const styles = StyleSheet.create({
   avatarLetter: { fontSize: 24, fontWeight: FontWeight.black },
   guestBadge: {
     position: 'absolute', bottom: -6, right: -6,
-    backgroundColor: '#f59e0b',
+    backgroundColor: Colors.warning,
     paddingHorizontal: 6, paddingVertical: 2,
     borderRadius: Radius.full,
   },

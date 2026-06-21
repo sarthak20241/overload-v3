@@ -157,7 +157,7 @@ export default function AuthScreen() {
     // but we refuse here too so a hot-reload or upstream regression can't
     // re-open the hole.
     if (!hasClerkKey) {
-      setError('This build is misconfigured — please contact support@tryoverload.app');
+      setError('This build is misconfigured. Please contact support@tryoverload.app');
       return;
     }
     if (!signInLoaded || !signUpLoaded) return;

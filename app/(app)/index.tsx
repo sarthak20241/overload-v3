@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -11,7 +10,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume } from '@/lib/format';
-import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
+import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
@@ -22,6 +21,8 @@ import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
+import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { getPendingWorkouts } from '@/lib/syncQueue';
 import { pendingToDashboardWorkout, pendingXp } from '@/lib/pendingAdapters';
 import { applyEditsToDashboardRows } from '@/lib/editQueue';
@@ -31,19 +32,7 @@ const ROUTINE_COLORS = Colors.routineColors;
 
 // Figma-matched muscle group colors. Module-scoped so consumers get a stable
 // identity across renders.
-const MUSCLE_COLORS: Record<string, string> = {
-  Chest: '#ef4444',
-  Back: '#3b82f6',
-  Shoulders: '#f59e0b',
-  Quads: '#10b981',
-  Hamstrings: '#06b6d4',
-  Biceps: '#a855f7',
-  Triceps: '#ec4899',
-  Calves: '#84cc16',
-  Core: '#f97316',
-  Glutes: '#14b8a6',
-  'Full Body': '#8b5cf6',
-};
+// Muscle-group accent colours now live in Colors.muscle (constants/theme.ts).
 
 function formatDuration(sec: number) {
   const m = Math.floor(sec / 60);
@@ -175,22 +164,22 @@ function XPBar({ xp }: { xp: number }) {
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { C, mode } = useTheme();
-  const isDark = mode === 'dark';
-  const aiGradient = isDark
-    ? (['rgba(168,85,247,0.28)', 'rgba(59,130,246,0.22)', 'rgba(6,182,212,0.16)'] as const)
-    : (['rgba(168,85,247,0.12)', 'rgba(59,130,246,0.10)', 'rgba(6,182,212,0.08)'] as const);
-  const aiBorderColor = isDark ? 'rgba(168,85,247,0.45)' : 'rgba(168,85,247,0.20)';
-  const aiOrb1Bg = isDark ? 'rgba(168,85,247,0.35)' : 'rgba(168,85,247,0.15)';
-  const aiOrb2Bg = isDark ? 'rgba(6,182,212,0.22)' : 'rgba(6,182,212,0.10)';
-  const aiChipBg = isDark ? 'rgba(168,85,247,0.18)' : 'rgba(168,85,247,0.08)';
-  const aiChipBorder = isDark ? 'rgba(168,85,247,0.30)' : 'rgba(168,85,247,0.12)';
-  const aiChipFg = isDark ? C.foreground : C.textSecondary;
+  const { C } = useTheme();
+  // Coach card uses the flat, on-brand lime signature. The purple/teal gradient +
+  // glow orbs were removed in the design polish: the coach's own menu is flat/lime,
+  // so the dashboard entry now matches the room it opens into (and survives light mode).
+  const aiBorderColor = C.primaryBorder;
+  const aiChipBg = C.muted;
+  const aiChipBorder = C.border;
+  const aiChipFg = C.foreground;
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { pendingCount } = useSync();
   const [workouts, setWorkouts] = useState<Workout[]>([]);
+  const [routines, setRoutines] = useState<any[]>([]);
+  // The session-preview sheet opened from the "today" card (planned suggestion).
+  const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
   const [loading, setLoading] = useState(true);
   const [userXP, setUserXP] = useState(0);
 
@@ -302,6 +291,87 @@ export default function DashboardScreen() {
       cancelled = true;
     };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+
+  // Load the user's saved routines so the "today's suggestion" card can pick a
+  // planned session. Offline-first like the workouts fetch above, but READ-ONLY
+  // on the shared 'routines' cache: routines.tsx owns the canonical (pending-
+  // merged) write, so we don't clobber a not-yet-synced routine here.
+  useEffect(() => {
+    if (!clerkLoaded) return;
+    const clerkId = user?.id;
+    if (isGuestSession || !clerkId) {
+      setRoutines(getGuestRoutines() as any[]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      await hydrateCache(clerkId);
+      const cached = readCache<any[]>('routines', clerkId);
+      if (cached && !cancelled) setRoutines(cached);
+      try {
+        const { data, error } = await supabase
+          .from('routines')
+          .select('*, routine_exercises(*, exercises(*))')
+          .eq('user_id', clerkId)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        if (!cancelled) setRoutines((data as any[]) || []);
+      } catch {
+        // Offline — keep the cached routines.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+
+  // Today's suggestion (Element 2). Simple, no-AI heuristic for the polish; the
+  // real adaptive "coach plans your path" pick is the separate feature workstream.
+  //   rest    -> already trained today, recover
+  //   planned -> the routine done least recently (the most "due")
+  //   new     -> no routines yet, offer to build one
+  const todaySuggestion = useMemo(() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const trainedToday = workouts.some((w: any) => {
+      const t = new Date(w.started_at || w.created_at || 0).getTime();
+      return t >= startOfToday.getTime();
+    });
+    if (trainedToday) return { kind: 'rest' as const, routine: null as any };
+    if (!routines || routines.length === 0) return { kind: 'new' as const, routine: null as any };
+    const lastDoneAt = (r: any) => {
+      const matches = workouts.filter((w: any) =>
+        (w.routine_id && w.routine_id === r.id) ||
+        (w.name && r.name && String(w.name).toLowerCase() === String(r.name).toLowerCase()),
+      );
+      if (matches.length === 0) return 0; // never done -> most due
+      return Math.max(...matches.map((w: any) => new Date(w.started_at || w.created_at || 0).getTime()));
+    };
+    const pick = [...routines].sort((a, b) => lastDoneAt(a) - lastDoneAt(b))[0];
+    return { kind: 'planned' as const, routine: pick };
+  }, [routines, workouts]);
+
+  // Tapping the today's-suggestion card. 'planned' opens an in-place session
+  // preview (the shared routine-detail sheet) where the user can see the
+  // exercises, ask Drona about it, or start it. 'new' opens the coach to build one.
+  const handleTodayPress = () => {
+    if (todaySuggestion.kind === 'new') {
+      setAiCoachPrompt(undefined);
+      setAiCoachInitialScreen('workout');
+      setAiCoachOpen(true);
+      return;
+    }
+    if (todaySuggestion.kind === 'planned' && todaySuggestion.routine) {
+      setDetailRoutine(todaySuggestion.routine as RoutineRaw);
+    }
+  };
+
+  // Open Coach Drona to discuss the previewed routine. The prompt reads as the
+  // user asking; the coach already has the user's training as server-side context.
+  const askCoachAboutRoutine = (routine: RoutineRaw) => {
+    setDetailRoutine(null);
+    setAiCoachPrompt(`Walk me through my ${routine.name} session and what I should focus on today.`);
+    setAiCoachInitialScreen('chat');
+    setAiCoachOpen(true);
+  };
 
   // Compute stats. Memoized so we don't reprocess every workout on every
   // re-render — useWorkout's timer ticks 60×/min while a workout is active.
@@ -440,7 +510,7 @@ export default function DashboardScreen() {
       });
     });
     return Object.entries(counts)
-      .map(([name, value]) => ({ name, value, color: MUSCLE_COLORS[name] || '#6b7280' }))
+      .map(([name, value]) => ({ name, value, color: Colors.muscle[name] || '#6b7280' }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 6);
   }, [workouts]);
@@ -486,47 +556,33 @@ export default function DashboardScreen() {
           <WeeklyCalendar workouts={workouts} />
         </View>
 
+        {/* Today's suggestion (Element 2) — the coach's pick for today is the
+            PRIMARY action, so it leads above the coach card (lead with the
+            directive). Lime outline marks it as the primary action. */}
+        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
+          <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
+        </View>
+
         {/* AI Coach Hero Card */}
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen('menu'); setAiCoachOpen(true); }}
-            style={[styles.aiCoachCard, { borderColor: aiBorderColor }]}
+            style={[styles.aiCoachCard, { backgroundColor: C.card, borderColor: aiBorderColor }]}
           >
-            {/* Background gradient */}
-            <LinearGradient
-              colors={aiGradient as any}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={StyleSheet.absoluteFillObject}
-            />
-            {/* Glow orbs */}
-            <View style={[styles.aiGlowOrb1, { backgroundColor: aiOrb1Bg }]} />
-            <View style={[styles.aiGlowOrb2, { backgroundColor: aiOrb2Bg }]} />
-
             <View style={styles.aiCoachRow}>
-              {/* Icon */}
-              <LinearGradient
-                colors={['#a855f7', '#3b82f6']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.aiCoachIconWrap}
-              >
-                <Feather name="zap" size={18} color="#ffffff" />
-              </LinearGradient>
+              {/* Icon — the lime bolt is the coach's signature mark */}
+              <View style={[styles.aiCoachIconWrap, { backgroundColor: Colors.primary }]}>
+                <Feather name="zap" size={18} color={Colors.primaryFg} />
+              </View>
 
               {/* Text */}
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>Coach Drona</Text>
-                  <LinearGradient
-                    colors={['#a855f7', '#3b82f6']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.newBadge}
-                  >
-                    <Text style={styles.newBadgeText}>NEW</Text>
-                  </LinearGradient>
+                  <View style={[styles.newBadge, { backgroundColor: C.primaryMuted }]}>
+                    <Text style={[styles.newBadgeText, { color: C.accentText }]}>NEW</Text>
+                  </View>
                 </View>
                 <Text style={[styles.aiCoachSub, { color: C.textMuted }]}>
                   Your coach. Knows every rep, every PR.
@@ -534,8 +590,8 @@ export default function DashboardScreen() {
               </View>
 
               {/* Arrow */}
-              <View style={styles.aiCoachArrow}>
-                <Feather name="chevron-right" size={14} color="#a855f7" />
+              <View style={[styles.aiCoachArrow, { backgroundColor: C.muted }]}>
+                <Feather name="chevron-right" size={14} color={C.textMuted} />
               </View>
             </View>
 
@@ -552,7 +608,7 @@ export default function DashboardScreen() {
                   style={[styles.aiChip, { backgroundColor: aiChipBg, borderColor: aiChipBorder }]}
                   activeOpacity={0.7}
                 >
-                  <Feather name={icon} size={10} color={aiChipFg} />
+                  <Feather name={icon} size={10} color={C.accentText} />
                   <Text style={[styles.aiChipText, { color: aiChipFg }]}>{label}</Text>
                 </TouchableOpacity>
               ))}
@@ -564,10 +620,10 @@ export default function DashboardScreen() {
         <View style={styles.statsGrid}>
           {/* Volume card with area chart */}
           <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={[styles.cardGlow, { backgroundColor: '#3b82f6', opacity: 0.04 }]} />
+            <View style={[styles.cardGlow, { backgroundColor: Colors.stat.volume, opacity: 0.04 }]} />
             <View style={styles.statHeader}>
-              <Feather name="trending-up" size={12} color="#3b82f6" />
-              <Text style={[styles.statLabel, { color: '#3b82f6' }]}>VOLUME</Text>
+              <Feather name="trending-up" size={12} color={Colors.stat.volume} />
+              <Text style={[styles.statLabel, { color: Colors.stat.volume }]}>VOLUME</Text>
             </View>
             <View style={styles.statValueRow}>
               <Text style={[styles.statValue, { color: C.foreground }]}>
@@ -582,7 +638,7 @@ export default function DashboardScreen() {
                   labels={weeklyLabels}
                   width={140}
                   height={72}
-                  color="#3b82f6"
+                  color={Colors.stat.volume}
                   valueSuffix="kg"
                   tooltipBgColor={C.elevated}
                   tooltipTextColor={C.foreground}
@@ -595,10 +651,10 @@ export default function DashboardScreen() {
 
           {/* Muscles card with interactive donut chart */}
           <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={[styles.cardGlow, { backgroundColor: '#ec4899', opacity: 0.04 }]} />
+            <View style={[styles.cardGlow, { backgroundColor: Colors.stat.muscles, opacity: 0.04 }]} />
             <View style={styles.statHeader}>
-              <Feather name="activity" size={12} color="#ec4899" />
-              <Text style={[styles.statLabel, { color: '#ec4899' }]}>MUSCLES</Text>
+              <Feather name="activity" size={12} color={Colors.stat.muscles} />
+              <Text style={[styles.statLabel, { color: Colors.stat.muscles }]}>MUSCLES</Text>
             </View>
             {muscleData.length > 0 ? (
               <View style={{ alignItems: 'center', marginTop: 2 }}>
@@ -842,6 +898,20 @@ export default function DashboardScreen() {
         </View>
       </ScrollView>
 
+      {/* Session preview — the shared routine-detail sheet, opened from the
+          "today" card. Start the session, or ask Drona about it. Editing lives
+          in the Routines tab (where the editor is), so no Edit action here. */}
+      <RoutineDetailSheet
+        routine={detailRoutine}
+        onClose={() => setDetailRoutine(null)}
+        onStartWorkout={() => {
+          const r = detailRoutine;
+          setDetailRoutine(null);
+          if (r) router.push(`/workout/${r.id}` as any);
+        }}
+        onAskCoach={detailRoutine ? () => askCoachAboutRoutine(detailRoutine) : undefined}
+      />
+
       {/* AI Coach Modal */}
       <AICoachModal
         visible={aiCoachOpen}
@@ -1062,24 +1132,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
-  aiGlowOrb1: {
-    position: 'absolute',
-    top: -24,
-    right: -24,
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: 'rgba(168,85,247,0.35)',
-  },
-  aiGlowOrb2: {
-    position: 'absolute',
-    bottom: -16,
-    left: -16,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(6,182,212,0.22)',
-  },
   aiCoachRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1105,7 +1157,6 @@ const styles = StyleSheet.create({
   newBadgeText: {
     fontSize: 8,
     fontWeight: FontWeight.bold,
-    color: '#ffffff',
     letterSpacing: 0.8,
   },
   aiCoachSub: {
@@ -1116,7 +1167,6 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: 'rgba(168,85,247,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
@@ -1133,9 +1183,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: Radius.sm,
-    backgroundColor: 'rgba(168,85,247,0.18)',
     borderWidth: 1,
-    borderColor: 'rgba(168,85,247,0.30)',
   },
   aiChipText: {
     fontSize: 10,
