@@ -164,7 +164,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
           <View style={styles.miniBarInner}>
             {/* Pause/Resume button */}
             <TouchableOpacity
-              onPress={workout.togglePause}
+              onPress={() => { haptics.selection(); workout.togglePause(); }}
               style={[
                 styles.miniPauseBtn,
                 {

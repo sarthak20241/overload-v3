@@ -476,6 +476,16 @@ export default function ActiveWorkoutScreen() {
     };
   }, []);
 
+  // A light tick whenever the active exercise changes (chip tap, swipe pager, or
+  // auto-advance). Seeded with the initial index so it doesn't fire on mount.
+  const prevIdxRef = useRef(currentIdx);
+  useEffect(() => {
+    if (prevIdxRef.current !== currentIdx) {
+      haptics.selection();
+      prevIdxRef.current = currentIdx;
+    }
+  }, [currentIdx]);
+
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
   // On pause: clear the intervals and remember each elapsed offset.
   // On resume: shift each start-time ref forward by the paused duration so the
@@ -613,11 +623,13 @@ export default function ActiveWorkoutScreen() {
   // End the current rest period early. Lets the user signal "ready for the next
   // set" without having to log a set just to clear the running rest timer.
   const handleSkipRest = () => {
+    haptics.tap();
     stopRestTimer();
   };
 
   // Delete a set
   const handleDeleteSet = (setIdx: number) => {
+    haptics.tap();
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
     ex.sets = ex.sets.filter((_, i) => i !== setIdx);
@@ -679,6 +691,7 @@ export default function ActiveWorkoutScreen() {
 
   // Add exercise from library
   const addExercise = (ex: ExerciseDef) => {
+    haptics.tap();
     // Optimistic: add immediately with a temp id and default sets, close modal.
     // Real exercise row + previous-set defaults are fetched in the background
     // by reconcileExerciseRow.
@@ -792,6 +805,7 @@ export default function ActiveWorkoutScreen() {
   // cancel out. (Blocking the delete with no feedback just dead-ends them.)
   const removeExercise = () => {
     if (exercises.length === 0) return;
+    haptics.warning();
     const updated = exercises.filter((_, i) => i !== currentIdx);
     const newStarted = exerciseStarted.filter((_, i) => i !== currentIdx);
     const newFinished = exerciseFinished.filter((_, i) => i !== currentIdx);
@@ -823,6 +837,7 @@ export default function ActiveWorkoutScreen() {
   };
 
   const confirmCancel = () => {
+    haptics.warning();
     setShowCancelAlert(false);
     workout.finishWorkout();
     leaveWorkout();
@@ -1190,6 +1205,7 @@ export default function ActiveWorkoutScreen() {
     // different clientIds and double-save it.
     if (finishingRef.current) return;
     finishingRef.current = true;
+    haptics.success(); // workout complete
     setShowFinishAlert(false);
     setShowFinishSheet(false);
     Keyboard.dismiss();
@@ -1575,7 +1591,7 @@ export default function ActiveWorkoutScreen() {
                           it (keypad) and reveals its −/+. Reps is untouched. */}
                       <View style={[styles.colVal, editField === 'weight' && styles.activeCellRow]}>
                         {editField === 'weight' && (
-                          <TouchableOpacity onPress={() => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5)))} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
                             <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
                           </TouchableOpacity>
                         )}

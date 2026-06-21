@@ -18,6 +18,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume } from '@/lib/format';
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
@@ -76,11 +77,12 @@ function AnimatedBar({ progress, color, bg, delay = 0 }: { progress: number; col
 
 // ─── Mini area card (Volume / Duration) ───────────────────────────────────────
 function MiniAreaCard({
-  icon, label, value, suffix, color, data, labels, valueSuffix,
+  icon, label, value, format, suffix, color, data, labels, valueSuffix,
 }: {
   icon: React.ComponentProps<typeof Feather>['name'];
   label: string;
-  value: string;
+  value: number;
+  format: (n: number) => string;
   suffix: string;
   color: string;
   data: number[];
@@ -97,7 +99,7 @@ function MiniAreaCard({
         <Text style={[styles.miniLabel, { color }]}>{label.toUpperCase()}</Text>
       </View>
       <View style={styles.miniValueRow}>
-        <Text style={[styles.miniValue, { color: C.foreground }]}>{value}</Text>
+        <AnimatedNumber value={value} format={format} style={[styles.miniValue, { color: C.foreground }]} />
         <Text style={[styles.miniSuffix, { color: C.textMuted }]}> {suffix}</Text>
       </View>
       {hasData ? (
@@ -124,7 +126,7 @@ function MiniAreaCard({
 
 // ─── Stat mini card (Sets / Reps) ─────────────────────────────────────────────
 function StatMiniCard({
-  icon, label, value, suffix, color, progress, target,
+  icon, label, value, suffix, color, progress, target, format = (n: number) => String(Math.round(n)),
 }: {
   icon: React.ComponentProps<typeof Feather>['name'];
   label: string;
@@ -133,6 +135,7 @@ function StatMiniCard({
   color: string;
   progress: number;
   target: string;
+  format?: (n: number) => string;
 }) {
   const { C } = useTheme();
   return (
@@ -143,7 +146,7 @@ function StatMiniCard({
         <Text style={[styles.miniLabel, { color }]}>{label.toUpperCase()}</Text>
       </View>
       <View style={styles.miniValueRow}>
-        <Text style={[styles.miniValue, { color: C.foreground }]}>{value}</Text>
+        <AnimatedNumber value={value} format={format} style={[styles.miniValue, { color: C.foreground }]} />
         <Text style={[styles.miniSuffix, { color: C.textMuted }]}> {suffix}</Text>
       </View>
       <View style={{ marginTop: 6 }}>
@@ -1459,7 +1462,8 @@ export default function AnalyticsScreen() {
                 <MiniAreaCard
                   icon="trending-up"
                   label="Volume"
-                  value={weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : String(weekVolume)}
+                  value={weekVolume}
+                  format={(n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))}
                   suffix="kg"
                   color="#06b6d4"
                   data={volumeSeries.data}
@@ -1469,7 +1473,8 @@ export default function AnalyticsScreen() {
                 <MiniAreaCard
                   icon="clock"
                   label="Duration"
-                  value={String(avgDurationMin)}
+                  value={avgDurationMin}
+                  format={(n) => String(Math.round(n))}
                   suffix="min avg"
                   color="#a855f7"
                   data={durationSeries.data}

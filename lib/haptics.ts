@@ -44,14 +44,45 @@ const run = (fn: (h: HapticsModule) => Promise<unknown>): void => {
   }
 };
 
+// iOS notification haptics (Success/Warning/Error) are crisp and distinct. On
+// many Android devices they're faint or imperceptible, while impactAsync is
+// reliably felt — so on Android we render them as short impact SEQUENCES that
+// stay distinguishable from each other and from the light taps/ticks.
+const isAndroid = Platform.OS === 'android';
+
 export const haptics = {
   tap: () => run((h) => h.impactAsync(h.ImpactFeedbackStyle.Light)),
   medium: () => run((h) => h.impactAsync(h.ImpactFeedbackStyle.Medium)),
   tick: () => run((h) => h.selectionAsync()),
   selection: () => run((h) => h.selectionAsync()),
-  success: () => run((h) => h.notificationAsync(h.NotificationFeedbackType.Success)),
-  warning: () => run((h) => h.notificationAsync(h.NotificationFeedbackType.Warning)),
-  error: () => run((h) => h.notificationAsync(h.NotificationFeedbackType.Error)),
+  // celebratory rising two-pulse
+  success: () => {
+    if (isAndroid) {
+      run((h) => h.impactAsync(h.ImpactFeedbackStyle.Medium));
+      setTimeout(() => run((h) => h.impactAsync(h.ImpactFeedbackStyle.Heavy)), 90);
+    } else {
+      run((h) => h.notificationAsync(h.NotificationFeedbackType.Success));
+    }
+  },
+  // firm "careful" double thud
+  warning: () => {
+    if (isAndroid) {
+      run((h) => h.impactAsync(h.ImpactFeedbackStyle.Heavy));
+      setTimeout(() => run((h) => h.impactAsync(h.ImpactFeedbackStyle.Heavy)), 110);
+    } else {
+      run((h) => h.notificationAsync(h.NotificationFeedbackType.Warning));
+    }
+  },
+  // three sharp hits
+  error: () => {
+    if (isAndroid) {
+      run((h) => h.impactAsync(h.ImpactFeedbackStyle.Heavy));
+      setTimeout(() => run((h) => h.impactAsync(h.ImpactFeedbackStyle.Heavy)), 80);
+      setTimeout(() => run((h) => h.impactAsync(h.ImpactFeedbackStyle.Heavy)), 160);
+    } else {
+      run((h) => h.notificationAsync(h.NotificationFeedbackType.Error));
+    }
+  },
 };
 
 export type HapticKind = keyof typeof haptics;

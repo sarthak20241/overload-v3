@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
-import Animated, { FadeInDown, type SharedValue } from 'react-native-reanimated';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, type SharedValue } from 'react-native-reanimated';
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -342,6 +342,12 @@ function SessionCard({
 }) {
   const { C } = useTheme();
   const [expanded, setExpanded] = useState(false);
+  // Rotate the chevron 180deg as the card expands.
+  const chevronRot = useSharedValue(0);
+  useEffect(() => {
+    chevronRot.value = withTiming(expanded ? 1 : 0, { duration: 200 });
+  }, [expanded]);
+  const chevronStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${chevronRot.value * 180}deg` }] }));
   const swipeRef = useRef<SwipeableMethods>(null);
   // Tracks the tray's open state so a tap on an open card closes it instead of
   // toggling the expanded details underneath. (ReanimatedSwipeable also closes
@@ -484,18 +490,16 @@ function SessionCard({
             >
               <Feather name="more-vertical" size={15} color={C.textMuted} />
             </TouchableOpacity>
-            <Feather
-              name={expanded ? 'chevron-up' : 'chevron-down'}
-              size={14}
-              color={C.textMuted}
-            />
+            <Animated.View style={chevronStyle}>
+              <Feather name="chevron-down" size={14} color={C.textMuted} />
+            </Animated.View>
           </View>
         </TouchableOpacity>
       </ReanimatedSwipeable>
 
       {/* Expanded exercise details */}
       {expanded && (
-        <View style={[styles.wExpandedSection, { borderTopColor: C.borderSubtle }]}>
+        <Animated.View entering={FadeInDown.duration(160)} style={[styles.wExpandedSection, { borderTopColor: C.borderSubtle }]}>
           {workout.exercises && workout.exercises.length > 0 ? (
             workout.exercises.map((ex, i) => {
               const completedSets = ex.sets?.filter(s => s.completed) || [];
@@ -536,7 +540,7 @@ function SessionCard({
               <Text style={[styles.notesText, { color: C.mutedFg }]}>{workout.notes}</Text>
             </View>
           )}
-        </View>
+        </Animated.View>
       )}
     </View>
   );

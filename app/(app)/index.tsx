@@ -5,7 +5,7 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -468,6 +468,16 @@ export default function DashboardScreen() {
   // AI Coach state
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
   const [aiCoachInitialScreen, setAiCoachInitialScreen] = useState<'menu' | 'chat' | 'plan' | 'workout'>('menu');
+  // A slow, subtle "breathing" on the coach's bolt — the coach is present and alive.
+  const boltScale = useSharedValue(1);
+  useEffect(() => {
+    boltScale.value = withRepeat(
+      withTiming(1.06, { duration: 1500, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true,
+    );
+  }, []);
+  const boltStyle = useAnimatedStyle(() => ({ transform: [{ scale: boltScale.value }] }));
   // Set when an insight card is tapped — seeds the chat with that insight's
   // question. Cleared (undefined) for every other coach entry point.
   const [aiCoachPrompt, setAiCoachPrompt] = useState<string | undefined>(undefined);
@@ -572,10 +582,12 @@ export default function DashboardScreen() {
             style={[styles.aiCoachCard, { backgroundColor: C.card, borderColor: aiBorderColor }]}
           >
             <View style={styles.aiCoachRow}>
-              {/* Icon — the lime bolt is the coach's signature mark */}
-              <View style={[styles.aiCoachIconWrap, { backgroundColor: Colors.primary }]}>
-                <Feather name="zap" size={18} color={Colors.primaryFg} />
-              </View>
+              {/* Icon — the lime bolt is the coach's signature mark, gently breathing */}
+              <Animated.View style={boltStyle}>
+                <View style={[styles.aiCoachIconWrap, { backgroundColor: Colors.primary }]}>
+                  <Feather name="zap" size={18} color={Colors.primaryFg} />
+                </View>
+              </Animated.View>
 
               {/* Text */}
               <View style={{ flex: 1 }}>

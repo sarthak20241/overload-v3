@@ -41,6 +41,8 @@ import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Portal } from '@/components/ui/Portal';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { RoutineDetailSheet } from '@/components/routines/RoutineDetailSheet';
+import { DraggableList, type DragHandle } from '@/components/ui/DraggableList';
+import { arrayMove } from '@/lib/reorder';
 import type { ExerciseDef } from '@/lib/exercises';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -75,7 +77,14 @@ interface RoutineRaw {
 
 // Editor exercise shape (local state only)
 interface EditorExercise {
+  // Per-ROW unique id — the React key and the identity used by onChange/onRemove
+  // and drag-reorder. Deliberately NOT the catalog exercise id: a routine may
+  // list the same exercise twice (warmup + working, supersets, AI cues), and a
+  // shared id would collide keys and make an edit/delete hit both rows.
   id: string;
+  /** Catalog exercises.id, when this row came from a saved routine. Undefined
+   *  for hand-built rows (the signed-in save resolves those by name). */
+  exerciseId?: string;
   name: string;
   muscleGroup: string;
   /** Equipment category from the picker (custom creations choose one);
@@ -87,9 +96,16 @@ interface EditorExercise {
   notes: string;
 }
 
+// A fresh, collision-proof row id (Date.now() can repeat within a .map(), so mix
+// in a random suffix).
+let _rowSeq = 0;
+function makeRowId(): string {
+  return `er-${Date.now()}-${_rowSeq++}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function newExercise(): EditorExercise {
   return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: makeRowId(),
     name: '',
     muscleGroup: '',
     targetSets: 3,
@@ -200,6 +216,10 @@ function RoutineCard({
 }
 
 // ─── Exercise Editor Card ────────────────────────────────────────────────────
+// Passthrough used when no drag handle is supplied (keeps the card usable
+// outside the draggable list).
+const PlainHandle: DragHandle = ({ children }) => <>{children}</>;
+
 function ExerciseEditorCard({
   exercise,
   onChange,
@@ -207,6 +227,9 @@ function ExerciseEditorCard({
   onOpenPicker,
   onFieldFocus,
   index,
+  Handle = PlainHandle,
+  isDragging = false,
+  showDragHandle = true,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
@@ -214,45 +237,70 @@ function ExerciseEditorCard({
   onOpenPicker: () => void;
   onFieldFocus?: () => void;
   index: number;
+  Handle?: DragHandle;
+  isDragging?: boolean;
+  showDragHandle?: boolean;
 }) {
   const { C } = useTheme();
-  const [expanded, setExpanded] = useState(index === 0);
+  // Open unfilled rows so a freshly added card is ready to pick into. Keyed off
+  // content, not position, so the expanded card follows the item across a
+  // reorder instead of being pinned to index 0.
+  const [expanded, setExpanded] = useState(!exercise.name);
+  // Collapse the body while this card is the one being dragged so the floating
+  // row is compact and the list shuffles around a small footprint.
+  const showBody = expanded && !isDragging;
 
   return (
     <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
-      {/* Header - always visible */}
-      <TouchableOpacity
-        onPress={() => setExpanded(!expanded)}
-        style={styles.editorHeader}
-        activeOpacity={0.7}
-      >
-        <Feather name="menu" size={14} color={C.textDim} style={{ marginRight: 8 }} />
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={[styles.editorExName, { color: exercise.name ? C.foreground : C.textMuted }]} numberOfLines={1}>
-            {exercise.name || 'Unnamed exercise'}
-          </Text>
-          <Text style={[styles.editorExSub, { color: C.textMuted }]}>
-            {exercise.targetSets} sets · {exercise.targetReps} reps
-            {exercise.muscleGroup ? ` · ${exercise.muscleGroup}` : ''}
-          </Text>
-        </View>
+      {/* Header - always visible. The grip is its own long-press drag handle;
+          the rest of the row still taps to expand / collapse. */}
+      <View style={styles.editorHeader}>
+        {showDragHandle ? (
+          <Handle>
+            <View
+              style={styles.dragHandle}
+              hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+              accessibilityRole="button"
+              accessibilityLabel={`Reorder ${exercise.name || 'exercise'}`}
+            >
+              <Feather name="menu" size={16} color={C.textDim} />
+            </View>
+          </Handle>
+        ) : (
+          <View style={styles.dragHandleSpacer} />
+        )}
         <TouchableOpacity
-          onPress={(e) => { onRemove(); }}
+          onPress={() => setExpanded(!expanded)}
+          style={styles.editorHeaderMain}
+          activeOpacity={0.7}
+        >
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[styles.editorExName, { color: exercise.name ? C.foreground : C.textMuted }]} numberOfLines={1}>
+              {exercise.name || 'Unnamed exercise'}
+            </Text>
+            <Text style={[styles.editorExSub, { color: C.textMuted }]}>
+              {exercise.targetSets} sets · {exercise.targetReps} reps
+              {exercise.muscleGroup ? ` · ${exercise.muscleGroup}` : ''}
+            </Text>
+          </View>
+          <Feather
+            name={showBody ? 'chevron-up' : 'chevron-down'}
+            size={14}
+            color={C.textMuted}
+            style={{ marginLeft: 4 }}
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onRemove}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           style={styles.editorRemoveBtn}
         >
           <Feather name="x" size={13} color={C.textMuted} />
         </TouchableOpacity>
-        <Feather
-          name={expanded ? 'chevron-up' : 'chevron-down'}
-          size={14}
-          color={C.textMuted}
-          style={{ marginLeft: 4 }}
-        />
-      </TouchableOpacity>
+      </View>
 
       {/* Expandable body */}
-      {expanded && (
+      {showBody && (
         <View style={[styles.editorBody, { borderTopColor: C.borderSubtle }]}>
           {/* Exercise picker — opens the bottom-sheet library. The inline
               dropdown it replaces expanded downward into the IME, so the
@@ -366,6 +414,9 @@ function RoutineEditorSheet({
   // Which exercise card the bottom-sheet picker is choosing for (null = closed).
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
+  // True while an exercise card is being dragged — freezes the editor ScrollView
+  // so the vertical drag doesn't fight the scroll.
+  const [isReordering, setIsReordering] = useState(false);
 
   // Keep the focused field above the keyboard on Android: SDK 54 edge-to-edge
   // stops the window resizing for the IME, so the KeyboardAvoidingView below
@@ -421,6 +472,8 @@ function RoutineEditorSheet({
       setName(editingRoutine.name);
       setDescription(editingRoutine.description);
       setErrorMsg('');
+      // Clear any stuck reorder freeze from a drag that was interrupted last time.
+      setIsReordering(false);
     }
   }, [visible, editingRoutine]);
 
@@ -448,7 +501,8 @@ function RoutineEditorSheet({
       setExercises(
         rows.length > 0
           ? rows.map((re: any) => ({
-              id: re.exercises?.id || re.exercise_id || re.id,
+              id: makeRowId(),
+              exerciseId: re.exercises?.id || re.exercise_id || re.id,
               name: re.exercises?.name || '',
               muscleGroup: re.exercises?.muscle_group || '',
               category: re.exercises?.category || undefined,
@@ -464,7 +518,8 @@ function RoutineEditorSheet({
       return;
     }
     const mapRow = (re: any) => ({
-      id: re.exercise_id || re.exercises?.id || re.id,
+      id: makeRowId(),
+      exerciseId: re.exercise_id || re.exercises?.id || re.id,
       name: re.exercises?.name || '',
       muscleGroup: re.exercises?.muscle_group || '',
       category: re.exercises?.category || undefined,
@@ -523,16 +578,20 @@ function RoutineEditorSheet({
       const routineId = editingId || `guest-r-${Date.now()}`;
       const routineExercises = validExercises.map((ex, i) => {
         const [repsMin, repsMax] = parseReps(ex.targetReps);
+        // Persist the catalog exercise id (loaded rows) or fall back to the
+        // row id for hand-built rows — the same identity the old code stored,
+        // now that `ex.id` is a per-row key rather than the exercise id.
+        const exId = ex.exerciseId ?? ex.id;
         return {
           id: `gre-${Date.now()}-${i}`,
-          exercise_id: ex.id,
+          exercise_id: exId,
           order: i,
           sets: ex.targetSets,
           reps_min: repsMin,
           reps_max: repsMax,
           rest_seconds: ex.restSeconds,
           exercises: {
-            id: ex.id,
+            id: exId,
             name: ex.name,
             muscle_group: ex.muscleGroup || 'Other',
             category: 'Custom',
@@ -708,6 +767,7 @@ function RoutineEditorSheet({
               ]}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
+              scrollEnabled={!isReordering}
             >
               {/* Routine Name */}
               <View>
@@ -742,21 +802,29 @@ function RoutineEditorSheet({
                     EXERCISES ({exercises.length})
                   </Text>
                 </View>
-                <View style={{ gap: 8 }}>
-                  {exercises.map((ex, i) => (
+                <DraggableList
+                  data={exercises}
+                  keyExtractor={(ex) => ex.id}
+                  gap={8}
+                  onDragStart={() => setIsReordering(true)}
+                  onDragEnd={() => setIsReordering(false)}
+                  onReorder={(from, to) => setExercises((prev) => arrayMove(prev, from, to))}
+                  renderItem={({ item: ex, index: i, isActive, Handle }) => (
                     <ExerciseEditorCard
-                      key={ex.id}
                       exercise={ex}
                       index={i}
+                      Handle={Handle}
+                      isDragging={isActive}
+                      showDragHandle={exercises.length > 1}
                       onChange={(updated) =>
-                        setExercises((prev) => prev.map((e, idx) => (idx === i ? updated : e)))
+                        setExercises((prev) => prev.map((e) => (e.id === ex.id ? updated : e)))
                       }
-                      onRemove={() => setExercises((prev) => prev.filter((_, idx) => idx !== i))}
+                      onRemove={() => setExercises((prev) => prev.filter((e) => e.id !== ex.id))}
                       onOpenPicker={() => setPickerTargetIdx(i)}
                       onFieldFocus={scrollFocusedIntoView}
                     />
-                  ))}
-                </View>
+                  )}
+                />
 
                 {/* Add Exercise Button */}
                 <TouchableOpacity
@@ -891,7 +959,7 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
       </View>
       <Text style={[styles.emptyTitle, { color: C.textMuted }]}>No routines yet</Text>
       <Text style={[styles.emptySub, { color: C.textDim }]}>
-        Create one manually or generate with AI
+        Tell Coach Drona your goal and he'll build your first one. Or make one yourself.
       </Text>
       <View style={styles.emptyBtnRow}>
         <TouchableOpacity
@@ -905,7 +973,7 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
           style={[styles.emptyBtnAI, { borderColor: C.primaryBorder, backgroundColor: C.primaryMuted }]}
         >
           <Feather name="zap" size={13} color={C.accentText} />
-          <Text style={[styles.emptyBtnAIText, { color: C.accentText }]}>AI Generate</Text>
+          <Text style={[styles.emptyBtnAIText, { color: C.accentText }]}>Build with Drona</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -1475,7 +1543,25 @@ const styles = StyleSheet.create({
   editorHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.lg,
+    paddingRight: Spacing.lg,
+    paddingLeft: Spacing.sm,
+  },
+  // Long-press drag grip — spans the row height so it's an easy target.
+  dragHandle: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Keeps the header left-aligned with multi-item cards when the grip is hidden
+  // (a single-exercise routine has nothing to reorder).
+  dragHandleSpacer: { width: Spacing.sm },
+  editorHeaderMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.lg,
+    minWidth: 0,
   },
   editorExName: {
     fontSize: FontSize.base,
