@@ -9,7 +9,7 @@ import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, wit
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
-import { roundVolume } from '@/lib/format';
+import { abbreviateNumber } from '@/lib/format';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
@@ -642,7 +642,7 @@ export default function DashboardScreen() {
               <AnimatedNumber
                 style={[styles.statValue, { color: C.foreground }]}
                 value={totalVolume}
-                format={(n) => (n > 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))}
+                format={abbreviateNumber}
               />
               <Text style={[styles.statSuffix, { color: C.textMuted }]}> kg</Text>
             </View>
@@ -821,7 +821,7 @@ export default function DashboardScreen() {
                             </View>
                             {w.total_volume_kg ? (
                               <Text style={[styles.workoutVolume, { color: C.textMuted }]}>
-                                {roundVolume(w.total_volume_kg)}kg
+                                {abbreviateNumber(w.total_volume_kg)} kg
                               </Text>
                             ) : null}
                             {delta !== undefined && Math.round(delta) !== 0 && (

@@ -17,7 +17,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha }
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
-import { roundVolume } from '@/lib/format';
+import { abbreviateNumber } from '@/lib/format';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -95,8 +95,7 @@ function formatDateShort(iso: string) {
 
 function formatVolume(kg?: number) {
   if (!kg) return '—';
-  if (kg >= 1000) return `${(kg / 1000).toFixed(1)}k kg`;
-  return `${roundVolume(kg)} kg`;
+  return `${abbreviateNumber(kg)} kg`;
 }
 
 function isSameDay(d1: Date, d2: Date) {
@@ -840,9 +839,7 @@ export default function HistoryScreen() {
             {totalWorkouts} workouts
           </Text>
           <Text style={[styles.headerStat, { color: C.textMuted }]}>
-            {totalVolume >= 1000
-              ? `${Math.round(totalVolume / 1000)}t`
-              : `${roundVolume(totalVolume)}kg`}{' '}
+            {`${abbreviateNumber(totalVolume)} kg`}{' '}
             total volume
           </Text>
         </View>
@@ -939,7 +936,7 @@ export default function HistoryScreen() {
               No workouts logged yet
             </Text>
             <Text style={[styles.emptySub, { color: C.textDim }]}>
-              Complete a workout to see it here
+              Get your first session in and it'll show up here.
             </Text>
           </View>
         ) : filtered.length === 0 ? (

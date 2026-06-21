@@ -13,7 +13,7 @@ interface Props extends TextProps {
 // changes), extending the dashboard's roll-up feel to stat numbers. Pure JS
 // RAF tween in a self-contained component, so a parent re-render (e.g. the
 // workout timer ticking) never restarts the animation.
-export function AnimatedNumber({ value, format = (n) => String(Math.round(n)), durationMs = 700, ...rest }: Props) {
+export function AnimatedNumber({ value, format = (n) => String(Math.round(n)), durationMs = 700, style, ...rest }: Props) {
   const [display, setDisplay] = useState(0);
   const fromRef = useRef(0);
   const rafRef = useRef<number | null>(null);
@@ -42,5 +42,6 @@ export function AnimatedNumber({ value, format = (n) => String(Math.round(n)), d
     };
   }, [value, durationMs]);
 
-  return <Text {...rest}>{format(display)}</Text>;
+  // Tabular figures so the width stays fixed while the value tweens (no wobble).
+  return <Text {...rest} style={[{ fontVariant: ['tabular-nums'] }, style]}>{format(display)}</Text>;
 }

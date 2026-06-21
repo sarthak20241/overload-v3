@@ -15,7 +15,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
-import { roundVolume } from '@/lib/format';
+import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -1293,7 +1293,7 @@ export default function AnalyticsScreen() {
   const localInsights = (): string[] => {
     const out: string[] = [];
     if (weekWorkouts.length > 0) out.push(`${weekWorkouts.length} sessions in the bag this week. That consistency is what moves the needle.`);
-    if (weekVolume > 0) out.push(`You moved ${weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : weekVolume}kg this week. Add a set somewhere next week and we keep climbing.`);
+    if (weekVolume > 0) out.push(`You moved ${abbreviateNumber(weekVolume)}kg this week. Add a set somewhere next week and we keep climbing.`);
     if (pr) out.push(`Your ${selectedExercise} top set sits at ${pr}kg. Next time, chase a clean 2.5kg jump.`);
     if (avgDurationMin > 0) out.push(`Sessions average ${avgDurationMin} min. That is a solid window for volume and recovery both.`);
     if (out.length === 0) out.push('Log a few sessions and I will start reading your training for you.');
@@ -1463,7 +1463,7 @@ export default function AnalyticsScreen() {
                   icon="trending-up"
                   label="Volume"
                   value={weekVolume}
-                  format={(n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))}
+                  format={abbreviateNumber}
                   suffix="kg"
                   color="#06b6d4"
                   data={volumeSeries.data}
