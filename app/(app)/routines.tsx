@@ -197,10 +197,10 @@ function RoutineCard({
         <View style={styles.routineActions}>
           <TouchableOpacity
             onPress={(e) => { e.stopPropagation?.(); onPlay(); }}
-            style={[styles.playBtn, Shadow.playBtn]}
+            style={[styles.playBtn, { backgroundColor: C.primaryMuted }]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Feather name="play" size={14} color={Colors.primaryFg} />
+            <Feather name="play" size={14} color={C.accentText} />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={(e) => { e.stopPropagation?.(); onMenu(); }}
@@ -1369,7 +1369,6 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },

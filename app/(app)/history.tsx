@@ -317,8 +317,8 @@ function MonthCalendar({
           <Text style={[styles.legendText, { color: C.textDim }]}>Trained</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendSquare, { backgroundColor: Colors.calendar.base }]} />
-          <Text style={[styles.legendText, { color: C.textDim }]}>Multiple</Text>
+          <View style={[styles.legendSquare, { backgroundColor: Colors.calendar.max, borderRadius: 999 }]} />
+          <Text style={[styles.legendText, { color: C.textDim }]}>Multiple sessions</Text>
         </View>
       </View>
     </View>

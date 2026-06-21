@@ -16,8 +16,11 @@ import { useEffect } from 'react';
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 function fmt(seconds: number) {
-  const m = Math.floor(seconds / 60);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
+  // Roll into hours so long sessions don't overflow as "588:34".
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
@@ -269,13 +272,16 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             }
           >
             <Feather name={getCenterIcon()} size={22} color={getCenterIconColor()} />
-            {/* Active dot indicator when away from workout page */}
+            {/* A neutral "session in progress" dot (the FAB colour + icon already
+                convey running vs paused). White reads as a status indicator on
+                both the lime and amber FAB; red looked like an error, and an
+                amber dot was invisible on the paused (amber) FAB. */}
             {workout.isActive && !isOnWorkout && (
               <View style={[
                 styles.activeDot,
                 {
                   borderColor: C.navBg,
-                  backgroundColor: workout.isPaused ? Colors.paused : '#ef4444',
+                  backgroundColor: '#fff',
                 },
               ]} />
             )}

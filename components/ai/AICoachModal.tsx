@@ -2813,8 +2813,16 @@ export function AICoachModal({
                     </Text>
                   </View>
                   <View style={s.upgradeBannerRight}>
-                    <Text style={[s.upgradeBannerCta, { color: C.accentText }]}>Upgrade</Text>
-                    <Feather name="chevron-right" size={14} color={C.accentText} />
+                    {/* Stay a calm "X days left" chip until the trial's final
+                        week; only then push the explicit Upgrade CTA. */}
+                    {typeof access.daysLeft === 'number' && access.daysLeft <= 7 && (
+                      <Text style={[s.upgradeBannerCta, { color: C.accentText }]}>Upgrade</Text>
+                    )}
+                    <Feather
+                      name="chevron-right"
+                      size={14}
+                      color={typeof access.daysLeft === 'number' && access.daysLeft <= 7 ? C.accentText : C.textMuted}
+                    />
                   </View>
                 </TouchableOpacity>
               )}
