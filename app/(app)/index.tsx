@@ -545,6 +545,8 @@ export default function DashboardScreen() {
             <PressableScale
               style={styles.startBtn}
               onPress={() => router.push('/workout/new')}
+              accessibilityRole="button"
+              accessibilityLabel="Start a workout"
             >
               <Feather name="activity" size={16} color={Colors.primaryFg} />
               <Text style={styles.startBtnText}>Start</Text>
@@ -554,6 +556,8 @@ export default function DashboardScreen() {
               onPress={() => router.push('/(app)/profile')}
               style={[styles.avatarBtn, { backgroundColor: C.circleBg, borderColor: C.primaryBorder }]}
               activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Open your profile"
             >
               <Text style={[styles.avatarText, { color: C.circleFg }]}>
                 {userName.charAt(0).toUpperCase()}

@@ -199,6 +199,8 @@ function RoutineCard({
             onPress={(e) => { e.stopPropagation?.(); onPlay(); }}
             style={[styles.playBtn, { backgroundColor: C.primaryMuted }]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Start ${routine.name}`}
           >
             <Feather name="play" size={14} color={C.accentText} />
           </TouchableOpacity>
@@ -206,6 +208,8 @@ function RoutineCard({
             onPress={(e) => { e.stopPropagation?.(); onMenu(); }}
             style={styles.menuBtn}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`${routine.name} options`}
           >
             <Feather name="more-vertical" size={16} color={C.textMuted} />
           </TouchableOpacity>

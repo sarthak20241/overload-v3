@@ -1242,6 +1242,8 @@ export default function ProfileScreen() {
                 <TouchableOpacity
                   onPress={() => setBugModalOpen(false)}
                   style={[styles.bugCloseBtn, { backgroundColor: C.glowBg }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
                 >
                   <Feather name="x" size={16} color={C.mutedFg} />
                 </TouchableOpacity>
@@ -1378,7 +1380,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6, paddingVertical: 2,
     borderRadius: Radius.full,
   },
-  guestBadgeText: { color: '#0a0a0a', fontSize: 8, fontWeight: FontWeight.bold, letterSpacing: 0.4 },
+  guestBadgeText: { color: '#0a0a0a', fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.4 },
   levelBadge: {
     position: 'absolute', bottom: -6, right: -6,
     paddingHorizontal: 6, paddingVertical: 2,
