@@ -47,5 +47,10 @@ supabase/.temp/
 /agent/
 .claude/skills/
 
+# HyperFrames render scratch / intermediate artifacts
+brag-output-*/work-*/
+brag-output-*/composition/snapshots/
+brag-output-*/composition/node_modules/
+
 # One-off data migration workspace (contains user data dumps)
 migration/
