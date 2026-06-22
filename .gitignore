@@ -42,5 +42,10 @@ Redesign Gym Workout Tracker UI*/
 .claude/worktrees/
 supabase/.temp/
 
+# HyperFrames skill-installer artifacts (local AI tooling, not app code)
+.agents/
+/agent/
+.claude/skills/
+
 # One-off data migration workspace (contains user data dumps)
 migration/
