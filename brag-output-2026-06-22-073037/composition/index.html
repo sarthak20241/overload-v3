@@ -78,7 +78,7 @@
       .screen { position: absolute; inset: 0; padding: 64px 44px 0 44px; }
 
       /* dashboard header */
-      .dh-greet { font-size: 22px; letter-spacing: 4px; text-transform: uppercase; color: var(--dim); font-weight: 500; }
+      .dh-greet { font-size: 22px; letter-spacing: 4px; text-transform: uppercase; color: var(--mut); font-weight: 600; }
       .dh-name { font-size: 52px; font-weight: 900; letter-spacing: -1px; color: var(--fg); margin-top: 8px; }
       .dh-row { display: flex; align-items: flex-start; justify-content: space-between; }
       .dh-start { display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 26px; border-radius: 32px; background: var(--lime); margin-top: 24px; }
@@ -89,7 +89,7 @@
       .dh-lvlnum { font-size: 24px; font-weight: 900; color: var(--lime-fg); }
       .dh-track { flex: 1; height: 16px; border-radius: 8px; background: var(--lime-muted); margin-left: -6px; overflow: hidden; }
       .dh-fill { height: 100%; border-radius: 8px; background: var(--lime); transform-origin: left center; transform: scaleX(0.42); box-shadow: 0 0 18px rgba(200,255,0,0.5); }
-      .dh-xptx { font-size: 18px; font-weight: 700; color: var(--dim); margin-left: 14px; white-space: nowrap; }
+      .dh-xptx { font-size: 18px; font-weight: 700; color: var(--mut); margin-left: 14px; white-space: nowrap; }
 
       /* weekly calendar */
       .cal { display: flex; justify-content: space-between; margin-top: 44px; opacity: 0; }
@@ -186,26 +186,26 @@
     </style>
   </head>
   <body>
-    <!-- Music (root-level, framework-owned). Fades under final wordmark via main timeline. -->
-    <audio id="bgm" data-start="0" data-duration="20" src="assets/music/happy-beats-business-moves-vol-11-by-ende-dot-app.mp3"></audio>
-
-    <!-- SFX layer (root-level) -->
-    <audio id="sfx-bar" data-start="1.60" data-duration="1.2" src="assets/sfx/click2.ogg"></audio>
-    <audio id="sfx-lvchip" data-start="1.72" data-duration="0.6" src="assets/sfx/bong_001.ogg"></audio>
-    <audio id="sfx-card1" data-start="3.70" data-duration="0.5" src="assets/sfx/card-slide-1.ogg"></audio>
-    <audio id="sfx-card2" data-start="4.23" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
-    <audio id="sfx-card3" data-start="4.75" data-duration="0.5" src="assets/sfx/card-slide-1.ogg"></audio>
-    <audio id="sfx-card4" data-start="5.28" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
-    <audio id="sfx-coach" data-start="8.96" data-duration="0.8" src="assets/sfx/impactSoft_medium_004.ogg"></audio>
-    <audio id="sfx-chip1" data-start="10.55" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
-    <audio id="sfx-chip2" data-start="10.85" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
-    <audio id="sfx-chip3" data-start="11.15" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
-    <audio id="sfx-pr" data-start="12.65" data-duration="0.9" src="assets/sfx/impactBell_heavy_000.ogg"></audio>
-    <audio id="sfx-delta" data-start="13.10" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
-    <audio id="sfx-levelup" data-start="17.91" data-duration="1.0" src="assets/sfx/impactBell_heavy_003.ogg"></audio>
-    <audio id="sfx-ring" data-start="18.05" data-duration="0.8" src="assets/sfx/impactSoft_medium_001.ogg"></audio>
-
     <div id="root" data-composition-id="main" data-start="0" data-duration="20" data-width="1080" data-height="1920">
+
+      <!-- Music (host-root child, framework-owned). Fades under final wordmark via main timeline. -->
+      <audio id="bgm" data-start="0" data-duration="20" src="assets/music/happy-beats-business-moves-vol-11-by-ende-dot-app.mp3"></audio>
+
+      <!-- SFX layer (host-root children) -->
+      <audio id="sfx-bar" data-start="1.60" data-duration="1.2" src="assets/sfx/click2.ogg"></audio>
+      <audio id="sfx-lvchip" data-start="1.72" data-duration="0.6" src="assets/sfx/bong_001.ogg"></audio>
+      <audio id="sfx-card1" data-start="3.70" data-duration="0.5" src="assets/sfx/card-slide-1.ogg"></audio>
+      <audio id="sfx-card2" data-start="4.23" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
+      <audio id="sfx-card3" data-start="4.75" data-duration="0.5" src="assets/sfx/card-slide-1.ogg"></audio>
+      <audio id="sfx-card4" data-start="5.28" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
+      <audio id="sfx-coach" data-start="8.96" data-duration="0.8" src="assets/sfx/impactSoft_medium_004.ogg"></audio>
+      <audio id="sfx-chip1" data-start="10.55" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
+      <audio id="sfx-chip2" data-start="10.85" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
+      <audio id="sfx-chip3" data-start="11.15" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
+      <audio id="sfx-pr" data-start="12.65" data-duration="0.9" src="assets/sfx/impactBell_heavy_000.ogg"></audio>
+      <audio id="sfx-delta" data-start="13.10" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
+      <audio id="sfx-levelup" data-start="17.91" data-duration="1.0" src="assets/sfx/impactBell_heavy_003.ogg"></audio>
+      <audio id="sfx-ring" data-start="18.05" data-duration="0.8" src="assets/sfx/impactSoft_medium_001.ogg"></audio>
 
       <!-- Audio-reactive ambient lime glow (breathes with music energy) -->
       <div class="amb clip" id="amb" data-start="0" data-duration="20" data-track-index="0"></div>
@@ -266,9 +266,9 @@
                     <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
                   </linearGradient>
                 </defs>
-                <path d="M0,118 L53,96 L106,104 L160,70 L213,58 L266,40 L320,22 L320,150 L0,150 Z" fill="url(#volgrad)"/>
-                <path d="M0,118 L53,96 L106,104 L160,70 L213,58 L266,40 L320,22" fill="none" stroke="#3b82f6" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
-                <circle cx="320" cy="22" r="7" fill="#3b82f6"/>
+                <path d="M8,118 L60,96 L110,104 L160,70 L210,58 L262,40 L312,24 L312,150 L8,150 Z" fill="url(#volgrad)"/>
+                <path d="M8,118 L60,96 L110,104 L160,70 L210,58 L262,40 L312,24" fill="none" stroke="#3b82f6" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+                <circle cx="312" cy="24" r="7" fill="#3b82f6"/>
               </svg>
             </div>
             <div class="stat" id="d-mus">
