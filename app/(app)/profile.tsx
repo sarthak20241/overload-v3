@@ -238,10 +238,15 @@ export default function ProfileScreen() {
     invalidateCustomExercisesCache();
     // Drop this user's read cache (per-user keyed; clears stale data so the
     // next account never paints from it). The sync queue stays parked per user.
-    if (prevUserId) await clearUserCache(prevUserId);
-    // Drop this user's persisted coach conversations so the next account on this
-    // device never sees them (same per-user discipline as the read cache).
-    if (prevUserId) await clearCoachConversations(prevUserId);
+    // Best-effort local cleanup (both per-user keyed, so the next account never
+    // sees them). allSettled so a storage failure can't block the redirect after
+    // auth teardown has already happened.
+    if (prevUserId) {
+      await Promise.allSettled([
+        clearUserCache(prevUserId),
+        clearCoachConversations(prevUserId),
+      ]);
+    }
     router.replace('/(auth)');
   };
   const [deletingAccount, setDeletingAccount] = useState(false);

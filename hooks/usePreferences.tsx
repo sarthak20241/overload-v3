@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useMemo, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Workout preferences live here. This mirrors useTheme's shape (Provider +
@@ -51,6 +51,9 @@ const PreferencesContext = createContext<PreferencesContextType>({
 export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<WorkoutPreferences>(DEFAULT_PREFERENCES);
   const [ready, setReady] = useState(false);
+  // If the user toggles a preference before the initial AsyncStorage read
+  // resolves, don't let the on-disk blob clobber that change.
+  const touchedBeforeReadyRef = useRef(false);
 
   useEffect(() => {
     AsyncStorage.getItem(PREFS_KEY)
@@ -58,8 +61,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         if (stored) {
           try {
             const parsed = JSON.parse(stored) as Partial<WorkoutPreferences>;
-            // Merge over defaults so newly-added keys are forward-safe.
-            setPrefs({ ...DEFAULT_PREFERENCES, ...parsed });
+            // Merge over defaults so newly-added keys are forward-safe — but keep
+            // any local edit the user made before hydration completed.
+            setPrefs((prev) => (touchedBeforeReadyRef.current ? prev : { ...DEFAULT_PREFERENCES, ...parsed }));
           } catch {
             /* corrupt blob — keep defaults */
           }
@@ -71,6 +75,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const setPreference = useCallback(
     <K extends keyof WorkoutPreferences,>(key: K, value: WorkoutPreferences[K]) => {
+      // Mark the store user-touched so a late hydration read won't overwrite it.
+      touchedBeforeReadyRef.current = true;
       setPrefs((prev) => {
         const next = { ...prev, [key]: value };
         AsyncStorage.setItem(PREFS_KEY, JSON.stringify(next)).catch(() => {});

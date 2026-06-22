@@ -19,6 +19,9 @@ export function AnimatedNumber({ value, format = (n) => String(Math.round(n)), d
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
+    // Guard against a zero/negative/NaN duration, which would make the RAF loop
+    // never reach completion (t never hits 1).
+    const safeDurationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 1;
     const from = fromRef.current;
     const to = value;
     if (from === to) {
@@ -27,7 +30,7 @@ export function AnimatedNumber({ value, format = (n) => String(Math.round(n)), d
     }
     const start = Date.now();
     const tick = () => {
-      const t = Math.min(1, (Date.now() - start) / durationMs);
+      const t = Math.min(1, (Date.now() - start) / safeDurationMs);
       const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
       setDisplay(from + (to - from) * eased);
       if (t < 1) {

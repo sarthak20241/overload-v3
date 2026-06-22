@@ -168,6 +168,8 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             {/* Pause/Resume button */}
             <TouchableOpacity
               onPress={() => { haptics.selection(); workout.togglePause(); }}
+              accessibilityRole="button"
+              accessibilityLabel={workout.isPaused ? 'Resume workout' : 'Pause workout'}
               style={[
                 styles.miniPauseBtn,
                 {

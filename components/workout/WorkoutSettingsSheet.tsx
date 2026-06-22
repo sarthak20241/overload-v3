@@ -64,7 +64,7 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
               <Text style={[s.title, { color: C.foreground }]}>Workout settings</Text>
               <Text style={[s.subtitle, { color: C.mutedFg }]}>Tune how logging works for you</Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
+            <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityRole="button" accessibilityLabel="Close">
               <Feather name="x" size={15} color={C.foreground} />
             </TouchableOpacity>
           </View>

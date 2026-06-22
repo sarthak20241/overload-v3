@@ -1370,7 +1370,7 @@ export default function AnalyticsScreen() {
   useEffect(() => {
     setInsights([]);
     setInsightsFromCoach(false);
-  }, [weekWorkouts.length, weekVolume, avgDurationMin]);
+  }, [weekWorkouts.length, weekVolume, avgDurationMin, selectedExercise, pr]);
 
   const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
