@@ -386,7 +386,7 @@ function SessionCard({
         accessibilityRole="button"
         accessibilityLabel="Delete workout"
       >
-        <Feather name="trash-2" size={14} color={Colors.danger} />
+        <Feather name="trash-2" size={14} color={C.dangerText} />
       </TouchableOpacity>
     </View>
   );

@@ -29,6 +29,11 @@ export const Colors = {
     textDim: '#6a6a72',
     textSecondary: '#a1a1aa',
     accentText: '#c8ff00',
+    // Status colors as TEXT. On dark the bright base colors already pass WCAG AA,
+    // so these equal the base; the light theme overrides them with darker values.
+    successText: '#10b981',
+    warningText: '#f59e0b',
+    dangerText: '#ef4444',
     primaryMuted: 'rgba(200,255,0,0.10)',
     primarySubtle: 'rgba(200,255,0,0.05)',
     primaryBorder: 'rgba(200,255,0,0.20)',
@@ -63,6 +68,11 @@ export const Colors = {
     textDim: '#9ca3af',
     textSecondary: '#645d58',
     accentText: '#4d7a00',
+    // Darker status-text variants that pass WCAG AA on cream/white (the bright
+    // base colors fail: success 2.54, warning 2.15, danger 3.76 on white).
+    successText: '#047857',
+    warningText: '#b45309',
+    dangerText: '#c2371f',
     primaryMuted: 'rgba(77,122,0,0.08)',
     primarySubtle: 'rgba(77,122,0,0.10)',
     primaryBorder: 'rgba(77,122,0,0.20)',

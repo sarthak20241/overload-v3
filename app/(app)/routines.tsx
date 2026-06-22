@@ -922,8 +922,8 @@ function RoutineMenuModal({
                 onPress={() => setShowDeleteConfirm(true)}
                 style={[styles.menuItem, { borderColor: C.border }]}
               >
-                <Feather name="trash-2" size={16} color={Colors.danger} />
-                <Text style={[styles.menuItemText, { color: Colors.danger }]}>Delete</Text>
+                <Feather name="trash-2" size={16} color={C.dangerText} />
+                <Text style={[styles.menuItemText, { color: C.dangerText }]}>Delete</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={onClose}

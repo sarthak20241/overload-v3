@@ -833,11 +833,11 @@ export default function DashboardScreen() {
                                 <Feather
                                   name={delta > 0 ? 'trending-up' : 'trending-down'}
                                   size={9}
-                                  color={delta > 0 ? Colors.success : Colors.danger}
+                                  color={delta > 0 ? C.successText : C.dangerText}
                                 />
                                 <Text style={[
                                   styles.deltaText,
-                                  { color: delta > 0 ? Colors.success : Colors.danger },
+                                  { color: delta > 0 ? C.successText : C.dangerText },
                                 ]}>
                                   {delta > 0 ? '+' : ''}{Math.round(delta)}kg
                                 </Text>

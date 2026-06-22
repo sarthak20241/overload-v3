@@ -412,7 +412,7 @@ function HistoryDrawer({
               <View style={styles.historyRight}>
                 {diff !== 0 && (
                   <View style={[styles.diffBadge, { backgroundColor: diff > 0 ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)' }]}>
-                    <Text style={[styles.diffText, { color: diff > 0 ? Colors.danger : Colors.success }]}>
+                    <Text style={[styles.diffText, { color: diff > 0 ? C.dangerText : C.successText }]}>
                       {diff > 0 ? '+' : ''}{diff.toFixed(1)}
                     </Text>
                   </View>
@@ -470,7 +470,7 @@ function TrendCard({
             {sorted.length === 0 ? null : (
               <>
                 {diff !== 0 && (
-                  <Text style={[styles.diffText, { color: diff > 0 ? Colors.danger : Colors.success, fontWeight: FontWeight.bold }]}>
+                  <Text style={[styles.diffText, { color: diff > 0 ? C.dangerText : C.successText, fontWeight: FontWeight.bold }]}>
                     {diff > 0 ? '+' : ''}{diff.toFixed(1)} {unit}
                   </Text>
                 )}
@@ -503,7 +503,7 @@ function TrendCard({
               tooltipTextColor={C.foreground}
             />
             {goal != null && (
-              <Text style={[styles.goalLabel, { color: Colors.warning }]}>Goal: {goal} {unit}</Text>
+              <Text style={[styles.goalLabel, { color: C.warningText }]}>Goal: {goal} {unit}</Text>
             )}
           </View>
         ) : (
@@ -945,7 +945,7 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
                             <Text style={[styles.mDropdownItemLabel, { color: C.foreground }]} numberOfLines={1}>{f.label}</Text>
                             <Text style={[styles.mDropdownItemValue, { color: C.foreground }]}>{v.current}</Text>
                             {v.change !== undefined && v.change !== 0 && (
-                              <Text style={[styles.mDropdownItemChange, { color: v.change > 0 ? Colors.success : Colors.danger }]}>
+                              <Text style={[styles.mDropdownItemChange, { color: v.change > 0 ? C.successText : C.dangerText }]}>
                                 {v.change > 0 ? '+' : ''}{v.change}
                               </Text>
                             )}
@@ -964,16 +964,16 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
             <View style={styles.mStatsRow}>
               {selectedVal.change !== undefined && selectedVal.change !== 0 && (
                 <View style={[styles.mStatBadge, { backgroundColor: selectedVal.change > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                  <Feather name={selectedVal.change > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.change > 0 ? Colors.success : Colors.danger} />
-                  <Text style={[styles.mStatBadgeText, { color: selectedVal.change > 0 ? Colors.success : Colors.danger }]}>
+                  <Feather name={selectedVal.change > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.change > 0 ? C.successText : C.dangerText} />
+                  <Text style={[styles.mStatBadgeText, { color: selectedVal.change > 0 ? C.successText : C.dangerText }]}>
                     {selectedVal.change > 0 ? '+' : ''}{selectedVal.change} last
                   </Text>
                 </View>
               )}
               {selectedVal.totalChange !== undefined && selectedVal.totalChange !== 0 && (
                 <View style={[styles.mStatBadge, { backgroundColor: selectedVal.totalChange > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                  <Feather name={selectedVal.totalChange > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.totalChange > 0 ? Colors.success : Colors.danger} />
-                  <Text style={[styles.mStatBadgeText, { color: selectedVal.totalChange > 0 ? Colors.success : Colors.danger }]}>
+                  <Feather name={selectedVal.totalChange > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.totalChange > 0 ? C.successText : C.dangerText} />
+                  <Text style={[styles.mStatBadgeText, { color: selectedVal.totalChange > 0 ? C.successText : C.dangerText }]}>
                     {selectedVal.totalChange > 0 ? '+' : ''}{selectedVal.totalChange} total
                   </Text>
                 </View>
@@ -1627,7 +1627,7 @@ export default function AnalyticsScreen() {
                       <Text style={[styles.prName, { color: C.foreground }]} numberOfLines={1}>{name}</Text>
                       <View style={styles.prRight}>
                         {trend !== 0 && (
-                          <Text style={[styles.prTrend, { color: trend > 0 ? Colors.success : Colors.danger }]}>
+                          <Text style={[styles.prTrend, { color: trend > 0 ? C.successText : C.dangerText }]}>
                             {trend > 0 ? '+' : ''}{trend}kg
                           </Text>
                         )}

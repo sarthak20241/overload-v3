@@ -80,11 +80,11 @@ function RowIcon({
 }: { name: React.ComponentProps<typeof Feather>['name']; color: string }) {
   // Data-field icon colour is decoration, not information, so render muted and
   // let lime stay meaningful for active states. The one exception is the brief
-  // "logged" flash, which call sites signal by passing Colors.success.
+  // "logged" flash, which call sites signal by passing C.successText.
   const { C } = useTheme();
-  const isFlash = color === Colors.success;
-  const tint = isFlash ? Colors.success : C.textMuted;
-  const bg = isFlash ? withAlpha(Colors.success, '15') : C.muted;
+  const isFlash = color === C.successText;
+  const tint = isFlash ? C.successText : C.textMuted;
+  const bg = isFlash ? withAlpha(C.successText, '15') : C.muted;
   return (
     <View style={[styles.rowIcon, { backgroundColor: bg }]}>
       <Feather name={name} size={11} color={tint} />
@@ -762,12 +762,12 @@ export default function ProfileScreen() {
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
                 <RowIcon
                   name={loggedFlash === 'weight' ? 'check' : 'anchor'}
-                  color={loggedFlash === 'weight' ? Colors.success : Colors.rowIcon.weight}
+                  color={loggedFlash === 'weight' ? C.successText : Colors.rowIcon.weight}
                 />
                 <Animated.Text
                   key={loggedFlash === 'weight' ? 'weight-logged' : 'weight-label'}
                   entering={FadeIn.duration(200)}
-                  style={[styles.infoLabel, { color: loggedFlash === 'weight' ? Colors.success : C.foreground }]}
+                  style={[styles.infoLabel, { color: loggedFlash === 'weight' ? C.successText : C.foreground }]}
                 >
                   {loggedFlash === 'weight' ? 'Logged' : 'Weight'}
                 </Animated.Text>
@@ -819,12 +819,12 @@ export default function ProfileScreen() {
               <View style={styles.infoRow}>
                 <RowIcon
                   name={loggedFlash === 'bodyFat' ? 'check' : 'percent'}
-                  color={loggedFlash === 'bodyFat' ? Colors.success : Colors.rowIcon.bodyFat}
+                  color={loggedFlash === 'bodyFat' ? C.successText : Colors.rowIcon.bodyFat}
                 />
                 <Animated.Text
                   key={loggedFlash === 'bodyFat' ? 'bodyfat-logged' : 'bodyfat-label'}
                   entering={FadeIn.duration(200)}
-                  style={[styles.infoLabel, { color: loggedFlash === 'bodyFat' ? Colors.success : C.foreground }]}
+                  style={[styles.infoLabel, { color: loggedFlash === 'bodyFat' ? C.successText : C.foreground }]}
                 >
                   {loggedFlash === 'bodyFat' ? 'Logged' : 'Body Fat'}
                 </Animated.Text>
@@ -1353,7 +1353,7 @@ export default function ProfileScreen() {
       <ThemedAlert
         visible={!!showInfoAlert}
         icon="check-circle"
-        iconColor={Colors.success}
+        iconColor={C.successText}
         title="Saved"
         message={showInfoAlert}
         buttons={[{ text: 'OK', style: 'primary', onPress: () => setShowInfoAlert('') }]}
