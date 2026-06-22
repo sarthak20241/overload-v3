@@ -10,7 +10,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft,
   SlideInDown, SlideOutDown, Easing,
-  useSharedValue, useAnimatedStyle, withTiming, withSpring, runOnJS,
+  useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSpring, runOnJS,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -501,6 +501,19 @@ export default function ActiveWorkoutScreen() {
       restDoneFiredRef.current = false;
     }
   }, [restTimer, isResting, currentIdx, exercises]);
+
+  // A gentle pulse on the rest timer as it nears zero (final 3s), building
+  // anticipation before the done color-flip + success buzz.
+  const restPulse = useSharedValue(1);
+  useEffect(() => {
+    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    const remaining = target - restTimer;
+    const nearDone = isResting && target > 0 && remaining > 0 && remaining <= 3;
+    restPulse.value = nearDone
+      ? withRepeat(withTiming(1.08, { duration: 450, easing: Easing.inOut(Easing.quad) }), -1, true)
+      : withTiming(1, { duration: 200 });
+  }, [restTimer, isResting, currentIdx, exercises]);
+  const restPulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: restPulse.value }] }));
 
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
   // On pause: clear the intervals and remember each elapsed offset.
@@ -1966,7 +1979,7 @@ export default function ActiveWorkoutScreen() {
                nav arrows still flank it, no tall card stealing the screen. */
             <View style={styles.restStrip}>
               <Feather name="clock" size={14} color={restDone ? Colors.primary : C.accentText} />
-              <Text style={[styles.restStripTime, { color: restDone ? Colors.primary : C.foreground }]}>{restDisplay}</Text>
+              <Animated.Text style={[styles.restStripTime, { color: restDone ? Colors.primary : C.foreground }, restPulseStyle]}>{restDisplay}</Animated.Text>
               <View style={[styles.restStripTrack, { backgroundColor: C.muted }]}>
                 <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
                 <View style={{ flex: 100 - restPct }} />
