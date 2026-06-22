@@ -12,7 +12,7 @@ lime-on-black) and make every beat a number climbing.
 - Duration: 20s (scenes sum to 20: 3 + 5 + 4 + 4.5 + 3.5)
 
 ## Source Material
-- Project root: `/home/user/overload-v3`
+- Project root: the Overload app repository root
 - Primary files read: `app/(app)/index.tsx` (dashboard), `constants/theme.ts`
   (design tokens), `lib/xp.ts` (XP/level tiers)
 - Product name: **Overload**
