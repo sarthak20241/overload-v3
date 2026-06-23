@@ -41,8 +41,12 @@ import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Portal } from '@/components/ui/Portal';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { RoutineDetailSheet } from '@/components/routines/RoutineDetailSheet';
-import { DraggableList, type DragHandle } from '@/components/ui/DraggableList';
-import { arrayMove } from '@/lib/reorder';
+import ReorderableList, {
+  useReorderableDrag,
+  useIsActive,
+  reorderItems,
+  type ReorderableListReorderEvent,
+} from 'react-native-reorderable-list';
 import type { ExerciseDef } from '@/lib/exercises';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -220,56 +224,51 @@ function RoutineCard({
 }
 
 // ─── Exercise Editor Card ────────────────────────────────────────────────────
-// Passthrough used when no drag handle is supplied (keeps the card usable
-// outside the draggable list).
-const PlainHandle: DragHandle = ({ children }) => <>{children}</>;
-
+// Rendered as a ReorderableList item, so it can use the library's drag hooks.
 function ExerciseEditorCard({
   exercise,
   onChange,
   onRemove,
   onOpenPicker,
-  onFieldFocus,
-  index,
-  Handle = PlainHandle,
-  isDragging = false,
-  showDragHandle = true,
+  onInputFocus,
+  canReorder = true,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
   onRemove: () => void;
   onOpenPicker: () => void;
-  onFieldFocus?: () => void;
-  index: number;
-  Handle?: DragHandle;
-  isDragging?: boolean;
-  showDragHandle?: boolean;
+  onInputFocus?: () => void;
+  canReorder?: boolean;
 }) {
   const { C } = useTheme();
+  // react-native-reorderable-list: `drag` begins the drag for this row; isActive
+  // is true while it's the one being dragged (needs shouldUpdateActiveItem).
+  const drag = useReorderableDrag();
+  const isActive = useIsActive();
   // Open unfilled rows so a freshly added card is ready to pick into. Keyed off
   // content, not position, so the expanded card follows the item across a
   // reorder instead of being pinned to index 0.
   const [expanded, setExpanded] = useState(!exercise.name);
   // Collapse the body while this card is the one being dragged so the floating
   // row is compact and the list shuffles around a small footprint.
-  const showBody = expanded && !isDragging;
+  const showBody = expanded && !isActive;
 
   return (
     <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
-      {/* Header - always visible. The grip is its own long-press drag handle;
+      {/* Header - always visible. The grip is the drag handle (hold to grab);
           the rest of the row still taps to expand / collapse. */}
       <View style={styles.editorHeader}>
-        {showDragHandle ? (
-          <Handle>
-            <View
-              style={styles.dragHandle}
-              hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-              accessibilityRole="button"
-              accessibilityLabel={`Reorder ${exercise.name || 'exercise'}`}
-            >
-              <Feather name="menu" size={16} color={C.textDim} />
-            </View>
-          </Handle>
+        {canReorder ? (
+          <Pressable
+            onLongPress={drag}
+            delayLongPress={140}
+            style={styles.dragHandle}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Reorder ${exercise.name || 'exercise'}`}
+          >
+            <Feather name="menu" size={16} color={isActive ? C.accentText : C.textDim} />
+          </Pressable>
         ) : (
           <View style={styles.dragHandleSpacer} />
         )}
@@ -335,7 +334,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.targetSets)}
                 onChangeText={(v) => onChange({ ...exercise, targetSets: Math.max(1, Math.min(10, Number(v) || 0)) })}
-                onFocus={onFieldFocus}
+                onFocus={onInputFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -346,7 +345,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={exercise.targetReps}
                 onChangeText={(v) => onChange({ ...exercise, targetReps: v })}
-                onFocus={onFieldFocus}
+                onFocus={onInputFocus}
                 placeholder="8-12"
                 placeholderTextColor={C.textMuted}
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -358,7 +357,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.restSeconds)}
                 onChangeText={(v) => onChange({ ...exercise, restSeconds: Math.max(0, Number(v) || 0) })}
-                onFocus={onFieldFocus}
+                onFocus={onInputFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -372,7 +371,7 @@ function ExerciseEditorCard({
             <TextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
-              onFocus={onFieldFocus}
+              onFocus={onInputFocus}
               placeholder="Form tip or reminder..."
               placeholderTextColor={C.textMuted}
               style={[styles.editorInput, styles.editorInputText, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -418,16 +417,25 @@ function RoutineEditorSheet({
   // Which exercise card the bottom-sheet picker is choosing for (null = closed).
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
-  // True while an exercise card is being dragged — freezes the editor ScrollView
-  // so the vertical drag doesn't fight the scroll.
-  const [isReordering, setIsReordering] = useState(false);
 
-  // Keep the focused field above the keyboard on Android: SDK 54 edge-to-edge
-  // stops the window resizing for the IME, so the KeyboardAvoidingView below
-  // (behavior=undefined on Android) is a no-op and lower inputs stay buried.
-  // Disabled while the picker is open — it tracks the keyboard itself.
-  const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
-    useKeyboardAwareScroll(pickerTargetIdx === null);
+  // The reorderable list is its own scroller; we keep a ref to scroll a focused
+  // card above the keyboard on Android (SDK 54 edge-to-edge doesn't resize the
+  // window for the IME, so lower inputs would otherwise stay buried). We only
+  // need kbHeight from the keyboard hook here — its ScrollView helpers don't
+  // apply to a FlatList. Disabled while the picker is open (it lifts itself).
+  const { kbHeight } = useKeyboardAwareScroll(pickerTargetIdx === null);
+  const listRef = useRef<any>(null);
+
+  // Bring a card's inputs above the keyboard when one is focused. Android only —
+  // iOS is handled by the KeyboardAvoidingView wrapper.
+  const handleCardFocus = useCallback((index: number) => {
+    if (Platform.OS !== 'android') return;
+    setTimeout(() => {
+      try {
+        listRef.current?.scrollToIndex({ index, viewPosition: 0, animated: true });
+      } catch {}
+    }, 50);
+  }, []);
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
@@ -476,8 +484,6 @@ function RoutineEditorSheet({
       setName(editingRoutine.name);
       setDescription(editingRoutine.description);
       setErrorMsg('');
-      // Clear any stuck reorder freeze from a drag that was interrupted last time.
-      setIsReordering(false);
     }
   }, [visible, editingRoutine]);
 
@@ -755,82 +761,85 @@ function RoutineEditorSheet({
               </View>
             ) : null}
 
-            {/* Sheet Body */}
-            <ScrollView
-              ref={scrollRef}
-              {...scrollProps}
-              style={{ flex: 1 }}
-              contentContainerStyle={[
-                styles.sheetBody,
-                // Android edge-to-edge: make room for the IME ourselves; the
-                // keyboard-show handler then lifts the focused field into view.
-                // The extra headroom keeps the scroll from clamping before the
-                // field clears the keyboard. iOS is covered by the
-                // KeyboardAvoidingView wrapper.
-                Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
-              ]}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              scrollEnabled={!isReordering}
-            >
-              {/* Routine Name */}
+            {/* Pinned fields — kept ABOVE the reorderable list (not inside it),
+                so the Name/Description inputs don't lose focus when the list
+                re-renders, and the list owns its own scroll for dragging. */}
+            <View style={styles.pinnedFields}>
               <View>
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Routine Name</Text>
                 <TextInput
                   value={name}
                   onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
-                  onFocus={scrollFocusedIntoView}
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
                 />
               </View>
 
-              {/* Description */}
               <View>
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Description (optional)</Text>
                 <TextInput
                   value={description}
                   onChangeText={setDescription}
-                  onFocus={scrollFocusedIntoView}
                   placeholder="Brief description..."
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
                 />
               </View>
 
-              {/* Exercises Section */}
-              <View>
-                <View style={styles.exercisesHeader}>
-                  <Text style={[styles.exercisesLabel, { color: C.textMuted }]}>
-                    EXERCISES ({exercises.length})
-                  </Text>
-                </View>
-                <DraggableList
-                  data={exercises}
-                  keyExtractor={(ex) => ex.id}
-                  gap={8}
-                  onDragStart={() => setIsReordering(true)}
-                  onDragEnd={() => setIsReordering(false)}
-                  onReorder={(from, to) => setExercises((prev) => arrayMove(prev, from, to))}
-                  renderItem={({ item: ex, index: i, isActive, Handle }) => (
-                    <ExerciseEditorCard
-                      exercise={ex}
-                      index={i}
-                      Handle={Handle}
-                      isDragging={isActive}
-                      showDragHandle={exercises.length > 1}
-                      onChange={(updated) =>
-                        setExercises((prev) => prev.map((e) => (e.id === ex.id ? updated : e)))
-                      }
-                      onRemove={() => setExercises((prev) => prev.filter((e) => e.id !== ex.id))}
-                      onOpenPicker={() => setPickerTargetIdx(i)}
-                      onFieldFocus={scrollFocusedIntoView}
-                    />
-                  )}
-                />
+              <View style={styles.exercisesHeader}>
+                <Text style={[styles.exercisesLabel, { color: C.textMuted }]}>
+                  EXERCISES ({exercises.length})
+                </Text>
+              </View>
+            </View>
 
-                {/* Add Exercise Button */}
+            {/* Exercise list — drag-to-reorder (react-native-reorderable-list).
+                The library owns activation (hold the grip), the shuffle, and
+                autoscroll, so it's the scroller for the cards. */}
+            <ReorderableList
+              ref={listRef}
+              data={exercises}
+              keyExtractor={(ex) => ex.id}
+              shouldUpdateActiveItem
+              onReorder={({ from, to }: ReorderableListReorderEvent) =>
+                setExercises((prev) => reorderItems(prev, from, to))
+              }
+              renderItem={({ item: ex, index: i }) => (
+                <View style={styles.cardWrap}>
+                  <ExerciseEditorCard
+                    exercise={ex}
+                    canReorder={exercises.length > 1}
+                    onChange={(updated) =>
+                      setExercises((prev) => prev.map((e) => (e.id === ex.id ? updated : e)))
+                    }
+                    onRemove={() => setExercises((prev) => prev.filter((e) => e.id !== ex.id))}
+                    onOpenPicker={() => setPickerTargetIdx(i)}
+                    onInputFocus={() => handleCardFocus(i)}
+                  />
+                </View>
+              )}
+              style={{ flex: 1 }}
+              contentContainerStyle={[
+                styles.editorListContent,
+                // Android edge-to-edge: make room for the IME so a focused lower
+                // card can scroll clear of the keyboard.
+                Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
+              ]}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              onScrollToIndexFailed={(info) => {
+                setTimeout(() => {
+                  try {
+                    listRef.current?.scrollToOffset?.({
+                      offset: (info.averageItemLength || 80) * info.index,
+                      animated: true,
+                    });
+                  } catch {}
+                }, 60);
+              }}
+              ListFooterComponent={
                 <TouchableOpacity
                   onPress={() => setExercises((prev) => [...prev, newExercise()])}
                   style={[styles.addExerciseBtn, { borderColor: C.border }]}
@@ -838,8 +847,8 @@ function RoutineEditorSheet({
                   <Feather name="plus" size={14} color={C.textMuted} />
                   <Text style={[styles.addExerciseBtnText, { color: C.textMuted }]}>Add Exercise</Text>
                 </TouchableOpacity>
-              </View>
-            </ScrollView>
+              }
+            />
           </KeyboardAvoidingView>
 
           {/* Exercise Picker — shared bottom-sheet library (search, muscle
@@ -1511,12 +1520,20 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Colors.primaryFg,
   },
-  sheetBody: {
+  // Pinned Name/Description/label above the reorderable list.
+  pinnedFields: {
     paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.xl,
-    paddingBottom: 40,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.sm,
     gap: 16,
   },
+  // Content padding for the reorderable exercise list.
+  editorListContent: {
+    paddingHorizontal: Spacing.xl,
+    paddingBottom: 40,
+  },
+  // Spacing between exercise cards (the list renders items flush).
+  cardWrap: { marginBottom: 8 },
   sheetInput: {
     paddingHorizontal: Spacing.lg,
     paddingVertical: 14,
