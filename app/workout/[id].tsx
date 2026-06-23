@@ -851,6 +851,10 @@ export default function ActiveWorkoutScreen() {
   const removeExercise = () => {
     if (exercises.length === 0) return;
     haptics.warning();
+    // Stop the local exercise/rest timers before the list shifts, so they don't
+    // leak into whatever exercise slides into this index.
+    stopExerciseTimer();
+    stopRestTimer();
     const updated = exercises.filter((_, i) => i !== currentIdx);
     const newStarted = exerciseStarted.filter((_, i) => i !== currentIdx);
     const newFinished = exerciseFinished.filter((_, i) => i !== currentIdx);
@@ -904,9 +908,12 @@ export default function ActiveWorkoutScreen() {
   const discardAndSwitch = useCallback(() => {
     setShowSwitchAlert(false);
     setLoading(true);
+    // Stop the local timers before the screen reloads into the new routine.
+    stopExerciseTimer();
+    stopRestTimer();
     workout.finishWorkout();
     setReloadKey((k) => k + 1);
-  }, [workout.finishWorkout]);
+  }, [stopExerciseTimer, stopRestTimer, workout.finishWorkout]);
 
   // Suggest a legible default name for a blank workout from what was actually
   // trained, so even a no-edit save reads well in history ("Chest & Back"
