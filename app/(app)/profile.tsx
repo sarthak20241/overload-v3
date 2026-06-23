@@ -602,6 +602,10 @@ export default function ProfileScreen() {
       setBugCategory('ui');
       setBugModalOpen(false);
       setShowInfoAlert('Bug report submitted. Thanks!');
+    } catch (e) {
+      // A rejected/throwing insert (network drop, etc.) skips the { error }
+      // path above — surface it instead of silently swallowing the failure.
+      setShowErrorAlert(`Couldn't send report: ${e instanceof Error ? e.message : 'please try again.'}`);
     } finally {
       setBugSubmitting(false);
     }

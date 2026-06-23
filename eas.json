@@ -34,9 +34,7 @@
   "submit": {
     "production": {
       "ios": {
-        "appleId": "sarthakbuilds99@gmail.com",
-        "ascAppId": "6773063775",
-        "appleTeamId": "JSA76PM8YB"
+        "ascAppId": "6773063775"
       },
       "android": {
         "track": "internal",

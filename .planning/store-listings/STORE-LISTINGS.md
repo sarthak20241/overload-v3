@@ -27,7 +27,7 @@ listings. Replace [PLACEHOLDER: ...] with your final values.
 
 ### Description (max 4000 chars)
 
-```
+```text
 Overload is a strength training tracker built for people who actually
 train. Log sets and reps in seconds, watch your numbers move, and get
 sharp feedback when something is off.
@@ -73,13 +73,13 @@ Read the full policy at [your privacy URL].
 
 ### Keywords (100 chars, comma-separated)
 
-```
+```text
 workout tracker,gym log,strength training,lifting,bodybuilding,reps sets,routines,coach,fitness,prs
 ```
 
 ### What's New (per release, max 4000 chars)
 
-```
+```text
 First release on the App Store. Welcome.
 • Build routines and track every set
 • Live analytics: volume, e1RM, PR history
@@ -133,7 +133,7 @@ Answer "no" to "Does this app use the AppTrackingTransparency framework?"
 ### TestFlight
 
 - Test Information / Beta App Description:
-  ```
+  ```text
   Overload is a strength training tracker. This TestFlight build is for
   internal testing of routines, workout logging, analytics, and the AI
   Coach flow. Sign-in via Apple, Google, or email. Send feedback via
@@ -153,7 +153,7 @@ Answer "no" to "Does this app use the AppTrackingTransparency framework?"
 
 - **App name** (max 30 chars): `Overload`
 - **Short description** (max 80 chars):
-  ```
+  ```text
   Strength training tracker. Routines, PRs, analytics, AI coach. No ads.
   ```
 - **Full description** (max 4000 chars): same body as App Store
