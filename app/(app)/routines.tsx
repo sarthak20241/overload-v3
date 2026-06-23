@@ -425,17 +425,32 @@ function RoutineEditorSheet({
   // apply to a FlatList. Disabled while the picker is open (it lifts itself).
   const { kbHeight } = useKeyboardAwareScroll(pickerTargetIdx === null);
   const listRef = useRef<any>(null);
+  // The card the user is editing — retried into view once the IME padding lands.
+  const focusedCardIndexRef = useRef<number | null>(null);
+
+  const scrollCardIntoView = useCallback((index: number) => {
+    if (Platform.OS !== 'android') return;
+    try {
+      listRef.current?.scrollToIndex({ index, viewPosition: 0, animated: true });
+    } catch {}
+  }, []);
 
   // Bring a card's inputs above the keyboard when one is focused. Android only —
-  // iOS is handled by the KeyboardAvoidingView wrapper.
+  // iOS is handled by the KeyboardAvoidingView wrapper. We scroll once eagerly,
+  // then again once kbHeight lands (the bottom padding can arrive after this
+  // first scroll, otherwise leaving lower cards buried behind the IME).
   const handleCardFocus = useCallback((index: number) => {
     if (Platform.OS !== 'android') return;
-    setTimeout(() => {
-      try {
-        listRef.current?.scrollToIndex({ index, viewPosition: 0, animated: true });
-      } catch {}
-    }, 50);
-  }, []);
+    focusedCardIndexRef.current = index;
+    setTimeout(() => scrollCardIntoView(index), 50);
+  }, [scrollCardIntoView]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    if (kbHeight <= 0) { focusedCardIndexRef.current = null; return; }
+    if (focusedCardIndexRef.current === null) return;
+    requestAnimationFrame(() => scrollCardIntoView(focusedCardIndexRef.current!));
+  }, [kbHeight, scrollCardIntoView]);
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
@@ -460,7 +475,10 @@ function RoutineEditorSheet({
       setExercises((prev) =>
         prev.map((e, i) => {
           if (i !== pickerTargetIdx) return e;
-          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category };
+          // The picker identifies exercises by name (ExerciseDef carries no id),
+          // so a re-picked row's old catalog exerciseId is now stale — clear it
+          // so the save resolves the new exercise by name, not the wrong id.
+          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category, exerciseId: undefined };
           // Custom creations carry set/rep/rest targets from the form; library
           // picks keep whatever the card already has.
           if (custom) {
@@ -649,7 +667,10 @@ function RoutineEditorSheet({
         const [reps_min, reps_max] = parseReps(ex.targetReps);
         return {
           def: { name: ex.name, muscle_group: ex.muscleGroup || 'Other', category: ex.category || 'Custom' },
-          resolvedExerciseId: null,
+          // Loaded-from-routine rows carry a real catalog id — attach it directly
+          // so the flusher skips name re-resolution (which can mis-match a
+          // duplicate name). Picked/hand-typed rows clear it and resolve by name.
+          resolvedExerciseId: ex.exerciseId ?? null,
           order: i,
           sets: ex.targetSets,
           reps_min,
