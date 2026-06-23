@@ -223,11 +223,38 @@ detailed-view toggle, warm-up calculator/sets.
   Tabler, Phosphor. Custom SVG downloads: UXWing / SVG Repo (commercial-friendly). Branded set:
   Figma MCP.
 
-### Adjacent opportunity — exercise library enrichment (not in scope, parks here)
+### Phase E — Exercise library enrichment (free-exercise-db) — DECIDED 2026-06-23
 
-Library is 47 hardcoded entries with no thumbnails. Open datasets to expand it + add demo images,
-synergistic with Phase A typing: yuhonas/free-exercise-db (public domain, 800+, JSON + images) and
-ExerciseDB API (11k+ with GIFs). Decide separately whether to ingest.
+Folded INTO this plan (was "parked") because it's synergistic with Phase A typing: tag `metric_type`
+during the same ingest. Expand the global library from ~50 hardcoded entries (no thumbnails) to ~800
+with demo images so the routine builder + workout "Add Exercise" picker offer a real catalog.
+
+LOCKED DECISIONS:
+1. Dataset = HYBRID. Base on `yuhonas/free-exercise-db` (public domain, ~800, JSON + static start/end
+   images, redistributable). ExerciseDB animated GIFs are a LATER additive enrichment only (keyed
+   freemium API, redistribution limits), never the foundation.
+2. Images = host in Supabase Storage (own bucket, our URLs), NOT hot-linked.
+3. Sequencing = start AFTER the design-polish PR #41 merges to main; fresh branch. Run alongside / just
+   before Phase A so `metric_type` tagging happens in the same pass.
+
+SOURCE SHAPE (free-exercise-db): `{ name, force, level, mechanic, equipment, primaryMuscles[],
+secondaryMuscles[], instructions[], category, images[] }` (images are 2 static photos per entry).
+
+APPROACH:
+- Migration (apply via Supabase MCP, never `db push`): add `instructions` + `image_url(s)` to
+  `exercises` (and `metric_type` from Phase A); create a public `exercise-images` Storage bucket + RLS.
+- `tools/exercise-ingest/` script: fetch dataset; MAP their fine taxonomy -> our `MUSCLE_GROUPS`
+  (primaryMuscles[0]; e.g. lower/middle back + lats -> Back) and equipment/category -> `CATEGORIES`;
+  DEDUP by normalized name vs the existing ~50; upload + resize images to Storage; emit batched upserts.
+- Make the DB the catalog SOURCE; remove the DUPLICATE local arrays (`lib/exercises.ts` EXERCISE_LIBRARY
+  + the separate 19-item one in `app/workout/[id].tsx` — see codebase CONCERNS.md). Pickers read DB (cached).
+- Tag `metric_type` per exercise during ingest: most = weight+reps; cardio/duration entries get
+  duration/distance.
+
+OPEN ITEMS: exact muscle-group mapping table (finalize at build); offline starter set vs fully remote
+catalog; verify picker + dedup + offline cache on sim.
+
+TRIGGER: PR #41 merged to main.
 
 ## Open refinements (decide during build, not blocking)
 
