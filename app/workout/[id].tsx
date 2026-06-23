@@ -1,18 +1,22 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
   StyleSheet, ActivityIndicator, Pressable, BackHandler,
   Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeIn, FadeOut, SlideInRight, SlideInLeft,
+  FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft,
   SlideInDown, SlideOutDown, Easing,
+  useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSpring, runOnJS,
 } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
+import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { usePreferences } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
@@ -30,13 +34,15 @@ import { useToast } from '@/components/ui/Toast';
 import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
-import { roundVolume } from '@/lib/format';
+import { haptics } from '@/lib/haptics';
+import { roundVolume, abbreviateNumber, formatWeight } from '@/lib/format';
 import type { ExerciseDef } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
+import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
 
-const AMBER = '#fbbf24';
+// Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -89,7 +95,7 @@ export default function ActiveWorkoutScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { height: winH } = useWindowDimensions();
+  const { width: winW, height: winH } = useWindowDimensions();
   const workout = useWorkout();
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   // Guests (no Clerk session) hit Supabase as the anon role, where RLS rejects
@@ -98,13 +104,32 @@ export default function ActiveWorkoutScreen() {
   const supabase = useSupabaseClient();
   const toast = useToast();
   const { flushNow } = useSync();
+  const { prefs } = usePreferences();
   const [kbHeight, setKbHeight] = useState(0);
 
-  const [loading, setLoading] = useState(!workout.isActive);
+  // A different routine was requested while a session is already live. Every
+  // "start workout" entry point does a bare router.push('/workout/<id>'), but
+  // this screen renders from the workout context (not the route param), so
+  // without this guard the picked routine is silently ignored and the old
+  // session is shown under the new URL. Blank sessions carry routineId 'new',
+  // so starting a routine over one still counts as a switch.
+  const isSwitchAttempt =
+    workout.isActive && workout.routineId != null && workout.routineId !== id;
+
+  // Hold the spinner (rather than flashing the old session) until the switch
+  // prompt below resolves.
+  const [loading, setLoading] = useState(!workout.isActive || isSwitchAttempt);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
+  // Briefly true after logging a weight PR, to flash the celebration badge.
+  const [prCelebrate, setPrCelebrate] = useState(false);
+  // Which field in the active set row is "open" for adjustment. Null = the row
+  // is a clean glance-and-confirm row; tapping a number opens that one field's
+  // −/+ (and focuses it for optional typing), leaving the other a plain number.
+  const [editField, setEditField] = useState<null | 'weight' | 'reps'>(null);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [exerciseTimer, setExerciseTimer] = useState(0);
   const [restTimer, setRestTimer] = useState(0);
   // True from the moment a set is logged until the user either logs the next
@@ -121,6 +146,11 @@ export default function ActiveWorkoutScreen() {
   const [showFinishAlert, setShowFinishAlert] = useState(false);
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
+  // Prompt shown when a second routine is requested mid-session (see
+  // isSwitchAttempt). `reloadKey` bumps to re-run the load effect after the user
+  // discards the current session, so the requested routine loads in place.
+  const [showSwitchAlert, setShowSwitchAlert] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [finishSetCount, setFinishSetCount] = useState(0);
   // Finish sheet for blank workouts ("New Workout" sessions with no routine):
   // lets the user name the session before it lands in history, add notes, and
@@ -135,6 +165,15 @@ export default function ActiveWorkoutScreen() {
   // list deviated from it. Non-null renders the "Update Routine?" alert;
   // navigation to history is deferred until the user answers.
   const [routineSync, setRoutineSync] = useState<RoutineSyncOffer | null>(null);
+
+  // Keep the screen awake during a workout when the user has opted in. Tied to
+  // this screen's lifetime: activates on mount (or when the pref flips on) and
+  // always releases the lock on unmount / when the pref is turned off.
+  useEffect(() => {
+    if (!prefs.keepAwake) return;
+    activateKeepAwakeAsync('workout');
+    return () => { deactivateKeepAwake('workout'); };
+  }, [prefs.keepAwake]);
   // In-workout coach. `coachContext` is a snapshot of the live session taken
   // when the user opens the coach (see openCoach), kept stable for that chat.
   const [coachOpen, setCoachOpen] = useState(false);
@@ -159,7 +198,6 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
-  const prevSets = currentEx?.previousSets;
 
   // Snapshot the live session and open the coach. Taking the snapshot here
   // (rather than passing live state) keeps the chat's context stable for the
@@ -247,9 +285,18 @@ export default function ActiveWorkoutScreen() {
   // Load routine on mount
   useEffect(() => {
     if (workout.isActive) {
-      // Session already running (e.g. returning to this screen after a tab
-      // switch). Started/finished flags live in the context and are already
-      // in sync — don't reset them or completed exercises revert to grey.
+      // A second routine was requested while a session is live. Prompt to
+      // finish or discard the current one instead of silently keeping it (the
+      // old bug); discarding re-runs this effect via reloadKey once isActive is
+      // false. Don't reset the in-context started/finished flags here.
+      if (workout.routineId != null && workout.routineId !== id) {
+        setShowSwitchAlert(true);
+        setLoading(false);
+        return;
+      }
+      // Returning to the same active session (e.g. after a tab switch).
+      // Started/finished flags live in the context and are already in sync —
+      // don't reset them or completed exercises revert to grey.
       setLoading(false);
       return;
     }
@@ -383,7 +430,7 @@ export default function ActiveWorkoutScreen() {
       }
     };
     load();
-  }, [id, clerkLoaded]);
+  }, [id, clerkLoaded, reloadKey]);
 
   // Exercise timer
   const startExerciseTimer = useCallback(() => {
@@ -430,6 +477,43 @@ export default function ActiveWorkoutScreen() {
       if (restTimerRef.current) clearInterval(restTimerRef.current);
     };
   }, []);
+
+  // A light tick whenever the active exercise changes (chip tap, swipe pager, or
+  // auto-advance). Seeded with the initial index so it doesn't fire on mount.
+  const prevIdxRef = useRef(currentIdx);
+  useEffect(() => {
+    if (prevIdxRef.current !== currentIdx) {
+      haptics.selection();
+      prevIdxRef.current = currentIdx;
+    }
+  }, [currentIdx]);
+
+  // A success buzz the moment a rest period crosses its target (rest done).
+  const restDoneFiredRef = useRef(false);
+  useEffect(() => {
+    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    if (isResting && target > 0 && restTimer >= target) {
+      if (!restDoneFiredRef.current) {
+        haptics.success();
+        restDoneFiredRef.current = true;
+      }
+    } else {
+      restDoneFiredRef.current = false;
+    }
+  }, [restTimer, isResting, currentIdx, exercises]);
+
+  // A gentle pulse on the rest timer as it nears zero (final 3s), building
+  // anticipation before the done color-flip + success buzz.
+  const restPulse = useSharedValue(1);
+  useEffect(() => {
+    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    const remaining = target - restTimer;
+    const nearDone = isResting && target > 0 && remaining > 0 && remaining <= 3;
+    restPulse.value = nearDone
+      ? withRepeat(withTiming(1.08, { duration: 450, easing: Easing.inOut(Easing.quad) }), -1, true)
+      : withTiming(1, { duration: 200 });
+  }, [restTimer, isResting, currentIdx, exercises]);
+  const restPulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: restPulse.value }] }));
 
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
   // On pause: clear the intervals and remember each elapsed offset.
@@ -506,6 +590,7 @@ export default function ActiveWorkoutScreen() {
 
   // Start exercise
   const handleStartExercise = () => {
+    haptics.tap();
     setExerciseStarted(prev => {
       const next = [...prev];
       next[currentIdx] = true;
@@ -520,6 +605,23 @@ export default function ActiveWorkoutScreen() {
     if (!currentEx) return;
     const weight = parseFloat(inputWeight) || 0;
     const reps = parseInt(inputReps) || 0;
+
+    // A weight PR: this set beats the best weight seen on this lift (previous
+    // sessions + earlier sets today). Celebrate it instead of the plain tap.
+    const prevBest = Math.max(
+      0,
+      ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
+      ...currentEx.sets.filter(s => s.completed).map(s => s.weight_kg),
+    );
+    // Only a PR if there's a prior record to beat (don't celebrate a brand-new lift's first set).
+    const isPR = weight > 0 && (currentEx.previousSets?.length ?? 0) > 0 && weight > prevBest;
+    if (isPR) {
+      haptics.success();
+      setPrCelebrate(true);
+      setTimeout(() => setPrCelebrate(false), 2200);
+    } else {
+      haptics.tap(); // set logged
+    }
 
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
@@ -548,6 +650,7 @@ export default function ActiveWorkoutScreen() {
 
   // Finish current exercise
   const handleFinishExercise = () => {
+    haptics.success();
     setExerciseFinished(prev => {
       const next = [...prev];
       next[currentIdx] = true;
@@ -565,11 +668,13 @@ export default function ActiveWorkoutScreen() {
   // End the current rest period early. Lets the user signal "ready for the next
   // set" without having to log a set just to clear the running rest timer.
   const handleSkipRest = () => {
+    haptics.tap();
     stopRestTimer();
   };
 
   // Delete a set
   const handleDeleteSet = (setIdx: number) => {
+    haptics.tap();
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
     ex.sets = ex.sets.filter((_, i) => i !== setIdx);
@@ -631,6 +736,7 @@ export default function ActiveWorkoutScreen() {
 
   // Add exercise from library
   const addExercise = (ex: ExerciseDef) => {
+    haptics.tap();
     // Optimistic: add immediately with a temp id and default sets, close modal.
     // Real exercise row + previous-set defaults are fetched in the background
     // by reconcileExerciseRow.
@@ -739,12 +845,23 @@ export default function ActiveWorkoutScreen() {
     }));
   };
 
-  // Remove exercise
+  // Remove exercise. Removing the last one is allowed — the screen falls back
+  // to its "No exercises yet" empty state, where the user can add another or
+  // cancel out. (Blocking the delete with no feedback just dead-ends them.)
   const removeExercise = () => {
-    if (exercises.length <= 1) return;
+    if (exercises.length === 0) return;
+    haptics.warning();
+    // Stop the local exercise/rest timers before the list shifts, so they don't
+    // leak into whatever exercise slides into this index.
+    stopExerciseTimer();
+    stopRestTimer();
     const updated = exercises.filter((_, i) => i !== currentIdx);
     const newStarted = exerciseStarted.filter((_, i) => i !== currentIdx);
     const newFinished = exerciseFinished.filter((_, i) => i !== currentIdx);
+    // Keep the measured pill frames index-aligned with the exercise list so the
+    // reveal logic can't read a stale frame after a removal.
+    pillLayoutsRef.current.splice(currentIdx, 1);
+    pillLayoutsRef.current.length = updated.length;
     workout.updateExercises(updated);
     setExerciseStarted(newStarted);
     setExerciseFinished(newFinished);
@@ -769,10 +886,34 @@ export default function ActiveWorkoutScreen() {
   };
 
   const confirmCancel = () => {
+    haptics.warning();
     setShowCancelAlert(false);
     workout.finishWorkout();
     leaveWorkout();
   };
+
+  // Switch guard (see isSwitchAttempt): the user tapped "start" on a different
+  // routine while one was already in progress.
+  // Keep — abandon the errant push and return to where they were; the active
+  // session stays live in the mini bar. Fall back to its full screen when
+  // there's nothing to go back to (e.g. a cold deep link).
+  const keepCurrentWorkout = useCallback(() => {
+    setShowSwitchAlert(false);
+    if (router.canGoBack()) router.back();
+    else router.replace(`/workout/${workout.routineId}` as any);
+  }, [router, workout.routineId]);
+
+  // Discard — drop the in-progress session, then re-run the load effect (now
+  // that isActive is false) to fetch and start the requested routine in place.
+  const discardAndSwitch = useCallback(() => {
+    setShowSwitchAlert(false);
+    setLoading(true);
+    // Stop the local timers before the screen reloads into the new routine.
+    stopExerciseTimer();
+    stopRestTimer();
+    workout.finishWorkout();
+    setReloadKey((k) => k + 1);
+  }, [stopExerciseTimer, stopRestTimer, workout.finishWorkout]);
 
   // Suggest a legible default name for a blank workout from what was actually
   // trained, so even a no-edit save reads well in history ("Chest & Back"
@@ -1116,6 +1257,7 @@ export default function ActiveWorkoutScreen() {
     // different clientIds and double-save it.
     if (finishingRef.current) return;
     finishingRef.current = true;
+    haptics.success(); // workout complete
     setShowFinishAlert(false);
     setShowFinishSheet(false);
     Keyboard.dismiss();
@@ -1268,8 +1410,6 @@ export default function ActiveWorkoutScreen() {
     .flatMap(e => e.sets.filter(s => s.completed).map(s => s.weight_kg * s.reps))
     .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
-  const isStarted = exerciseStarted[currentIdx];
-  const isFinished = exerciseFinished[currentIdx];
 
   // Rest timer: `restTimer` counts up since the last logged set. We present it
   // as a countdown against the exercise's recommended rest (restSeconds). A
@@ -1278,10 +1418,379 @@ export default function ActiveWorkoutScreen() {
   const restRemaining = restTarget - restTimer;
   const restDone = restTarget > 0 && restRemaining <= 0;
   const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
-  const nextSetNum = currentEx ? currentEx.sets.filter(s => s.completed).length + 1 : 1;
   const restDisplay = restTarget > 0
     ? (restRemaining > 0 ? fmt(restRemaining) : `+${fmt(restTimer - restTarget)}`)
     : fmt(restTimer);
+
+  // ---- Horizontal exercise pager ------------------------------------------
+  // Drag-follow swipe between exercises. `scrollX` (the strip's translateX, in
+  // px) is the SOLE driver of page position and lives on the UI thread, so a
+  // swipe never waits on React. Committing a swipe only moves `currentIdx` to
+  // re-target which page is interactive; it does NOT move the strip (the commit
+  // writes the same offset the release animation already settled on), so the
+  // hand-off is positionally seamless with no flash. Only the centered page is
+  // interactive — the neighbours render the identical body read-only so they
+  // look the same as they slide in.
+  const exercisesRef = useRef(exercises);
+  exercisesRef.current = exercises;
+  const scrollX = useSharedValue(-currentIdx * winW);
+  const startX = useSharedValue(0);
+  const countSV = useSharedValue(exercises.length);
+  useEffect(() => { countSV.value = exercises.length; }, [exercises.length]);
+  // Keep the strip aligned with currentIdx for every NON-gesture change (pill /
+  // arrow taps, auto-advance on finishing an exercise, add / remove). After a
+  // swipe commit this writes the exact offset the release animation already
+  // landed on, so it's a no-op there. Re-aligns on width change (rotation) too.
+  useEffect(() => { scrollX.value = -currentIdx * winW; }, [currentIdx, winW]);
+
+  // ---- Active-pill reveal (top exercise nav strip) -------------------------
+  // Keep the top exercise-pill strip in sync with the open exercise. As the
+  // current index changes (swipe, arrows, or a pill tap) we scroll the strip
+  // just enough to bring the active pill fully into view with a little margin —
+  // a minimal reveal rather than always re-centring, so stepping through
+  // exercises one at a time doesn't make the whole row crawl sideways. Pill
+  // widths vary with the exercise name, so we measure each pill's frame on
+  // layout and scroll in content coordinates, tracking the live scroll offset.
+  const pillLayoutsRef = useRef<{ x: number; width: number }[]>([]);
+  const pillScrollXRef = useRef(0);
+  // Index whose reveal has already been issued, so the currentIdx effect skips a
+  // redundant scroll for a swipe that pre-revealed its target alongside the page
+  // snap (see the gesture's onEnd).
+  const lastRevealedPillRef = useRef(currentIdx);
+  const revealActivePill = useCallback((idx: number) => {
+    lastRevealedPillRef.current = idx;
+    const frame = pillLayoutsRef.current[idx];
+    const scroller = pillsScrollRef.current;
+    if (!frame || !scroller) return;
+    const margin = 48; // breathing room so a sliver of the neighbour stays visible
+    const off = pillScrollXRef.current;
+    const left = frame.x;
+    const right = frame.x + frame.width;
+    // Already comfortably on-screen — leave the strip where the user left it.
+    if (left >= off + margin && right <= off + winW - margin) return;
+    // Otherwise scroll the minimum needed to clear the near edge. ScrollView
+    // clamps the upper bound; we only guard the lower bound.
+    const target = left < off + margin ? left - margin : right - winW + margin;
+    scroller.scrollTo({ x: Math.max(0, target), animated: true });
+  }, [winW]);
+  // Reveal on index change for arrow / pill-tap navigation. Swipes pre-reveal in
+  // the gesture's onEnd (coupled with the page snap) and set lastRevealedPillRef,
+  // so this skips them. On first mount it no-ops (ref seeded to currentIdx); the
+  // per-pill onLayout reveals the initial / resumed exercise once measured.
+  useEffect(() => {
+    if (lastRevealedPillRef.current === currentIdx) return;
+    revealActivePill(currentIdx);
+  }, [currentIdx, revealActivePill]);
+
+  const commitSwipe = useCallback((target: number) => {
+    setCurrentIdx(() => {
+      const max = exercisesRef.current.length - 1;
+      return Math.min(Math.max(target, 0), max);
+    });
+  }, [setCurrentIdx]);
+
+  const pagerPan = useMemo(() => Gesture.Pan()
+    // Claim only clearly-horizontal drags; vertical ones fall through to the
+    // page's own ScrollView.
+    .activeOffsetX([-14, 14])
+    .failOffsetY([-12, 12])
+    .onStart(() => { startX.value = scrollX.value; })
+    .onUpdate((e) => {
+      const W = winW;
+      const minX = -(countSV.value - 1) * W;
+      let next = startX.value + e.translationX;
+      // Rubber-band past the first / last exercise.
+      if (next > 0) next = next * 0.28;
+      else if (next < minX) next = minX + (next - minX) * 0.28;
+      scrollX.value = next;
+    })
+    .onEnd((e) => {
+      const W = winW;
+      const startIdx = Math.round(-startX.value / W);
+      const dragged = scrollX.value - startX.value;
+      const last = countSV.value - 1;
+      const dist = W * 0.22;       // commit once dragged past ~22% of the width
+      const fling = 550;           // …or on a fast flick
+      let target = startIdx;
+      if ((dragged <= -dist || e.velocityX <= -fling) && startIdx < last) target = startIdx + 1;
+      else if ((dragged >= dist || e.velocityX >= fling) && startIdx > 0) target = startIdx - 1;
+      if (target !== startIdx) {
+        // Glide the pill strip in sync with the page snap (rather than after the
+        // swipe commits 230ms later) so the two motions read as one.
+        runOnJS(revealActivePill)(target);
+        scrollX.value = withTiming(-target * W, { duration: 230, easing: Easing.out(Easing.cubic) }, (fin) => {
+          if (fin) runOnJS(commitSwipe)(target);
+        });
+      } else {
+        // Snap back to the current page.
+        scrollX.value = withSpring(-startIdx * W, { damping: 22, stiffness: 220, mass: 0.6, overshootClamping: true });
+      }
+    }),
+  [winW, commitSwipe, revealActivePill]);
+
+  const stripStyle = useAnimatedStyle(() => ({ transform: [{ translateX: scrollX.value }] }));
+
+  // Renders one exercise page. `interactive` is true only for the centered
+  // page (live timers / rest card / input wiring); neighbours render the
+  // same markup read-only so the slide-in looks identical.
+  const renderExerciseBody = (idx: number, interactive: boolean) => {
+    const currentEx = exercises[idx];
+    if (!currentEx) return null;
+    const isStarted = exerciseStarted[idx];
+    const isFinished = exerciseFinished[idx];
+    const prevSets = currentEx.previousSets;
+    const completed = currentEx.sets.filter(s => s.completed);
+    const doneCount = completed.length;
+    return (
+          <>
+            {/* Exercise Header */}
+            <View style={styles.exerciseHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.muscleLabel, { color: C.textDim }]}>
+                  {currentEx.exercise.muscle_group || 'Exercise'}
+                </Text>
+                <Text style={[styles.exerciseName, { color: C.foreground }]} numberOfLines={1}>
+                  {currentEx.exercise.name}
+                </Text>
+                <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
+                  {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
+                </Text>
+                {currentEx.coachNote ? (
+                  <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
+                    {currentEx.coachNote}
+                  </Text>
+                ) : null}
+              </View>
+              <TouchableOpacity onPress={removeExercise} style={[styles.removeBtn, { backgroundColor: C.muted }]}>
+                <Feather name="trash-2" size={13} color={C.textDim} />
+              </TouchableOpacity>
+            </View>
+
+            {/* The per-exercise "elapsed" card was retired here: workout-elapsed
+                lives in the top bar and rest lives in the bottom strip, so a
+                third timer was just noise. */}
+
+            {/* Rest now lives in the pinned bottom strip (see bottomBar) instead
+                of a tall in-flow card, so it never inflates the scroll height or
+                buries the input + footer. The input area stays mounted while
+                resting, so the next set is always one tap away. */}
+
+            {/* Previous Session */}
+            {currentEx.previousSets && currentEx.previousSets.length > 0 && !isStarted && (
+              <View style={styles.prevSection}>
+                <Text style={[styles.sectionLabel, { color: C.textDim }]}>PREVIOUS SESSION</Text>
+                <View style={[styles.prevTable, { borderColor: C.border }]}>
+                  <View style={[styles.prevHeader, { backgroundColor: C.muted }]}>
+                    <Text style={[styles.prevHeaderText, { flex: 1, color: C.textDim }]}>Set</Text>
+                    <Text style={[styles.prevHeaderText, { flex: 1, textAlign: 'center', color: C.textDim }]}>Weight</Text>
+                    <Text style={[styles.prevHeaderText, { flex: 1, textAlign: 'right', color: C.textDim }]}>Reps</Text>
+                  </View>
+                  {currentEx.previousSets.map((s, i) => (
+                    <View key={i} style={[styles.prevRow, { borderTopColor: C.border, backgroundColor: C.elevated }]}>
+                      <Text style={[styles.prevCell, { color: C.textMuted, flex: 1 }]}>{i + 1}</Text>
+                      <Text style={[styles.prevCellBold, { color: C.foreground, flex: 1, textAlign: 'center' }]}>
+                        {s.weight_kg} <Text style={{ color: C.textDim }}>kg</Text>
+                      </Text>
+                      <Text style={[styles.prevCellBold, { color: C.foreground, flex: 1, textAlign: 'right' }]}>
+                        {s.reps}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {/* The set table — one grid, three states (header · done · active).
+                Done sets recede into history; the active set is the bright, tall,
+                tappable row with inline steppers, and its ✓ commits the set.
+                Replaces the old "LOGGED list + separate input card", which read as
+                two different components and inflated the screen height. */}
+            {isStarted && (
+              <View style={styles.setTable}>
+                {prCelebrate && (
+                  <Animated.View
+                    entering={ZoomIn.duration(260)}
+                    exiting={FadeOut.duration(200)}
+                    style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 5, backgroundColor: Colors.primary, paddingHorizontal: 12, paddingVertical: 5, borderRadius: Radius.full, marginBottom: 10 }}
+                  >
+                    <Feather name="award" size={13} color={Colors.primaryFg} />
+                    <Text style={{ fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg }}>New PR</Text>
+                  </Animated.View>
+                )}
+                <View style={styles.setHeadRow}>
+                  <Text style={[styles.setHeadCell, styles.colSet, { color: C.textDim }]}>SET</Text>
+                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>KG</Text>
+                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>REPS</Text>
+                  <View style={styles.colCheck} />
+                </View>
+
+                {/* Done sets — settled history, receded. */}
+                {completed.map((s, i) => (
+                  <Animated.View key={i} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
+                    <Text style={[styles.setNum, styles.colSet, { color: C.textDim }]}>{i + 1}</Text>
+                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.weight_kg}</Text>
+                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.reps}</Text>
+                    {isFinished ? (
+                      <View style={styles.colCheck}><Feather name="check" size={14} color={C.accentText} /></View>
+                    ) : (
+                      <TouchableOpacity onPress={() => handleDeleteSet(i)} style={styles.colCheck} hitSlop={6} accessibilityLabel={`Delete set ${i + 1}`}>
+                        <Feather name="x" size={12} color={Colors.danger} />
+                      </TouchableOpacity>
+                    )}
+                  </Animated.View>
+                ))}
+
+                {/* Active set — the one bright row asking for a tap. */}
+                {!isFinished && (
+                  <>
+                    <View
+                      ref={interactive ? inputCardRef : undefined}
+                      style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
+                    >
+                      <Text style={[styles.setNum, styles.colSet, { color: C.accentText }]}>{doneCount + 1}</Text>
+
+                      {/* Weight — a plain bright number until tapped; tapping focuses
+                          it (keypad) and reveals its −/+. Reps is untouched. */}
+                      <View style={[styles.colVal, editField === 'weight' && styles.activeCellRow]}>
+                        {editField === 'weight' && (
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+                          </TouchableOpacity>
+                        )}
+                        <TextInput
+                          value={inputWeight}
+                          onChangeText={setInputWeight}
+                          keyboardType="decimal-pad"
+                          style={[editField === 'weight' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'weight' && { backgroundColor: C.muted }]}
+                          selectTextOnFocus
+                          onFocus={() => { setEditField('weight'); kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { setEditField((p) => (p === 'weight' ? null : p)); kbScrollTargetRef.current = null; }}
+                        />
+                        {editField === 'weight' && (
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      <View style={[styles.colVal, editField === 'reps' && styles.activeCellRow]}>
+                        {editField === 'reps' && (
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+                          </TouchableOpacity>
+                        )}
+                        <TextInput
+                          value={inputReps}
+                          onChangeText={setInputReps}
+                          keyboardType="number-pad"
+                          style={[editField === 'reps' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'reps' && { backgroundColor: C.muted }]}
+                          selectTextOnFocus
+                          onFocus={() => { setEditField('reps'); kbScrollTargetRef.current = 'logger'; }}
+                          onBlur={() => { setEditField((p) => (p === 'reps' ? null : p)); kbScrollTargetRef.current = null; }}
+                        />
+                        {editField === 'reps' && (
+                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String((parseInt(inputReps) || 0) + 1)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      <TouchableOpacity onPress={() => { Keyboard.dismiss(); handleLogSet(); setEditField(null); }} style={[styles.colCheck, styles.commitBtn]} accessibilityLabel={`Log set ${doneCount + 1}`}>
+                        <Feather name="check" size={18} color={Colors.primaryFg} />
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Always present so the layout never collapses under the
+                        active row. Falls back in Drona's voice once you've gone
+                        past last session's set count (or it's a brand-new lift). */}
+                    <Text style={[styles.lastTime, { color: C.textMuted }]}>
+                      {prevSets && prevSets[doneCount]
+                        ? `Last time: ${formatWeight(prevSets[doneCount].weight_kg)} × ${prevSets[doneCount].reps}`
+                        : prevSets && prevSets.length > 0
+                          ? 'Past your last session. Keep going.'
+                          : 'First time on this one. Find a weight you own.'}
+                    </Text>
+
+                    {doneCount > 0 && (
+                      <TouchableOpacity onPress={handleFinishExercise} style={[styles.finishExBtn, { backgroundColor: C.muted }]}>
+                        <Text style={[styles.finishExBtnText, { color: C.mutedFg }]}>Finish exercise</Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
+                )}
+              </View>
+            )}
+
+            {/* Start Exercise Button (when not started) */}
+            {!isStarted && !isFinished && (
+              <View style={styles.startArea}>
+                <TouchableOpacity onPress={handleStartExercise} style={styles.startBtn}>
+                  <Feather name="play" size={18} color={Colors.primaryFg} />
+                  <Text style={styles.startBtnText}>Start Exercise</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Finished badge */}
+            {isFinished && (
+              <View style={styles.finishedBadge}>
+                <View style={[styles.finishedIcon, { backgroundColor: C.primarySubtle, borderWidth: 1, borderColor: C.primaryBorder }]}>
+                  <Feather name="check" size={28} color={C.accentText} />
+                </View>
+                <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
+                <Text style={[styles.finishedSub, { color: C.textMuted }]}>
+                  {currentEx.sets.filter(s => s.completed).length} sets · {abbreviateNumber(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setExerciseFinished(prev => {
+                      const next = [...prev];
+                      next[currentIdx] = false;
+                      return next;
+                    });
+                    startExerciseTimer();
+                  }}
+                  style={[styles.addMoreSetsBtn, { backgroundColor: C.muted }]}
+                >
+                  <Text style={[styles.addMoreSetsBtnText, { color: C.textMuted }]}>+ Add More Sets</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Exercise notes */}
+            <TextInput
+              placeholder="How did that feel? Jot it down."
+              placeholderTextColor={C.textMuted}
+              value={currentEx.notes}
+              onChangeText={(text) => {
+                const updated = [...exercises];
+                updated[currentIdx] = { ...updated[currentIdx], notes: text };
+                workout.updateExercises(updated);
+              }}
+              multiline
+              numberOfLines={2}
+              style={[styles.notesInput, { backgroundColor: C.muted, color: C.mutedFg }]}
+              onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
+              onBlur={() => { kbScrollTargetRef.current = null; }}
+            />
+            {renderSettingsLink()}
+          </>
+    );
+  };
+
+  // Quiet, low-emphasis entry to workout settings. Lives at the foot of the
+  // session content (and the empty state) rather than the top bar, so it reads
+  // as a secondary aside and never competes with cancel / timer / Finish.
+  const renderSettingsLink = () => (
+    <TouchableOpacity
+      onPress={() => setShowSettings(true)}
+      style={styles.settingsLink}
+      accessibilityLabel="Workout settings"
+    >
+      <Feather name="sliders" size={13} color={C.textMuted} />
+      <Text style={[styles.settingsLinkText, { color: C.textMuted }]}>Workout settings</Text>
+    </TouchableOpacity>
+  );
 
   if (loading) {
     return (
@@ -1305,8 +1814,8 @@ export default function ActiveWorkoutScreen() {
             {workout.routineName}
           </Text>
           <View style={styles.timerRow}>
-            <Feather name="clock" size={11} color={workout.isPaused ? AMBER : C.textDim} />
-            <Text style={[styles.timerText, { color: workout.isPaused ? AMBER : C.textMuted }]}>{fmt(workout.elapsed)}</Text>
+            <Feather name="clock" size={11} color={workout.isPaused ? Colors.paused : C.textDim} />
+            <Text style={[styles.timerText, { color: workout.isPaused ? Colors.paused : C.textMuted }]}>{fmt(workout.elapsed)}</Text>
             {workout.isPaused && (
               <View style={styles.pausedBadge}>
                 <Text style={styles.pausedBadgeText}>PAUSED</Text>
@@ -1339,6 +1848,8 @@ export default function ActiveWorkoutScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.pillsContainer}
           style={styles.pillsScroll}
+          onScroll={(e) => { pillScrollXRef.current = e.nativeEvent.contentOffset.x; }}
+          scrollEventThrottle={16}
         >
           {exercises.map((ex, i) => {
             const isCurrent = i === currentIdx;
@@ -1347,6 +1858,15 @@ export default function ActiveWorkoutScreen() {
               <TouchableOpacity
                 key={`${ex.exercise.id}-${i}`}
                 onPress={() => goTo(i)}
+                onLayout={(e) => {
+                  const firstMeasure = pillLayoutsRef.current[i] === undefined;
+                  pillLayoutsRef.current[i] = { x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width };
+                  // Only the first measurement reveals; later index changes go
+                  // through the effect / onEnd. This stops a width change (e.g.
+                  // the done-check icon appearing) from yanking the strip back
+                  // against a manual scroll.
+                  if (firstMeasure && i === currentIdx) revealActivePill(i);
+                }}
                 style={[
                   styles.pill,
                   {
@@ -1391,340 +1911,61 @@ export default function ActiveWorkoutScreen() {
         </ScrollView>
       )}
 
-      {/* MAIN CONTENT */}
-      <ScrollView
-        ref={mainScrollRef}
-        style={styles.mainScroll}
-        contentContainerStyle={[
-          styles.mainContent,
-          // Android edge-to-edge: the window doesn't resize for the IME, so
-          // make room for the keyboard ourselves; the keyboard-show listener
-          // then scrolls the set logger into view. iOS pads via
-          // automaticallyAdjustKeyboardInsets below.
-          Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight },
-        ]}
-        showsVerticalScrollIndicator={false}
-        // The keyboard-show handler scrolls relative to the current offset,
-        // so keep it tracked here.
-        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
-        scrollEventThrottle={16}
-        // With the keyboard open after typing a weight/rep, taps on "Log Set"
-        // and the +/− steppers must land on the first tap — the default
-        // ("never") swallows that tap to dismiss the keyboard.
-        keyboardShouldPersistTaps="handled"
-        // iOS only: insets the scroll content by the keyboard height and
-        // scrolls the focused field into view. Once a few sets are logged the
-        // input card sits in the lower half of the screen, under the keyboard.
-        automaticallyAdjustKeyboardInsets
-      >
-        {exercises.length === 0 ? (
+      {/* MAIN CONTENT — horizontal exercise pager (see renderExerciseBody) */}
+      {exercises.length === 0 ? (
+        <ScrollView
+          style={styles.mainScroll}
+          contentContainerStyle={styles.mainContent}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.emptyState}>
             <View style={[styles.emptyIcon, { backgroundColor: C.muted }]}>
               <Feather name="target" size={28} color={C.textDim} />
             </View>
             <Text style={[styles.emptyTitle, { color: C.foreground }]}>No exercises yet</Text>
-            <Text style={[styles.emptySub, { color: C.textMuted }]}>Add an exercise to get started</Text>
+            <Text style={[styles.emptySub, { color: C.textMuted }]}>Pick your first move and let's get to work.</Text>
             <TouchableOpacity onPress={() => setShowAddExercise(true)} style={styles.addExerciseBtn}>
               <Feather name="plus" size={15} color={Colors.primaryFg} />
               <Text style={styles.addExerciseBtnText}>Add Exercise</Text>
             </TouchableOpacity>
+            {renderSettingsLink()}
           </View>
-        ) : currentEx && (
-          <>
-            {/* Exercise Header */}
-            <View style={styles.exerciseHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.muscleLabel, { color: C.textDim }]}>
-                  {currentEx.exercise.muscle_group || 'Exercise'}
-                </Text>
-                <Text style={[styles.exerciseName, { color: C.foreground }]} numberOfLines={1}>
-                  {currentEx.exercise.name}
-                </Text>
-                <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
-                  {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
-                </Text>
-                {currentEx.coachNote ? (
-                  <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
-                    {currentEx.coachNote}
-                  </Text>
-                ) : null}
-              </View>
-              <TouchableOpacity onPress={removeExercise} style={[styles.removeBtn, { backgroundColor: C.muted }]}>
-                <Feather name="trash-2" size={13} color={C.textDim} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Exercise timer */}
-            {isStarted && !isFinished && (
-              <Animated.View entering={FadeIn} style={[styles.timersRow, { backgroundColor: C.muted }]}>
-                <View style={styles.timerBlock}>
-                  <Text style={[styles.timerValue, { color: C.accentText }]}>{fmt(exerciseTimer)}</Text>
-                  <Text style={[styles.timerLabel, { color: C.textDim }]}>ELAPSED</Text>
-                </View>
-              </Animated.View>
-            )}
-
-            {/* Rest timer — appears right after a set is logged. Counts down the
-                exercise's recommended rest and can be ended early with "Skip
-                rest", so the user no longer has to log the next set just to
-                clear a running rest timer. */}
-            {isStarted && !isFinished && isResting && (
-              <Animated.View
-                entering={FadeIn}
-                exiting={FadeOut}
-                style={[styles.restCard, { backgroundColor: C.card, borderColor: restDone ? Colors.primary : C.primaryBorder }]}
-              >
-                <View style={styles.restCardTop}>
-                  <View>
-                    <View style={styles.restCardLabelRow}>
-                      <Feather name="clock" size={12} color={restDone ? Colors.primary : C.textMuted} />
-                      <Text style={[styles.restCardLabel, { color: restDone ? Colors.primary : C.textMuted }]}>
-                        {restDone ? 'Rest complete' : 'Resting'}
-                      </Text>
-                    </View>
-                    <Text style={[styles.restCardValue, { color: restDone ? Colors.primary : C.foreground }]}>
-                      {restDisplay}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={handleSkipRest}
-                    style={[styles.skipRestBtn, { backgroundColor: restDone ? Colors.primary : C.muted }]}
+        </ScrollView>
+      ) : (
+        <GestureDetector gesture={pagerPan}>
+          <View style={styles.pager}>
+            <Animated.View style={[styles.pagerStrip, stripStyle]}>
+              {exercises.map((pageEx, i) => {
+                const isCur = i === currentIdx;
+                return (
+                  <Animated.View
+                    key={`${pageEx.exercise.id}-${i}`}
+                    style={[styles.pagerPage, { width: winW, left: i * winW }]}
+                    pointerEvents={isCur ? 'auto' : 'none'}
                   >
-                    <Feather name="skip-forward" size={13} color={restDone ? Colors.primaryFg : C.mutedFg} />
-                    <Text style={[styles.skipRestBtnText, { color: restDone ? Colors.primaryFg : C.mutedFg }]}>
-                      {restDone ? 'Done' : 'Skip rest'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {restTarget > 0 && (
-                  <View style={[styles.restTrack, { backgroundColor: C.muted }]}>
-                    <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
-                    <View style={{ flex: 100 - restPct }} />
-                  </View>
-                )}
-
-                <Text style={[styles.restHint, { color: C.textDim }]}>
-                  {restDone
-                    ? `Rest’s up — tap “Done”, or just log set ${nextSetNum} whenever you’re ready.`
-                    : `Recovering before set ${nextSetNum}. Tap “Skip rest” to end it early and start now.`}
-                </Text>
-
-                {/* Rest is prime dead-time — surface the coach right where the
-                    user is already thinking about the next set. */}
-                <TouchableOpacity
-                  onPress={openCoach}
-                  style={[styles.restCoachBtn, { borderColor: C.primaryBorder }]}
-                  activeOpacity={0.7}
-                >
-                  <Feather name="zap" size={12} color={C.accentText} />
-                  <Text style={[styles.restCoachBtnText, { color: C.accentText }]}>
-                    Ask Coach about this set
-                  </Text>
-                </TouchableOpacity>
-              </Animated.View>
-            )}
-
-            {/* Previous Session */}
-            {currentEx.previousSets && currentEx.previousSets.length > 0 && !isStarted && (
-              <View style={styles.prevSection}>
-                <Text style={[styles.sectionLabel, { color: C.textDim }]}>PREVIOUS SESSION</Text>
-                <View style={[styles.prevTable, { borderColor: C.border }]}>
-                  <View style={[styles.prevHeader, { backgroundColor: C.muted }]}>
-                    <Text style={[styles.prevHeaderText, { flex: 1, color: C.textDim }]}>Set</Text>
-                    <Text style={[styles.prevHeaderText, { flex: 1, textAlign: 'center', color: C.textDim }]}>Weight</Text>
-                    <Text style={[styles.prevHeaderText, { flex: 1, textAlign: 'right', color: C.textDim }]}>Reps</Text>
-                  </View>
-                  {currentEx.previousSets.map((s, i) => (
-                    <View key={i} style={[styles.prevRow, { borderTopColor: C.border, backgroundColor: C.elevated }]}>
-                      <Text style={[styles.prevCell, { color: C.textMuted, flex: 1 }]}>{i + 1}</Text>
-                      <Text style={[styles.prevCellBold, { color: C.foreground, flex: 1, textAlign: 'center' }]}>
-                        {s.weight_kg} <Text style={{ color: C.textDim }}>kg</Text>
-                      </Text>
-                      <Text style={[styles.prevCellBold, { color: C.foreground, flex: 1, textAlign: 'right' }]}>
-                        {s.reps}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            )}
-
-            {/* Logged Sets */}
-            {isStarted && currentEx.sets.some(s => s.completed) && (
-              <View style={styles.loggedSection}>
-                <Text style={[styles.sectionLabel, { color: C.textDim }]}>LOGGED</Text>
-                {currentEx.sets.filter(s => s.completed).map((s, i) => {
-                  const diff = prevSets && prevSets[i] ? s.weight_kg - prevSets[i].weight_kg : 0;
-                  return (
-                    <View key={i} style={[styles.loggedSet, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
-                      <Text style={[styles.setIdx, { color: C.accentText }]}>{i + 1}</Text>
-                      <Text style={[styles.setValueBold, { color: C.foreground }]}>
-                        {s.weight_kg}<Text style={[styles.setUnit, { color: C.textDim }]}> kg</Text>
-                      </Text>
-                      <Text style={[styles.setX, { color: C.textDim }]}>×</Text>
-                      <Text style={[styles.setValueBold, { color: C.foreground }]}>{s.reps}</Text>
-                      <View style={{ flex: 1 }} />
-                      {diff !== 0 && (
-                        <Text style={[styles.diffBadge, { color: diff > 0 ? '#34d399' : '#f87171' }]}>
-                          {diff > 0 ? '+' : ''}{diff}kg
-                        </Text>
-                      )}
-                      {!isFinished && (
-                        <TouchableOpacity onPress={() => handleDeleteSet(i)} style={styles.deleteSetBtn}>
-                          <Feather name="x" size={10} color="#ef4444" />
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            {/* Input Area (when started and not finished) */}
-            {isStarted && !isFinished && (
-              <Animated.View entering={FadeIn} style={styles.inputArea}>
-                {/* Input Card */}
-                <View ref={inputCardRef} style={[styles.inputCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-                  <View style={styles.inputRow}>
-                    {/* Weight */}
-                    <View style={styles.inputGroup}>
-                      <Text style={[styles.inputLabel, { color: C.textDim }]}>WEIGHT (KG)</Text>
-                      <View style={styles.inputControls}>
-                        <TouchableOpacity
-                          onPress={() => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5)))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>−</Text>
-                        </TouchableOpacity>
-                        <TextInput
-                          value={inputWeight}
-                          onChangeText={setInputWeight}
-                          keyboardType="decimal-pad"
-                          style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
-                          selectTextOnFocus
-                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { kbScrollTargetRef.current = null; }}
-                        />
-                        <TouchableOpacity
-                          onPress={() => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>+</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-
-                    {/* Divider */}
-                    <View style={[styles.inputDivider, { backgroundColor: C.borderSubtle }]} />
-
-                    {/* Reps */}
-                    <View style={styles.inputGroup}>
-                      <Text style={[styles.inputLabel, { color: C.textDim }]}>REPS</Text>
-                      <View style={styles.inputControls}>
-                        <TouchableOpacity
-                          onPress={() => setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1)))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>−</Text>
-                        </TouchableOpacity>
-                        <TextInput
-                          value={inputReps}
-                          onChangeText={setInputReps}
-                          keyboardType="number-pad"
-                          style={[styles.inputValue, { color: C.foreground, backgroundColor: C.muted }]}
-                          selectTextOnFocus
-                          onFocus={() => { kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { kbScrollTargetRef.current = null; }}
-                        />
-                        <TouchableOpacity
-                          onPress={() => setInputReps(String((parseInt(inputReps) || 0) + 1))}
-                          style={[styles.inputStepBtn, { backgroundColor: C.muted }]}
-                        >
-                          <Text style={[styles.stepBtnText, { color: C.mutedFg }]}>+</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </View>
-
-                  {/* Previous performance hint */}
-                  {prevSets && prevSets[currentEx.sets.filter(s => s.completed).length] && (
-                    <View style={[styles.prevHint, { backgroundColor: C.muted }]}>
-                      <Text style={[styles.prevHintText, { color: C.textMuted }]}>
-                        Previous: {prevSets[currentEx.sets.filter(s => s.completed).length].weight_kg}kg × {prevSets[currentEx.sets.filter(s => s.completed).length].reps} reps
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                <TouchableOpacity onPress={handleLogSet} style={styles.logSetBtn}>
-                  <Feather name="check" size={15} color={Colors.primaryFg} />
-                  <Text style={styles.logSetBtnText}>Log Set {currentEx.sets.filter(s => s.completed).length + 1}</Text>
-                </TouchableOpacity>
-
-                {currentEx.sets.filter(s => s.completed).length > 0 && (
-                  <TouchableOpacity onPress={handleFinishExercise} style={[styles.finishExBtn, { backgroundColor: C.muted }]}>
-                    <Text style={[styles.finishExBtnText, { color: C.mutedFg }]}>Finish Exercise</Text>
-                  </TouchableOpacity>
-                )}
-              </Animated.View>
-            )}
-
-            {/* Start Exercise Button (when not started) */}
-            {!isStarted && !isFinished && (
-              <View style={styles.startArea}>
-                <TouchableOpacity onPress={handleStartExercise} style={styles.startBtn}>
-                  <Feather name="play" size={18} color={Colors.primaryFg} />
-                  <Text style={styles.startBtnText}>Start Exercise</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Finished badge */}
-            {isFinished && (
-              <View style={styles.finishedBadge}>
-                <View style={[styles.finishedIcon, { backgroundColor: C.primarySubtle, borderWidth: 1, borderColor: C.primaryBorder }]}>
-                  <Feather name="check" size={28} color={C.accentText} />
-                </View>
-                <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
-                <Text style={[styles.finishedSub, { color: C.textMuted }]}>
-                  {currentEx.sets.filter(s => s.completed).length} sets · {roundVolume(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
-                </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    setExerciseFinished(prev => {
-                      const next = [...prev];
-                      next[currentIdx] = false;
-                      return next;
-                    });
-                    startExerciseTimer();
-                  }}
-                  style={[styles.addMoreSetsBtn, { backgroundColor: C.muted }]}
-                >
-                  <Text style={[styles.addMoreSetsBtnText, { color: C.textMuted }]}>+ Add More Sets</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Exercise notes */}
-            <TextInput
-              placeholder="Exercise notes..."
-              placeholderTextColor={C.textMuted}
-              value={currentEx.notes}
-              onChangeText={(text) => {
-                const updated = [...exercises];
-                updated[currentIdx] = { ...updated[currentIdx], notes: text };
-                workout.updateExercises(updated);
-              }}
-              multiline
-              numberOfLines={2}
-              style={[styles.notesInput, { backgroundColor: C.muted, color: C.mutedFg }]}
-              onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
-              onBlur={() => { kbScrollTargetRef.current = null; }}
-            />
-          </>
-        )}
-      </ScrollView>
+                    <ScrollView
+                      ref={isCur ? mainScrollRef : undefined}
+                      style={styles.mainScroll}
+                      contentContainerStyle={[
+                        styles.mainContent,
+                        Platform.OS === 'android' && isCur && kbHeight > 0 && { paddingBottom: kbHeight },
+                      ]}
+                      showsVerticalScrollIndicator={false}
+                      scrollEnabled={isCur}
+                      onScroll={isCur ? (e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; } : undefined}
+                      scrollEventThrottle={16}
+                      keyboardShouldPersistTaps="handled"
+                      automaticallyAdjustKeyboardInsets={isCur}
+                    >
+                      {renderExerciseBody(i, isCur)}
+                    </ScrollView>
+                  </Animated.View>
+                );
+              })}
+            </Animated.View>
+          </View>
+        </GestureDetector>
+      )}
 
       {/* BOTTOM PROGRESS BAR — sits above nav bar */}
       {exercises.length > 0 && (
@@ -1740,24 +1981,42 @@ export default function ActiveWorkoutScreen() {
             <Feather name="chevron-left" size={18} color={C.mutedFg} />
           </TouchableOpacity>
 
-          <View style={styles.bottomStats}>
-            <View style={styles.bottomStatItem}>
-              <Text style={[styles.bottomStatValue, { color: C.foreground }]}>{completedSets}</Text>
-              <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Sets</Text>
+          {isResting && exerciseStarted[currentIdx] && !exerciseFinished[currentIdx] ? (
+            /* RESTING — the bottom bar morphs into a slim rest strip. Same row,
+               nav arrows still flank it, no tall card stealing the screen. */
+            <View style={styles.restStrip}>
+              <Feather name="clock" size={14} color={restDone ? Colors.primary : C.accentText} />
+              <Animated.Text style={[styles.restStripTime, { color: restDone ? Colors.primary : C.foreground }, restPulseStyle]}>{restDisplay}</Animated.Text>
+              <View style={[styles.restStripTrack, { backgroundColor: C.muted }]}>
+                <View style={{ flex: restPct, backgroundColor: restDone ? Colors.primary : C.accentText }} />
+                <View style={{ flex: 100 - restPct }} />
+              </View>
+              <TouchableOpacity onPress={handleSkipRest} hitSlop={8}>
+                <Text style={[styles.restStripSkip, { color: restDone ? Colors.primary : C.textMuted }]}>
+                  {restDone ? 'Done' : 'Skip'}
+                </Text>
+              </TouchableOpacity>
             </View>
-            <View style={styles.bottomStatItem}>
-              <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
-                {finishedCount}<Text style={{ color: C.textDim, fontWeight: FontWeight.regular }}>/{exercises.length}</Text>
-              </Text>
-              <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Done</Text>
+          ) : (
+            <View style={styles.bottomStats}>
+              <View style={styles.bottomStatItem}>
+                <Text style={[styles.bottomStatValue, { color: C.foreground }]}>{completedSets}</Text>
+                <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Sets</Text>
+              </View>
+              <View style={styles.bottomStatItem}>
+                <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
+                  {finishedCount}<Text style={{ color: C.textDim, fontWeight: FontWeight.regular }}>/{exercises.length}</Text>
+                </Text>
+                <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Done</Text>
+              </View>
+              <View style={styles.bottomStatItem}>
+                <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
+                  {totalVolume}<Text style={[styles.bottomStatUnit, { color: C.textDim }]}>kg</Text>
+                </Text>
+                <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Vol</Text>
+              </View>
             </View>
-            <View style={styles.bottomStatItem}>
-              <Text style={[styles.bottomStatValue, { color: C.foreground }]}>
-                {totalVolume}<Text style={[styles.bottomStatUnit, { color: C.textDim }]}>kg</Text>
-              </Text>
-              <Text style={[styles.bottomStatLabel, { color: C.textDim }]}>Vol</Text>
-            </View>
-          </View>
+          )}
 
           <TouchableOpacity
             onPress={() => goTo(currentIdx + 1)}
@@ -1779,6 +2038,8 @@ export default function ActiveWorkoutScreen() {
         onSelect={(ex, custom) => (custom ? addCustomExercise(ex, custom) : addExercise(ex))}
         selectedNames={exercises.map((e) => e.exercise.name)}
       />
+
+      <WorkoutSettingsSheet visible={showSettings} onClose={() => setShowSettings(false)} />
 
       {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
           other sheets. Lets the user name the session (pre-filled from the
@@ -1987,6 +2248,25 @@ export default function ActiveWorkoutScreen() {
         onClose={() => setShowNoSetsAlert(false)}
       />
 
+      {/* Switch guard: a different routine was requested mid-session (see
+          isSwitchAttempt). Keep = return to the live session; Discard = drop it
+          and load the requested routine here. Dismissing keeps the session — we
+          never discard on an accidental tap. */}
+      <ThemedAlert
+        visible={showSwitchAlert}
+        icon="alert-triangle"
+        iconColor="#f97316"
+        title="Finish this one first?"
+        message={`You're still in the middle of ${
+          workout.routineName ? `“${workout.routineName}”` : 'a workout'
+        }. Want to keep going, or drop it and start fresh?`}
+        buttons={[
+          { text: 'Keep Going', style: 'primary', onPress: keepCurrentWorkout },
+          { text: 'Discard & Start New', style: 'destructive', onPress: discardAndSwitch },
+        ]}
+        onClose={keepCurrentWorkout}
+      />
+
       {/* Post-save offer: the session's exercises deviated from the source
           routine, so offer to bring the routine in line with what was done.
           Shown after the workout is already saved; both answers land on
@@ -2084,7 +2364,7 @@ const styles = StyleSheet.create({
   timerRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   timerText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   pausedBadge: {
-    backgroundColor: 'rgba(251,191,36,0.12)',
+    backgroundColor: colorWithAlpha(Colors.paused, 0.12),
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -2093,7 +2373,7 @@ const styles = StyleSheet.create({
   pausedBadgeText: {
     fontSize: 9,
     fontWeight: FontWeight.semibold,
-    color: '#fbbf24',
+    color: Colors.paused,
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
@@ -2148,6 +2428,9 @@ const styles = StyleSheet.create({
   // Main
   mainScroll: { flex: 1 },
   mainContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, paddingBottom: 180 },
+  pager: { flex: 1, overflow: 'hidden' },
+  pagerStrip: { flex: 1 },
+  pagerPage: { position: 'absolute', top: 0, bottom: 0 },
 
   // Empty
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
@@ -2164,6 +2447,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
   },
   addExerciseBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
+  settingsLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: Spacing.md, marginTop: Spacing.xs },
+  settingsLinkText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
 
   // Exercise header
   exerciseHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: Spacing.xl },
@@ -2299,6 +2584,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 14,
     borderRadius: Radius.xl,
+    marginTop: 18,
   },
   finishExBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
 
@@ -2348,6 +2634,28 @@ const styles = StyleSheet.create({
   },
   navArrow: { width: 40, height: 40, borderRadius: Radius.lg, alignItems: 'center', justifyContent: 'center' },
   bottomStats: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20 },
+  restStrip: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: Spacing.md },
+  restStripTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 56 },
+  restStripTrack: { flex: 1, height: 4, borderRadius: 2, overflow: 'hidden', flexDirection: 'row' },
+  restStripSkip: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  // Unified set table (header · done rows · active row) — one shared grid.
+  setTable: { marginBottom: Spacing.xl },
+  setHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
+  setHeadCell: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5, textAlign: 'center' },
+  colSet: { width: 30, textAlign: 'center' },
+  colVal: { flex: 1, alignItems: 'center' },
+  colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
+  setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
+  setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
+  doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
+  setRowActive: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 6, borderRadius: Radius.lg, marginTop: 14 },
+  activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  activeInputPlain: { flex: 1, height: 44, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
+  activeInput: { flex: 1, height: 44, minWidth: 36, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, borderRadius: Radius.sm, fontVariant: ['tabular-nums'] },
+  miniStep: { width: 28, height: 30, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
+  miniStepText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
+  lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },
   bottomStatItem: { alignItems: 'center' },
   bottomStatValue: { fontSize: FontSize.base, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] as any },
   bottomStatLabel: { fontSize: 9, marginTop: 1 },

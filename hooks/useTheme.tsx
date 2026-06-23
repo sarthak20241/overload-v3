@@ -8,7 +8,10 @@ const THEME_KEY = 'overload_theme';
 
 interface ThemeContextType {
   mode: ThemeMode;
-  C: typeof Colors.dark;
+  // Either theme — dark and light share identical keys but differ in literal
+  // values (statusBar, and the per-theme color hexes), so pin to the union
+  // rather than one theme's inferred literal types.
+  C: typeof Colors.dark | typeof Colors.light;
   toggleTheme: () => void;
 }
 

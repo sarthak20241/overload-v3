@@ -7,16 +7,20 @@ import Animated, {
   Easing, SlideInUp, SlideOutDown, FadeIn, FadeOut,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
+import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useWorkout } from '@/hooks/useWorkout';
+import { haptics } from '@/lib/haptics';
 import { useEffect } from 'react';
 
-const AMBER = '#fbbf24';
+// Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 function fmt(seconds: number) {
-  const m = Math.floor(seconds / 60);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
+  // Roll into hours so long sessions don't overflow as "588:34".
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
@@ -27,7 +31,7 @@ function NavButton({
   return (
     <TouchableOpacity
       style={styles.navItem}
-      onPress={onPress}
+      onPress={() => { if (!active) haptics.selection(); onPress(); }}
       activeOpacity={0.7}
       accessibilityRole="tab"
       accessibilityLabel={`${label} tab`}
@@ -114,8 +118,8 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
   const getCenterButtonStyle = () => {
     if (workout.isActive && workout.isPaused) {
       return {
-        backgroundColor: AMBER,
-        shadowColor: AMBER,
+        backgroundColor: Colors.paused,
+        shadowColor: Colors.paused,
       };
     }
     return {
@@ -151,8 +155,8 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             {
               bottom: 68 + insets.bottom,
               backgroundColor: C.elevated,
-              borderColor: workout.isPaused ? AMBER : Colors.primary,
-              shadowColor: workout.isPaused ? AMBER : Colors.primary,
+              borderColor: workout.isPaused ? Colors.paused : Colors.primary,
+              shadowColor: workout.isPaused ? Colors.paused : Colors.primary,
               shadowOffset: { width: 0, height: -2 },
               shadowOpacity: 0.25,
               shadowRadius: 10,
@@ -163,12 +167,14 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
           <View style={styles.miniBarInner}>
             {/* Pause/Resume button */}
             <TouchableOpacity
-              onPress={workout.togglePause}
+              onPress={() => { haptics.selection(); workout.togglePause(); }}
+              accessibilityRole="button"
+              accessibilityLabel={workout.isPaused ? 'Resume workout' : 'Pause workout'}
               style={[
                 styles.miniPauseBtn,
                 {
                   backgroundColor: workout.isPaused
-                    ? 'rgba(251,191,36,0.15)'
+                    ? colorWithAlpha(Colors.paused, 0.15)
                     : Colors.primary,
                 },
               ]}
@@ -176,7 +182,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
               <Feather
                 name={workout.isPaused ? 'play' : 'pause'}
                 size={12}
-                color={workout.isPaused ? AMBER : Colors.primaryFg}
+                color={workout.isPaused ? Colors.paused : Colors.primaryFg}
               />
             </TouchableOpacity>
 
@@ -193,16 +199,16 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
                 <Feather
                   name="clock"
                   size={9}
-                  color={workout.isPaused ? AMBER : C.textMuted}
+                  color={workout.isPaused ? Colors.paused : C.textMuted}
                 />
                 <Text style={[
                   styles.miniBarTime,
-                  { color: workout.isPaused ? AMBER : C.textMuted },
+                  { color: workout.isPaused ? Colors.paused : C.textMuted },
                 ]}>
                   {fmt(workout.elapsed)}
                 </Text>
                 {workout.isPaused && (
-                  <Text style={[styles.pausedBadge, { color: AMBER }]}>PAUSED</Text>
+                  <Text style={[styles.pausedBadge, { color: Colors.paused }]}>PAUSED</Text>
                 )}
                 <Text style={[styles.miniBarDot, { color: C.textDim }]}>·</Text>
                 <Text style={[styles.miniBarTime, { color: C.textMuted }]}>
@@ -268,13 +274,16 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
             }
           >
             <Feather name={getCenterIcon()} size={22} color={getCenterIconColor()} />
-            {/* Active dot indicator when away from workout page */}
+            {/* A neutral "session in progress" dot (the FAB colour + icon already
+                convey running vs paused). White reads as a status indicator on
+                both the lime and amber FAB; red looked like an error, and an
+                amber dot was invisible on the paused (amber) FAB. */}
             {workout.isActive && !isOnWorkout && (
               <View style={[
                 styles.activeDot,
                 {
                   borderColor: C.navBg,
-                  backgroundColor: workout.isPaused ? AMBER : '#ef4444',
+                  backgroundColor: '#fff',
                 },
               ]} />
             )}

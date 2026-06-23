@@ -172,10 +172,11 @@ Answer "no" to "Does this app use the AppTrackingTransparency framework?"
 - Language: None
 - Controlled Substances: None
 - Gambling: None
-- Miscellaneous: This app does not contain user-to-user interaction,
-  unrestricted internet, or location sharing. It DOES offer digital
-  purchases (Coach Drona subscriptions + founding-member tiers via
-  in-app purchase).
+- Miscellaneous: No user-to-user interaction, unrestricted internet, or
+  location sharing. **Digital purchases: Yes** — the app sells in-app
+  subscriptions plus a one-time lifetime unlock. If you previously
+  answered "no purchases," re-run the IARC questionnaire (Policy → App
+  content → Content rating); the rating stays Everyone / PEGI 3.
 - Result: **Everyone** / **PEGI 3** / **CERO A** etc.
 
 ### Data Safety form
@@ -224,6 +225,42 @@ For `eas submit --platform android` to upload automatically:
 4. Save it at the repo root as `google-service-account.json` (already
    gitignored via `.gitignore` if it isn't, ADD IT).
 5. eas.json already points to `./google-service-account.json`.
+
+### In-app purchases (RevenueCat + Play Billing) — go-live checklist
+
+Billing is handled by RevenueCat (`react-native-purchases`), which unifies
+Apple IAP + Google Play Billing into one webhook stream
+(`supabase/functions/revenuecat-webhook`).
+
+**The 3 products** (Play product IDs must match what you created in
+Play Console AND what you map in RevenueCat):
+
+| Plan             | RC package    | Play product type        | Suggested product ID         |
+|------------------|---------------|--------------------------|------------------------------|
+| Monthly          | `$rc_monthly` | Subscription (P1M)       | `overload_pro_monthly`       |
+| Annual           | `$rc_annual`  | Subscription (P1Y)       | `overload_pro_annual`        |
+| Founding Lifetime| `$rc_lifetime`| One-time in-app product  | `overload_founding_lifetime` |
+
+Lifetime MUST be a one-time (managed) product, not a subscription — the
+webhook only grants it via `NON_RENEWING_PURCHASE`.
+
+**Blocking step for publishability:** set up the Google **payments /
+merchant profile** (Play Console → Monetize → Payments profile → *Set up a
+merchant account*; bank + tax info, Google verifies it). Until it's Active,
+the products can be created but NOT activated or sold.
+
+**Config to finish on our side (env / secrets):**
+- `.env.local` → `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY` = the `goog_…` SDK key
+  from RevenueCat (currently a placeholder).
+- Edge function secrets — append the Google product IDs to the existing
+  Apple ones (comma-separated), so the webhook maps both stores:
+  - `RC_PRODUCT_MONTHLY="<apple_id>,overload_pro_monthly"`
+  - `RC_PRODUCT_ANNUAL="<apple_id>,overload_pro_annual"`
+  - `RC_PRODUCT_FOUNDING_LIFETIME="<apple_id>,overload_founding_lifetime"`
+  - Verify the exact `product_id` string RevenueCat sends for Play subs
+    (it may be `productId:basePlanId`) and match it here.
+- Before public launch, set `REVENUECAT_ALLOW_SANDBOX="false"` (or remove it)
+  so test purchases can't flip production tiers.
 
 ---
 

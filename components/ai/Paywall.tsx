@@ -172,7 +172,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
           onClose();
         } else {
           toast.info(
-            "Purchase received — we're finalizing. Pull to refresh or relaunch in a minute.",
+            "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
             { durationMs: 8000 },
           );
         }
@@ -212,7 +212,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
           await onPurchased();
           onClose();
         } else {
-          toast.info("Restored — we're finalizing. Try again in a minute.");
+          toast.info("Restored. We're finalizing. Try again in a minute.");
         }
       } else {
         toast.info('No previous purchases on this Apple ID.');

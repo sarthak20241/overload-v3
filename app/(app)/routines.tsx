@@ -40,6 +40,13 @@ import { useToast } from '@/components/ui/Toast';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { Portal } from '@/components/ui/Portal';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
+import { RoutineDetailSheet } from '@/components/routines/RoutineDetailSheet';
+import ReorderableList, {
+  useReorderableDrag,
+  useIsActive,
+  reorderItems,
+  type ReorderableListReorderEvent,
+} from 'react-native-reorderable-list';
 import type { ExerciseDef } from '@/lib/exercises';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -74,7 +81,14 @@ interface RoutineRaw {
 
 // Editor exercise shape (local state only)
 interface EditorExercise {
+  // Per-ROW unique id — the React key and the identity used by onChange/onRemove
+  // and drag-reorder. Deliberately NOT the catalog exercise id: a routine may
+  // list the same exercise twice (warmup + working, supersets, AI cues), and a
+  // shared id would collide keys and make an edit/delete hit both rows.
   id: string;
+  /** Catalog exercises.id, when this row came from a saved routine. Undefined
+   *  for hand-built rows (the signed-in save resolves those by name). */
+  exerciseId?: string;
   name: string;
   muscleGroup: string;
   /** Equipment category from the picker (custom creations choose one);
@@ -86,9 +100,16 @@ interface EditorExercise {
   notes: string;
 }
 
+// A fresh, collision-proof row id (Date.now() can repeat within a .map(), so mix
+// in a random suffix).
+let _rowSeq = 0;
+function makeRowId(): string {
+  return `er-${Date.now()}-${_rowSeq++}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function newExercise(): EditorExercise {
   return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: makeRowId(),
     name: '',
     muscleGroup: '',
     targetSets: 3,
@@ -180,15 +201,19 @@ function RoutineCard({
         <View style={styles.routineActions}>
           <TouchableOpacity
             onPress={(e) => { e.stopPropagation?.(); onPlay(); }}
-            style={[styles.playBtn, Shadow.playBtn]}
+            style={[styles.playBtn, { backgroundColor: C.primaryMuted }]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Start ${routine.name}`}
           >
-            <Feather name="play" size={14} color={Colors.primaryFg} />
+            <Feather name="play" size={14} color={C.accentText} />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={(e) => { e.stopPropagation?.(); onMenu(); }}
             style={styles.menuBtn}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`${routine.name} options`}
           >
             <Feather name="more-vertical" size={16} color={C.textMuted} />
           </TouchableOpacity>
@@ -198,198 +223,87 @@ function RoutineCard({
   );
 }
 
-// ─── Routine Detail Sheet ────────────────────────────────────────────────────
-function RoutineDetailSheet({
-  routine,
-  onClose,
-  onStartWorkout,
-  onEdit,
-}: {
-  routine: RoutineRaw | null;
-  onClose: () => void;
-  onStartWorkout: () => void;
-  onEdit: () => void;
-}) {
-  const { C } = useTheme();
-  const insets = useSafeAreaInsets();
-
-  // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
-  // hardware back button to dismiss the sheet while it's open.
-  useEffect(() => {
-    if (!routine) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      onClose();
-      return true;
-    });
-    return () => sub.remove();
-  }, [routine, onClose]);
-
-  if (!routine) return null;
-
-  const sortedExercises = [...routine.routine_exercises].sort((a, b) => a.order - b.order);
-
-  return (
-    // Rendered via the root <Portal>, not RN <Modal> — on Android edge-to-edge
-    // a <Modal> is a separate Dialog window inset by the system nav bar, so a
-    // bottom sheet floats above it with a gap (see components/ui/Portal.tsx).
-    <Portal>
-      <View style={styles.backdrop}>
-        <Pressable
-          style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
-          onPress={onClose}
-        />
-        <Animated.View
-          entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-          exiting={SlideOutDown.duration(200)}
-          style={[styles.detailSheet, {
-            backgroundColor: C.card,
-            borderColor: C.border,
-            // Flush with the screen bottom now, so pad past the gesture bar.
-            paddingBottom: insets.bottom + Spacing.md,
-          }]}
-        >
-            <View style={[styles.handle, { backgroundColor: C.handle }]} />
-
-            {/* Header */}
-            <View style={styles.detailHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.detailTitle, { color: C.foreground }]} numberOfLines={1}>
-                  {routine.name}
-                </Text>
-                {routine.description ? (
-                  <Text style={[styles.detailDesc, { color: C.mutedFg }]} numberOfLines={2}>
-                    {routine.description}
-                  </Text>
-                ) : null}
-              </View>
-              <TouchableOpacity onPress={onClose} style={[styles.sheetCloseBtn, { backgroundColor: C.closeBtn }]}>
-                <Feather name="x" size={15} color={C.foreground} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Exercises list */}
-            <View style={styles.detailExercisesLabel}>
-              <Text style={[styles.exercisesLabel, { color: C.textMuted }]}>
-                EXERCISES ({sortedExercises.length})
-              </Text>
-            </View>
-
-            <ScrollView
-              style={{ flexShrink: 1, flexGrow: 1 }}
-              contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md }}
-              showsVerticalScrollIndicator
-            >
-              {sortedExercises.map((re, i) => (
-                <View
-                  key={`${re.exercise_id}-${i}`}
-                  style={[styles.detailExRow, { borderBottomColor: C.borderSubtle }]}
-                >
-                  <View style={[styles.detailExDot, { backgroundColor: C.primaryMuted }]}>
-                    <Text style={[styles.detailExIdx, { color: C.accentText }]}>{i + 1}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.detailExName, { color: C.foreground }]}>
-                      {re.exercises?.name || 'Unknown'}
-                    </Text>
-                    <Text style={[styles.detailExMeta, { color: C.textMuted }]}>
-                      {re.sets} sets · {re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · {re.rest_seconds}s rest
-                    </Text>
-                    {re.note ? (
-                      <Text style={[styles.detailExNote, { color: C.accentText }]} numberOfLines={3}>
-                        {re.note}
-                      </Text>
-                    ) : null}
-                  </View>
-                  {re.exercises?.muscle_group ? (
-                    <View style={[styles.detailExBadge, { backgroundColor: C.muted }]}>
-                      <Text style={[styles.detailExBadgeText, { color: C.textSecondary }]}>
-                        {re.exercises.muscle_group}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              ))}
-            </ScrollView>
-
-            {/* Footer Actions */}
-            <View style={styles.detailFooter}>
-              <TouchableOpacity
-                onPress={onEdit}
-                style={[styles.editRoutineBtn, { backgroundColor: C.muted, borderColor: C.border }]}
-                activeOpacity={0.8}
-              >
-                <Feather name="edit-2" size={14} color={C.foreground} />
-                <Text style={[styles.editRoutineBtnText, { color: C.foreground }]}>Edit</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={onStartWorkout}
-                style={styles.startWorkoutBtn}
-                activeOpacity={0.8}
-              >
-                <Feather name="play" size={16} color={Colors.primaryFg} />
-                <Text style={styles.startWorkoutBtnText}>Start Workout</Text>
-              </TouchableOpacity>
-            </View>
-        </Animated.View>
-      </View>
-    </Portal>
-  );
-}
-
 // ─── Exercise Editor Card ────────────────────────────────────────────────────
+// Rendered as a ReorderableList item, so it can use the library's drag hooks.
 function ExerciseEditorCard({
   exercise,
   onChange,
   onRemove,
   onOpenPicker,
-  onFieldFocus,
-  index,
+  onInputFocus,
+  canReorder = true,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
   onRemove: () => void;
   onOpenPicker: () => void;
-  onFieldFocus?: () => void;
-  index: number;
+  onInputFocus?: () => void;
+  canReorder?: boolean;
 }) {
   const { C } = useTheme();
-  const [expanded, setExpanded] = useState(index === 0);
+  // react-native-reorderable-list: `drag` begins the drag for this row; isActive
+  // is true while it's the one being dragged (needs shouldUpdateActiveItem).
+  const drag = useReorderableDrag();
+  const isActive = useIsActive();
+  // Open unfilled rows so a freshly added card is ready to pick into. Keyed off
+  // content, not position, so the expanded card follows the item across a
+  // reorder instead of being pinned to index 0.
+  const [expanded, setExpanded] = useState(!exercise.name);
+  // Collapse the body while this card is the one being dragged so the floating
+  // row is compact and the list shuffles around a small footprint.
+  const showBody = expanded && !isActive;
 
   return (
     <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
-      {/* Header - always visible */}
-      <TouchableOpacity
-        onPress={() => setExpanded(!expanded)}
-        style={styles.editorHeader}
-        activeOpacity={0.7}
-      >
-        <Feather name="menu" size={14} color={C.textDim} style={{ marginRight: 8 }} />
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={[styles.editorExName, { color: exercise.name ? C.foreground : C.textMuted }]} numberOfLines={1}>
-            {exercise.name || 'Unnamed exercise'}
-          </Text>
-          <Text style={[styles.editorExSub, { color: C.textMuted }]}>
-            {exercise.targetSets} sets · {exercise.targetReps} reps
-            {exercise.muscleGroup ? ` · ${exercise.muscleGroup}` : ''}
-          </Text>
-        </View>
+      {/* Header - always visible. The grip is the drag handle (hold to grab);
+          the rest of the row still taps to expand / collapse. */}
+      <View style={styles.editorHeader}>
+        {canReorder ? (
+          <Pressable
+            onLongPress={drag}
+            delayLongPress={140}
+            style={styles.dragHandle}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Reorder ${exercise.name || 'exercise'}`}
+          >
+            <Feather name="menu" size={16} color={isActive ? C.accentText : C.textDim} />
+          </Pressable>
+        ) : (
+          <View style={styles.dragHandleSpacer} />
+        )}
         <TouchableOpacity
-          onPress={(e) => { onRemove(); }}
+          onPress={() => setExpanded(!expanded)}
+          style={styles.editorHeaderMain}
+          activeOpacity={0.7}
+        >
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[styles.editorExName, { color: exercise.name ? C.foreground : C.textMuted }]} numberOfLines={1}>
+              {exercise.name || 'Unnamed exercise'}
+            </Text>
+            <Text style={[styles.editorExSub, { color: C.textMuted }]}>
+              {exercise.targetSets} sets · {exercise.targetReps} reps
+              {exercise.muscleGroup ? ` · ${exercise.muscleGroup}` : ''}
+            </Text>
+          </View>
+          <Feather
+            name={showBody ? 'chevron-up' : 'chevron-down'}
+            size={14}
+            color={C.textMuted}
+            style={{ marginLeft: 4 }}
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onRemove}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           style={styles.editorRemoveBtn}
         >
           <Feather name="x" size={13} color={C.textMuted} />
         </TouchableOpacity>
-        <Feather
-          name={expanded ? 'chevron-up' : 'chevron-down'}
-          size={14}
-          color={C.textMuted}
-          style={{ marginLeft: 4 }}
-        />
-      </TouchableOpacity>
+      </View>
 
       {/* Expandable body */}
-      {expanded && (
+      {showBody && (
         <View style={[styles.editorBody, { borderTopColor: C.borderSubtle }]}>
           {/* Exercise picker — opens the bottom-sheet library. The inline
               dropdown it replaces expanded downward into the IME, so the
@@ -420,7 +334,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.targetSets)}
                 onChangeText={(v) => onChange({ ...exercise, targetSets: Math.max(1, Math.min(10, Number(v) || 0)) })}
-                onFocus={onFieldFocus}
+                onFocus={onInputFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -431,7 +345,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={exercise.targetReps}
                 onChangeText={(v) => onChange({ ...exercise, targetReps: v })}
-                onFocus={onFieldFocus}
+                onFocus={onInputFocus}
                 placeholder="8-12"
                 placeholderTextColor={C.textMuted}
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -443,7 +357,7 @@ function ExerciseEditorCard({
               <TextInput
                 value={String(exercise.restSeconds)}
                 onChangeText={(v) => onChange({ ...exercise, restSeconds: Math.max(0, Number(v) || 0) })}
-                onFocus={onFieldFocus}
+                onFocus={onInputFocus}
                 keyboardType="number-pad"
                 style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
                 textAlign="center"
@@ -457,7 +371,7 @@ function ExerciseEditorCard({
             <TextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
-              onFocus={onFieldFocus}
+              onFocus={onInputFocus}
               placeholder="Form tip or reminder..."
               placeholderTextColor={C.textMuted}
               style={[styles.editorInput, styles.editorInputText, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
@@ -504,12 +418,39 @@ function RoutineEditorSheet({
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
 
-  // Keep the focused field above the keyboard on Android: SDK 54 edge-to-edge
-  // stops the window resizing for the IME, so the KeyboardAvoidingView below
-  // (behavior=undefined on Android) is a no-op and lower inputs stay buried.
-  // Disabled while the picker is open — it tracks the keyboard itself.
-  const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
-    useKeyboardAwareScroll(pickerTargetIdx === null);
+  // The reorderable list is its own scroller; we keep a ref to scroll a focused
+  // card above the keyboard on Android (SDK 54 edge-to-edge doesn't resize the
+  // window for the IME, so lower inputs would otherwise stay buried). We only
+  // need kbHeight from the keyboard hook here — its ScrollView helpers don't
+  // apply to a FlatList. Disabled while the picker is open (it lifts itself).
+  const { kbHeight } = useKeyboardAwareScroll(pickerTargetIdx === null);
+  const listRef = useRef<any>(null);
+  // The card the user is editing — retried into view once the IME padding lands.
+  const focusedCardIndexRef = useRef<number | null>(null);
+
+  const scrollCardIntoView = useCallback((index: number) => {
+    if (Platform.OS !== 'android') return;
+    try {
+      listRef.current?.scrollToIndex({ index, viewPosition: 0, animated: true });
+    } catch {}
+  }, []);
+
+  // Bring a card's inputs above the keyboard when one is focused. Android only —
+  // iOS is handled by the KeyboardAvoidingView wrapper. We scroll once eagerly,
+  // then again once kbHeight lands (the bottom padding can arrive after this
+  // first scroll, otherwise leaving lower cards buried behind the IME).
+  const handleCardFocus = useCallback((index: number) => {
+    if (Platform.OS !== 'android') return;
+    focusedCardIndexRef.current = index;
+    setTimeout(() => scrollCardIntoView(index), 50);
+  }, [scrollCardIntoView]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    if (kbHeight <= 0) { focusedCardIndexRef.current = null; return; }
+    if (focusedCardIndexRef.current === null) return;
+    requestAnimationFrame(() => scrollCardIntoView(focusedCardIndexRef.current!));
+  }, [kbHeight, scrollCardIntoView]);
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
@@ -534,7 +475,10 @@ function RoutineEditorSheet({
       setExercises((prev) =>
         prev.map((e, i) => {
           if (i !== pickerTargetIdx) return e;
-          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category };
+          // The picker identifies exercises by name (ExerciseDef carries no id),
+          // so a re-picked row's old catalog exerciseId is now stale — clear it
+          // so the save resolves the new exercise by name, not the wrong id.
+          const next = { ...e, name: ex.name, muscleGroup: ex.muscle_group, category: ex.category, exerciseId: undefined };
           // Custom creations carry set/rep/rest targets from the form; library
           // picks keep whatever the card already has.
           if (custom) {
@@ -585,7 +529,8 @@ function RoutineEditorSheet({
       setExercises(
         rows.length > 0
           ? rows.map((re: any) => ({
-              id: re.exercises?.id || re.exercise_id || re.id,
+              id: makeRowId(),
+              exerciseId: re.exercises?.id || re.exercise_id || re.id,
               name: re.exercises?.name || '',
               muscleGroup: re.exercises?.muscle_group || '',
               category: re.exercises?.category || undefined,
@@ -601,7 +546,8 @@ function RoutineEditorSheet({
       return;
     }
     const mapRow = (re: any) => ({
-      id: re.exercise_id || re.exercises?.id || re.id,
+      id: makeRowId(),
+      exerciseId: re.exercise_id || re.exercises?.id || re.id,
       name: re.exercises?.name || '',
       muscleGroup: re.exercises?.muscle_group || '',
       category: re.exercises?.category || undefined,
@@ -660,16 +606,20 @@ function RoutineEditorSheet({
       const routineId = editingId || `guest-r-${Date.now()}`;
       const routineExercises = validExercises.map((ex, i) => {
         const [repsMin, repsMax] = parseReps(ex.targetReps);
+        // Persist the catalog exercise id (loaded rows) or fall back to the
+        // row id for hand-built rows — the same identity the old code stored,
+        // now that `ex.id` is a per-row key rather than the exercise id.
+        const exId = ex.exerciseId ?? ex.id;
         return {
           id: `gre-${Date.now()}-${i}`,
-          exercise_id: ex.id,
+          exercise_id: exId,
           order: i,
           sets: ex.targetSets,
           reps_min: repsMin,
           reps_max: repsMax,
           rest_seconds: ex.restSeconds,
           exercises: {
-            id: ex.id,
+            id: exId,
             name: ex.name,
             muscle_group: ex.muscleGroup || 'Other',
             category: 'Custom',
@@ -717,7 +667,10 @@ function RoutineEditorSheet({
         const [reps_min, reps_max] = parseReps(ex.targetReps);
         return {
           def: { name: ex.name, muscle_group: ex.muscleGroup || 'Other', category: ex.category || 'Custom' },
-          resolvedExerciseId: null,
+          // Loaded-from-routine rows carry a real catalog id — attach it directly
+          // so the flusher skips name re-resolution (which can mis-match a
+          // duplicate name). Picked/hand-typed rows clear it and resolve by name.
+          resolvedExerciseId: ex.exerciseId ?? null,
           order: i,
           sets: ex.targetSets,
           reps_min,
@@ -829,73 +782,85 @@ function RoutineEditorSheet({
               </View>
             ) : null}
 
-            {/* Sheet Body */}
-            <ScrollView
-              ref={scrollRef}
-              {...scrollProps}
-              style={{ flex: 1 }}
-              contentContainerStyle={[
-                styles.sheetBody,
-                // Android edge-to-edge: make room for the IME ourselves; the
-                // keyboard-show handler then lifts the focused field into view.
-                // The extra headroom keeps the scroll from clamping before the
-                // field clears the keyboard. iOS is covered by the
-                // KeyboardAvoidingView wrapper.
-                Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
-              ]}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {/* Routine Name */}
+            {/* Pinned fields — kept ABOVE the reorderable list (not inside it),
+                so the Name/Description inputs don't lose focus when the list
+                re-renders, and the list owns its own scroll for dragging. */}
+            <View style={styles.pinnedFields}>
               <View>
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Routine Name</Text>
                 <TextInput
                   value={name}
                   onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
-                  onFocus={scrollFocusedIntoView}
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
                 />
               </View>
 
-              {/* Description */}
               <View>
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Description (optional)</Text>
                 <TextInput
                   value={description}
                   onChangeText={setDescription}
-                  onFocus={scrollFocusedIntoView}
                   placeholder="Brief description..."
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
                 />
               </View>
 
-              {/* Exercises Section */}
-              <View>
-                <View style={styles.exercisesHeader}>
-                  <Text style={[styles.exercisesLabel, { color: C.textMuted }]}>
-                    EXERCISES ({exercises.length})
-                  </Text>
-                </View>
-                <View style={{ gap: 8 }}>
-                  {exercises.map((ex, i) => (
-                    <ExerciseEditorCard
-                      key={ex.id}
-                      exercise={ex}
-                      index={i}
-                      onChange={(updated) =>
-                        setExercises((prev) => prev.map((e, idx) => (idx === i ? updated : e)))
-                      }
-                      onRemove={() => setExercises((prev) => prev.filter((_, idx) => idx !== i))}
-                      onOpenPicker={() => setPickerTargetIdx(i)}
-                      onFieldFocus={scrollFocusedIntoView}
-                    />
-                  ))}
-                </View>
+              <View style={styles.exercisesHeader}>
+                <Text style={[styles.exercisesLabel, { color: C.textMuted }]}>
+                  EXERCISES ({exercises.length})
+                </Text>
+              </View>
+            </View>
 
-                {/* Add Exercise Button */}
+            {/* Exercise list — drag-to-reorder (react-native-reorderable-list).
+                The library owns activation (hold the grip), the shuffle, and
+                autoscroll, so it's the scroller for the cards. */}
+            <ReorderableList
+              ref={listRef}
+              data={exercises}
+              keyExtractor={(ex) => ex.id}
+              shouldUpdateActiveItem
+              onReorder={({ from, to }: ReorderableListReorderEvent) =>
+                setExercises((prev) => reorderItems(prev, from, to))
+              }
+              renderItem={({ item: ex, index: i }) => (
+                <View style={styles.cardWrap}>
+                  <ExerciseEditorCard
+                    exercise={ex}
+                    canReorder={exercises.length > 1}
+                    onChange={(updated) =>
+                      setExercises((prev) => prev.map((e) => (e.id === ex.id ? updated : e)))
+                    }
+                    onRemove={() => setExercises((prev) => prev.filter((e) => e.id !== ex.id))}
+                    onOpenPicker={() => setPickerTargetIdx(i)}
+                    onInputFocus={() => handleCardFocus(i)}
+                  />
+                </View>
+              )}
+              style={{ flex: 1 }}
+              contentContainerStyle={[
+                styles.editorListContent,
+                // Android edge-to-edge: make room for the IME so a focused lower
+                // card can scroll clear of the keyboard.
+                Platform.OS === 'android' && kbHeight > 0 && { paddingBottom: kbHeight + 120 },
+              ]}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              onScrollToIndexFailed={(info) => {
+                setTimeout(() => {
+                  try {
+                    listRef.current?.scrollToOffset?.({
+                      offset: (info.averageItemLength || 80) * info.index,
+                      animated: true,
+                    });
+                  } catch {}
+                }, 60);
+              }}
+              ListFooterComponent={
                 <TouchableOpacity
                   onPress={() => setExercises((prev) => [...prev, newExercise()])}
                   style={[styles.addExerciseBtn, { borderColor: C.border }]}
@@ -903,8 +868,8 @@ function RoutineEditorSheet({
                   <Feather name="plus" size={14} color={C.textMuted} />
                   <Text style={[styles.addExerciseBtnText, { color: C.textMuted }]}>Add Exercise</Text>
                 </TouchableOpacity>
-              </View>
-            </ScrollView>
+              }
+            />
           </KeyboardAvoidingView>
 
           {/* Exercise Picker — shared bottom-sheet library (search, muscle
@@ -987,8 +952,8 @@ function RoutineMenuModal({
                 onPress={() => setShowDeleteConfirm(true)}
                 style={[styles.menuItem, { borderColor: C.border }]}
               >
-                <Feather name="trash-2" size={16} color={Colors.danger} />
-                <Text style={[styles.menuItemText, { color: Colors.danger }]}>Delete</Text>
+                <Feather name="trash-2" size={16} color={C.dangerText} />
+                <Text style={[styles.menuItemText, { color: C.dangerText }]}>Delete</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={onClose}
@@ -1028,7 +993,7 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
       </View>
       <Text style={[styles.emptyTitle, { color: C.textMuted }]}>No routines yet</Text>
       <Text style={[styles.emptySub, { color: C.textDim }]}>
-        Create one manually or generate with AI
+        Tell Coach Drona your goal and he'll build your first one. Or make one yourself.
       </Text>
       <View style={styles.emptyBtnRow}>
         <TouchableOpacity
@@ -1042,7 +1007,7 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
           style={[styles.emptyBtnAI, { borderColor: C.primaryBorder, backgroundColor: C.primaryMuted }]}
         >
           <Feather name="zap" size={13} color={C.accentText} />
-          <Text style={[styles.emptyBtnAIText, { color: C.accentText }]}>AI Generate</Text>
+          <Text style={[styles.emptyBtnAIText, { color: C.accentText }]}>Build with Drona</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -1438,7 +1403,6 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1577,12 +1541,20 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Colors.primaryFg,
   },
-  sheetBody: {
+  // Pinned Name/Description/label above the reorderable list.
+  pinnedFields: {
     paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.xl,
-    paddingBottom: 40,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.sm,
     gap: 16,
   },
+  // Content padding for the reorderable exercise list.
+  editorListContent: {
+    paddingHorizontal: Spacing.xl,
+    paddingBottom: 40,
+  },
+  // Spacing between exercise cards (the list renders items flush).
+  cardWrap: { marginBottom: 8 },
   sheetInput: {
     paddingHorizontal: Spacing.lg,
     paddingVertical: 14,
@@ -1612,7 +1584,25 @@ const styles = StyleSheet.create({
   editorHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.lg,
+    paddingRight: Spacing.lg,
+    paddingLeft: Spacing.sm,
+  },
+  // Long-press drag grip — spans the row height so it's an easy target.
+  dragHandle: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Keeps the header left-aligned with multi-item cards when the grip is hidden
+  // (a single-exercise routine has nothing to reorder).
+  dragHandleSpacer: { width: Spacing.sm },
+  editorHeaderMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.lg,
+    minWidth: 0,
   },
   editorExName: {
     fontSize: FontSize.base,
@@ -1676,118 +1666,5 @@ const styles = StyleSheet.create({
   addExerciseBtnText: {
     fontSize: FontSize.base,
     fontWeight: FontWeight.medium,
-  },
-
-  // Routine Detail Sheet
-  detailSheet: {
-    borderTopLeftRadius: Radius.xxl,
-    borderTopRightRadius: Radius.xxl,
-    borderTopWidth: 1,
-    paddingBottom: Spacing.xxl,
-    height: '80%',
-  },
-  detailHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.lg,
-    gap: 12,
-    flexShrink: 0,
-  },
-  detailTitle: {
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.bold,
-    letterSpacing: -0.3,
-  },
-  detailDesc: {
-    fontSize: FontSize.sm,
-    marginTop: 4,
-    lineHeight: 18,
-  },
-  detailExercisesLabel: {
-    paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.sm,
-    flexShrink: 0,
-  },
-  detailExRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  detailExDot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  detailExIdx: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-  },
-  detailExName: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.semibold,
-  },
-  detailExMeta: {
-    fontSize: FontSize.xs,
-    marginTop: 2,
-  },
-  detailExNote: {
-    fontSize: FontSize.xs,
-    fontStyle: 'italic',
-    marginTop: 4,
-    lineHeight: 14,
-  },
-  detailExBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: Radius.full,
-  },
-  detailExBadgeText: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.medium,
-  },
-  detailFooter: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 10,
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.lg,
-    flexShrink: 0,
-  },
-  editRoutineBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 14,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    flexShrink: 0,
-  },
-  editRoutineBtnText: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.semibold,
-  },
-  startWorkoutBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: Radius.xl,
-    backgroundColor: Colors.primary,
-    flex: 1,
-  },
-  startWorkoutBtnText: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.black,
-    color: Colors.primaryFg,
   },
 });

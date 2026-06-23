@@ -42,7 +42,11 @@ export function InsightCard({
 }) {
   const { C } = useTheme();
   const ts = TYPE_STYLE[insight.type];
-  const accent = ts.color;
+  // Theme-aware accent for the semantic types so the icon + kicker stay legible
+  // on the light theme (the bright base colors fail WCAG AA on white).
+  const accent = insight.type === 'victory' ? C.successText
+    : insight.type === 'plateau' ? C.warningText
+    : ts.color;
   const icon = (insight.icon as Feature) || ts.icon;
   const kicker = insight.kicker || ts.kicker;
 

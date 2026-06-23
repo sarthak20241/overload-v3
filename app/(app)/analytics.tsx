@@ -15,9 +15,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
-import { roundVolume } from '@/lib/format';
+import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
@@ -76,11 +77,12 @@ function AnimatedBar({ progress, color, bg, delay = 0 }: { progress: number; col
 
 // ─── Mini area card (Volume / Duration) ───────────────────────────────────────
 function MiniAreaCard({
-  icon, label, value, suffix, color, data, labels, valueSuffix,
+  icon, label, value, format, suffix, color, data, labels, valueSuffix,
 }: {
   icon: React.ComponentProps<typeof Feather>['name'];
   label: string;
-  value: string;
+  value: number;
+  format: (n: number) => string;
   suffix: string;
   color: string;
   data: number[];
@@ -97,7 +99,7 @@ function MiniAreaCard({
         <Text style={[styles.miniLabel, { color }]}>{label.toUpperCase()}</Text>
       </View>
       <View style={styles.miniValueRow}>
-        <Text style={[styles.miniValue, { color: C.foreground }]}>{value}</Text>
+        <AnimatedNumber value={value} format={format} style={[styles.miniValue, { color: C.foreground }]} />
         <Text style={[styles.miniSuffix, { color: C.textMuted }]}> {suffix}</Text>
       </View>
       {hasData ? (
@@ -124,7 +126,7 @@ function MiniAreaCard({
 
 // ─── Stat mini card (Sets / Reps) ─────────────────────────────────────────────
 function StatMiniCard({
-  icon, label, value, suffix, color, progress, target,
+  icon, label, value, suffix, color, progress, target, format = (n: number) => String(Math.round(n)),
 }: {
   icon: React.ComponentProps<typeof Feather>['name'];
   label: string;
@@ -133,6 +135,7 @@ function StatMiniCard({
   color: string;
   progress: number;
   target: string;
+  format?: (n: number) => string;
 }) {
   const { C } = useTheme();
   return (
@@ -143,7 +146,7 @@ function StatMiniCard({
         <Text style={[styles.miniLabel, { color }]}>{label.toUpperCase()}</Text>
       </View>
       <View style={styles.miniValueRow}>
-        <Text style={[styles.miniValue, { color: C.foreground }]}>{value}</Text>
+        <AnimatedNumber value={value} format={format} style={[styles.miniValue, { color: C.foreground }]} />
         <Text style={[styles.miniSuffix, { color: C.textMuted }]}> {suffix}</Text>
       </View>
       <View style={{ marginTop: 6 }}>
@@ -409,7 +412,7 @@ function HistoryDrawer({
               <View style={styles.historyRight}>
                 {diff !== 0 && (
                   <View style={[styles.diffBadge, { backgroundColor: diff > 0 ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)' }]}>
-                    <Text style={[styles.diffText, { color: diff > 0 ? '#ef4444' : '#10b981' }]}>
+                    <Text style={[styles.diffText, { color: diff > 0 ? C.dangerText : C.successText }]}>
                       {diff > 0 ? '+' : ''}{diff.toFixed(1)}
                     </Text>
                   </View>
@@ -467,7 +470,7 @@ function TrendCard({
             {sorted.length === 0 ? null : (
               <>
                 {diff !== 0 && (
-                  <Text style={[styles.diffText, { color: diff > 0 ? '#ef4444' : '#10b981', fontWeight: FontWeight.bold }]}>
+                  <Text style={[styles.diffText, { color: diff > 0 ? C.dangerText : C.successText, fontWeight: FontWeight.bold }]}>
                     {diff > 0 ? '+' : ''}{diff.toFixed(1)} {unit}
                   </Text>
                 )}
@@ -500,7 +503,7 @@ function TrendCard({
               tooltipTextColor={C.foreground}
             />
             {goal != null && (
-              <Text style={[styles.goalLabel, { color: '#f59e0b' }]}>Goal: {goal} {unit}</Text>
+              <Text style={[styles.goalLabel, { color: C.warningText }]}>Goal: {goal} {unit}</Text>
             )}
           </View>
         ) : (
@@ -942,7 +945,7 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
                             <Text style={[styles.mDropdownItemLabel, { color: C.foreground }]} numberOfLines={1}>{f.label}</Text>
                             <Text style={[styles.mDropdownItemValue, { color: C.foreground }]}>{v.current}</Text>
                             {v.change !== undefined && v.change !== 0 && (
-                              <Text style={[styles.mDropdownItemChange, { color: v.change > 0 ? '#10b981' : '#ef4444' }]}>
+                              <Text style={[styles.mDropdownItemChange, { color: v.change > 0 ? C.successText : C.dangerText }]}>
                                 {v.change > 0 ? '+' : ''}{v.change}
                               </Text>
                             )}
@@ -961,16 +964,16 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
             <View style={styles.mStatsRow}>
               {selectedVal.change !== undefined && selectedVal.change !== 0 && (
                 <View style={[styles.mStatBadge, { backgroundColor: selectedVal.change > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                  <Feather name={selectedVal.change > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.change > 0 ? '#10b981' : '#ef4444'} />
-                  <Text style={[styles.mStatBadgeText, { color: selectedVal.change > 0 ? '#10b981' : '#ef4444' }]}>
+                  <Feather name={selectedVal.change > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.change > 0 ? C.successText : C.dangerText} />
+                  <Text style={[styles.mStatBadgeText, { color: selectedVal.change > 0 ? C.successText : C.dangerText }]}>
                     {selectedVal.change > 0 ? '+' : ''}{selectedVal.change} last
                   </Text>
                 </View>
               )}
               {selectedVal.totalChange !== undefined && selectedVal.totalChange !== 0 && (
                 <View style={[styles.mStatBadge, { backgroundColor: selectedVal.totalChange > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)' }]}>
-                  <Feather name={selectedVal.totalChange > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.totalChange > 0 ? '#10b981' : '#ef4444'} />
-                  <Text style={[styles.mStatBadgeText, { color: selectedVal.totalChange > 0 ? '#10b981' : '#ef4444' }]}>
+                  <Feather name={selectedVal.totalChange > 0 ? 'trending-up' : 'trending-down'} size={10} color={selectedVal.totalChange > 0 ? C.successText : C.dangerText} />
+                  <Text style={[styles.mStatBadgeText, { color: selectedVal.totalChange > 0 ? C.successText : C.dangerText }]}>
                     {selectedVal.totalChange > 0 ? '+' : ''}{selectedVal.totalChange} total
                   </Text>
                 </View>
@@ -1102,6 +1105,10 @@ export default function AnalyticsScreen() {
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [insights, setInsights] = useState<string[]>([]);
+  // True only when `insights` came from a successful real coach call (not the
+  // local fallback). We cache a real read to avoid re-billing, but a fallback
+  // stays retryable.
+  const [insightsFromCoach, setInsightsFromCoach] = useState(false);
 
   // Body stats
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
@@ -1281,20 +1288,89 @@ export default function AnalyticsScreen() {
     await saveBodyFatLog(next);
   };
 
+  // A quick local read in Coach Drona's voice. Used for guests (the coach is
+  // account-gated) and as a fallback if the real call fails. No em dashes.
+  const localInsights = (): string[] => {
+    const out: string[] = [];
+    if (weekWorkouts.length > 0) out.push(`${weekWorkouts.length} sessions in the bag this week. That consistency is what moves the needle.`);
+    if (weekVolume > 0) out.push(`You moved ${abbreviateNumber(weekVolume)}kg this week. Add a set somewhere next week and we keep climbing.`);
+    if (pr) out.push(`Your ${selectedExercise} top set sits at ${pr}kg. Next time, chase a clean 2.5kg jump.`);
+    if (avgDurationMin > 0) out.push(`Sessions average ${avgDurationMin} min. That is a solid window for volume and recovery both.`);
+    if (out.length === 0) out.push('Log a few sessions and I will start reading your training for you.');
+    return out;
+  };
+
+  // Strip list markers and normalize dashes from a coach line. A dash BETWEEN
+  // digits is a range ("8–10 reps") and stays a hyphen; a dash used as
+  // punctuation becomes a comma. No em dashes survive.
+  const cleanLine = (raw: string): string =>
+    raw
+      .replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '')
+      .replace(/(\d)\s*[—–]\s*(\d)/g, '$1-$2')
+      .replace(/\s*[—–]\s*/g, ', ')
+      .trim();
+
+  // The edge function returns these as a 200 with body text when it can't
+  // answer; treat them as a failure so we never show an apology as an "insight".
+  const isServerFallback = (t: string): boolean =>
+    /sorry, i couldn't generate/i.test(t) || /hit the tool-call limit/i.test(t);
+
+  // Insights from the real Coach Drona edge function (it injects the user's
+  // training history server-side). A successful real read is cached per session
+  // so re-opening does not re-bill; a fallback stays retryable. Guests (no
+  // coach access) always get the local read.
   const runAnalyze = async () => {
     setInsightsOpen(true);
+    // Skip re-billing only when we already have a REAL coach read this session.
+    if (insights.length > 0 && insightsFromCoach) return;
     setAiLoading(true);
     setInsights([]);
-    await new Promise((r) => setTimeout(r, 1200));
-    const stats: string[] = [];
-    if (weekWorkouts.length > 0) stats.push(`You've completed ${weekWorkouts.length} workouts this week — great consistency.`);
-    if (weekVolume > 0) stats.push(`Weekly volume is ${weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : weekVolume}kg. Try adding one more set per exercise next week.`);
-    if (pr) stats.push(`Your current PR on ${selectedExercise} is ${pr}kg. Aim for a small 2.5kg increase next session.`);
-    if (avgDurationMin > 0) stats.push(`Your average session is ${avgDurationMin} minutes — balanced for hypertrophy and recovery.`);
-    if (stats.length === 0) stats.push('Log a few workouts to unlock personalized insights from Coach Drona.');
-    setInsights(stats);
-    setAiLoading(false);
+
+    if (isGuestSession || !user) {
+      await new Promise((r) => setTimeout(r, 400));
+      setInsightsFromCoach(false);
+      setInsights(localInsights());
+      setAiLoading(false);
+      return;
+    }
+
+    try {
+      const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr ? `, ${selectedExercise} top set ${pr}kg` : ''}.`;
+      const messages = [{
+        role: 'user',
+        content: `${summary} Give me 3 short, specific insights on where my training is right now and what to focus on next. One line each, no intro, no bullets, no dashes.`,
+      }];
+      // Bound the call so a stalled connection can't spin the card forever.
+      const { data, error } = await Promise.race([
+        supabase.functions.invoke('ai-coach', { body: { messages } }),
+        new Promise<{ data: any; error: any }>((_, reject) =>
+          setTimeout(() => reject(new Error('coach timeout')), 25000)),
+      ]);
+      const text = (!error && data?.response) ? String(data.response) : '';
+      const lines = isServerFallback(text)
+        ? []
+        : text.split('\n').map(cleanLine).filter((l) => l.length > 0).slice(0, 4);
+      if (lines.length > 0) {
+        setInsightsFromCoach(true);
+        setInsights(lines);
+      } else {
+        setInsightsFromCoach(false);
+        setInsights(localInsights());
+      }
+    } catch {
+      setInsightsFromCoach(false);
+      setInsights(localInsights());
+    } finally {
+      setAiLoading(false);
+    }
   };
+
+  // Re-enable a fresh coach read when the week's data materially changes, so
+  // the card never shows insights that no longer match the numbers below it.
+  useEffect(() => {
+    setInsights([]);
+    setInsightsFromCoach(false);
+  }, [weekWorkouts.length, weekVolume, avgDurationMin, selectedExercise, pr]);
 
   const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
@@ -1386,7 +1462,8 @@ export default function AnalyticsScreen() {
                 <MiniAreaCard
                   icon="trending-up"
                   label="Volume"
-                  value={weekVolume >= 1000 ? `${(weekVolume / 1000).toFixed(1)}k` : String(weekVolume)}
+                  value={weekVolume}
+                  format={abbreviateNumber}
                   suffix="kg"
                   color="#06b6d4"
                   data={volumeSeries.data}
@@ -1396,7 +1473,8 @@ export default function AnalyticsScreen() {
                 <MiniAreaCard
                   icon="clock"
                   label="Duration"
-                  value={String(avgDurationMin)}
+                  value={avgDurationMin}
+                  format={(n) => String(Math.round(n))}
                   suffix="min avg"
                   color="#a855f7"
                   data={durationSeries.data}
@@ -1549,7 +1627,7 @@ export default function AnalyticsScreen() {
                       <Text style={[styles.prName, { color: C.foreground }]} numberOfLines={1}>{name}</Text>
                       <View style={styles.prRight}>
                         {trend !== 0 && (
-                          <Text style={[styles.prTrend, { color: trend > 0 ? '#10b981' : '#ef4444' }]}>
+                          <Text style={[styles.prTrend, { color: trend > 0 ? C.successText : C.dangerText }]}>
                             {trend > 0 ? '+' : ''}{trend}kg
                           </Text>
                         )}
