@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en" data-resolution="portrait">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <script src="assets/vendor/gsap.min.js"></script>
+    <script src="assets/audio-data.js"></script>
+    <style>
+      @font-face { font-family: "Inter"; src: url("assets/fonts/inter-400.woff2") format("woff2"); font-weight: 400; font-display: block; }
+      @font-face { font-family: "Inter"; src: url("assets/fonts/inter-500.woff2") format("woff2"); font-weight: 500; font-display: block; }
+      @font-face { font-family: "Inter"; src: url("assets/fonts/inter-600.woff2") format("woff2"); font-weight: 600; font-display: block; }
+      @font-face { font-family: "Inter"; src: url("assets/fonts/inter-700.woff2") format("woff2"); font-weight: 700; font-display: block; }
+      @font-face { font-family: "Inter"; src: url("assets/fonts/inter-800.woff2") format("woff2"); font-weight: 800; font-display: block; }
+      @font-face { font-family: "Inter"; src: url("assets/fonts/inter-900.woff2") format("woff2"); font-weight: 900; font-display: block; }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #0a0a0a; }
+      body { font-family: "Inter", sans-serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+
+      :root {
+        --bg: #0a0a0a;
+        --fg: #ffffff;
+        --card: #1c1c1e;
+        --muted: #242428;
+        --border: rgba(255,255,255,0.14);
+        --border-subtle: rgba(255,255,255,0.10);
+        --lime: #c8ff00;
+        --lime-fg: #0a0a0a;
+        --lime-muted: rgba(200,255,0,0.10);
+        --lime-border: rgba(200,255,0,0.20);
+        --sec: #a1a1aa;
+        --dim: #6a6a72;
+        --mut: #8a8a93;
+        --blue: #3b82f6;
+        --pink: #ec4899;
+        --green: #10b981;
+        --purple: #a855f7;
+      }
+
+      #root { position: relative; width: 1080px; height: 1920px; overflow: hidden; background: var(--bg); }
+
+      /* ===== Ambient lime glow (audio-reactive) ===== */
+      .amb {
+        position: absolute; left: 50%; top: 50%;
+        width: 1300px; height: 1300px; margin: -650px 0 0 -650px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(200,255,0,0.16) 0%, rgba(200,255,0,0.05) 40%, transparent 68%);
+        will-change: transform, opacity; pointer-events: none;
+      }
+
+      /* ===== Generic ===== */
+      .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+      .wordmark { font-weight: 900; letter-spacing: -3px; color: var(--lime); line-height: 0.9; }
+
+      /* ===== Scene 1 hook ===== */
+      .s1-wm { font-size: 168px; }
+      .s1-barwrap { width: 620px; margin-top: 56px; display: flex; align-items: center; gap: 0; }
+      .s1-lvl { width: 64px; height: 64px; border-radius: 32px; background: var(--lime); display: flex; align-items: center; justify-content: center; z-index: 2; flex-shrink: 0; }
+      .s1-lvlnum { font-weight: 900; font-size: 28px; color: var(--lime-fg); }
+      .s1-track { flex: 1; height: 22px; border-radius: 11px; background: var(--lime-muted); margin-left: -8px; overflow: hidden; }
+      .s1-fill { height: 100%; width: 100%; border-radius: 11px; background: var(--lime); transform-origin: left center; transform: scaleX(0); box-shadow: 0 0 28px rgba(200,255,0,0.55); }
+      .s1-chip { margin-top: 44px; padding: 12px 28px; border-radius: 999px; background: var(--lime-muted); border: 1.5px solid var(--lime-border); display: flex; align-items: center; gap: 10px; opacity: 0; }
+      .s1-chip-dot { width: 14px; height: 14px; border-radius: 7px; background: var(--lime); }
+      .s1-chip-tx { font-weight: 800; font-size: 30px; color: var(--lime); letter-spacing: 1px; }
+      .s1-tag { margin-top: 60px; font-weight: 600; font-size: 44px; color: var(--fg); opacity: 0; letter-spacing: -0.5px; }
+
+      /* ===== Phone frame (scenes 2-4) ===== */
+      .phone {
+        position: absolute; left: 60px; top: 150px;
+        width: 960px; height: 1620px;
+        background: var(--bg);
+        border-radius: 64px;
+        border: 14px solid #181818;
+        box-shadow: 0 40px 120px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(255,255,255,0.04);
+        overflow: hidden;
+      }
+      .notch { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); width: 150px; height: 30px; border-radius: 16px; background: #0a0a0a; z-index: 6; }
+      .screen { position: absolute; inset: 0; padding: 64px 44px 0 44px; }
+
+      /* dashboard header */
+      .dh-greet { font-size: 22px; letter-spacing: 4px; text-transform: uppercase; color: var(--mut); font-weight: 600; }
+      .dh-name { font-size: 52px; font-weight: 900; letter-spacing: -1px; color: var(--fg); margin-top: 8px; }
+      .dh-row { display: flex; align-items: flex-start; justify-content: space-between; }
+      .dh-start { display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 26px; border-radius: 32px; background: var(--lime); margin-top: 24px; }
+      .dh-start-ic { width: 22px; height: 22px; border-radius: 5px; background: var(--lime-fg); }
+      .dh-start-tx { font-size: 24px; font-weight: 600; color: var(--lime-fg); }
+      .dh-xprow { display: flex; align-items: center; margin-top: 22px; max-width: 460px; }
+      .dh-lvl { width: 50px; height: 50px; border-radius: 25px; background: var(--lime); display: flex; align-items: center; justify-content: center; z-index: 2; flex-shrink: 0; }
+      .dh-lvlnum { font-size: 24px; font-weight: 900; color: var(--lime-fg); }
+      .dh-track { flex: 1; height: 16px; border-radius: 8px; background: var(--lime-muted); margin-left: -6px; overflow: hidden; }
+      .dh-fill { height: 100%; border-radius: 8px; background: var(--lime); transform-origin: left center; transform: scaleX(0.42); box-shadow: 0 0 18px rgba(200,255,0,0.5); }
+      .dh-xptx { font-size: 18px; font-weight: 700; color: var(--mut); margin-left: 14px; white-space: nowrap; }
+
+      /* weekly calendar */
+      .cal { display: flex; justify-content: space-between; margin-top: 44px; opacity: 0; }
+      .cal-day { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+      .cal-lab { font-size: 22px; font-weight: 500; color: var(--mut); }
+      .cal-lab.today { color: var(--lime); }
+      .cal-c { width: 74px; height: 74px; border-radius: 37px; display: flex; align-items: center; justify-content: center; background: var(--muted); }
+      .cal-c.on { background: var(--lime); }
+      .cal-c.today { background: var(--lime-muted); border: 2px solid var(--lime-border); }
+      .cal-n { font-size: 26px; color: var(--mut); }
+      .cal-c.on .cal-n { color: var(--lime-fg); font-weight: 700; }
+      .cal-c.today .cal-n { color: var(--lime); font-weight: 700; }
+
+      /* stat cards */
+      .stats { display: flex; gap: 26px; margin-top: 44px; }
+      .stat { position: relative; flex: 1; background: var(--card); border: 2px solid var(--border-subtle); border-radius: 32px; padding: 28px; overflow: hidden; }
+      .stat-glow { position: absolute; top: -40px; left: -40px; width: 160px; height: 160px; border-radius: 80px; opacity: 0.10; }
+      .stat-hd { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+      .stat-ic { width: 26px; height: 26px; border-radius: 7px; }
+      .stat-lab { font-size: 22px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; }
+      .stat-valrow { display: flex; align-items: baseline; gap: 4px; }
+      .stat-val { font-size: 56px; font-weight: 900; letter-spacing: -1.5px; color: var(--fg); }
+      .stat-suf { font-size: 22px; font-weight: 500; color: var(--mut); }
+      /* mini area chart */
+      .area { margin-top: 18px; }
+      /* donut */
+      .donut-wrap { display: flex; align-items: center; justify-content: center; margin-top: 6px; }
+
+      /* ===== Coach card (scene 3) ===== */
+      .coach {
+        position: absolute; left: 44px; right: 44px; top: 1000px;
+        border-radius: 36px; padding: 36px;
+        border: 2px solid rgba(168,85,247,0.55);
+        background:
+          radial-gradient(120px 120px at 88% 8%, rgba(168,85,247,0.42), transparent 70%),
+          radial-gradient(110px 110px at 6% 96%, rgba(6,182,212,0.30), transparent 70%),
+          linear-gradient(135deg, rgba(168,85,247,0.30) 0%, rgba(59,130,246,0.24) 55%, rgba(6,182,212,0.18) 100%);
+        overflow: hidden; opacity: 0;
+      }
+      .coach-row { display: flex; align-items: center; gap: 24px; }
+      .coach-ic { width: 84px; height: 84px; border-radius: 22px; background: linear-gradient(135deg, #a855f7, #3b82f6); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 8px 28px rgba(168,85,247,0.4); }
+      .coach-bolt { font-size: 40px; }
+      .coach-titlerow { display: flex; align-items: center; gap: 14px; }
+      .coach-title { font-size: 38px; font-weight: 700; color: var(--fg); }
+      .coach-new { padding: 6px 16px; border-radius: 999px; background: linear-gradient(135deg, #a855f7, #3b82f6); font-size: 20px; font-weight: 700; color: #fff; letter-spacing: 1.5px; }
+      .coach-sub { font-size: 28px; color: #d9c8f0; margin-top: 8px; font-weight: 500; opacity: 0; }
+      .coach-chips { display: flex; gap: 16px; margin-top: 30px; }
+      .coach-chip { display: flex; align-items: center; gap: 10px; padding: 14px 22px; border-radius: 16px; background: rgba(168,85,247,0.22); border: 2px solid rgba(168,85,247,0.4); opacity: 0; }
+      .coach-chip-dot { width: 16px; height: 16px; border-radius: 4px; background: #e9d5ff; }
+      .coach-chip-tx { font-size: 24px; font-weight: 500; color: #f3e8ff; }
+
+      /* ===== Recent workout PR row (scene 4) ===== */
+      .recent {
+        position: absolute; left: 44px; right: 44px; top: 1000px;
+        background: var(--card); border: 2px solid var(--border-subtle);
+        border-radius: 36px; padding: 34px; overflow: hidden; opacity: 0;
+      }
+      .rec-hd { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+      .rec-ic { width: 26px; height: 26px; border-radius: 6px; background: var(--lime); }
+      .rec-title { font-size: 26px; font-weight: 600; color: var(--lime); }
+      .wrow { display: flex; align-items: flex-start; gap: 22px; padding: 26px; border-radius: 24px; background: rgba(255,255,255,0.03); border: 2px solid var(--lime-border); }
+      .wdot-wrap { width: 64px; height: 64px; border-radius: 16px; background: rgba(132,204,22,0.12); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+      .wdot { width: 18px; height: 18px; border-radius: 9px; background: #84cc16; }
+      .wmid { flex: 1; }
+      .wname-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+      .wname { font-size: 32px; font-weight: 600; color: var(--fg); }
+      .pr-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px; border-radius: 999px; background: var(--lime); opacity: 0; }
+      .pr-badge-ic { width: 18px; height: 18px; border-radius: 4px; background: var(--lime-fg); }
+      .pr-badge-tx { font-size: 22px; font-weight: 900; color: var(--lime-fg); letter-spacing: 0.5px; }
+      .wdate { font-size: 24px; color: var(--mut); margin-top: 8px; }
+      .wright { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+      .wvol { font-size: 30px; font-weight: 700; color: var(--lime); letter-spacing: -0.5px; }
+      .wdelta { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 12px; background: rgba(16,185,129,0.14); opacity: 0; }
+      .wdelta-ic { width: 16px; height: 16px; border-radius: 3px; background: var(--green); }
+      .wdelta-tx { font-size: 24px; font-weight: 700; color: var(--green); }
+      .bigvol-wrap { margin-top: 30px; display: flex; align-items: baseline; justify-content: center; gap: 10px; opacity: 0; }
+      .bigvol { font-size: 96px; font-weight: 900; color: var(--lime); letter-spacing: -3px; line-height: 1; text-shadow: 0 0 34px rgba(200,255,0,0.4); }
+      .bigvol-suf { font-size: 36px; font-weight: 600; color: var(--mut); }
+      .bigvol-cap { position: absolute; left: 0; right: 0; bottom: 30px; text-align: center; font-size: 24px; font-weight: 500; color: var(--dim); letter-spacing: 1px; opacity: 0; }
+
+      /* ===== Scene 5 level up / outro ===== */
+      .lvlup-wrap { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0; }
+      .lvlup-track { width: 640px; height: 24px; border-radius: 12px; background: var(--lime-muted); overflow: hidden; }
+      .lvlup-fill { height: 100%; width: 100%; border-radius: 12px; background: var(--lime); transform-origin: left center; transform: scaleX(0.62); box-shadow: 0 0 34px rgba(200,255,0,0.6); }
+      .lvlup-tx { margin-top: 64px; font-size: 120px; font-weight: 900; color: var(--lime); letter-spacing: -2px; line-height: 0.9; text-shadow: 0 0 50px rgba(200,255,0,0.5); opacity: 0; }
+      .tier-chip { margin-top: 40px; display: flex; align-items: center; gap: 16px; padding: 16px 40px; border-radius: 999px; background: rgba(168,85,247,0.16); border: 2px solid rgba(168,85,247,0.45); opacity: 0; }
+      .tier-tx { font-size: 46px; font-weight: 800; color: #c084fc; letter-spacing: 2px; }
+      .tier-em { font-size: 46px; }
+
+      .outro { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0; }
+      .outro-wm { font-size: 150px; }
+      .outro-tag { margin-top: 36px; font-size: 46px; font-weight: 600; color: var(--fg); letter-spacing: -0.5px; }
+      .outro-tag .lime { color: var(--lime); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="20" data-width="1080" data-height="1920">
+
+      <!-- Music (host-root child, framework-owned). Fades under final wordmark via main timeline. -->
+      <audio id="bgm" data-start="0" data-duration="20" src="assets/music/happy-beats-business-moves-vol-11-by-ende-dot-app.mp3"></audio>
+
+      <!-- SFX layer (host-root children) -->
+      <audio id="sfx-bar" data-start="1.60" data-duration="1.2" src="assets/sfx/click2.ogg"></audio>
+      <audio id="sfx-lvchip" data-start="1.72" data-duration="0.6" src="assets/sfx/bong_001.ogg"></audio>
+      <audio id="sfx-card1" data-start="3.70" data-duration="0.5" src="assets/sfx/card-slide-1.ogg"></audio>
+      <audio id="sfx-card2" data-start="4.23" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
+      <audio id="sfx-card3" data-start="4.75" data-duration="0.5" src="assets/sfx/card-slide-1.ogg"></audio>
+      <audio id="sfx-card4" data-start="5.28" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
+      <audio id="sfx-coach" data-start="8.96" data-duration="0.8" src="assets/sfx/impactSoft_medium_004.ogg"></audio>
+      <audio id="sfx-chip1" data-start="10.55" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
+      <audio id="sfx-chip2" data-start="10.85" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
+      <audio id="sfx-chip3" data-start="11.15" data-duration="0.4" src="assets/sfx/rollover2.ogg"></audio>
+      <audio id="sfx-pr" data-start="12.65" data-duration="0.9" src="assets/sfx/impactBell_heavy_000.ogg"></audio>
+      <audio id="sfx-delta" data-start="13.10" data-duration="0.5" src="assets/sfx/click_003.ogg"></audio>
+      <audio id="sfx-levelup" data-start="17.91" data-duration="1.0" src="assets/sfx/impactBell_heavy_003.ogg"></audio>
+      <audio id="sfx-ring" data-start="18.05" data-duration="0.8" src="assets/sfx/impactSoft_medium_001.ogg"></audio>
+
+      <!-- Audio-reactive ambient lime glow (breathes with music energy) -->
+      <div class="amb clip" id="amb" data-start="0" data-duration="20" data-track-index="0"></div>
+
+      <!-- ============ SCENE 1: HOOK (0-3s) ============ -->
+      <div class="center clip" id="s1" data-start="0" data-duration="3.1" data-track-index="1">
+        <div class="wordmark s1-wm" id="s1wm">OVERLOAD</div>
+        <div class="s1-barwrap">
+          <div class="s1-lvl" id="s1lvl"><span class="s1-lvlnum">12</span></div>
+          <div class="s1-track"><div class="s1-fill" id="s1fill"></div></div>
+        </div>
+        <div class="s1-chip" id="s1chip"><span class="s1-chip-dot"></span><span class="s1-chip-tx">LV 12</span></div>
+        <div class="s1-tag" id="s1tag">Every rep counts.</div>
+      </div>
+
+      <!-- ============ PHONE (scenes 2-4) ============ -->
+      <div class="phone clip" id="phone" data-start="3.0" data-duration="13.6" data-track-index="2">
+        <div class="notch"></div>
+        <div class="screen">
+
+          <!-- header -->
+          <div id="d-header">
+            <div class="dh-row">
+              <div>
+                <div class="dh-greet">Good morning</div>
+                <div class="dh-name">Athlete</div>
+              </div>
+              <div class="dh-start"><span class="dh-start-ic"></span><span class="dh-start-tx">Start</span></div>
+            </div>
+            <div class="dh-xprow">
+              <div class="dh-lvl"><span class="dh-lvlnum">12</span></div>
+              <div class="dh-track"><div class="dh-fill" id="d-xpfill"></div></div>
+              <span class="dh-xptx">820/1500</span>
+            </div>
+          </div>
+
+          <!-- weekly calendar -->
+          <div class="cal" id="d-cal">
+            <div class="cal-day"><span class="cal-lab">M</span><div class="cal-c on"><span class="cal-n">16</span></div></div>
+            <div class="cal-day"><span class="cal-lab">T</span><div class="cal-c"><span class="cal-n">17</span></div></div>
+            <div class="cal-day"><span class="cal-lab">W</span><div class="cal-c on"><span class="cal-n">18</span></div></div>
+            <div class="cal-day"><span class="cal-lab">T</span><div class="cal-c on"><span class="cal-n">19</span></div></div>
+            <div class="cal-day"><span class="cal-lab">F</span><div class="cal-c"><span class="cal-n">20</span></div></div>
+            <div class="cal-day"><span class="cal-lab">S</span><div class="cal-c on"><span class="cal-n">21</span></div></div>
+            <div class="cal-day"><span class="cal-lab today">S</span><div class="cal-c today"><span class="cal-n">22</span></div></div>
+          </div>
+
+          <!-- stat cards -->
+          <div class="stats">
+            <div class="stat" id="d-vol">
+              <div class="stat-glow" style="background:#3b82f6;"></div>
+              <div class="stat-hd"><span class="stat-ic" style="background:#3b82f6;"></span><span class="stat-lab" style="color:#3b82f6;">VOLUME</span></div>
+              <div class="stat-valrow"><span class="stat-val">12.4k</span><span class="stat-suf">kg</span></div>
+              <svg class="area" width="320" height="150" viewBox="0 0 320 150" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="volgrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.5"/>
+                    <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+                  </linearGradient>
+                </defs>
+                <path d="M8,118 L60,96 L110,104 L160,70 L210,58 L262,40 L312,24 L312,150 L8,150 Z" fill="url(#volgrad)"/>
+                <path d="M8,118 L60,96 L110,104 L160,70 L210,58 L262,40 L312,24" fill="none" stroke="#3b82f6" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+                <circle cx="312" cy="24" r="7" fill="#3b82f6"/>
+              </svg>
+            </div>
+            <div class="stat" id="d-mus">
+              <div class="stat-glow" style="background:#ec4899;"></div>
+              <div class="stat-hd"><span class="stat-ic" style="background:#ec4899;"></span><span class="stat-lab" style="color:#ec4899;">MUSCLES</span></div>
+              <div class="donut-wrap">
+                <svg width="200" height="200" viewBox="0 0 200 200">
+                  <g transform="rotate(-90 100 100)" fill="none" stroke-width="34">
+                    <circle cx="100" cy="100" r="74" stroke="#ef4444" stroke-dasharray="120 465" stroke-dashoffset="0"/>
+                    <circle cx="100" cy="100" r="74" stroke="#3b82f6" stroke-dasharray="96 465" stroke-dashoffset="-124"/>
+                    <circle cx="100" cy="100" r="74" stroke="#f59e0b" stroke-dasharray="80 465" stroke-dashoffset="-224"/>
+                    <circle cx="100" cy="100" r="74" stroke="#10b981" stroke-dasharray="70 465" stroke-dashoffset="-308"/>
+                    <circle cx="100" cy="100" r="74" stroke="#a855f7" stroke-dasharray="99 465" stroke-dashoffset="-382"/>
+                  </g>
+                  <text x="100" y="94" text-anchor="middle" font-size="34" font-weight="900" fill="#ffffff">5</text>
+                  <text x="100" y="124" text-anchor="middle" font-size="18" font-weight="500" fill="#8a8a93">groups</text>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Coach card (scene 3) — lives inside phone, slides up over dashboard -->
+        <div class="coach" id="coach">
+          <div class="coach-row">
+            <div class="coach-ic"><span class="coach-bolt">⚡</span></div>
+            <div style="flex:1;">
+              <div class="coach-titlerow"><span class="coach-title">Coach Drona</span><span class="coach-new">NEW</span></div>
+              <div class="coach-sub" id="coach-sub">Your coach. Knows every rep, every PR.</div>
+            </div>
+          </div>
+          <div class="coach-chips">
+            <div class="coach-chip" id="cc1"><span class="coach-chip-dot"></span><span class="coach-chip-tx">Chat</span></div>
+            <div class="coach-chip" id="cc2"><span class="coach-chip-dot"></span><span class="coach-chip-tx">Quick Workout</span></div>
+            <div class="coach-chip" id="cc3"><span class="coach-chip-dot"></span><span class="coach-chip-tx">Full Plan</span></div>
+          </div>
+        </div>
+
+        <!-- Recent PR row (scene 4) -->
+        <div class="recent" id="recent">
+          <div class="rec-hd"><span class="rec-ic"></span><span class="rec-title">Recent Workouts</span></div>
+          <div class="wrow">
+            <div class="wdot-wrap"><span class="wdot"></span></div>
+            <div class="wmid">
+              <div class="wname-row">
+                <span class="wname">Push Day</span>
+                <span class="pr-badge" id="prbadge"><span class="pr-badge-ic"></span><span class="pr-badge-tx">PR ×2</span></span>
+              </div>
+              <div class="wdate">Sun, Jun 22</div>
+            </div>
+            <div class="wright">
+              <span class="wvol">8,420kg</span>
+              <span class="wdelta" id="wdelta"><span class="wdelta-ic"></span><span class="wdelta-tx">+45kg ↑</span></span>
+            </div>
+          </div>
+          <div class="bigvol-wrap" id="bigvolwrap"><span class="bigvol" id="bigvol">0</span><span class="bigvol-suf">kg this week</span></div>
+        </div>
+        <div class="bigvol-cap" id="bigvolcap">Every rep counts.</div>
+      </div>
+
+      <!-- ============ SCENE 5: LEVEL UP (16.5-20s) ============ -->
+      <div class="lvlup-wrap clip" id="lvlup" data-start="16.5" data-duration="2.4" data-track-index="3">
+        <div class="lvlup-track"><div class="lvlup-fill" id="lvlupfill"></div></div>
+        <div class="lvlup-tx" id="lvluptx">LEVEL UP</div>
+        <div class="tier-chip" id="tierchip"><span class="tier-tx">ATHLETE</span><span class="tier-em">🏆</span></div>
+      </div>
+
+      <!-- ============ OUTRO (18.7-20s) ============ -->
+      <div class="outro clip" id="outro" data-start="18.6" data-duration="1.4" data-track-index="4">
+        <div class="wordmark outro-wm">OVERLOAD</div>
+        <div class="outro-tag"><span class="lime">Lift.</span> Level up. Repeat.</div>
+      </div>
+
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      var E_OUT = "power3.out", E_INOUT = "power2.inOut", E_BACK = "back.out(1.7)";
+
+      /* ===================== SCENE 1: HOOK ===================== */
+      // Wordmark slams in
+      tl.fromTo("#s1wm", { opacity: 0, scale: 1.35, y: 10 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.5, ease: "power4.out" }, 0.18);
+      // Level chip + track fade
+      tl.fromTo(".s1-barwrap", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 0.5);
+      // XP bar sweeps to full, peaking on the 1.60s beat
+      tl.fromTo("#s1fill", { scaleX: 0 }, { scaleX: 1, duration: 0.95, ease: "power2.inOut" }, 0.65);
+      // bar-fill peak ≈1.60s
+      // LV chip pops just after fill completes
+      tl.fromTo("#s1chip", { opacity: 0, scale: 0.6, y: 14 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.42, ease: E_BACK }, 1.68);
+      // tagline settles, held ~0.9s
+      tl.fromTo("#s1tag", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: E_OUT }, 2.0);
+      // scene 1 exits (handled by clip end at 3.1; add gentle fade out)
+      tl.to("#s1", { opacity: 0, duration: 0.4, ease: E_INOUT }, 2.75);
+
+      /* ===================== SCENE 2: DASHBOARD ===================== */
+      // phone frame rises in
+      tl.fromTo("#phone", { opacity: 0, y: 80, scale: 0.96 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.55, ease: E_OUT }, 3.05);
+      // pre-hide dashboard pieces that arrive one-by-one (set at/after clip start)
+      tl.set(["#d-header", "#d-cal", "#d-vol", "#d-mus"], { opacity: 0 }, 3.05);
+      tl.set(["#coach", "#recent", "#bigvolcap"], { opacity: 0 }, 3.05);
+      // header (beat 3.70)
+      tl.fromTo("#d-header", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.4, ease: E_OUT }, 3.66);
+      // XP fill nudges up subtly with the header
+      tl.fromTo("#d-xpfill", { scaleX: 0.42 }, { scaleX: 0.55, duration: 0.5, ease: "power1.out" }, 3.7);
+      // calendar (beat 4.23)
+      tl.fromTo("#d-cal", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.38, ease: E_OUT }, 4.19);
+      // VOLUME card (beat 4.75)
+      tl.fromTo("#d-vol", { opacity: 0, y: 30, scale: 0.95 }, { opacity: 1, y: 0, scale: 1, duration: 0.4, ease: E_BACK }, 4.71);
+      // MUSCLES card (beat 5.28)
+      tl.fromTo("#d-mus", { opacity: 0, y: 30, scale: 0.95 }, { opacity: 1, y: 0, scale: 1, duration: 0.4, ease: E_BACK }, 5.24);
+      // hold full board ~3s
+
+      /* ===================== SCENE 3: COACH DRONA ===================== */
+      // card slides up locked to 8.96s beat
+      tl.fromTo("#coach", { opacity: 0, y: 120 }, { opacity: 1, y: 0, duration: 0.6, ease: E_OUT }, 8.6);
+      // title row already in card; subline reveals, held ~1.2s
+      tl.fromTo("#coach-sub", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.45, ease: E_OUT }, 9.5);
+      // chips settle one by one (beats ~10.55/10.85/11.15)
+      tl.fromTo("#cc1", { opacity: 0, scale: 0.7, y: 10 }, { opacity: 1, scale: 1, y: 0, duration: 0.34, ease: E_BACK }, 10.5);
+      tl.fromTo("#cc2", { opacity: 0, scale: 0.7, y: 10 }, { opacity: 1, scale: 1, y: 0, duration: 0.34, ease: E_BACK }, 10.82);
+      tl.fromTo("#cc3", { opacity: 0, scale: 0.7, y: 10 }, { opacity: 1, scale: 1, y: 0, duration: 0.34, ease: E_BACK }, 11.14);
+      // coach card slides back down to reveal PR row underneath
+      tl.to("#coach", { opacity: 0, y: -40, duration: 0.4, ease: E_INOUT }, 11.85);
+
+      /* ===================== SCENE 4: PR PAYOFF ===================== */
+      // Push Day row appears
+      tl.fromTo("#recent", { opacity: 0, y: 80 }, { opacity: 1, y: 0, duration: 0.45, ease: E_OUT }, 12.0);
+      // big volume number ticks up; reveal wrap first
+      tl.fromTo("#bigvolwrap", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: E_OUT }, 12.25);
+      var volObj = { v: 0 };
+      tl.to(volObj, {
+        v: 8420, duration: 1.4, ease: "power2.out",
+        onUpdate: function () {
+          var el = document.getElementById("bigvol");
+          if (el) el.textContent = Math.round(volObj.v).toLocaleString("en-US");
+        }
+      }, 12.3);
+      // PR ×2 badge pops on the 12.65s beat
+      tl.fromTo("#prbadge", { opacity: 0, scale: 0.5, y: 8 }, { opacity: 1, scale: 1, y: 0, duration: 0.42, ease: E_BACK }, 12.62);
+      // green +45kg delta ticks in
+      tl.fromTo("#wdelta", { opacity: 0, x: 14 }, { opacity: 1, x: 0, duration: 0.36, ease: E_OUT }, 13.05);
+      // caption rings out under the row
+      tl.fromTo("#bigvolcap", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 13.4);
+      // hold PR + delta ~1.2s, then phone slides away
+      tl.to("#phone", { opacity: 0, y: -90, duration: 0.45, ease: E_INOUT }, 16.05);
+      tl.to("#bigvolcap", { opacity: 0, duration: 0.3 }, 16.05);
+      tl.set("#phone", { opacity: 0 }, 16.5);
+
+      /* ===================== SCENE 5: LEVEL UP + OUTRO ===================== */
+      tl.fromTo("#lvlup", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 16.55);
+      // XP bar snaps to full
+      tl.fromTo("#lvlupfill", { scaleX: 0.62 }, { scaleX: 1, duration: 0.7, ease: "power3.inOut" }, 16.7);
+      // LEVEL UP flash locked to 17.91s
+      tl.fromTo("#lvluptx", { opacity: 0, scale: 1.4 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power4.out" }, 17.85);
+      tl.fromTo("#tierchip", { opacity: 0, scale: 0.7, y: 16 }, { opacity: 1, scale: 1, y: 0, duration: 0.42, ease: E_BACK }, 18.2);
+      // level-up scene fades to outro
+      tl.to("#lvlup", { opacity: 0, duration: 0.35, ease: E_INOUT }, 18.55);
+      // outro wordmark resolves
+      tl.fromTo("#outro", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 18.65);
+      tl.fromTo(".outro-wm", { opacity: 0, scale: 1.15, y: 8 }, { opacity: 1, scale: 1, y: 0, duration: 0.5, ease: "power4.out" }, 18.7);
+      tl.fromTo(".outro-tag", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.45, ease: E_OUT }, 19.05);
+
+      /* ===================== MUSIC FADE under final wordmark ===================== */
+      tl.to("#bgm", { volume: 0.32, duration: 0.01 }, 0);
+      tl.to("#bgm", { volume: 0.0, duration: 1.4, ease: "power1.in" }, 18.6);
+
+      /* ===================== AUDIO-REACTIVE AMBIENT GLOW ===================== */
+      // Per-frame sampling: bass drives ambient scale/opacity, treble sharpens glow.
+      (function () {
+        var A = window.AUDIO_DATA;
+        if (!A || !A.frames) return;
+        var amb = document.getElementById("amb");
+        var n = A.frames.length, fps = A.fps;
+        for (var f = 0; f < n; f++) {
+          (function (frame) {
+            var bass = frame[0], treble = frame[2], amp = frame[3];
+            var scale = 0.9 + bass * 0.28 + amp * 0.06;     // breathe 0.9–1.24
+            var op = 0.45 + amp * 0.4 + treble * 0.15;       // presence
+            if (op > 1) op = 1;
+            tl.call(function () {
+              gsap.set(amb, { scale: scale, opacity: op });
+            }, [], f / fps);
+          })(A.frames[f]);
+        }
+      })();
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
