@@ -35,7 +35,9 @@ import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { mergeLocalCustoms } from '@/lib/exerciseResolve';
 import { getGuestExercises, updateGuestExercise, removeGuestExercise } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
-import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES } from '@/lib/exercises';
+import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, METRIC_TYPES, metricTypeOf, metricTypeDef, DEFAULT_METRIC_TYPE } from '@/lib/exercises';
+import type { MetricType } from '@/lib/exercises';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -49,6 +51,7 @@ interface DbExercise {
   muscle_group: string;
   category: string;
   created_by: string | null;
+  metric_type?: MetricType;
 }
 
 export default function ExerciseLibraryScreen() {
@@ -71,6 +74,7 @@ export default function ExerciseLibraryScreen() {
   const [editName, setEditName] = useState('');
   const [editMuscle, setEditMuscle] = useState('Other');
   const [editCategory, setEditCategory] = useState('Other');
+  const [editType, setEditType] = useState<MetricType>(DEFAULT_METRIC_TYPE);
   const [saving, setSaving] = useState(false);
 
   // Delete confirmation (with usage counts so the warning is concrete)
@@ -100,6 +104,7 @@ export default function ExerciseLibraryScreen() {
           muscle_group: e.muscle_group,
           category: e.category,
           created_by: 'guest',
+          metric_type: metricTypeOf(e),
         }));
       setRows([
         ...guestCustoms,
@@ -109,6 +114,7 @@ export default function ExerciseLibraryScreen() {
           muscle_group: e.muscle_group,
           category: e.category,
           created_by: null,
+          metric_type: metricTypeOf(e),
         })),
       ]);
       setLoading(false);
@@ -125,7 +131,7 @@ export default function ExerciseLibraryScreen() {
     try {
       const { data, error } = await supabase
         .from('exercises')
-        .select('id, name, muscle_group, category, created_by')
+        .select('id, name, muscle_group, category, created_by, metric_type')
         .order('created_at', { ascending: false });
       if (error) throw error;
       if (data) {
@@ -157,6 +163,7 @@ export default function ExerciseLibraryScreen() {
         muscle_group: e.muscle_group,
         category: e.category,
         created_by: null as string | null,
+        metric_type: metricTypeOf(e),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [customs]);
@@ -186,6 +193,7 @@ export default function ExerciseLibraryScreen() {
     setEditName(ex.name);
     setEditMuscle(ex.muscle_group);
     setEditCategory(ex.category);
+    setEditType(metricTypeOf(ex));
   };
 
   const closeEdit = () => {
@@ -229,6 +237,7 @@ export default function ExerciseLibraryScreen() {
         name: trimmed,
         muscle_group: editMuscle,
         category: editCategory,
+        metric_type: editType,
       });
       setSaving(false);
       if (!ok) {
@@ -242,14 +251,14 @@ export default function ExerciseLibraryScreen() {
       const cached = readCache<DbExercise[]>('exercises', user?.id) ?? [];
       writeCache('exercises', user?.id, cached.map(r =>
         r.id === editTarget.id
-          ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory }
+          ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory, metric_type: editType }
           : r
       ));
       setSaving(false);
     } else {
       const { error } = await supabase
         .from('exercises')
-        .update({ name: trimmed, muscle_group: editMuscle, category: editCategory })
+        .update({ name: trimmed, muscle_group: editMuscle, category: editCategory, metric_type: editType })
         .eq('id', editTarget.id);
       setSaving(false);
       if (error) {
@@ -264,7 +273,7 @@ export default function ExerciseLibraryScreen() {
     }
     setRows(prev => prev.map(r =>
       r.id === editTarget.id
-        ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory }
+        ? { ...r, name: trimmed, muscle_group: editMuscle, category: editCategory, metric_type: editType }
         : r
     ));
     // The picker caches the signed-in customs list for a short TTL — drop it
@@ -561,6 +570,27 @@ export default function ExerciseLibraryScreen() {
                       );
                     })}
                   </View>
+
+                  <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>TYPE</Text>
+                  <Text style={[styles.formHint, { color: C.textMuted }]}>{metricTypeDef(editType).sublabel}</Text>
+                  <View style={styles.chipRow}>
+                    {METRIC_TYPES.map(mt => {
+                      const active = editType === mt.value;
+                      return (
+                        <TouchableOpacity
+                          key={mt.value}
+                          onPress={() => setEditType(mt.value)}
+                          style={[styles.typeChip, {
+                            backgroundColor: active ? Colors.primary : C.muted,
+                            borderColor: active ? Colors.primary : C.border,
+                          }]}
+                        >
+                          <MaterialCommunityIcons name={mt.icon as any} size={13} color={active ? Colors.primaryFg : C.textMuted} />
+                          <Text style={[styles.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mt.label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </ScrollView>
 
                 <View style={{ paddingHorizontal: Spacing.xl, gap: 8 }}>
@@ -690,6 +720,8 @@ const styles = StyleSheet.create({
   sheetTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   formLabel: { fontSize: 10, fontWeight: FontWeight.semibold, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 6 },
+  formHint: { fontSize: FontSize.sm, marginTop: -2, marginBottom: 8 },
+  typeChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: Radius.full, borderWidth: 1 },
   formInput: { height: 44, paddingHorizontal: Spacing.md, borderRadius: Radius.lg, borderWidth: 1, fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: Radius.full, borderWidth: 1 },

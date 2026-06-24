@@ -14,25 +14,28 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useToast } from '@/components/ui/Toast';
 import { useSync } from '@/components/SyncProvider';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
-import { roundVolume } from '@/lib/format';
+import { roundVolume, formatDuration as fmtDur, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { hydrateCache, readCache } from '@/lib/localCache';
 import { getGuestWorkouts, updateGuestWorkout, type GuestWorkout } from '@/lib/guestStore';
 import { getPendingWorkouts, updatePendingWorkout, hydrateSyncQueue, type PendingExercise } from '@/lib/syncQueue';
 import { getPendingEdit, enqueueEdit, hydrateEditQueue, type PendingEditExercise } from '@/lib/editQueue';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
-import type { ExerciseDef } from '@/lib/exercises';
+import { metricTypeOf, metricTypeDef, type ExerciseDef, type MetricType, type MetricAxis } from '@/lib/exercises';
 
 type Backend = 'guest' | 'pending' | 'synced';
 
 // Set/exercise values are edited as strings so typing feels natural (clearing a
 // field, partial decimals); they're parsed back to numbers on save.
-interface EditSet { uid: string; weight: string; reps: string }
+// Strings so typing feels natural; duration is "m:ss", distance is km. Only the
+// axes the exercise's metric_type uses are rendered/parsed.
+interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string }
 interface EditExercise {
   uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
   name: string;
   muscle_group?: string;
   category?: string;
+  metric_type?: MetricType;
   sets: EditSet[];
 }
 
@@ -41,10 +44,17 @@ interface EditExercise {
 // exercises share a name), shuffling focus / IME state. Each set and exercise
 // carries a uid for the duration of the edit.
 let _setSeq = 0;
-const mkSet = (weight: string | number, reps: string | number): EditSet => ({
+const mkSet = (
+  weight: string | number,
+  reps: string | number,
+  durationSeconds?: number | null,
+  distanceM?: number | null,
+): EditSet => ({
   uid: `set-${_setSeq++}`,
   weight: String(weight),
   reps: String(reps),
+  duration: durationSeconds ? fmtDur(durationSeconds) : '',
+  distance: distanceM ? formatDistanceKm(distanceM).replace(/[^\d.]/g, '') : '',
 });
 
 let _exSeq = 0;
@@ -55,6 +65,16 @@ function formatDateLong(iso?: string) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
+
+const axisLabel = (a: MetricAxis): string =>
+  a === 'weight' ? 'WEIGHT (KG)'
+  : a === 'added_weight' ? '+KG'
+  : a === 'assist_weight' ? '−KG'
+  : a === 'reps' ? 'REPS'
+  : a === 'duration' ? 'TIME'
+  : 'KM';
+const axisField = (a: MetricAxis): keyof EditSet =>
+  a === 'reps' ? 'reps' : a === 'duration' ? 'duration' : a === 'distance' ? 'distance' : 'weight';
 
 function formatDuration(sec?: number) {
   if (!sec) return null;
@@ -107,11 +127,12 @@ export default function EditWorkoutScreen() {
           name: s.exercises?.name ?? 'Exercise',
           muscle_group: s.exercises?.muscle_group,
           category: s.exercises?.category,
+          metric_type: metricTypeOf(s.exercises),
           sets: [],
         };
         map.set(exId, ex);
       }
-      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0));
+      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m));
     }
     return [...map.values()];
   };
@@ -137,7 +158,8 @@ export default function EditWorkoutScreen() {
             name: ex.name,
             muscle_group: ex.muscle_group,
             category: ex.category,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
+            metric_type: ex.metric_type,
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
           setLoading(false);
@@ -164,7 +186,8 @@ export default function EditWorkoutScreen() {
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
+            metric_type: metricTypeOf(ex.def),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
           setLoading(false);
@@ -190,7 +213,8 @@ export default function EditWorkoutScreen() {
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
+            metric_type: metricTypeOf(ex.def),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
           setMeta(cacheMeta);
@@ -202,7 +226,7 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", exercises(id, name, muscle_group, category))')
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -283,6 +307,7 @@ export default function EditWorkoutScreen() {
         name: def.name,
         muscle_group: def.muscle_group,
         category: def.category,
+        metric_type: metricTypeOf(def),
         sets: Array.from({ length: count }, () => mkSet('0', reps)),
       },
     ]);
@@ -298,15 +323,30 @@ export default function EditWorkoutScreen() {
   const handleSave = async () => {
     if (saving || loading) return;
 
-    // Parse + clean: a set counts when reps > 0 (weight 0 is valid bodyweight);
-    // drop empty sets and any exercise left with none.
+    // Parse + clean, per the exercise's metric_type. A set counts when its
+    // primary axis has a value (reps for rep types, time for duration, distance
+    // for cardio); weight 0 stays valid for bodyweight. Drop empty sets and any
+    // exercise left with none.
     const cleaned = exercises
-      .map((ex) => ({
-        ex,
-        sets: ex.sets
-          .map((s) => ({ weight_kg: Math.max(0, parseFloat(s.weight) || 0), reps: Math.max(0, parseInt(s.reps, 10) || 0) }))
-          .filter((s) => s.reps > 0),
-      }))
+      .map((ex) => {
+        const axes = metricTypeDef(ex.metric_type).axes;
+        const usesReps = axes.includes('reps');
+        const usesDuration = axes.includes('duration');
+        const usesDistance = axes.includes('distance');
+        const sets = ex.sets
+          .map((s) => ({
+            weight_kg: Math.max(0, parseFloat(s.weight) || 0),
+            reps: Math.max(0, parseInt(s.reps, 10) || 0),
+            duration_seconds: usesDuration ? parseDuration(s.duration) : null,
+            distance_m: usesDistance ? parseDistanceKm(s.distance) : null,
+          }))
+          .filter((s) =>
+            (usesReps && s.reps > 0) ||
+            (usesDuration && (s.duration_seconds ?? 0) > 0) ||
+            (usesDistance && (s.distance_m ?? 0) > 0),
+          );
+        return { ex, sets };
+      })
       .filter((e) => e.sets.length > 0);
 
     const allSets = cleaned.flatMap((e) => e.sets);
@@ -332,7 +372,11 @@ export default function EditWorkoutScreen() {
             name: e.ex.name,
             muscle_group: e.ex.muscle_group,
             category: e.ex.category,
-            sets: e.sets.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps })),
+            metric_type: metricTypeOf(e.ex),
+            sets: e.sets.map((s) => ({
+              weight_kg: s.weight_kg, reps: s.reps,
+              duration_seconds: s.duration_seconds, distance_m: s.distance_m,
+            })),
           })),
         };
         if (!updateGuestWorkout(updated)) {
@@ -354,9 +398,13 @@ export default function EditWorkoutScreen() {
           name: e.ex.name,
           muscle_group: e.ex.muscle_group || 'Other',
           category: e.ex.category || 'Custom',
+          metric_type: metricTypeOf(e.ex),
         },
         resolvedExerciseId: e.ex.exerciseId && !String(e.ex.exerciseId).startsWith('temp-') ? e.ex.exerciseId : null,
-        sets: e.sets.map((s, idx) => ({ weight_kg: s.weight_kg, reps: s.reps, order: idx })),
+        sets: e.sets.map((s, idx) => ({
+          weight_kg: s.weight_kg, reps: s.reps, order: idx,
+          duration_seconds: s.duration_seconds, distance_m: s.distance_m,
+        })),
       }));
 
       if (backend === 'pending') {
@@ -512,33 +560,37 @@ export default function EditWorkoutScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Column labels */}
+                {/* Column labels — driven by the exercise's measurement type. */}
                 <View style={styles.setHeaderRow}>
                   <Text style={[styles.setColIdx, styles.setColLabel, { color: C.textDim }]}>SET</Text>
-                  <Text style={[styles.setColInput, styles.setColLabel, { color: C.textDim }]}>WEIGHT (KG)</Text>
-                  <Text style={[styles.setColInput, styles.setColLabel, { color: C.textDim }]}>REPS</Text>
+                  {metricTypeDef(ex.metric_type).axes.map((a) => (
+                    <Text key={a} style={[styles.setColInput, styles.setColLabel, { color: C.textDim }]}>{axisLabel(a)}</Text>
+                  ))}
                   <View style={styles.setColDelete} />
                 </View>
 
                 {ex.sets.map((s, si) => (
                   <View key={s.uid} style={styles.setRow}>
                     <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
-                    <TextInput
-                      value={s.weight}
-                      onChangeText={(t) => updateSet(ei, si, 'weight', t)}
-                      keyboardType="decimal-pad"
-                      selectTextOnFocus
-                      onFocus={scrollFocusedIntoView}
-                      style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
-                    />
-                    <TextInput
-                      value={s.reps}
-                      onChangeText={(t) => updateSet(ei, si, 'reps', t)}
-                      keyboardType="number-pad"
-                      selectTextOnFocus
-                      onFocus={scrollFocusedIntoView}
-                      style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
-                    />
+                    {metricTypeDef(ex.metric_type).axes.map((a) => {
+                      const field = axisField(a);
+                      const kbd = a === 'reps' ? 'number-pad'
+                        : a === 'duration' ? (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default')
+                        : 'decimal-pad';
+                      return (
+                        <TextInput
+                          key={a}
+                          value={s[field]}
+                          onChangeText={(t) => updateSet(ei, si, field, t)}
+                          keyboardType={kbd as any}
+                          placeholder={a === 'duration' ? '0:00' : '0'}
+                          placeholderTextColor={C.textMuted}
+                          selectTextOnFocus
+                          onFocus={scrollFocusedIntoView}
+                          style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
+                        />
+                      );
+                    })}
                     <TouchableOpacity
                       onPress={() => removeSet(ei, si)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

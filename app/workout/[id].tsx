@@ -35,8 +35,9 @@ import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
-import { roundVolume, abbreviateNumber, formatWeight } from '@/lib/format';
-import type { ExerciseDef } from '@/lib/exercises';
+import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
+import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
+import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -121,12 +122,21 @@ export default function ActiveWorkoutScreen() {
   const [loading, setLoading] = useState(!workout.isActive || isSwitchAttempt);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
+  // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
+  // Each is only rendered when the exercise's metric_type uses that axis.
+  const [inputDuration, setInputDuration] = useState('0:00');
+  const [inputDistance, setInputDistance] = useState('');
+  // Inline stopwatch for duration exercises (gated on prefs.inlineTimerForDuration).
+  // swElapsed is the live seconds; it's the source of truth for the logged set
+  // while running, falling back to the typed inputDuration when stopped/manual.
+  const [swElapsed, setSwElapsed] = useState(0);
+  const [swRunning, setSwRunning] = useState(false);
   // Briefly true after logging a weight PR, to flash the celebration badge.
   const [prCelebrate, setPrCelebrate] = useState(false);
   // Which field in the active set row is "open" for adjustment. Null = the row
   // is a clean glance-and-confirm row; tapping a number opens that one field's
   // −/+ (and focuses it for optional typing), leaving the other a plain number.
-  const [editField, setEditField] = useState<null | 'weight' | 'reps'>(null);
+  const [editField, setEditField] = useState<null | 'weight' | 'reps' | 'duration' | 'distance'>(null);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -184,6 +194,9 @@ export default function ActiveWorkoutScreen() {
 
   const exerciseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const swTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const swStartRef = useRef<number | null>(null); // wall-clock ms at the current run's start
+  const swBaseRef = useRef(0);                     // seconds accumulated before the current run
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
@@ -471,10 +484,45 @@ export default function ActiveWorkoutScreen() {
     setIsResting(false);
   }, []);
 
+  // Inline duration stopwatch (timestamp-based so it never drifts on a slow tick).
+  const startStopwatch = useCallback(() => {
+    if (swTimerRef.current) clearInterval(swTimerRef.current);
+    swStartRef.current = Date.now();
+    setSwRunning(true);
+    swTimerRef.current = setInterval(() => {
+      if (swStartRef.current != null) {
+        setSwElapsed(swBaseRef.current + (Date.now() - swStartRef.current) / 1000);
+      }
+    }, 200);
+  }, []);
+
+  const pauseStopwatch = useCallback(() => {
+    if (swTimerRef.current) clearInterval(swTimerRef.current);
+    swTimerRef.current = null;
+    if (swStartRef.current != null) {
+      const total = swBaseRef.current + (Date.now() - swStartRef.current) / 1000;
+      swBaseRef.current = total;
+      swStartRef.current = null;
+      setSwElapsed(total);
+      setInputDuration(formatDuration(total)); // keep the typed field / commit value in sync
+    }
+    setSwRunning(false);
+  }, []);
+
+  const resetStopwatch = useCallback(() => {
+    if (swTimerRef.current) clearInterval(swTimerRef.current);
+    swTimerRef.current = null;
+    swStartRef.current = null;
+    swBaseRef.current = 0;
+    setSwElapsed(0);
+    setSwRunning(false);
+  }, []);
+
   useEffect(() => {
     return () => {
       if (exerciseTimerRef.current) clearInterval(exerciseTimerRef.current);
       if (restTimerRef.current) clearInterval(restTimerRef.current);
+      if (swTimerRef.current) clearInterval(swTimerRef.current);
     };
   }, []);
 
@@ -485,8 +533,12 @@ export default function ActiveWorkoutScreen() {
     if (prevIdxRef.current !== currentIdx) {
       haptics.selection();
       prevIdxRef.current = currentIdx;
+      // The duration stopwatch belongs to one exercise's active set — clear it
+      // (and the typed fallback) so it never bleeds into the next exercise.
+      resetStopwatch();
+      setInputDuration('0:00');
     }
-  }, [currentIdx]);
+  }, [currentIdx, resetStopwatch]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
@@ -603,8 +655,13 @@ export default function ActiveWorkoutScreen() {
   // Log a set
   const handleLogSet = () => {
     if (!currentEx) return;
-    const weight = parseFloat(inputWeight) || 0;
-    const reps = parseInt(inputReps) || 0;
+    const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
+    const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
+    const usesReps = axes.includes('reps');
+    const usesDuration = axes.includes('duration');
+    const usesDistance = axes.includes('distance');
+    const weight = usesWeight ? (parseFloat(inputWeight) || 0) : 0;
+    const reps = usesReps ? (parseInt(inputReps) || 0) : 0;
 
     // A weight PR: this set beats the best weight seen on this lift (previous
     // sessions + earlier sets today). Celebrate it instead of the plain tap.
@@ -625,7 +682,17 @@ export default function ActiveWorkoutScreen() {
 
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
-    const newSet: ActiveSet = { weight_kg: weight, reps, completed: true };
+    // Duration prefers the live stopwatch (running or paused-with-value); falls
+    // back to the typed mm:ss field when the stopwatch was never used (manual mode).
+    const durationSecs =
+      swRunning || swElapsed > 0 ? Math.round(swElapsed) : parseDuration(inputDuration);
+    const newSet: ActiveSet = {
+      weight_kg: weight,
+      reps,
+      completed: true,
+      duration_seconds: usesDuration ? durationSecs : null,
+      distance_m: usesDistance ? parseDistanceKm(inputDistance) : null,
+    };
 
     // Find first incomplete set or add new
     const incompleteIdx = ex.sets.findIndex(s => !s.completed);
@@ -645,6 +712,11 @@ export default function ActiveWorkoutScreen() {
     if (prev && prev[nextIdx]) {
       setInputWeight(String(prev[nextIdx].weight_kg));
       setInputReps(String(prev[nextIdx].reps));
+    }
+    // Zero the duration stopwatch + field so the next set times from scratch.
+    if (usesDuration) {
+      resetStopwatch();
+      setInputDuration('0:00');
     }
   };
 
@@ -743,7 +815,7 @@ export default function ActiveWorkoutScreen() {
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const targetSets = 3;
     const newEx: ActiveWorkoutExercise = {
-      exercise: { id: tempId, name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
+      exercise: { id: tempId, name: ex.name, muscle_group: ex.muscle_group, category: ex.category, metric_type: ex.metric_type },
       sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: 10, completed: false })),
       notes: '',
       targetSets,
@@ -767,7 +839,7 @@ export default function ActiveWorkoutScreen() {
     // the real exercise row and previous-set defaults in the background.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const newEx: ActiveWorkoutExercise = {
-      exercise: { id: tempId, name: def.name, muscle_group: def.muscle_group, category: def.category },
+      exercise: { id: tempId, name: def.name, muscle_group: def.muscle_group, category: def.category, metric_type: def.metric_type },
       sets: Array.from({ length: details.sets }, () => ({ weight_kg: 0, reps: details.repsMin, completed: false })),
       notes: '',
       targetSets: details.sets,
@@ -1312,7 +1384,11 @@ export default function ActiveWorkoutScreen() {
               name: e.exercise.name,
               muscle_group: e.exercise.muscle_group,
               category: e.exercise.category,
-              sets: e.sets.filter(s => s.completed).map(s => ({ weight_kg: s.weight_kg, reps: s.reps })),
+              metric_type: metricTypeOf(e.exercise),
+              sets: e.sets.filter(s => s.completed).map(s => ({
+                weight_kg: s.weight_kg, reps: s.reps,
+                duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
+              })),
             })),
         });
         // Built before finishWorkout() clears the active session.
@@ -1346,11 +1422,18 @@ export default function ActiveWorkoutScreen() {
             name: e.exercise.name,
             muscle_group: e.exercise.muscle_group || 'Other',
             category: e.exercise.category || 'Custom',
+            metric_type: e.exercise.metric_type,
           },
           resolvedExerciseId: String(e.exercise.id).startsWith('temp-') ? null : e.exercise.id,
           sets: e.sets
             .filter(s => s.completed)
-            .map((s, idx) => ({ weight_kg: s.weight_kg, reps: s.reps, order: idx })),
+            .map((s, idx) => ({
+              weight_kg: s.weight_kg,
+              reps: s.reps,
+              order: idx,
+              duration_seconds: s.duration_seconds ?? null,
+              distance_m: s.distance_m ?? null,
+            })),
         }));
 
       const entry: PendingWorkout = {
@@ -1541,6 +1624,138 @@ export default function ActiveWorkoutScreen() {
     const prevSets = currentEx.previousSets;
     const completed = currentEx.sets.filter(s => s.completed);
     const doneCount = completed.length;
+
+    // Phase A — the set table is driven by the exercise's measurement type.
+    const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
+    const axisHeader = (a: MetricAxis): string =>
+      a === 'weight' ? 'KG'
+      : a === 'added_weight' ? '+KG'
+      : a === 'assist_weight' ? '−KG'
+      : a === 'reps' ? 'REPS'
+      : a === 'duration' ? 'TIME'
+      : 'KM';
+    const axisDoneValue = (a: MetricAxis, s: ActiveSet): string =>
+      a === 'reps' ? String(s.reps)
+      : a === 'duration' ? formatDuration(s.duration_seconds)
+      : a === 'distance' ? formatDistanceKm(s.distance_m)
+      : formatWeight(s.weight_kg);
+
+    // One input cell per axis in the active row. Weight-ish axes share the
+    // inputWeight/editField='weight' state (a type never uses two of them);
+    // reps/duration/distance each own their field.
+    const renderAxisInput = (a: MetricAxis) => {
+      // Duration with the inline-stopwatch preference on: a tap-to-start timer
+      // instead of a manual mm:ss field. swElapsed is the live value; logging the
+      // set reads it (see handleLogSet) and zeroes it for the next set.
+      if (a === 'duration' && prefs.inlineTimerForDuration) {
+        const hasValue = swElapsed > 0;
+        // Typing the time is always allowed (the stopwatch is just a shortcut):
+        // editing the field sets the stopwatch base so ▶ resumes from it and the
+        // logged set reads the same value.
+        const onTimeChange = (t: string) => {
+          setInputDuration(t);
+          const secs = parseDuration(t);
+          swBaseRef.current = secs;
+          setSwElapsed(secs);
+        };
+        return (
+          <View key={a} style={[styles.colVal, styles.swCell]}>
+            <TouchableOpacity
+              onPress={() => { haptics.tick(); if (swRunning) { pauseStopwatch(); } else { startStopwatch(); } }}
+              style={[styles.swBtn, { backgroundColor: swRunning ? C.muted : Colors.primary }]}
+              hitSlop={6}
+              accessibilityLabel={swRunning ? 'Pause timer' : 'Start timer'}
+            >
+              <Feather name={swRunning ? 'pause' : 'play'} size={13} color={swRunning ? C.foreground : Colors.primaryFg} />
+            </TouchableOpacity>
+            {swRunning ? (
+              <Text style={[styles.swTime, { color: C.foreground }]}>{formatDuration(swElapsed)}</Text>
+            ) : (
+              <TextInput
+                value={inputDuration}
+                onChangeText={onTimeChange}
+                keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'}
+                style={[styles.swTime, styles.swTimeInput, { color: C.foreground, backgroundColor: C.muted }]}
+                selectTextOnFocus
+                accessibilityLabel="Edit time"
+                onFocus={() => { setEditField('duration'); kbScrollTargetRef.current = 'logger'; }}
+                onBlur={() => { setEditField((p) => (p === 'duration' ? null : p)); kbScrollTargetRef.current = null; }}
+              />
+            )}
+            {!swRunning && hasValue && (
+              <TouchableOpacity onPress={() => { haptics.tick(); resetStopwatch(); setInputDuration('0:00'); }} hitSlop={6} accessibilityLabel="Reset timer">
+                <Feather name="rotate-ccw" size={13} color={C.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+      }
+      const isWeight = a === 'weight' || a === 'added_weight' || a === 'assist_weight';
+      const field: typeof editField = isWeight ? 'weight' : (a as 'reps' | 'duration' | 'distance');
+      const open = editField === field;
+      const cellStyle = [styles.colVal, open && styles.activeCellRow];
+      const inputStyle = [open ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, open && { backgroundColor: C.muted }];
+
+      // value + setter + keypad + ± step behavior per axis.
+      const cfg = isWeight
+        ? {
+            value: inputWeight,
+            onChangeText: setInputWeight,
+            keyboardType: 'decimal-pad' as const,
+            dec: () => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))),
+            inc: () => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)),
+          }
+        : a === 'reps'
+        ? {
+            value: inputReps,
+            onChangeText: setInputReps,
+            keyboardType: 'number-pad' as const,
+            dec: () => setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1))),
+            inc: () => setInputReps(String((parseInt(inputReps) || 0) + 1)),
+          }
+        : a === 'duration'
+        ? {
+            value: inputDuration,
+            onChangeText: setInputDuration,
+            keyboardType: (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default') as 'numbers-and-punctuation' | 'default',
+            dec: () => setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))),
+            inc: () => setInputDuration(formatDuration(parseDuration(inputDuration) + 15)),
+          }
+        : {
+            value: inputDistance,
+            onChangeText: setInputDistance,
+            keyboardType: 'decimal-pad' as const,
+            dec: () => setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))),
+            inc: () => setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)),
+          };
+
+      return (
+        <View key={a} style={cellStyle}>
+          {open && (
+            <TouchableOpacity onPress={() => { haptics.tick(); cfg.dec(); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+            </TouchableOpacity>
+          )}
+          <TextInput
+            value={cfg.value}
+            onChangeText={cfg.onChangeText}
+            keyboardType={cfg.keyboardType}
+            placeholder={a === 'duration' ? '0:00' : '0'}
+            placeholderTextColor={C.textMuted}
+            style={inputStyle}
+            selectTextOnFocus
+            onFocus={() => { setEditField(field); kbScrollTargetRef.current = 'logger'; }}
+            onBlur={() => { setEditField((p) => (p === field ? null : p)); kbScrollTargetRef.current = null; }}
+          />
+          {open && (
+            <TouchableOpacity onPress={() => { haptics.tick(); cfg.inc(); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      );
+    };
+
     return (
           <>
             {/* Exercise Header */}
@@ -1619,8 +1834,9 @@ export default function ActiveWorkoutScreen() {
                 )}
                 <View style={styles.setHeadRow}>
                   <Text style={[styles.setHeadCell, styles.colSet, { color: C.textDim }]}>SET</Text>
-                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>KG</Text>
-                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>REPS</Text>
+                  {axes.map((a) => (
+                    <Text key={a} style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>{axisHeader(a)}</Text>
+                  ))}
                   <View style={styles.colCheck} />
                 </View>
 
@@ -1628,8 +1844,9 @@ export default function ActiveWorkoutScreen() {
                 {completed.map((s, i) => (
                   <Animated.View key={i} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
                     <Text style={[styles.setNum, styles.colSet, { color: C.textDim }]}>{i + 1}</Text>
-                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.weight_kg}</Text>
-                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.reps}</Text>
+                    {axes.map((a) => (
+                      <Text key={a} style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{axisDoneValue(a, s)}</Text>
+                    ))}
                     {isFinished ? (
                       <View style={styles.colCheck}><Feather name="check" size={14} color={C.accentText} /></View>
                     ) : (
@@ -1649,51 +1866,9 @@ export default function ActiveWorkoutScreen() {
                     >
                       <Text style={[styles.setNum, styles.colSet, { color: C.accentText }]}>{doneCount + 1}</Text>
 
-                      {/* Weight — a plain bright number until tapped; tapping focuses
-                          it (keypad) and reveals its −/+. Reps is untouched. */}
-                      <View style={[styles.colVal, editField === 'weight' && styles.activeCellRow]}>
-                        {editField === 'weight' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
-                          </TouchableOpacity>
-                        )}
-                        <TextInput
-                          value={inputWeight}
-                          onChangeText={setInputWeight}
-                          keyboardType="decimal-pad"
-                          style={[editField === 'weight' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'weight' && { backgroundColor: C.muted }]}
-                          selectTextOnFocus
-                          onFocus={() => { setEditField('weight'); kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { setEditField((p) => (p === 'weight' ? null : p)); kbScrollTargetRef.current = null; }}
-                        />
-                        {editField === 'weight' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-
-                      <View style={[styles.colVal, editField === 'reps' && styles.activeCellRow]}>
-                        {editField === 'reps' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
-                          </TouchableOpacity>
-                        )}
-                        <TextInput
-                          value={inputReps}
-                          onChangeText={setInputReps}
-                          keyboardType="number-pad"
-                          style={[editField === 'reps' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'reps' && { backgroundColor: C.muted }]}
-                          selectTextOnFocus
-                          onFocus={() => { setEditField('reps'); kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { setEditField((p) => (p === 'reps' ? null : p)); kbScrollTargetRef.current = null; }}
-                        />
-                        {editField === 'reps' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String((parseInt(inputReps) || 0) + 1)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
+                      {/* One input cell per measurement axis. A plain bright value
+                          until tapped; tapping focuses it (keypad) and reveals its −/+. */}
+                      {axes.map((a) => renderAxisInput(a))}
 
                       <TouchableOpacity onPress={() => { Keyboard.dismiss(); handleLogSet(); setEditField(null); }} style={[styles.colCheck, styles.commitBtn]} accessibilityLabel={`Log set ${doneCount + 1}`}>
                         <Feather name="check" size={18} color={Colors.primaryFg} />
@@ -1704,11 +1879,15 @@ export default function ActiveWorkoutScreen() {
                         active row. Falls back in Drona's voice once you've gone
                         past last session's set count (or it's a brand-new lift). */}
                     <Text style={[styles.lastTime, { color: C.textMuted }]}>
-                      {prevSets && prevSets[doneCount]
-                        ? `Last time: ${formatWeight(prevSets[doneCount].weight_kg)} × ${prevSets[doneCount].reps}`
-                        : prevSets && prevSets.length > 0
-                          ? 'Past your last session. Keep going.'
-                          : 'First time on this one. Find a weight you own.'}
+                      {(() => {
+                        const usesWeightAxis = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
+                        const usesRepsAxis = axes.includes('reps');
+                        const prev = prevSets && prevSets[doneCount];
+                        if (prev && usesWeightAxis && usesRepsAxis) return `Last time: ${formatWeight(prev.weight_kg)} × ${prev.reps}`;
+                        if (prev && usesRepsAxis && !usesWeightAxis) return `Last time: ${prev.reps} reps`;
+                        if (prevSets && prevSets.length > 0) return 'Past your last session. Keep going.';
+                        return usesWeightAxis ? 'First time on this one. Find a weight you own.' : 'First time on this one. Set your baseline.';
+                      })()}
                     </Text>
 
                     {doneCount > 0 && (
@@ -2654,6 +2833,11 @@ const styles = StyleSheet.create({
   activeInput: { flex: 1, height: 44, minWidth: 36, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, borderRadius: Radius.sm, fontVariant: ['tabular-nums'] },
   miniStep: { width: 28, height: 30, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   miniStepText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  // Inline duration stopwatch cell.
+  swCell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  swBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  swTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 56, textAlign: 'center' },
+  swTimeInput: { height: 40, borderRadius: Radius.sm, paddingHorizontal: 6 },
   commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
   lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },
   bottomStatItem: { alignItems: 'center' },

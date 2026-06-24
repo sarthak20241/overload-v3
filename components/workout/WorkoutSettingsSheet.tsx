@@ -81,7 +81,15 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
               onValueChange={(v) => setPreference('keepAwake', v)}
             />
 
-            {/* Phase A adds: "Stopwatch for timed exercises" → inlineTimerForDuration */}
+            <ToggleRow
+              icon={<Feather name="clock" size={15} color={C.foreground} />}
+              tint={C.muted}
+              title="Stopwatch for timed exercises"
+              subtitle="Tap to time planks, holds & cardio. Off = type the time."
+              value={prefs.inlineTimerForDuration}
+              onValueChange={(v) => setPreference('inlineTimerForDuration', v)}
+            />
+
             {/* Phase B adds: "Track intensity (RPE / RIR)" → intensityTrackingEnabled + intensityScale */}
           </ScrollView>
         </Pressable>
