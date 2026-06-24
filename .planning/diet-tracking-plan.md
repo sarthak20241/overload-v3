@@ -269,6 +269,33 @@ optional fields.
 
 ---
 
+## Data model v2 — per-100 basis + servings (REVISED 2026-06-24, applied as 0051)
+
+Research into how MyFitnessPal / Cronometer / FatSecret / HealthifyMe + USDA/OFF model food found the
+single-serving design in 0046/0047 too rigid (a food could not offer "100 g" AND "1 katori" AND "1 egg",
+and datasets give per-100 g). SUPERSEDED by the canonical model, applied as migration **0051**:
+
+- **Nutrients per 100 base-units.** `foods.base_unit` in ('g','ml'); kcal/protein_g/carb_g/fat_g now mean
+  per-100 (not per-serving). The old `serving_unit`/`serving_size` columns were dropped (tables empty).
+- **Named servings in a child table.** `food_servings(food_id, label, grams, is_default, source, seq)` —
+  each row is a portion option mapping a label to a weight in the base unit: "100 g", "1 katori"=150 g,
+  "1 scoop"=32 g. Parent-food EXISTS RLS. Household/portion units are per-food gram weights (density
+  varies, so never a global volume formula).
+- **Universal units in code** (`lib/units.ts`): g/kg/oz/lb and ml/l/cup/tbsp/tsp. Only food-specific
+  portions (1 egg, 1 roti, 1 katori) live in food_servings.
+- **Nutrient scope (decided):** must-have = kcal, protein, carb, fat, fiber; good-to-have = sugar,
+  sat_fat, sodium (fixed columns on foods + meal_entries snapshots); deferred = full micros in a
+  `micros jsonb` column. Protein-first lifter niche (MFP free stops at ~6 fields; Cronometer's 84 is a
+  different product).
+- **Logging:** pick a serving + quantity -> resolveBaseAmount -> grams -> macros = per-100 * grams/100.
+  `meal_entries` gains `serving_id` (FK, set null) + `grams_logged` + extended snapshots; keeps the
+  denormalized food_name/macros for immutable offline history.
+- **Per-field sourcing:** macros from USDA (Western/raw) / IFCT (Indian raw) / INDB (cooked dishes) / OFF
+  (branded, segregated); portion-to-gram from USDA food_portion.csv (the only generic source, parse
+  amount+modifier+gram_weight) + curated Indian household measures; micros from IFCT/USDA later.
+
+---
+
 ## Phases
 
 Sizing in t-shirts. P1 to P3 do not touch the dashboard/nav and are candidates for running parallel to
@@ -314,9 +341,10 @@ design-polish. P4 (card) and P5 (tab) are the polish-gated surfaces.
 
 ## Migration numbering
 
-Next free number is **0046** (highest present is 0045; 0041 is missing, 0030 is duplicated, 0040 jumps
-to 0042). This plan claims 0046 to 0049. Verify with `ls supabase/migrations/` before applying, and
-apply via Supabase MCP only.
+Migrations **0046 to 0051 are APPLIED to live prod** (rjmmslierxhvwdjgjilb) via Supabase MCP: 0046 foods,
+0047 meals+meal_entries, 0048 nutrition_targets, 0049 user_nutrition_stats, 0050 meal-delete rollup fix,
+0051 per-100 basis + food_servings + extended nutrients. Next free number is **0052**. Verify with
+`ls supabase/migrations/` before applying, and apply via Supabase MCP only.
 
 ---
 
