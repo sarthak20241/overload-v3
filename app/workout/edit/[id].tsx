@@ -258,7 +258,8 @@ export default function EditWorkoutScreen() {
               name: ex.name,
               muscle_group: ex.muscle_group,
               category: ex.category,
-              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps)),
+              metric_type: ex.metric_type,
+              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
             setMeta(cacheMeta);

@@ -1676,7 +1676,7 @@ export default function ActiveWorkoutScreen() {
               <Feather name={swRunning ? 'pause' : 'play'} size={13} color={swRunning ? C.foreground : Colors.primaryFg} />
             </TouchableOpacity>
             {swRunning ? (
-              <Text style={[styles.swTime, { color: C.foreground }]}>{formatDuration(swElapsed)}</Text>
+              <Text style={[styles.swTime, { color: C.foreground }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{formatDuration(swElapsed)}</Text>
             ) : (
               <TextInput
                 value={inputDuration}
@@ -1689,7 +1689,11 @@ export default function ActiveWorkoutScreen() {
                 onBlur={() => { setEditField((p) => (p === 'duration' ? null : p)); kbScrollTargetRef.current = null; }}
               />
             )}
-            {!swRunning && hasValue && (
+            {/* Inline reset only when duration is the sole axis — on a stopwatch +
+                second-axis row (distance/weight/resistance + time) it has no room
+                and would collide with the commit ✓. There, reset = tap the time and
+                type 0:00 (plus the auto-reset on log / exercise change). */}
+            {!swRunning && hasValue && axes.length === 1 && (
               <TouchableOpacity onPress={() => { haptics.tick(); resetStopwatch(); setInputDuration('0:00'); }} hitSlop={6} accessibilityLabel="Reset timer">
                 <Feather name="rotate-ccw" size={13} color={C.textMuted} />
               </TouchableOpacity>
@@ -2837,21 +2841,21 @@ const styles = StyleSheet.create({
   setHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
   setHeadCell: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5, textAlign: 'center' },
   colSet: { width: 30, textAlign: 'center' },
-  colVal: { flex: 1, alignItems: 'center' },
+  colVal: { flex: 1, alignItems: 'center', minWidth: 0 },
   colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
   setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
   doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
   setRowActive: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 6, borderRadius: Radius.lg, marginTop: 14 },
-  activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   activeInputPlain: { flex: 1, height: 44, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
   activeInput: { flex: 1, height: 44, minWidth: 36, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, borderRadius: Radius.sm, fontVariant: ['tabular-nums'] },
   miniStep: { width: 28, height: 30, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   miniStepText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   // Inline duration stopwatch cell.
-  swCell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  swCell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minWidth: 0 },
   swBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  swTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 56, textAlign: 'center' },
+  swTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 40, flexShrink: 1, textAlign: 'center' },
   swTimeInput: { height: 40, borderRadius: Radius.sm, paddingHorizontal: 6 },
   commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
   lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },

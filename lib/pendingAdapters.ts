@@ -83,7 +83,11 @@ export function pendingToHistoryRow(entry: PendingWorkout): any {
     ),
     exercises: entry.exercises.map((ex) => ({
       name: ex.def.name,
-      sets: ex.sets.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps, completed: true })),
+      metric_type: ex.def.metric_type,
+      sets: ex.sets.map((s) => ({
+        weight_kg: s.weight_kg, reps: s.reps, completed: true,
+        duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null, resistance: s.resistance ?? null,
+      })),
     })),
     _pendingSync: true,
   };
