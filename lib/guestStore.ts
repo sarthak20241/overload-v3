@@ -9,6 +9,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { EXERCISE_LIBRARY } from '@/lib/exercises';
+import type { MetricType } from '@/lib/exercises';
 
 const GUEST_ROUTINES_KEY = 'guest_routines_v1';
 const GUEST_WORKOUTS_KEY = 'guest_workouts_v1';
@@ -44,7 +45,9 @@ interface GuestWorkoutExercise {
   /** Optional because already-persisted v1 data predates these fields. */
   muscle_group?: string;
   category?: string;
-  sets: { weight_kg: number; reps: number }[];
+  /** Phase A — so a guest's duration/distance exercises render + persist right. */
+  metric_type?: MetricType;
+  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null }[];
 }
 
 export interface GuestWorkout {
@@ -66,6 +69,8 @@ export interface GuestExercise {
   muscle_group: string;
   category: string;
   created_at: string;
+  /** Phase A. Optional + forward-safe for entries persisted before the field. */
+  metric_type?: MetricType;
 }
 
 /**
@@ -191,6 +196,7 @@ export function getGuestWorkoutsDetailed() {
         name: ex.name,
         muscle_group: ex.muscle_group || lib?.muscle_group || 'Other',
         category: ex.category || lib?.category || 'Other',
+        metric_type: ex.metric_type ?? lib?.metric_type,
       };
       return ex.sets.map((s, si) => ({
         id: `${w.id}-set-${ei}-${si}`,
@@ -200,6 +206,8 @@ export function getGuestWorkoutsDetailed() {
         reps: s.reps,
         completed: true,
         order: order++,
+        duration_seconds: s.duration_seconds ?? null,
+        distance_m: s.distance_m ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };
@@ -225,7 +233,7 @@ export function getGuestExercises(): GuestExercise[] {
 // already in EXERCISE_LIBRARY returns null — the caller should skip creation,
 // the library entry already covers it. A name already in the guest store
 // returns that existing entry unchanged.
-export function addGuestExercise(ex: { name: string; muscle_group: string; category: string }): GuestExercise | null {
+export function addGuestExercise(ex: { name: string; muscle_group: string; category: string; metric_type?: MetricType }): GuestExercise | null {
   const name = ex.name.trim();
   const lower = name.toLowerCase();
   if (EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === lower)) return null;
@@ -237,6 +245,7 @@ export function addGuestExercise(ex: { name: string; muscle_group: string; categ
     muscle_group: ex.muscle_group,
     category: ex.category,
     created_at: new Date().toISOString(),
+    metric_type: ex.metric_type,
   };
   _guestExercises.unshift(created);
   void persistGuestExercises();
@@ -246,7 +255,7 @@ export function addGuestExercise(ex: { name: string; muscle_group: string; categ
 // Patch a guest exercise in-place. Returns false when the id isn't in the store.
 export function updateGuestExercise(
   id: string,
-  patch: Partial<Pick<GuestExercise, 'name' | 'muscle_group' | 'category'>>
+  patch: Partial<Pick<GuestExercise, 'name' | 'muscle_group' | 'category' | 'metric_type'>>
 ): boolean {
   const idx = _guestExercises.findIndex(e => e.id === id);
   if (idx < 0) return false;

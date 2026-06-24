@@ -23,11 +23,15 @@ export interface PendingSet {
   weight_kg: number;
   reps: number;
   order: number;
+  // Phase A — only set for the relevant metric_type axes; omitted otherwise.
+  duration_seconds?: number | null;
+  distance_m?: number | null;
 }
 
 export interface PendingExercise {
-  /** Library def, kept so a temp (unresolved) exercise can resolve at flush. */
-  def: { name: string; muscle_group: string; category: string };
+  /** Library def, kept so a temp (unresolved) exercise can resolve at flush.
+   * metric_type lets an offline-resolved insert land with the right type. */
+  def: { name: string; muscle_group: string; category: string; metric_type?: import('@/lib/exercises').MetricType };
   /** Real exercises.id if known at finish; null when it was still a `temp-` id. */
   resolvedExerciseId: string | null;
   /** Completed sets only. */
@@ -285,6 +289,8 @@ export async function flushPendingWorkout(
               reps: s.reps,
               completed: true,
               order: s.order ?? idx,
+              duration_seconds: s.duration_seconds ?? null,
+              distance_m: s.distance_m ?? null,
             }))
           : [],
       );

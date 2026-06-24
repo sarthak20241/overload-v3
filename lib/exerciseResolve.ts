@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Exercise } from '@/lib/types';
-import type { ExerciseDef } from '@/lib/exercises';
-import { EXERCISE_LIBRARY } from '@/lib/exercises';
+import type { ExerciseDef, MetricType } from '@/lib/exercises';
+import { EXERCISE_LIBRARY, metricTypeOf } from '@/lib/exercises';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { readCache, writeCache } from '@/lib/localCache';
 
@@ -12,6 +12,8 @@ export interface CachedExercise {
   muscle_group: string;
   category: string;
   created_by: string | null;
+  /** Phase A. Optional + forward-safe for rows cached before the column existed. */
+  metric_type?: MetricType;
 }
 
 /**
@@ -24,7 +26,7 @@ export interface CachedExercise {
  */
 export function saveLocalCustomExercise(
   userId: string | null | undefined,
-  def: { name: string; muscle_group: string; category: string },
+  def: { name: string; muscle_group: string; category: string; metric_type?: MetricType },
 ): void {
   if (!userId) return;
   const name = def.name.trim();
@@ -39,6 +41,7 @@ export function saveLocalCustomExercise(
     muscle_group: def.muscle_group || 'Other',
     category: def.category || 'Other',
     created_by: userId,
+    metric_type: metricTypeOf(def),
   };
   writeCache('exercises', userId, [row, ...existing]);
 }
@@ -94,7 +97,12 @@ export async function resolveExerciseRow(
     if (existing) return existing;
     const { data: inserted, error } = await supabase
       .from('exercises')
-      .insert({ name: lib.name, muscle_group: lib.muscle_group, category: lib.category })
+      .insert({
+        name: lib.name,
+        muscle_group: lib.muscle_group,
+        category: lib.category,
+        metric_type: metricTypeOf(lib),
+      })
       .select()
       .single();
     if (!error) return (inserted as Exercise) ?? null;

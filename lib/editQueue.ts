@@ -25,11 +25,15 @@ export interface PendingEditSet {
   weight_kg: number;
   reps: number;
   order: number;
+  // Phase A axes — only set for the exercise's metric_type; omitted otherwise.
+  duration_seconds?: number | null;
+  distance_m?: number | null;
 }
 
 export interface PendingEditExercise {
-  /** Library def, kept so a temp (unresolved) exercise can resolve at flush. */
-  def: { name: string; muscle_group: string; category: string };
+  /** Library def, kept so a temp (unresolved) exercise can resolve at flush.
+   * metric_type lets a resolve-by-name insert land with the right type. */
+  def: { name: string; muscle_group: string; category: string; metric_type?: import('@/lib/exercises').MetricType };
   /** Real exercises.id if known; null when it must resolve by name at flush. */
   resolvedExerciseId: string | null;
   sets: PendingEditSet[];
@@ -205,7 +209,11 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
       ),
       exercises: e.exercises.map((ex) => ({
         name: ex.def.name,
-        sets: ex.sets.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps, completed: true })),
+        metric_type: ex.def.metric_type,
+        sets: ex.sets.map((s) => ({
+          weight_kg: s.weight_kg, reps: s.reps, completed: true,
+          duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
+        })),
       })),
       _pendingSync: true,
     };
@@ -231,6 +239,7 @@ export function applyEditsToDashboardRows(userId: string | null | undefined, row
         name: ex.def.name,
         muscle_group: ex.def.muscle_group || 'Other',
         category: ex.def.category || 'Other',
+        metric_type: ex.def.metric_type,
       };
       return ex.sets.map((s, si) => ({
         id: `${e.workoutId}-edit-set-${ei}-${si}`,
@@ -240,6 +249,8 @@ export function applyEditsToDashboardRows(userId: string | null | undefined, row
         reps: s.reps,
         completed: true,
         order: order++,
+        duration_seconds: s.duration_seconds ?? null,
+        distance_m: s.distance_m ?? null,
       }));
     });
     return {
@@ -313,6 +324,8 @@ async function flushPendingEdit(
             reps: s.reps,
             completed: true,
             order: s.order ?? idx,
+            duration_seconds: s.duration_seconds ?? null,
+            distance_m: s.distance_m ?? null,
           }))
         : [],
     );
