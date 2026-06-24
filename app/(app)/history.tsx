@@ -51,7 +51,7 @@ const MONTH_FULL = [
 interface ExerciseDetail {
   name: string;
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null }[];
+  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null }[];
 }
 type HistorySet = ExerciseDetail['sets'][number];
 
@@ -62,6 +62,7 @@ function historySetLabel(metricType: MetricType, s: HistorySet): string {
     a === 'reps' ? `${s.reps}`
     : a === 'duration' ? formatSetDuration(s.duration_seconds)
     : a === 'distance' ? `${formatDistanceKm(s.distance_m)}km`
+    : a === 'resistance' ? `Lv ${s.resistance ?? 0}`
     : a === 'assist_weight' ? `-${formatWeight(s.weight_kg)}kg`
     : a === 'added_weight' ? `+${formatWeight(s.weight_kg)}kg`
     : `${formatWeight(s.weight_kg)}kg`,
@@ -672,7 +673,7 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, exercises(name, metric_type))')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);

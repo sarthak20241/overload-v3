@@ -28,7 +28,7 @@ type Backend = 'guest' | 'pending' | 'synced';
 // field, partial decimals); they're parsed back to numbers on save.
 // Strings so typing feels natural; duration is "m:ss", distance is km. Only the
 // axes the exercise's metric_type uses are rendered/parsed.
-interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string }
+interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string }
 interface EditExercise {
   uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
@@ -49,12 +49,14 @@ const mkSet = (
   reps: string | number,
   durationSeconds?: number | null,
   distanceM?: number | null,
+  resistance?: number | null,
 ): EditSet => ({
   uid: `set-${_setSeq++}`,
   weight: String(weight),
   reps: String(reps),
   duration: durationSeconds ? fmtDur(durationSeconds) : '',
   distance: distanceM ? formatDistanceKm(distanceM).replace(/[^\d.]/g, '') : '',
+  resistance: resistance != null ? String(resistance) : '',
 });
 
 let _exSeq = 0;
@@ -72,9 +74,11 @@ const axisLabel = (a: MetricAxis): string =>
   : a === 'assist_weight' ? '−KG'
   : a === 'reps' ? 'REPS'
   : a === 'duration' ? 'TIME'
+  : a === 'resistance' ? 'LEVEL'
   : 'KM';
 const axisField = (a: MetricAxis): keyof EditSet =>
-  a === 'reps' ? 'reps' : a === 'duration' ? 'duration' : a === 'distance' ? 'distance' : 'weight';
+  a === 'reps' ? 'reps' : a === 'duration' ? 'duration' : a === 'distance' ? 'distance'
+  : a === 'resistance' ? 'resistance' : 'weight';
 
 function formatDuration(sec?: number) {
   if (!sec) return null;
@@ -132,7 +136,7 @@ export default function EditWorkoutScreen() {
         };
         map.set(exId, ex);
       }
-      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m));
+      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance));
     }
     return [...map.values()];
   };
@@ -159,7 +163,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.muscle_group,
             category: ex.category,
             metric_type: ex.metric_type,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
           setLoading(false);
@@ -187,7 +191,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
           setLoading(false);
@@ -214,7 +218,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
           setMeta(cacheMeta);
@@ -226,7 +230,7 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, exercises(id, name, muscle_group, category, metric_type))')
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -333,12 +337,14 @@ export default function EditWorkoutScreen() {
         const usesReps = axes.includes('reps');
         const usesDuration = axes.includes('duration');
         const usesDistance = axes.includes('distance');
+        const usesResistance = axes.includes('resistance');
         const sets = ex.sets
           .map((s) => ({
             weight_kg: Math.max(0, parseFloat(s.weight) || 0),
             reps: Math.max(0, parseInt(s.reps, 10) || 0),
             duration_seconds: usesDuration ? parseDuration(s.duration) : null,
             distance_m: usesDistance ? parseDistanceKm(s.distance) : null,
+            resistance: usesResistance ? (parseFloat(s.resistance) || 0) : null,
           }))
           .filter((s) =>
             (usesReps && s.reps > 0) ||
@@ -375,7 +381,7 @@ export default function EditWorkoutScreen() {
             metric_type: metricTypeOf(e.ex),
             sets: e.sets.map((s) => ({
               weight_kg: s.weight_kg, reps: s.reps,
-              duration_seconds: s.duration_seconds, distance_m: s.distance_m,
+              duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
             })),
           })),
         };
@@ -403,7 +409,7 @@ export default function EditWorkoutScreen() {
         resolvedExerciseId: e.ex.exerciseId && !String(e.ex.exerciseId).startsWith('temp-') ? e.ex.exerciseId : null,
         sets: e.sets.map((s, idx) => ({
           weight_kg: s.weight_kg, reps: s.reps, order: idx,
-          duration_seconds: s.duration_seconds, distance_m: s.distance_m,
+          duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
         })),
       }));
 

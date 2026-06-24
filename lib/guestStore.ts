@@ -47,7 +47,7 @@ interface GuestWorkoutExercise {
   category?: string;
   /** Phase A — so a guest's duration/distance exercises render + persist right. */
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null }[];
+  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null }[];
 }
 
 export interface GuestWorkout {
@@ -208,6 +208,7 @@ export function getGuestWorkoutsDetailed() {
         order: order++,
         duration_seconds: s.duration_seconds ?? null,
         distance_m: s.distance_m ?? null,
+        resistance: s.resistance ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };

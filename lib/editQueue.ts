@@ -28,6 +28,7 @@ export interface PendingEditSet {
   // Phase A axes — only set for the exercise's metric_type; omitted otherwise.
   duration_seconds?: number | null;
   distance_m?: number | null;
+  resistance?: number | null;
 }
 
 export interface PendingEditExercise {
@@ -213,6 +214,7 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
         sets: ex.sets.map((s) => ({
           weight_kg: s.weight_kg, reps: s.reps, completed: true,
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
+          resistance: s.resistance ?? null,
         })),
       })),
       _pendingSync: true,
@@ -251,6 +253,7 @@ export function applyEditsToDashboardRows(userId: string | null | undefined, row
         order: order++,
         duration_seconds: s.duration_seconds ?? null,
         distance_m: s.distance_m ?? null,
+        resistance: s.resistance ?? null,
       }));
     });
     return {
@@ -326,6 +329,7 @@ async function flushPendingEdit(
             order: s.order ?? idx,
             duration_seconds: s.duration_seconds ?? null,
             distance_m: s.distance_m ?? null,
+            resistance: s.resistance ?? null,
           }))
         : [],
     );

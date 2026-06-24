@@ -17,7 +17,8 @@ export type MetricType =
   | 'duration'
   | 'duration_weight'
   | 'distance_duration'
-  | 'weight_distance';
+  | 'weight_distance'
+  | 'resistance_duration';
 
 /** Default applied to any exercise/cached row that predates the metric_type column. */
 export const DEFAULT_METRIC_TYPE: MetricType = 'weight_reps';
@@ -25,7 +26,7 @@ export const DEFAULT_METRIC_TYPE: MetricType = 'weight_reps';
 /** The input axes a set row can render. Stored as: weight axes -> weight_kg
  * (magnitude; the sign is implied by metric_type), reps -> reps,
  * duration -> duration_seconds, distance -> distance_m. */
-export type MetricAxis = 'weight' | 'added_weight' | 'assist_weight' | 'reps' | 'duration' | 'distance';
+export type MetricAxis = 'weight' | 'added_weight' | 'assist_weight' | 'reps' | 'duration' | 'distance' | 'resistance';
 
 export interface MetricTypeDef {
   value: MetricType;
@@ -49,6 +50,7 @@ export const METRIC_TYPES: MetricTypeDef[] = [
   { value: 'duration_weight', label: 'Duration & Weight', sublabel: 'Kg · Time', icon: 'timer', axes: ['weight', 'duration'] },
   { value: 'distance_duration', label: 'Distance & Duration', sublabel: 'Km · Time', icon: 'run', axes: ['distance', 'duration'] },
   { value: 'weight_distance', label: 'Weight & Distance', sublabel: 'Kg · Km', icon: 'walk', axes: ['weight', 'distance'] },
+  { value: 'resistance_duration', label: 'Resistance & Duration', sublabel: 'Level · Time', icon: 'bike', axes: ['resistance', 'duration'] },
 ];
 
 const METRIC_TYPE_BY_VALUE: Record<MetricType, MetricTypeDef> = Object.fromEntries(

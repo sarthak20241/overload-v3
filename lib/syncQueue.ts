@@ -26,6 +26,7 @@ export interface PendingSet {
   // Phase A — only set for the relevant metric_type axes; omitted otherwise.
   duration_seconds?: number | null;
   distance_m?: number | null;
+  resistance?: number | null;
 }
 
 export interface PendingExercise {
@@ -291,6 +292,7 @@ export async function flushPendingWorkout(
               order: s.order ?? idx,
               duration_seconds: s.duration_seconds ?? null,
               distance_m: s.distance_m ?? null,
+              resistance: s.resistance ?? null,
             }))
           : [],
       );

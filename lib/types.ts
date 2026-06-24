@@ -74,6 +74,8 @@ export interface WorkoutSet {
   // ±Kg (weighted/assisted) types; the sign is implied by metric_type.
   duration_seconds?: number | null;
   distance_m?: number | null;
+  // resistance level for cardio machines (bike/elliptical), resistance_duration.
+  resistance?: number | null;
 }
 
 export interface Workout {
@@ -111,9 +113,10 @@ export interface ActiveSet {
   reps: number;
   completed: boolean;
   // Phase A — populated per the exercise's metric_type (see ActiveSet axes in
-  // WorkoutSet). Both nullable; weight_kg/reps stay the kg/rep axes.
+  // WorkoutSet). All nullable; weight_kg/reps stay the kg/rep axes.
   duration_seconds?: number | null;
   distance_m?: number | null;
+  resistance?: number | null;
 }
 
 export interface DashboardStats {

@@ -126,6 +126,7 @@ export default function ActiveWorkoutScreen() {
   // Each is only rendered when the exercise's metric_type uses that axis.
   const [inputDuration, setInputDuration] = useState('0:00');
   const [inputDistance, setInputDistance] = useState('');
+  const [inputResistance, setInputResistance] = useState('');
   // Inline stopwatch for duration exercises (gated on prefs.inlineTimerForDuration).
   // swElapsed is the live seconds; it's the source of truth for the logged set
   // while running, falling back to the typed inputDuration when stopped/manual.
@@ -136,7 +137,7 @@ export default function ActiveWorkoutScreen() {
   // Which field in the active set row is "open" for adjustment. Null = the row
   // is a clean glance-and-confirm row; tapping a number opens that one field's
   // −/+ (and focuses it for optional typing), leaving the other a plain number.
-  const [editField, setEditField] = useState<null | 'weight' | 'reps' | 'duration' | 'distance'>(null);
+  const [editField, setEditField] = useState<null | 'weight' | 'reps' | 'duration' | 'distance' | 'resistance'>(null);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -660,6 +661,7 @@ export default function ActiveWorkoutScreen() {
     const usesReps = axes.includes('reps');
     const usesDuration = axes.includes('duration');
     const usesDistance = axes.includes('distance');
+    const usesResistance = axes.includes('resistance');
     const weight = usesWeight ? (parseFloat(inputWeight) || 0) : 0;
     const reps = usesReps ? (parseInt(inputReps) || 0) : 0;
 
@@ -692,6 +694,7 @@ export default function ActiveWorkoutScreen() {
       completed: true,
       duration_seconds: usesDuration ? durationSecs : null,
       distance_m: usesDistance ? parseDistanceKm(inputDistance) : null,
+      resistance: usesResistance ? (parseFloat(inputResistance) || 0) : null,
     };
 
     // Find first incomplete set or add new
@@ -1388,6 +1391,7 @@ export default function ActiveWorkoutScreen() {
               sets: e.sets.filter(s => s.completed).map(s => ({
                 weight_kg: s.weight_kg, reps: s.reps,
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
+                resistance: s.resistance ?? null,
               })),
             })),
         });
@@ -1433,6 +1437,7 @@ export default function ActiveWorkoutScreen() {
               order: idx,
               duration_seconds: s.duration_seconds ?? null,
               distance_m: s.distance_m ?? null,
+              resistance: s.resistance ?? null,
             })),
         }));
 
@@ -1633,11 +1638,13 @@ export default function ActiveWorkoutScreen() {
       : a === 'assist_weight' ? '−KG'
       : a === 'reps' ? 'REPS'
       : a === 'duration' ? 'TIME'
+      : a === 'resistance' ? 'LEVEL'
       : 'KM';
     const axisDoneValue = (a: MetricAxis, s: ActiveSet): string =>
       a === 'reps' ? String(s.reps)
       : a === 'duration' ? formatDuration(s.duration_seconds)
       : a === 'distance' ? formatDistanceKm(s.distance_m)
+      : a === 'resistance' ? String(s.resistance ?? 0)
       : formatWeight(s.weight_kg);
 
     // One input cell per axis in the active row. Weight-ish axes share the
@@ -1691,7 +1698,7 @@ export default function ActiveWorkoutScreen() {
         );
       }
       const isWeight = a === 'weight' || a === 'added_weight' || a === 'assist_weight';
-      const field: typeof editField = isWeight ? 'weight' : (a as 'reps' | 'duration' | 'distance');
+      const field: typeof editField = isWeight ? 'weight' : (a as 'reps' | 'duration' | 'distance' | 'resistance');
       const open = editField === field;
       const cellStyle = [styles.colVal, open && styles.activeCellRow];
       const inputStyle = [open ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, open && { backgroundColor: C.muted }];
@@ -1721,12 +1728,20 @@ export default function ActiveWorkoutScreen() {
             dec: () => setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))),
             inc: () => setInputDuration(formatDuration(parseDuration(inputDuration) + 15)),
           }
-        : {
+        : a === 'distance'
+        ? {
             value: inputDistance,
             onChangeText: setInputDistance,
             keyboardType: 'decimal-pad' as const,
             dec: () => setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))),
             inc: () => setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)),
+          }
+        : {
+            value: inputResistance,
+            onChangeText: setInputResistance,
+            keyboardType: 'number-pad' as const,
+            dec: () => setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))),
+            inc: () => setInputResistance(String((parseFloat(inputResistance) || 0) + 1)),
           };
 
       return (
