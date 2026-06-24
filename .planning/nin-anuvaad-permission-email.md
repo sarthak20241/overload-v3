@@ -9,11 +9,11 @@ time in the plan, so send early. Fill the [bracketed] bits before sending.
 
 ## 1. ICMR-NIN — IFCT 2017 (Indian Food Composition Tables)
 
-**To:** director-nin@icmr.gov.in (Director, ICMR-NIN) — also cc the IFCT/data contact if
-listed at nin.res.in. Verify the current address on the NIN site before sending.
+**To:** directornin@icmr.gov.in (Director, ICMR-NIN; current Director Dr. Bharati Kulkarni).
+Verified via nin.res.in (Jun 2026); gov addresses change, so reconfirm before sending.
 **Subject:** Permission request: use of IFCT 2017 data in a fitness app (commercial)
 
-Respected Sir/Madam,
+Respected Dr. Kulkarni / Sir/Madam,
 
 I am [Full Name], developer of Overload, a fitness and nutrition tracking app aimed at
 Indian users. I am writing to request written permission to use the food composition
@@ -45,9 +45,9 @@ Respectfully,
 
 ## 2. Anuvaad Solutions / Dr. Lindsay Jaacks — INDB (Indian Nutrient Databank)
 
-**To:** the contact listed on the INDB GitHub repo / the Curr Dev Nutr 2024 paper
-(corresponding author Dr. Lindsay Jaacks, University of Edinburgh) and Anuvaad Solutions.
-Verify current addresses before sending.
+**To:** aswathy@anuvaad.org.in (Aswathy Vijayakumar, INDB corresponding author, Anuvaad
+Solutions). **Cc:** Lindsay.Jaacks@ed.ac.uk (Dr. Lindsay Jaacks, Univ. of Edinburgh),
+dubasi@anuvaad.org.in, awasthi@anuvaad.org.in. Verified via the 2024 paper + repo.
 **Subject:** Permission request: use of the Indian Nutrient Databank (INDB) in a commercial app
 
 Dear Dr. Jaacks and the Anuvaad team,
