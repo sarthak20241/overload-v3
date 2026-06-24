@@ -3,14 +3,15 @@
  *
  *   compute Indian dishes  ─┐
  *   ingest USDA (CC0)      ─┼─► merge + dedupe (by lower(name)) ─► emit:
- *   ingest OFF (ODbL, off) ─┘        lib/foods.generated.ts
+ *   ingest OFF (ODbL, off) ─┘        lib/foods.generated.ts (per-100 + servings)
  *                                    supabase/seed/foods_seed.generated.sql
  *
  * Run:  npx tsx scripts/diet-catalog/build.ts
  *
- * Today it runs the compute-dishes slice with no downloads. USDA/OFF ingest are
- * stubbed with the parse structure; wire them once data/ inputs are in place.
- * See README.md for the inputs + the (load-bearing) license guardrails.
+ * Model (migration 0051): nutrients are PER 100 base-units (g/ml); portions are a
+ * `servings` list (label -> grams). USDA gives per-100 nutrients + household
+ * portions (food_portion.csv); we also pull fiber/sugar/sat-fat/sodium. OFF ingest
+ * is still stubbed. See README.md for the license guardrails.
  */
 
 import fs from 'node:fs';
@@ -23,20 +24,32 @@ export type FoodCategory =
   | 'protein' | 'legume' | 'dairy' | 'grain' | 'vegetable' | 'fruit' | 'fat_oil'
   | 'nuts_seeds' | 'prepared_dish' | 'snack' | 'beverage' | 'sweet' | 'supplement'
   | 'condiment' | 'other';
-export type ServingUnit =
-  | 'g' | 'ml' | 'piece' | 'slice' | 'bowl' | 'cup' | 'glass' | 'tbsp' | 'tsp' | 'scoop';
+export type BaseUnit = 'g' | 'ml';
 export type FoodSource = 'usda' | 'off' | 'curated' | 'user';
 export interface Macros { kcal: number; protein_g: number; carb_g: number; fat_g: number }
+
+export interface Serving {
+  label: string;
+  grams: number;
+  is_default: boolean;
+  source: FoodSource;
+  seq: number;
+}
 
 export interface FoodRow {
   name: string;
   food_category: FoodCategory;
-  serving_unit: ServingUnit;
-  serving_size: number;
+  base_unit: BaseUnit;
+  // nutrients per 100 base-units
   kcal: number;
   protein_g: number;
   carb_g: number;
   fat_g: number;
+  fiber_g: number;
+  sugar_g: number;
+  sat_fat_g: number;
+  sodium_mg: number;
+  servings: Serving[];
   brand?: string;
   barcode?: string;
   source: FoodSource;
@@ -45,6 +58,7 @@ export interface FoodRow {
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(__dirname, 'data');
 const round1 = (n: number) => Math.round(n * 10) / 10;
+const fmtAmount = (n: number) => (Number.isInteger(n) ? String(n) : String(round1(n)));
 
 /** Quote-aware CSV line parser (USDA fields are all double-quoted; "" escapes). */
 function parseCsvLine(line: string): string[] {
@@ -78,29 +92,41 @@ function findFirst(dir: string, filename: string): string | null {
   return null;
 }
 
-// ── 1. Computed Indian dishes (runnable now, no download) ────────────────────
+/** Always-present canonical "100 g"/"100 ml" serving. */
+function canonicalServing(base: BaseUnit, seq: number, source: FoodSource): Serving {
+  return { label: `100 ${base}`, grams: 100, is_default: false, source, seq };
+}
+
+// ── 1. Computed Indian dishes (per-100 from the ingredient breakdown) ─────────
 function buildDishes(): FoodRow[] {
   return DISHES.map((d) => {
-    const m = computeDish(d);
+    const total = computeDish(d); // whole-dish macros
+    const grams = d.ingredients.reduce((s, c) => s + c.grams, 0);
+    const per100 = (v: number) => (grams > 0 ? (v / grams) * 100 : 0);
     return {
       name: d.name,
       food_category: d.food_category,
-      serving_unit: d.serving_unit,
-      serving_size: d.serving_size,
-      kcal: Math.round(m.kcal),
-      protein_g: round1(m.protein_g),
-      carb_g: round1(m.carb_g),
-      fat_g: round1(m.fat_g),
+      base_unit: 'g',
+      kcal: Math.round(per100(total.kcal)),
+      protein_g: round1(per100(total.protein_g)),
+      carb_g: round1(per100(total.carb_g)),
+      fat_g: round1(per100(total.fat_g)),
+      fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sodium_mg: 0,
+      servings: [
+        { label: '1 bowl', grams: Math.round(grams), is_default: true, source: 'curated', seq: 0 },
+        canonicalServing('g', 1, 'curated'),
+      ],
       source: 'curated',
     };
   });
 }
 
-// ── 2. USDA ingest (CC0) — bundle freely ─────────────────────────────────────
-// food.csv (fdc_id -> description) + food_nutrient.csv (fdc_id, nutrient_id,
-// amount per 100 g). Nutrient ids: 1008 kcal, 1003 protein, 1005 carb, 1004 fat.
-const USDA_NUTRIENT: Record<string, keyof Macros> = {
+// ── 2. USDA ingest (CC0): per-100 nutrients + household portions ──────────────
+// nutrient ids: 1008 kcal, 1003 protein, 1005 carb, 1004 fat, 1079 fiber,
+// 2000 sugars, 1258 saturated fat, 1093 sodium (mg).
+const USDA_NUTRIENT: Record<string, keyof FoodRow> = {
   '1008': 'kcal', '1003': 'protein_g', '1005': 'carb_g', '1004': 'fat_g',
+  '1079': 'fiber_g', '2000': 'sugar_g', '1258': 'sat_fat_g', '1093': 'sodium_mg',
 };
 
 function buildUsda(): FoodRow[] {
@@ -111,6 +137,7 @@ function buildUsda(): FoodRow[] {
     console.warn('[usda] data/usda CSVs not found — skipping (download SR Legacy, see README).');
     return [];
   }
+  const portionCsv = findFirst(dir, 'food_portion.csv');
 
   // 1. food.csv -> [{ id, desc }]
   const foodLines = fs.readFileSync(foodCsv, 'utf8').split('\n');
@@ -127,7 +154,6 @@ function buildUsda(): FoodRow[] {
 
   // 2. one fdc_id per allowlist pick (shortest matching description wins)
   const chosen = new Map<string, UsdaPick>();
-  const chosenDesc = new Map<string, string>();
   const missed: string[] = [];
   for (const pick of USDA_ALLOWLIST) {
     const m = pick.match.toLowerCase();
@@ -135,12 +161,12 @@ function buildUsda(): FoodRow[] {
     for (const fd of foods) {
       if (fd.desc.toLowerCase().includes(m) && (!best || fd.desc.length < best.desc.length)) best = fd;
     }
-    if (best) { chosen.set(best.id, pick); chosenDesc.set(best.id, best.desc); }
+    if (best) chosen.set(best.id, pick);
     else missed.push(pick.name);
   }
 
-  // 3. food_nutrient.csv -> macros for the chosen fdc_ids
-  const macros = new Map<string, Partial<Macros>>();
+  // 3. food_nutrient.csv -> per-100 nutrients for the chosen fdc_ids
+  const nut = new Map<string, Partial<Record<keyof FoodRow, number>>>();
   const nLines = fs.readFileSync(nutrientCsv, 'utf8').split('\n');
   const nHead = parseCsvLine(nLines[0]);
   const nFdc = nHead.indexOf('fdc_id');
@@ -153,31 +179,68 @@ function buildUsda(): FoodRow[] {
     if (!chosen.has(fdc)) continue;
     const field = USDA_NUTRIENT[r[nNut]];
     if (!field) continue;
-    const cur = macros.get(fdc) ?? {};
+    const cur = nut.get(fdc) ?? {};
     cur[field] = Number(r[nAmt]);
-    macros.set(fdc, cur);
+    nut.set(fdc, cur);
   }
 
-  // 4. emit (skip foods with no energy value)
+  // 4. food_portion.csv -> household servings (label from amount + modifier)
+  const portions = new Map<string, Serving[]>();
+  if (portionCsv) {
+    const pLines = fs.readFileSync(portionCsv, 'utf8').split('\n');
+    const pHead = parseCsvLine(pLines[0]);
+    const pFdc = pHead.indexOf('fdc_id');
+    const pSeq = pHead.indexOf('seq_num');
+    const pAmt = pHead.indexOf('amount');
+    const pDesc = pHead.indexOf('portion_description');
+    const pMod = pHead.indexOf('modifier');
+    const pGram = pHead.indexOf('gram_weight');
+    for (let i = 1; i < pLines.length; i++) {
+      if (!pLines[i]) continue;
+      const r = parseCsvLine(pLines[i]);
+      const fdc = r[pFdc];
+      if (!chosen.has(fdc)) continue;
+      const grams = Number(r[pGram]);
+      const amount = Number(r[pAmt]);
+      const unit = (r[pMod] || r[pDesc] || '').trim();
+      if (!(grams > 0) || !unit) continue;
+      const label = `${fmtAmount(amount || 1)} ${unit}`.trim();
+      const list = portions.get(fdc) ?? [];
+      if (!list.some((s) => s.label.toLowerCase() === label.toLowerCase())) {
+        list.push({ label, grams, is_default: false, source: 'usda', seq: Number(r[pSeq]) || list.length });
+      }
+      portions.set(fdc, list);
+    }
+  }
+
+  // 5. emit (skip foods with no energy value)
   const rows: FoodRow[] = [];
   for (const [fdc, pick] of chosen) {
-    const m = macros.get(fdc);
+    const m = nut.get(fdc);
     if (!m || m.kcal == null) continue;
+    const base: BaseUnit = pick.base_unit ?? 'g';
+    const servs = (portions.get(fdc) ?? []).slice().sort((a, b) => a.seq - b.seq);
+    servs.push(canonicalServing(base, 999, 'usda'));
+    // default = first real portion, else the canonical 100
+    if (servs.length) servs[0].is_default = true;
     rows.push({
       name: pick.name,
       food_category: pick.food_category,
-      serving_unit: pick.serving_unit,
-      serving_size: pick.serving_size,
+      base_unit: base,
       kcal: Math.round(m.kcal),
       protein_g: round1(m.protein_g ?? 0),
       carb_g: round1(m.carb_g ?? 0),
       fat_g: round1(m.fat_g ?? 0),
+      fiber_g: round1(m.fiber_g ?? 0),
+      sugar_g: round1(m.sugar_g ?? 0),
+      sat_fat_g: round1(m.sat_fat_g ?? 0),
+      sodium_mg: Math.round(m.sodium_mg ?? 0),
+      servings: servs,
       source: 'usda',
     });
-    if (process.env.VERBOSE) console.log(`  [usda] ${pick.name} <- "${chosenDesc.get(fdc)}"`);
   }
   if (missed.length) console.warn(`[usda] no description match for: ${missed.join(', ')}`);
-  console.log(`[usda] ${rows.length} foods from ${USDA_ALLOWLIST.length} picks`);
+  console.log(`[usda] ${rows.length} foods (${portions.size} with household portions)`);
   return rows;
 }
 
@@ -188,12 +251,10 @@ function buildOff(): FoodRow[] {
     console.warn('[off] data/off not found — skipping (download the India subset).');
     return [];
   }
-  // TODO: stream the OFF JSONL/Parquet dump. Keep a product iff:
-  //   - countries_tags ∩ OFF_FILTER.countries, OR brand ∈ gymBrands/fmcgBrands, AND
-  //   - all OFF_FILTER.requireNutriments present.
-  // Map energy-kcal_100g/proteins_100g/... to a FoodRow{ serving_size:100, source:'off',
-  // brand, barcode: product.code }. NEVER merge OFF values into a non-off row.
-  console.warn('[off] parser TODO — see allowlist.ts OFF_FILTER and README (ODbL rules).');
+  // TODO: stream the OFF dump; keep India + gym brands with complete _100g nutriments.
+  // Emit per-100 nutrients + ONE serving from serving_quantity (grams, guard >0 <2000).
+  // NEVER merge OFF values into a non-off row. See allowlist.ts OFF_FILTER + README (ODbL).
+  console.warn('[off] parser TODO — see allowlist.ts OFF_FILTER and README.');
   void OFF_FILTER;
   return [];
 }
@@ -212,11 +273,18 @@ function mergeRows(...groups: FoodRow[][]): FoodRow[] {
 
 // ── 5. Emit ──────────────────────────────────────────────────────────────────
 function emitFoodLibraryTs(rows: FoodRow[]) {
-  const body = rows
-    .map((r) => `  ${JSON.stringify(r)},`)
-    .join('\n');
+  const toDef = (r: FoodRow) => ({
+    name: r.name,
+    food_category: r.food_category,
+    base_unit: r.base_unit,
+    kcal: r.kcal, protein_g: r.protein_g, carb_g: r.carb_g, fat_g: r.fat_g,
+    fiber_g: r.fiber_g, sugar_g: r.sugar_g, sat_fat_g: r.sat_fat_g, sodium_mg: r.sodium_mg,
+    servings: r.servings.map((s) => ({ label: s.label, grams: s.grams, is_default: s.is_default, source: s.source })),
+    source: r.source,
+  });
+  const body = rows.map((r) => `  ${JSON.stringify(toDef(r))},`).join('\n');
   const out = `// GENERATED by scripts/diet-catalog/build.ts — do not edit by hand.
-// Sourcing + license: see scripts/diet-catalog/README.md.
+// Per-100 nutrients + named servings (migration 0051). License: see README.md.
 import type { FoodDef } from './foods';
 
 export const FOOD_LIBRARY_GENERATED: FoodDef[] = [
@@ -230,21 +298,25 @@ ${body}
 
 function emitSeedSql(rows: FoodRow[]) {
   const esc = (s: string) => s.replace(/'/g, "''");
-  const values = rows
-    .map((r) => {
-      const brand = r.brand ? `'${esc(r.brand)}'` : 'null';
-      const barcode = r.barcode ? `'${esc(r.barcode)}'` : 'null';
-      return `  ('${esc(r.name)}','${r.food_category}','${r.serving_unit}',${r.serving_size},${r.kcal},${r.protein_g},${r.carb_g},${r.fat_g},${brand},${barcode},'${r.source}')`;
-    })
-    .join(',\n');
+  const sqlStr = (s?: string) => (s ? `'${esc(s)}'` : 'null');
+  const blocks = rows.map((r) => {
+    const servingValues = r.servings
+      .map((s) => `('${esc(s.label)}',${s.grams},${s.is_default},'${s.source}',${s.seq})`)
+      .join(', ');
+    return `with f as (
+  insert into public.foods
+    (name, food_category, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, brand, barcode, source)
+  values ('${esc(r.name)}','${r.food_category}','${r.base_unit}',${r.kcal},${r.protein_g},${r.carb_g},${r.fat_g},${r.fiber_g},${r.sugar_g},${r.sat_fat_g},${r.sodium_mg},${sqlStr(r.brand)},${sqlStr(r.barcode)},'${r.source}')
+  on conflict do nothing returning id
+)
+insert into public.food_servings (food_id, label, grams, is_default, source, seq)
+select f.id, v.label, v.grams, v.is_default, v.source, v.seq
+from f cross join (values ${servingValues}) as v(label, grams, is_default, source, seq);`;
+  }).join('\n\n');
   const out = `-- GENERATED by scripts/diet-catalog/build.ts — do not edit by hand.
--- Apply as SERVICE ROLE so created_by stays null (global rows). Idempotent via
--- the uq_foods_name_global index. Sourcing/license: scripts/diet-catalog/README.md.
-insert into public.foods
-  (name, food_category, serving_unit, serving_size, kcal, protein_g, carb_g, fat_g, brand, barcode, source)
-values
-${values}
-on conflict do nothing;
+-- Apply as SERVICE ROLE so created_by stays null (global rows). Idempotent via the
+-- uq_foods_name_global index. Sourcing/license: scripts/diet-catalog/README.md.
+${blocks}
 `;
   const destDir = path.join(REPO_ROOT, 'supabase/seed');
   fs.mkdirSync(destDir, { recursive: true });

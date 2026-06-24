@@ -9,7 +9,7 @@
  * ingest their numbers. See scripts/diet-catalog/README.md.
  */
 
-import type { FoodCategory, ServingUnit, Macros } from './build';
+import type { FoodCategory, Macros } from './build';
 
 /** Per-100 g macros for raw dish components (curated facts). Extend as needed. */
 export const RAW_INGREDIENTS: Record<string, Macros> = {
@@ -36,9 +36,7 @@ export const RAW_INGREDIENTS: Record<string, Macros> = {
 export interface DishDef {
   name: string;
   food_category: FoodCategory; // 'prepared_dish'
-  serving_unit: ServingUnit;
-  serving_size: number;
-  /** Component grams per ONE serving_size of the dish. */
+  /** Component grams that make up ONE serving (a bowl) of the dish. */
   ingredients: { ingredient: keyof typeof RAW_INGREDIENTS; grams: number }[];
 }
 
@@ -48,7 +46,7 @@ export interface DishDef {
  */
 export const DISHES: DishDef[] = [
   {
-    name: 'Dal Tadka', food_category: 'prepared_dish', serving_unit: 'bowl', serving_size: 1,
+    name: 'Dal Tadka', food_category: 'prepared_dish',
     ingredients: [
       { ingredient: 'toor_dal_cooked', grams: 150 },
       { ingredient: 'ghee', grams: 8 },
@@ -57,7 +55,7 @@ export const DISHES: DishDef[] = [
     ],
   },
   {
-    name: 'Paneer Butter Masala', food_category: 'prepared_dish', serving_unit: 'bowl', serving_size: 1,
+    name: 'Paneer Butter Masala', food_category: 'prepared_dish',
     ingredients: [
       { ingredient: 'paneer', grams: 80 },
       { ingredient: 'butter', grams: 10 },
@@ -67,7 +65,7 @@ export const DISHES: DishDef[] = [
     ],
   },
   {
-    name: 'Chicken Biryani', food_category: 'prepared_dish', serving_unit: 'bowl', serving_size: 1,
+    name: 'Chicken Biryani', food_category: 'prepared_dish',
     ingredients: [
       { ingredient: 'rice_cooked', grams: 180 },
       { ingredient: 'chicken_cooked', grams: 90 },
@@ -76,7 +74,7 @@ export const DISHES: DishDef[] = [
     ],
   },
   {
-    name: 'Rajma Chawal', food_category: 'prepared_dish', serving_unit: 'bowl', serving_size: 1,
+    name: 'Rajma Chawal', food_category: 'prepared_dish',
     ingredients: [
       { ingredient: 'rajma_cooked', grams: 120 },
       { ingredient: 'rice_cooked', grams: 150 },
