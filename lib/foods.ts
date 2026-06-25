@@ -95,6 +95,7 @@ export interface Food extends FoodDef {
   image_url?: string | null;
   created_by?: string | null; // null = global
   micros?: Record<string, number> | null; // deferred open-ended tail (jsonb)
+  sources?: FoodSource[] | null; // every dataset that contributed (provenance + ODbL)
 }
 
 export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
