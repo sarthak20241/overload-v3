@@ -150,11 +150,16 @@ function main() {
     }
   }
 
-  // 4. assemble rows (skip foods missing energy)
+  // 4. assemble rows (skip foods missing energy; dedupe by name so the upsert's
+  //    ON CONFLICT never hits the same key twice within one batch)
   const rows: Row[] = [];
+  const seenNames = new Set<string>();
   for (const [fdc, { desc, cat }] of kept) {
     const m = macros.get(fdc);
     if (!m || m.kcal == null) continue;
+    const nameKey = desc.trim().toLowerCase();
+    if (seenNames.has(nameKey)) continue;
+    seenNames.add(nameKey);
     const servs = (portions.get(fdc) ?? []).slice().sort((a, b) => a.seq - b.seq);
     servs.push({ label: '100 g', grams: 100, is_default: false, seq: 999 });
     servs[0].is_default = true; // first real portion, else the 100 g canonical
