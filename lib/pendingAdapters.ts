@@ -43,6 +43,11 @@ export function pendingToDashboardWorkout(entry: PendingWorkout): any {
       reps: s.reps,
       completed: true,
       order: order++,
+      duration_seconds: s.duration_seconds ?? null,
+      distance_m: s.distance_m ?? null,
+      resistance: s.resistance ?? null,
+      set_type: s.set_type ?? 'normal',
+      rpe: s.rpe ?? null,
     }));
   });
   return {
@@ -87,6 +92,7 @@ export function pendingToHistoryRow(entry: PendingWorkout): any {
       sets: ex.sets.map((s) => ({
         weight_kg: s.weight_kg, reps: s.reps, completed: true,
         duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null, resistance: s.resistance ?? null,
+        set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
       })),
     })),
     _pendingSync: true,

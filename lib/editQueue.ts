@@ -29,6 +29,9 @@ export interface PendingEditSet {
   duration_seconds?: number | null;
   distance_m?: number | null;
   resistance?: number | null;
+  // Phase B — per-set type + intensity.
+  set_type?: import('@/lib/types').SetType;
+  rpe?: number | null;
 }
 
 export interface PendingEditExercise {
@@ -214,7 +217,7 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
         sets: ex.sets.map((s) => ({
           weight_kg: s.weight_kg, reps: s.reps, completed: true,
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
-          resistance: s.resistance ?? null,
+          resistance: s.resistance ?? null, set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
         })),
       })),
       _pendingSync: true,
@@ -254,6 +257,8 @@ export function applyEditsToDashboardRows(userId: string | null | undefined, row
         duration_seconds: s.duration_seconds ?? null,
         distance_m: s.distance_m ?? null,
         resistance: s.resistance ?? null,
+        set_type: s.set_type ?? 'normal',
+        rpe: s.rpe ?? null,
       }));
     });
     return {
@@ -330,6 +335,8 @@ async function flushPendingEdit(
             duration_seconds: s.duration_seconds ?? null,
             distance_m: s.distance_m ?? null,
             resistance: s.resistance ?? null,
+            set_type: s.set_type ?? 'normal',
+            rpe: s.rpe ?? null,
           }))
         : [],
     );

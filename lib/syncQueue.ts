@@ -27,6 +27,9 @@ export interface PendingSet {
   duration_seconds?: number | null;
   distance_m?: number | null;
   resistance?: number | null;
+  // Phase B — per-set type + intensity (rpe = raw 1-10).
+  set_type?: import('@/lib/types').SetType;
+  rpe?: number | null;
 }
 
 export interface PendingExercise {
@@ -293,6 +296,8 @@ export async function flushPendingWorkout(
               duration_seconds: s.duration_seconds ?? null,
               distance_m: s.distance_m ?? null,
               resistance: s.resistance ?? null,
+              set_type: s.set_type ?? 'normal',
+              rpe: s.rpe ?? null,
             }))
           : [],
       );

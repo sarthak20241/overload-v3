@@ -47,7 +47,7 @@ interface GuestWorkoutExercise {
   category?: string;
   /** Phase A — so a guest's duration/distance exercises render + persist right. */
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null }[];
+  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
 }
 
 export interface GuestWorkout {
@@ -209,6 +209,8 @@ export function getGuestWorkoutsDetailed() {
         duration_seconds: s.duration_seconds ?? null,
         distance_m: s.distance_m ?? null,
         resistance: s.resistance ?? null,
+        set_type: s.set_type ?? 'normal',
+        rpe: s.rpe ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };
@@ -362,7 +364,8 @@ export function getPreviousPerformance(routineId: string): Record<string, { weig
   if (!prev?.exercises) return {};
   const map: Record<string, { weight_kg: number; reps: number }[]> = {};
   prev.exercises.forEach(ex => {
-    map[ex.name] = ex.sets;
+    // Warmups never seed previous-performance prefill / PR comparison.
+    map[ex.name] = ex.sets.filter(s => s.set_type !== 'warmup').map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   });
   return map;
 }
@@ -374,7 +377,8 @@ export function getPreviousPerformanceForExerciseName(
   for (const w of _guestWorkouts) {
     if (!w.exercises) continue;
     const found = w.exercises.find(e => e.name === exerciseName);
-    if (found && found.sets.length > 0) return found.sets;
+    const working = found?.sets.filter(s => s.set_type !== 'warmup') ?? [];
+    if (working.length > 0) return working.map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   }
   return undefined;
 }

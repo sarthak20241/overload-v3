@@ -1,4 +1,8 @@
 export type CoachGoal = 'hypertrophy' | 'strength' | 'fat_loss' | 'endurance' | 'general';
+
+/** Phase B — per-set type. 'normal' is the default; 'warmup' is excluded from
+ * working volume / 1RM / PR detection. See SET_TYPE_META in components/workout. */
+export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure' | 'negative' | 'left' | 'right';
 export type ExperienceLevel = 'beginner' | 'intermediate' | 'advanced';
 
 export interface UserProfile {
@@ -76,6 +80,9 @@ export interface WorkoutSet {
   distance_m?: number | null;
   // resistance level for cardio machines (bike/elliptical), resistance_duration.
   resistance?: number | null;
+  // Phase B — per-set type + intensity. rpe is the raw 1-10 scale (RIR = 10 - rpe).
+  set_type?: SetType;
+  rpe?: number | null;
 }
 
 export interface Workout {
@@ -117,6 +124,9 @@ export interface ActiveSet {
   duration_seconds?: number | null;
   distance_m?: number | null;
   resistance?: number | null;
+  // Phase B — per-set type + intensity (rpe = raw 1-10; RIR = 10 - rpe).
+  set_type?: SetType;
+  rpe?: number | null;
 }
 
 export interface DashboardStats {
