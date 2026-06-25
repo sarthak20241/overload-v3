@@ -37,23 +37,35 @@ export function setTypeOf(value: string | null | undefined): SetType {
 }
 
 /**
+ * Whether a set occupies a working-set NUMBER. Warm-ups (prep) and drop sets
+ * (a continuation of the set before them) don't take a number; everything else
+ * does — a failure/negative/left/right set still counts as a working set, it
+ * just shows its letter instead of the number.
+ */
+export function countsAsWorkingSet(value: string | null | undefined): boolean {
+  const t = setTypeOf(value);
+  return t !== 'warmup' && t !== 'dropset';
+}
+
+/**
  * Renders the set's marker: the plain number for 'normal', else a tinted letter
  * tile. `numColor` styles the number (the caller controls done vs active tint).
  */
 export function SetTypeBadge({
   type,
-  index,
+  num,
   size = 22,
   numColor,
 }: {
   type: SetType;
-  index?: number;
+  /** Working-set number to show for a 'normal' set (already 1-based). */
+  num?: number;
   size?: number;
   numColor?: string;
 }) {
   const meta = SET_TYPE_META[type] ?? SET_TYPE_META.normal;
   if (!meta.letter) {
-    return <Text style={[s.num, numColor ? { color: numColor } : null]}>{(index ?? 0) + 1}</Text>;
+    return <Text style={[s.num, numColor ? { color: numColor } : null]}>{num ?? ''}</Text>;
   }
   return (
     <View style={[s.badge, { width: size, height: size, backgroundColor: colorWithAlpha(meta.color, 0.18) }]}>

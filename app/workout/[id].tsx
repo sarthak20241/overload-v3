@@ -28,8 +28,9 @@ import { hydrateCache, readCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import { useSync } from '@/components/SyncProvider';
 import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
-import { SetTypeBadge } from '@/components/workout/SetTypeBadge';
+import { SetTypeBadge, countsAsWorkingSet } from '@/components/workout/SetTypeBadge';
 import { SetTypeSheet } from '@/components/workout/SetTypeSheet';
+import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
@@ -145,6 +146,7 @@ export default function ActiveWorkoutScreen() {
   const [activeSetType, setActiveSetType] = useState<SetType>('normal');
   const [inputRpe, setInputRpe] = useState<number | null>(null);
   const [setTypeSheetIdx, setSetTypeSheetIdx] = useState<number | null>(null);
+  const [showRpeSheet, setShowRpeSheet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -1666,11 +1668,14 @@ export default function ActiveWorkoutScreen() {
       .map((s, realIdx) => ({ s, realIdx }))
       .filter((x) => x.s.completed)
       .map((x) => {
+        // Warmups (W) + drop sets (D) don't take a number; everything else counts
+        // as a working set (failure included) — but only `normal` shows the number,
+        // the rest show their letter. So [1][D][D][2] and [1][F][3] read like Hevy.
+        if (countsAsWorkingSet(x.s.set_type)) _workN += 1;
         const isNormal = (x.s.set_type ?? 'normal') === 'normal';
-        if (isNormal) _workN += 1;
         return { ...x, workNum: isNormal ? _workN : null };
       });
-    const completedNormal = _workN; // active normal set = completedNormal + 1
+    const completedWorking = _workN; // active counting set's number = completedWorking + 1
     const completed = currentEx.sets.filter(s => s.completed);
     const doneCount = completed.length;
 
@@ -1679,17 +1684,6 @@ export default function ActiveWorkoutScreen() {
     const rpeScale = prefs.intensityScale;
     const dispRpe = (r: number | null | undefined): string =>
       r == null ? '' : String(rpeScale === 'rir' ? 10 - r : r);
-    // Step the active set's RPE in the displayed scale's natural direction
-    // (+ = bigger number), stored always as raw RPE (1-10, 0.5 grid).
-    const stepRpe = (dir: 1 | -1) => setInputRpe((cur) => {
-      if (rpeScale === 'rir') {
-        const curRir = cur == null ? 2 : 10 - cur;
-        const nextRir = Math.min(9, Math.max(0, curRir + dir * 0.5));
-        return Math.round((10 - nextRir) * 2) / 2;
-      }
-      const base = cur == null ? 8 : cur;
-      return Math.min(10, Math.max(1, Math.round((base + dir * 0.5) * 2) / 2));
-    });
 
     // Phase A — the set table is driven by the exercise's measurement type.
     const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
@@ -1922,7 +1916,7 @@ export default function ActiveWorkoutScreen() {
                 {doneSets.map(({ s, realIdx, workNum }, i) => (
                   <Animated.View key={realIdx} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
                     <TouchableOpacity style={styles.colSet} onPress={() => { if (!isFinished) setSetTypeSheetIdx(realIdx); }} hitSlop={6} disabled={isFinished} accessibilityLabel={`Set ${i + 1} type`}>
-                      <SetTypeBadge type={s.set_type ?? 'normal'} index={(workNum ?? 1) - 1} numColor={C.textDim} />
+                      <SetTypeBadge type={s.set_type ?? 'normal'} num={workNum ?? undefined} numColor={C.textDim} />
                     </TouchableOpacity>
                     {showIntensity && (
                       <Text style={[styles.doneVal, styles.colRpe, { color: C.textMuted }]}>{dispRpe(s.rpe) || '–'}</Text>
@@ -1949,26 +1943,19 @@ export default function ActiveWorkoutScreen() {
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). */}
                       <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
-                        <SetTypeBadge type={activeSetType} index={completedNormal} numColor={C.accentText} />
+                        <SetTypeBadge type={activeSetType} num={completedWorking + 1} numColor={C.accentText} />
                       </TouchableOpacity>
 
-                      {/* Intensity (RPE / RIR) — a tappable number with a 0.5 stepper. */}
+                      {/* Intensity (RPE / RIR) — a tappable value that opens the picker. */}
                       {showIntensity && (
-                        <View style={[styles.colRpe, editField === 'rpe' && styles.colRpeOpen]}>
-                          {editField === 'rpe' && (
-                            <TouchableOpacity onPress={() => { haptics.tick(); stepRpe(-1); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
-                            </TouchableOpacity>
-                          )}
-                          <TouchableOpacity onPress={() => { Keyboard.dismiss(); setEditField('rpe'); if (inputRpe == null) setInputRpe(8); }} style={{ flex: editField === 'rpe' ? 1 : undefined, alignItems: 'center' }}>
-                            <Text numberOfLines={1} style={[styles.rpeVal, { color: inputRpe == null ? C.textMuted : C.foreground }]}>{inputRpe == null ? '+' : dispRpe(inputRpe)}</Text>
-                          </TouchableOpacity>
-                          {editField === 'rpe' && (
-                            <TouchableOpacity onPress={() => { haptics.tick(); stepRpe(1); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
-                            </TouchableOpacity>
-                          )}
-                        </View>
+                        <TouchableOpacity
+                          style={styles.colRpe}
+                          onPress={() => { Keyboard.dismiss(); setEditField(null); setShowRpeSheet(true); }}
+                          hitSlop={6}
+                          accessibilityLabel={rpeScale === 'rir' ? 'Set RIR' : 'Set RPE'}
+                        >
+                          <Text numberOfLines={1} style={[styles.rpeVal, { color: inputRpe == null ? C.textMuted : C.foreground }]}>{inputRpe == null ? '+' : dispRpe(inputRpe)}</Text>
+                        </TouchableOpacity>
                       )}
 
                       {/* One input cell per measurement axis. A plain bright value
@@ -2356,6 +2343,14 @@ export default function ActiveWorkoutScreen() {
         }}
         onRemove={() => { if (setTypeSheetIdx !== null && setTypeSheetIdx >= 0) handleDeleteSet(setTypeSheetIdx); }}
         onClose={() => setSetTypeSheetIdx(null)}
+      />
+
+      <RpePickerSheet
+        visible={showRpeSheet}
+        scale={prefs.intensityScale}
+        value={inputRpe}
+        onSelect={(r) => setInputRpe(r)}
+        onClose={() => setShowRpeSheet(false)}
       />
 
       {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
@@ -2963,10 +2958,10 @@ const styles = StyleSheet.create({
   colVal: { flex: 1, alignItems: 'center', minWidth: 0 },
   colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
   // Phase B intensity column — fixed width so the axis columns keep their layout.
-  colRpe: { width: 46, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
-  // While editing, the RPE cell grows so the −/value/+ fit on one line.
-  colRpeOpen: { width: undefined, minWidth: 110, gap: 2 },
-  rpeVal: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], textAlign: 'center', minWidth: 34 },
+  // RPE column holds a single tappable value (the picker opens as a sheet), so a
+  // narrow fixed width is enough and never wraps (numberOfLines={1}).
+  colRpe: { width: 40, alignItems: 'center', justifyContent: 'center' },
+  rpeVal: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], textAlign: 'center' },
   setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
   doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
