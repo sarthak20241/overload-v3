@@ -5,6 +5,15 @@
 -- New columns / RLS policies / extensions are added with `if not exists` /
 -- `do $$` guards so applying this against an established prod DB only adds
 -- what's missing.
+--
+-- SCOPE: this is the curated CORE schema (user_profiles, exercises, routines,
+-- routine_exercises, workouts, workout_sets, per-user lift/volume stats), kept
+-- readable with rationale comments. It is NOT the whole database. The AI-coach /
+-- research-KB, diet, admin, and monetization subsystems exist only as numbered
+-- migrations in supabase/migrations/, and a few subsystem columns on core tables
+-- live there too (e.g. user_profiles tier/purchase + macro-target fields). The
+-- live DB is the source of truth and is changed only by applying those migrations
+-- (via the Supabase MCP; never `db push`); run them in order to stand up a full DB.
 
 -- Enable UUID generation
 create extension if not exists "uuid-ossp";
@@ -125,8 +134,18 @@ create table if not exists workouts (
   duration_seconds integer,
   total_volume_kg numeric,
   notes text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Client-generated id for offline-create idempotency (migration 0038). Null
+  -- for rows created server-side or before the column existed; the partial unique
+  -- index below dedupes re-uploads of the same client row per user.
+  client_id uuid
 );
+
+-- Idempotent re-apply: client_id sits inside the create-if-not-exists block, so
+-- mirror it for databases where workouts predates 0038.
+alter table workouts add column if not exists client_id uuid;
+create unique index if not exists uq_workouts_client_id
+  on workouts(user_id, client_id) where client_id is not null;
 
 -- ─── Workout Sets ───────────────────────────────────────────────────────────
 create table if not exists workout_sets (
