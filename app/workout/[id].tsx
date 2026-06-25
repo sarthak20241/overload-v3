@@ -1658,7 +1658,19 @@ export default function ActiveWorkoutScreen() {
     const prevSets = currentEx.previousSets;
     // Done sets paired with their REAL index in currentEx.sets, so the type-badge
     // tap + delete target the right set even if an incomplete row sits earlier.
-    const doneSets = currentEx.sets.map((s, realIdx) => ({ s, realIdx })).filter((x) => x.s.completed);
+    // workNum is the working-set ordinal: only `normal` sets get a number; warmup/
+    // drop/etc. show their letter, so [1][D][D][2] reads like Hevy (the next normal
+    // set after drops is 2, not 4).
+    let _workN = 0;
+    const doneSets = currentEx.sets
+      .map((s, realIdx) => ({ s, realIdx }))
+      .filter((x) => x.s.completed)
+      .map((x) => {
+        const isNormal = (x.s.set_type ?? 'normal') === 'normal';
+        if (isNormal) _workN += 1;
+        return { ...x, workNum: isNormal ? _workN : null };
+      });
+    const completedNormal = _workN; // active normal set = completedNormal + 1
     const completed = currentEx.sets.filter(s => s.completed);
     const doneCount = completed.length;
 
@@ -1907,10 +1919,10 @@ export default function ActiveWorkoutScreen() {
 
                 {/* Done sets — settled history, receded. The set marker is the
                     type badge (tap to retype); warmups etc. read as W/D/F. */}
-                {doneSets.map(({ s, realIdx }, i) => (
+                {doneSets.map(({ s, realIdx, workNum }, i) => (
                   <Animated.View key={realIdx} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
                     <TouchableOpacity style={styles.colSet} onPress={() => { if (!isFinished) setSetTypeSheetIdx(realIdx); }} hitSlop={6} disabled={isFinished} accessibilityLabel={`Set ${i + 1} type`}>
-                      <SetTypeBadge type={s.set_type ?? 'normal'} index={i} numColor={C.textDim} />
+                      <SetTypeBadge type={s.set_type ?? 'normal'} index={(workNum ?? 1) - 1} numColor={C.textDim} />
                     </TouchableOpacity>
                     {showIntensity && (
                       <Text style={[styles.doneVal, styles.colRpe, { color: C.textMuted }]}>{dispRpe(s.rpe) || '–'}</Text>
@@ -1937,19 +1949,19 @@ export default function ActiveWorkoutScreen() {
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). */}
                       <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
-                        <SetTypeBadge type={activeSetType} index={doneCount} numColor={C.accentText} />
+                        <SetTypeBadge type={activeSetType} index={completedNormal} numColor={C.accentText} />
                       </TouchableOpacity>
 
                       {/* Intensity (RPE / RIR) — a tappable number with a 0.5 stepper. */}
                       {showIntensity && (
-                        <View style={[styles.colRpe, editField === 'rpe' && styles.activeCellRow]}>
+                        <View style={[styles.colRpe, editField === 'rpe' && styles.colRpeOpen]}>
                           {editField === 'rpe' && (
                             <TouchableOpacity onPress={() => { haptics.tick(); stepRpe(-1); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
                               <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
                             </TouchableOpacity>
                           )}
                           <TouchableOpacity onPress={() => { Keyboard.dismiss(); setEditField('rpe'); if (inputRpe == null) setInputRpe(8); }} style={{ flex: editField === 'rpe' ? 1 : undefined, alignItems: 'center' }}>
-                            <Text style={[styles.rpeVal, { color: inputRpe == null ? C.textMuted : C.foreground }]}>{inputRpe == null ? '+' : dispRpe(inputRpe)}</Text>
+                            <Text numberOfLines={1} style={[styles.rpeVal, { color: inputRpe == null ? C.textMuted : C.foreground }]}>{inputRpe == null ? '+' : dispRpe(inputRpe)}</Text>
                           </TouchableOpacity>
                           {editField === 'rpe' && (
                             <TouchableOpacity onPress={() => { haptics.tick(); stepRpe(1); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
@@ -2952,7 +2964,9 @@ const styles = StyleSheet.create({
   colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
   // Phase B intensity column — fixed width so the axis columns keep their layout.
   colRpe: { width: 46, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
-  rpeVal: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], textAlign: 'center' },
+  // While editing, the RPE cell grows so the −/value/+ fit on one line.
+  colRpeOpen: { width: undefined, minWidth: 110, gap: 2 },
+  rpeVal: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], textAlign: 'center', minWidth: 34 },
   setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
   doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
