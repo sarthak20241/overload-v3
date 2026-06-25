@@ -20,6 +20,7 @@ import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
 import { abbreviateNumber, formatWeight, formatDuration as formatSetDuration, formatDistanceKm } from '@/lib/format';
 import { metricTypeDef, metricTypeOf } from '@/lib/exercises';
 import type { MetricType } from '@/lib/exercises';
+import { SetTypeBadge, setTypeOf } from '@/components/workout/SetTypeBadge';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -51,7 +52,7 @@ const MONTH_FULL = [
 interface ExerciseDetail {
   name: string;
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null }[];
+  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
 }
 type HistorySet = ExerciseDetail['sets'][number];
 
@@ -547,11 +548,17 @@ function SessionCard({
                       {completedSets.map((set, si) => (
                         <View
                           key={si}
-                          style={[styles.setPill, { backgroundColor: C.muted }]}
+                          style={[styles.setPill, { backgroundColor: C.muted, flexDirection: 'row', alignItems: 'center', gap: 4 }]}
                         >
+                          {set.set_type && set.set_type !== 'normal' && (
+                            <SetTypeBadge type={setTypeOf(set.set_type)} size={15} />
+                          )}
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
                             {historySetLabel(mt, set)}
                           </Text>
+                          {set.rpe != null && (
+                            <Text style={[styles.setPillText, { color: C.textMuted }]}>@{set.rpe}</Text>
+                          )}
                         </View>
                       ))}
                     </View>
@@ -673,7 +680,7 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, exercises(name, metric_type))')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -688,7 +695,7 @@ export default function HistoryScreen() {
           if (!exerciseMap[exId]) {
             exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, sets: [] };
           }
-          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance });
+          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe });
         });
         return {
           ...w,

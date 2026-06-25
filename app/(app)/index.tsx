@@ -430,6 +430,7 @@ export default function DashboardScreen() {
       const prs: string[] = [];
       for (const s of (w.sets || []) as any[]) {
         if (!s.completed) continue;
+        if (s.set_type === 'warmup') continue; // warmups never flag a PR
         const exId = s.exercise_id || s.exercises?.id;
         const exName = s.exercises?.name;
         if (!exId || !exName || s.weight_kg <= 0 || s.reps <= 0) continue;

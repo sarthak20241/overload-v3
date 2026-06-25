@@ -21,6 +21,8 @@ import { getPendingWorkouts, updatePendingWorkout, hydrateSyncQueue, type Pendin
 import { getPendingEdit, enqueueEdit, hydrateEditQueue, type PendingEditExercise } from '@/lib/editQueue';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { metricTypeOf, metricTypeDef, type ExerciseDef, type MetricType, type MetricAxis } from '@/lib/exercises';
+import type { SetType } from '@/lib/types';
+import { SET_TYPE_META } from '@/components/workout/SetTypeBadge';
 
 type Backend = 'guest' | 'pending' | 'synced';
 
@@ -28,7 +30,7 @@ type Backend = 'guest' | 'pending' | 'synced';
 // field, partial decimals); they're parsed back to numbers on save.
 // Strings so typing feels natural; duration is "m:ss", distance is km. Only the
 // axes the exercise's metric_type uses are rendered/parsed.
-interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string }
+interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string; set_type: SetType; rpe: string }
 interface EditExercise {
   uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
@@ -50,6 +52,8 @@ const mkSet = (
   durationSeconds?: number | null,
   distanceM?: number | null,
   resistance?: number | null,
+  setType?: string | null,
+  rpe?: number | null,
 ): EditSet => ({
   uid: `set-${_setSeq++}`,
   weight: String(weight),
@@ -57,6 +61,8 @@ const mkSet = (
   duration: durationSeconds ? fmtDur(durationSeconds) : '',
   distance: distanceM ? formatDistanceKm(distanceM).replace(/[^\d.]/g, '') : '',
   resistance: resistance != null ? String(resistance) : '',
+  set_type: (setType && setType in SET_TYPE_META ? setType : 'normal') as SetType,
+  rpe: rpe != null ? String(rpe) : '',
 });
 
 let _exSeq = 0;
@@ -136,7 +142,7 @@ export default function EditWorkoutScreen() {
         };
         map.set(exId, ex);
       }
-      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance));
+      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe));
     }
     return [...map.values()];
   };
@@ -163,7 +169,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.muscle_group,
             category: ex.category,
             metric_type: ex.metric_type,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
           setLoading(false);
@@ -191,7 +197,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
           setLoading(false);
@@ -218,7 +224,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
           setMeta(cacheMeta);
@@ -230,7 +236,7 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, exercises(id, name, muscle_group, category, metric_type))')
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -259,7 +265,7 @@ export default function EditWorkoutScreen() {
               muscle_group: ex.muscle_group,
               category: ex.category,
               metric_type: ex.metric_type,
-              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance)),
+              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
             setMeta(cacheMeta);
@@ -346,6 +352,8 @@ export default function EditWorkoutScreen() {
             duration_seconds: usesDuration ? parseDuration(s.duration) : null,
             distance_m: usesDistance ? parseDistanceKm(s.distance) : null,
             resistance: usesResistance ? (parseFloat(s.resistance) || 0) : null,
+            set_type: s.set_type ?? 'normal',
+            rpe: s.rpe ? parseFloat(s.rpe) : null,
           }))
           .filter((s) =>
             (usesReps && s.reps > 0) ||
@@ -361,7 +369,9 @@ export default function EditWorkoutScreen() {
       toast.error('Add at least one set, or delete the workout from History.');
       return;
     }
-    const newVolume = roundVolume(allSets.reduce((s, x) => s + x.weight_kg * x.reps, 0));
+    // Warmups persist as rows but are excluded from total_volume_kg (match the
+    // logger + server recompute, migration 0053).
+    const newVolume = roundVolume(allSets.reduce((s, x) => s + (x.set_type === 'warmup' ? 0 : x.weight_kg * x.reps), 0));
     const cleanName = name.trim() || 'Workout';
     const cleanNotes = notes.trim() ? notes.trim() : null;
 
@@ -383,6 +393,7 @@ export default function EditWorkoutScreen() {
             sets: e.sets.map((s) => ({
               weight_kg: s.weight_kg, reps: s.reps,
               duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
+              set_type: s.set_type, rpe: s.rpe,
             })),
           })),
         };
@@ -411,6 +422,7 @@ export default function EditWorkoutScreen() {
         sets: e.sets.map((s, idx) => ({
           weight_kg: s.weight_kg, reps: s.reps, order: idx,
           duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
+          set_type: s.set_type, rpe: s.rpe,
         })),
       }));
 

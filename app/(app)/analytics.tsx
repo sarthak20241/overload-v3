@@ -1219,7 +1219,7 @@ export default function AnalyticsScreen() {
     const sessions = workouts.slice().reverse();
     const byDate: { date: string; weight: number; volume: number }[] = [];
     sessions.forEach((w) => {
-      const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === selectedExercise);
+      const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === selectedExercise && (s as any).set_type !== 'warmup');
       if (sets.length === 0) return;
       const maxWeight = Math.max(...sets.map((s) => s.weight_kg || 0));
       const volume = sets.reduce((v, s) => v + (s.weight_kg || 0) * (s.reps || 0), 0);
@@ -1241,7 +1241,7 @@ export default function AnalyticsScreen() {
     allExerciseNames.forEach((name) => {
       const sessions: { date: string; weight: number }[] = [];
       workouts.slice().reverse().forEach((w) => {
-        const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === name);
+        const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === name && (s as any).set_type !== 'warmup');
         if (sets.length > 0) {
           sessions.push({ date: w.started_at, weight: Math.max(...sets.map((s) => s.weight_kg || 0)) });
         }

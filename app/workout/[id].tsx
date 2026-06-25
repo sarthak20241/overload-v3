@@ -27,7 +27,9 @@ import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/
 import { hydrateCache, readCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import { useSync } from '@/components/SyncProvider';
-import type { ActiveWorkoutExercise, ActiveSet } from '@/lib/types';
+import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
+import { SetTypeBadge } from '@/components/workout/SetTypeBadge';
+import { SetTypeSheet } from '@/components/workout/SetTypeSheet';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
@@ -137,7 +139,12 @@ export default function ActiveWorkoutScreen() {
   // Which field in the active set row is "open" for adjustment. Null = the row
   // is a clean glance-and-confirm row; tapping a number opens that one field's
   // −/+ (and focuses it for optional typing), leaving the other a plain number.
-  const [editField, setEditField] = useState<null | 'weight' | 'reps' | 'duration' | 'distance' | 'resistance'>(null);
+  const [editField, setEditField] = useState<null | 'weight' | 'reps' | 'duration' | 'distance' | 'resistance' | 'rpe'>(null);
+  // Phase B — the not-yet-logged set's type + intensity, and which set's badge
+  // opened the Set Type sheet (-1 = the active set; >=0 = a done set's real index).
+  const [activeSetType, setActiveSetType] = useState<SetType>('normal');
+  const [inputRpe, setInputRpe] = useState<number | null>(null);
+  const [setTypeSheetIdx, setSetTypeSheetIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -538,6 +545,9 @@ export default function ActiveWorkoutScreen() {
       // (and the typed fallback) so it never bleeds into the next exercise.
       resetStopwatch();
       setInputDuration('0:00');
+      // Per-set type + intensity are per-set; don't bleed across exercises.
+      setActiveSetType('normal');
+      setInputRpe(null);
     }
   }, [currentIdx, resetStopwatch]);
 
@@ -667,13 +677,16 @@ export default function ActiveWorkoutScreen() {
 
     // A weight PR: this set beats the best weight seen on this lift (previous
     // sessions + earlier sets today). Celebrate it instead of the plain tap.
+    // previousSets is already warmup-free (filtered at the source); exclude this
+    // session's warmups too so a light primer never sets the bar for a PR.
     const prevBest = Math.max(
       0,
       ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
-      ...currentEx.sets.filter(s => s.completed).map(s => s.weight_kg),
+      ...currentEx.sets.filter(s => s.completed && s.set_type !== 'warmup').map(s => s.weight_kg),
     );
-    // Only a PR if there's a prior record to beat (don't celebrate a brand-new lift's first set).
-    const isPR = weight > 0 && (currentEx.previousSets?.length ?? 0) > 0 && weight > prevBest;
+    // Only a PR if there's a prior record to beat, and warmups never count.
+    const isPR = weight > 0 && activeSetType !== 'warmup'
+      && (currentEx.previousSets?.length ?? 0) > 0 && weight > prevBest;
     if (isPR) {
       haptics.success();
       setPrCelebrate(true);
@@ -695,6 +708,8 @@ export default function ActiveWorkoutScreen() {
       duration_seconds: usesDuration ? durationSecs : null,
       distance_m: usesDistance ? parseDistanceKm(inputDistance) : null,
       resistance: usesResistance ? (parseFloat(inputResistance) || 0) : null,
+      set_type: activeSetType,
+      rpe: prefs.intensityTrackingEnabled ? inputRpe : null,
     };
 
     // Find first incomplete set or add new
@@ -721,6 +736,9 @@ export default function ActiveWorkoutScreen() {
       resetStopwatch();
       setInputDuration('0:00');
     }
+    // Per-set type + intensity reset to defaults for the next set.
+    setActiveSetType('normal');
+    setInputRpe(null);
   };
 
   // Finish current exercise
@@ -774,16 +792,19 @@ export default function ActiveWorkoutScreen() {
     try {
       const { data: rows } = await supabase
         .from('workout_sets')
-        .select('weight_kg, reps, "order", workout_id, workouts!inner(finished_at)')
+        .select('weight_kg, reps, "order", set_type, workout_id, workouts!inner(finished_at)')
         .eq('exercise_id', resolvedId)
         .not('workouts.finished_at', 'is', null);
       if (!rows || rows.length === 0) return undefined;
+      // Warmups never seed prefill / PR comparison.
+      const working = (rows as any[]).filter(r => r.set_type !== 'warmup');
+      if (working.length === 0) return undefined;
       // Sort client-side by workouts.finished_at DESC. PostgREST's
       // .order('finished_at', { foreignTable: 'workouts' }) silently no-ops
       // (workout_sets has no finished_at column), so trusting rows[0] would
       // return whichever workout Postgres happened to scan first — usually
       // the OLDEST one. Sorting locally guarantees most-recent first.
-      const sorted = (rows as any[]).slice().sort((a, b) => {
+      const sorted = working.slice().sort((a, b) => {
         const af = String(a.workouts?.finished_at ?? '');
         const bf = String(b.workouts?.finished_at ?? '');
         return bf.localeCompare(af);
@@ -1342,7 +1363,10 @@ export default function ActiveWorkoutScreen() {
       const workoutName = opts?.name?.trim() || workout.routineName;
       const workoutNotes = opts?.notes?.trim() || null;
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
-      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0));
+      // Warmups are saved as rows but excluded from total_volume_kg, to match the
+      // live display + the server recompute (migration 0053). allCompleted stays
+      // unfiltered for the set-count + per-set inserts below.
+      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + (s.set_type === 'warmup' ? 0 : s.weight_kg * s.reps), 0));
 
       // Create the routine first (when requested) so the workout row can link
       // to it — that link is what feeds "previous session" the next time the
@@ -1392,6 +1416,7 @@ export default function ActiveWorkoutScreen() {
                 weight_kg: s.weight_kg, reps: s.reps,
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
                 resistance: s.resistance ?? null,
+                set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
               })),
             })),
         });
@@ -1438,6 +1463,8 @@ export default function ActiveWorkoutScreen() {
               duration_seconds: s.duration_seconds ?? null,
               distance_m: s.distance_m ?? null,
               resistance: s.resistance ?? null,
+              set_type: s.set_type ?? 'normal',
+              rpe: s.rpe ?? null,
             })),
         }));
 
@@ -1494,8 +1521,10 @@ export default function ActiveWorkoutScreen() {
 
   // Computed
   const completedSets = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
+  // Warmups are excluded from working volume to match the server recompute
+  // (migration 0053), so the optimistic total stays consistent with the trigger.
   const totalVolume = roundVolume(exercises
-    .flatMap(e => e.sets.filter(s => s.completed).map(s => s.weight_kg * s.reps))
+    .flatMap(e => e.sets.filter(s => s.completed && s.set_type !== 'warmup').map(s => s.weight_kg * s.reps))
     .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
 
@@ -1627,8 +1656,28 @@ export default function ActiveWorkoutScreen() {
     const isStarted = exerciseStarted[idx];
     const isFinished = exerciseFinished[idx];
     const prevSets = currentEx.previousSets;
+    // Done sets paired with their REAL index in currentEx.sets, so the type-badge
+    // tap + delete target the right set even if an incomplete row sits earlier.
+    const doneSets = currentEx.sets.map((s, realIdx) => ({ s, realIdx })).filter((x) => x.s.completed);
     const completed = currentEx.sets.filter(s => s.completed);
     const doneCount = completed.length;
+
+    // Phase B — intensity column (RPE/RIR), shown only when the pref is on.
+    const showIntensity = prefs.intensityTrackingEnabled;
+    const rpeScale = prefs.intensityScale;
+    const dispRpe = (r: number | null | undefined): string =>
+      r == null ? '' : String(rpeScale === 'rir' ? 10 - r : r);
+    // Step the active set's RPE in the displayed scale's natural direction
+    // (+ = bigger number), stored always as raw RPE (1-10, 0.5 grid).
+    const stepRpe = (dir: 1 | -1) => setInputRpe((cur) => {
+      if (rpeScale === 'rir') {
+        const curRir = cur == null ? 2 : 10 - cur;
+        const nextRir = Math.min(9, Math.max(0, curRir + dir * 0.5));
+        return Math.round((10 - nextRir) * 2) / 2;
+      }
+      const base = cur == null ? 8 : cur;
+      return Math.min(10, Math.max(1, Math.round((base + dir * 0.5) * 2) / 2));
+    });
 
     // Phase A — the set table is driven by the exercise's measurement type.
     const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
@@ -1689,15 +1738,9 @@ export default function ActiveWorkoutScreen() {
                 onBlur={() => { setEditField((p) => (p === 'duration' ? null : p)); kbScrollTargetRef.current = null; }}
               />
             )}
-            {/* Inline reset only when duration is the sole axis — on a stopwatch +
-                second-axis row (distance/weight/resistance + time) it has no room
-                and would collide with the commit ✓. There, reset = tap the time and
-                type 0:00 (plus the auto-reset on log / exercise change). */}
-            {!swRunning && hasValue && axes.length === 1 && (
-              <TouchableOpacity onPress={() => { haptics.tick(); resetStopwatch(); setInputDuration('0:00'); }} hitSlop={6} accessibilityLabel="Reset timer">
-                <Feather name="rotate-ccw" size={13} color={C.textMuted} />
-              </TouchableOpacity>
-            )}
+            {/* Reset moved OUT of the cell — it lives on its own line below the set
+                row (see resetTimerBtn), so it can never collide with the commit ✓
+                on a stopwatch + second-axis row (the bug it used to cause). */}
           </View>
         );
       }
@@ -1853,23 +1896,32 @@ export default function ActiveWorkoutScreen() {
                 )}
                 <View style={styles.setHeadRow}>
                   <Text style={[styles.setHeadCell, styles.colSet, { color: C.textDim }]}>SET</Text>
+                  {showIntensity && (
+                    <Text style={[styles.setHeadCell, styles.colRpe, { color: C.textDim }]}>{rpeScale === 'rir' ? 'RIR' : 'RPE'}</Text>
+                  )}
                   {axes.map((a) => (
                     <Text key={a} style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>{axisHeader(a)}</Text>
                   ))}
                   <View style={styles.colCheck} />
                 </View>
 
-                {/* Done sets — settled history, receded. */}
-                {completed.map((s, i) => (
-                  <Animated.View key={i} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
-                    <Text style={[styles.setNum, styles.colSet, { color: C.textDim }]}>{i + 1}</Text>
+                {/* Done sets — settled history, receded. The set marker is the
+                    type badge (tap to retype); warmups etc. read as W/D/F. */}
+                {doneSets.map(({ s, realIdx }, i) => (
+                  <Animated.View key={realIdx} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
+                    <TouchableOpacity style={styles.colSet} onPress={() => { if (!isFinished) setSetTypeSheetIdx(realIdx); }} hitSlop={6} disabled={isFinished} accessibilityLabel={`Set ${i + 1} type`}>
+                      <SetTypeBadge type={s.set_type ?? 'normal'} index={i} numColor={C.textDim} />
+                    </TouchableOpacity>
+                    {showIntensity && (
+                      <Text style={[styles.doneVal, styles.colRpe, { color: C.textMuted }]}>{dispRpe(s.rpe) || '–'}</Text>
+                    )}
                     {axes.map((a) => (
                       <Text key={a} style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{axisDoneValue(a, s)}</Text>
                     ))}
                     {isFinished ? (
                       <View style={styles.colCheck}><Feather name="check" size={14} color={C.accentText} /></View>
                     ) : (
-                      <TouchableOpacity onPress={() => handleDeleteSet(i)} style={styles.colCheck} hitSlop={6} accessibilityLabel={`Delete set ${i + 1}`}>
+                      <TouchableOpacity onPress={() => handleDeleteSet(realIdx)} style={styles.colCheck} hitSlop={6} accessibilityLabel={`Delete set ${i + 1}`}>
                         <Feather name="x" size={12} color={Colors.danger} />
                       </TouchableOpacity>
                     )}
@@ -1883,7 +1935,29 @@ export default function ActiveWorkoutScreen() {
                       ref={interactive ? inputCardRef : undefined}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
                     >
-                      <Text style={[styles.setNum, styles.colSet, { color: C.accentText }]}>{doneCount + 1}</Text>
+                      {/* Set marker — tap to set the type (warmup/drop/failure/...). */}
+                      <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
+                        <SetTypeBadge type={activeSetType} index={doneCount} numColor={C.accentText} />
+                      </TouchableOpacity>
+
+                      {/* Intensity (RPE / RIR) — a tappable number with a 0.5 stepper. */}
+                      {showIntensity && (
+                        <View style={[styles.colRpe, editField === 'rpe' && styles.activeCellRow]}>
+                          {editField === 'rpe' && (
+                            <TouchableOpacity onPress={() => { haptics.tick(); stepRpe(-1); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+                            </TouchableOpacity>
+                          )}
+                          <TouchableOpacity onPress={() => { Keyboard.dismiss(); setEditField('rpe'); if (inputRpe == null) setInputRpe(8); }} style={{ flex: editField === 'rpe' ? 1 : undefined, alignItems: 'center' }}>
+                            <Text style={[styles.rpeVal, { color: inputRpe == null ? C.textMuted : C.foreground }]}>{inputRpe == null ? '+' : dispRpe(inputRpe)}</Text>
+                          </TouchableOpacity>
+                          {editField === 'rpe' && (
+                            <TouchableOpacity onPress={() => { haptics.tick(); stepRpe(1); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+                              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      )}
 
                       {/* One input cell per measurement axis. A plain bright value
                           until tapped; tapping focuses it (keypad) and reveals its −/+. */}
@@ -1893,6 +1967,19 @@ export default function ActiveWorkoutScreen() {
                         <Feather name="check" size={18} color={Colors.primaryFg} />
                       </TouchableOpacity>
                     </View>
+
+                    {/* Reset stopwatch — on its own full-width line so it never
+                        crowds the commit ✓ (any stopwatch type, paused with a value). */}
+                    {prefs.inlineTimerForDuration && axes.includes('duration') && !swRunning && swElapsed > 0 && (
+                      <TouchableOpacity
+                        onPress={() => { haptics.tick(); resetStopwatch(); setInputDuration('0:00'); }}
+                        style={styles.resetTimerBtn}
+                        accessibilityLabel="Reset timer"
+                      >
+                        <Feather name="rotate-ccw" size={13} color={C.textMuted} />
+                        <Text style={[styles.resetTimerText, { color: C.textMuted }]}>Reset timer</Text>
+                      </TouchableOpacity>
+                    )}
 
                     {/* Always present so the layout never collapses under the
                         active row. Falls back in Drona's voice once you've gone
@@ -2238,6 +2325,26 @@ export default function ActiveWorkoutScreen() {
       />
 
       <WorkoutSettingsSheet visible={showSettings} onClose={() => setShowSettings(false)} />
+
+      <SetTypeSheet
+        visible={setTypeSheetIdx !== null}
+        currentType={
+          setTypeSheetIdx === null ? 'normal'
+          : setTypeSheetIdx < 0 ? activeSetType
+          : (currentEx?.sets[setTypeSheetIdx]?.set_type ?? 'normal')
+        }
+        canRemove={setTypeSheetIdx !== null && setTypeSheetIdx >= 0}
+        onSelect={(t) => {
+          if (setTypeSheetIdx === null) return;
+          if (setTypeSheetIdx < 0) { setActiveSetType(t); return; }
+          const idx = setTypeSheetIdx;
+          workout.updateExercises(prev => prev.map((e, ei) =>
+            ei !== currentIdx ? e : { ...e, sets: e.sets.map((s, si) => si === idx ? { ...s, set_type: t } : s) }
+          ));
+        }}
+        onRemove={() => { if (setTypeSheetIdx !== null && setTypeSheetIdx >= 0) handleDeleteSet(setTypeSheetIdx); }}
+        onClose={() => setSetTypeSheetIdx(null)}
+      />
 
       {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
           other sheets. Lets the user name the session (pre-filled from the
@@ -2840,9 +2947,12 @@ const styles = StyleSheet.create({
   setTable: { marginBottom: Spacing.xl },
   setHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
   setHeadCell: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5, textAlign: 'center' },
-  colSet: { width: 30, textAlign: 'center' },
+  colSet: { width: 30, textAlign: 'center', alignItems: 'center', justifyContent: 'center' },
   colVal: { flex: 1, alignItems: 'center', minWidth: 0 },
   colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
+  // Phase B intensity column — fixed width so the axis columns keep their layout.
+  colRpe: { width: 46, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
+  rpeVal: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], textAlign: 'center' },
   setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
   doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
@@ -2858,6 +2968,8 @@ const styles = StyleSheet.create({
   swTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 40, flexShrink: 1, textAlign: 'center' },
   swTimeInput: { height: 40, borderRadius: Radius.sm, paddingHorizontal: 6 },
   commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
+  resetTimerBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, marginTop: 10 },
+  resetTimerText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },
   bottomStatItem: { alignItems: 'center' },
   bottomStatValue: { fontSize: FontSize.base, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] as any },
