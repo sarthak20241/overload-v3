@@ -55,14 +55,16 @@ function findFirst(dir: string, filename: string): string | null {
   return null;
 }
 
-// USDA food_category_id -> our FoodCategory (drop ids not listed = junk for us:
-// 3 Baby, 21 Fast Food, 24 American Indian, 25 Restaurant, 26 Branded, 27 QC).
+// USDA food_category_id -> our FoodCategory. Only true junk is dropped: 3 Baby
+// Foods, 26 Branded, 27 Quality Control. Fast Foods (21), Restaurant Foods (25),
+// and American Indian/Alaska Native (24) are KEPT — people log fast-food and
+// restaurant meals.
 const CATEGORY_MAP: Record<string, string> = {
   '1': 'dairy', '2': 'condiment', '4': 'fat_oil', '5': 'protein', '6': 'prepared_dish',
   '7': 'protein', '8': 'grain', '9': 'fruit', '10': 'protein', '11': 'vegetable',
   '12': 'nuts_seeds', '13': 'protein', '14': 'beverage', '15': 'protein', '16': 'legume',
-  '17': 'protein', '18': 'grain', '19': 'sweet', '20': 'grain', '22': 'prepared_dish',
-  '23': 'snack',
+  '17': 'protein', '18': 'grain', '19': 'sweet', '20': 'grain', '21': 'prepared_dish',
+  '22': 'prepared_dish', '23': 'snack', '24': 'other', '25': 'prepared_dish',
 };
 
 // nutrient_id -> column field
