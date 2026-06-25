@@ -90,7 +90,28 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
               onValueChange={(v) => setPreference('inlineTimerForDuration', v)}
             />
 
-            {/* Phase B adds: "Track intensity (RPE / RIR)" → intensityTrackingEnabled + intensityScale */}
+            <SectionLabel color={C.textMuted}>Intensity</SectionLabel>
+
+            <ToggleRow
+              icon={<Feather name="activity" size={15} color={C.foreground} />}
+              tint={C.muted}
+              title="Track intensity"
+              subtitle="Adds an RPE / RIR column to every set."
+              value={prefs.intensityTrackingEnabled}
+              onValueChange={(v) => setPreference('intensityTrackingEnabled', v)}
+            />
+
+            {prefs.intensityTrackingEnabled && (
+              <ChoiceRow
+                icon={<Feather name="sliders" size={15} color={C.foreground} />}
+                tint={C.muted}
+                title="Scale"
+                subtitle="RIR counts reps left in the tank; RPE rates effort out of 10."
+                options={[{ value: 'rir', label: 'RIR' }, { value: 'rpe', label: 'RPE' }]}
+                value={prefs.intensityScale}
+                onChange={(v) => setPreference('intensityScale', v)}
+              />
+            )}
           </ScrollView>
         </Pressable>
       </Animated.View>
@@ -133,11 +154,52 @@ function ToggleRow({ icon, tint, title, subtitle, value, onValueChange }: Toggle
   );
 }
 
+interface ChoiceRowProps<T extends string> {
+  icon: ReactNode;
+  tint: string;
+  title: string;
+  subtitle?: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}
+
+function ChoiceRow<T extends string>({ icon, tint, title, subtitle, options, value, onChange }: ChoiceRowProps<T>) {
+  const { C } = useTheme();
+  return (
+    <View style={[s.row, { borderColor: C.borderSubtle }]}>
+      <View style={[s.rowIcon, { backgroundColor: tint }]}>{icon}</View>
+      <View style={{ flex: 1 }}>
+        <Text style={[s.rowTitle, { color: C.foreground }]}>{title}</Text>
+        {subtitle ? <Text style={[s.rowSub, { color: C.textMuted }]}>{subtitle}</Text> : null}
+      </View>
+      <View style={[s.seg, { borderColor: C.border, backgroundColor: C.muted }]}>
+        {options.map((opt) => {
+          const active = opt.value === value;
+          return (
+            <TouchableOpacity
+              key={opt.value}
+              onPress={() => { haptics.selection(); onChange(opt.value); }}
+              activeOpacity={0.85}
+              style={[s.segOption, active && { backgroundColor: Colors.primary }]}
+            >
+              <Text style={[s.segText, { color: active ? Colors.primaryFg : C.textMuted }]}>{opt.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'flex-end',
   },
+  seg: { flexDirection: 'row', borderWidth: 1, borderRadius: Radius.md, overflow: 'hidden' },
+  segOption: { paddingHorizontal: 14, paddingVertical: 6, alignItems: 'center', justifyContent: 'center' },
+  segText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   sheet: {
     borderTopLeftRadius: Radius.xxl,
     borderTopRightRadius: Radius.xxl,
