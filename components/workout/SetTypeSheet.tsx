@@ -85,7 +85,7 @@ export function SetTypeSheet({ visible, currentType, onSelect, onRemove, onClose
                 </TouchableOpacity>
               </View>
 
-              <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" delaysContentTouches={false}>
+              <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" canCancelContentTouches={false}>
                 <Text style={[s.sectionLabel, { color: C.textMuted }]}>Common</Text>
                 {COMMON.map((t) => <Row key={t} t={t} />)}
                 <Text style={[s.sectionLabel, { color: C.textMuted, marginTop: Spacing.md }]}>More</Text>

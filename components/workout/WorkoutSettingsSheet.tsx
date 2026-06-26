@@ -69,7 +69,7 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" delaysContentTouches={false}>
+          <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" canCancelContentTouches={false}>
             <SectionLabel color={C.textMuted}>During workout</SectionLabel>
 
             <ToggleRow
