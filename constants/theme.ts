@@ -143,6 +143,17 @@ export const Colors = {
     max: '#facc15', // 3+ sessions
   },
 
+  // Macro accents (diet day-view rings, food rows). Categorical, theme-independent,
+  // in the muted register of `muscle`. Calories graphite reads as the neutral primary;
+  // protein/carbs/fat are earthy and co-equal — lime is reserved for the one action,
+  // never for data (see feedback: calm/mature, not flashy).
+  macro: {
+    calories: '#2c2c26',
+    protein: '#b4623c',
+    carbs: '#6f7b85',
+    fat: '#be9a4a',
+  } as Record<string, string>,
+
   // Paused / warning amber (mini-bar paused badge, workout pause state).
   paused: '#fbbf24',
 
@@ -204,6 +215,7 @@ export const FontSize = {
   xxl: 22,
   xxxl: 28,
   display: 36,
+  hero: 44, // the single biggest number on a screen (e.g. a day's calorie total)
 };
 
 export const FontWeight = {
@@ -212,6 +224,18 @@ export const FontWeight = {
   semibold: '600' as const,
   bold: '700' as const,
   black: '900' as const,
+};
+
+// Letter-spacing scale. The app tracks titles/big numbers tight and all-caps
+// labels wide; naming the values keeps them consistent instead of hand-tuned
+// per screen. Use with numbers that also carry tabular figures.
+export const LetterSpacing = {
+  tight: -0.5, // screen titles, hero/big numbers
+  snug: -0.2, // subtitles, large body
+  normal: 0,
+  label: 0.6, // stat-card labels
+  eyebrow: 1.5, // section labels (all-caps)
+  caps: 2, // greeting / wide all-caps
 };
 
 // Shadow presets
