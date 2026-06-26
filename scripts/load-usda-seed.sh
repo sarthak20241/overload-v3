@@ -26,8 +26,9 @@ post() { # $1 = sql file; echoes "HTTPCODE\nbody"
 }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-# split before each foods-insert: each chunk = one foods upsert + its servings insert
-csplit -s -z -f "$TMP/chunk_" -b '%03d.sql' "$SEED" '/^insert into public.foods/' '{*}'
+# split before each foods-insert: each chunk = one foods upsert + its servings insert.
+# (portable awk, not csplit — macOS csplit lacks GNU -z/{*}.)
+awk -v dir="$TMP" '/^insert into public\.foods/{n++} n>0{print > sprintf("%s/chunk_%03d.sql", dir, n)}' "$SEED"
 
 n=0; ok=0
 for f in "$TMP"/chunk_*.sql; do
