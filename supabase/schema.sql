@@ -153,7 +153,7 @@ create table if not exists workout_sets (
   workout_id uuid not null references workouts(id) on delete cascade,
   exercise_id uuid not null references exercises(id) on delete cascade,
   weight_kg numeric not null default 0,
-  reps integer not null default 0,
+  reps numeric not null default 0,
   completed boolean not null default false,
   "order" integer not null default 0,
   -- Phase A non-weight/rep axes (migrations 0044, 0052). Nullable; only the axes
@@ -452,9 +452,9 @@ create table if not exists user_lift_stats (
   muscle_group      text          not null,
   estimated_1rm     numeric(10, 2),
   top_set_weight    numeric(10, 2),
-  top_set_reps      integer,
+  top_set_reps      numeric,
   last_set_weight   numeric(10, 2),
-  last_set_reps     integer,
+  last_set_reps     numeric,
   last_performed_at timestamptz,
   sessions_last_28d integer       not null default 0,
   updated_at        timestamptz   not null default now(),
@@ -521,9 +521,9 @@ declare
   v_metric_type   text;
   v_e1rm          numeric(10, 2);
   v_top_weight    numeric(10, 2);
-  v_top_reps      integer;
+  v_top_reps      numeric;
   v_last_weight   numeric(10, 2);
-  v_last_reps     integer;
+  v_last_reps     numeric;
   v_last_at       timestamptz;
   v_sessions_28d  integer;
 begin

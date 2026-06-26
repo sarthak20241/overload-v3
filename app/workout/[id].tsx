@@ -675,7 +675,7 @@ export default function ActiveWorkoutScreen() {
     const usesDistance = axes.includes('distance');
     const usesResistance = axes.includes('resistance');
     const weight = usesWeight ? (parseFloat(inputWeight) || 0) : 0;
-    const reps = usesReps ? (parseInt(inputReps) || 0) : 0;
+    const reps = usesReps ? (parseFloat(inputReps) || 0) : 0;
 
     // A weight PR: this set beats the best weight seen on this lift (previous
     // sessions + earlier sets today). Celebrate it instead of the plain tap.
@@ -1767,11 +1767,12 @@ export default function ActiveWorkoutScreen() {
           }
         : a === 'reps'
         ? {
+            // decimal-pad so a partial rep (e.g. 8.5) can be typed; ± steps stay whole.
             value: inputReps,
             onChangeText: setInputReps,
-            keyboardType: 'number-pad' as const,
-            dec: () => setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1))),
-            inc: () => setInputReps(String((parseInt(inputReps) || 0) + 1)),
+            keyboardType: 'decimal-pad' as const,
+            dec: () => setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))),
+            inc: () => setInputReps(String((parseFloat(inputReps) || 0) + 1)),
           }
         : a === 'duration'
         ? {

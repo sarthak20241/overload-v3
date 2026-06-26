@@ -348,7 +348,7 @@ export default function EditWorkoutScreen() {
         const sets = ex.sets
           .map((s) => ({
             weight_kg: Math.max(0, parseFloat(s.weight) || 0),
-            reps: Math.max(0, parseInt(s.reps, 10) || 0),
+            reps: Math.max(0, parseFloat(s.reps) || 0),
             duration_seconds: usesDuration ? parseDuration(s.duration) : null,
             distance_m: usesDistance ? parseDistanceKm(s.distance) : null,
             resistance: usesResistance ? (parseFloat(s.resistance) || 0) : null,
@@ -593,9 +593,8 @@ export default function EditWorkoutScreen() {
                     <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
                     {metricTypeDef(ex.metric_type).axes.map((a) => {
                       const field = axisField(a);
-                      const kbd = a === 'reps' ? 'number-pad'
-                        : a === 'duration' ? (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default')
-                        : 'decimal-pad';
+                      const kbd = a === 'duration' ? (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default')
+                        : 'decimal-pad'; // reps included — allow partial reps like 8.5
                       return (
                         <TextInput
                           key={a}
