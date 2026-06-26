@@ -31,6 +31,7 @@ import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
 import { SetTypeBadge, countsAsWorkingSet } from '@/components/workout/SetTypeBadge';
 import { SetTypeSheet } from '@/components/workout/SetTypeSheet';
 import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
+import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
@@ -163,7 +164,6 @@ export default function ActiveWorkoutScreen() {
   const { exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished, currentIdx, setCurrentIdx } = workout;
   // Alert states
   const [showCancelAlert, setShowCancelAlert] = useState(false);
-  const [showFinishAlert, setShowFinishAlert] = useState(false);
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   // Prompt shown when a second routine is requested mid-session (see
@@ -172,15 +172,17 @@ export default function ActiveWorkoutScreen() {
   const [showSwitchAlert, setShowSwitchAlert] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [finishSetCount, setFinishSetCount] = useState(0);
-  // Finish sheet for blank workouts ("New Workout" sessions with no routine):
-  // lets the user name the session before it lands in history, add notes, and
-  // optionally save the performed exercises as a reusable routine. Routine
-  // workouts keep the lighter confirm alert since they already have a name.
+  // Save Workout sheet (Phase B.5) — shown on every finish (routine + blank).
+  // Lets the user set the title, backdate the start, add notes, see a summary,
+  // review with Coach, and (blank workouts only) save the session as a routine.
   const [showFinishSheet, setShowFinishSheet] = useState(false);
   const [finishName, setFinishName] = useState('');
   const [finishNotes, setFinishNotes] = useState('');
   const [saveAsRoutine, setSaveAsRoutine] = useState(false);
   const [routineNameInput, setRoutineNameInput] = useState('');
+  // Phase B.5 — editable start (backdating) shown in the save sheet. Defaults to
+  // start = now - elapsed when the sheet opens.
+  const [finishStartedAt, setFinishStartedAt] = useState<Date>(() => new Date());
   // Post-save offer to sync the source routine when the session's exercise
   // list deviated from it. Non-null renders the "Update Routine?" alert;
   // navigation to history is deferred until the user answers.
@@ -1044,16 +1046,15 @@ export default function ActiveWorkoutScreen() {
       return;
     }
     setFinishSetCount(count);
-    if (workout.routineId === 'new') {
-      // Blank workout: open the naming/save sheet instead of the bare confirm.
-      setFinishName(suggestWorkoutName());
-      setFinishNotes('');
-      setSaveAsRoutine(false);
-      setRoutineNameInput('');
-      setShowFinishSheet(true);
-    } else {
-      setShowFinishAlert(true);
-    }
+    // Phase B.5 — the Save Workout sheet now shows for every finish (routine or
+    // blank). Title defaults to the routine name (or a smart name for blanks);
+    // start defaults to when the session began (editable for backdating).
+    setFinishStartedAt(new Date(Date.now() - workout.elapsed * 1000));
+    setFinishName(workout.routineId === 'new' ? suggestWorkoutName() : workout.routineName);
+    setFinishNotes('');
+    setSaveAsRoutine(false);
+    setRoutineNameInput('');
+    setShowFinishSheet(true);
   };
 
   // The routine name input is deliberately not pre-filled: while it stays
@@ -1335,7 +1336,7 @@ export default function ActiveWorkoutScreen() {
     router.replace('/(app)/history');
   };
 
-  // Save from the blank-workout finish sheet.
+  // Save from the finish sheet (all workouts — routine and blank).
   const handleSheetSave = () => {
     if (saving) return;
     const name = finishName.trim();
@@ -1343,12 +1344,13 @@ export default function ActiveWorkoutScreen() {
     void confirmFinish({
       name,
       notes: finishNotes,
+      startedAtIso: finishStartedAt.toISOString(),
       routineNameToSave: saveAsRoutine ? (routineNameInput.trim() || name) : undefined,
     });
   };
 
   const finishingRef = useRef(false);
-  const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string }) => {
+  const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string; startedAtIso?: string }) => {
     // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
     // the confirm alert's Finish button (which has no disabled state during its
     // exit animation) could otherwise enqueue the same workout twice with two
@@ -1356,7 +1358,6 @@ export default function ActiveWorkoutScreen() {
     if (finishingRef.current) return;
     finishingRef.current = true;
     haptics.success(); // workout complete
-    setShowFinishAlert(false);
     setShowFinishSheet(false);
     Keyboard.dismiss();
     setSaving(true);
@@ -1400,8 +1401,10 @@ export default function ActiveWorkoutScreen() {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
           name: workoutName,
-          started_at: new Date(Date.now() - workout.elapsed * 1000).toISOString(),
-          finished_at: new Date().toISOString(),
+          started_at: opts?.startedAtIso ?? new Date(Date.now() - workout.elapsed * 1000).toISOString(),
+          finished_at: opts?.startedAtIso
+            ? new Date(Date.parse(opts.startedAtIso) + workout.elapsed * 1000).toISOString()
+            : new Date().toISOString(),
           duration_seconds: workout.elapsed,
           total_volume_kg: vol,
           routine_id: linkedRoutineId,
@@ -1436,7 +1439,9 @@ export default function ActiveWorkoutScreen() {
 
       const clerkId = user?.id;
       if (!clerkId) throw new Error('Not signed in');
-      const startedAtIso = new Date(Date.now() - workout.elapsed * 1000).toISOString();
+      // Editable start (backdating) from the save sheet; defaults to start = now - elapsed.
+      // The flusher derives finished_at = started_at + duration, so this is the only override needed.
+      const startedAtIso = opts?.startedAtIso ?? new Date(Date.now() - workout.elapsed * 1000).toISOString();
 
       // Save locally first, sync in the background. The finished workout is
       // written to the pending-sync queue and the SyncProvider pushes it to
@@ -2354,10 +2359,10 @@ export default function ActiveWorkoutScreen() {
         onClose={() => setShowRpeSheet(false)}
       />
 
-      {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
-          other sheets. Lets the user name the session (pre-filled from the
-          muscle groups trained) so history stays legible, jot optional notes,
-          and one-tap save the performed exercises as a reusable routine. */}
+      {/* SAVE WORKOUT SHEET (Phase B.5) — shown on every finish. Rendered via the
+          root <Portal> like the other sheets. Title (pre-filled), editable start
+          (backdating), notes, summary, Review with Coach, and — for blank
+          sessions only — one-tap save the performed exercises as a reusable routine. */}
       <Portal>
         {showFinishSheet && (
         <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowFinishSheet(false)}>
@@ -2389,6 +2394,7 @@ export default function ActiveWorkoutScreen() {
                 contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                canCancelContentTouches={false}
               >
                 {/* Session summary */}
                 <View style={styles.finishStatsRow}>
@@ -2428,7 +2434,13 @@ export default function ActiveWorkoutScreen() {
                   style={[styles.formInput, styles.finishNotesInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
                 />
 
-                {/* Save as routine */}
+                {/* Started — editable for backdating a forgotten workout */}
+                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>STARTED</Text>
+                <StartTimeEditor value={finishStartedAt} onChange={setFinishStartedAt} />
+
+                {/* Save as routine — only for blank workouts; routine workouts are already routines */}
+                {workout.routineId === 'new' && (
+                <>
                 <TouchableOpacity
                   onPress={toggleSaveAsRoutine}
                   activeOpacity={0.8}
@@ -2475,6 +2487,8 @@ export default function ActiveWorkoutScreen() {
                       style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
                     />
                   </Animated.View>
+                )}
+                </>
                 )}
               </ScrollView>
 
@@ -2527,28 +2541,6 @@ export default function ActiveWorkoutScreen() {
           { text: 'Cancel Workout', style: 'destructive', onPress: confirmCancel },
         ]}
         onClose={() => setShowCancelAlert(false)}
-      />
-
-      <ThemedAlert
-        visible={showFinishAlert}
-        icon="check-circle"
-        iconColor={Colors.primary}
-        title="Finish Workout"
-        message={`Save ${finishSetCount} sets?`}
-        stats={[
-          { label: 'Sets', value: String(finishSetCount) },
-          { label: 'Duration', value: `${Math.floor(workout.elapsed / 60)}m` },
-          { label: 'Volume', value: `${totalVolume}kg` },
-        ]}
-        buttons={[
-          { text: 'Finish', style: 'primary', onPress: () => { void confirmFinish(); } },
-          {
-            text: 'Review with Coach',
-            onPress: () => { setShowFinishAlert(false); openCoachReview(); },
-          },
-          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
-        ]}
-        onClose={() => setShowFinishAlert(false)}
       />
 
       <ThemedAlert
