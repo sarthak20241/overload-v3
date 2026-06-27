@@ -22,6 +22,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
+import { MacroRing } from '@/components/ui/MacroRing';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -633,6 +634,35 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Today's Fuel — the diet day-view entry point. Glance layer: calories +
+            protein at a glance, tap through to the full nutrition day view. NOTE:
+            sample values for now; wires to a useTodayNutrition hook (today's
+            meal_entries) next. */}
+        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => router.push('/nutrition' as any)}
+            style={[styles.fuelCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+          >
+            <View style={styles.fuelHeader}>
+              <Text style={[styles.statLabel, { color: C.textDim }]}>TODAY&apos;S FUEL</Text>
+              <View style={{ flex: 1 }} />
+              <Text style={[styles.fuelLeft, { color: C.foreground }]}>1,421</Text>
+              <Text style={[styles.fuelLeftUnit, { color: C.textMuted }]}>kcal left</Text>
+              <View style={[styles.aiCoachArrow, { backgroundColor: C.muted, marginLeft: 8 }]}>
+                <Feather name="chevron-right" size={14} color={C.textMuted} />
+              </View>
+            </View>
+            <View style={styles.fuelRings}>
+              <MacroRing value={579} target={2000} color={C.foreground} label="Calories" size={62} thickness={5} animate={false} />
+              <MacroRing value={41} target={125} color={Colors.macro.protein} label="Protein" unit="g" size={62} thickness={5} animate={false} />
+              <Text style={[styles.fuelHint, { color: C.textMuted }]}>
+                On pace. Tap to log lunch.
+              </Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {/* Stats grid */}
         <View style={styles.statsGrid}>
           {/* Volume card with area chart */}
@@ -1143,6 +1173,13 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
+  // Today's Fuel card (diet entry point)
+  fuelCard: { borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.lg },
+  fuelHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md },
+  fuelLeft: { fontSize: FontSize.lg, fontWeight: FontWeight.black, letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  fuelLeftUnit: { fontSize: 10, marginLeft: 4 },
+  fuelRings: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  fuelHint: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,
