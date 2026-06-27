@@ -12,7 +12,7 @@ import Animated, {
   SlideInDown, SlideOutDown, Easing,
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSpring, runOnJS,
 } from 'react-native-reanimated';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -1673,12 +1673,12 @@ export default function ActiveWorkoutScreen() {
       .map((s, realIdx) => ({ s, realIdx }))
       .filter((x) => x.s.completed)
       .map((x) => {
-        // Warmups (W) + drop sets (D) don't take a number; everything else counts
-        // as a working set (failure included) — but only `normal` shows the number,
-        // the rest show their letter. So [1][D][D][2] and [1][F][3] read like Hevy.
-        if (countsAsWorkingSet(x.s.set_type)) _workN += 1;
-        const isNormal = (x.s.set_type ?? 'normal') === 'normal';
-        return { ...x, workNum: isNormal ? _workN : null };
+        // Warmups (W) + drop sets (D) don't take a number; every other type counts
+        // as a working set (failure included) and shows its working number — with a
+        // small type letter for non-normal types. So [1][D][D][2] and [1][2·F][3].
+        const counts = countsAsWorkingSet(x.s.set_type);
+        if (counts) _workN += 1;
+        return { ...x, workNum: counts ? _workN : null };
       });
     const completedWorking = _workN; // active counting set's number = completedWorking + 1
     const completed = currentEx.sets.filter(s => s.completed);
@@ -1949,7 +1949,7 @@ export default function ActiveWorkoutScreen() {
                     >
                       {/* Set marker — tap to set the type (warmup/drop/failure/...). */}
                       <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
-                        <SetTypeBadge type={activeSetType} num={completedWorking + 1} numColor={C.accentText} />
+                        <SetTypeBadge type={activeSetType} num={countsAsWorkingSet(activeSetType) ? completedWorking + 1 : undefined} numColor={C.accentText} />
                       </TouchableOpacity>
 
                       {/* Intensity (RPE / RIR) — a tappable value that opens the picker. */}
@@ -2233,7 +2233,11 @@ export default function ActiveWorkoutScreen() {
                     style={[styles.pagerPage, { width: winW, left: i * winW }]}
                     pointerEvents={isCur ? 'auto' : 'none'}
                   >
-                    <ScrollView
+                    {/* gesture-handler ScrollView so the inner vertical scroll
+                        coordinates with the horizontal pager Pan under the New
+                        Architecture (RN core ScrollView loses the touch handoff
+                        once the pager gesture fails on a vertical drag). */}
+                    <GHScrollView
                       ref={isCur ? mainScrollRef : undefined}
                       style={styles.mainScroll}
                       contentContainerStyle={[
@@ -2248,7 +2252,7 @@ export default function ActiveWorkoutScreen() {
                       automaticallyAdjustKeyboardInsets={isCur}
                     >
                       {renderExerciseBody(i, isCur)}
-                    </ScrollView>
+                    </GHScrollView>
                   </Animated.View>
                 );
               })}
