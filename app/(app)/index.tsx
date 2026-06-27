@@ -14,7 +14,7 @@ import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
-import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
+import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { detectInsights } from '@/lib/insights';
@@ -513,21 +513,6 @@ export default function DashboardScreen() {
   const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
   const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
 
-  // Muscle breakdown — powers the Muscles donut card.
-  const muscleData = useMemo(() => {
-    const counts: Record<string, number> = {};
-    workouts.forEach(w => {
-      (w.sets || []).forEach((s: any) => {
-        const mg = s.exercises?.muscle_group || s.muscle_group;
-        if (mg) counts[mg] = (counts[mg] || 0) + 1;
-      });
-    });
-    return Object.entries(counts)
-      .map(([name, value]) => ({ name, value, color: Colors.muscle[name] || '#6b7280' }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
-  }, [workouts]);
-
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
       <ScrollView
@@ -669,30 +654,8 @@ export default function DashboardScreen() {
             )}
           </View>
 
-          {/* Muscles card with interactive donut chart */}
-          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={[styles.cardGlow, { backgroundColor: Colors.stat.muscles, opacity: 0.04 }]} />
-            <View style={styles.statHeader}>
-              <Feather name="activity" size={12} color={Colors.stat.muscles} />
-              <Text style={[styles.statLabel, { color: Colors.stat.muscles }]}>MUSCLES</Text>
-            </View>
-            {muscleData.length > 0 ? (
-              <View style={{ alignItems: 'center', marginTop: 2 }}>
-                <MiniDonutChart
-                  data={muscleData}
-                  size={100}
-                  thickness={18}
-                  gap={2}
-                  subColor={C.textMuted}
-                />
-              </View>
-            ) : (
-              <>
-                <Text style={[styles.statValue, { color: C.foreground }]}>-</Text>
-                <Text style={[styles.statSub, { color: C.textDim }]}>Track workouts</Text>
-              </>
-            )}
-          </View>
+          {/* Readiness card (muscle breakdown moved to Analytics). */}
+          <ReadinessCard />
         </View>
 
         {/* Proactive insights — "Coach noticed" */}

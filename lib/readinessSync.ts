@@ -37,11 +37,12 @@ function stat(values: number[]): BaselineStat {
 }
 
 /**
- * Compute today's readiness from daily_metrics and store it. Returns the result
- * (null when there is no user). Acute training-load tempering is a documented
- * TODO (read base workouts/workout_sets, never the absent matviews).
+ * Compute today's readiness from daily_metrics WITHOUT writing. Read-only, so the
+ * dashboard card can call it on render. Returns null when there is no user.
+ * Acute training-load tempering is a documented TODO (read base
+ * workouts/workout_sets, never the absent matviews).
  */
-export async function computeAndStoreReadiness(
+export async function loadReadiness(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<ReadinessResult | null> {
@@ -68,7 +69,7 @@ export async function computeAndStoreReadiness(
     else if (baseline[r.metric_type]) baseline[r.metric_type].push(v);
   }
 
-  const result = computeReadiness({
+  return computeReadiness({
     today: {
       sleepMinutes: todayVal.sleep_minutes,
       restingHrBpm: todayVal.resting_hr_bpm,
@@ -81,15 +82,24 @@ export async function computeAndStoreReadiness(
     },
     // acuteLoad: TODO read recent set count vs typical from base workout tables.
   });
+}
 
-  if (result.score != null) {
+/**
+ * Compute today's readiness and STORE it (current day only; past days frozen).
+ * Thin wrapper over loadReadiness used by the foreground sync.
+ */
+export async function computeAndStoreReadiness(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<ReadinessResult | null> {
+  const result = await loadReadiness(supabase, userId);
+  if (result && result.score != null) {
     const { error: upErr } = await supabase.from('daily_metrics').upsert(
-      { user_id: userId, metric_date: today, metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
+      { user_id: userId, metric_date: todayLocalISO(), metric_type: 'readiness_score', value: result.score, unit: 'score', source: 'manual' },
       { onConflict: 'user_id,metric_date,metric_type' },
     );
     if (upErr) throw upErr;
   }
-
   return result;
 }
 

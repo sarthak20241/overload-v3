@@ -102,6 +102,7 @@ export const Colors = {
     muscles: '#a855f7',
     duration: '#a855f7',
     sets: '#10b981',
+    readiness: '#14b8a6',
   },
 
   // Muscle-group accents (dashboard donut + tags). Categorical, theme-independent.
