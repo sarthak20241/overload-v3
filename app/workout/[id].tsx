@@ -2359,7 +2359,7 @@ export default function ActiveWorkoutScreen() {
         visible={showRpeSheet}
         scale={prefs.intensityScale}
         value={inputRpe}
-        onSelect={(r) => setInputRpe(r)}
+        onChange={(r) => setInputRpe(r)}
         onClose={() => setShowRpeSheet(false)}
       />
 
