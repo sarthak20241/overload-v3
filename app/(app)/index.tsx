@@ -634,69 +634,33 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Today's Fuel — the diet day-view entry point. Glance layer: calories +
-            protein at a glance, tap through to the full nutrition day view. NOTE:
-            sample values for now; wires to a useTodayNutrition hook (today's
-            meal_entries) next. */}
-        <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
+        {/* Stats grid */}
+        <View style={styles.statsGrid}>
+          {/* Nutrition card — calories ring hero + protein, taps to the full day
+              view. Replaces the Volume card (volume still lives in Analytics).
+              Sample values for now; wires to useTodayNutrition next. */}
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={() => router.push('/nutrition' as any)}
-            style={[styles.fuelCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+            style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
           >
-            <View style={styles.fuelHeader}>
-              <Text style={[styles.statLabel, { color: C.textDim }]}>TODAY&apos;S FUEL</Text>
+            <View style={[styles.cardGlow, { backgroundColor: Colors.macro.protein, opacity: 0.05 }]} />
+            <View style={styles.statHeader}>
+              <Feather name="zap" size={12} color={Colors.macro.protein} />
+              <Text style={[styles.statLabel, { color: Colors.macro.protein }]}>FUEL</Text>
               <View style={{ flex: 1 }} />
-              <Text style={[styles.fuelLeft, { color: C.foreground }]}>1,421</Text>
-              <Text style={[styles.fuelLeftUnit, { color: C.textMuted }]}>kcal left</Text>
-              <View style={[styles.aiCoachArrow, { backgroundColor: C.muted, marginLeft: 8 }]}>
-                <Feather name="chevron-right" size={14} color={C.textMuted} />
-              </View>
+              <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>
-            <View style={styles.fuelRings}>
-              <MacroRing value={579} target={2000} color={C.foreground} label="Calories" size={62} thickness={5} animate={false} />
-              <MacroRing value={41} target={125} color={Colors.macro.protein} label="Protein" unit="g" size={62} thickness={5} animate={false} />
-              <Text style={[styles.fuelHint, { color: C.textMuted }]}>
-                On pace. Tap to log lunch.
-              </Text>
+            <View style={{ alignItems: 'center', marginTop: 2 }}>
+              <MacroRing value={579} target={2000} color={C.foreground} label="Calories" size={96} thickness={7} animate={false} />
+            </View>
+            <View style={styles.fuelProtein}>
+              <View style={[styles.fuelProteinBar, { backgroundColor: C.muted }]}>
+                <View style={{ width: '33%', height: 4, backgroundColor: Colors.macro.protein, borderRadius: 2 }} />
+              </View>
+              <Text style={[styles.fuelProteinTxt, { color: C.textMuted }]}>41 / 125 g protein</Text>
             </View>
           </TouchableOpacity>
-        </View>
-
-        {/* Stats grid */}
-        <View style={styles.statsGrid}>
-          {/* Volume card with area chart */}
-          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={[styles.cardGlow, { backgroundColor: Colors.stat.volume, opacity: 0.04 }]} />
-            <View style={styles.statHeader}>
-              <Feather name="trending-up" size={12} color={Colors.stat.volume} />
-              <Text style={[styles.statLabel, { color: Colors.stat.volume }]}>VOLUME</Text>
-            </View>
-            <View style={styles.statValueRow}>
-              <AnimatedNumber
-                style={[styles.statValue, { color: C.foreground }]}
-                value={totalVolume}
-                format={abbreviateNumber}
-              />
-              <Text style={[styles.statSuffix, { color: C.textMuted }]}> kg</Text>
-            </View>
-            {weeklyVolumes.some(v => v > 0) ? (
-              <View style={{ marginTop: 6, marginHorizontal: -4, marginBottom: -4 }}>
-                <MiniAreaChart
-                  data={weeklyVolumes}
-                  labels={weeklyLabels}
-                  width={140}
-                  height={72}
-                  color={Colors.stat.volume}
-                  valueSuffix="kg"
-                  tooltipBgColor={C.elevated}
-                  tooltipTextColor={C.foreground}
-                />
-              </View>
-            ) : (
-              <Text style={[styles.statSub, { color: C.textDim }]}>No data yet</Text>
-            )}
-          </View>
 
           {/* Muscles card with interactive donut chart */}
           <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
@@ -1173,13 +1137,10 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
-  // Today's Fuel card (diet entry point)
-  fuelCard: { borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.lg },
-  fuelHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md },
-  fuelLeft: { fontSize: FontSize.lg, fontWeight: FontWeight.black, letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
-  fuelLeftUnit: { fontSize: 10, marginLeft: 4 },
-  fuelRings: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
-  fuelHint: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
+  // Nutrition card (diet entry point) — protein bar under the calories ring
+  fuelProtein: { marginTop: Spacing.sm, gap: 4 },
+  fuelProteinBar: { height: 4, borderRadius: 2, overflow: 'hidden' },
+  fuelProteinTxt: { fontSize: 11, textAlign: 'center', fontVariant: ['tabular-nums'] },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,

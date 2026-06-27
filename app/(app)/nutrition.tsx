@@ -90,18 +90,22 @@ export default function NutritionScreen() {
           </View>
         </View>
 
-        {/* Summary */}
+        {/* Summary — the hero of the day. Big co-equal calories + protein rings. */}
         <View style={s.summary}>
-          <View style={s.rings}>
-            <MacroRing value={eaten.kcal} target={TARGETS.kcal} color={C.foreground} label="Calories" size={78} thickness={6} />
-            <MacroRing value={eaten.protein} target={TARGETS.protein} color={Colors.macro.protein} label="Protein" unit="g" size={78} thickness={6} />
-            <View style={s.bars}>
+          <View style={s.ringsRow}>
+            <MacroRing value={eaten.kcal} target={TARGETS.kcal} color={C.foreground} label="Calories" size={102} thickness={8} />
+            <MacroRing value={eaten.protein} target={TARGETS.protein} color={Colors.macro.protein} label="Protein" unit="g" size={102} thickness={8} />
+          </View>
+          <View style={s.remaining}>
+            <Text style={s.remainNum}>{remaining.toLocaleString()}</Text>
+            <Text style={s.remainLbl}>kcal left</Text>
+          </View>
+          <View style={s.barsRow}>
+            <View style={s.barCol}>
               <MacroBar label="Carbs" value={eaten.carb} target={TARGETS.carb} color={Colors.macro.carbs} C={C} />
+            </View>
+            <View style={s.barCol}>
               <MacroBar label="Fat" value={eaten.fat} target={TARGETS.fat} color={Colors.macro.fat} C={C} />
-              <View style={s.remaining}>
-                <Text style={s.remainNum}>{remaining.toLocaleString()}</Text>
-                <Text style={s.remainLbl}>kcal left</Text>
-              </View>
             </View>
           </View>
         </View>
@@ -202,11 +206,12 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
 
     summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg },
-    rings: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-    bars: { flex: 1, gap: Spacing.sm, paddingLeft: Spacing.xs },
-    remaining: { flexDirection: 'row', alignItems: 'baseline', gap: 5, marginTop: 2 },
-    remainNum: { fontSize: FontSize.lg, fontWeight: FontWeight.black, color: C.foreground, fontVariant: ['tabular-nums'], letterSpacing: LetterSpacing.tight },
-    remainLbl: { fontSize: 10, color: C.textMuted },
+    ringsRow: { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' },
+    remaining: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'center', gap: 5, marginTop: Spacing.md },
+    remainNum: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: C.foreground, fontVariant: ['tabular-nums'], letterSpacing: LetterSpacing.tight },
+    remainLbl: { fontSize: FontSize.sm, color: C.textMuted },
+    barsRow: { flexDirection: 'row', gap: Spacing.lg, marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: C.borderSubtle },
+    barCol: { flex: 1 },
 
     drona: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     avatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
