@@ -277,6 +277,12 @@ export default function AppLayout() {
         */}
         <Tabs.Screen name="exercises" options={{ href: null }} />
         {/*
+          Nutrition day view (diet tracking). Hidden from the bottom nav for now —
+          reached via a dashboard card / deep-link (`/nutrition`) until the nav
+          placement lands post-design-polish.
+        */}
+        <Tabs.Screen name="nutrition" options={{ href: null }} />
+        {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link
           (`/admin/research`) or the "Admin Tools" button rendered for
