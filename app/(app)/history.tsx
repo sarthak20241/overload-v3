@@ -17,7 +17,10 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha }
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
-import { abbreviateNumber } from '@/lib/format';
+import { abbreviateNumber, formatWeight, formatDuration as formatSetDuration, formatDistanceKm } from '@/lib/format';
+import { metricTypeDef, metricTypeOf } from '@/lib/exercises';
+import type { MetricType } from '@/lib/exercises';
+import { SetTypeBadge, setTypeOf } from '@/components/workout/SetTypeBadge';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -48,7 +51,40 @@ const MONTH_FULL = [
 
 interface ExerciseDetail {
   name: string;
-  sets: { weight_kg: number; reps: number; completed: boolean }[];
+  metric_type?: MetricType;
+  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
+}
+type HistorySet = ExerciseDetail['sets'][number];
+
+/** Per-set pill text, axis-aware ("60kg × 8", "+10kg × 6", "0:45", "5km · 22:30", "12"). */
+function historySetLabel(metricType: MetricType, s: HistorySet): string {
+  const axes = metricTypeDef(metricType).axes;
+  const parts = axes.map((a) =>
+    a === 'reps' ? `${s.reps}`
+    : a === 'duration' ? formatSetDuration(s.duration_seconds)
+    : a === 'distance' ? `${formatDistanceKm(s.distance_m)}km`
+    : a === 'resistance' ? `Lv ${s.resistance ?? 0}`
+    : a === 'assist_weight' ? `-${formatWeight(s.weight_kg)}kg`
+    : a === 'added_weight' ? `+${formatWeight(s.weight_kg)}kg`
+    : `${formatWeight(s.weight_kg)}kg`,
+  );
+  const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
+  return usesWeight && axes.includes('reps') ? parts.join(' × ') : parts.join(' · ');
+}
+
+/** Headline "best" stat for an exercise's completed sets (heaviest / longest / farthest / most reps). */
+function historyBest(metricType: MetricType, sets: HistorySet[]): string {
+  const axes = metricTypeDef(metricType).axes;
+  if (axes.includes('distance')) {
+    return `${formatDistanceKm(Math.max(0, ...sets.map(s => s.distance_m ?? 0)))}km`;
+  }
+  if (axes.includes('duration') && !axes.some(a => a === 'weight')) {
+    return formatSetDuration(Math.max(0, ...sets.map(s => s.duration_seconds ?? 0)));
+  }
+  if (axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight')) {
+    return `${formatWeight(Math.max(0, ...sets.map(s => s.weight_kg)))}kg`;
+  }
+  return `${Math.max(0, ...sets.map(s => s.reps))} reps`;
 }
 
 interface WorkoutRaw {
@@ -503,7 +539,7 @@ function SessionCard({
             workout.exercises.map((ex, i) => {
               const completedSets = ex.sets?.filter(s => s.completed) || [];
               if (completedSets.length === 0) return null;
-              const maxWeight = Math.max(...completedSets.map(s => s.weight_kg));
+              const mt = metricTypeOf(ex);
               return (
                 <View key={i} style={styles.exerciseRow}>
                   <View style={styles.exerciseInfo}>
@@ -512,17 +548,23 @@ function SessionCard({
                       {completedSets.map((set, si) => (
                         <View
                           key={si}
-                          style={[styles.setPill, { backgroundColor: C.muted }]}
+                          style={[styles.setPill, { backgroundColor: C.muted, flexDirection: 'row', alignItems: 'center', gap: 4 }]}
                         >
+                          {set.set_type && set.set_type !== 'normal' && (
+                            <SetTypeBadge type={setTypeOf(set.set_type)} size={15} />
+                          )}
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
-                            {set.weight_kg}kg x {set.reps}
+                            {historySetLabel(mt, set)}
                           </Text>
+                          {set.rpe != null && (
+                            <Text style={[styles.setPillText, { color: C.textMuted }]}>@{set.rpe}</Text>
+                          )}
                         </View>
                       ))}
                     </View>
                   </View>
                   <View style={styles.exerciseBest}>
-                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{maxWeight}kg</Text>
+                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{historyBest(mt, completedSets)}</Text>
                     <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
                   </View>
                 </View>
@@ -638,7 +680,7 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, exercises(name))')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -651,9 +693,9 @@ export default function HistoryScreen() {
         (w.workout_sets || []).forEach((s: any) => {
           const exId = s.exercise_id;
           if (!exerciseMap[exId]) {
-            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', sets: [] };
+            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, sets: [] };
           }
-          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed });
+          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe });
         });
         return {
           ...w,

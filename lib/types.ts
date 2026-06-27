@@ -1,4 +1,8 @@
 export type CoachGoal = 'hypertrophy' | 'strength' | 'fat_loss' | 'endurance' | 'general';
+
+/** Phase B — per-set type. 'normal' is the default; 'warmup' is excluded from
+ * working volume / 1RM / PR detection. See SET_TYPE_META in components/workout. */
+export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure' | 'negative' | 'left' | 'right';
 export type ExperienceLevel = 'beginner' | 'intermediate' | 'advanced';
 
 export interface UserProfile {
@@ -29,6 +33,12 @@ export interface Exercise {
   name: string;
   muscle_group: string;
   category: string;
+  /** Phase A measurement type. Optional + forward-safe: absent means
+   * weight_reps (use metricTypeOf from lib/exercises). */
+  metric_type?: import('@/lib/exercises').MetricType;
+  /** Catalog enrichment (Phase E ingest). */
+  instructions?: string[];
+  image_urls?: string[];
 }
 
 export interface RoutineExercise {
@@ -63,6 +73,16 @@ export interface WorkoutSet {
   reps: number;
   completed: boolean;
   order: number;
+  // Phase A — non-weight/rep axes. Nullable; only the axes the exercise's
+  // metric_type uses are populated. weight_kg stores the magnitude for the
+  // ±Kg (weighted/assisted) types; the sign is implied by metric_type.
+  duration_seconds?: number | null;
+  distance_m?: number | null;
+  // resistance level for cardio machines (bike/elliptical), resistance_duration.
+  resistance?: number | null;
+  // Phase B — per-set type + intensity. rpe is the raw 1-10 scale (RIR = 10 - rpe).
+  set_type?: SetType;
+  rpe?: number | null;
 }
 
 export interface Workout {
@@ -99,6 +119,14 @@ export interface ActiveSet {
   weight_kg: number;
   reps: number;
   completed: boolean;
+  // Phase A — populated per the exercise's metric_type (see ActiveSet axes in
+  // WorkoutSet). All nullable; weight_kg/reps stay the kg/rep axes.
+  duration_seconds?: number | null;
+  distance_m?: number | null;
+  resistance?: number | null;
+  // Phase B — per-set type + intensity (rpe = raw 1-10; RIR = 10 - rpe).
+  set_type?: SetType;
+  rpe?: number | null;
 }
 
 export interface DashboardStats {
