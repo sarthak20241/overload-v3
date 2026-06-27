@@ -92,7 +92,7 @@ export default function NutritionScreen() {
         {/* Summary */}
         <View style={s.summary}>
           <View style={s.rings}>
-            <MacroRing value={eaten.kcal} target={TARGETS.kcal} color={Colors.macro.calories} label="Calories" size={78} thickness={6} />
+            <MacroRing value={eaten.kcal} target={TARGETS.kcal} color={C.foreground} label="Calories" size={78} thickness={6} />
             <MacroRing value={eaten.protein} target={TARGETS.protein} color={Colors.macro.protein} label="Protein" unit="g" size={78} thickness={6} />
             <View style={s.bars}>
               <MacroBar label="Carbs" value={eaten.carb} target={TARGETS.carb} color={Colors.macro.carbs} C={C} />
@@ -138,7 +138,7 @@ export default function NutritionScreen() {
                     <>
                       <Text style={s.entryName}>{e.name} <Text style={s.serving}>· {e.serving}</Text></Text>
                       <View style={s.macros}>
-                        <Text style={[s.macroNum, { color: Colors.macro.calories }]}>{round(e.kcal)}</Text>
+                        <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
                         <Text style={[s.macroNum, { color: Colors.macro.protein }]}>{round(e.protein)}g P</Text>
                         <Text style={[s.macroNum, { color: Colors.macro.carbs }]}>{round(e.carb)} C</Text>
                         <Text style={[s.macroNum, { color: Colors.macro.fat }]}>{round(e.fat)} F</Text>
