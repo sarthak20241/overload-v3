@@ -1956,7 +1956,7 @@ export default function ActiveWorkoutScreen() {
                       {showIntensity && (
                         <TouchableOpacity
                           style={styles.colRpe}
-                          onPress={() => { Keyboard.dismiss(); setEditField(null); setShowRpeSheet(true); }}
+                          onPress={() => { Keyboard.dismiss(); setEditField(null); if (inputRpe == null) setInputRpe(8); setShowRpeSheet(true); }}
                           hitSlop={6}
                           accessibilityLabel={rpeScale === 'rir' ? 'Set RIR' : 'Set RPE'}
                         >
