@@ -23,6 +23,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { MacroRing } from '@/components/ui/MacroRing';
+import { useTodayNutrition } from '@/lib/dietData';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -168,6 +169,7 @@ function XPBar({ xp }: { xp: number }) {
 export default function DashboardScreen() {
   const router = useRouter();
   const { C } = useTheme();
+  const fuel = useTodayNutrition();
   // Coach card uses the flat, on-brand lime signature. The purple/teal gradient +
   // glow orbs were removed in the design polish: the coach's own menu is flat/lime,
   // so the dashboard entry now matches the room it opens into (and survives light mode).
@@ -652,13 +654,13 @@ export default function DashboardScreen() {
               <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>
             <View style={{ alignItems: 'center', marginTop: 2 }}>
-              <MacroRing value={579} target={2000} color={C.foreground} label="Calories" size={96} thickness={7} animate={false} />
+              <MacroRing value={fuel.totals.kcal} target={2000} color={C.foreground} label="Calories" size={96} thickness={7} animate={false} />
             </View>
             <View style={styles.fuelProtein}>
               <View style={[styles.fuelProteinBar, { backgroundColor: C.muted }]}>
-                <View style={{ width: '33%', height: 4, backgroundColor: Colors.macro.protein, borderRadius: 2 }} />
+                <View style={{ width: `${Math.min(fuel.totals.protein_g / 125, 1) * 100}%`, height: 4, backgroundColor: Colors.macro.protein, borderRadius: 2 }} />
               </View>
-              <Text style={[styles.fuelProteinTxt, { color: C.textMuted }]}>41 / 125 g protein</Text>
+              <Text style={[styles.fuelProteinTxt, { color: C.textMuted }]}>{Math.round(fuel.totals.protein_g)} / 125 g protein</Text>
             </View>
           </TouchableOpacity>
 

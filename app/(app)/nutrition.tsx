@@ -11,8 +11,8 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, ScrollView, Pressable, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -21,9 +21,10 @@ import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
 import { MacroRing } from '@/components/ui/MacroRing';
+import { FoodPickerSheet } from '@/components/diet/FoodPickerSheet';
+import { useTodayNutrition } from '@/lib/dietData';
+import type { MealType } from '@/lib/foods';
 
-type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
-interface Entry { raw?: string; name: string; serving: string; kcal: number; protein: number; carb: number; fat: number; analysing?: boolean }
 interface MealDef { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }
 
 const MEALS: MealDef[] = [
@@ -33,40 +34,18 @@ const MEALS: MealDef[] = [
   { type: 'snack', label: 'Snacks', icon: 'coffee' },
 ];
 
-// Sample data (v1). Replaced by today's meal_entries from Supabase next.
+// Daily targets — hardcoded for now; reads from user_profiles next.
 const TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
-const SAMPLE: Record<MealType, Entry[]> = {
-  breakfast: [
-    { raw: 'bowl of oats', name: 'Oats', serving: '1 bowl · 40 g', kcal: 152, protein: 5, carb: 27, fat: 3 },
-    { raw: '1 scoop whey', name: 'Whey Protein', serving: '1 scoop · 32 g', kcal: 120, protein: 24, carb: 3, fat: 1 },
-  ],
-  lunch: [
-    { raw: 'masoor dal 0.5 katori', name: 'Masoor Dal', serving: '0.5 katori · 75 g', kcal: 87, protein: 6, carb: 15, fat: 0 },
-    { raw: '2 medium roti', name: 'Roti', serving: '2 medium', kcal: 220, protein: 6, carb: 46, fat: 2 },
-    { name: '1 boiled egg and a banana', serving: '', kcal: 0, protein: 0, carb: 0, fat: 0, analysing: true },
-  ],
-  dinner: [],
-  snack: [],
-};
 
 const round = (n: number) => Math.round(n);
 
 export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
-  const [draft, setDraft] = useState('');
-  const inputRef = useRef<TextInput>(null);
+  const { byMeal, totals, reload } = useTodayNutrition();
+  const [pickerMeal, setPickerMeal] = useState<MealType | null>(null);
 
-  const eaten = MEALS.reduce(
-    (acc, m) => {
-      for (const e of SAMPLE[m.type]) {
-        if (e.analysing) continue;
-        acc.kcal += e.kcal; acc.protein += e.protein; acc.carb += e.carb; acc.fat += e.fat;
-      }
-      return acc;
-    },
-    { kcal: 0, protein: 0, carb: 0, fat: 0 },
-  );
+  const eaten = { kcal: totals.kcal, protein: totals.protein_g, carb: totals.carb_g, fat: totals.fat_g };
   const remaining = Math.max(TARGETS.kcal - eaten.kcal, 0);
 
   const s = makeStyles(C);
@@ -118,8 +97,8 @@ export default function NutritionScreen() {
 
         {/* Meal sections */}
         {MEALS.map((m) => {
-          const entries = SAMPLE[m.type];
-          const sub = entries.reduce((a, e) => (e.analysing ? a : { kcal: a.kcal + e.kcal, protein: a.protein + e.protein }), { kcal: 0, protein: 0 });
+          const entries = byMeal[m.type];
+          const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
           return (
             <View key={m.type} style={s.section}>
               <View style={s.sectionHead}>
@@ -131,29 +110,21 @@ export default function NutritionScreen() {
                 )}
               </View>
 
-              {entries.map((e, i) => (
-                <Pressable key={i} style={s.entry} onPress={() => {}}>
-                  {e.raw ? <Text style={s.raw}>{e.raw}</Text> : null}
-                  {e.analysing ? (
-                    <View style={s.analysing}>
-                      <Text style={s.entryName}>{e.name}</Text>
-                      <Text style={s.analysingTxt}>  Drona's reading it<Text style={{ color: Colors.macro.protein }}>…</Text></Text>
-                    </View>
-                  ) : (
-                    <>
-                      <Text style={s.entryName}>{e.name} <Text style={s.serving}>· {e.serving}</Text></Text>
-                      <View style={s.macros}>
-                        <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
-                        <Text style={[s.macroNum, { color: Colors.macro.protein }]}>{round(e.protein)}g P</Text>
-                        <Text style={[s.macroNum, { color: Colors.macro.carbs }]}>{round(e.carb)} C</Text>
-                        <Text style={[s.macroNum, { color: Colors.macro.fat }]}>{round(e.fat)} F</Text>
-                      </View>
-                    </>
-                  )}
-                </Pressable>
+              {entries.map((e) => (
+                <View key={e.id} style={s.entry}>
+                  <Text style={s.entryName}>
+                    {e.food_name} <Text style={s.serving}>· {e.quantity !== 1 ? `${e.quantity} × ` : ''}{e.serving_unit}</Text>
+                  </Text>
+                  <View style={s.macros}>
+                    <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
+                    <Text style={[s.macroNum, { color: Colors.macro.protein }]}>{round(e.protein_g)}g P</Text>
+                    <Text style={[s.macroNum, { color: Colors.macro.carbs }]}>{round(e.carb_g)} C</Text>
+                    <Text style={[s.macroNum, { color: Colors.macro.fat }]}>{round(e.fat_g)} F</Text>
+                  </View>
+                </View>
               ))}
 
-              <Pressable style={s.add} hitSlop={8} onPress={() => inputRef.current?.focus()}>
+              <Pressable style={s.add} hitSlop={8} onPress={() => setPickerMeal(m.type)}>
                 <Feather name="plus" size={14} color={C.accentText} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
@@ -162,21 +133,23 @@ export default function NutritionScreen() {
         })}
       </ScrollView>
 
-      {/* Inline "tell Drona" logging input */}
+      {/* Bottom logging bar — opens the food picker. Becomes the Drona NL input
+          once the parse edge fn lands. */}
       <View style={[s.inputWrap, { paddingBottom: insets.bottom + 12 }]}>
-        <View style={s.input}>
-          <TextInput
-            ref={inputRef}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="Tell Drona what you ate"
-            placeholderTextColor={C.textDim}
-            style={s.inputText}
-          />
+        <Pressable style={s.input} onPress={() => setPickerMeal('snack')}>
+          <Feather name="plus-circle" size={16} color={C.accentText} />
+          <Text style={[s.inputText, { color: C.textDim }]}>Tell Drona what you ate</Text>
           <Feather name="camera" size={16} color={C.textSecondary} style={{ marginHorizontal: 4 }} />
           <Feather name="mic" size={16} color={C.textSecondary} />
-        </View>
+        </Pressable>
       </View>
+
+      <FoodPickerSheet
+        visible={pickerMeal !== null}
+        mealType={pickerMeal ?? 'snack'}
+        onClose={() => setPickerMeal(null)}
+        onLogged={reload}
+      />
     </View>
   );
 }
