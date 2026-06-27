@@ -18,7 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import {
-  Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing,
+  Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
 import { MacroRing } from '@/components/ui/MacroRing';
 
@@ -205,7 +205,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     streak: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 'auto' },
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
 
-    summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg },
+    summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg, ...Shadow.card },
     ringsRow: { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' },
     remaining: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'center', gap: 5, marginTop: Spacing.md },
     remainNum: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: C.foreground, fontVariant: ['tabular-nums'], letterSpacing: LetterSpacing.tight },
@@ -222,7 +222,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     sectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim },
     sectionSub: { fontSize: 11, color: C.textMuted, fontVariant: ['tabular-nums'] },
 
-    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, marginTop: Spacing.sm },
+    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, marginTop: Spacing.sm, ...Shadow.card },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
     entryName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },
@@ -235,7 +235,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     addTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.medium },
 
     inputWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, backgroundColor: C.background },
-    input: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 10 },
+    input: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 10, ...Shadow.card },
     inputText: { flex: 1, fontSize: FontSize.base, color: C.foreground, padding: 0 },
   });
 }
