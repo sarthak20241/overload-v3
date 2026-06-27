@@ -158,6 +158,7 @@ export function FoodPickerSheet({ visible, mealType, onClose, onLogged }: Props)
               data={results}
               keyExtractor={(f, i) => `${f.id ?? f.name}-${i}`}
               keyboardShouldPersistTaps="handled"
+              style={{ maxHeight: winH * 0.55 }}
               renderItem={({ item }) => (
                 <Pressable style={s.row} onPress={() => pickFood(item)}>
                   <View style={{ flex: 1 }}>
