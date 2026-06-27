@@ -23,6 +23,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
+import { useForegroundHealthSync } from '@/lib/useHealthSync';
 import type { Routine } from '@/lib/types';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -240,6 +241,11 @@ export default function AppLayout() {
   const [modalOpen, setModalOpen] = useState(false);
   const { isSignedIn, isLoaded } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
+
+  // Mirror health-hub data + recompute readiness on app-open / foreground.
+  // No-op for guests and when no hub adapter exists. Called before the early
+  // returns below so the hook runs on every render (rules of hooks).
+  useForegroundHealthSync();
 
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
