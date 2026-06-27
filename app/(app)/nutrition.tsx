@@ -11,7 +11,7 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -55,6 +55,7 @@ export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const [draft, setDraft] = useState('');
+  const inputRef = useRef<TextInput>(null);
 
   const eaten = MEALS.reduce(
     (acc, m) => {
@@ -148,7 +149,7 @@ export default function NutritionScreen() {
                 </Pressable>
               ))}
 
-              <Pressable style={s.add} hitSlop={8}>
+              <Pressable style={s.add} hitSlop={8} onPress={() => inputRef.current?.focus()}>
                 <Feather name="plus" size={14} color={C.accentText} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
@@ -158,9 +159,10 @@ export default function NutritionScreen() {
       </ScrollView>
 
       {/* Inline "tell Drona" logging input */}
-      <View style={[s.inputWrap, { paddingBottom: insets.bottom + 64 }]}>
+      <View style={[s.inputWrap, { paddingBottom: insets.bottom + 12 }]}>
         <View style={s.input}>
           <TextInput
+            ref={inputRef}
             value={draft}
             onChangeText={setDraft}
             placeholder="Tell Drona what you ate"
