@@ -83,7 +83,6 @@
           "background": false
         }
       ],
-      "react-native-health-connect",
       [
         "expo-build-properties",
         {
@@ -93,7 +92,8 @@
             "targetSdkVersion": 35
           }
         }
-      ]
+      ],
+      "expo-health-connect"
     ],
     "experiments": {
       "typedRoutes": true
