@@ -98,18 +98,22 @@ function shiftDaysISO(iso: string, deltaDays: number): string {
 }
 
 /**
- * Resolve the platform adapter, or null when none is wired/available.
+ * Resolve the platform adapter, or null when none applies (e.g. web).
  *
- * Wiring (post-install): return the iOS adapter on Platform.OS === 'ios'
- * (lib/health/healthkitAdapter, backed by @kingstinct/react-native-healthkit)
- * and the Android adapter on 'android' (lib/health/healthConnectAdapter, backed
- * by react-native-health-connect). Keep this the ONLY place that branches on
- * platform so the rest of the pipeline stays platform-agnostic.
+ * Lazy-require so each platform only loads its OWN native module: importing the
+ * iOS HealthKit module on Android (or vice versa) would pull in a native module
+ * that doesn't exist on that platform. This is the ONLY place that branches on
+ * platform, so the rest of the pipeline stays platform-agnostic.
  */
 export function getHealthAdapter(): HealthAdapter | null {
-  // Intentionally null until the native modules are installed (see file header).
-  // Referenced here to keep the platform seam obvious without importing native code:
-  void Platform.OS;
+  if (Platform.OS === 'ios') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('./health/healthkitAdapter').healthkitAdapter as HealthAdapter;
+  }
+  if (Platform.OS === 'android') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('./health/healthConnectAdapter').healthConnectAdapter as HealthAdapter;
+  }
   return null;
 }
 
