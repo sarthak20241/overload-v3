@@ -118,6 +118,19 @@ export function getHealthAdapter(): HealthAdapter | null {
 }
 
 /**
+ * Ask the platform for READ authorization. Call on an explicit user tap (the
+ * connect screen), not at app boot. On iOS this resolves true once the auth
+ * sheet is handled, NOT whether read was granted (read-denial is invisible).
+ * Returns false when no hub is available on this device.
+ */
+export async function requestHealthAuthorization(): Promise<boolean> {
+  const adapter = getHealthAdapter();
+  if (!adapter) return false;
+  if (!(await adapter.isAvailable())) return false;
+  return adapter.requestAuthorization(READABLE_METRICS);
+}
+
+/**
  * Read from the hub and mirror into daily_metrics. Safe no-op when no adapter is
  * wired or the hub is unavailable/unauthorized. Never writes readiness_score
  * (that is derived elsewhere and frozen per past day).
