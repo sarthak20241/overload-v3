@@ -29,7 +29,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
-import { loadConnectedMetrics, requestHealthAuthorization, type ReadableMetric } from '@/lib/healthSync';
+import { loadConnectedMetrics, loadMetricSeries, requestHealthAuthorization, type ReadableMetric } from '@/lib/healthSync';
 import { bandColor, directive, bandPillTextColor, type ReadinessContributor, type ReadinessResult } from '@/lib/readiness';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
@@ -39,8 +39,11 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorW
 
 const HUB: HealthHub = Platform.OS === 'ios' ? 'healthkit' : 'health_connect';
 const HUB_LABEL = Platform.OS === 'ios' ? 'Apple Health' : 'Health Connect';
-const HUB_GLYPH = Platform.OS === 'ios' ? 'heart' : 'activity';
 const CHART_W = Math.round(Dimensions.get('window').width - Spacing.xl * 2 - Spacing.lg * 2);
+// Half-width sparkline for the 2-up "Your signals" grid.
+const SIGNAL_CHART_W = Math.round((Dimensions.get('window').width - Spacing.xl * 2 - Spacing.lg) / 2 - Spacing.md * 2);
+// Display order for signal cards: recovery signals first, then activity/body.
+const SIGNAL_ORDER: ReadableMetric[] = ['sleep_minutes', 'resting_hr_bpm', 'hrv_sdnn_ms', 'steps', 'active_energy_kcal', 'bodyweight_kg'];
 
 const stat = Colors.stat as Record<string, string>;
 
@@ -58,8 +61,6 @@ const CONTRIB_METRIC: Record<string, string | undefined> = {
   sleep: 'sleep_minutes',
 };
 
-// Only these signals feed readiness, so only these are worth flagging as a gap here.
-const READINESS_METRICS: ReadableMetric[] = ['hrv_sdnn_ms', 'resting_hr_bpm', 'sleep_minutes'];
 
 function contributorNote(c: ReadinessContributor): string {
   const z = c.z ?? 0;
@@ -99,6 +100,7 @@ export default function HealthScreen() {
   const [result, setResult] = useState<ReadinessResult | null>(null);
   const [connected, setConnected] = useState<Set<ReadableMetric>>(new Set());
   const [history, setHistory] = useState<{ date: string; value: number }[]>([]);
+  const [series, setSeries] = useState<Record<string, { date: string; value: number }[]>>({});
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -113,17 +115,19 @@ export default function HealthScreen() {
     }
     // Keep the readiness read distinct: a failed read must NOT look like no-data.
     let readinessFailed = false;
-    const [r, c, h] = await Promise.all([
+    const [r, c, h, s] = await Promise.all([
       loadReadiness(supabase, userId).catch(() => {
         readinessFailed = true;
         return null;
       }),
       loadConnectedMetrics(supabase, userId).catch(() => new Set<ReadableMetric>()),
       loadReadinessHistory(supabase, userId).catch(() => []),
+      loadMetricSeries(supabase, userId).catch(() => ({})),
     ]);
     setResult(r);
     setConnected(c);
     setHistory(h);
+    setSeries(s);
     setLoadError(readinessFailed);
     setLoading(false);
   }, [userId, supabase]);
@@ -303,100 +307,71 @@ export default function HealthScreen() {
               </View>
             )}
 
-            {/* WHERE THIS COMES FROM */}
-            <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
-              <View style={styles.sectionHeader}>
-                <View style={[styles.tile, { backgroundColor: C.muted }]}>
-                  <Feather name="link" size={IconSize.sm} color={C.textSecondary} />
-                </View>
-                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Where this comes from</Text>
+            {/* YOUR SIGNALS — the data we actually receive, as trends */}
+            {hasData && (
+              <View style={styles.signalsGrid}>
+                {SIGNAL_ORDER.filter((m) => (series[m]?.length ?? 0) > 0).map((m) => {
+                  const def = dailyMetricDef(m);
+                  if (!def) return null;
+                  const pts = series[m];
+                  const col = metricColor(def.colorKey);
+                  return (
+                    <View key={m} style={[styles.signalCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+                      <View style={styles.signalHeader}>
+                        <Feather name={def.icon as keyof typeof Feather.glyphMap} size={12} color={col} />
+                        <Text style={[styles.signalLabel, { color: C.textMuted }]} numberOfLines={1}>{def.label}</Text>
+                      </View>
+                      <Text style={[styles.signalValue, { color: C.foreground }]} numberOfLines={1}>{def.format(pts[pts.length - 1].value)}</Text>
+                      {pts.length >= 2 ? (
+                        <View style={{ marginTop: 4, marginHorizontal: -4, marginBottom: -4 }}>
+                          <MiniAreaChart
+                            data={pts.map((p) => p.value)}
+                            labels={pts.map((p) => p.date.slice(5))}
+                            width={SIGNAL_CHART_W}
+                            height={44}
+                            color={col}
+                            tooltipBgColor={C.elevated}
+                            tooltipTextColor={C.foreground}
+                          />
+                        </View>
+                      ) : (
+                        <Text style={[styles.signalSub, { color: C.textDim }]}>Building history</Text>
+                      )}
+                    </View>
+                  );
+                })}
               </View>
+            )}
 
-              {hasData && (
-                <View style={styles.sourceRow}>
-                  <View style={[styles.tile, { backgroundColor: C.muted }]}>
-                    <Feather name={HUB_GLYPH as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.foreground} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.sourceNameRow}>
-                      <Text style={[styles.sourceName, { color: C.foreground }]}>{HUB_LABEL}</Text>
-                      <View style={[styles.statusDot, { backgroundColor: Colors.success }]} />
-                    </View>
-                    <View style={styles.chipWrap}>
-                      {[...connected].map((m) => {
-                        const def = dailyMetricDef(m);
-                        if (!def) return null;
-                        const col = metricColor(def.colorKey);
-                        return (
-                          <View key={m} style={[styles.chip, { backgroundColor: colorWithAlpha(col, 0.1) }]}>
-                            <Text style={[styles.chipText, { color: col }]}>{def.shortLabel}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  </View>
-                </View>
-              )}
-
-              {Platform.OS === 'android' && connected.has('hrv_sdnn_ms') && (
-                <View style={styles.caveatRow}>
-                  <Feather name="info" size={14} color={C.textMuted} />
-                  <Text style={[styles.caveatText, { color: C.textMuted }]}>
-                    On Android your HRV arrives as RMSSD, not SDNN. Drona compares it to your own RMSSD baseline, so the trend still holds.
-                  </Text>
-                </View>
-              )}
-
-              {/* Honest gaps: only the signals readiness actually uses, and only once something is connected. */}
-              {hasData && READINESS_METRICS.filter((m) => !connected.has(m)).map((m) => {
-                const def = dailyMetricDef(m);
-                if (!def) return null;
-                return (
-                  <View key={m} style={styles.missingRow}>
-                    <View style={[styles.tile, { backgroundColor: C.muted }]}>
-                      <Feather name={def.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textMuted} />
-                    </View>
-                    <Text style={[styles.missingText, { color: C.textMuted }]}>{def.label} is not coming through yet.</Text>
-                  </View>
-                );
-              })}
-
-              <View style={[styles.divider, { backgroundColor: C.borderSubtle }]} />
-              <Text style={[styles.caption, { color: C.textMuted, marginBottom: Spacing.sm }]}>Also works with</Text>
-              {sourcesForHub(HUB).map((s) => (
-                <View key={s.id}>
-                  <View style={styles.compatRow}>
-                    <View style={[styles.tile, { backgroundColor: C.muted }]}>
-                      <Feather name={s.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textMuted} />
-                    </View>
-                    <Text style={[styles.compatName, { color: C.textMuted }]}>{s.name}</Text>
-                  </View>
-                  {s.caveat && (
-                    <View style={styles.caveatRow}>
-                      <Feather name="info" size={14} color={C.textMuted} />
-                      <Text style={[styles.caveatText, { color: C.textMuted }]}>{s.caveat}</Text>
-                    </View>
-                  )}
-                </View>
-              ))}
-            </View>
+            {/* Compact, honest connection line (replaces the old source catalog). */}
+            {hasData && (
+              <View style={styles.connLine}>
+                <View style={[styles.statusDot, { backgroundColor: Colors.success }]} />
+                <Text style={[styles.connText, { color: C.textMuted }]}>Syncing from {HUB_LABEL}.</Text>
+              </View>
+            )}
 
             {/* MANAGE / CONNECT */}
             {notConnected ? (
-              <Pressable
-                onPress={() => runSync(true)}
-                disabled={working}
-                style={({ pressed }) => [styles.cta, { backgroundColor: Colors.primary }, (pressed || working) && { opacity: 0.85 }]}
-              >
-                {working ? (
-                  <ActivityIndicator color={Colors.primaryFg} />
-                ) : (
-                  <>
-                    <Feather name="link" size={IconSize.md} color={Colors.primaryFg} />
-                    <Text style={[styles.ctaText, { color: Colors.primaryFg }]}>Connect {HUB_LABEL}</Text>
-                  </>
-                )}
-              </Pressable>
+              <>
+                <Pressable
+                  onPress={() => runSync(true)}
+                  disabled={working}
+                  style={({ pressed }) => [styles.cta, { backgroundColor: Colors.primary }, (pressed || working) && { opacity: 0.85 }]}
+                >
+                  {working ? (
+                    <ActivityIndicator color={Colors.primaryFg} />
+                  ) : (
+                    <>
+                      <Feather name="link" size={IconSize.md} color={Colors.primaryFg} />
+                      <Text style={[styles.ctaText, { color: Colors.primaryFg }]}>Connect {HUB_LABEL}</Text>
+                    </>
+                  )}
+                </Pressable>
+                <Text style={[styles.worksWith, { color: C.textMuted }]}>
+                  Works with {sourcesForHub(HUB).map((s) => s.name).join(', ')}.
+                </Text>
+              </>
             ) : (
               <Pressable
                 onPress={() => runSync(false)}
@@ -505,6 +480,15 @@ const styles = StyleSheet.create({
   contribRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
   contribNote: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
   caption: { fontSize: FontSize.xs, marginTop: Spacing.sm },
+  signalsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: Spacing.lg },
+  signalCard: { width: '47%', borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.md, overflow: 'hidden' },
+  signalHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  signalLabel: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.4, textTransform: 'uppercase' },
+  signalValue: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: -0.5 },
+  signalSub: { fontSize: 10, marginTop: 6 },
+  connLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.xs },
+  connText: { fontSize: FontSize.sm },
+  worksWith: { fontSize: FontSize.sm, lineHeight: 18, textAlign: 'center', marginTop: Spacing.md, paddingHorizontal: Spacing.lg },
   sourceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
   sourceNameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   sourceName: { fontSize: FontSize.base, fontWeight: FontWeight.medium },

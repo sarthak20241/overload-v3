@@ -203,3 +203,30 @@ export async function loadConnectedMetrics(
   }
   return present;
 }
+
+/**
+ * Recent daily series for every readable metric, ascending, grouped by type.
+ * Powers the hub's "Your signals" trend cards. Read-only.
+ */
+export async function loadMetricSeries(
+  supabase: SupabaseClient,
+  userId: string,
+  days = 14,
+): Promise<Record<string, { date: string; value: number }[]>> {
+  const out: Record<string, { date: string; value: number }[]> = {};
+  if (!userId) return out;
+  const since = shiftDaysISO(todayLocalISO(), -days);
+  const { data, error } = await supabase
+    .from('daily_metrics')
+    .select('metric_type, metric_date, value')
+    .in('metric_type', READABLE_METRICS as unknown as string[])
+    .gte('metric_date', since)
+    .order('metric_date', { ascending: true });
+  if (error) throw error;
+  for (const r of (data ?? []) as { metric_type: string; metric_date: string; value: number | string }[]) {
+    const v = Number(r.value);
+    if (!Number.isFinite(v)) continue;
+    (out[r.metric_type] ||= []).push({ date: r.metric_date, value: v });
+  }
+  return out;
+}
