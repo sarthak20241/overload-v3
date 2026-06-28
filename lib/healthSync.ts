@@ -175,3 +175,31 @@ export async function syncHealthData(
   await setCursor(userId, today);
   return { written: rows.length };
 }
+
+/**
+ * Which readable metrics have FRESH data (a daily_metrics row within the last
+ * `freshDays`). This is our honest "what's connected" signal: iOS never reports
+ * read-grant, so we infer a source is feeding from the presence of its rows
+ * rather than from any permission read-back. Read-only.
+ */
+export async function loadConnectedMetrics(
+  supabase: SupabaseClient,
+  userId: string,
+  freshDays = 3,
+): Promise<Set<ReadableMetric>> {
+  const present = new Set<ReadableMetric>();
+  if (!userId) return present;
+  const since = shiftDaysISO(todayLocalISO(), -freshDays);
+  const { data, error } = await supabase
+    .from('daily_metrics')
+    .select('metric_type')
+    .in('metric_type', READABLE_METRICS as unknown as string[])
+    .gte('metric_date', since);
+  if (error) throw error;
+  for (const r of (data ?? []) as { metric_type: string }[]) {
+    if ((READABLE_METRICS as unknown as string[]).includes(r.metric_type)) {
+      present.add(r.metric_type as ReadableMetric);
+    }
+  }
+  return present;
+}

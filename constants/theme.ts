@@ -103,6 +103,13 @@ export const Colors = {
     duration: '#a855f7',
     sets: '#10b981',
     readiness: '#14b8a6',
+    // Holistic daily-metric accents (keyed by DAILY_METRICS[].colorKey). Categorical.
+    hrv: '#8b5cf6',
+    resting_hr: '#ef4444',
+    sleep: '#6366f1',
+    steps: '#84cc16',
+    bodyweight: '#10b981',
+    active_energy: '#f97316',
   },
 
   // Muscle-group accents (dashboard donut + tags). Categorical, theme-independent.

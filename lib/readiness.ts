@@ -14,6 +14,8 @@
  * here (owned by the diet workstream); a neutral hook can be added later.
  */
 
+import { Colors } from '@/constants/theme';
+
 /** Trailing-window stats for one signal (mean/sd over the baseline period). */
 export interface BaselineStat {
   mean: number | null;
@@ -186,4 +188,28 @@ function rationaleFor(score: number, band: ReadinessBand, tier: ReadinessTier): 
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Vivid band base colour for the ring stroke + directive pill fill. */
+export function bandColor(band: ReadinessBand): string {
+  if (band === 'high') return Colors.success;
+  if (band === 'moderate') return Colors.warning;
+  return Colors.danger;
+}
+
+/** Two-to-three word directive derived from the band (Drona voice, no em dashes). */
+export function directive(band: ReadinessBand): string {
+  if (band === 'high') return 'Push today';
+  if (band === 'moderate') return 'Train as planned';
+  return 'Ease off today';
+}
+
+/** AA-tuned band text colour; pass the active theme object from useTheme(). */
+export function bandTextColor(
+  band: ReadinessBand,
+  C: { successText: string; warningText: string; dangerText: string },
+): string {
+  if (band === 'high') return C.successText;
+  if (band === 'moderate') return C.warningText;
+  return C.dangerText;
 }

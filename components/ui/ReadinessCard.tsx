@@ -15,23 +15,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness } from '@/lib/readinessSync';
-import type { ReadinessBand, ReadinessResult } from '@/lib/readiness';
+import { bandColor, directive } from '@/lib/readiness';
+import type { ReadinessResult } from '@/lib/readiness';
 import { Colors, Radius, Spacing, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
-
-const RING = 96;
-const STROKE = 9;
-
-function bandColor(band: ReadinessBand): string {
-  if (band === 'high') return Colors.success;
-  if (band === 'moderate') return Colors.warning;
-  return Colors.danger;
-}
-
-function directive(band: ReadinessBand): string {
-  if (band === 'high') return 'Push today';
-  if (band === 'moderate') return 'Train as planned';
-  return 'Ease off today';
-}
+import { ReadinessRing } from '@/components/ui/ReadinessRing';
 
 export function ReadinessCard() {
   const { C } = useTheme();
@@ -85,12 +72,9 @@ export function ReadinessCard() {
         </View>
       ) : hasScore ? (
         <View style={styles.center}>
-          <View style={{ width: RING, height: RING }}>
-            <Ring score={result!.score!} color={bandColor(result!.band!)} track={C.muted} />
-            <View style={styles.ringLabel}>
-              <Text style={[styles.score, { color: C.foreground }]}>{result!.score}</Text>
-            </View>
-          </View>
+          <ReadinessRing score={result!.score!} color={bandColor(result!.band!)} track={C.muted} size={96} stroke={9}>
+            <Text style={[styles.score, { color: C.foreground }]}>{result!.score}</Text>
+          </ReadinessRing>
           <Text style={[styles.directive, { color: bandColor(result!.band!) }]}>
             {directive(result!.band!)}
           </Text>
@@ -111,31 +95,6 @@ export function ReadinessCard() {
         </View>
       )}
     </Pressable>
-  );
-}
-
-function Ring({ score, color, track }: { score: number; color: string; track: string }) {
-  const r = (RING - STROKE) / 2;
-  const cx = RING / 2;
-  const circ = 2 * Math.PI * r;
-  const offset = circ * (1 - Math.max(0, Math.min(100, score)) / 100);
-  return (
-    <Svg width={RING} height={RING}>
-      <Circle cx={cx} cy={cx} r={r} fill="none" stroke={track} strokeWidth={STROKE} />
-      <Circle
-        cx={cx}
-        cy={cx}
-        r={r}
-        fill="none"
-        stroke={color}
-        strokeWidth={STROKE}
-        strokeLinecap="round"
-        strokeDasharray={circ}
-        strokeDashoffset={offset}
-        rotation={-90}
-        origin={`${cx}, ${cx}`}
-      />
-    </Svg>
   );
 }
 

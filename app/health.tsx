@@ -1,193 +1,493 @@
 /**
- * Health connect screen (holistic tracking, v1).
+ * Readiness hub (holistic tracking, Phase 2 redesign).
  *
- * Root-level full-screen route (like workout/[id]) so it sits outside the tab
- * layout. Reachable now via router.push('/health') or the deep link
- * overload://health; a polished entry point (a Drona-framed dashboard card) lands
- * with the readiness work in Phase 2. Lets the user connect Apple Health /
- * Health Connect and pull a first sync. Plan: .planning/holistic-tracking-plan.md.
+ * Root-level full-screen route (like workout/[id]), reached from the dashboard
+ * ReadinessCard and the deep link overload://health. It is NOT a connect button:
+ * once data is flowing it shows the readiness score, WHY it moved (contributors
+ * vs the user's own baseline), the trend, and WHAT is feeding it (the hub + which
+ * metrics, honestly, since iOS never reports read grants). The connect action is
+ * demoted to a "Sync now" footer once connected. Fully theme-aware (no hardcoded
+ * light). Plan: .planning/holistic-tracking-plan.md.
  */
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
   Pressable,
   ScrollView,
   ActivityIndicator,
-  Platform,
   StyleSheet,
+  Platform,
+  Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
+import Svg, { Circle } from 'react-native-svg';
 import { useRouter } from 'expo-router';
-import { useAuth } from '@clerk/clerk-expo';
+import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
-import { requestHealthAuthorization, syncHealthData } from '@/lib/healthSync';
+import { useClerkUser } from '@/hooks/useClerkUser';
+import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
+import { loadConnectedMetrics, requestHealthAuthorization, READABLE_METRICS, type ReadableMetric } from '@/lib/healthSync';
+import { bandColor, directive, bandTextColor, type ReadinessContributor, type ReadinessResult } from '@/lib/readiness';
+import { ReadinessRing } from '@/components/ui/ReadinessRing';
+import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { dailyMetricDef } from '@/lib/dailyMetrics';
 import { sourcesForHub, type HealthHub } from '@/lib/healthSources';
-import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, colorWithAlpha } from '@/constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorWithAlpha } from '@/constants/theme';
 
-const C = Colors.light;
 const HUB: HealthHub = Platform.OS === 'ios' ? 'healthkit' : 'health_connect';
 const HUB_LABEL = Platform.OS === 'ios' ? 'Apple Health' : 'Health Connect';
+const HUB_GLYPH = Platform.OS === 'ios' ? 'heart' : 'activity';
+const CHART_W = Math.round(Dimensions.get('window').width - Spacing.xl * 2 - Spacing.lg * 2);
+
+const stat = Colors.stat as Record<string, string>;
 
 type Status =
   | { kind: 'idle' }
   | { kind: 'working' }
-  | { kind: 'done'; written: number }
+  | { kind: 'done'; written: number | null }
   | { kind: 'unavailable' }
   | { kind: 'error'; message: string };
 
-export default function HealthConnectScreen() {
+// contributor key -> daily-metric type (load/subjective have no metric)
+const CONTRIB_METRIC: Record<string, string | undefined> = {
+  hrv: 'hrv_sdnn_ms',
+  rhr: 'resting_hr_bpm',
+  sleep: 'sleep_minutes',
+};
+
+function contributorNote(c: ReadinessContributor): string {
+  const z = c.z ?? 0;
+  const up = z > 0.3;
+  const down = z < -0.3;
+  switch (c.key) {
+    case 'hrv':
+      return up ? 'HRV is up on your normal. That is your body saying it is ready.'
+        : down ? 'HRV is below your normal, a sign recovery is still catching up.'
+        : 'HRV is about your normal.';
+    case 'rhr':
+      return up ? 'Resting heart rate is sitting low (lower is better), a good recovery sign.'
+        : down ? 'Resting heart rate is a touch high today (lower is better), so readiness eased down.'
+        : 'Resting heart rate is about your normal (lower is better).';
+    case 'sleep':
+      return up ? 'You slept more than your usual, which helps recovery.'
+        : down ? 'Sleep came in short of your usual, so readiness took a small hit.'
+        : 'Sleep is about your usual.';
+    case 'load':
+      return 'Recent training load is high this week, so readiness leaves room to recover.';
+    case 'subjective':
+      return 'Built from how you said you feel today.';
+    default:
+      return c.note;
+  }
+}
+
+export default function HealthScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { C } = useTheme();
   const supabase = useSupabaseClient();
-  const { userId } = useAuth();
+  const { user } = useClerkUser();
+  const userId = user?.id ?? null;
+
+  const [loading, setLoading] = useState(true);
+  const [result, setResult] = useState<ReadinessResult | null>(null);
+  const [connected, setConnected] = useState<Set<ReadableMetric>>(new Set());
+  const [history, setHistory] = useState<{ date: string; value: number }[]>([]);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
 
-  const sources = sourcesForHub(HUB);
-  const busy = status.kind === 'working';
+  const accent = stat.readiness;
+  const metricColor = (colorKey: string) => stat[colorKey] ?? C.textSecondary;
 
-  async function onConnect() {
+  const load = useCallback(async () => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const [r, c, h] = await Promise.all([
+        loadReadiness(supabase, userId).catch(() => null),
+        loadConnectedMetrics(supabase, userId).catch(() => new Set<ReadableMetric>()),
+        loadReadinessHistory(supabase, userId).catch(() => []),
+      ]);
+      setResult(r);
+      setConnected(c);
+      setHistory(h);
+    } finally {
+      setLoading(false);
+    }
+  }, [userId, supabase]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onConnectOrSync() {
     if (!userId) {
       setStatus({ kind: 'error', message: 'Sign in first so your data can sync to your account.' });
       return;
     }
     setStatus({ kind: 'working' });
     try {
-      const authorized = await requestHealthAuthorization();
-      if (!authorized) {
+      const ok = await requestHealthAuthorization();
+      if (!ok) {
         setStatus({ kind: 'unavailable' });
         return;
       }
-      const result = await syncHealthData(supabase, userId);
-      setStatus({ kind: 'done', written: result?.written ?? 0 });
+      const { synced } = await runHealthSyncAndReadiness(supabase, userId);
+      setStatus({ kind: 'done', written: synced });
+      await load();
     } catch (e) {
       setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'Something went wrong.' });
     }
   }
 
+  const hasScore = result?.score != null && result.band != null;
+  const calibrating = !hasScore && result?.calibrating === true;
+  const hasData = connected.size > 0;
+  const notConnected = !hasScore && !calibrating && !hasData;
+  const working = status.kind === 'working';
+
+  const contributors = (result?.contributors ?? []).filter((c) => c.key !== 'subjective' || result?.tier === 'B');
+
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
           <Feather name="chevron-left" size={IconSize.lg} color={C.foreground} />
         </Pressable>
-        <Text style={styles.headerTitle}>Health</Text>
-        <View style={styles.backBtn} />
+        <Text style={[styles.headerTitle, { color: C.foreground }]}>Readiness</Text>
+        <View style={styles.iconBtn} />
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + Spacing.xxxl }}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + Spacing.xxxl, gap: Spacing.lg }}
       >
-        <Text style={styles.lede}>
-          Connect {HUB_LABEL} and Drona can read your sleep, steps, heart rate and bodyweight to gauge
-          how recovered you are. Nothing leaves your account, and you can disconnect any time in {HUB_LABEL}.
-        </Text>
-
-        <Pressable
-          onPress={onConnect}
-          disabled={busy}
-          style={({ pressed }) => [styles.cta, (pressed || busy) && styles.ctaPressed]}
-        >
-          {busy ? (
-            <ActivityIndicator color={Colors.primaryFg} />
-          ) : (
-            <>
-              <Feather name="link" size={IconSize.md} color={Colors.primaryFg} />
-              <Text style={styles.ctaText}>Connect {HUB_LABEL}</Text>
-            </>
-          )}
-        </Pressable>
-
-        {status.kind !== 'idle' && status.kind !== 'working' && (
-          <View
-            style={[
-              styles.statusBox,
-              {
-                backgroundColor:
-                  status.kind === 'done'
-                    ? colorWithAlpha(Colors.success, 0.1)
-                    : status.kind === 'error'
-                      ? Colors.dangerBg
-                      : C.muted,
-              },
-            ]}
-          >
-            <Text style={styles.statusText}>
-              {status.kind === 'done'
-                ? status.written > 0
-                  ? `Synced ${status.written} readings. Drona will fold these into your readiness.`
-                  : 'Connected. No new readings yet, so nothing to pull right now.'
-                : status.kind === 'unavailable'
-                  ? `${HUB_LABEL} is not set up on this device yet. Open it, allow Overload, then try again.`
-                  : status.message}
-            </Text>
+        {loading ? (
+          <View style={{ paddingVertical: Spacing.xxxl * 2, alignItems: 'center' }}>
+            <ActivityIndicator color={accent} />
           </View>
+        ) : (
+          <>
+            {/* HERO */}
+            <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+              <View style={[styles.cardGlow, { backgroundColor: accent }]} />
+              <View style={styles.cardHeaderRow}>
+                <Svg width={12} height={12} viewBox="0 0 24 24">
+                  <Circle cx={12} cy={12} r={5} fill="none" stroke={accent} strokeWidth={2.5} />
+                </Svg>
+                <Text style={[styles.cardLabel, { color: accent }]}>READINESS</Text>
+              </View>
+
+              {hasScore ? (
+                <View style={styles.heroBody}>
+                  <ReadinessRing score={result!.score!} color={bandColor(result!.band!)} track={C.muted} size={140} stroke={12}>
+                    <Text style={[styles.heroScore, { color: C.foreground }]}>{result!.score}</Text>
+                    <Text style={[styles.heroOutOf, { color: C.textDim }]}>/100</Text>
+                  </ReadinessRing>
+                  <View style={[styles.pill, { backgroundColor: colorWithAlpha(bandColor(result!.band!), 0.12) }]}>
+                    <Text style={[styles.pillText, { color: bandTextColor(result!.band!, C) }]}>{directive(result!.band!)}</Text>
+                  </View>
+                  <Text style={[styles.tierChip, { color: C.textMuted }]}>
+                    {result!.tier === 'A1' ? 'From HRV, resting heart rate and sleep'
+                      : result!.tier === 'A2' ? 'From resting heart rate and sleep'
+                      : 'From your check-in'}
+                  </Text>
+                  <Text style={[styles.rationale, { color: C.textSecondary }]}>{result!.rationale}</Text>
+                </View>
+              ) : (
+                <View style={styles.heroBody}>
+                  <ReadinessRing score={0} color={accent} track={C.muted} size={140} stroke={12}>
+                    {working ? (
+                      <ActivityIndicator color={accent} />
+                    ) : (
+                      <Feather name={notConnected ? 'plus-circle' : 'moon'} size={26} color={C.textDim} />
+                    )}
+                  </ReadinessRing>
+                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>
+                    {notConnected ? 'Connect health' : calibrating ? 'Building your baseline' : 'Connected'}
+                  </Text>
+                  <Text style={[styles.emptySub, { color: C.textMuted }]}>
+                    {notConnected
+                      ? `Sync your sleep and recovery and Drona reads how recovered you are each morning.`
+                      : calibrating
+                        ? `Still learning your normal. Give it a week or two of data and readiness kicks in.`
+                        : `Connected. Waiting on your first night of data.`}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* WHY TODAY */}
+            {hasScore && contributors.length > 0 && (
+              <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+                <View style={styles.sectionHeader}>
+                  <View style={[styles.tile, { backgroundColor: colorWithAlpha(accent, 0.12) }]}>
+                    <Feather name="sun" size={IconSize.sm} color={accent} />
+                  </View>
+                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Why today</Text>
+                </View>
+                {contributors.map((c) => {
+                  const def = CONTRIB_METRIC[c.key] ? dailyMetricDef(CONTRIB_METRIC[c.key]) : undefined;
+                  const col = def ? metricColor(def.colorKey) : C.textMuted;
+                  const hasZ = c.z != null && (c.key === 'hrv' || c.key === 'rhr' || c.key === 'sleep');
+                  return (
+                    <View key={c.key} style={styles.contribRow}>
+                      <View style={[styles.tile, { backgroundColor: colorWithAlpha(col, 0.12) }]}>
+                        <Feather name={(def?.icon ?? 'circle') as keyof typeof Feather.glyphMap} size={IconSize.sm} color={col} />
+                      </View>
+                      <Text style={[styles.contribNote, { color: C.foreground }]}>{contributorNote(c)}</Text>
+                      {hasZ && (
+                        <ZBar z={c.z!} pos={C.successText} neg={C.dangerText} neutral={C.textMuted} track={C.muted} mid={C.border} />
+                      )}
+                    </View>
+                  );
+                })}
+                <Text style={[styles.caption, { color: C.textMuted }]}>Measured against your own baseline, not anyone else.</Text>
+              </View>
+            )}
+
+            {/* TREND */}
+            {history.length >= 2 && (
+              <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+                <View style={styles.sectionHeaderSplit}>
+                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Last 14 days</Text>
+                  <TrendDelta history={history} C={C} />
+                </View>
+                <View style={{ marginTop: Spacing.md, marginHorizontal: -4 }}>
+                  <MiniAreaChart
+                    data={history.map((p) => p.value)}
+                    labels={history.map((p) => p.date.slice(5))}
+                    width={CHART_W}
+                    height={72}
+                    color={accent}
+                    tooltipBgColor={C.elevated}
+                    tooltipTextColor={C.foreground}
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* WHERE THIS COMES FROM */}
+            <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+              <View style={styles.sectionHeader}>
+                <View style={[styles.tile, { backgroundColor: C.muted }]}>
+                  <Feather name="link" size={IconSize.sm} color={C.textSecondary} />
+                </View>
+                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Where this comes from</Text>
+              </View>
+
+              {hasData && (
+                <View style={styles.sourceRow}>
+                  <View style={[styles.tile, { backgroundColor: C.muted }]}>
+                    <Feather name={HUB_GLYPH as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.foreground} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.sourceNameRow}>
+                      <Text style={[styles.sourceName, { color: C.foreground }]}>{HUB_LABEL}</Text>
+                      <View style={[styles.statusDot, { backgroundColor: Colors.success }]} />
+                    </View>
+                    <View style={styles.chipWrap}>
+                      {[...connected].map((m) => {
+                        const def = dailyMetricDef(m);
+                        if (!def) return null;
+                        const col = metricColor(def.colorKey);
+                        return (
+                          <View key={m} style={[styles.chip, { backgroundColor: colorWithAlpha(col, 0.1) }]}>
+                            <Text style={[styles.chipText, { color: col }]}>{def.shortLabel}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </View>
+                </View>
+              )}
+
+              {Platform.OS === 'android' && connected.has('hrv_sdnn_ms') && (
+                <View style={styles.caveatRow}>
+                  <Feather name="info" size={14} color={C.warningText} />
+                  <Text style={[styles.caveatText, { color: C.textMuted }]}>
+                    On Android your HRV arrives as RMSSD, not SDNN. Drona compares it to your own RMSSD baseline, so the trend still holds.
+                  </Text>
+                </View>
+              )}
+
+              {/* Missing metrics — honest gaps */}
+              {READABLE_METRICS.filter((m) => !connected.has(m)).map((m) => {
+                const def = dailyMetricDef(m);
+                if (!def) return null;
+                return (
+                  <View key={m} style={styles.missingRow}>
+                    <View style={[styles.tile, { backgroundColor: C.muted }]}>
+                      <Feather name={def.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textDim} />
+                    </View>
+                    <Text style={[styles.missingText, { color: C.textMuted }]}>{def.label}, no source yet.</Text>
+                  </View>
+                );
+              })}
+
+              <View style={[styles.divider, { backgroundColor: C.borderSubtle }]} />
+              <Text style={[styles.caption, { color: C.textMuted, marginBottom: Spacing.sm }]}>Also works with</Text>
+              {sourcesForHub(HUB).map((s) => (
+                <View key={s.id}>
+                  <View style={styles.compatRow}>
+                    <View style={[styles.tile, { backgroundColor: C.muted }]}>
+                      <Feather name={s.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textMuted} />
+                    </View>
+                    <Text style={[styles.compatName, { color: C.textMuted }]}>{s.name}</Text>
+                  </View>
+                  {s.caveat && (
+                    <View style={styles.caveatRow}>
+                      <Feather name="info" size={14} color={C.warningText} />
+                      <Text style={[styles.caveatText, { color: C.textMuted }]}>{s.caveat}</Text>
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
+
+            {/* MANAGE / CONNECT */}
+            {notConnected ? (
+              <Pressable
+                onPress={onConnectOrSync}
+                disabled={working}
+                style={({ pressed }) => [styles.cta, { backgroundColor: Colors.primary }, (pressed || working) && { opacity: 0.85 }]}
+              >
+                {working ? (
+                  <ActivityIndicator color={Colors.primaryFg} />
+                ) : (
+                  <>
+                    <Feather name="link" size={IconSize.md} color={Colors.primaryFg} />
+                    <Text style={[styles.ctaText, { color: Colors.primaryFg }]}>Connect {HUB_LABEL}</Text>
+                  </>
+                )}
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={onConnectOrSync}
+                disabled={working}
+                style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
+              >
+                {working ? (
+                  <ActivityIndicator color={C.foreground} />
+                ) : (
+                  <>
+                    <Feather name="refresh-cw" size={IconSize.md} color={C.foreground} />
+                    <Text style={[styles.ghostText, { color: C.foreground }]}>Sync now</Text>
+                  </>
+                )}
+              </Pressable>
+            )}
+
+            {status.kind !== 'idle' && status.kind !== 'working' && (
+              <View
+                style={[
+                  styles.statusBox,
+                  {
+                    backgroundColor:
+                      status.kind === 'done' ? colorWithAlpha(Colors.success, 0.1)
+                        : status.kind === 'error' ? Colors.dangerBg
+                        : C.muted,
+                  },
+                ]}
+              >
+                <Text style={[styles.statusText, { color: C.foreground }]}>
+                  {status.kind === 'done'
+                    ? (status.written ?? 0) > 0
+                      ? `Synced ${status.written} readings. Drona folded them into your readiness.`
+                      : 'Connected. No new readings yet, so nothing to pull right now.'
+                    : status.kind === 'unavailable'
+                      ? `${HUB_LABEL} is not set up on this device yet. Open it, allow Overload, then try again.`
+                      : status.message}
+                </Text>
+              </View>
+            )}
+          </>
         )}
-
-        <Text style={styles.sectionLabel}>Works with</Text>
-        {sources.map((s) => (
-          <View key={s.id} style={styles.sourceRow}>
-            <View style={styles.sourceIcon}>
-              <Feather name={s.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textSecondary} />
-            </View>
-            <View style={styles.sourceText}>
-              <Text style={styles.sourceName}>{s.name}</Text>
-              <Text style={styles.sourceHint}>{s.caveat ?? s.setupHint}</Text>
-            </View>
-          </View>
-        ))}
       </ScrollView>
     </View>
   );
 }
 
+function TrendDelta({ history, C }: { history: { value: number }[]; C: ReturnType<typeof useTheme>['C'] }) {
+  const latest = history[history.length - 1].value;
+  const first = history[0].value;
+  const delta = latest - first;
+  const col = delta > 0 ? C.successText : delta < 0 ? C.dangerText : C.textMuted;
+  const sign = delta > 0 ? '+' : '';
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
+      <Text style={{ fontSize: FontSize.base, fontWeight: FontWeight.black, color: C.foreground }}>{latest}</Text>
+      <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: col }}>{sign}{delta}</Text>
+    </View>
+  );
+}
+
+function ZBar({ z, pos, neg, neutral, track, mid }: { z: number; pos: string; neg: string; neutral: string; track: string; mid: string }) {
+  const W = 64;
+  const H = 6;
+  const half = W / 2;
+  const mag = Math.min(Math.abs(z), 3) / 3;
+  const isNeutral = Math.abs(z) < 0.3;
+  const fillW = Math.max(2, mag * half);
+  const color = isNeutral ? neutral : z > 0 ? pos : neg;
+  return (
+    <View style={{ width: W, height: H, borderRadius: H / 2, backgroundColor: track, justifyContent: 'center' }}>
+      <View style={{ position: 'absolute', left: half - 0.5, width: 1, height: H, backgroundColor: mid }} />
+      {isNeutral ? (
+        <View style={{ position: 'absolute', left: half - 3, width: 6, height: H, borderRadius: H / 2, backgroundColor: color }} />
+      ) : (
+        <View style={{ position: 'absolute', height: H, borderRadius: H / 2, backgroundColor: color, width: fillW, left: z > 0 ? half : half - fillW }} />
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-  },
-  backBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, color: C.foreground },
-  lede: { fontSize: FontSize.base, lineHeight: 21, color: C.textSecondary, marginBottom: Spacing.xl },
-  cta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.primary,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.lg,
-    minHeight: 52,
-  },
-  ctaPressed: { opacity: 0.85 },
-  ctaText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.primaryFg },
-  statusBox: { marginTop: Spacing.lg, padding: Spacing.lg, borderRadius: Radius.md },
-  statusText: { fontSize: FontSize.base, lineHeight: 20, color: C.foreground },
-  sectionLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: C.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: Spacing.xxxl,
-    marginBottom: Spacing.md,
-  },
-  sourceRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.md },
-  sourceIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.full,
-    backgroundColor: C.muted,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sourceText: { flex: 1 },
-  sourceName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
-  sourceHint: { fontSize: FontSize.sm, color: C.textMuted, marginTop: 2, lineHeight: 17 },
+  root: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  card: { borderRadius: Radius.xl, borderWidth: 1, padding: Spacing.lg, overflow: 'hidden', position: 'relative' },
+  cardGlow: { position: 'absolute', top: -40, left: -40, width: 120, height: 120, borderRadius: 60, opacity: 0.04 },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
+  cardLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.6, textTransform: 'uppercase' },
+  heroBody: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.sm },
+  heroScore: { fontSize: FontSize.display, fontWeight: FontWeight.black, letterSpacing: -1 },
+  heroOutOf: { fontSize: FontSize.sm, marginTop: -6 },
+  pill: { paddingHorizontal: Spacing.md, paddingVertical: 6, borderRadius: Radius.full },
+  pillText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  tierChip: { fontSize: FontSize.xs },
+  rationale: { fontSize: FontSize.base, lineHeight: 21, textAlign: 'center', paddingHorizontal: Spacing.md },
+  emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, marginTop: Spacing.xs },
+  emptySub: { fontSize: FontSize.sm, lineHeight: 19, textAlign: 'center', paddingHorizontal: Spacing.lg },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md },
+  sectionHeaderSplit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  tile: { width: 28, height: 28, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  sectionTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  contribRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm },
+  contribNote: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
+  caption: { fontSize: FontSize.xs, marginTop: Spacing.sm },
+  sourceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
+  sourceNameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  sourceName: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  chip: { borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
+  chipText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  missingRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: 6 },
+  missingText: { flex: 1, fontSize: FontSize.sm },
+  divider: { height: 1, marginVertical: Spacing.md },
+  compatRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: 6 },
+  compatName: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  caveatRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingLeft: 40, paddingBottom: 6 },
+  caveatText: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
+  cta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: Spacing.lg, borderRadius: Radius.lg, minHeight: 52 },
+  ctaText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  ghost: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, borderRadius: Radius.lg, borderWidth: 1, minHeight: 48 },
+  ghostText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  statusBox: { padding: Spacing.lg, borderRadius: Radius.md },
+  statusText: { fontSize: FontSize.base, lineHeight: 20 },
 });

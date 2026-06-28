@@ -69,6 +69,8 @@ export async function loadReadiness(
     else if (baseline[r.metric_type]) baseline[r.metric_type].push(v);
   }
 
+  const acuteLoad = await loadAcuteLoad(supabase, today);
+
   return computeReadiness({
     today: {
       sleepMinutes: todayVal.sleep_minutes,
@@ -80,8 +82,65 @@ export async function loadReadiness(
       restingHrBpm: stat(baseline.resting_hr_bpm),
       hrvMs: stat(baseline.hrv_sdnn_ms),
     },
-    // acuteLoad: TODO read recent set count vs typical from base workout tables.
+    acuteLoad,
   });
+}
+
+/**
+ * Recent training load vs typical, from base workouts/workout_sets (never the
+ * absent stats matviews). Defensive: returns null on any issue so readiness
+ * still computes without the load temper. RLS scopes workouts to the user.
+ */
+async function loadAcuteLoad(
+  supabase: SupabaseClient,
+  today: string,
+): Promise<{ last7dSets: number; typicalWeeklySets: number } | null> {
+  try {
+    const since28 = shiftDaysISO(today, -28);
+    const since7Ms = new Date(shiftDaysISO(today, -7)).getTime();
+    const { data, error } = await supabase
+      .from('workouts')
+      .select('started_at, workout_sets(count)')
+      .gte('started_at', since28);
+    if (error || !data) return null;
+    let last7 = 0;
+    let total = 0;
+    for (const w of data as { started_at: string; workout_sets: { count: number }[] }[]) {
+      const c = Array.isArray(w.workout_sets) ? (w.workout_sets[0]?.count ?? 0) : 0;
+      total += c;
+      if (new Date(w.started_at).getTime() >= since7Ms) last7 += c;
+    }
+    const typicalWeeklySets = total / 4;
+    if (typicalWeeklySets <= 0) return null;
+    return { last7dSets: last7, typicalWeeklySets };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stored readiness scores over the last `days`, ascending. Drives the hub trend
+ * chart (hidden until >= 2 points). Read-only.
+ */
+export async function loadReadinessHistory(
+  supabase: SupabaseClient,
+  userId: string,
+  days = 14,
+): Promise<{ date: string; value: number }[]> {
+  if (!userId) return [];
+  const today = todayLocalISO();
+  const since = shiftDaysISO(today, -days);
+  const { data, error } = await supabase
+    .from('daily_metrics')
+    .select('metric_date, value')
+    .eq('metric_type', 'readiness_score')
+    .gte('metric_date', since)
+    .lte('metric_date', today)
+    .order('metric_date', { ascending: true });
+  if (error) throw error;
+  return (data ?? [])
+    .map((r: { metric_date: string; value: number | string }) => ({ date: r.metric_date, value: Number(r.value) }))
+    .filter((p) => Number.isFinite(p.value));
 }
 
 /**
