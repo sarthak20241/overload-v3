@@ -213,3 +213,16 @@ export function bandTextColor(
   if (band === 'moderate') return C.warningText;
   return C.dangerText;
 }
+
+/**
+ * Directive-pill text colour. Same as bandTextColor except the low/danger red is
+ * lifted on dark, where #ef4444 over a 12% danger fill dips below WCAG AA; light
+ * keeps its darker red, which already passes on the cream card.
+ */
+export function bandPillTextColor(
+  band: ReadinessBand,
+  C: { successText: string; warningText: string; dangerText: string },
+): string {
+  if (band !== 'low') return bandTextColor(band, C);
+  return C.dangerText === '#ef4444' ? '#f87171' : C.dangerText;
+}

@@ -19,6 +19,7 @@ import {
   StyleSheet,
   Platform,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -28,8 +29,8 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
-import { loadConnectedMetrics, requestHealthAuthorization, READABLE_METRICS, type ReadableMetric } from '@/lib/healthSync';
-import { bandColor, directive, bandTextColor, type ReadinessContributor, type ReadinessResult } from '@/lib/readiness';
+import { loadConnectedMetrics, requestHealthAuthorization, type ReadableMetric } from '@/lib/healthSync';
+import { bandColor, directive, bandPillTextColor, type ReadinessContributor, type ReadinessResult } from '@/lib/readiness';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { dailyMetricDef } from '@/lib/dailyMetrics';
@@ -56,6 +57,9 @@ const CONTRIB_METRIC: Record<string, string | undefined> = {
   rhr: 'resting_hr_bpm',
   sleep: 'sleep_minutes',
 };
+
+// Only these signals feed readiness, so only these are worth flagging as a gap here.
+const READINESS_METRICS: ReadableMetric[] = ['hrv_sdnn_ms', 'resting_hr_bpm', 'sleep_minutes'];
 
 function contributorNote(c: ReadinessContributor): string {
   const z = c.z ?? 0;
@@ -96,6 +100,8 @@ export default function HealthScreen() {
   const [connected, setConnected] = useState<Set<ReadableMetric>>(new Set());
   const [history, setHistory] = useState<{ date: string; value: number }[]>([]);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  const [loadError, setLoadError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const accent = stat.readiness;
   const metricColor = (colorKey: string) => stat[colorKey] ?? C.textSecondary;
@@ -105,35 +111,54 @@ export default function HealthScreen() {
       setLoading(false);
       return;
     }
-    try {
-      const [r, c, h] = await Promise.all([
-        loadReadiness(supabase, userId).catch(() => null),
-        loadConnectedMetrics(supabase, userId).catch(() => new Set<ReadableMetric>()),
-        loadReadinessHistory(supabase, userId).catch(() => []),
-      ]);
-      setResult(r);
-      setConnected(c);
-      setHistory(h);
-    } finally {
-      setLoading(false);
-    }
+    // Keep the readiness read distinct: a failed read must NOT look like no-data.
+    let readinessFailed = false;
+    const [r, c, h] = await Promise.all([
+      loadReadiness(supabase, userId).catch(() => {
+        readinessFailed = true;
+        return null;
+      }),
+      loadConnectedMetrics(supabase, userId).catch(() => new Set<ReadableMetric>()),
+      loadReadinessHistory(supabase, userId).catch(() => []),
+    ]);
+    setResult(r);
+    setConnected(c);
+    setHistory(h);
+    setLoadError(readinessFailed);
+    setLoading(false);
   }, [userId, supabase]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  async function onConnectOrSync() {
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }, [load]);
+
+  // A one-shot status (synced / error) should not stay pinned forever.
+  useEffect(() => {
+    if (status.kind === 'idle' || status.kind === 'working') return;
+    const t = setTimeout(() => setStatus({ kind: 'idle' }), 5000);
+    return () => clearTimeout(t);
+  }, [status]);
+
+  // reauth=true only for the first-time Connect; "Sync now" must never re-prompt.
+  async function runSync(reauth: boolean) {
     if (!userId) {
       setStatus({ kind: 'error', message: 'Sign in first so your data can sync to your account.' });
       return;
     }
     setStatus({ kind: 'working' });
     try {
-      const ok = await requestHealthAuthorization();
-      if (!ok) {
-        setStatus({ kind: 'unavailable' });
-        return;
+      if (reauth) {
+        const ok = await requestHealthAuthorization();
+        if (!ok) {
+          setStatus({ kind: 'unavailable' });
+          return;
+        }
       }
       const { synced } = await runHealthSyncAndReadiness(supabase, userId);
       setStatus({ kind: 'done', written: synced });
@@ -164,6 +189,7 @@ export default function HealthScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + Spacing.xxxl, gap: Spacing.lg }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={accent} colors={[accent]} />}
       >
         {loading ? (
           <View style={{ paddingVertical: Spacing.xxxl * 2, alignItems: 'center' }}>
@@ -171,6 +197,13 @@ export default function HealthScreen() {
           </View>
         ) : (
           <>
+            {loadError && (
+              <Pressable onPress={load} style={[styles.card, { backgroundColor: Colors.dangerBg, borderColor: C.borderSubtle }]}>
+                <Text style={[styles.statusText, { color: C.foreground }]}>
+                  Could not load your readiness just now. Tap to retry.
+                </Text>
+              </Pressable>
+            )}
             {/* HERO */}
             <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
               <View style={[styles.cardGlow, { backgroundColor: accent }]} />
@@ -185,10 +218,10 @@ export default function HealthScreen() {
                 <View style={styles.heroBody}>
                   <ReadinessRing score={result!.score!} color={bandColor(result!.band!)} track={C.muted} size={140} stroke={12}>
                     <Text style={[styles.heroScore, { color: C.foreground }]}>{result!.score}</Text>
-                    <Text style={[styles.heroOutOf, { color: C.textDim }]}>/100</Text>
+                    <Text style={[styles.heroOutOf, { color: C.textMuted }]}>/100</Text>
                   </ReadinessRing>
                   <View style={[styles.pill, { backgroundColor: colorWithAlpha(bandColor(result!.band!), 0.12) }]}>
-                    <Text style={[styles.pillText, { color: bandTextColor(result!.band!, C) }]}>{directive(result!.band!)}</Text>
+                    <Text style={[styles.pillText, { color: bandPillTextColor(result!.band!, C) }]}>{directive(result!.band!)}</Text>
                   </View>
                   <Text style={[styles.tierChip, { color: C.textMuted }]}>
                     {result!.tier === 'A1' ? 'From HRV, resting heart rate and sleep'
@@ -203,7 +236,7 @@ export default function HealthScreen() {
                     {working ? (
                       <ActivityIndicator color={accent} />
                     ) : (
-                      <Feather name={notConnected ? 'plus-circle' : 'moon'} size={26} color={C.textDim} />
+                      <Feather name={notConnected ? 'plus-circle' : 'moon'} size={26} color={C.textMuted} />
                     )}
                   </ReadinessRing>
                   <Text style={[styles.emptyTitle, { color: C.foreground }]}>
@@ -307,23 +340,23 @@ export default function HealthScreen() {
 
               {Platform.OS === 'android' && connected.has('hrv_sdnn_ms') && (
                 <View style={styles.caveatRow}>
-                  <Feather name="info" size={14} color={C.warningText} />
+                  <Feather name="info" size={14} color={C.textMuted} />
                   <Text style={[styles.caveatText, { color: C.textMuted }]}>
                     On Android your HRV arrives as RMSSD, not SDNN. Drona compares it to your own RMSSD baseline, so the trend still holds.
                   </Text>
                 </View>
               )}
 
-              {/* Missing metrics — honest gaps */}
-              {READABLE_METRICS.filter((m) => !connected.has(m)).map((m) => {
+              {/* Honest gaps: only the signals readiness actually uses, and only once something is connected. */}
+              {hasData && READINESS_METRICS.filter((m) => !connected.has(m)).map((m) => {
                 const def = dailyMetricDef(m);
                 if (!def) return null;
                 return (
                   <View key={m} style={styles.missingRow}>
                     <View style={[styles.tile, { backgroundColor: C.muted }]}>
-                      <Feather name={def.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textDim} />
+                      <Feather name={def.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={C.textMuted} />
                     </View>
-                    <Text style={[styles.missingText, { color: C.textMuted }]}>{def.label}, no source yet.</Text>
+                    <Text style={[styles.missingText, { color: C.textMuted }]}>{def.label} is not coming through yet.</Text>
                   </View>
                 );
               })}
@@ -340,7 +373,7 @@ export default function HealthScreen() {
                   </View>
                   {s.caveat && (
                     <View style={styles.caveatRow}>
-                      <Feather name="info" size={14} color={C.warningText} />
+                      <Feather name="info" size={14} color={C.textMuted} />
                       <Text style={[styles.caveatText, { color: C.textMuted }]}>{s.caveat}</Text>
                     </View>
                   )}
@@ -351,7 +384,7 @@ export default function HealthScreen() {
             {/* MANAGE / CONNECT */}
             {notConnected ? (
               <Pressable
-                onPress={onConnectOrSync}
+                onPress={() => runSync(true)}
                 disabled={working}
                 style={({ pressed }) => [styles.cta, { backgroundColor: Colors.primary }, (pressed || working) && { opacity: 0.85 }]}
               >
@@ -366,7 +399,7 @@ export default function HealthScreen() {
               </Pressable>
             ) : (
               <Pressable
-                onPress={onConnectOrSync}
+                onPress={() => runSync(false)}
                 disabled={working}
                 style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
               >
@@ -397,7 +430,9 @@ export default function HealthScreen() {
                   {status.kind === 'done'
                     ? (status.written ?? 0) > 0
                       ? `Synced ${status.written} readings. Drona folded them into your readiness.`
-                      : 'Connected. No new readings yet, so nothing to pull right now.'
+                      : Platform.OS === 'ios' && !hasData
+                        ? 'If you just allowed access, give it a moment. If nothing shows, check Apple Health, then Sharing, then Overload.'
+                        : 'Connected. No new readings yet, so nothing to pull right now.'
                     : status.kind === 'unavailable'
                       ? `${HUB_LABEL} is not set up on this device yet. Open it, allow Overload, then try again.`
                       : status.message}
@@ -467,7 +502,7 @@ const styles = StyleSheet.create({
   sectionHeaderSplit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   tile: { width: 28, height: 28, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
   sectionTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  contribRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm },
+  contribRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
   contribNote: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
   caption: { fontSize: FontSize.xs, marginTop: Spacing.sm },
   sourceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },

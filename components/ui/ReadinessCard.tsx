@@ -15,7 +15,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness } from '@/lib/readinessSync';
-import { bandColor, directive } from '@/lib/readiness';
+import { bandColor, directive, bandPillTextColor } from '@/lib/readiness';
 import type { ReadinessResult } from '@/lib/readiness';
 import { Colors, Radius, Spacing, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
@@ -75,9 +75,11 @@ export function ReadinessCard() {
           <ReadinessRing score={result!.score!} color={bandColor(result!.band!)} track={C.muted} size={96} stroke={9}>
             <Text style={[styles.score, { color: C.foreground }]}>{result!.score}</Text>
           </ReadinessRing>
-          <Text style={[styles.directive, { color: bandColor(result!.band!) }]}>
-            {directive(result!.band!)}
-          </Text>
+          <View style={[styles.pill, { backgroundColor: colorWithAlpha(bandColor(result!.band!), 0.12) }]}>
+            <Text style={[styles.directive, { color: bandPillTextColor(result!.band!, C) }]}>
+              {directive(result!.band!)}
+            </Text>
+          </View>
         </View>
       ) : (
         <View style={styles.center}>
@@ -106,7 +108,8 @@ const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center', marginTop: 2, minHeight: 116 },
   ringLabel: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   score: { fontSize: 28, fontWeight: FontWeight.black, letterSpacing: -1 },
-  directive: { fontSize: 11, fontWeight: FontWeight.semibold, marginTop: 6 },
+  pill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full, marginTop: 6 },
+  directive: { fontSize: 11, fontWeight: FontWeight.semibold },
   emptyChip: { width: 40, height: 40, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   emptyTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   emptySub: { fontSize: 10, marginTop: 3, textAlign: 'center', lineHeight: 14 },
