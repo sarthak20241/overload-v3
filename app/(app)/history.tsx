@@ -52,15 +52,24 @@ const MONTH_FULL = [
 interface ExerciseDetail {
   name: string;
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
+  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 type HistorySet = ExerciseDetail['sets'][number];
 
 /** Per-set pill text, axis-aware ("60kg × 8", "+10kg × 6", "0:45", "5km · 22:30", "12"). */
 function historySetLabel(metricType: MetricType, s: HistorySet): string {
   const axes = metricTypeDef(metricType).axes;
+  const usesWeightAxis = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
+  // Per-side weight (migration 0059): a unilateral set whose two sides used different
+  // loads spells both out ("40kg×8 / 35kg×7"); equal weights keep the compact form below.
+  if (s.is_unilateral && usesWeightAxis && axes.includes('reps')
+      && s.weight_kg_right != null && s.weight_kg_right !== s.weight_kg) {
+    const pre = axes.includes('assist_weight') ? '-' : axes.includes('added_weight') ? '+' : '';
+    return `${pre}${formatWeight(s.weight_kg)}kg×${s.reps} / ${pre}${formatWeight(s.weight_kg_right)}kg×${s.reps_right ?? 0}`;
+  }
   const parts = axes.map((a) =>
-    a === 'reps' ? `${s.reps}`
+    // A unilateral set shows both sides on the reps axis (weight is shared).
+    a === 'reps' ? (s.is_unilateral ? `${s.reps}/${s.reps_right ?? 0}` : `${s.reps}`)
     : a === 'duration' ? formatSetDuration(s.duration_seconds)
     : a === 'distance' ? `${formatDistanceKm(s.distance_m)}km`
     : a === 'resistance' ? `Lv ${s.resistance ?? 0}`
@@ -82,9 +91,9 @@ function historyBest(metricType: MetricType, sets: HistorySet[]): string {
     return formatSetDuration(Math.max(0, ...sets.map(s => s.duration_seconds ?? 0)));
   }
   if (axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight')) {
-    return `${formatWeight(Math.max(0, ...sets.map(s => s.weight_kg)))}kg`;
+    return `${formatWeight(Math.max(0, ...sets.map(s => s.weight_kg), ...sets.map(s => s.weight_kg_right ?? 0)))}kg`;
   }
-  return `${Math.max(0, ...sets.map(s => s.reps))} reps`;
+  return `${Math.max(0, ...sets.map(s => s.reps), ...sets.map(s => s.reps_right ?? 0))} reps`;
 }
 
 interface WorkoutRaw {
@@ -556,8 +565,10 @@ function SessionCard({
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
                             {historySetLabel(mt, set)}
                           </Text>
-                          {set.rpe != null && (
-                            <Text style={[styles.setPillText, { color: C.textMuted }]}>@{set.rpe}</Text>
+                          {(set.rpe != null || (set.is_unilateral && set.rpe_right != null)) && (
+                            <Text style={[styles.setPillText, { color: C.textMuted }]}>
+                              @{set.rpe ?? '–'}{set.is_unilateral && set.rpe_right != null ? `/${set.rpe_right}` : ''}
+                            </Text>
                           )}
                         </View>
                       ))}
@@ -680,7 +691,7 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, exercises(name, metric_type))')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -695,7 +706,7 @@ export default function HistoryScreen() {
           if (!exerciseMap[exId]) {
             exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, sets: [] };
           }
-          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe });
+          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe, is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right });
         });
         return {
           ...w,

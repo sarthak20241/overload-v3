@@ -434,7 +434,11 @@ export default function DashboardScreen() {
         const exId = s.exercise_id || s.exercises?.id;
         const exName = s.exercises?.name;
         if (!exId || !exName || s.weight_kg <= 0 || s.reps <= 0) continue;
-        const epley = s.weight_kg * (1 + s.reps / 30);
+        // A unilateral set's heavier side can be the real peak (per-side weight, 0059);
+        // take the better side's Epley, mirroring lib/insights.ts + recompute_user_lift_stat.
+        const epley = s.is_unilateral
+          ? Math.max(s.weight_kg * (1 + s.reps / 30), (s.weight_kg_right ?? s.weight_kg) * (1 + (s.reps_right ?? s.reps) / 30))
+          : s.weight_kg * (1 + s.reps / 30);
         const prev = best[exId] ?? 0;
         if (epley > prev) {
           if (prev > 0 && !prs.includes(exName)) prs.push(exName);
@@ -758,7 +762,7 @@ export default function DashboardScreen() {
                   const delta = volumeDeltas[w.id];
 
                     // Group sets by exercise (in order of first appearance)
-                    const grouped: { name: string; sets: { weight: number; reps: number; completed: boolean }[] }[] = [];
+                    const grouped: { name: string; sets: { weight: number; reps: number; completed: boolean; is_unilateral?: boolean; reps_right?: number | null; weight_kg_right?: number | null }[] }[] = [];
                     const groupIdx: Record<string, number> = {};
                     for (const s of (w.sets || []) as any[]) {
                       const name = s.exercises?.name || 'Unknown';
@@ -770,6 +774,9 @@ export default function DashboardScreen() {
                         weight: s.weight_kg,
                         reps: s.reps,
                         completed: s.completed,
+                        is_unilateral: s.is_unilateral,
+                        reps_right: s.reps_right,
+                        weight_kg_right: s.weight_kg_right,
                       });
                     }
 
@@ -898,7 +905,14 @@ export default function DashboardScreen() {
                                           ]}
                                         >
                                           <Text style={[styles.expandedSetText, { color: C.textSecondary }]}>
-                                            {s.weight > 0 ? `${s.weight}kg × ${s.reps}` : `${s.reps} reps`}
+                                            {(() => {
+                                              const wR = s.weight_kg_right ?? s.weight;
+                                              if (s.is_unilateral && s.weight > 0 && wR !== s.weight) {
+                                                return `${s.weight}kg×${s.reps} / ${wR}kg×${s.reps_right ?? 0}`;
+                                              }
+                                              const reps = s.is_unilateral ? `${s.reps}/${s.reps_right ?? 0}` : `${s.reps}`;
+                                              return s.weight > 0 ? `${s.weight}kg × ${reps}` : `${reps} reps`;
+                                            })()}
                                           </Text>
                                         </View>
                                       ))}

@@ -27,6 +27,13 @@ export interface WorkoutCoachSet {
   durationSeconds: number | null;
   distanceM: number | null;
   resistance: number | null;
+  // Unilateral "L+R" (migration 0056/0059). One set trained one side at a time;
+  // reps/rpe = LEFT, repsRight/rpeRight = RIGHT; weightKg = LEFT weight,
+  // weightKgRight = RIGHT (null => same). Still ONE working set.
+  isUnilateral: boolean;
+  repsRight: number | null;
+  rpeRight: number | null;
+  weightKgRight: number | null;
 }
 
 export interface WorkoutCoachExercise {
@@ -90,26 +97,33 @@ const SET_TYPE_LABEL: Record<SetType, string> = {
   negative: 'negative', left: 'left side', right: 'right side',
 };
 
-/** The set's core value, in the units the exercise's metric_type uses. */
+/** The set's core value, in the units the exercise's metric_type uses. For a
+ * unilateral set the rep count reads as left/right (weight is shared). */
 function setCore(s: WorkoutCoachSet, mt: MetricType): string {
+  const reps = s.isUnilateral ? `${s.reps}/${s.repsRight ?? 0}` : `${s.reps}`;
+  // Per-side weight (migration 0059): when the two sides used different loads, spell
+  // each side out (weight×reps / weight×reps); otherwise the compact shared form.
+  const wR = s.weightKgRight ?? s.weightKg;
+  const diffW = s.isUnilateral && wR !== s.weightKg;
   switch (mt) {
-    case 'bodyweight_reps': return `${s.reps} reps`;
-    case 'weighted_bodyweight': return `+${s.weightKg}kg×${s.reps}`;
-    case 'assisted_bodyweight': return `-${s.weightKg}kg×${s.reps}`;
+    case 'bodyweight_reps': return `${reps} reps`;
+    case 'weighted_bodyweight': return diffW ? `+${s.weightKg}kg×${s.reps}/+${wR}kg×${s.repsRight ?? 0}` : `+${s.weightKg}kg×${reps}`;
+    case 'assisted_bodyweight': return diffW ? `-${s.weightKg}kg×${s.reps}/-${wR}kg×${s.repsRight ?? 0}` : `-${s.weightKg}kg×${reps}`;
     case 'duration': return fmtDur(s.durationSeconds);
     case 'duration_weight': return `${s.weightKg}kg ${fmtDur(s.durationSeconds)}`;
     case 'distance_duration': return `${km(s.distanceM)}km ${fmtDur(s.durationSeconds)}`;
     case 'weight_distance': return `${s.weightKg}kg ${km(s.distanceM)}km`;
     case 'resistance_duration': return `L${s.resistance ?? 0} ${fmtDur(s.durationSeconds)}`;
-    default: return `${s.weightKg}kg×${s.reps}`; // weight_reps
+    default: return diffW ? `${s.weightKg}kg×${s.reps}/${wR}kg×${s.repsRight ?? 0}` : `${s.weightKg}kg×${reps}`; // weight_reps
   }
 }
 
-/** Trailing (set type, RPE) tags. Warmups/drop/failure/etc. + effort. */
+/** Trailing (set type, RPE) tags. Warmups/drop/failure/etc. + effort + unilateral. */
 function setSuffix(s: WorkoutCoachSet): string {
   const tags: string[] = [];
   if (s.setType !== 'normal' && SET_TYPE_LABEL[s.setType]) tags.push(SET_TYPE_LABEL[s.setType]);
-  if (s.rpe != null) tags.push(`RPE ${s.rpe}`);
+  if (s.isUnilateral) tags.push('unilateral L+R');
+  if (s.rpe != null) tags.push(s.isUnilateral && s.rpeRight != null ? `RPE ${s.rpe}/${s.rpeRight}` : `RPE ${s.rpe}`);
   return tags.length ? ` (${tags.join(', ')})` : '';
 }
 
@@ -147,6 +161,10 @@ export function buildWorkoutCoachContext(params: {
         durationSeconds: s.duration_seconds ?? null,
         distanceM: s.distance_m ?? null,
         resistance: s.resistance ?? null,
+        isUnilateral: !!s.is_unilateral,
+        repsRight: s.reps_right ?? null,
+        rpeRight: s.rpe_right ?? null,
+        weightKgRight: s.weight_kg_right ?? null,
       }));
     return {
       name: ex.exercise.name,
@@ -243,7 +261,7 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
       '- Finish with 1-2 concrete things to change next time.',
       '- You may use your tools for deeper history if it genuinely helps.',
       "- Don't just restate my numbers back to me, interpret them.",
-      '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km.',
+      '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides.',
     ].join('\n');
   }
   return [
@@ -257,7 +275,7 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
     '- Give a clear, immediately actionable call (weight, reps, rest, a swap, or stop/continue).',
     '- You may use your tools to check my training history if it genuinely helps, but don\'t stall.',
     "- Don't repeat this summary back to me.",
-    '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km.',
+    '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides.',
   ].join('\n');
 }
 
@@ -282,7 +300,10 @@ export function workoutCoachStarter(ctx: WorkoutCoachContext): string {
   if (ctx.kind === 'review') {
     const totalSets = ctx.exercises.reduce((n, e) => n + workingSets(e.loggedSets).length, 0);
     const volume = ctx.exercises.reduce(
-      (sum, e) => sum + workingSets(e.loggedSets).reduce((s, set) => s + set.weightKg * set.reps, 0),
+      (sum, e) => sum + workingSets(e.loggedSets).reduce(
+        (s, set) => s + set.weightKg * set.reps
+          + (set.isUnilateral ? (set.weightKgRight ?? set.weightKg) * (set.repsRight ?? 0) : 0),
+        0),
       0,
     );
     const mins = Math.round(ctx.elapsedSeconds / 60);

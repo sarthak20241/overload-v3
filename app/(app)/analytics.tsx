@@ -16,6 +16,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
+import { setVolumeKg } from '@/lib/sets';
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -1204,7 +1205,9 @@ export default function AnalyticsScreen() {
     : 0;
   const weekSets = weekWorkouts.reduce((s, w) => s + (w.workout_sets?.length || 0), 0);
   const weekReps = weekWorkouts.reduce(
-    (s, w) => s + (w.workout_sets?.reduce((r, set) => r + (set.reps || 0), 0) || 0), 0
+    // Unilateral sets count both sides' reps (weight is shared); one row still = one set.
+    (s, w) => s + (w.workout_sets?.reduce((r, set) => r + (set.reps || 0)
+      + ((set as any).is_unilateral ? ((set as any).reps_right || 0) : 0), 0) || 0), 0
   );
 
   const volumeSeries = useMemo(() => get6WeekVolume(workouts), [workouts]);
@@ -1221,8 +1224,11 @@ export default function AnalyticsScreen() {
     sessions.forEach((w) => {
       const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === selectedExercise && (s as any).set_type !== 'warmup');
       if (sets.length === 0) return;
-      const maxWeight = Math.max(...sets.map((s) => s.weight_kg || 0));
-      const volume = sets.reduce((v, s) => v + (s.weight_kg || 0) * (s.reps || 0), 0);
+      // Peak weight counts both sides of a unilateral set (per-side weight, 0059);
+      // weight_kg_right is null on bilateral/legacy rows so the term is a no-op there.
+      const maxWeight = Math.max(0, ...sets.map((s) => s.weight_kg || 0), ...sets.map((s) => (s as any).weight_kg_right || 0));
+      // Unilateral sets count both sides' own-weight volume; warmups already filtered.
+      const volume = sets.reduce((v, s) => v + setVolumeKg(s as any), 0);
       byDate.push({ date: w.started_at, weight: maxWeight, volume });
     });
     const recent = byDate.slice(-10);
@@ -1243,7 +1249,7 @@ export default function AnalyticsScreen() {
       workouts.slice().reverse().forEach((w) => {
         const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === name && (s as any).set_type !== 'warmup');
         if (sets.length > 0) {
-          sessions.push({ date: w.started_at, weight: Math.max(...sets.map((s) => s.weight_kg || 0)) });
+          sessions.push({ date: w.started_at, weight: Math.max(0, ...sets.map((s) => s.weight_kg || 0), ...sets.map((s) => (s as any).weight_kg_right || 0)) });
         }
       });
       if (sessions.length > 0) {
