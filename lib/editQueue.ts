@@ -32,6 +32,12 @@ export interface PendingEditSet {
   // Phase B — per-set type + intensity.
   set_type?: import('@/lib/types').SetType;
   rpe?: number | null;
+  // Unilateral "L+R" (migration 0056/0059). reps/rpe = LEFT, *_right = RIGHT;
+  // weight_kg = LEFT weight, weight_kg_right = RIGHT (null => same).
+  is_unilateral?: boolean;
+  reps_right?: number | null;
+  rpe_right?: number | null;
+  weight_kg_right?: number | null;
 }
 
 export interface PendingEditExercise {
@@ -218,6 +224,8 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
           weight_kg: s.weight_kg, reps: s.reps, completed: true,
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
           resistance: s.resistance ?? null, set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
+          is_unilateral: s.is_unilateral ?? false, reps_right: s.reps_right ?? null, rpe_right: s.rpe_right ?? null,
+          weight_kg_right: s.weight_kg_right ?? null,
         })),
       })),
       _pendingSync: true,
@@ -259,6 +267,10 @@ export function applyEditsToDashboardRows(userId: string | null | undefined, row
         resistance: s.resistance ?? null,
         set_type: s.set_type ?? 'normal',
         rpe: s.rpe ?? null,
+        is_unilateral: s.is_unilateral ?? false,
+        reps_right: s.reps_right ?? null,
+        rpe_right: s.rpe_right ?? null,
+        weight_kg_right: s.weight_kg_right ?? null,
       }));
     });
     return {
@@ -337,6 +349,10 @@ async function flushPendingEdit(
             resistance: s.resistance ?? null,
             set_type: s.set_type ?? 'normal',
             rpe: s.rpe ?? null,
+            is_unilateral: s.is_unilateral ?? false,
+            reps_right: s.reps_right ?? null,
+            rpe_right: s.rpe_right ?? null,
+            weight_kg_right: s.weight_kg_right ?? null,
           }))
         : [],
     );

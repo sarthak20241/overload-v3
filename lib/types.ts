@@ -83,6 +83,15 @@ export interface WorkoutSet {
   // Phase B — per-set type + intensity. rpe is the raw 1-10 scale (RIR = 10 - rpe).
   set_type?: SetType;
   rpe?: number | null;
+  // Unilateral "L+R" (migration 0056). When true, this ONE row is a set trained one
+  // side at a time: reps/rpe hold the LEFT side, reps_right/rpe_right hold the RIGHT.
+  // weight_kg is the LEFT weight; weight_kg_right is the RIGHT (null => same as left,
+  // migration 0059). Orthogonal to set_type (a set can be failure AND unilateral).
+  // Volume counts both sides with their own weight; it still counts as ONE set.
+  is_unilateral?: boolean;
+  reps_right?: number | null;
+  rpe_right?: number | null;
+  weight_kg_right?: number | null;
 }
 
 export interface Workout {
@@ -127,6 +136,13 @@ export interface ActiveSet {
   // Phase B — per-set type + intensity (rpe = raw 1-10; RIR = 10 - rpe).
   set_type?: SetType;
   rpe?: number | null;
+  // Unilateral "L+R" (migration 0056/0059). See WorkoutSet. reps/rpe = LEFT,
+  // reps_right/rpe_right = RIGHT; weight_kg = LEFT weight, weight_kg_right = RIGHT
+  // (null => same). One row = one set; volume counts both sides with their own weight.
+  is_unilateral?: boolean;
+  reps_right?: number | null;
+  rpe_right?: number | null;
+  weight_kg_right?: number | null;
 }
 
 export interface DashboardStats {

@@ -48,6 +48,10 @@ export function pendingToDashboardWorkout(entry: PendingWorkout): any {
       resistance: s.resistance ?? null,
       set_type: s.set_type ?? 'normal',
       rpe: s.rpe ?? null,
+      is_unilateral: s.is_unilateral ?? false,
+      reps_right: s.reps_right ?? null,
+      rpe_right: s.rpe_right ?? null,
+      weight_kg_right: s.weight_kg_right ?? null,
     }));
   });
   return {
@@ -93,6 +97,8 @@ export function pendingToHistoryRow(entry: PendingWorkout): any {
         weight_kg: s.weight_kg, reps: s.reps, completed: true,
         duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null, resistance: s.resistance ?? null,
         set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
+        is_unilateral: s.is_unilateral ?? false, reps_right: s.reps_right ?? null, rpe_right: s.rpe_right ?? null,
+        weight_kg_right: s.weight_kg_right ?? null,
       })),
     })),
     _pendingSync: true,

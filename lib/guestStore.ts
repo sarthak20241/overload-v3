@@ -47,7 +47,7 @@ interface GuestWorkoutExercise {
   category?: string;
   /** Phase A — so a guest's duration/distance exercises render + persist right. */
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
+  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 
 export interface GuestWorkout {
@@ -211,6 +211,10 @@ export function getGuestWorkoutsDetailed() {
         resistance: s.resistance ?? null,
         set_type: s.set_type ?? 'normal',
         rpe: s.rpe ?? null,
+        is_unilateral: s.is_unilateral ?? false,
+        reps_right: s.reps_right ?? null,
+        rpe_right: s.rpe_right ?? null,
+        weight_kg_right: s.weight_kg_right ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };
