@@ -15,6 +15,7 @@ import { useToast } from '@/components/ui/Toast';
 import { useSync } from '@/components/SyncProvider';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import { roundVolume, formatDuration as fmtDur, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
+import { setVolumeKg } from '@/lib/sets';
 import { hydrateCache, readCache } from '@/lib/localCache';
 import { getGuestWorkouts, updateGuestWorkout, type GuestWorkout } from '@/lib/guestStore';
 import { getPendingWorkouts, updatePendingWorkout, hydrateSyncQueue, type PendingExercise } from '@/lib/syncQueue';
@@ -30,7 +31,10 @@ type Backend = 'guest' | 'pending' | 'synced';
 // field, partial decimals); they're parsed back to numbers on save.
 // Strings so typing feels natural; duration is "m:ss", distance is km. Only the
 // axes the exercise's metric_type uses are rendered/parsed.
-interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string; set_type: SetType; rpe: string }
+interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string; set_type: SetType; rpe: string;
+  // Unilateral "L+R" (migration 0056). The editor round-trips these silently (no
+  // per-side UI in v1); only the in-workout logger creates them. weight is shared.
+  is_unilateral: boolean; reps_right: number | null; rpe_right: number | null; weight_kg_right: number | null }
 interface EditExercise {
   uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
@@ -54,6 +58,10 @@ const mkSet = (
   resistance?: number | null,
   setType?: string | null,
   rpe?: number | null,
+  isUnilateral?: boolean | null,
+  repsRight?: number | null,
+  rpeRight?: number | null,
+  weightRight?: number | null,
 ): EditSet => ({
   uid: `set-${_setSeq++}`,
   weight: String(weight),
@@ -63,6 +71,10 @@ const mkSet = (
   resistance: resistance != null ? String(resistance) : '',
   set_type: (setType && setType in SET_TYPE_META ? setType : 'normal') as SetType,
   rpe: rpe != null ? String(rpe) : '',
+  is_unilateral: !!isUnilateral,
+  reps_right: repsRight ?? null,
+  rpe_right: rpeRight ?? null,
+  weight_kg_right: weightRight ?? null,
 });
 
 let _exSeq = 0;
@@ -82,7 +94,10 @@ const axisLabel = (a: MetricAxis): string =>
   : a === 'duration' ? 'TIME'
   : a === 'resistance' ? 'LEVEL'
   : 'KM';
-const axisField = (a: MetricAxis): keyof EditSet =>
+// The string-valued, user-editable axis fields of EditSet (the only ones bound to
+// a TextInput). Excludes set_type and the unilateral fields, which round-trip silently.
+type AxisField = 'weight' | 'reps' | 'duration' | 'distance' | 'resistance';
+const axisField = (a: MetricAxis): AxisField =>
   a === 'reps' ? 'reps' : a === 'duration' ? 'duration' : a === 'distance' ? 'distance'
   : a === 'resistance' ? 'resistance' : 'weight';
 
@@ -142,7 +157,7 @@ export default function EditWorkoutScreen() {
         };
         map.set(exId, ex);
       }
-      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe));
+      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right));
     }
     return [...map.values()];
   };
@@ -169,7 +184,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.muscle_group,
             category: ex.category,
             metric_type: ex.metric_type,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
           setLoading(false);
@@ -197,7 +212,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
           setLoading(false);
@@ -224,7 +239,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
           setMeta(cacheMeta);
@@ -236,7 +251,7 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, exercises(id, name, muscle_group, category, metric_type))')
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -265,7 +280,7 @@ export default function EditWorkoutScreen() {
               muscle_group: ex.muscle_group,
               category: ex.category,
               metric_type: ex.metric_type,
-              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe)),
+              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
             setMeta(cacheMeta);
@@ -281,7 +296,7 @@ export default function EditWorkoutScreen() {
   }, [id, clerkLoaded, isGuestSession, user?.id]);
 
   // --- set / exercise mutations ---
-  const updateSet = (ei: number, si: number, field: keyof EditSet, value: string) => {
+  const updateSet = (ei: number, si: number, field: AxisField, value: string) => {
     setExercises((prev) => prev.map((ex, i) => {
       if (i !== ei) return ex;
       const sets = ex.sets.map((s, j) => (j === si ? { ...s, [field]: value } : s));
@@ -354,6 +369,11 @@ export default function EditWorkoutScreen() {
             resistance: usesResistance ? (parseFloat(s.resistance) || 0) : null,
             set_type: s.set_type ?? 'normal',
             rpe: s.rpe ? parseFloat(s.rpe) : null,
+            // Unilateral round-trips silently (no editor UI in v1).
+            is_unilateral: s.is_unilateral,
+            reps_right: s.reps_right,
+            rpe_right: s.rpe_right,
+            weight_kg_right: s.weight_kg_right,
           }))
           .filter((s) =>
             (usesReps && s.reps > 0) ||
@@ -371,7 +391,7 @@ export default function EditWorkoutScreen() {
     }
     // Warmups persist as rows but are excluded from total_volume_kg (match the
     // logger + server recompute, migration 0053).
-    const newVolume = roundVolume(allSets.reduce((s, x) => s + (x.set_type === 'warmup' ? 0 : x.weight_kg * x.reps), 0));
+    const newVolume = roundVolume(allSets.reduce((s, x) => s + setVolumeKg(x), 0));
     const cleanName = name.trim() || 'Workout';
     const cleanNotes = notes.trim() ? notes.trim() : null;
 
@@ -394,6 +414,7 @@ export default function EditWorkoutScreen() {
               weight_kg: s.weight_kg, reps: s.reps,
               duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
               set_type: s.set_type, rpe: s.rpe,
+              is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right,
             })),
           })),
         };
@@ -423,6 +444,7 @@ export default function EditWorkoutScreen() {
           weight_kg: s.weight_kg, reps: s.reps, order: idx,
           duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
           set_type: s.set_type, rpe: s.rpe,
+          is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right,
         })),
       }));
 
