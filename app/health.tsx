@@ -33,17 +33,51 @@ import { loadConnectedMetrics, loadMetricSeries, requestHealthAuthorization, typ
 import { bandColor, directive, bandPillTextColor, type ReadinessContributor, type ReadinessResult } from '@/lib/readiness';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
-import { dailyMetricDef } from '@/lib/dailyMetrics';
+import { AICoachModal } from '@/components/ai/AICoachModal';
+import { dailyMetricDef, type DailyMetricDef } from '@/lib/dailyMetrics';
 import { sourcesForHub, type HealthHub } from '@/lib/healthSources';
 import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorWithAlpha } from '@/constants/theme';
 
 const HUB: HealthHub = Platform.OS === 'ios' ? 'healthkit' : 'health_connect';
 const HUB_LABEL = Platform.OS === 'ios' ? 'Apple Health' : 'Health Connect';
 const CHART_W = Math.round(Dimensions.get('window').width - Spacing.xl * 2 - Spacing.lg * 2);
-// Half-width sparkline for the 2-up "Your signals" grid.
-const SIGNAL_CHART_W = Math.round((Dimensions.get('window').width - Spacing.xl * 2 - Spacing.lg) / 2 - Spacing.md * 2);
 // Display order for signal cards: recovery signals first, then activity/body.
 const SIGNAL_ORDER: ReadableMetric[] = ['sleep_minutes', 'resting_hr_bpm', 'hrv_sdnn_ms', 'steps', 'active_energy_kcal', 'bodyweight_kg'];
+
+// Plain-language meaning (so the user gets it without tapping), the "good"
+// direction for the baseline caption, and a personalized prompt handed to Drona.
+const METRIC_INFO: Record<string, { meaning: string; higherBetter: boolean | null; ask: (val: string, base: string) => string }> = {
+  sleep_minutes: {
+    meaning: 'Total time asleep. More sleep is more fuel to recover and adapt.',
+    higherBetter: true,
+    ask: (v, b) => `I slept ${v} last night and my usual is around ${b}. What does that mean for my training and recovery today?`,
+  },
+  resting_hr_bpm: {
+    meaning: 'Your heart rate at rest. Lower usually means you are well recovered.',
+    higherBetter: false,
+    ask: (v, b) => `My resting heart rate today is ${v} and my usual is around ${b}. What does resting heart rate tell me, and what is mine saying?`,
+  },
+  hrv_sdnn_ms: {
+    meaning: 'Heart rate variability, a read on how recovered your nervous system is. Higher is better.',
+    higherBetter: true,
+    ask: (v, b) => `My HRV today is ${v} and my usual is around ${b}. Explain what HRV is in simple terms and what mine means for my training today.`,
+  },
+  steps: {
+    meaning: 'How much you moved through the day, outside training.',
+    higherBetter: true,
+    ask: (v, b) => `I took ${v} steps today and usually do around ${b}. Does daily movement matter alongside my lifting?`,
+  },
+  active_energy_kcal: {
+    meaning: 'Calories burned through movement and training.',
+    higherBetter: true,
+    ask: (v, b) => `I burned ${v} active calories today vs my usual ${b}. How should I read this number?`,
+  },
+  bodyweight_kg: {
+    meaning: 'Your bodyweight trend over time.',
+    higherBetter: null,
+    ask: (v, b) => `My bodyweight is ${v}, hovering around ${b} lately. How should I think about my weight trend for my goals?`,
+  },
+};
 
 const stat = Colors.stat as Record<string, string>;
 
@@ -104,6 +138,8 @@ export default function HealthScreen() {
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachPrompt, setCoachPrompt] = useState<string | undefined>(undefined);
 
   const accent = stat.readiness;
   const metricColor = (colorKey: string) => stat[colorKey] ?? C.textSecondary;
@@ -141,6 +177,19 @@ export default function HealthScreen() {
     await load();
     setRefreshing(false);
   }, [load]);
+
+  // Open Drona with a personalized question about this metric (its value + the user's usual).
+  function askAboutMetric(def: DailyMetricDef, pts: { date: string; value: number }[]) {
+    const latest = pts[pts.length - 1].value;
+    const mean = pts.reduce((a, p) => a + p.value, 0) / pts.length;
+    const info = METRIC_INFO[def.type];
+    setCoachPrompt(
+      info
+        ? info.ask(def.format(latest), def.format(mean))
+        : `Tell me about my ${def.label.toLowerCase()} and what it means for my training.`,
+    );
+    setCoachOpen(true);
+  }
 
   // A one-shot status (synced / error) should not stay pinned forever.
   useEffect(() => {
@@ -307,37 +356,22 @@ export default function HealthScreen() {
               </View>
             )}
 
-            {/* YOUR SIGNALS — the data we actually receive, as trends */}
+            {/* YOUR SIGNALS — your data, read like a coach (not a BI grid) */}
             {hasData && (
-              <View style={styles.signalsGrid}>
+              <View style={{ gap: Spacing.lg }}>
+                <Text style={[styles.signalsTitle, { color: C.textMuted }]}>Your signals</Text>
                 {SIGNAL_ORDER.filter((m) => (series[m]?.length ?? 0) > 0).map((m) => {
                   const def = dailyMetricDef(m);
                   if (!def) return null;
-                  const pts = series[m];
-                  const col = metricColor(def.colorKey);
                   return (
-                    <View key={m} style={[styles.signalCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
-                      <View style={styles.signalHeader}>
-                        <Feather name={def.icon as keyof typeof Feather.glyphMap} size={12} color={col} />
-                        <Text style={[styles.signalLabel, { color: C.textMuted }]} numberOfLines={1}>{def.label}</Text>
-                      </View>
-                      <Text style={[styles.signalValue, { color: C.foreground }]} numberOfLines={1}>{def.format(pts[pts.length - 1].value)}</Text>
-                      {pts.length >= 2 ? (
-                        <View style={{ marginTop: 4, marginHorizontal: -4, marginBottom: -4 }}>
-                          <MiniAreaChart
-                            data={pts.map((p) => p.value)}
-                            labels={pts.map((p) => p.date.slice(5))}
-                            width={SIGNAL_CHART_W}
-                            height={44}
-                            color={col}
-                            tooltipBgColor={C.elevated}
-                            tooltipTextColor={C.foreground}
-                          />
-                        </View>
-                      ) : (
-                        <Text style={[styles.signalSub, { color: C.textDim }]}>Building history</Text>
-                      )}
-                    </View>
+                    <SignalCard
+                      key={m}
+                      def={def}
+                      pts={series[m]}
+                      col={metricColor(def.colorKey)}
+                      C={C}
+                      onAsk={() => askAboutMetric(def, series[m])}
+                    />
                   );
                 })}
               </View>
@@ -417,6 +451,14 @@ export default function HealthScreen() {
           </>
         )}
       </ScrollView>
+
+      <AICoachModal
+        visible={coachOpen}
+        onClose={() => setCoachOpen(false)}
+        initialScreen="chat"
+        initialPrompt={coachPrompt}
+        onRoutineCreated={() => {}}
+      />
     </View>
   );
 }
@@ -450,6 +492,87 @@ function ZBar({ z, pos, neg, neutral, track, mid }: { z: number; pos: string; ne
         <View style={{ position: 'absolute', left: half - 3, width: 6, height: H, borderRadius: H / 2, backgroundColor: color }} />
       ) : (
         <View style={{ position: 'absolute', height: H, borderRadius: H / 2, backgroundColor: color, width: fillW, left: z > 0 ? half : half - fillW }} />
+      )}
+    </View>
+  );
+}
+
+function SignalCard({
+  def,
+  pts,
+  col,
+  C,
+  onAsk,
+}: {
+  def: DailyMetricDef;
+  pts: { date: string; value: number }[];
+  col: string;
+  C: ReturnType<typeof useTheme>['C'];
+  onAsk: () => void;
+}) {
+  const vals = pts.map((p) => p.value);
+  const latest = vals[vals.length - 1];
+  const n = vals.length;
+  const mean = vals.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+  const enough = n >= 4 && sd > 0;
+  const info = METRIC_INFO[def.type];
+
+  // Coached caption: where today sits vs the user's own normal, in plain words.
+  let caption = '';
+  let capColor = C.textMuted;
+  if (enough) {
+    const dev = (latest - mean) / sd;
+    if (Math.abs(dev) < 0.5) {
+      caption = 'Right around your normal';
+    } else if (info?.higherBetter == null) {
+      caption = latest > mean ? 'Up from your usual' : 'Down from your usual';
+    } else {
+      const good = (latest > mean) === info.higherBetter;
+      caption = latest > mean ? 'Above your normal' : 'Below your normal';
+      capColor = good ? C.successText : C.dangerText;
+    }
+  }
+  const baseline = enough ? { lo: mean - sd, hi: mean + sd } : undefined;
+
+  return (
+    <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+      <View style={styles.sigHeadRow}>
+        <View style={styles.sigHeadLeft}>
+          <View style={[styles.tile, { backgroundColor: colorWithAlpha(col, 0.12) }]}>
+            <Feather name={def.icon as keyof typeof Feather.glyphMap} size={IconSize.sm} color={col} />
+          </View>
+          <Text style={[styles.signalLabel, { color: C.textMuted }]}>{def.label}</Text>
+        </View>
+        <Pressable onPress={onAsk} hitSlop={8} style={[styles.askChip, { backgroundColor: C.muted }]}>
+          <Feather name="message-circle" size={11} color={C.accentText} />
+          <Text style={[styles.askText, { color: C.accentText }]}>Ask Drona</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.sigValueRow}>
+        <Text style={[styles.sigValue, { color: C.foreground }]}>{def.format(latest)}</Text>
+        {!!caption && <Text style={[styles.sigCaption, { color: capColor }]}>{caption}</Text>}
+      </View>
+
+      {!!info && <Text style={[styles.sigMeaning, { color: C.textMuted }]}>{info.meaning}</Text>}
+
+      {pts.length >= 2 ? (
+        <View style={{ marginTop: Spacing.sm, marginHorizontal: -4 }}>
+          <MiniAreaChart
+            data={vals}
+            labels={pts.map((p) => p.date.slice(5))}
+            width={CHART_W}
+            height={60}
+            color={col}
+            autoScale
+            baseline={baseline}
+            tooltipBgColor={C.elevated}
+            tooltipTextColor={C.foreground}
+          />
+        </View>
+      ) : (
+        <Text style={[styles.sigMeaning, { color: C.textDim, marginTop: 4 }]}>Building history. Check back in a few days.</Text>
       )}
     </View>
   );
@@ -489,6 +612,15 @@ const styles = StyleSheet.create({
   connLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.xs },
   connText: { fontSize: FontSize.sm },
   worksWith: { fontSize: FontSize.sm, lineHeight: 18, textAlign: 'center', marginTop: Spacing.md, paddingHorizontal: Spacing.lg },
+  signalsTitle: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.6, textTransform: 'uppercase' },
+  sigHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sigHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flex: 1 },
+  askChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.full },
+  askText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  sigValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.sm, marginTop: Spacing.sm, flexWrap: 'wrap' },
+  sigValue: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, letterSpacing: -0.5 },
+  sigCaption: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  sigMeaning: { fontSize: FontSize.sm, lineHeight: 18, marginTop: 2 },
   sourceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
   sourceNameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   sourceName: { fontSize: FontSize.base, fontWeight: FontWeight.medium },

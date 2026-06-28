@@ -6,7 +6,7 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import Svg, {
-  Path, Defs, LinearGradient, Stop, Circle, Line,
+  Path, Defs, LinearGradient, Stop, Circle, Line, Rect,
 } from 'react-native-svg';
 import { FontWeight } from '@/constants/theme';
 import type { GestureResponderEvent } from 'react-native';
@@ -21,6 +21,11 @@ interface MiniAreaChartProps {
   tooltipTextColor?: string;
   tooltipBgColor?: string;
   valueSuffix?: string;
+  /** Opt-in: scale the y-axis to the data's own range (not forced through 0), so
+   *  small real variation reads clearly. Implied when `baseline` is set. */
+  autoScale?: boolean;
+  /** A faint "your normal" band drawn behind the line, in data units. */
+  baseline?: { lo: number; hi: number };
 }
 
 export function MiniAreaChart({
@@ -33,18 +38,32 @@ export function MiniAreaChart({
   tooltipTextColor = '#fff',
   tooltipBgColor = 'rgba(0,0,0,0.75)',
   valueSuffix = '',
+  autoScale = false,
+  baseline,
 }: MiniAreaChartProps) {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
 
   if (data.length < 2) return null;
 
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
+  let max: number;
+  let min: number;
+  if (autoScale || baseline) {
+    const vals = baseline ? [...data, baseline.lo, baseline.hi] : [...data];
+    max = Math.max(...vals);
+    min = Math.min(...vals);
+    const pad = (max - min) * 0.15 || Math.abs(max) * 0.1 || 1;
+    max += pad;
+    min -= pad;
+  } else {
+    max = Math.max(...data, 1);
+    min = Math.min(...data, 0);
+  }
   const range = max - min || 1;
 
   const padTop = 20;
   const padBottom = 4;
   const chartH = height - padTop - padBottom;
+  const yFor = (v: number) => padTop + chartH - ((v - min) / range) * chartH;
 
   const points = data.map((v, i) => ({
     x: (i / (data.length - 1)) * width,
@@ -91,6 +110,18 @@ export function MiniAreaChart({
             <Stop offset="100%" stopColor={color} stopOpacity={0.02} />
           </LinearGradient>
         </Defs>
+
+        {/* "Your normal" band, drawn behind the line. */}
+        {baseline && (
+          <Rect
+            x={0}
+            y={yFor(baseline.hi)}
+            width={width}
+            height={Math.max(1, yFor(baseline.lo) - yFor(baseline.hi))}
+            fill={color}
+            opacity={0.08}
+          />
+        )}
 
         <Path d={areaPath} fill="url(#areaGrad)" />
         <Path
