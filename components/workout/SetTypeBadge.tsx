@@ -29,8 +29,13 @@ export const SET_TYPE_META: Record<SetType, SetTypeMeta> = {
   right:    { label: 'Right side', letter: 'R', color: Colors.stat.muscles, tier: 'more',   explainer: 'Logged for your right side when you train one limb at a time.' },
 };
 
-/** Stored value list, in display order (common tier first). */
-export const SET_TYPE_ORDER: SetType[] = ['normal', 'warmup', 'dropset', 'failure', 'negative', 'left', 'right'];
+/**
+ * Stored value list, in display order (common tier first). Drives the SetTypeSheet.
+ * 'left'/'right' are intentionally OMITTED: they're retired in favour of the unilateral
+ * "L+R" toggle (migration 0056), but their SET_TYPE_META entries stay so old rows that
+ * still carry set_type='left'/'right' keep rendering their L/R tile.
+ */
+export const SET_TYPE_ORDER: SetType[] = ['normal', 'warmup', 'dropset', 'failure', 'negative'];
 
 export function setTypeOf(value: string | null | undefined): SetType {
   return value && value in SET_TYPE_META ? (value as SetType) : 'normal';

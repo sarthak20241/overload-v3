@@ -90,6 +90,15 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
               onValueChange={(v) => setPreference('inlineTimerForDuration', v)}
             />
 
+            <ToggleRow
+              icon={<Feather name="repeat" size={15} color={C.foreground} />}
+              tint={C.muted}
+              title="Rest between sides"
+              subtitle="A short breather between left and right on unilateral sets."
+              value={prefs.restBetweenSides}
+              onValueChange={(v) => setPreference('restBetweenSides', v)}
+            />
+
             <SectionLabel color={C.textMuted}>Intensity</SectionLabel>
 
             <ToggleRow

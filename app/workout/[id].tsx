@@ -16,7 +16,7 @@ import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-nati
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { usePreferences } from '@/hooks/usePreferences';
+import { usePreferences, REST_BETWEEN_SIDES_SECONDS } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
@@ -41,6 +41,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
 import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
 import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
+import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
@@ -147,6 +148,18 @@ export default function ActiveWorkoutScreen() {
   const [activeSetType, setActiveSetType] = useState<SetType>('normal');
   const [inputRpe, setInputRpe] = useState<number | null>(null);
   const [setTypeSheetIdx, setSetTypeSheetIdx] = useState<number | null>(null);
+  // Unilateral "L+R" (migration 0056/0059). The active set logs one side then the
+  // other into ONE row. activeUnilateral persists across the exercise's sets (reset
+  // on exercise change); firstSide is which side you log first (swappable via the ⇄);
+  // sideEntering tracks which side the inputs currently hold; pendingFirst buffers the
+  // first-logged side (its own weight/reps/rpe) between the two ✓ taps.
+  const [activeUnilateral, setActiveUnilateral] = useState(false);
+  const [firstSide, setFirstSide] = useState<'left' | 'right'>('left');
+  const [sideEntering, setSideEntering] = useState<'left' | 'right'>('left');
+  const [pendingFirst, setPendingFirst] = useState<{ side: 'left' | 'right'; weight_kg: number; reps: number; rpe: number | null } | null>(null);
+  // When set, the rest timer counts toward this (shorter, inter-side) target
+  // instead of the exercise's restSeconds. Cleared on a normal between-sets rest.
+  const [restOverrideTarget, setRestOverrideTarget] = useState<number | null>(null);
   const [showRpeSheet, setShowRpeSheet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
@@ -475,10 +488,12 @@ export default function ActiveWorkoutScreen() {
     exerciseStartTimeRef.current = null;
   }, []);
 
-  // Rest timer
-  const startRestTimer = useCallback(() => {
+  // Rest timer. overrideTarget (seconds) drives a shorter inter-side rest for
+  // unilateral sets; omit it for the normal between-sets rest (restSeconds).
+  const startRestTimer = useCallback((overrideTarget?: number | null) => {
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     lastSetTimeRef.current = Date.now();
+    setRestOverrideTarget(overrideTarget ?? null);
     setRestTimer(0);
     setIsResting(true);
     restTimerRef.current = setInterval(() => {
@@ -492,6 +507,7 @@ export default function ActiveWorkoutScreen() {
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     restTimerRef.current = null;
     lastSetTimeRef.current = null;
+    setRestOverrideTarget(null);
     setRestTimer(0);
     setIsResting(false);
   }, []);
@@ -552,13 +568,23 @@ export default function ActiveWorkoutScreen() {
       // Per-set type + intensity are per-set; don't bleed across exercises.
       setActiveSetType('normal');
       setInputRpe(null);
+      // Unilateral is per-exercise; reset to bilateral and drop any half-entered
+      // left side so it can't carry into the next exercise.
+      setActiveUnilateral(false);
+      setFirstSide('left');
+      setSideEntering('left');
+      setPendingFirst(null);
+      // A short inter-side rest started for the first side must not bleed its 20s
+      // target onto the next exercise's rest; tear it down (a normal between-sets
+      // rest, override null, is left running).
+      if (restOverrideTarget != null) stopRestTimer();
     }
-  }, [currentIdx, resetStopwatch]);
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
   useEffect(() => {
-    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    const target = restOverrideTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
     if (isResting && target > 0 && restTimer >= target) {
       if (!restDoneFiredRef.current) {
         haptics.success();
@@ -567,19 +593,19 @@ export default function ActiveWorkoutScreen() {
     } else {
       restDoneFiredRef.current = false;
     }
-  }, [restTimer, isResting, currentIdx, exercises]);
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget]);
 
   // A gentle pulse on the rest timer as it nears zero (final 3s), building
   // anticipation before the done color-flip + success buzz.
   const restPulse = useSharedValue(1);
   useEffect(() => {
-    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    const target = restOverrideTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
     const remaining = target - restTimer;
     const nearDone = isResting && target > 0 && remaining > 0 && remaining <= 3;
     restPulse.value = nearDone
       ? withRepeat(withTiming(1.08, { duration: 450, easing: Easing.inOut(Easing.quad) }), -1, true)
       : withTiming(1, { duration: 200 });
-  }, [restTimer, isResting, currentIdx, exercises]);
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget]);
   const restPulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: restPulse.value }] }));
 
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
@@ -683,20 +709,45 @@ export default function ActiveWorkoutScreen() {
     // sessions + earlier sets today). Celebrate it instead of the plain tap.
     // previousSets is already warmup-free (filtered at the source); exclude this
     // session's warmups too so a light primer never sets the bar for a PR.
+    // Prior best weight to beat: previous sessions + this session's working sets,
+    // counting BOTH sides of any unilateral set (per-side weight, migration 0059).
     const prevBest = Math.max(
       0,
       ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
-      ...currentEx.sets.filter(s => s.completed && s.set_type !== 'warmup').map(s => s.weight_kg),
+      ...currentEx.sets.filter(s => s.completed && s.set_type !== 'warmup')
+        .flatMap(s => [s.weight_kg, s.is_unilateral ? (s.weight_kg_right ?? s.weight_kg) : 0]),
     );
+    // Mid-capture: a unilateral set logs its FIRST side first (left or right, per
+    // the swap). Only a real, completed set celebrates a PR — and it weighs the
+    // heavier of the two sides (the first side is already buffered in pendingFirst).
+    const enteringFirstSide = activeUnilateral && pendingFirst === null;
+    const prWeight = activeUnilateral && pendingFirst ? Math.max(weight, pendingFirst.weight_kg) : weight;
+
     // Only a PR if there's a prior record to beat, and warmups never count.
-    const isPR = weight > 0 && activeSetType !== 'warmup'
-      && (currentEx.previousSets?.length ?? 0) > 0 && weight > prevBest;
-    if (isPR) {
+    const isPR = prWeight > 0 && activeSetType !== 'warmup'
+      && (currentEx.previousSets?.length ?? 0) > 0 && prWeight > prevBest;
+    if (isPR && !enteringFirstSide) {
       haptics.success();
       setPrCelebrate(true);
       setTimeout(() => setPrCelebrate(false), 2200);
     } else {
-      haptics.tap(); // set logged
+      haptics.tap(); // set logged (or first side captured)
+    }
+
+    const sessionRpe = prefs.intensityTrackingEnabled ? inputRpe : null;
+
+    // FIRST side of a unilateral set: buffer it (with its own weight), flip to the
+    // other side, seed that side's weight + reps from the first as a starting point
+    // (both editable), and optionally start a short inter-side rest. Nothing is
+    // written yet — the whole L+R round becomes ONE row when the second side is
+    // logged below (so it counts as one set).
+    if (enteringFirstSide) {
+      setPendingFirst({ side: sideEntering, weight_kg: weight, reps, rpe: sessionRpe });
+      setSideEntering(sideEntering === 'left' ? 'right' : 'left');
+      if (usesWeight) setInputWeight(String(weight));
+      setInputReps(String(reps));
+      if (prefs.restBetweenSides) startRestTimer(REST_BETWEEN_SIDES_SECONDS);
+      return;
     }
 
     const updated = [...exercises];
@@ -705,15 +756,31 @@ export default function ActiveWorkoutScreen() {
     // back to the typed mm:ss field when the stopwatch was never used (manual mode).
     const durationSecs =
       swRunning || swElapsed > 0 ? Math.round(swElapsed) : parseDuration(inputDuration);
+    // For a unilateral set, combine the buffered first side with the current (second)
+    // inputs, then map them to left/right by their tagged side. Each side keeps its
+    // own weight + reps + rpe. Non-unilateral: a plain single-side set.
+    let leftW = weight, leftReps = reps, leftRpe = sessionRpe;
+    let rightW: number | null = null, rightReps: number | null = null, rightRpe: number | null = null;
+    if (activeUnilateral && pendingFirst) {
+      const current = { side: sideEntering, weight_kg: weight, reps, rpe: sessionRpe };
+      const L = pendingFirst.side === 'left' ? pendingFirst : current;
+      const R = pendingFirst.side === 'right' ? pendingFirst : current;
+      leftW = L.weight_kg; leftReps = L.reps; leftRpe = L.rpe;
+      rightW = R.weight_kg; rightReps = R.reps; rightRpe = R.rpe;
+    }
     const newSet: ActiveSet = {
-      weight_kg: weight,
-      reps,
+      weight_kg: leftW,
+      reps: leftReps,
       completed: true,
       duration_seconds: usesDuration ? durationSecs : null,
       distance_m: usesDistance ? parseDistanceKm(inputDistance) : null,
       resistance: usesResistance ? (parseFloat(inputResistance) || 0) : null,
       set_type: activeSetType,
-      rpe: prefs.intensityTrackingEnabled ? inputRpe : null,
+      rpe: leftRpe,
+      is_unilateral: activeUnilateral,
+      reps_right: activeUnilateral ? rightReps : null,
+      rpe_right: activeUnilateral ? rightRpe : null,
+      weight_kg_right: activeUnilateral ? rightW : null,
     };
 
     // Find first incomplete set or add new
@@ -727,6 +794,12 @@ export default function ActiveWorkoutScreen() {
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
     startRestTimer();
+
+    // Next unilateral set starts fresh on the configured first side.
+    if (activeUnilateral) {
+      setPendingFirst(null);
+      setSideEntering(firstSide);
+    }
 
     // Advance input to next set's previous performance
     const nextIdx = ex.sets.filter(s => s.completed).length;
@@ -1369,7 +1442,7 @@ export default function ActiveWorkoutScreen() {
       // Warmups are saved as rows but excluded from total_volume_kg, to match the
       // live display + the server recompute (migration 0053). allCompleted stays
       // unfiltered for the set-count + per-set inserts below.
-      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + (s.set_type === 'warmup' ? 0 : s.weight_kg * s.reps), 0));
+      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + setVolumeKg(s), 0));
 
       // Create the routine first (when requested) so the workout row can link
       // to it — that link is what feeds "previous session" the next time the
@@ -1422,6 +1495,8 @@ export default function ActiveWorkoutScreen() {
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
                 resistance: s.resistance ?? null,
                 set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
+                is_unilateral: s.is_unilateral ?? false, reps_right: s.reps_right ?? null, rpe_right: s.rpe_right ?? null,
+                weight_kg_right: s.weight_kg_right ?? null,
               })),
             })),
         });
@@ -1472,6 +1547,10 @@ export default function ActiveWorkoutScreen() {
               resistance: s.resistance ?? null,
               set_type: s.set_type ?? 'normal',
               rpe: s.rpe ?? null,
+              is_unilateral: s.is_unilateral ?? false,
+              reps_right: s.reps_right ?? null,
+              rpe_right: s.rpe_right ?? null,
+              weight_kg_right: s.weight_kg_right ?? null,
             })),
         }));
 
@@ -1531,14 +1610,14 @@ export default function ActiveWorkoutScreen() {
   // Warmups are excluded from working volume to match the server recompute
   // (migration 0053), so the optimistic total stays consistent with the trigger.
   const totalVolume = roundVolume(exercises
-    .flatMap(e => e.sets.filter(s => s.completed && s.set_type !== 'warmup').map(s => s.weight_kg * s.reps))
+    .flatMap(e => e.sets.filter(s => s.completed).map(s => setVolumeKg(s)))
     .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
 
   // Rest timer: `restTimer` counts up since the last logged set. We present it
   // as a countdown against the exercise's recommended rest (restSeconds). A
   // restSeconds of 0 means "no target", so we just show elapsed rest instead.
-  const restTarget = currentEx?.restSeconds ?? 0;
+  const restTarget = restOverrideTarget ?? (currentEx?.restSeconds ?? 0);
   const restRemaining = restTarget - restTimer;
   const restDone = restTarget > 0 && restRemaining <= 0;
   const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
@@ -1700,12 +1779,16 @@ export default function ActiveWorkoutScreen() {
       : a === 'duration' ? 'TIME'
       : a === 'resistance' ? 'LEVEL'
       : 'KM';
+    // A unilateral set reads as left/right per cell: reps "8/7", and weight "40/35"
+    // only when the two sides used different loads (else the shared weight).
+    const uniWeightDiffers = (s: ActiveSet) =>
+      !!s.is_unilateral && s.weight_kg_right != null && s.weight_kg_right !== s.weight_kg;
     const axisDoneValue = (a: MetricAxis, s: ActiveSet): string =>
-      a === 'reps' ? String(s.reps)
+      a === 'reps' ? (s.is_unilateral ? `${s.reps}/${s.reps_right ?? 0}` : String(s.reps))
       : a === 'duration' ? formatDuration(s.duration_seconds)
       : a === 'distance' ? formatDistanceKm(s.distance_m)
       : a === 'resistance' ? String(s.resistance ?? 0)
-      : formatWeight(s.weight_kg);
+      : uniWeightDiffers(s) ? `${formatWeight(s.weight_kg)}/${formatWeight(s.weight_kg_right as number)}` : formatWeight(s.weight_kg);
 
     // One input cell per axis in the active row. Weight-ish axes share the
     // inputWeight/editField='weight' state (a type never uses two of them);
@@ -1925,10 +2008,14 @@ export default function ActiveWorkoutScreen() {
                       <SetTypeBadge type={s.set_type ?? 'normal'} num={workNum ?? undefined} numColor={C.textDim} />
                     </TouchableOpacity>
                     {showIntensity && (
-                      <Text style={[styles.doneVal, styles.colRpe, { color: C.textMuted }]}>{dispRpe(s.rpe) || '–'}</Text>
+                      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={[styles.doneVal, styles.colRpe, { color: C.textMuted }]}>
+                        {s.is_unilateral && s.rpe_right != null
+                          ? `${dispRpe(s.rpe) || '–'}/${dispRpe(s.rpe_right)}`
+                          : (dispRpe(s.rpe) || '–')}
+                      </Text>
                     )}
                     {axes.map((a) => (
-                      <Text key={a} style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{axisDoneValue(a, s)}</Text>
+                      <Text key={a} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{axisDoneValue(a, s)}</Text>
                     ))}
                     {isFinished ? (
                       <View style={styles.colCheck}><Feather name="check" size={14} color={C.accentText} /></View>
@@ -1943,6 +2030,30 @@ export default function ActiveWorkoutScreen() {
                 {/* Active set — the one bright row asking for a tap. */}
                 {!isFinished && (
                   <>
+                    {/* Unilateral (L+R): which side this tap logs. On the first side the
+                        ⇄ swaps the order; the second side prefills from the first (editable). */}
+                    {activeUnilateral && (
+                      pendingFirst === null ? (
+                        <TouchableOpacity
+                          style={styles.sideHint}
+                          onPress={() => { haptics.selection(); const next = firstSide === 'left' ? 'right' : 'left'; setFirstSide(next); setSideEntering(next); }}
+                          hitSlop={8}
+                          accessibilityLabel="Swap which side you log first"
+                        >
+                          <Feather name="repeat" size={12} color={C.accentText} />
+                          <Text style={[styles.sideHintText, { color: C.accentText }]}>
+                            {sideEntering === 'left' ? 'Left side first' : 'Right side first'} · tap to swap
+                          </Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={styles.sideHint}>
+                          <Feather name="corner-down-right" size={12} color={C.accentText} />
+                          <Text style={[styles.sideHintText, { color: C.accentText }]}>
+                            Now {sideEntering} side · carried over, edit if different
+                          </Text>
+                        </View>
+                      )
+                    )}
                     <View
                       ref={interactive ? inputCardRef : undefined}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
@@ -2029,7 +2140,7 @@ export default function ActiveWorkoutScreen() {
                 </View>
                 <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
                 <Text style={[styles.finishedSub, { color: C.textMuted }]}>
-                  {currentEx.sets.filter(s => s.completed).length} sets · {abbreviateNumber(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
+                  {currentEx.sets.filter(s => s.completed).length} sets · {abbreviateNumber(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + setVolumeKg(s), 0))} kg total volume
                 </Text>
                 <TouchableOpacity
                   onPress={() => {
@@ -2351,6 +2462,28 @@ export default function ActiveWorkoutScreen() {
             ei !== currentIdx ? e : { ...e, sets: e.sets.map((s, si) => si === idx ? { ...s, set_type: t } : s) }
           ));
         }}
+        unilateral={activeUnilateral}
+        onUnilateralChange={
+          // Unilateral is chosen at capture time, so the toggle only appears for
+          // the active (not-yet-logged) set. It's also gated to reps-bearing metric
+          // types — only reps/rpe/weight have per-side storage, so on a pure
+          // duration/distance/resistance exercise it would silently drop the first
+          // side's primary metric. Turning it off mid-round drops any half-entered
+          // side and cancels a running inter-side rest.
+          setTypeSheetIdx !== null && setTypeSheetIdx < 0 && currentEx
+          && metricTypeDef(metricTypeOf(currentEx.exercise)).axes.includes('reps')
+            ? (v: boolean) => {
+                setActiveUnilateral(v);
+                if (v) {
+                  setSideEntering(firstSide);
+                } else {
+                  setPendingFirst(null);
+                  setSideEntering(firstSide);
+                  if (restOverrideTarget != null) stopRestTimer();
+                }
+              }
+            : undefined
+        }
         onRemove={() => { if (setTypeSheetIdx !== null && setTypeSheetIdx >= 0) handleDeleteSet(setTypeSheetIdx); }}
         onClose={() => setSetTypeSheetIdx(null)}
       />
@@ -2976,6 +3109,8 @@ const styles = StyleSheet.create({
   commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
   resetTimerBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, marginTop: 10 },
   resetTimerText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  sideHint: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 5, paddingVertical: 4, marginBottom: 2 },
+  sideHintText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 0.3 },
   lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },
   bottomStatItem: { alignItems: 'center' },
   bottomStatValue: { fontSize: FontSize.base, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] as any },
