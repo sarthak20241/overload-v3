@@ -26,6 +26,13 @@ interface MiniAreaChartProps {
   autoScale?: boolean;
   /** A faint "your normal" band drawn behind the line, in data units. */
   baseline?: { lo: number; hi: number };
+  /** Faint dashed horizontal reference lines, in data units (e.g. band thresholds). */
+  refLines?: number[];
+  /** Format the tooltip value (pass the metric's own formatter). */
+  formatValue?: (v: number) => string;
+  /** Always-on dot on the latest point, coloured (e.g. today's band colour). */
+  lastPointColor?: string;
+  accessibilityLabel?: string;
 }
 
 export function MiniAreaChart({
@@ -40,6 +47,10 @@ export function MiniAreaChart({
   valueSuffix = '',
   autoScale = false,
   baseline,
+  refLines,
+  formatValue,
+  lastPointColor,
+  accessibilityLabel,
 }: MiniAreaChartProps) {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
 
@@ -71,15 +82,9 @@ export function MiniAreaChart({
     value: v,
   }));
 
-  // Smooth cubic bezier curve
-  const linePath = points
-    .map((p, i) => {
-      if (i === 0) return `M ${p.x},${p.y}`;
-      const prev = points[i - 1];
-      const cpx = (prev.x + p.x) / 2;
-      return `C ${cpx},${prev.y} ${cpx},${p.y} ${p.x},${p.y}`;
-    })
-    .join(' ');
+  // Straight segments between real points. A bezier would overshoot between
+  // sparse daily samples and fabricate values the user never recorded.
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x},${p.y}`).join(' ');
 
   const areaPath = `${linePath} L ${points[points.length - 1].x},${height} L ${points[0].x},${height} Z`;
 
@@ -101,7 +106,7 @@ export function MiniAreaChart({
   }, [points, activeIdx]);
 
   return (
-    <Pressable onPress={handlePress} style={{ width, height }}>
+    <Pressable onPress={handlePress} style={{ width, height }} accessible={!!accessibilityLabel} accessibilityLabel={accessibilityLabel}>
       <Svg width={width} height={height}>
         <Defs>
           <LinearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
@@ -119,9 +124,14 @@ export function MiniAreaChart({
             width={width}
             height={Math.max(1, yFor(baseline.lo) - yFor(baseline.hi))}
             fill={color}
-            opacity={0.08}
+            opacity={0.13}
           />
         )}
+
+        {/* Threshold reference lines (e.g. readiness band cutoffs). */}
+        {refLines?.map((v, i) => (
+          <Line key={`ref-${i}`} x1={0} y1={yFor(v)} x2={width} y2={yFor(v)} stroke={color} strokeWidth={1} strokeDasharray="2,4" opacity={0.18} />
+        ))}
 
         <Path d={areaPath} fill="url(#areaGrad)" />
         <Path
@@ -132,6 +142,11 @@ export function MiniAreaChart({
           strokeLinecap="round"
           strokeLinejoin="round"
         />
+
+        {/* Always-on "today" dot, coloured by band when provided. */}
+        {lastPointColor && (
+          <Circle cx={points[points.length - 1].x} cy={points[points.length - 1].y} r={3.5} fill={lastPointColor} />
+        )}
 
         {/* Dashed indicator line */}
         {activePoint && (
@@ -174,10 +189,9 @@ export function MiniAreaChart({
             </Text>
           )}
           <Text style={[chartStyles.tooltipValue, { color: tooltipTextColor }]}>
-            {activePoint.value >= 1000
-              ? `${(activePoint.value / 1000).toFixed(1)}k`
-              : activePoint.value}
-            {valueSuffix}
+            {formatValue
+              ? formatValue(activePoint.value)
+              : `${activePoint.value >= 1000 ? `${(activePoint.value / 1000).toFixed(1)}k` : activePoint.value}${valueSuffix}`}
           </Text>
         </View>
       )}

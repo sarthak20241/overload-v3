@@ -30,7 +30,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
 import { loadConnectedMetrics, loadMetricSeries, requestHealthAuthorization, type ReadableMetric } from '@/lib/healthSync';
-import { bandColor, directive, bandPillTextColor, type ReadinessContributor, type ReadinessResult } from '@/lib/readiness';
+import { bandColor, directive, bandPillTextColor, contributorImpact, bandForScore, type ReadinessBand, type ReadinessContributor, type ReadinessResult, type ReadinessTier } from '@/lib/readiness';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -41,8 +41,16 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorW
 const HUB: HealthHub = Platform.OS === 'ios' ? 'healthkit' : 'health_connect';
 const HUB_LABEL = Platform.OS === 'ios' ? 'Apple Health' : 'Health Connect';
 const CHART_W = Math.round(Dimensions.get('window').width - Spacing.xl * 2 - Spacing.lg * 2);
-// Display order for signal cards: recovery signals first, then activity/body.
-const SIGNAL_ORDER: ReadableMetric[] = ['sleep_minutes', 'resting_hr_bpm', 'hrv_sdnn_ms', 'steps', 'active_energy_kcal', 'bodyweight_kg'];
+// Recovery signals (HRV/RHR/sleep) live in the hero's contributor bars, told once.
+// "Your signals" carries only activity/body, the stuff not already in the score.
+const SIGNAL_ORDER: ReadableMetric[] = ['steps', 'active_energy_kcal', 'bodyweight_kg'];
+
+// Band-specific next move; the line is tappable into Drona.
+function actionLine(band: ReadinessBand): { text: string; prompt: string } {
+  if (band === 'high') return { text: 'Good day to push. Tap to plan it with Drona.', prompt: 'My readiness is high today. How should I push my session, and is it worth chasing a top set?' };
+  if (band === 'moderate') return { text: 'Train as planned. Tap for a gut check.', prompt: 'My readiness is moderate today. Should I train as planned or adjust anything?' };
+  return { text: 'Ease off today. Tap for a lighter version.', prompt: 'My readiness is low today. How should I lighten my session to protect recovery?' };
+}
 
 // Plain-language meaning (so the user gets it without tapping), the "good"
 // direction for the baseline caption, and a personalized prompt handed to Drona.
@@ -191,6 +199,13 @@ export default function HealthScreen() {
     setCoachOpen(true);
   }
 
+  // The hero "so what" line: open Drona with a band-specific next move.
+  function askAction(r: ReadinessResult) {
+    if (!r.band) return;
+    setCoachPrompt(actionLine(r.band).prompt);
+    setCoachOpen(true);
+  }
+
   // A one-shot status (synced / error) should not stay pinned forever.
   useEffect(() => {
     if (status.kind === 'idle' || status.kind === 'working') return;
@@ -282,6 +297,15 @@ export default function HealthScreen() {
                       : 'From your check-in'}
                   </Text>
                   <Text style={[styles.rationale, { color: C.textSecondary }]}>{result!.rationale}</Text>
+                  <ContributorBars contributors={contributors} tier={result!.tier} C={C} />
+                  <Pressable
+                    onPress={() => askAction(result!)}
+                    style={({ pressed }) => [styles.actionLine, { borderColor: C.borderSubtle }, pressed && { opacity: 0.7 }]}
+                  >
+                    <Feather name="message-circle" size={IconSize.sm} color={C.accentText} />
+                    <Text style={[styles.actionText, { color: C.foreground }]}>{actionLine(result!.band!).text}</Text>
+                    <Feather name="chevron-right" size={IconSize.sm} color={C.textMuted} />
+                  </Pressable>
                 </View>
               ) : (
                 <View style={styles.heroBody}>
@@ -306,35 +330,6 @@ export default function HealthScreen() {
               )}
             </View>
 
-            {/* WHY TODAY */}
-            {hasScore && contributors.length > 0 && (
-              <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
-                <View style={styles.sectionHeader}>
-                  <View style={[styles.tile, { backgroundColor: colorWithAlpha(accent, 0.12) }]}>
-                    <Feather name="sun" size={IconSize.sm} color={accent} />
-                  </View>
-                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Why today</Text>
-                </View>
-                {contributors.map((c) => {
-                  const def = CONTRIB_METRIC[c.key] ? dailyMetricDef(CONTRIB_METRIC[c.key]) : undefined;
-                  const col = def ? metricColor(def.colorKey) : C.textMuted;
-                  const hasZ = c.z != null && (c.key === 'hrv' || c.key === 'rhr' || c.key === 'sleep');
-                  return (
-                    <View key={c.key} style={styles.contribRow}>
-                      <View style={[styles.tile, { backgroundColor: colorWithAlpha(col, 0.12) }]}>
-                        <Feather name={(def?.icon ?? 'circle') as keyof typeof Feather.glyphMap} size={IconSize.sm} color={col} />
-                      </View>
-                      <Text style={[styles.contribNote, { color: C.foreground }]}>{contributorNote(c)}</Text>
-                      {hasZ && (
-                        <ZBar z={c.z!} pos={C.successText} neg={C.dangerText} neutral={C.textMuted} track={C.muted} mid={C.border} />
-                      )}
-                    </View>
-                  );
-                })}
-                <Text style={[styles.caption, { color: C.textMuted }]}>Measured against your own baseline, not anyone else.</Text>
-              </View>
-            )}
-
             {/* TREND */}
             {history.length >= 2 && (
               <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
@@ -349,10 +344,18 @@ export default function HealthScreen() {
                     width={CHART_W}
                     height={72}
                     color={accent}
+                    autoScale
+                    refLines={[40, 66]}
+                    lastPointColor={bandColor(bandForScore(history[history.length - 1].value))}
+                    formatValue={(v) => String(Math.round(v))}
+                    accessibilityLabel={`Readiness over ${history.length} days, today ${Math.round(history[history.length - 1].value)} out of 100`}
                     tooltipBgColor={C.elevated}
                     tooltipTextColor={C.foreground}
                   />
                 </View>
+                <Text style={[styles.caption, { color: C.textMuted, marginTop: Spacing.sm }]}>
+                  Dashes mark the low and high zones. Measured against your own baseline.
+                </Text>
               </View>
             )}
 
@@ -464,35 +467,60 @@ export default function HealthScreen() {
 }
 
 function TrendDelta({ history, C }: { history: { value: number }[]; C: ReturnType<typeof useTheme>['C'] }) {
-  const latest = history[history.length - 1].value;
-  const first = history[0].value;
-  const delta = latest - first;
+  const latest = Math.round(history[history.length - 1].value);
+  const mean = (arr: { value: number }[]) => arr.reduce((a, p) => a + p.value, 0) / (arr.length || 1);
+  // Last 3 days vs the prior 3, so one stale morning cannot flip the read.
+  const recent = history.slice(-3);
+  const prior = history.slice(-6, -3);
+  const delta = prior.length ? Math.round(mean(recent) - mean(prior)) : 0;
   const col = delta > 0 ? C.successText : delta < 0 ? C.dangerText : C.textMuted;
   const sign = delta > 0 ? '+' : '';
   return (
     <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
       <Text style={{ fontSize: FontSize.base, fontWeight: FontWeight.black, color: C.foreground }}>{latest}</Text>
-      <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: col }}>{sign}{delta}</Text>
+      {prior.length > 0 && (
+        <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: col }}>{sign}{delta}</Text>
+      )}
     </View>
   );
 }
 
-function ZBar({ z, pos, neg, neutral, track, mid }: { z: number; pos: string; neg: string; neutral: string; track: string; mid: string }) {
-  const W = 64;
-  const H = 6;
-  const half = W / 2;
-  const mag = Math.min(Math.abs(z), 3) / 3;
-  const isNeutral = Math.abs(z) < 0.3;
-  const fillW = Math.max(2, mag * half);
-  const color = isNeutral ? neutral : z > 0 ? pos : neg;
+// Ranked "what moved my score today": diverging bars, length = weight x deviation,
+// right = lifted the score, left = dragged it down. Replaces the unlabeled ZBar.
+function ContributorBars({ contributors, tier, C }: {
+  contributors: ReadinessContributor[];
+  tier: ReadinessTier;
+  C: ReturnType<typeof useTheme>['C'];
+}) {
+  const rows = contributors
+    .filter((c) => c.z != null && (c.key === 'hrv' || c.key === 'rhr' || c.key === 'sleep'))
+    .map((c) => ({ c, impact: contributorImpact(tier, c) }))
+    .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+  if (rows.length === 0) return null;
+  const maxImpact = Math.max(...rows.map((r) => Math.abs(r.impact)), 0.01);
   return (
-    <View style={{ width: W, height: H, borderRadius: H / 2, backgroundColor: track, justifyContent: 'center' }}>
-      <View style={{ position: 'absolute', left: half - 0.5, width: 1, height: H, backgroundColor: mid }} />
-      {isNeutral ? (
-        <View style={{ position: 'absolute', left: half - 3, width: 6, height: H, borderRadius: H / 2, backgroundColor: color }} />
-      ) : (
-        <View style={{ position: 'absolute', height: H, borderRadius: H / 2, backgroundColor: color, width: fillW, left: z > 0 ? half : half - fillW }} />
-      )}
+    <View style={styles.cbWrap}>
+      {rows.map(({ c, impact }) => {
+        const def = dailyMetricDef(CONTRIB_METRIC[c.key]);
+        const neutral = Math.abs(c.z ?? 0) < 0.3;
+        const good = impact >= 0;
+        const barColor = neutral ? C.textMuted : good ? C.successText : C.dangerText;
+        const frac = Math.min(Math.abs(impact) / maxImpact, 1);
+        return (
+          <View key={c.key} style={styles.cbRow}>
+            <Text style={[styles.cbLabel, { color: C.textSecondary }]} numberOfLines={1}>{def?.shortLabel ?? c.key}</Text>
+            <View style={[styles.cbTrack, { backgroundColor: C.muted }]}>
+              <View style={[styles.cbMid, { backgroundColor: C.border }]} />
+              {neutral ? (
+                <View style={[styles.cbDot, { backgroundColor: C.textMuted }]} />
+              ) : (
+                <View style={[styles.cbBar, { backgroundColor: barColor, width: `${frac * 50}%`, left: good ? '50%' : `${50 - frac * 50}%` }]} />
+              )}
+            </View>
+          </View>
+        );
+      })}
+      <Text style={[styles.cbNote, { color: C.textMuted }]}>{contributorNote(rows[0].c)}</Text>
     </View>
   );
 }
@@ -603,6 +631,16 @@ const styles = StyleSheet.create({
   contribRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
   contribNote: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
   caption: { fontSize: FontSize.xs, marginTop: Spacing.sm },
+  actionLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, alignSelf: 'stretch', marginTop: Spacing.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, borderWidth: 1, borderRadius: Radius.lg },
+  actionText: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  cbWrap: { width: '100%', gap: 8, marginTop: Spacing.md },
+  cbRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  cbLabel: { width: 52, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  cbTrack: { flex: 1, height: 8, borderRadius: 4, position: 'relative', justifyContent: 'center' },
+  cbMid: { position: 'absolute', left: '50%', width: 1, height: 8 },
+  cbBar: { position: 'absolute', height: 8, borderRadius: 4 },
+  cbDot: { position: 'absolute', left: '50%', marginLeft: -3, width: 6, height: 6, borderRadius: 3 },
+  cbNote: { fontSize: FontSize.sm, lineHeight: 18, marginTop: 4 },
   signalsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: Spacing.lg },
   signalCard: { width: '47%', borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.md, overflow: 'hidden' },
   signalHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },

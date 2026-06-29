@@ -190,6 +190,26 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** The tier weight a recovery signal carries in the score (mirrors computeReadiness). */
+export function contributorWeight(tier: ReadinessTier, key: ReadinessContributor['key']): number {
+  if (tier !== 'A1' && tier !== 'A2') return 0;
+  const w: Record<string, number> = tier === 'A1'
+    ? { hrv: 0.5, rhr: 0.3, sleep: 0.2 }
+    : { hrv: 0, rhr: 0.5, sleep: 0.5 };
+  return w[key] ?? 0;
+}
+
+/** Signed pull this contributor had on today's score (weight x deviation). */
+export function contributorImpact(tier: ReadinessTier, c: ReadinessContributor): number {
+  if (c.z == null) return 0;
+  return contributorWeight(tier, c.key) * c.z;
+}
+
+/** Band for a raw 0-100 score (exposed so the trend can colour its latest point). */
+export function bandForScore(score: number): ReadinessBand {
+  return bandFor(score);
+}
+
 /** Vivid band base colour for the ring stroke + directive pill fill. */
 export function bandColor(band: ReadinessBand): string {
   if (band === 'high') return Colors.success;
