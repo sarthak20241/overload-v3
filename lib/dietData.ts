@@ -66,10 +66,22 @@ function todayRange(): { start: string; end: string } {
   return { start: s.toISOString(), end: e.toISOString() };
 }
 
+/** Local-day key so a cached read can't bleed across midnight. */
+function dayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/** Process-lifetime cache of today's grouped entries, so opening the diary paints
+ *  instantly from what the dashboard already loaded (no 5s cold re-fetch), then
+ *  revalidates silently. Keyed by local day so it never shows stale cross-day data. */
+let _navCache: { key: string; byMeal: Record<MealType, LoggedEntry[]> } | null = null;
+
 export function useTodayNutrition(): DayData {
   const supabase = useSupabaseClient();
-  const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(emptyByMeal);
-  const [loading, setLoading] = useState(true);
+  const seed = _navCache && _navCache.key === dayKey() ? _navCache.byMeal : null;
+  const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
+  const [loading, setLoading] = useState(!seed);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
@@ -77,13 +89,19 @@ export function useTodayNutrition(): DayData {
     let cancelled = false;
     (async () => {
       if (!supabase) { setLoading(false); return; }
-      setLoading(true);
+      // Only show the loading state on a true cold load; a same-day cache means we
+      // already painted real numbers, so revalidate silently (no zeros flash).
+      if (!(_navCache && _navCache.key === dayKey())) setLoading(true);
       const { start, end } = todayRange();
       const { data: meals } = await supabase
         .from('meals').select('id, meal_type')
         .gte('logged_at', start).lte('logged_at', end);
       if (cancelled) return;
-      if (!meals || meals.length === 0) { setByMeal(emptyByMeal()); setLoading(false); return; }
+      if (!meals || meals.length === 0) {
+        const empty = emptyByMeal();
+        _navCache = { key: dayKey(), byMeal: empty };
+        setByMeal(empty); setLoading(false); return;
+      }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
       const { data: entries } = await supabase
         .from('meal_entries')
@@ -101,6 +119,7 @@ export function useTodayNutrition(): DayData {
           carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
         });
       }
+      _navCache = { key: dayKey(), byMeal: grouped };
       setByMeal(grouped);
       setLoading(false);
     })();

@@ -81,6 +81,7 @@ export function MacroRing({
   }, [overFrac, animate, reduced, overSv]);
   const overProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - overSv.value) }));
   const gap = gapColor ?? C.card;
+  const notchLen = circ * 0.05; // single seam gap (~18°), Apple/Google style
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
@@ -108,16 +109,18 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* card-coloured moat: carves white space so the second lap reads as a
-                  separate arc over the base ring (the "how much extra" gap). */}
-              <AnimatedCircle
-                cx={cx} cy={cy} r={r} stroke={gap} strokeWidth={thickness + 5} fill="none"
-                strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
-                transform={`rotate(-90, ${cx}, ${cy})`}
-              />
+              {/* second lap rides directly on the base in the same hue (no radial
+                  moat — that read as two gaps). */}
               <AnimatedCircle
                 cx={cx} cy={cy} r={r} stroke={color} strokeWidth={thickness} fill="none"
                 strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
+                transform={`rotate(-90, ${cx}, ${cy})`}
+              />
+              {/* ONE gap: a single card-coloured notch at the 12 o'clock seam so the
+                  lap reads as a fresh pass — the Apple/Google single-gap look. */}
+              <Circle
+                cx={cx} cy={cy} r={r} stroke={gap} strokeWidth={thickness + 1.5} fill="none"
+                strokeLinecap="butt" strokeDasharray={`${notchLen} ${circ - notchLen}`}
                 transform={`rotate(-90, ${cx}, ${cy})`}
               />
             </>
