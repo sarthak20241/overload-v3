@@ -49,8 +49,9 @@ B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
       DEFERRED follow-up: a dedicated per-exercise notes column (workout_sets.notes) so notes read back
       under each exercise in history/edit instead of mashed into the workout note — a migration-scale
       mini-feature, not a bug.
-   3. Supersets invisible on read-back/preview: RoutineDetailSheet + card drop grouping; history bracket
-      deferred (data flows via superset_group now). Render the grouping.
+   3. ~~Supersets invisible on read-back/preview~~ DONE 2026-06-29 (commit a062098). RoutineDetailSheet
+      "SUPERSET" caption + lime left-accent bracket; RoutineCard "· N superset(s)" hint; history expanded
+      card same caption + accent (group read exercise-level for guest, per-set for signed-in). Reviewed.
    4. Resume drops mid-unilateral/mid-superset capture (cross-cutting) + duration stopwatch lost on
       background. 5. Core-loop UX: log toast/undo, set-type discoverability, superset auto-hop "next: X"
       cue, rest-over sound/notification, unsaved-changes guard on routine editor + coach output.
