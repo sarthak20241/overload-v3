@@ -17,9 +17,10 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha }
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
-import { abbreviateNumber, formatWeight, formatDuration as formatSetDuration, formatDistanceKm } from '@/lib/format';
-import { metricTypeDef, metricTypeOf } from '@/lib/exercises';
+import { abbreviateNumber } from '@/lib/format';
+import { metricTypeOf } from '@/lib/exercises';
 import type { MetricType } from '@/lib/exercises';
+import { setLabel, setBestLabel } from '@/lib/setDisplay';
 import { SetTypeBadge, setTypeOf } from '@/components/workout/SetTypeBadge';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -56,45 +57,8 @@ interface ExerciseDetail {
 }
 type HistorySet = ExerciseDetail['sets'][number];
 
-/** Per-set pill text, axis-aware ("60kg × 8", "+10kg × 6", "0:45", "5km · 22:30", "12"). */
-function historySetLabel(metricType: MetricType, s: HistorySet): string {
-  const axes = metricTypeDef(metricType).axes;
-  const usesWeightAxis = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
-  // Per-side weight (migration 0059): a unilateral set whose two sides used different
-  // loads spells both out ("40kg×8 / 35kg×7"); equal weights keep the compact form below.
-  if (s.is_unilateral && usesWeightAxis && axes.includes('reps')
-      && s.weight_kg_right != null && s.weight_kg_right !== s.weight_kg) {
-    const pre = axes.includes('assist_weight') ? '-' : axes.includes('added_weight') ? '+' : '';
-    return `${pre}${formatWeight(s.weight_kg)}kg×${s.reps} / ${pre}${formatWeight(s.weight_kg_right)}kg×${s.reps_right ?? 0}`;
-  }
-  const parts = axes.map((a) =>
-    // A unilateral set shows both sides on the reps axis (weight is shared).
-    a === 'reps' ? (s.is_unilateral ? `${s.reps}/${s.reps_right ?? 0}` : `${s.reps}`)
-    : a === 'duration' ? formatSetDuration(s.duration_seconds)
-    : a === 'distance' ? `${formatDistanceKm(s.distance_m)}km`
-    : a === 'resistance' ? `Lv ${s.resistance ?? 0}`
-    : a === 'assist_weight' ? `-${formatWeight(s.weight_kg)}kg`
-    : a === 'added_weight' ? `+${formatWeight(s.weight_kg)}kg`
-    : `${formatWeight(s.weight_kg)}kg`,
-  );
-  const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
-  return usesWeight && axes.includes('reps') ? parts.join(' × ') : parts.join(' · ');
-}
-
-/** Headline "best" stat for an exercise's completed sets (heaviest / longest / farthest / most reps). */
-function historyBest(metricType: MetricType, sets: HistorySet[]): string {
-  const axes = metricTypeDef(metricType).axes;
-  if (axes.includes('distance')) {
-    return `${formatDistanceKm(Math.max(0, ...sets.map(s => s.distance_m ?? 0)))}km`;
-  }
-  if (axes.includes('duration') && !axes.some(a => a === 'weight')) {
-    return formatSetDuration(Math.max(0, ...sets.map(s => s.duration_seconds ?? 0)));
-  }
-  if (axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight')) {
-    return `${formatWeight(Math.max(0, ...sets.map(s => s.weight_kg), ...sets.map(s => s.weight_kg_right ?? 0)))}kg`;
-  }
-  return `${Math.max(0, ...sets.map(s => s.reps), ...sets.map(s => s.reps_right ?? 0))} reps`;
-}
+// Per-set pill text + headline "best" now live in lib/setDisplay (setLabel /
+// setBestLabel) so the dashboard, analytics and coach share the exact formatting.
 
 interface WorkoutRaw {
   id: string;
@@ -563,7 +527,7 @@ function SessionCard({
                             <SetTypeBadge type={setTypeOf(set.set_type)} size={15} />
                           )}
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
-                            {historySetLabel(mt, set)}
+                            {setLabel(mt, set)}
                           </Text>
                           {(set.rpe != null || (set.is_unilateral && set.rpe_right != null)) && (
                             <Text style={[styles.setPillText, { color: C.textMuted }]}>
@@ -575,7 +539,7 @@ function SessionCard({
                     </View>
                   </View>
                   <View style={styles.exerciseBest}>
-                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{historyBest(mt, completedSets)}</Text>
+                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{setBestLabel(mt, completedSets)}</Text>
                     <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
                   </View>
                 </View>
