@@ -196,7 +196,12 @@ export function getGuestWorkoutsDetailed() {
     const sets = (w.exercises ?? []).flatMap((ex, ei) => {
       const lib = EXERCISE_LIBRARY.find(e => e.name.toLowerCase() === ex.name.toLowerCase());
       const meta = {
-        id: `${w.id}-ex-${ei}`,
+        // Stable across workouts: same exercise → same id, so the dashboard's
+        // running-best map can detect PRs between two guest sessions. Library
+        // entries carry no id, so the lowercased name is the stable anchor (the
+        // PR memo already requires the name anyway). A per-workout id like
+        // `${w.id}-ex-${ei}` would be fresh every session, so a PR never fired.
+        id: `guest-ex-${ex.name.trim().toLowerCase()}`,
         name: ex.name,
         muscle_group: ex.muscle_group || lib?.muscle_group || 'Other',
         category: ex.category || lib?.category || 'Other',
