@@ -8,13 +8,18 @@ Worktree `/Users/sarthakkumar/Coding/overload-v3` is EXCLUSIVELY on `feat/exerci
 #43 → main, OPEN, do NOT merge — all workstreams merge at once later). The holistic branch is parked
 at ../overload-holistic; never switch this folder's branch.
 
-Three features shipped this run, all on PR #43:
-1. **Unilateral "L+R" set type** + per-side weight + swappable first side. COMMITTED + PUSHED (commits
-   e1f1477..748ef26). One-row model: `is_unilateral` flag + `reps_right`/`rpe_right`/`weight_kg_right`.
-2. **Routines fix** (Android IME lift + rep-range dual input). COMMITTED + PUSHED (bc6263c).
-3. **Supersets (Phase D)**: BUILT + reviewed (5 findings fixed) + type-clean + coach redeployed, but
-   **NOT COMMITTED** — lives on the working tree. Per-row `superset_group` column; interleaved logging
-   (pager auto-advance UX); routine-editor grouping; coach recap awareness.
+Features shipped this run, all on PR #43 (all COMMITTED + PUSHED):
+1. **Unilateral "L+R" set type** + per-side weight + swappable first side (e1f1477..748ef26). One-row
+   model: `is_unilateral` flag + `reps_right`/`rpe_right`/`weight_kg_right`.
+2. **Routines fix** (Android IME lift + rep-range dual input) (bc6263c).
+3. **Supersets (Phase D)** (6 scoped commits 750ac68..653d45e): per-row `superset_group` column;
+   interleaved logging (pager auto-advance UX); routine-editor grouping; coach recap awareness.
+   Reviewed (5 findings fixed), coach redeployed.
+4. **Metric-type read surfaces (board theme B.1)** (8a19f78..238c93f): new shared `lib/setDisplay.ts`
+   makes bodyweight/duration/distance work first-class on the dashboard, analytics (chart + PR card),
+   coach, and the offline adapter. Adversarially reviewed (15 agents, parity-verified); 3 confirmed
+   edge-fixes applied (volume-chart k-abbreviation, pending-adapter `metric_type`, per-series unit
+   pinning so a shadowed duplicate name can't mix kg with seconds/metres).
 
 DB: migrations 0056-0060 ALL applied live (Supabase MCP) + mirrored to supabase/migrations/ + schema.sql
 synced. ai-coach edge fn redeployed (prompt.ts current). Project ref: rjmmslierxhvwdjgjilb.
@@ -27,17 +32,16 @@ synced. ai-coach edge fn redeployed (prompt.ts current). Project ref: rjmmslierx
 
 ## Remaining tasks (prioritized)
 
-A. **Commit supersets to PR #43** (scoped commits, like L+R: db / model+threading / logger interleave /
-   editor grouping / coach). Working tree has the supersets diff (uncommitted). The 2 once-stray files
-   (routines.tsx, useKeyboardAwareScroll.ts) are ALREADY committed; remaining untracked = unrelated junk
-   (__pycache__, downloads/, flat_*.py, sketches/, store-assets/, .planning/p2-review.workflow.js) — do
-   NOT commit those.
+A. ~~Commit supersets to PR #43~~ DONE 2026-06-29 (6 scoped commits 750ac68..653d45e, pushed). Remaining
+   untracked = unrelated junk (__pycache__, downloads/, flat_*.py, sketches/, store-assets/,
+   .planning/p2-review.workflow.js) — do NOT commit those.
 
 B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
-   1. THEME: non-weight metric types are second-class on read/stats surfaces (~5 bugs). Analytics PR
-      card + progress chart show "PR: 0kg"/flat; dashboard expanded sets read "0 reps"; coach review
-      volume = 0kg for non-weight; PR badges never fire for bodyweight/duration/distance. Fix once with a
-      shared "primary metric value/volume" helper used across index.tsx, analytics.tsx, workoutCoach.ts.
+   1. ~~THEME: non-weight metric types second-class on read/stats surfaces~~ DONE 2026-06-29
+      (commits 8a19f78..238c93f, lib/setDisplay.ts). Reviewed; one known LOW left as pre-existing/out of
+      scope: guest workouts never flag PRs because getGuestWorkoutsDetailed assigns a per-workout
+      synthetic exercise_id (`${w.id}-ex-${ei}`) so best[exId] never accumulates across guest sessions —
+      fix by deriving a stable id from the exercise name/library id (lib/guestStore.ts).
    2. Data-integrity HIGHs: (a) editing a unilateral set in app/workout/edit/[id].tsx corrupts the right
       side (edits left, keeps stale right, no badge) → render L/R inputs OR keep sides in sync + show a
       badge; (b) superset "tap to split" on a 3+ giant set EJECTS a member instead of splitting (routines
