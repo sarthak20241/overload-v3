@@ -204,6 +204,14 @@ function RoutineCard({
     ),
   ].join(', ');
 
+  // How many supersets this routine contains, so a grouped routine doesn't read
+  // identical to a flat one on the collapsed card.
+  const supersetCount = new Set(
+    routine.routine_exercises
+      .map((re) => re.superset_group)
+      .filter((g): g is number => g != null),
+  ).size;
+
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.7}>
       <Animated.View
@@ -228,6 +236,7 @@ function RoutineCard({
           ) : null}
           <Text style={[styles.exerciseCount, { color: C.textMuted }]}>
             {routine.routine_exercises.length} exercise{routine.routine_exercises.length !== 1 ? 's' : ''}
+            {supersetCount > 0 ? ` · ${supersetCount} superset${supersetCount !== 1 ? 's' : ''}` : ''}
           </Text>
           {exerciseNames.length > 0 && <ExerciseTags exercises={exerciseNames} />}
         </View>

@@ -53,6 +53,9 @@ const MONTH_FULL = [
 interface ExerciseDetail {
   name: string;
   metric_type?: MetricType;
+  // Superset group. Signed-in/pending rows carry it per-set; guest workouts carry
+  // it at the exercise level. groupOf() reads exercise-level first, then per-set.
+  superset_group?: number | null;
   sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null; superset_group?: number | null }[];
 }
 type HistorySet = ExerciseDetail['sets'][number];
@@ -513,8 +516,23 @@ function SessionCard({
               const completedSets = ex.sets?.filter(s => s.completed) || [];
               if (completedSets.length === 0) return null;
               const mt = metricTypeOf(ex);
+              // Superset grouping rides on the sets (per-set superset_group). Members
+              // stay contiguous under the first-seen ordering, so flag the first of
+              // each run for a "SUPERSET" caption + a lime left accent down the group.
+              const groupOf = (e?: ExerciseDetail) =>
+                e?.superset_group ?? (e?.sets || []).find(s => s.superset_group != null)?.superset_group ?? null;
+              const g = groupOf(ex);
+              const grouped = g != null;
+              const firstInGroup = grouped && g !== groupOf(workout.exercises?.[i - 1]);
               return (
-                <View key={i} style={styles.exerciseRow}>
+                <View key={i}>
+                  {firstInGroup ? (
+                    <View style={styles.supersetLabelRow}>
+                      <Feather name="link" size={9} color={C.accentText} />
+                      <Text style={[styles.supersetLabelText, { color: C.accentText }]}>SUPERSET</Text>
+                    </View>
+                  ) : null}
+                  <View style={[styles.exerciseRow, grouped ? { borderLeftWidth: 3, borderLeftColor: Colors.primary, paddingLeft: 10 } : null]}>
                   <View style={styles.exerciseInfo}>
                     <Text style={[styles.exerciseName, { color: C.foreground }]}>{ex.name}</Text>
                     <View style={styles.setPills}>
@@ -541,6 +559,7 @@ function SessionCard({
                   <View style={styles.exerciseBest}>
                     <Text style={[styles.bestWeight, { color: C.accentText }]}>{setBestLabel(mt, completedSets)}</Text>
                     <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
+                  </View>
                   </View>
                 </View>
               );
@@ -1292,6 +1311,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+  },
+  // "SUPERSET" caption above the first member of a superset run in the expanded card.
+  supersetLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  supersetLabelText: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
   },
   exerciseInfo: {
     flex: 1,

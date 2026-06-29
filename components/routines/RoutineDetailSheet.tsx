@@ -32,6 +32,9 @@ export interface RoutineExerciseRaw {
   rest_seconds: number;
   order: number;
   note?: string | null;
+  // Superset grouping ordinal (migration 0060). Members share a value and are
+  // contiguous by `order`; null = solo. Drives the bracket/accent below.
+  superset_group?: number | null;
   exercises: {
     id: string;
     name: string;
@@ -76,6 +79,13 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
   if (!routine) return null;
 
   const sortedExercises = [...routine.routine_exercises].sort((a, b) => a.order - b.order);
+  // Superset members are contiguous once sorted; flag the first of each run so we
+  // can label it once and run a left accent down the whole group (a bracket).
+  const supersetRows = sortedExercises.map((re, i) => {
+    const g = re.superset_group ?? null;
+    const prevG = i > 0 ? (sortedExercises[i - 1].superset_group ?? null) : null;
+    return { grouped: g != null, isFirstInGroup: g != null && g !== prevG };
+  });
 
   return (
     <Portal>
@@ -124,36 +134,50 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
             contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.md }}
             showsVerticalScrollIndicator
           >
-            {sortedExercises.map((re, i) => (
-              <View
-                key={`${re.exercise_id}-${i}`}
-                style={[s.detailExRow, { borderBottomColor: C.borderSubtle }]}
-              >
-                <View style={[s.detailExDot, { backgroundColor: C.primaryMuted }]}>
-                  <Text style={[s.detailExIdx, { color: C.accentText }]}>{i + 1}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.detailExName, { color: C.foreground }]}>
-                    {re.exercises?.name || 'Unknown'}
-                  </Text>
-                  <Text style={[s.detailExMeta, { color: C.textMuted }]}>
-                    {re.sets} sets · {re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · {re.rest_seconds}s rest
-                  </Text>
-                  {re.note ? (
-                    <Text style={[s.detailExNote, { color: C.accentText }]} numberOfLines={3}>
-                      {re.note}
-                    </Text>
+            {sortedExercises.map((re, i) => {
+              const { grouped, isFirstInGroup } = supersetRows[i];
+              return (
+                <View key={`${re.exercise_id}-${i}`}>
+                  {isFirstInGroup ? (
+                    <View style={s.supersetLabelRow}>
+                      <Feather name="link" size={10} color={C.accentText} />
+                      <Text style={[s.supersetLabel, { color: C.accentText }]}>SUPERSET</Text>
+                    </View>
                   ) : null}
-                </View>
-                {re.exercises?.muscle_group ? (
-                  <View style={[s.detailExBadge, { backgroundColor: C.muted }]}>
-                    <Text style={[s.detailExBadgeText, { color: C.textSecondary }]}>
-                      {re.exercises.muscle_group}
-                    </Text>
+                  <View
+                    style={[
+                      s.detailExRow,
+                      { borderBottomColor: C.borderSubtle },
+                      grouped ? { borderLeftWidth: 3, borderLeftColor: Colors.primary, paddingLeft: 10 } : null,
+                    ]}
+                  >
+                    <View style={[s.detailExDot, { backgroundColor: C.primaryMuted }]}>
+                      <Text style={[s.detailExIdx, { color: C.accentText }]}>{i + 1}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.detailExName, { color: C.foreground }]}>
+                        {re.exercises?.name || 'Unknown'}
+                      </Text>
+                      <Text style={[s.detailExMeta, { color: C.textMuted }]}>
+                        {re.sets} sets · {re.reps_min === re.reps_max ? re.reps_min : `${re.reps_min}-${re.reps_max}`} reps · {re.rest_seconds}s rest
+                      </Text>
+                      {re.note ? (
+                        <Text style={[s.detailExNote, { color: C.accentText }]} numberOfLines={3}>
+                          {re.note}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {re.exercises?.muscle_group ? (
+                      <View style={[s.detailExBadge, { backgroundColor: C.muted }]}>
+                        <Text style={[s.detailExBadgeText, { color: C.textSecondary }]}>
+                          {re.exercises.muscle_group}
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
-                ) : null}
-              </View>
-            ))}
+                </View>
+              );
+            })}
           </ScrollView>
 
           {/* Footer Actions */}
@@ -258,6 +282,21 @@ const s = StyleSheet.create({
     gap: 12,
     paddingVertical: 12,
     borderBottomWidth: 1,
+  },
+  // "SUPERSET" caption above the first member of a group; the rows below it carry
+  // a lime left accent so the group reads as one bracketed block.
+  supersetLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 8,
+    marginBottom: 2,
+    paddingLeft: 2,
+  },
+  supersetLabel: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
   },
   detailExDot: {
     width: 28,
