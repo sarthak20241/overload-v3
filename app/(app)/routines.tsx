@@ -580,7 +580,15 @@ function RoutineEditorSheet({
       const next = prev.map((e) => ({ ...e }));
       const linked = next[i].supersetGroup != null && next[i].supersetGroup === next[i - 1].supersetGroup;
       if (linked) {
-        next[i].supersetGroup = null;
+        // Split the contiguous run AT this boundary: row i and everything below it in
+        // the same run start a fresh group; rows above keep the old id. (Nulling just
+        // row i would leave a 3+ giant set non-contiguous, and normalizeGroups would
+        // then dissolve BOTH remaining singletons — ejecting the member, not splitting.)
+        const oldGid = next[i].supersetGroup;
+        const newGid = 9000 + i;
+        for (let k = i; k < next.length && next[k].supersetGroup === oldGid; k++) {
+          next[k].supersetGroup = newGid;
+        }
       } else {
         const gid = next[i - 1].supersetGroup ?? 9000 + i;
         next[i - 1].supersetGroup = gid;
