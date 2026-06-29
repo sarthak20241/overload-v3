@@ -87,7 +87,7 @@ export default function NutritionScreen() {
         <View style={s.summary}>
           <View style={{ alignItems: 'center' }}>
             <MacroRing
-              value={eaten.kcal} target={TARGETS.kcal} color={C.foreground}
+              value={eaten.kcal} target={TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
               display="remaining" overshoot name="Calories" size={132} thickness={9} centerFontSize={32}
               belowCaption={calCaption(eaten.kcal, TARGETS.kcal)}
             />
