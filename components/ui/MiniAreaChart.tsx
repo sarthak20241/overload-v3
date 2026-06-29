@@ -35,6 +35,47 @@ interface MiniAreaChartProps {
   accessibilityLabel?: string;
 }
 
+// Monotone cubic interpolation (Fritsch-Carlson): a smooth curve through every
+// point with no overshoot, so it never invents values between sparse samples.
+function monotonePath(pts: { x: number; y: number }[]): string {
+  const n = pts.length;
+  if (n < 2) return n === 1 ? `M ${pts[0].x},${pts[0].y}` : '';
+  if (n === 2) return `M ${pts[0].x},${pts[0].y} L ${pts[1].x},${pts[1].y}`;
+  const dx: number[] = [];
+  const slope: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1].x - pts[i].x;
+    slope[i] = (pts[i + 1].y - pts[i].y) / (dx[i] || 1);
+  }
+  const m: number[] = new Array(n);
+  m[0] = slope[0];
+  m[n - 1] = slope[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    m[i] = slope[i - 1] * slope[i] <= 0 ? 0 : (slope[i - 1] + slope[i]) / 2;
+  }
+  // Constrain tangents so each segment stays monotone (kills overshoot).
+  for (let i = 0; i < n - 1; i++) {
+    if (slope[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / slope[i];
+    const b = m[i + 1] / slope[i];
+    const s = a * a + b * b;
+    if (s > 9) {
+      const t = 3 / Math.sqrt(s);
+      m[i] = t * a * slope[i];
+      m[i + 1] = t * b * slope[i];
+    }
+  }
+  let d = `M ${pts[0].x},${pts[0].y}`;
+  for (let i = 0; i < n - 1; i++) {
+    const c1x = pts[i].x + dx[i] / 3;
+    const c1y = pts[i].y + (m[i] * dx[i]) / 3;
+    const c2x = pts[i + 1].x - dx[i] / 3;
+    const c2y = pts[i + 1].y - (m[i + 1] * dx[i]) / 3;
+    d += ` C ${c1x},${c1y} ${c2x},${c2y} ${pts[i + 1].x},${pts[i + 1].y}`;
+  }
+  return d;
+}
+
 export function MiniAreaChart({
   data,
   labels,
@@ -82,9 +123,9 @@ export function MiniAreaChart({
     value: v,
   }));
 
-  // Straight segments between real points. A bezier would overshoot between
-  // sparse daily samples and fabricate values the user never recorded.
-  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x},${p.y}`).join(' ');
+  // Smooth but honest: a monotone cubic passes through every real point and never
+  // overshoots into values the user did not record (unlike a plain midpoint bezier).
+  const linePath = monotonePath(points);
 
   const areaPath = `${linePath} L ${points[points.length - 1].x},${height} L ${points[0].x},${height} Z`;
 
