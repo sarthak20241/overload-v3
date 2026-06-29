@@ -21,8 +21,9 @@ interface MiniAreaChartProps {
   tooltipTextColor?: string;
   tooltipBgColor?: string;
   valueSuffix?: string;
-  /** Opt-in: scale the y-axis to the data's own range (not forced through 0), so
-   *  small real variation reads clearly. Implied when `baseline` is set. */
+  /** Scale the y-axis to the data's OWN range (default true), so small real
+   *  variation in narrow-band metrics (weight, resting HR, body fat) stays
+   *  visible. Pass false to anchor at zero for magnitude-from-zero metrics. */
   autoScale?: boolean;
   /** A faint "your normal" band drawn behind the line, in data units. */
   baseline?: { lo: number; hi: number };
@@ -86,7 +87,7 @@ export function MiniAreaChart({
   tooltipTextColor = '#fff',
   tooltipBgColor = 'rgba(0,0,0,0.75)',
   valueSuffix = '',
-  autoScale = false,
+  autoScale = true,
   baseline,
   refLines,
   formatValue,
