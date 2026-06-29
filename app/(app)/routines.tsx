@@ -26,7 +26,8 @@ import Animated, {
   useSharedValue,
   useAnimatedScrollHandler,
 } from 'react-native-reanimated';
-import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
+import { haptics } from '@/lib/haptics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
@@ -63,6 +64,8 @@ interface RoutineExerciseRaw {
   // Phase 2.5: AI-generated routines carry the coach's per-exercise cue.
   // Optional — null/missing on editor-built routines.
   note?: string | null;
+  // Supersets (migration 0060): grouping ordinal; null/missing = solo.
+  superset_group?: number | null;
   exercises: {
     id: string;
     name: string;
@@ -100,6 +103,9 @@ interface EditorExercise {
   targetReps: string;
   restSeconds: number;
   notes: string;
+  /** Superset grouping ordinal (migration 0060); null = solo. Members share a value
+   *  and are kept contiguous in the list (order = list position). */
+  supersetGroup?: number | null;
 }
 
 // A fresh, collision-proof row id (Date.now() can repeat within a .map(), so mix
@@ -118,7 +124,32 @@ function newExercise(): EditorExercise {
     targetReps: '8-12',
     restSeconds: 90,
     notes: '',
+    supersetGroup: null,
   };
+}
+
+// Supersets (migration 0060): a group is a CONTIGUOUS run of rows sharing a value
+// (order = list position). This re-numbers each maximal contiguous run to a fresh
+// sequential id and dissolves singletons (a "group of 1" = solo). Run after any
+// link/unlink or reorder so groups stay contiguous + cleanly numbered.
+function normalizeGroups(exs: EditorExercise[]): EditorExercise[] {
+  const out = exs.map((e) => ({ ...e }));
+  let nextId = 1;
+  let i = 0;
+  while (i < out.length) {
+    const g = out[i].supersetGroup ?? null;
+    if (g == null) { i++; continue; }
+    let j = i;
+    while (j < out.length && (out[j].supersetGroup ?? null) === g) j++;
+    if (j - i >= 2) {
+      const id = nextId++;
+      for (let k = i; k < j; k++) out[k].supersetGroup = id;
+    } else {
+      out[i].supersetGroup = null;
+    }
+    i = j;
+  }
+  return out;
 }
 
 // ─── Exercise Tag Pills ───────────────────────────────────────────────────────
@@ -355,6 +386,7 @@ function ExerciseEditorCard({
   onOpenPicker,
   onInputFocus,
   canReorder = true,
+  grouped = false,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
@@ -362,6 +394,8 @@ function ExerciseEditorCard({
   onOpenPicker: () => void;
   onInputFocus?: () => void;
   canReorder?: boolean;
+  /** Part of a superset — show a left accent so the group reads as a block. */
+  grouped?: boolean;
 }) {
   const { C } = useTheme();
   // react-native-reorderable-list: `drag` begins the drag for this row; isActive
@@ -377,7 +411,7 @@ function ExerciseEditorCard({
   const showBody = expanded && !isActive;
 
   return (
-    <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
+    <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }, grouped && { borderLeftColor: Colors.primary, borderLeftWidth: 3 }]}>
       {/* Header - always visible. The grip is the drag handle (hold to grab);
           the rest of the row still taps to expand / collapse. */}
       <View style={styles.editorHeader}>
@@ -537,6 +571,25 @@ function RoutineEditorSheet({
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
 
+  // Supersets: link row i with the one above into a group (or split it off).
+  // normalizeGroups renumbers contiguous runs + dissolves singletons.
+  const toggleSupersetLink = (i: number) => {
+    if (i < 1) return;
+    haptics.selection();
+    setExercises((prev) => {
+      const next = prev.map((e) => ({ ...e }));
+      const linked = next[i].supersetGroup != null && next[i].supersetGroup === next[i - 1].supersetGroup;
+      if (linked) {
+        next[i].supersetGroup = null;
+      } else {
+        const gid = next[i - 1].supersetGroup ?? 9000 + i;
+        next[i - 1].supersetGroup = gid;
+        next[i].supersetGroup = gid;
+      }
+      return normalizeGroups(next);
+    });
+  };
+
   // The reorderable list is its own scroller. On Android (SDK 54 edge-to-edge
   // doesn't resize the window for the IME) lower inputs would stay buried under
   // the keyboard, so we lift the focused field above it ourselves. We hand the
@@ -655,6 +708,7 @@ function RoutineEditorSheet({
                 : `${re.reps_min}-${re.reps_max}`,
               restSeconds: re.rest_seconds || 90,
               notes: re.note || '',
+              supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             }))
           : [newExercise()]
       );
@@ -674,6 +728,7 @@ function RoutineEditorSheet({
       // The DB column is `note` (singular). `re.notes` was a typo that silently
       // read undefined, so opening an AI-generated routine dropped its cues.
       notes: re.note || re.notes || '',
+      supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
     });
 
     // Cache-first: hydrate the editor from the cached routine so it is never
@@ -733,6 +788,7 @@ function RoutineEditorSheet({
           reps_min: repsMin,
           reps_max: repsMax,
           rest_seconds: ex.restSeconds,
+          superset_group: ex.supersetGroup ?? null,
           exercises: {
             id: exId,
             name: ex.name,
@@ -792,6 +848,7 @@ function RoutineEditorSheet({
           reps_max,
           rest_seconds: ex.restSeconds,
           note: ex.notes?.trim() ? ex.notes.trim() : null,
+          superset_group: ex.supersetGroup ?? null,
         };
       }),
       phase: 'queued',
@@ -829,7 +886,9 @@ function RoutineEditorSheet({
       setErrorMsg('Please enter a routine name');
       return;
     }
-    const validExercises = exercises.filter((e) => e.name.trim());
+    // Re-normalize after dropping blank-named rows: a filtered-out member could leave
+    // a superset with a single remaining member, which must dissolve to solo.
+    const validExercises = normalizeGroups(exercises.filter((e) => e.name.trim()));
     if (validExercises.length === 0) {
       setErrorMsg('Add at least one exercise');
       return;
@@ -939,22 +998,43 @@ function RoutineEditorSheet({
               keyExtractor={(ex) => ex.id}
               shouldUpdateActiveItem
               onReorder={({ from, to }: ReorderableListReorderEvent) =>
-                setExercises((prev) => reorderItems(prev, from, to))
+                // Re-normalize so a reorder can't leave a superset's members
+                // non-contiguous (a split run dissolves; see normalizeGroups).
+                setExercises((prev) => normalizeGroups(reorderItems(prev, from, to)))
               }
-              renderItem={({ item: ex, index: i }) => (
+              renderItem={({ item: ex, index: i }) => {
+                const linkedAbove = i > 0 && ex.supersetGroup != null
+                  && ex.supersetGroup === exercises[i - 1].supersetGroup;
+                return (
                 <View style={styles.cardWrap}>
+                  {i > 0 && (
+                    <TouchableOpacity
+                      onPress={() => toggleSupersetLink(i)}
+                      style={[styles.linkRow, linkedAbove && { backgroundColor: colorWithAlpha(Colors.primary, 0.12) }]}
+                      hitSlop={{ top: 4, bottom: 4, left: 8, right: 8 }}
+                      accessibilityRole="button"
+                      accessibilityLabel={linkedAbove ? 'Split this superset' : 'Make a superset with the exercise above'}
+                    >
+                      <Feather name={linkedAbove ? 'link' : 'link-2'} size={11} color={linkedAbove ? Colors.primary : C.textMuted} />
+                      <Text style={[styles.linkRowText, { color: linkedAbove ? Colors.primary : C.textMuted }]}>
+                        {linkedAbove ? 'Superset — tap to split' : 'Superset with above'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                   <ExerciseEditorCard
                     exercise={ex}
+                    grouped={ex.supersetGroup != null}
                     canReorder={exercises.length > 1}
                     onChange={(updated) =>
                       setExercises((prev) => prev.map((e) => (e.id === ex.id ? updated : e)))
                     }
-                    onRemove={() => setExercises((prev) => prev.filter((e) => e.id !== ex.id))}
+                    onRemove={() => setExercises((prev) => normalizeGroups(prev.filter((e) => e.id !== ex.id)))}
                     onOpenPicker={() => setPickerTargetIdx(i)}
                     onInputFocus={scrollFocusedIntoView}
                   />
                 </View>
-              )}
+                );
+              }}
               style={{ flex: 1 }}
               contentContainerStyle={[
                 styles.editorListContent,
@@ -1665,6 +1745,8 @@ const styles = StyleSheet.create({
   },
   // Spacing between exercise cards (the list renders items flush).
   cardWrap: { marginBottom: 8 },
+  linkRow: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 4, paddingVertical: 3, paddingHorizontal: 10, borderRadius: Radius.full, marginBottom: 4 },
+  linkRowText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   sheetInput: {
     paddingHorizontal: Spacing.lg,
     paddingVertical: 14,
