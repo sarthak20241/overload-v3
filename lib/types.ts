@@ -53,6 +53,9 @@ export interface RoutineExercise {
   // (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Optional — only
   // set on AI-generated routines, not editor-built ones.
   note?: string;
+  // Supersets (migration 0060). Grouping ordinal; members of one superset share a
+  // value, NULL/undefined = solo. Members are kept contiguous (order = list position).
+  superset_group?: number | null;
 }
 
 export interface Routine {
@@ -92,6 +95,9 @@ export interface WorkoutSet {
   reps_right?: number | null;
   rpe_right?: number | null;
   weight_kg_right?: number | null;
+  // Supersets (migration 0060). Carried per set (stamped from the parent exercise at
+  // write time) so history can group members. NULL = not part of a superset.
+  superset_group?: number | null;
 }
 
 export interface Workout {
@@ -122,6 +128,10 @@ export interface ActiveWorkoutExercise {
   repsMin: number;
   repsMax: number;
   restSeconds: number;
+  // Supersets (migration 0060). Grouping ordinal carried from the routine (or set
+  // ad-hoc mid-session). Members of one superset share a value, NULL = solo. Drives
+  // the interleaved logging + round rest. Stamped onto each set's superset_group on save.
+  supersetGroup?: number | null;
 }
 
 export interface ActiveSet {

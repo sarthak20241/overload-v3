@@ -46,6 +46,9 @@ export interface PendingExercise {
   resolvedExerciseId: string | null;
   /** Completed sets only. */
   sets: PendingSet[];
+  /** Superset grouping ordinal (migration 0060), stamped onto each set's
+   * workout_sets.superset_group at flush. NULL = solo. */
+  supersetGroup?: number | null;
 }
 
 export type PendingPhase = 'queued' | 'workout_inserted' | 'sets_inserted' | 'done';
@@ -308,6 +311,7 @@ export async function flushPendingWorkout(
               reps_right: s.reps_right ?? null,
               rpe_right: s.rpe_right ?? null,
               weight_kg_right: s.weight_kg_right ?? null,
+              superset_group: ex.supersetGroup ?? null,
             }))
           : [],
       );

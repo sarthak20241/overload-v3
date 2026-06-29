@@ -47,6 +47,8 @@ export interface PendingEditExercise {
   /** Real exercises.id if known; null when it must resolve by name at flush. */
   resolvedExerciseId: string | null;
   sets: PendingEditSet[];
+  /** Superset grouping ordinal (migration 0060), stamped per set at flush. NULL = solo. */
+  supersetGroup?: number | null;
 }
 
 export interface PendingWorkoutEdit {
@@ -225,7 +227,7 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
           resistance: s.resistance ?? null, set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
           is_unilateral: s.is_unilateral ?? false, reps_right: s.reps_right ?? null, rpe_right: s.rpe_right ?? null,
-          weight_kg_right: s.weight_kg_right ?? null,
+          weight_kg_right: s.weight_kg_right ?? null, superset_group: ex.supersetGroup ?? null,
         })),
       })),
       _pendingSync: true,
@@ -271,6 +273,7 @@ export function applyEditsToDashboardRows(userId: string | null | undefined, row
         reps_right: s.reps_right ?? null,
         rpe_right: s.rpe_right ?? null,
         weight_kg_right: s.weight_kg_right ?? null,
+        superset_group: ex.supersetGroup ?? null,
       }));
     });
     return {
@@ -353,6 +356,7 @@ async function flushPendingEdit(
             reps_right: s.reps_right ?? null,
             rpe_right: s.rpe_right ?? null,
             weight_kg_right: s.weight_kg_right ?? null,
+            superset_group: ex.supersetGroup ?? null,
           }))
         : [],
     );

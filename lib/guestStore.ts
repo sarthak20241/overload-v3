@@ -27,6 +27,8 @@ export interface GuestRoutineExercise {
   rest_seconds: number;
   /** AI Coach's per-exercise cue; null/missing on editor-built routines. */
   note?: string | null;
+  /** Superset grouping ordinal (migration 0060); null/missing = solo. */
+  superset_group?: number | null;
   exercises: { id: string; name: string; muscle_group: string; category: string };
 }
 
@@ -47,6 +49,8 @@ interface GuestWorkoutExercise {
   category?: string;
   /** Phase A — so a guest's duration/distance exercises render + persist right. */
   metric_type?: MetricType;
+  /** Superset grouping ordinal (migration 0060), per exercise; null = solo. */
+  superset_group?: number | null;
   sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 
@@ -215,6 +219,7 @@ export function getGuestWorkoutsDetailed() {
         reps_right: s.reps_right ?? null,
         rpe_right: s.rpe_right ?? null,
         weight_kg_right: s.weight_kg_right ?? null,
+        superset_group: ex.superset_group ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };
