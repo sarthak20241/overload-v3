@@ -323,7 +323,10 @@ export function workoutCoachStarter(ctx: WorkoutCoachContext): string {
       0,
     );
     const mins = Math.round(ctx.elapsedSeconds / 60);
-    return `Session logged — “${ctx.routineName}”: ${totalSets} set${totalSets === 1 ? '' : 's'}, ${Math.round(volume)}kg of volume in ${mins} min. Let me take a look…`;
+    // Volume is weight×reps; a pure bodyweight / duration / distance session has
+    // none, so only surface the kg clause when there's actual load (no "0kg of volume").
+    const volPart = volume > 0 ? `, ${Math.round(volume)}kg of volume` : '';
+    return `Session logged, “${ctx.routineName}”: ${totalSets} set${totalSets === 1 ? '' : 's'}${volPart} in ${mins} min. Let me take a look…`;
   }
   if (ctx.exerciseCount === 0) {
     return `Blank canvas — “${ctx.routineName}” has no exercises yet. Tell me your goal and how much time you've got, and I'll get you moving.`;

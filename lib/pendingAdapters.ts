@@ -34,6 +34,10 @@ export function pendingToDashboardWorkout(entry: PendingWorkout): any {
       name: ex.def.name,
       muscle_group: ex.def.muscle_group || 'Other',
       category: ex.def.category || 'Other',
+      // Carry the metric type so the dashboard reads duration/distance/bodyweight
+      // sets correctly (and flags their PRs) before this row syncs — mirrors the
+      // history adapter + guest store, which already pass it.
+      metric_type: ex.def.metric_type,
     };
     return ex.sets.map((s, si) => ({
       id: `${entry.clientId}-set-${ei}-${si}`,
