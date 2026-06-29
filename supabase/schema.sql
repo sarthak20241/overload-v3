@@ -112,7 +112,10 @@ create table if not exists routine_exercises (
   -- generate_workout / generate_plan tool emits a `note` for the exercise
   -- (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Nullable —
   -- hand-built routines from the editor don't set this.
-  note text
+  note text,
+  -- Supersets (migration 0060). Grouping ordinal; members of one superset share a
+  -- value, NULL = solo. Members are kept contiguous (order = list position).
+  superset_group integer
 );
 
 -- Idempotent re-apply: the column above is INSIDE the create-if-not-exists
@@ -174,7 +177,10 @@ create table if not exists workout_sets (
   reps_right numeric,
   rpe_right numeric check (rpe_right is null or (rpe_right >= 1.0 and rpe_right <= 10.0)),
   -- Per-side weight (migration 0059). null => same as weight_kg (legacy shared dumbbell).
-  weight_kg_right numeric
+  weight_kg_right numeric,
+  -- Supersets (migration 0060). Grouping ordinal carried from the active exercise so the
+  -- grouping persists into history; members of one superset share a value, NULL = solo.
+  superset_group integer
 );
 
 -- ─── AI Coach Rate Limit ────────────────────────────────────────────────────
