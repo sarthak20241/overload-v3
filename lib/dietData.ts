@@ -12,16 +12,27 @@
  * Catalog: searchCatalog() merges the bundled FOOD_LIBRARY (Indian staples, always
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import { useSupabaseClient } from '@/lib/supabase';
 import {
-  type MealType, type Food, type FoodDef, type FoodServing,
-  nutrientsForAmount, resolveBaseAmount, searchFoods, foodCategoryOf,
+  type MealType, type FoodDef, type FoodServing,
+  nutrientsForAmount, resolveBaseAmount, foodCategoryOf,
 } from '@/lib/foods';
 
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
 /** A food the picker can log: a catalog Food (has id) or a bundled FoodDef (no id). */
 export type PickerFood = FoodDef & { id?: string | null };
+
+/**
+ * The meal the logging flow is targeting. food-search / food-detail are RETAINED
+ * Tabs screens, so router params went stale across re-opens and every log landed
+ * in breakfast. This module-level target is set right before navigating and read
+ * on screen focus, so it can never go stale regardless of param threading.
+ */
+let _logMeal: MealType = 'breakfast';
+export const setLogMeal = (m: MealType) => { _logMeal = m; };
+export const getLogMeal = (): MealType => _logMeal;
 
 const r0 = (n: number) => Math.round(n);
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -96,6 +107,17 @@ export function useTodayNutrition(): DayData {
     return () => { cancelled = true; };
   }, [supabase, tick]);
 
+  // Refetch when the consuming screen regains focus, so the dashboard FUEL card
+  // reflects a food logged on the nutrition screen the moment the user returns.
+  // Skip the first focus — mount already loads — to avoid a double-fetch on open.
+  const firstFocus = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) { firstFocus.current = false; return; }
+      reload();
+    }, [reload]),
+  );
+
   const totals = useMemo<DayTotals>(() => {
     const t = { kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 };
     for (const mt of Object.keys(byMeal) as MealType[]) {
@@ -109,26 +131,85 @@ export function useTodayNutrition(): DayData {
   return { byMeal, totals, loading, reload };
 }
 
-/** Search the catalog: bundled FOOD_LIBRARY first (curated Indian staples), then the
- *  Supabase `foods` table, deduped by lowercased name. */
-export async function searchCatalog(supabase: Supa | null, query: string): Promise<PickerFood[]> {
-  const q = query.trim();
-  const lib: PickerFood[] = searchFoods(q).map((f) => ({ ...f, id: null }));
-  if (!q || !supabase) return lib.slice(0, 25);
-  const { data } = await supabase
-    .from('foods')
-    .select('id, name, food_category, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg')
-    .ilike('name', `%${q}%`)
-    .limit(40);
-  const catalog: PickerFood[] = (data ?? []).map((d: any) => ({
-    id: d.id, name: d.name, food_category: foodCategoryOf(d.food_category),
+/** Tidy a raw USDA catalog name for display: de-SHOUT all-caps brand fragments
+ *  ("SNICKERS" -> "Snickers", "HERSHEY'S" -> "Hershey's") while leaving normal
+ *  mixed-case words and possessives intact. Applied so logged history reads clean. */
+export function cleanFoodName(raw: string): string {
+  return raw
+    .replace(/\s+/g, ' ')
+    .trim()
+    // De-SHOUT any run of 2+ caps (brand fragments, even with trailing punctuation
+    // like "APPLEBEE'S,") to Title case; mixed-case words + single letters untouched.
+    .replace(/[A-Z][A-Z'&.]+/g, (w) => w[0] + w.slice(1).toLowerCase());
+}
+
+function rowToPickerFood(d: any): PickerFood {
+  return {
+    id: d.id ?? null,
+    name: cleanFoodName(String(d.name ?? '')),
+    brand: d.brand ?? undefined,
+    food_category: foodCategoryOf(d.food_category),
     base_unit: d.base_unit === 'ml' ? 'ml' : 'g',
     kcal: num(d.kcal), protein_g: num(d.protein_g), carb_g: num(d.carb_g), fat_g: num(d.fat_g),
     fiber_g: num(d.fiber_g), sugar_g: num(d.sugar_g), sat_fat_g: num(d.sat_fat_g), sodium_mg: num(d.sodium_mg),
     servings: [],
-  }));
-  const seen = new Set(lib.map((f) => f.name.toLowerCase()));
-  return [...lib, ...catalog.filter((c) => !seen.has(c.name.toLowerCase()))].slice(0, 50);
+  };
+}
+
+/** Search the global catalog, relevance-ranked (real foods before branded variants)
+ *  via the search_foods_ranked RPC (migration 0054). Empty query returns nothing —
+ *  the picker shows Recents for that case (see recentFoods). */
+export async function searchCatalog(supabase: Supa | null, query: string): Promise<PickerFood[]> {
+  const q = query.trim();
+  if (!q || !supabase) return [];
+  const { data, error } = await supabase.rpc('search_foods_ranked', { q, lim: 40 });
+  if (error || !data) return [];
+  return (data as any[]).map(rowToPickerFood);
+}
+
+/** The user's recently-logged foods, most recent first, deduped by name — the
+ *  default picker list (global, no regional seed). Each is rebuilt as a loggable
+ *  food: the per-100 basis is reconstructed from the stored snapshot + grams, and
+ *  the serving they used is carried so re-logging is one tap at the same portion. */
+export async function recentFoods(supabase: Supa | null, limit = 20): Promise<PickerFood[]> {
+  if (!supabase) return [];
+  const { data: meals } = await supabase
+    .from('meals').select('id, logged_at')
+    .order('logged_at', { ascending: false }).limit(40);
+  if (!meals || meals.length === 0) return [];
+  const order = new Map<string, number>(meals.map((m: any) => [m.id, new Date(m.logged_at).getTime()]));
+  const { data: entries } = await supabase
+    .from('meal_entries')
+    .select('food_id, food_name, serving_unit, grams_logged, quantity, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, meal_id')
+    .in('meal_id', meals.map((m: any) => m.id));
+  if (!entries || entries.length === 0) return [];
+  const sorted = [...entries].sort(
+    (a: any, b: any) => (order.get(b.meal_id) ?? 0) - (order.get(a.meal_id) ?? 0),
+  );
+  const seen = new Set<string>();
+  const out: PickerFood[] = [];
+  for (const e of sorted as any[]) {
+    const key = (e.food_name ?? '').toLowerCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const grams = num(e.grams_logged);
+    const qty = num(e.quantity) || 1;
+    const per100 = grams > 0 ? 100 / grams : 0; // entry snapshot -> per-100 basis
+    const unitGrams = qty > 0 ? grams / qty : grams; // grams of one serving_unit
+    out.push({
+      id: e.food_id ?? null,
+      name: e.food_name,
+      food_category: 'other',
+      base_unit: 'g',
+      kcal: num(e.kcal) * per100, protein_g: num(e.protein_g) * per100,
+      carb_g: num(e.carb_g) * per100, fat_g: num(e.fat_g) * per100,
+      fiber_g: num(e.fiber_g) * per100, sugar_g: num(e.sugar_g) * per100,
+      sat_fat_g: num(e.sat_fat_g) * per100, sodium_mg: num(e.sodium_mg) * per100,
+      servings: unitGrams > 0 ? [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }] : [],
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** A food's serving options. Bundled foods carry them; catalog foods load from

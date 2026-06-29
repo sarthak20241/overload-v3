@@ -11,7 +11,7 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useState } from 'react';
+import React from 'react';
 import { View, Text, ScrollView, Pressable, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -21,9 +21,24 @@ import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
 import { MacroRing } from '@/components/ui/MacroRing';
-import { FoodPickerSheet } from '@/components/diet/FoodPickerSheet';
-import { useTodayNutrition } from '@/lib/dietData';
+import { MacroBar } from '@/components/diet/MacroBar';
+import { useTodayNutrition, setLogMeal } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
+
+const fmtK = (n: number) => Math.round(n).toLocaleString();
+const calCaption = (eaten: number, goal: number) =>
+  eaten > goal
+    ? `${fmtK(eaten)} / ${fmtK(goal)} · +${fmtK(eaten - goal)} kcal`
+    : `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
+
+/** Open the full-screen food search targeting a meal (MFP model, not a drawer).
+ *  The target meal goes through setLogMeal (a module store the screens read on
+ *  focus) because food-search is a retained Tabs screen and router params went
+ *  stale across re-opens — which made every log land in breakfast. */
+function openSearch(meal: MealType) {
+  setLogMeal(meal);
+  router.push({ pathname: '/food-search', params: { meal } });
+}
 
 interface MealDef { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }
 
@@ -42,11 +57,9 @@ const round = (n: number) => Math.round(n);
 export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
-  const { byMeal, totals, reload } = useTodayNutrition();
-  const [pickerMeal, setPickerMeal] = useState<MealType | null>(null);
+  const { byMeal, totals } = useTodayNutrition();
 
   const eaten = { kcal: totals.kcal, protein: totals.protein_g, carb: totals.carb_g, fat: totals.fat_g };
-  const remaining = Math.max(TARGETS.kcal - eaten.kcal, 0);
 
   const s = makeStyles(C);
 
@@ -69,23 +82,20 @@ export default function NutritionScreen() {
           </View>
         </View>
 
-        {/* Summary — the hero of the day. Big co-equal calories + protein rings. */}
+        {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue
+            overshoot) and three macro bars carrying target + signed over. */}
         <View style={s.summary}>
-          <View style={s.ringsRow}>
-            <MacroRing value={eaten.kcal} target={TARGETS.kcal} color={C.foreground} label="Calories" size={102} thickness={8} />
-            <MacroRing value={eaten.protein} target={TARGETS.protein} color={Colors.macro.protein} label="Protein" unit="g" size={102} thickness={8} />
+          <View style={{ alignItems: 'center' }}>
+            <MacroRing
+              value={eaten.kcal} target={TARGETS.kcal} color={C.foreground}
+              display="remaining" overshoot name="Calories" size={132} thickness={9} centerFontSize={32}
+              belowCaption={calCaption(eaten.kcal, TARGETS.kcal)}
+            />
           </View>
-          <View style={s.remaining}>
-            <Text style={s.remainNum}>{remaining.toLocaleString()}</Text>
-            <Text style={s.remainLbl}>kcal left</Text>
-          </View>
-          <View style={s.barsRow}>
-            <View style={s.barCol}>
-              <MacroBar label="Carbs" value={eaten.carb} target={TARGETS.carb} color={Colors.macro.carbs} C={C} />
-            </View>
-            <View style={s.barCol}>
-              <MacroBar label="Fat" value={eaten.fat} target={TARGETS.fat} color={Colors.macro.fat} C={C} />
-            </View>
+          <View style={s.macroRail}>
+            <MacroBar verbose label="Protein" name="Protein" value={eaten.protein} target={TARGETS.protein} color={C.macro.protein} delayMs={0} />
+            <MacroBar verbose label="Carbs" name="Carbs" value={eaten.carb} target={TARGETS.carb} color={C.macro.carbs} delayMs={70} />
+            <MacroBar verbose label="Fat" name="Fat" value={eaten.fat} target={TARGETS.fat} color={C.macro.fat} delayMs={140} />
           </View>
         </View>
 
@@ -117,14 +127,14 @@ export default function NutritionScreen() {
                   </Text>
                   <View style={s.macros}>
                     <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
-                    <Text style={[s.macroNum, { color: Colors.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                    <Text style={[s.macroNum, { color: Colors.macro.carbs }]}>{round(e.carb_g)} C</Text>
-                    <Text style={[s.macroNum, { color: Colors.macro.fat }]}>{round(e.fat_g)} F</Text>
+                    <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
+                    <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)} C</Text>
+                    <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)} F</Text>
                   </View>
                 </View>
               ))}
 
-              <Pressable style={s.add} hitSlop={8} onPress={() => setPickerMeal(m.type)}>
+              <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
                 <Feather name="plus" size={14} color={C.accentText} />
                 <Text style={s.addTxt}>Add to {m.label.toLowerCase()}</Text>
               </Pressable>
@@ -133,37 +143,15 @@ export default function NutritionScreen() {
         })}
       </ScrollView>
 
-      {/* Bottom logging bar — opens the food picker. Becomes the Drona NL input
-          once the parse edge fn lands. */}
+      {/* Bottom logging bar — opens the full-screen search. Becomes the Drona NL
+          input once the parse edge fn lands. */}
       <View style={[s.inputWrap, { paddingBottom: insets.bottom + 12 }]}>
-        <Pressable style={s.input} onPress={() => setPickerMeal('snack')}>
+        <Pressable style={s.input} onPress={() => openSearch('snack')}>
           <Feather name="plus-circle" size={16} color={C.accentText} />
           <Text style={[s.inputText, { color: C.textDim }]}>Tell Drona what you ate</Text>
           <Feather name="camera" size={16} color={C.textSecondary} style={{ marginHorizontal: 4 }} />
           <Feather name="mic" size={16} color={C.textSecondary} />
         </Pressable>
-      </View>
-
-      <FoodPickerSheet
-        visible={pickerMeal !== null}
-        mealType={pickerMeal ?? 'snack'}
-        onClose={() => setPickerMeal(null)}
-        onLogged={reload}
-      />
-    </View>
-  );
-}
-
-function MacroBar({ label, value, target, color, C }: { label: string; value: number; target: number; color: string; C: ReturnType<typeof useTheme>['C'] }) {
-  const pct = target > 0 ? Math.min(value / target, 1) : 0;
-  return (
-    <View style={{ gap: 3 }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <Text style={{ fontSize: 10, color: C.textMuted }}>{label}</Text>
-        <Text style={{ fontSize: 10, color: C.textMuted, fontVariant: ['tabular-nums'] }}>{round(value)} / {target}</Text>
-      </View>
-      <View style={{ height: 4, backgroundColor: C.muted, borderRadius: 2 }}>
-        <View style={{ width: `${pct * 100}%`, height: 4, backgroundColor: color, borderRadius: 2 }} />
       </View>
     </View>
   );
@@ -179,12 +167,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
 
     summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg, ...Shadow.card },
-    ringsRow: { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' },
-    remaining: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'center', gap: 5, marginTop: Spacing.md },
-    remainNum: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, color: C.foreground, fontVariant: ['tabular-nums'], letterSpacing: LetterSpacing.tight },
-    remainLbl: { fontSize: FontSize.sm, color: C.textMuted },
-    barsRow: { flexDirection: 'row', gap: Spacing.lg, marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: C.borderSubtle },
-    barCol: { flex: 1 },
+    macroRail: { marginTop: Spacing.lg, gap: 11 },
 
     drona: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     avatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle, alignItems: 'center', justifyContent: 'center', marginTop: 1 },

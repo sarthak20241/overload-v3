@@ -244,7 +244,8 @@ export default function AppLayout() {
   // The nutrition day view is a focused full screen with its own bottom input
   // (Journable model). Hide the workout tab bar + workout overlays there so the
   // input is reachable and the screen reads as its own destination.
-  const hideWorkoutChrome = pathname === '/nutrition';
+  const hideWorkoutChrome =
+    pathname === '/nutrition' || pathname === '/food-search' || pathname === '/food-detail';
 
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
@@ -287,6 +288,9 @@ export default function AppLayout() {
           placement lands post-design-polish.
         */}
         <Tabs.Screen name="nutrition" options={{ href: null }} />
+        {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
+        <Tabs.Screen name="food-search" options={{ href: null }} />
+        <Tabs.Screen name="food-detail" options={{ href: null }} />
         {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link

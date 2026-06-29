@@ -23,7 +23,16 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { MacroRing } from '@/components/ui/MacroRing';
+import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition } from '@/lib/dietData';
+
+// Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
+const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
+const fmtK = (n: number) => Math.round(n).toLocaleString();
+const fuelCaption = (eaten: number, goal: number) =>
+  eaten > goal
+    ? `${fmtK(eaten)} / ${fmtK(goal)} · +${fmtK(eaten - goal)} kcal`
+    : `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -638,11 +647,12 @@ export default function DashboardScreen() {
 
         {/* Stats grid */}
         <View style={styles.statsGrid}>
-          {/* Nutrition card — calories ring hero + protein, taps to the full day
-              view. Replaces the Volume card (volume still lives in Analytics).
-              Sample values for now; wires to useTodayNutrition next. */}
-          <TouchableOpacity
-            activeOpacity={0.85}
+          {/* FUEL — one ink calorie ring (kcal LEFT) + three baseline-aligned P/C/F
+              bars (the decided encoding; NOT concentric rings). Taps to the diary.
+              The ring + bars fill on first appear and tween the delta when a food is
+              logged. Replaces the Volume card (volume still lives in Analytics). */}
+          <PressableScale
+            haptic="tap"
             onPress={() => router.push('/nutrition' as any)}
             style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
           >
@@ -654,15 +664,18 @@ export default function DashboardScreen() {
               <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>
             <View style={{ alignItems: 'center', marginTop: 2 }}>
-              <MacroRing value={fuel.totals.kcal} target={2000} color={C.foreground} label="Calories" size={96} thickness={7} animate={false} />
+              <MacroRing
+                value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.foreground}
+                display="remaining" overshoot name="Calories" size={92} thickness={7} centerFontSize={21}
+                belowCaption={fuelCaption(fuel.totals.kcal, FUEL_TARGETS.kcal)}
+              />
             </View>
-            <View style={styles.fuelProtein}>
-              <View style={[styles.fuelProteinBar, { backgroundColor: C.muted }]}>
-                <View style={{ width: `${Math.min(fuel.totals.protein_g / 125, 1) * 100}%`, height: 4, backgroundColor: Colors.macro.protein, borderRadius: 2 }} />
-              </View>
-              <Text style={[styles.fuelProteinTxt, { color: C.textMuted }]}>{Math.round(fuel.totals.protein_g)} / 125 g protein</Text>
+            <View style={styles.fuelBars}>
+              <MacroBar label="P" name="Protein" value={fuel.totals.protein_g} target={FUEL_TARGETS.protein} color={C.macro.protein} delayMs={0} />
+              <MacroBar label="C" name="Carbs" value={fuel.totals.carb_g} target={FUEL_TARGETS.carb} color={C.macro.carbs} delayMs={70} />
+              <MacroBar label="F" name="Fat" value={fuel.totals.fat_g} target={FUEL_TARGETS.fat} color={C.macro.fat} delayMs={140} />
             </View>
-          </TouchableOpacity>
+          </PressableScale>
 
           {/* Muscles card with interactive donut chart */}
           <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
@@ -1140,9 +1153,7 @@ const styles = StyleSheet.create({
   },
   expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
   // Nutrition card (diet entry point) — protein bar under the calories ring
-  fuelProtein: { marginTop: Spacing.sm, gap: 4 },
-  fuelProteinBar: { height: 4, borderRadius: 2, overflow: 'hidden' },
-  fuelProteinTxt: { fontSize: 11, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  fuelBars: { marginTop: Spacing.md, gap: 9 },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,
