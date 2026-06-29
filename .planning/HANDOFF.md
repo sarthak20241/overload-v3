@@ -42,11 +42,13 @@ B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
       scope: guest workouts never flag PRs because getGuestWorkoutsDetailed assigns a per-workout
       synthetic exercise_id (`${w.id}-ex-${ei}`) so best[exId] never accumulates across guest sessions —
       fix by deriving a stable id from the exercise name/library id (lib/guestStore.ts).
-   2. Data-integrity HIGHs: (a) editing a unilateral set in app/workout/edit/[id].tsx corrupts the right
-      side (edits left, keeps stale right, no badge) → render L/R inputs OR keep sides in sync + show a
-      badge; (b) superset "tap to split" on a 3+ giant set EJECTS a member instead of splitting (routines
-      toggleSupersetLink — cut the contiguous run at i, don't null one row); (c) per-exercise notes typed
-      mid-workout are discarded on save (confirmFinish + PendingExercise has no notes field).
+   2. ~~Data-integrity HIGHs~~ DONE 2026-06-29 (commits b94ac85, 9a60e46, 1c01e53; reviewed, 2 edge-fixes
+      applied). (a) unilateral edit now renders editable L/R inputs + "L+R" badge (right side no longer
+      silently desyncs); (b) superset split cuts the contiguous run instead of ejecting a member;
+      (c) per-exercise notes folded into the workout note on finish (no data loss).
+      DEFERRED follow-up: a dedicated per-exercise notes column (workout_sets.notes) so notes read back
+      under each exercise in history/edit instead of mashed into the workout note — a migration-scale
+      mini-feature, not a bug.
    3. Supersets invisible on read-back/preview: RoutineDetailSheet + card drop grouping; history bracket
       deferred (data flows via superset_group now). Render the grouping.
    4. Resume drops mid-unilateral/mid-superset capture (cross-cutting) + duration stopwatch lost on
