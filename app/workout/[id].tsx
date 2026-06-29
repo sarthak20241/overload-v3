@@ -52,6 +52,42 @@ import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workou
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// ─── Supersets (migration 0060) ──────────────────────────────────────────────
+// After a set is logged for exercise `fromIdx`, decide the next step within its
+// superset group (members share supersetGroup, kept contiguous in the array):
+//  - 'solo'      : not in a group of 2+ → normal one-exercise-at-a-time behaviour.
+//  - 'advance'   : a member is BEHIND this round → hop to it with NO rest (mid-round).
+//  - 'round'     : the round is complete → rest, then go to the next round's first
+//                  member (idx; restTarget = the group's pinned round rest).
+//  - 'groupDone' : every member has finished all its sets → normal rest, stay.
+// The "next to log" is always the in-rotation member with the fewest completed sets
+// (ties by array order), which also handles unequal target sets for free.
+type SupersetStep =
+  | { kind: 'solo' }
+  | { kind: 'advance'; idx: number }
+  | { kind: 'round'; idx: number; restTarget: number }
+  | { kind: 'groupDone' };
+
+function nextSupersetStep(exs: ActiveWorkoutExercise[], fromIdx: number, finished: boolean[]): SupersetStep {
+  const g = exs[fromIdx]?.supersetGroup;
+  if (g == null) return { kind: 'solo' };
+  const members = exs.map((e, i) => (e.supersetGroup === g ? i : -1)).filter((i) => i >= 0);
+  if (members.length < 2) return { kind: 'solo' };
+  const done = (i: number) => exs[i].sets.filter((s) => s.completed).length;
+  const target = (i: number) => exs[i].targetSets ?? 0;
+  // A member drops out of the rotation when it has hit its target OR the user has
+  // manually finished it — so finishing one member mid-superset can't wedge the hop.
+  const rotation = members.filter((i) => done(i) < target(i) && !finished[i]);
+  if (rotation.length === 0) return { kind: 'groupDone' };
+  const minDone = Math.min(...rotation.map(done));
+  if (minDone < done(fromIdx)) {
+    return { kind: 'advance', idx: rotation.find((i) => done(i) === minDone)! };
+  }
+  // Round-end rest = the just-logged (round-closing) member's rest, i.e. the rest set
+  // on the exercise you just finished the round on.
+  return { kind: 'round', idx: rotation[0], restTarget: exs[fromIdx].restSeconds ?? 0 };
+}
+
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -160,6 +196,14 @@ export default function ActiveWorkoutScreen() {
   // When set, the rest timer counts toward this (shorter, inter-side) target
   // instead of the exercise's restSeconds. Cleared on a normal between-sets rest.
   const [restOverrideTarget, setRestOverrideTarget] = useState<number | null>(null);
+  // Supersets: the pinned round-end rest target. Survives the pager auto-advancing
+  // to the next round's first member (a normal rest isn't torn down on index change),
+  // so the countdown/buzz stays correct even though currentEx hops. null = no group rest.
+  const [restGroupTarget, setRestGroupTarget] = useState<number | null>(null);
+  // Which superset group the pinned round rest belongs to. Lets the index-change
+  // effect keep the rest while hopping WITHIN the group but tear it down the moment
+  // the user navigates to a different group / a solo exercise.
+  const [restGroupId, setRestGroupId] = useState<number | null>(null);
   const [showRpeSheet, setShowRpeSheet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
@@ -451,6 +495,9 @@ export default function ActiveWorkoutScreen() {
               repsMin: re.reps_min,
               repsMax: re.reps_max,
               restSeconds: re.rest_seconds ?? 90,
+              // Supersets (migration 0060): carry the routine's grouping so the active
+              // workout interleaves grouped members + rests only after the round.
+              supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             };
           });
 
@@ -508,6 +555,8 @@ export default function ActiveWorkoutScreen() {
     restTimerRef.current = null;
     lastSetTimeRef.current = null;
     setRestOverrideTarget(null);
+    setRestGroupTarget(null);
+    setRestGroupId(null);
     setRestTimer(0);
     setIsResting(false);
   }, []);
@@ -578,13 +627,17 @@ export default function ActiveWorkoutScreen() {
       // target onto the next exercise's rest; tear it down (a normal between-sets
       // rest, override null, is left running).
       if (restOverrideTarget != null) stopRestTimer();
+      // A pinned superset round rest survives auto-advancing WITHIN its group, but if
+      // the user manually navigates to a different group / a solo exercise, tear it
+      // down so its target can't bleed onto the new exercise's rest strip.
+      else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
-  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer]);
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
   useEffect(() => {
-    const target = restOverrideTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
+    const target = restOverrideTarget ?? restGroupTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
     if (isResting && target > 0 && restTimer >= target) {
       if (!restDoneFiredRef.current) {
         haptics.success();
@@ -593,19 +646,19 @@ export default function ActiveWorkoutScreen() {
     } else {
       restDoneFiredRef.current = false;
     }
-  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget]);
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget]);
 
   // A gentle pulse on the rest timer as it nears zero (final 3s), building
   // anticipation before the done color-flip + success buzz.
   const restPulse = useSharedValue(1);
   useEffect(() => {
-    const target = restOverrideTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
+    const target = restOverrideTarget ?? restGroupTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
     const remaining = target - restTimer;
     const nearDone = isResting && target > 0 && remaining > 0 && remaining <= 3;
     restPulse.value = nearDone
       ? withRepeat(withTiming(1.08, { duration: 450, easing: Easing.inOut(Easing.quad) }), -1, true)
       : withTiming(1, { duration: 200 });
-  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget]);
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget]);
   const restPulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: restPulse.value }] }));
 
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
@@ -684,9 +737,13 @@ export default function ActiveWorkoutScreen() {
   // Start exercise
   const handleStartExercise = () => {
     haptics.tap();
+    // Supersets: starting one member starts the whole group — you train them back to
+    // back, so auto-advancing to a sibling must land on its logger, not the start gate.
+    const g = exercises[currentIdx]?.supersetGroup ?? null;
     setExerciseStarted(prev => {
       const next = [...prev];
       next[currentIdx] = true;
+      if (g != null) exercises.forEach((e, i) => { if (e.supersetGroup === g) next[i] = true; });
       return next;
     });
     startExerciseTimer();
@@ -793,7 +850,6 @@ export default function ActiveWorkoutScreen() {
     }
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
-    startRestTimer();
 
     // Next unilateral set starts fresh on the configured first side.
     if (activeUnilateral) {
@@ -801,7 +857,37 @@ export default function ActiveWorkoutScreen() {
       setSideEntering(firstSide);
     }
 
-    // Advance input to next set's previous performance
+    // Supersets (migration 0060): decide the next step within the group. For a normal
+    // (non-grouped) set this is 'solo' and the behaviour is exactly as before.
+    const step = nextSupersetStep(updated, currentIdx, exerciseFinished);
+    const willAdvance = step.kind === 'advance' || (step.kind === 'round' && step.idx !== currentIdx);
+
+    if (step.kind === 'advance') {
+      // Mid-round: hop to the next behind member with NO rest. End any running rest
+      // (logging a set ends the round rest from the previous round).
+      stopRestTimer();
+    } else if (step.kind === 'round') {
+      // Round complete: a pinned round rest that survives the hop to the next round's
+      // first member (a normal rest isn't torn down on the index change). Tag it with
+      // the group so manual navigation OUT of the group tears it down.
+      setRestGroupTarget(step.restTarget);
+      setRestGroupId(updated[currentIdx]?.supersetGroup ?? null);
+      startRestTimer();
+    } else {
+      // Solo or whole group finished: the normal between-sets rest.
+      setRestGroupTarget(null);
+      setRestGroupId(null);
+      startRestTimer();
+    }
+
+    if (willAdvance) {
+      // Hop the pager to the next member; the index-change effects prefill the new
+      // exercise's inputs + reset its per-set state, so skip the manual reset below.
+      setCurrentIdx(step.idx);
+      return;
+    }
+
+    // Advance input to next set's previous performance (solo / group-done / round-stay).
     const nextIdx = ex.sets.filter(s => s.completed).length;
     const prev = currentEx.previousSets;
     if (prev && prev[nextIdx]) {
@@ -1211,6 +1297,8 @@ export default function ActiveWorkoutScreen() {
           reps_max: r.reps_max,
           rest_seconds: r.rest_seconds,
           note: null,
+          // Carry the superset grouping into the saved routine (migration 0060).
+          superset_group: ex.supersetGroup ?? null,
         };
       }),
       phase: 'queued',
@@ -1490,6 +1578,7 @@ export default function ActiveWorkoutScreen() {
               muscle_group: e.exercise.muscle_group,
               category: e.exercise.category,
               metric_type: metricTypeOf(e.exercise),
+              superset_group: e.supersetGroup ?? null,
               sets: e.sets.filter(s => s.completed).map(s => ({
                 weight_kg: s.weight_kg, reps: s.reps,
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
@@ -1536,6 +1625,7 @@ export default function ActiveWorkoutScreen() {
             metric_type: e.exercise.metric_type,
           },
           resolvedExerciseId: String(e.exercise.id).startsWith('temp-') ? null : e.exercise.id,
+          supersetGroup: e.supersetGroup ?? null,
           sets: e.sets
             .filter(s => s.completed)
             .map((s, idx) => ({
@@ -1617,7 +1707,7 @@ export default function ActiveWorkoutScreen() {
   // Rest timer: `restTimer` counts up since the last logged set. We present it
   // as a countdown against the exercise's recommended rest (restSeconds). A
   // restSeconds of 0 means "no target", so we just show elapsed rest instead.
-  const restTarget = restOverrideTarget ?? (currentEx?.restSeconds ?? 0);
+  const restTarget = restOverrideTarget ?? restGroupTarget ?? (currentEx?.restSeconds ?? 0);
   const restRemaining = restTarget - restTimer;
   const restDone = restTarget > 0 && restRemaining <= 0;
   const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
@@ -1927,6 +2017,22 @@ export default function ActiveWorkoutScreen() {
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
                   {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
+                {(() => {
+                  // Supersets: name the group + the members so the back-to-back flow is
+                  // legible (the pager auto-hops between them; rest fires after the round).
+                  const g = currentEx.supersetGroup;
+                  if (g == null) return null;
+                  const members = exercises.filter(e => e.supersetGroup === g);
+                  if (members.length < 2) return null;
+                  return (
+                    <View style={styles.supersetBanner}>
+                      <Feather name="repeat" size={11} color={Colors.primary} />
+                      <Text style={[styles.supersetBannerText, { color: Colors.primary }]} numberOfLines={1}>
+                        Superset · {members.map(m => m.exercise.name).join(' + ')}
+                      </Text>
+                    </View>
+                  );
+                })()}
                 {currentEx.coachNote ? (
                   <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
                     {currentEx.coachNote}
@@ -2901,6 +3007,8 @@ const styles = StyleSheet.create({
   // card so the user remembers the intent ("RIR 2", "Hams-focused", etc.)
   // while they're doing the set.
   coachCue: { fontSize: 12, fontStyle: 'italic', marginTop: 6, lineHeight: 16 },
+  supersetBanner: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
+  supersetBannerText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 0.3, flexShrink: 1 },
   removeBtn: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.md },
 
   // Timers

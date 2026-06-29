@@ -42,6 +42,9 @@ interface EditExercise {
   muscle_group?: string;
   category?: string;
   metric_type?: MetricType;
+  // Superset grouping ordinal (migration 0060), per exercise; round-tripped silently
+  // (no editor UI to change it). null = solo. Read from the first set's column.
+  supersetGroup?: number | null;
   sets: EditSet[];
 }
 
@@ -153,6 +156,7 @@ export default function EditWorkoutScreen() {
           muscle_group: s.exercises?.muscle_group,
           category: s.exercises?.category,
           metric_type: metricTypeOf(s.exercises),
+          supersetGroup: typeof s.superset_group === 'number' ? s.superset_group : null,
           sets: [],
         };
         map.set(exId, ex);
@@ -184,6 +188,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.muscle_group,
             category: ex.category,
             metric_type: ex.metric_type,
+            supersetGroup: typeof ex.superset_group === 'number' ? ex.superset_group : null,
             sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
@@ -212,6 +217,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
+            supersetGroup: ex.supersetGroup ?? null,
             sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
@@ -239,6 +245,7 @@ export default function EditWorkoutScreen() {
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
+            supersetGroup: ex.supersetGroup ?? null,
             sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
@@ -251,7 +258,7 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, exercises(id, name, muscle_group, category, metric_type))')
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -280,6 +287,7 @@ export default function EditWorkoutScreen() {
               muscle_group: ex.muscle_group,
               category: ex.category,
               metric_type: ex.metric_type,
+              supersetGroup: typeof ex.sets?.[0]?.superset_group === 'number' ? ex.sets[0].superset_group : null,
               sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
@@ -334,6 +342,7 @@ export default function EditWorkoutScreen() {
         muscle_group: def.muscle_group,
         category: def.category,
         metric_type: metricTypeOf(def),
+        supersetGroup: null,
         sets: Array.from({ length: count }, () => mkSet('0', reps)),
       },
     ]);
@@ -410,6 +419,7 @@ export default function EditWorkoutScreen() {
             muscle_group: e.ex.muscle_group,
             category: e.ex.category,
             metric_type: metricTypeOf(e.ex),
+            superset_group: e.ex.supersetGroup ?? null,
             sets: e.sets.map((s) => ({
               weight_kg: s.weight_kg, reps: s.reps,
               duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
@@ -440,6 +450,7 @@ export default function EditWorkoutScreen() {
           metric_type: metricTypeOf(e.ex),
         },
         resolvedExerciseId: e.ex.exerciseId && !String(e.ex.exerciseId).startsWith('temp-') ? e.ex.exerciseId : null,
+        supersetGroup: e.ex.supersetGroup ?? null,
         sets: e.sets.map((s, idx) => ({
           weight_kg: s.weight_kg, reps: s.reps, order: idx,
           duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
