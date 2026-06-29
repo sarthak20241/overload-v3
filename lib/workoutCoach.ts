@@ -50,6 +50,10 @@ export interface WorkoutCoachExercise {
   coachNote?: string;
   loggedSets: WorkoutCoachSet[];
   previousSets?: { weightKg: number; reps: number }[];
+  // Supersets (migration 0060): grouping ordinal; same value = same superset (done
+  // back to back, rest only after the round). null = solo. Lets the coach read rest
+  // structure correctly instead of implying rest between paired lifts.
+  supersetGroup?: number | null;
 }
 
 export interface WorkoutCoachContext {
@@ -179,6 +183,7 @@ export function buildWorkoutCoachContext(params: {
       coachNote: ex.coachNote,
       loggedSets: logged,
       previousSets: ex.previousSets?.map((s) => ({ weightKg: s.weight_kg, reps: s.reps })),
+      supersetGroup: ex.supersetGroup ?? null,
     };
   });
 
@@ -225,11 +230,22 @@ export function workoutCoachContextToText(ctx: WorkoutCoachContext): string {
         ? `CURRENT (next: working set ${workingSets(ex.loggedSets).length + 1})`
         : 'not started';
     const muscle = ex.muscleGroup ? ` [${ex.muscleGroup}]` : '';
-    const rest = ex.restSeconds > 0 ? `, rest ${ex.restSeconds}s` : '';
+    // Supersets: tag the group and correct the rest wording — members are done back to
+    // back with NO rest between them; rest comes only after the round's last member.
+    const g = ex.supersetGroup ?? null;
+    let supersetTag = '';
+    let rest = ex.restSeconds > 0 ? `, rest ${ex.restSeconds}s` : '';
+    if (g != null) {
+      supersetTag = ` [Superset ${g <= 26 ? String.fromCharCode(64 + g) : g}]`;
+      const lastInGroup = !(ctx.exercises[i + 1] && ctx.exercises[i + 1].supersetGroup === g);
+      rest = lastInGroup
+        ? `, rest ${ex.restSeconds}s after the superset round`
+        : ', no rest (straight into the next exercise in the superset)';
+    }
     // Only call out the measurement type when it isn't the plain weight×reps default.
     const metric = ex.metricType !== 'weight_reps' ? ` (${metricTypeDef(ex.metricType).label})` : '';
     lines.push(
-      `${i + 1}. ${ex.name}${muscle}${metric} — target ${ex.targetSets}×${repRange(ex.repsMin, ex.repsMax)}${rest} — ${status}`,
+      `${i + 1}. ${ex.name}${muscle}${supersetTag}${metric} — target ${ex.targetSets}×${repRange(ex.repsMin, ex.repsMax)}${rest} — ${status}`,
     );
     if (ex.coachNote) lines.push(`   Coach cue: ${ex.coachNote}`);
     if (ex.loggedSets.length > 0) lines.push(`   Logged so far: ${setsToText(ex.loggedSets, ex.metricType)}`);
@@ -261,7 +277,7 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
       '- Finish with 1-2 concrete things to change next time.',
       '- You may use your tools for deeper history if it genuinely helps.',
       "- Don't just restate my numbers back to me, interpret them.",
-      '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides.',
+      '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides. Exercises tagged [Superset X] are trained back to back as one group with no rest between them, resting only after each round.',
     ].join('\n');
   }
   return [
@@ -275,7 +291,7 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
     '- Give a clear, immediately actionable call (weight, reps, rest, a swap, or stop/continue).',
     '- You may use your tools to check my training history if it genuinely helps, but don\'t stall.',
     "- Don't repeat this summary back to me.",
-    '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides.',
+    '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides. Exercises tagged [Superset X] are trained back to back as one group with no rest between them, resting only after each round.',
   ].join('\n');
 }
 
