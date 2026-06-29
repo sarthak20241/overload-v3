@@ -1525,7 +1525,15 @@ export default function ActiveWorkoutScreen() {
     toast.info('Saving workout…');
     try {
       const workoutName = opts?.name?.trim() || workout.routineName;
-      const workoutNotes = opts?.notes?.trim() || null;
+      // Fold any per-exercise notes jotted mid-workout into the saved note. The
+      // schema stores notes only at the workout level, so without this the
+      // "How did that feel?" per-exercise jots would be silently lost on finish.
+      // Labelled by exercise, appended after the user's summary note.
+      const perExerciseNotes = exercises
+        .filter((e) => e.sets.some((s) => s.completed) && e.notes.trim())
+        .map((e) => `${e.exercise.name}: ${e.notes.trim()}`);
+      const baseNotes = opts?.notes?.trim() ?? '';
+      const workoutNotes = [baseNotes, ...perExerciseNotes].filter(Boolean).join('\n') || null;
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
       // Warmups are saved as rows but excluded from total_volume_kg, to match the
       // live display + the server recompute (migration 0053). allCompleted stays
