@@ -32,9 +32,11 @@ type Backend = 'guest' | 'pending' | 'synced';
 // Strings so typing feels natural; duration is "m:ss", distance is km. Only the
 // axes the exercise's metric_type uses are rendered/parsed.
 interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string; set_type: SetType; rpe: string;
-  // Unilateral "L+R" (migration 0056). The editor round-trips these silently (no
-  // per-side UI in v1); only the in-workout logger creates them. weight is shared.
-  is_unilateral: boolean; reps_right: number | null; rpe_right: number | null; weight_kg_right: number | null }
+  // Unilateral "L+R" (migration 0056). Created only by the in-workout logger. The
+  // edit screen renders the right side (weight_kg_right / reps_right) as its own L/R
+  // inputs so a left-only edit can't silently desync the sides. Edited as strings,
+  // like weight/reps; rpe_right round-trips silently. weight = the left side.
+  is_unilateral: boolean; reps_right: string; rpe_right: number | null; weight_kg_right: string }
 interface EditExercise {
   uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
@@ -75,9 +77,9 @@ const mkSet = (
   set_type: (setType && setType in SET_TYPE_META ? setType : 'normal') as SetType,
   rpe: rpe != null ? String(rpe) : '',
   is_unilateral: !!isUnilateral,
-  reps_right: repsRight ?? null,
+  reps_right: repsRight != null ? String(repsRight) : '',
   rpe_right: rpeRight ?? null,
-  weight_kg_right: weightRight ?? null,
+  weight_kg_right: weightRight != null ? String(weightRight) : '',
 });
 
 let _exSeq = 0;
@@ -103,6 +105,13 @@ type AxisField = 'weight' | 'reps' | 'duration' | 'distance' | 'resistance';
 const axisField = (a: MetricAxis): AxisField =>
   a === 'reps' ? 'reps' : a === 'duration' ? 'duration' : a === 'distance' ? 'distance'
   : a === 'resistance' ? 'resistance' : 'weight';
+// The right-side counterpart field for a unilateral set, or null for axes with no
+// per-side column (duration/distance/resistance — unilateral only stores L/R weight+reps).
+type RightField = 'weight_kg_right' | 'reps_right';
+const rightField = (a: MetricAxis): RightField | null =>
+  a === 'reps' ? 'reps_right'
+  : (a === 'weight' || a === 'added_weight' || a === 'assist_weight') ? 'weight_kg_right'
+  : null;
 
 function formatDuration(sec?: number) {
   if (!sec) return null;
@@ -312,6 +321,16 @@ export default function EditWorkoutScreen() {
     }));
   };
 
+  // Right ("R") side of a unilateral set. Same shape as updateSet; the side is its
+  // own field so editing one side never touches the other.
+  const updateSetRight = (ei: number, si: number, field: RightField, value: string) => {
+    setExercises((prev) => prev.map((ex, i) => {
+      if (i !== ei) return ex;
+      const sets = ex.sets.map((s, j) => (j === si ? { ...s, [field]: value } : s));
+      return { ...ex, sets };
+    }));
+  };
+
   const addSet = (ei: number) => {
     setExercises((prev) => prev.map((ex, i) => {
       if (i !== ei) return ex;
@@ -378,14 +397,22 @@ export default function EditWorkoutScreen() {
             resistance: usesResistance ? (parseFloat(s.resistance) || 0) : null,
             set_type: s.set_type ?? 'normal',
             rpe: s.rpe ? parseFloat(s.rpe) : null,
-            // Unilateral round-trips silently (no editor UI in v1).
+            // Unilateral: the right side is now user-editable; parse it like the left.
+            // Non-unilateral sets keep null right-side columns.
             is_unilateral: s.is_unilateral,
-            reps_right: s.reps_right,
+            reps_right: s.is_unilateral ? Math.max(0, parseFloat(s.reps_right) || 0) : null,
             rpe_right: s.rpe_right,
-            weight_kg_right: s.weight_kg_right,
+            // Blank R weight => null, so setVolumeKg/setLabel's `weight_kg_right ?? weight_kg`
+            // inherit-from-left contract fires (a cleared R load means "same as left", not 0kg).
+            weight_kg_right: s.is_unilateral
+              ? (s.weight_kg_right.trim() === '' ? null : Math.max(0, parseFloat(s.weight_kg_right) || 0))
+              : null,
           }))
+          // Count the right side of a unilateral set too: a set whose left reps is blank
+          // but whose right side has reps is real work (its right volume counts), so it
+          // must not be dropped as "empty".
           .filter((s) =>
-            (usesReps && s.reps > 0) ||
+            (usesReps && (s.reps > 0 || (s.is_unilateral && (s.reps_right ?? 0) > 0))) ||
             (usesDuration && (s.duration_seconds ?? 0) > 0) ||
             (usesDistance && (s.distance_m ?? 0) > 0),
           );
@@ -621,27 +648,12 @@ export default function EditWorkoutScreen() {
                   <View style={styles.setColDelete} />
                 </View>
 
-                {ex.sets.map((s, si) => (
-                  <View key={s.uid} style={styles.setRow}>
-                    <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
-                    {metricTypeDef(ex.metric_type).axes.map((a) => {
-                      const field = axisField(a);
-                      const kbd = a === 'duration' ? (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default')
-                        : 'decimal-pad'; // reps included — allow partial reps like 8.5
-                      return (
-                        <TextInput
-                          key={a}
-                          value={s[field]}
-                          onChangeText={(t) => updateSet(ei, si, field, t)}
-                          keyboardType={kbd as any}
-                          placeholder={a === 'duration' ? '0:00' : '0'}
-                          placeholderTextColor={C.textMuted}
-                          selectTextOnFocus
-                          onFocus={scrollFocusedIntoView}
-                          style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
-                        />
-                      );
-                    })}
+                {ex.sets.map((s, si) => {
+                  const axes = metricTypeDef(ex.metric_type).axes;
+                  const kbdFor = (a: MetricAxis) => a === 'duration'
+                    ? (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default')
+                    : 'decimal-pad'; // reps included — allow partial reps like 8.5
+                  const deleteBtn = (
                     <TouchableOpacity
                       onPress={() => removeSet(ei, si)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -651,8 +663,72 @@ export default function EditWorkoutScreen() {
                     >
                       <Feather name="x" size={12} color="#ef4444" />
                     </TouchableOpacity>
-                  </View>
-                ))}
+                  );
+                  const leftInput = (a: MetricAxis) => {
+                    const field = axisField(a);
+                    return (
+                      <TextInput
+                        key={a}
+                        value={s[field]}
+                        onChangeText={(t) => updateSet(ei, si, field, t)}
+                        keyboardType={kbdFor(a) as any}
+                        placeholder={a === 'duration' ? '0:00' : '0'}
+                        placeholderTextColor={C.textMuted}
+                        selectTextOnFocus
+                        onFocus={scrollFocusedIntoView}
+                        style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
+                      />
+                    );
+                  };
+
+                  // Unilateral: two aligned input lines (L / R) under a "SET n · L+R"
+                  // badge, so each side is editable and a left edit can't silently
+                  // desync the right. Only weight/reps have per-side columns.
+                  if (s.is_unilateral) {
+                    return (
+                      <View key={s.uid} style={styles.uniBlock}>
+                        <Text style={styles.uniBadge}>
+                          <Text style={{ color: C.textDim }}>{`SET ${si + 1}`}</Text>
+                          <Text style={{ color: C.accentText }}>{'   ·   L + R'}</Text>
+                        </Text>
+                        <View style={styles.setRow}>
+                          <Text style={[styles.setColIdx, styles.setIdxText, { color: C.accentText }]}>L</Text>
+                          {axes.map(leftInput)}
+                          {deleteBtn}
+                        </View>
+                        <View style={styles.setRow}>
+                          <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>R</Text>
+                          {axes.map((a) => {
+                            const rf = rightField(a);
+                            if (!rf) return <View key={a} style={styles.setColInput} />;
+                            return (
+                              <TextInput
+                                key={a}
+                                value={s[rf]}
+                                onChangeText={(t) => updateSetRight(ei, si, rf, t)}
+                                keyboardType="decimal-pad"
+                                placeholder="0"
+                                placeholderTextColor={C.textMuted}
+                                selectTextOnFocus
+                                onFocus={scrollFocusedIntoView}
+                                style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
+                              />
+                            );
+                          })}
+                          <View style={styles.setColDelete} />
+                        </View>
+                      </View>
+                    );
+                  }
+
+                  return (
+                    <View key={s.uid} style={styles.setRow}>
+                      <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
+                      {axes.map(leftInput)}
+                      {deleteBtn}
+                    </View>
+                  );
+                })}
 
                 <TouchableOpacity onPress={() => addSet(ei)} style={[styles.addSetBtn, { borderColor: C.borderSubtle }]}>
                   <Feather name="plus" size={13} color={C.accentText} />
@@ -752,6 +828,9 @@ const styles = StyleSheet.create({
   setHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
   setColLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.5 },
   setRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  // Unilateral L/R pair: badge + two input rows, grouped as one set.
+  uniBlock: { marginBottom: 8 },
+  uniBadge: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.5, marginBottom: 4, marginLeft: 2 },
   setColIdx: { width: 28 },
   setIdxText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, textAlign: 'center' },
   setColInput: { flex: 1 },
