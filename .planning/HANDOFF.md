@@ -38,10 +38,9 @@ A. ~~Commit supersets to PR #43~~ DONE 2026-06-29 (6 scoped commits 750ac68..653
 
 B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
    1. ~~THEME: non-weight metric types second-class on read/stats surfaces~~ DONE 2026-06-29
-      (commits 8a19f78..238c93f, lib/setDisplay.ts). Reviewed; one known LOW left as pre-existing/out of
-      scope: guest workouts never flag PRs because getGuestWorkoutsDetailed assigns a per-workout
-      synthetic exercise_id (`${w.id}-ex-${ei}`) so best[exId] never accumulates across guest sessions —
-      fix by deriving a stable id from the exercise name/library id (lib/guestStore.ts).
+      (commits 8a19f78..238c93f, lib/setDisplay.ts). Reviewed. The follow-up guest-PR LOW (guests never
+      flagged PRs because of a per-workout synthetic exercise_id) is now ALSO fixed (commit 63e5d2f,
+      stable synthetic id in lib/guestStore.ts).
    2. ~~Data-integrity HIGHs~~ DONE 2026-06-29 (commits b94ac85, 9a60e46, 1c01e53; reviewed, 2 edge-fixes
       applied). (a) unilateral edit now renders editable L/R inputs + "L+R" badge (right side no longer
       silently desyncs); (b) superset split cuts the contiguous run instead of ejecting a member;
@@ -52,9 +51,17 @@ B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
    3. ~~Supersets invisible on read-back/preview~~ DONE 2026-06-29 (commit a062098). RoutineDetailSheet
       "SUPERSET" caption + lime left-accent bracket; RoutineCard "· N superset(s)" hint; history expanded
       card same caption + accent (group read exercise-level for guest, per-set for signed-in). Reviewed.
-   4. Resume drops mid-unilateral/mid-superset capture (cross-cutting) + duration stopwatch lost on
-      background. 5. Core-loop UX: log toast/undo, set-type discoverability, superset auto-hop "next: X"
-      cue, rest-over sound/notification, unsaved-changes guard on routine editor + coach output.
+   4. ~~Resume drops mid-unilateral capture + duration stopwatch lost on kill~~ DONE 2026-06-29
+      (commit 4444b3c). Snapshot gained an optional `capture` field (pendingFirst + stopwatch); the screen
+      mirrors it into a captureRef (read by buildSnapshot + a debounced safety save) and restores it on
+      both resume paths via resumePendingRef + a dedicated effect that wins over the index-reset.
+      Reviewed twice (the 2nd re-review hit a session limit; verified by manual trace instead). Mid-
+      SUPERSET resume needs no extra state — the round is derived from per-set completion counts.
+      Known narrow edge (pre-existing, accepted): committing a 2nd side then minimizing within ~800ms and
+      re-entering could transiently re-show the half-set; fresh saves + the savedAt one-shot make it rare.
+   5. Core-loop UX (LAST board theme, mostly subjective polish — get the user's prioritization): log
+      toast/undo, set-type discoverability, superset auto-hop "next: X" cue, rest-over sound/notification,
+      unsaved-changes guard on routine editor + coach output.
 
 C. NOTE: "steppers hidden until you tap the number" is INTENTIONAL — do not re-flag / do not change.
 
