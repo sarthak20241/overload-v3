@@ -81,7 +81,11 @@ export function MacroRing({
   }, [overFrac, animate, reduced, overSv]);
   const overProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - overSv.value) }));
   const gap = gapColor ?? C.card;
-  const notchLen = circ * 0.05; // single seam gap (~18°), Apple/Google style
+  // A short card-coloured gap that sits just AHEAD of the overshoot's rounded
+  // leading cap, so the second lap reads as floating over the base (Google Fit).
+  const gapArcLen = circ * 0.05;
+  const gapPad = thickness * 0.85;
+  const gapProps = useAnimatedProps(() => ({ strokeDashoffset: -(overSv.value * circ + gapPad) }));
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
@@ -109,18 +113,17 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* second lap rides directly on the base in the same hue (no radial
-                  moat — that read as two gaps). */}
+              {/* the second lap, same hue, with a rounded leading cap (the "arch"). */}
               <AnimatedCircle
                 cx={cx} cy={cy} r={r} stroke={color} strokeWidth={thickness} fill="none"
                 strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
                 transform={`rotate(-90, ${cx}, ${cy})`}
               />
-              {/* ONE gap: a single card-coloured notch at the 12 o'clock seam so the
-                  lap reads as a fresh pass — the Apple/Google single-gap look. */}
-              <Circle
-                cx={cx} cy={cy} r={r} stroke={gap} strokeWidth={thickness + 1.5} fill="none"
-                strokeLinecap="butt" strokeDasharray={`${notchLen} ${circ - notchLen}`}
+              {/* a card-coloured gap just ahead of that cap, lifting it off the base
+                  ring so you read how far the lap has gone (Google Fit style). */}
+              <AnimatedCircle
+                cx={cx} cy={cy} r={r} stroke={gap} strokeWidth={thickness + 2} fill="none"
+                strokeLinecap="butt" strokeDasharray={`${gapArcLen} ${circ}`} animatedProps={gapProps}
                 transform={`rotate(-90, ${cx}, ${cy})`}
               />
             </>

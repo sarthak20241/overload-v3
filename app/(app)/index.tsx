@@ -666,7 +666,7 @@ export default function DashboardScreen() {
             <View style={{ alignItems: 'center', marginTop: 2 }}>
               <MacroRing
                 value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
-                display="remaining" overshoot name="Calories" size={92} thickness={7} centerFontSize={21}
+                display="remaining" overshoot name="Calories" size={92} thickness={10} centerFontSize={21}
                 belowCaption={fuelCaption(fuel.totals.kcal, FUEL_TARGETS.kcal)}
               />
             </View>

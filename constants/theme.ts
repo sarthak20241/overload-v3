@@ -52,7 +52,7 @@ export const Colors = {
     // the three read distinct by HUE + VALUE + CVD, not the old near-isoluminant
     // earthy trio. Over-target = oxblood, pulled out of the amber band so "over"
     // never twins protein. Calories = foreground (the ring). Letters P/C/F reinforce.
-    macro: { calories: '#8b82e0', protein: '#e0876b', carbs: '#52b9ae', fat: '#d4a73c' },
+    macro: { calories: '#6f96e6', protein: '#e0876b', carbs: '#52b9ae', fat: '#d4a73c' },
   },
 
   // Light theme
@@ -95,7 +95,7 @@ export const Colors = {
     // Theme-aware macro hues — terracotta / teal / gold, distinct by HUE + VALUE +
     // CVD and all ≥3:1 on cream/white. Over-target = oxblood (dark crimson), distinct
     // from terracotta by value so "over" never twins protein. Letters P/C/F reinforce.
-    macro: { calories: '#4f46a3', protein: '#bf4d34', carbs: '#2c8a80', fat: '#9e7b1f' },
+    macro: { calories: '#2b50a0', protein: '#bf4d34', carbs: '#2c8a80', fat: '#9e7b1f' },
   },
 
   // Routine / stat accent colors
