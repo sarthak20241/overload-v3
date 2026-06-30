@@ -13,7 +13,7 @@ import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 import Animated, {
-  useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, useReducedMotion,
+  useSharedValue, useAnimatedProps, withTiming, Easing, useReducedMotion,
 } from 'react-native-reanimated';
 import { FontWeight, FontSize, LetterSpacing, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -82,23 +82,16 @@ export function MacroRing({
   }, [baseFrac, animate, reduced, progress]);
   const baseProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - progress.value) }));
 
-  // Same-hue overshoot lap (Apple/Google style): a full-hue second arc lifted off
-  // the base ring by a card-coloured "moat" so a white-space gap shows how much
-  // extra was logged. Animates in after the base tops out.
-  const overSv = useSharedValue(animate && !reduced ? 0 : overFrac);
-  useEffect(() => {
-    overSv.value = animate && !reduced
-      ? withDelay(180, withTiming(overFrac, { duration: 520, easing: Easing.out(Easing.cubic) }))
-      : overFrac;
-  }, [overFrac, animate, reduced, overSv]);
-  const overProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - overSv.value) }));
   const gap = gapColor ?? C.card;
-  // A short card-coloured gap drawn as a STATIC arc just past the overshoot's
-  // rounded leading cap (computed by angle, so it can never clip the cap), so the
-  // cap floats over the base ring — the Google Fit "how far the lap went" look.
+  // Overshoot as STATIC arcs so the round cap is always clean. The second lap runs
+  // 12 o'clock -> overEnd with a rounded leading cap (the "arch"); a narrow,
+  // round-capped gap in the card colour sits just past that cap so it floats over
+  // the base ring — the graceful Google Fit overshoot. capDeg = half the stroke,
+  // as an angle, so the gap clears the cap's rounded tip.
   const capDeg = ((thickness * 0.5) / r) * (180 / Math.PI);
-  const gapStartDeg = Math.min(overFrac, 1) * 360 + capDeg + 2;
-  const gapDeg = 12;
+  const overEndDeg = Math.min(overFrac, 0.985) * 360;
+  const gapStartDeg = overEndDeg + capDeg * 2 + 1;
+  const gapDeg = 5;
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
@@ -126,17 +119,16 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* the second lap, same hue, with a rounded leading cap (the "arch"). */}
-              <AnimatedCircle
-                cx={cx} cy={cy} r={r} stroke={color} strokeWidth={thickness} fill="none"
-                strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
-                transform={`rotate(-90, ${cx}, ${cy})`}
+              {/* the second lap, same hue, ending in a clean rounded cap (the arch). */}
+              <Path
+                d={arcPath(cx, cy, r, 0.01, overEndDeg)}
+                stroke={color} strokeWidth={thickness} fill="none" strokeLinecap="round"
               />
-              {/* a card-coloured gap just past that cap (static arc), lifting it off
-                  the base ring so you read how far the lap has gone (Google Fit). */}
+              {/* a narrow round-capped card gap just past the cap, so it floats over
+                  the continuous base ring — the graceful Google Fit overshoot. */}
               <Path
                 d={arcPath(cx, cy, r, gapStartDeg, gapStartDeg + gapDeg)}
-                stroke={gap} strokeWidth={thickness + 2} fill="none" strokeLinecap="butt"
+                stroke={gap} strokeWidth={thickness + 1} fill="none" strokeLinecap="round"
               />
             </>
           )}
