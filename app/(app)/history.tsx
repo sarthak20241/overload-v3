@@ -18,6 +18,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
 import { abbreviateNumber } from '@/lib/format';
+import { metricTypeOf } from '@/lib/exercises';
+import type { MetricType } from '@/lib/exercises';
+import { setLabel, setBestLabel } from '@/lib/setDisplay';
+import { SetTypeBadge, setTypeOf } from '@/components/workout/SetTypeBadge';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
@@ -48,8 +52,16 @@ const MONTH_FULL = [
 
 interface ExerciseDetail {
   name: string;
-  sets: { weight_kg: number; reps: number; completed: boolean }[];
+  metric_type?: MetricType;
+  // Superset group. Signed-in/pending rows carry it per-set; guest workouts carry
+  // it at the exercise level. groupOf() reads exercise-level first, then per-set.
+  superset_group?: number | null;
+  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null; superset_group?: number | null }[];
 }
+type HistorySet = ExerciseDetail['sets'][number];
+
+// Per-set pill text + headline "best" now live in lib/setDisplay (setLabel /
+// setBestLabel) so the dashboard, analytics and coach share the exact formatting.
 
 interface WorkoutRaw {
   id: string;
@@ -503,27 +515,51 @@ function SessionCard({
             workout.exercises.map((ex, i) => {
               const completedSets = ex.sets?.filter(s => s.completed) || [];
               if (completedSets.length === 0) return null;
-              const maxWeight = Math.max(...completedSets.map(s => s.weight_kg));
+              const mt = metricTypeOf(ex);
+              // Superset grouping rides on the sets (per-set superset_group). Members
+              // stay contiguous under the first-seen ordering, so flag the first of
+              // each run for a "SUPERSET" caption + a lime left accent down the group.
+              const groupOf = (e?: ExerciseDetail) =>
+                e?.superset_group ?? (e?.sets || []).find(s => s.superset_group != null)?.superset_group ?? null;
+              const g = groupOf(ex);
+              const grouped = g != null;
+              const firstInGroup = grouped && g !== groupOf(workout.exercises?.[i - 1]);
               return (
-                <View key={i} style={styles.exerciseRow}>
+                <View key={i}>
+                  {firstInGroup ? (
+                    <View style={styles.supersetLabelRow}>
+                      <Feather name="link" size={9} color={C.accentText} />
+                      <Text style={[styles.supersetLabelText, { color: C.accentText }]}>SUPERSET</Text>
+                    </View>
+                  ) : null}
+                  <View style={[styles.exerciseRow, grouped ? { borderLeftWidth: 3, borderLeftColor: Colors.primary, paddingLeft: 10 } : null]}>
                   <View style={styles.exerciseInfo}>
                     <Text style={[styles.exerciseName, { color: C.foreground }]}>{ex.name}</Text>
                     <View style={styles.setPills}>
                       {completedSets.map((set, si) => (
                         <View
                           key={si}
-                          style={[styles.setPill, { backgroundColor: C.muted }]}
+                          style={[styles.setPill, { backgroundColor: C.muted, flexDirection: 'row', alignItems: 'center', gap: 4 }]}
                         >
+                          {set.set_type && set.set_type !== 'normal' && (
+                            <SetTypeBadge type={setTypeOf(set.set_type)} size={15} />
+                          )}
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
-                            {set.weight_kg}kg x {set.reps}
+                            {setLabel(mt, set)}
                           </Text>
+                          {(set.rpe != null || (set.is_unilateral && set.rpe_right != null)) && (
+                            <Text style={[styles.setPillText, { color: C.textMuted }]}>
+                              @{set.rpe ?? '–'}{set.is_unilateral && set.rpe_right != null ? `/${set.rpe_right}` : ''}
+                            </Text>
+                          )}
                         </View>
                       ))}
                     </View>
                   </View>
                   <View style={styles.exerciseBest}>
-                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{maxWeight}kg</Text>
+                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{setBestLabel(mt, completedSets)}</Text>
                     <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
+                  </View>
                   </View>
                 </View>
               );
@@ -638,7 +674,7 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, exercises(name))')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -651,9 +687,9 @@ export default function HistoryScreen() {
         (w.workout_sets || []).forEach((s: any) => {
           const exId = s.exercise_id;
           if (!exerciseMap[exId]) {
-            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', sets: [] };
+            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, sets: [] };
           }
-          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed });
+          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe, is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right, superset_group: s.superset_group });
         });
         return {
           ...w,
@@ -1275,6 +1311,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+  },
+  // "SUPERSET" caption above the first member of a superset run in the expanded card.
+  supersetLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  supersetLabelText: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
   },
   exerciseInfo: {
     flex: 1,

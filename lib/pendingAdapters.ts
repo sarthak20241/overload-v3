@@ -34,6 +34,10 @@ export function pendingToDashboardWorkout(entry: PendingWorkout): any {
       name: ex.def.name,
       muscle_group: ex.def.muscle_group || 'Other',
       category: ex.def.category || 'Other',
+      // Carry the metric type so the dashboard reads duration/distance/bodyweight
+      // sets correctly (and flags their PRs) before this row syncs — mirrors the
+      // history adapter + guest store, which already pass it.
+      metric_type: ex.def.metric_type,
     };
     return ex.sets.map((s, si) => ({
       id: `${entry.clientId}-set-${ei}-${si}`,
@@ -43,6 +47,16 @@ export function pendingToDashboardWorkout(entry: PendingWorkout): any {
       reps: s.reps,
       completed: true,
       order: order++,
+      duration_seconds: s.duration_seconds ?? null,
+      distance_m: s.distance_m ?? null,
+      resistance: s.resistance ?? null,
+      set_type: s.set_type ?? 'normal',
+      rpe: s.rpe ?? null,
+      is_unilateral: s.is_unilateral ?? false,
+      reps_right: s.reps_right ?? null,
+      rpe_right: s.rpe_right ?? null,
+      weight_kg_right: s.weight_kg_right ?? null,
+      superset_group: ex.supersetGroup ?? null,
     }));
   });
   return {
@@ -83,7 +97,14 @@ export function pendingToHistoryRow(entry: PendingWorkout): any {
     ),
     exercises: entry.exercises.map((ex) => ({
       name: ex.def.name,
-      sets: ex.sets.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps, completed: true })),
+      metric_type: ex.def.metric_type,
+      sets: ex.sets.map((s) => ({
+        weight_kg: s.weight_kg, reps: s.reps, completed: true,
+        duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null, resistance: s.resistance ?? null,
+        set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
+        is_unilateral: s.is_unilateral ?? false, reps_right: s.reps_right ?? null, rpe_right: s.rpe_right ?? null,
+        weight_kg_right: s.weight_kg_right ?? null, superset_group: ex.supersetGroup ?? null,
+      })),
     })),
     _pendingSync: true,
   };

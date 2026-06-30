@@ -36,8 +36,11 @@ export function getLocalPreviousPerformance(
     const perEx: Record<string, Sets> = {};
     for (const ex of e.exercises) {
       const key = ex.def.name.trim().toLowerCase();
-      if (!want.has(key) || ex.sets.length === 0) continue;
-      perEx[key] = ex.sets.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps }));
+      if (!want.has(key)) continue;
+      // Warmups never seed prefill / PR comparison.
+      const working = ex.sets.filter((s) => s.set_type !== 'warmup');
+      if (working.length === 0) continue;
+      perEx[key] = working.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps }));
     }
     if (Object.keys(perEx).length > 0) {
       // Key by FINISH time (start + duration) so ordering is consistent with the
@@ -66,7 +69,7 @@ export function getLocalPreviousPerformance(
       const nm = s?.exercises?.name;
       if (!nm) continue;
       const key = String(nm).trim().toLowerCase();
-      if (!want.has(key) || s.completed === false) continue;
+      if (!want.has(key) || s.completed === false || s.set_type === 'warmup') continue;
       (grouped[key] ??= []).push({
         weight_kg: Number(s.weight_kg),
         reps: s.reps,
@@ -95,7 +98,7 @@ export function getLocalPreviousPerformance(
       const key = String(ex?.name ?? '').trim().toLowerCase();
       if (!key || !want.has(key)) continue;
       const sets: Sets = (ex.sets ?? [])
-        .filter((s: any) => s?.completed !== false)
+        .filter((s: any) => s?.completed !== false && s?.set_type !== 'warmup')
         .map((s: any) => ({ weight_kg: Number(s.weight_kg), reps: s.reps }));
       if (sets.length > 0) perEx[key] = sets;
     }

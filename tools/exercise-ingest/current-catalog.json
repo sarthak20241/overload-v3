@@ -1,0 +1,23 @@
+{
+  "_note": "Snapshot of the live GLOBAL exercise catalog (exercises.created_by IS NULL), normalized to lowercase/trimmed names, captured 2026-06-23 via Supabase MCP. Used by dry-run.mjs to dedup the free-exercise-db ingest. Refresh with: select lower(btrim(name)) from exercises where created_by is null;",
+  "names": [
+    "ab crunch", "abs crunches", "arnold press", "as crunches",
+    "barbell curl", "barbell row", "bench press", "bicep curl", "bicep curl (cable)",
+    "bulgarian split squat", "bulgarian squats", "cable crunch", "cable fly",
+    "cable kickback", "cable lateral raise", "cable row", "calf raise",
+    "calf raises on leg press", "chest dip", "chest press", "close grip bench press",
+    "close-grip bench press", "deadlift", "dips", "dumbbell curl", "dumbbell fly",
+    "dumbbell row", "dumbbell shoulder press", "face pull", "front raise",
+    "glute bridge", "goblet squat", "good morning", "hack squat", "hammer curl",
+    "hanging leg raise", "hanging raises", "hip thrust", "hyperextension",
+    "incline barbell press", "incline bench press", "incline chest press (machine)",
+    "incline dumbbell press", "lat pulldown", "lat pullover", "lateral raise",
+    "leg curl", "leg extension", "leg press", "machine shoulder press",
+    "overhead press", "overhead tricep extension", "plank", "preacher curl",
+    "pull-up", "pull-ups", "push-up", "rear delt fly", "romanian deadlift",
+    "romanian dealift", "russian twist", "seated cable row", "seated calf raise",
+    "seated incline curl (dumbbell)", "seated rowing", "seated shoulder press (machine)",
+    "single leg standing calf raise", "skull crusher", "smith machine squats",
+    "squat", "t-bar row", "tricep extension", "tricep pushdown", "walking lunge"
+  ]
+}

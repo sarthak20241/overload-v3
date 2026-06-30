@@ -9,6 +9,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { EXERCISE_LIBRARY } from '@/lib/exercises';
+import type { MetricType } from '@/lib/exercises';
 
 const GUEST_ROUTINES_KEY = 'guest_routines_v1';
 const GUEST_WORKOUTS_KEY = 'guest_workouts_v1';
@@ -26,6 +27,8 @@ export interface GuestRoutineExercise {
   rest_seconds: number;
   /** AI Coach's per-exercise cue; null/missing on editor-built routines. */
   note?: string | null;
+  /** Superset grouping ordinal (migration 0060); null/missing = solo. */
+  superset_group?: number | null;
   exercises: { id: string; name: string; muscle_group: string; category: string };
 }
 
@@ -44,7 +47,11 @@ interface GuestWorkoutExercise {
   /** Optional because already-persisted v1 data predates these fields. */
   muscle_group?: string;
   category?: string;
-  sets: { weight_kg: number; reps: number }[];
+  /** Phase A — so a guest's duration/distance exercises render + persist right. */
+  metric_type?: MetricType;
+  /** Superset grouping ordinal (migration 0060), per exercise; null = solo. */
+  superset_group?: number | null;
+  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 
 export interface GuestWorkout {
@@ -66,6 +73,8 @@ export interface GuestExercise {
   muscle_group: string;
   category: string;
   created_at: string;
+  /** Phase A. Optional + forward-safe for entries persisted before the field. */
+  metric_type?: MetricType;
 }
 
 /**
@@ -187,10 +196,16 @@ export function getGuestWorkoutsDetailed() {
     const sets = (w.exercises ?? []).flatMap((ex, ei) => {
       const lib = EXERCISE_LIBRARY.find(e => e.name.toLowerCase() === ex.name.toLowerCase());
       const meta = {
-        id: `${w.id}-ex-${ei}`,
+        // Stable across workouts: same exercise → same id, so the dashboard's
+        // running-best map can detect PRs between two guest sessions. Library
+        // entries carry no id, so the lowercased name is the stable anchor (the
+        // PR memo already requires the name anyway). A per-workout id like
+        // `${w.id}-ex-${ei}` would be fresh every session, so a PR never fired.
+        id: `guest-ex-${ex.name.trim().toLowerCase()}`,
         name: ex.name,
         muscle_group: ex.muscle_group || lib?.muscle_group || 'Other',
         category: ex.category || lib?.category || 'Other',
+        metric_type: ex.metric_type ?? lib?.metric_type,
       };
       return ex.sets.map((s, si) => ({
         id: `${w.id}-set-${ei}-${si}`,
@@ -200,6 +215,16 @@ export function getGuestWorkoutsDetailed() {
         reps: s.reps,
         completed: true,
         order: order++,
+        duration_seconds: s.duration_seconds ?? null,
+        distance_m: s.distance_m ?? null,
+        resistance: s.resistance ?? null,
+        set_type: s.set_type ?? 'normal',
+        rpe: s.rpe ?? null,
+        is_unilateral: s.is_unilateral ?? false,
+        reps_right: s.reps_right ?? null,
+        rpe_right: s.rpe_right ?? null,
+        weight_kg_right: s.weight_kg_right ?? null,
+        superset_group: ex.superset_group ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };
@@ -225,7 +250,7 @@ export function getGuestExercises(): GuestExercise[] {
 // already in EXERCISE_LIBRARY returns null — the caller should skip creation,
 // the library entry already covers it. A name already in the guest store
 // returns that existing entry unchanged.
-export function addGuestExercise(ex: { name: string; muscle_group: string; category: string }): GuestExercise | null {
+export function addGuestExercise(ex: { name: string; muscle_group: string; category: string; metric_type?: MetricType }): GuestExercise | null {
   const name = ex.name.trim();
   const lower = name.toLowerCase();
   if (EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === lower)) return null;
@@ -237,6 +262,7 @@ export function addGuestExercise(ex: { name: string; muscle_group: string; categ
     muscle_group: ex.muscle_group,
     category: ex.category,
     created_at: new Date().toISOString(),
+    metric_type: ex.metric_type,
   };
   _guestExercises.unshift(created);
   void persistGuestExercises();
@@ -246,7 +272,7 @@ export function addGuestExercise(ex: { name: string; muscle_group: string; categ
 // Patch a guest exercise in-place. Returns false when the id isn't in the store.
 export function updateGuestExercise(
   id: string,
-  patch: Partial<Pick<GuestExercise, 'name' | 'muscle_group' | 'category'>>
+  patch: Partial<Pick<GuestExercise, 'name' | 'muscle_group' | 'category' | 'metric_type'>>
 ): boolean {
   const idx = _guestExercises.findIndex(e => e.id === id);
   if (idx < 0) return false;
@@ -352,7 +378,8 @@ export function getPreviousPerformance(routineId: string): Record<string, { weig
   if (!prev?.exercises) return {};
   const map: Record<string, { weight_kg: number; reps: number }[]> = {};
   prev.exercises.forEach(ex => {
-    map[ex.name] = ex.sets;
+    // Warmups never seed previous-performance prefill / PR comparison.
+    map[ex.name] = ex.sets.filter(s => s.set_type !== 'warmup').map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   });
   return map;
 }
@@ -364,7 +391,8 @@ export function getPreviousPerformanceForExerciseName(
   for (const w of _guestWorkouts) {
     if (!w.exercises) continue;
     const found = w.exercises.find(e => e.name === exerciseName);
-    if (found && found.sets.length > 0) return found.sets;
+    const working = found?.sets.filter(s => s.set_type !== 'warmup') ?? [];
+    if (working.length > 0) return working.map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   }
   return undefined;
 }

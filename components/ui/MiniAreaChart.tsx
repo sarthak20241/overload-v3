@@ -21,6 +21,8 @@ interface MiniAreaChartProps {
   tooltipTextColor?: string;
   tooltipBgColor?: string;
   valueSuffix?: string;
+  /** Format the tooltip value (e.g. mm:ss for duration, km for distance). Wins over valueSuffix. */
+  formatValue?: (v: number) => string;
 }
 
 export function MiniAreaChart({
@@ -33,6 +35,7 @@ export function MiniAreaChart({
   tooltipTextColor = '#fff',
   tooltipBgColor = 'rgba(0,0,0,0.75)',
   valueSuffix = '',
+  formatValue,
 }: MiniAreaChartProps) {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
 
@@ -143,10 +146,9 @@ export function MiniAreaChart({
             </Text>
           )}
           <Text style={[chartStyles.tooltipValue, { color: tooltipTextColor }]}>
-            {activePoint.value >= 1000
-              ? `${(activePoint.value / 1000).toFixed(1)}k`
-              : activePoint.value}
-            {valueSuffix}
+            {formatValue
+              ? formatValue(activePoint.value)
+              : `${activePoint.value >= 1000 ? `${(activePoint.value / 1000).toFixed(1)}k` : activePoint.value}${valueSuffix}`}
           </Text>
         </View>
       )}

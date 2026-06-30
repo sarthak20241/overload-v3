@@ -14,25 +14,39 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useToast } from '@/components/ui/Toast';
 import { useSync } from '@/components/SyncProvider';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
-import { roundVolume } from '@/lib/format';
+import { roundVolume, formatDuration as fmtDur, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
+import { setVolumeKg } from '@/lib/sets';
 import { hydrateCache, readCache } from '@/lib/localCache';
 import { getGuestWorkouts, updateGuestWorkout, type GuestWorkout } from '@/lib/guestStore';
 import { getPendingWorkouts, updatePendingWorkout, hydrateSyncQueue, type PendingExercise } from '@/lib/syncQueue';
 import { getPendingEdit, enqueueEdit, hydrateEditQueue, type PendingEditExercise } from '@/lib/editQueue';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
-import type { ExerciseDef } from '@/lib/exercises';
+import { metricTypeOf, metricTypeDef, type ExerciseDef, type MetricType, type MetricAxis } from '@/lib/exercises';
+import type { SetType } from '@/lib/types';
+import { SET_TYPE_META } from '@/components/workout/SetTypeBadge';
 
 type Backend = 'guest' | 'pending' | 'synced';
 
 // Set/exercise values are edited as strings so typing feels natural (clearing a
 // field, partial decimals); they're parsed back to numbers on save.
-interface EditSet { uid: string; weight: string; reps: string }
+// Strings so typing feels natural; duration is "m:ss", distance is km. Only the
+// axes the exercise's metric_type uses are rendered/parsed.
+interface EditSet { uid: string; weight: string; reps: string; duration: string; distance: string; resistance: string; set_type: SetType; rpe: string;
+  // Unilateral "L+R" (migration 0056). Created only by the in-workout logger. The
+  // edit screen renders the right side (weight_kg_right / reps_right) as its own L/R
+  // inputs so a left-only edit can't silently desync the sides. Edited as strings,
+  // like weight/reps; rpe_right round-trips silently. weight = the left side.
+  is_unilateral: boolean; reps_right: string; rpe_right: number | null; weight_kg_right: string }
 interface EditExercise {
   uid: string;
   exerciseId: string | null; // real exercises.id (synced) | null (resolve by name at flush)
   name: string;
   muscle_group?: string;
   category?: string;
+  metric_type?: MetricType;
+  // Superset grouping ordinal (migration 0060), per exercise; round-tripped silently
+  // (no editor UI to change it). null = solo. Read from the first set's column.
+  supersetGroup?: number | null;
   sets: EditSet[];
 }
 
@@ -41,10 +55,31 @@ interface EditExercise {
 // exercises share a name), shuffling focus / IME state. Each set and exercise
 // carries a uid for the duration of the edit.
 let _setSeq = 0;
-const mkSet = (weight: string | number, reps: string | number): EditSet => ({
+const mkSet = (
+  weight: string | number,
+  reps: string | number,
+  durationSeconds?: number | null,
+  distanceM?: number | null,
+  resistance?: number | null,
+  setType?: string | null,
+  rpe?: number | null,
+  isUnilateral?: boolean | null,
+  repsRight?: number | null,
+  rpeRight?: number | null,
+  weightRight?: number | null,
+): EditSet => ({
   uid: `set-${_setSeq++}`,
   weight: String(weight),
   reps: String(reps),
+  duration: durationSeconds ? fmtDur(durationSeconds) : '',
+  distance: distanceM ? formatDistanceKm(distanceM).replace(/[^\d.]/g, '') : '',
+  resistance: resistance != null ? String(resistance) : '',
+  set_type: (setType && setType in SET_TYPE_META ? setType : 'normal') as SetType,
+  rpe: rpe != null ? String(rpe) : '',
+  is_unilateral: !!isUnilateral,
+  reps_right: repsRight != null ? String(repsRight) : '',
+  rpe_right: rpeRight ?? null,
+  weight_kg_right: weightRight != null ? String(weightRight) : '',
 });
 
 let _exSeq = 0;
@@ -55,6 +90,28 @@ function formatDateLong(iso?: string) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
+
+const axisLabel = (a: MetricAxis): string =>
+  a === 'weight' ? 'WEIGHT (KG)'
+  : a === 'added_weight' ? '+KG'
+  : a === 'assist_weight' ? '−KG'
+  : a === 'reps' ? 'REPS'
+  : a === 'duration' ? 'TIME'
+  : a === 'resistance' ? 'LEVEL'
+  : 'KM';
+// The string-valued, user-editable axis fields of EditSet (the only ones bound to
+// a TextInput). Excludes set_type and the unilateral fields, which round-trip silently.
+type AxisField = 'weight' | 'reps' | 'duration' | 'distance' | 'resistance';
+const axisField = (a: MetricAxis): AxisField =>
+  a === 'reps' ? 'reps' : a === 'duration' ? 'duration' : a === 'distance' ? 'distance'
+  : a === 'resistance' ? 'resistance' : 'weight';
+// The right-side counterpart field for a unilateral set, or null for axes with no
+// per-side column (duration/distance/resistance — unilateral only stores L/R weight+reps).
+type RightField = 'weight_kg_right' | 'reps_right';
+const rightField = (a: MetricAxis): RightField | null =>
+  a === 'reps' ? 'reps_right'
+  : (a === 'weight' || a === 'added_weight' || a === 'assist_weight') ? 'weight_kg_right'
+  : null;
 
 function formatDuration(sec?: number) {
   if (!sec) return null;
@@ -107,11 +164,13 @@ export default function EditWorkoutScreen() {
           name: s.exercises?.name ?? 'Exercise',
           muscle_group: s.exercises?.muscle_group,
           category: s.exercises?.category,
+          metric_type: metricTypeOf(s.exercises),
+          supersetGroup: typeof s.superset_group === 'number' ? s.superset_group : null,
           sets: [],
         };
         map.set(exId, ex);
       }
-      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0));
+      ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right));
     }
     return [...map.values()];
   };
@@ -137,7 +196,9 @@ export default function EditWorkoutScreen() {
             name: ex.name,
             muscle_group: ex.muscle_group,
             category: ex.category,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
+            metric_type: ex.metric_type,
+            supersetGroup: typeof ex.superset_group === 'number' ? ex.superset_group : null,
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
           setLoading(false);
@@ -164,7 +225,9 @@ export default function EditWorkoutScreen() {
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
+            metric_type: metricTypeOf(ex.def),
+            supersetGroup: ex.supersetGroup ?? null,
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
           setLoading(false);
@@ -190,7 +253,9 @@ export default function EditWorkoutScreen() {
             name: ex.def.name,
             muscle_group: ex.def.muscle_group,
             category: ex.def.category,
-            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps)),
+            metric_type: metricTypeOf(ex.def),
+            supersetGroup: ex.supersetGroup ?? null,
+            sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setBase({ setCount: existingEdit.baseSetCount, volume: existingEdit.baseVolumeKg });
           setMeta(cacheMeta);
@@ -202,7 +267,7 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", exercises(id, name, muscle_group, category))')
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -230,7 +295,9 @@ export default function EditWorkoutScreen() {
               name: ex.name,
               muscle_group: ex.muscle_group,
               category: ex.category,
-              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps)),
+              metric_type: ex.metric_type,
+              supersetGroup: typeof ex.sets?.[0]?.superset_group === 'number' ? ex.sets[0].superset_group : null,
+              sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
             setMeta(cacheMeta);
@@ -246,7 +313,17 @@ export default function EditWorkoutScreen() {
   }, [id, clerkLoaded, isGuestSession, user?.id]);
 
   // --- set / exercise mutations ---
-  const updateSet = (ei: number, si: number, field: keyof EditSet, value: string) => {
+  const updateSet = (ei: number, si: number, field: AxisField, value: string) => {
+    setExercises((prev) => prev.map((ex, i) => {
+      if (i !== ei) return ex;
+      const sets = ex.sets.map((s, j) => (j === si ? { ...s, [field]: value } : s));
+      return { ...ex, sets };
+    }));
+  };
+
+  // Right ("R") side of a unilateral set. Same shape as updateSet; the side is its
+  // own field so editing one side never touches the other.
+  const updateSetRight = (ei: number, si: number, field: RightField, value: string) => {
     setExercises((prev) => prev.map((ex, i) => {
       if (i !== ei) return ex;
       const sets = ex.sets.map((s, j) => (j === si ? { ...s, [field]: value } : s));
@@ -283,6 +360,8 @@ export default function EditWorkoutScreen() {
         name: def.name,
         muscle_group: def.muscle_group,
         category: def.category,
+        metric_type: metricTypeOf(def),
+        supersetGroup: null,
         sets: Array.from({ length: count }, () => mkSet('0', reps)),
       },
     ]);
@@ -298,15 +377,47 @@ export default function EditWorkoutScreen() {
   const handleSave = async () => {
     if (saving || loading) return;
 
-    // Parse + clean: a set counts when reps > 0 (weight 0 is valid bodyweight);
-    // drop empty sets and any exercise left with none.
+    // Parse + clean, per the exercise's metric_type. A set counts when its
+    // primary axis has a value (reps for rep types, time for duration, distance
+    // for cardio); weight 0 stays valid for bodyweight. Drop empty sets and any
+    // exercise left with none.
     const cleaned = exercises
-      .map((ex) => ({
-        ex,
-        sets: ex.sets
-          .map((s) => ({ weight_kg: Math.max(0, parseFloat(s.weight) || 0), reps: Math.max(0, parseInt(s.reps, 10) || 0) }))
-          .filter((s) => s.reps > 0),
-      }))
+      .map((ex) => {
+        const axes = metricTypeDef(ex.metric_type).axes;
+        const usesReps = axes.includes('reps');
+        const usesDuration = axes.includes('duration');
+        const usesDistance = axes.includes('distance');
+        const usesResistance = axes.includes('resistance');
+        const sets = ex.sets
+          .map((s) => ({
+            weight_kg: Math.max(0, parseFloat(s.weight) || 0),
+            reps: Math.max(0, parseFloat(s.reps) || 0),
+            duration_seconds: usesDuration ? parseDuration(s.duration) : null,
+            distance_m: usesDistance ? parseDistanceKm(s.distance) : null,
+            resistance: usesResistance ? (parseFloat(s.resistance) || 0) : null,
+            set_type: s.set_type ?? 'normal',
+            rpe: s.rpe ? parseFloat(s.rpe) : null,
+            // Unilateral: the right side is now user-editable; parse it like the left.
+            // Non-unilateral sets keep null right-side columns.
+            is_unilateral: s.is_unilateral,
+            reps_right: s.is_unilateral ? Math.max(0, parseFloat(s.reps_right) || 0) : null,
+            rpe_right: s.rpe_right,
+            // Blank R weight => null, so setVolumeKg/setLabel's `weight_kg_right ?? weight_kg`
+            // inherit-from-left contract fires (a cleared R load means "same as left", not 0kg).
+            weight_kg_right: s.is_unilateral
+              ? (s.weight_kg_right.trim() === '' ? null : Math.max(0, parseFloat(s.weight_kg_right) || 0))
+              : null,
+          }))
+          // Count the right side of a unilateral set too: a set whose left reps is blank
+          // but whose right side has reps is real work (its right volume counts), so it
+          // must not be dropped as "empty".
+          .filter((s) =>
+            (usesReps && (s.reps > 0 || (s.is_unilateral && (s.reps_right ?? 0) > 0))) ||
+            (usesDuration && (s.duration_seconds ?? 0) > 0) ||
+            (usesDistance && (s.distance_m ?? 0) > 0),
+          );
+        return { ex, sets };
+      })
       .filter((e) => e.sets.length > 0);
 
     const allSets = cleaned.flatMap((e) => e.sets);
@@ -314,7 +425,9 @@ export default function EditWorkoutScreen() {
       toast.error('Add at least one set, or delete the workout from History.');
       return;
     }
-    const newVolume = roundVolume(allSets.reduce((s, x) => s + x.weight_kg * x.reps, 0));
+    // Warmups persist as rows but are excluded from total_volume_kg (match the
+    // logger + server recompute, migration 0053).
+    const newVolume = roundVolume(allSets.reduce((s, x) => s + setVolumeKg(x), 0));
     const cleanName = name.trim() || 'Workout';
     const cleanNotes = notes.trim() ? notes.trim() : null;
 
@@ -332,7 +445,14 @@ export default function EditWorkoutScreen() {
             name: e.ex.name,
             muscle_group: e.ex.muscle_group,
             category: e.ex.category,
-            sets: e.sets.map((s) => ({ weight_kg: s.weight_kg, reps: s.reps })),
+            metric_type: metricTypeOf(e.ex),
+            superset_group: e.ex.supersetGroup ?? null,
+            sets: e.sets.map((s) => ({
+              weight_kg: s.weight_kg, reps: s.reps,
+              duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
+              set_type: s.set_type, rpe: s.rpe,
+              is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right,
+            })),
           })),
         };
         if (!updateGuestWorkout(updated)) {
@@ -354,9 +474,16 @@ export default function EditWorkoutScreen() {
           name: e.ex.name,
           muscle_group: e.ex.muscle_group || 'Other',
           category: e.ex.category || 'Custom',
+          metric_type: metricTypeOf(e.ex),
         },
         resolvedExerciseId: e.ex.exerciseId && !String(e.ex.exerciseId).startsWith('temp-') ? e.ex.exerciseId : null,
-        sets: e.sets.map((s, idx) => ({ weight_kg: s.weight_kg, reps: s.reps, order: idx })),
+        supersetGroup: e.ex.supersetGroup ?? null,
+        sets: e.sets.map((s, idx) => ({
+          weight_kg: s.weight_kg, reps: s.reps, order: idx,
+          duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
+          set_type: s.set_type, rpe: s.rpe,
+          is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right,
+        })),
       }));
 
       if (backend === 'pending') {
@@ -512,33 +639,21 @@ export default function EditWorkoutScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Column labels */}
+                {/* Column labels — driven by the exercise's measurement type. */}
                 <View style={styles.setHeaderRow}>
                   <Text style={[styles.setColIdx, styles.setColLabel, { color: C.textDim }]}>SET</Text>
-                  <Text style={[styles.setColInput, styles.setColLabel, { color: C.textDim }]}>WEIGHT (KG)</Text>
-                  <Text style={[styles.setColInput, styles.setColLabel, { color: C.textDim }]}>REPS</Text>
+                  {metricTypeDef(ex.metric_type).axes.map((a) => (
+                    <Text key={a} style={[styles.setColInput, styles.setColLabel, { color: C.textDim }]}>{axisLabel(a)}</Text>
+                  ))}
                   <View style={styles.setColDelete} />
                 </View>
 
-                {ex.sets.map((s, si) => (
-                  <View key={s.uid} style={styles.setRow}>
-                    <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
-                    <TextInput
-                      value={s.weight}
-                      onChangeText={(t) => updateSet(ei, si, 'weight', t)}
-                      keyboardType="decimal-pad"
-                      selectTextOnFocus
-                      onFocus={scrollFocusedIntoView}
-                      style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
-                    />
-                    <TextInput
-                      value={s.reps}
-                      onChangeText={(t) => updateSet(ei, si, 'reps', t)}
-                      keyboardType="number-pad"
-                      selectTextOnFocus
-                      onFocus={scrollFocusedIntoView}
-                      style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
-                    />
+                {ex.sets.map((s, si) => {
+                  const axes = metricTypeDef(ex.metric_type).axes;
+                  const kbdFor = (a: MetricAxis) => a === 'duration'
+                    ? (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default')
+                    : 'decimal-pad'; // reps included — allow partial reps like 8.5
+                  const deleteBtn = (
                     <TouchableOpacity
                       onPress={() => removeSet(ei, si)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -548,8 +663,72 @@ export default function EditWorkoutScreen() {
                     >
                       <Feather name="x" size={12} color="#ef4444" />
                     </TouchableOpacity>
-                  </View>
-                ))}
+                  );
+                  const leftInput = (a: MetricAxis) => {
+                    const field = axisField(a);
+                    return (
+                      <TextInput
+                        key={a}
+                        value={s[field]}
+                        onChangeText={(t) => updateSet(ei, si, field, t)}
+                        keyboardType={kbdFor(a) as any}
+                        placeholder={a === 'duration' ? '0:00' : '0'}
+                        placeholderTextColor={C.textMuted}
+                        selectTextOnFocus
+                        onFocus={scrollFocusedIntoView}
+                        style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
+                      />
+                    );
+                  };
+
+                  // Unilateral: two aligned input lines (L / R) under a "SET n · L+R"
+                  // badge, so each side is editable and a left edit can't silently
+                  // desync the right. Only weight/reps have per-side columns.
+                  if (s.is_unilateral) {
+                    return (
+                      <View key={s.uid} style={styles.uniBlock}>
+                        <Text style={styles.uniBadge}>
+                          <Text style={{ color: C.textDim }}>{`SET ${si + 1}`}</Text>
+                          <Text style={{ color: C.accentText }}>{'   ·   L + R'}</Text>
+                        </Text>
+                        <View style={styles.setRow}>
+                          <Text style={[styles.setColIdx, styles.setIdxText, { color: C.accentText }]}>L</Text>
+                          {axes.map(leftInput)}
+                          {deleteBtn}
+                        </View>
+                        <View style={styles.setRow}>
+                          <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>R</Text>
+                          {axes.map((a) => {
+                            const rf = rightField(a);
+                            if (!rf) return <View key={a} style={styles.setColInput} />;
+                            return (
+                              <TextInput
+                                key={a}
+                                value={s[rf]}
+                                onChangeText={(t) => updateSetRight(ei, si, rf, t)}
+                                keyboardType="decimal-pad"
+                                placeholder="0"
+                                placeholderTextColor={C.textMuted}
+                                selectTextOnFocus
+                                onFocus={scrollFocusedIntoView}
+                                style={[styles.setColInput, styles.setInput, { backgroundColor: C.muted, color: C.foreground }]}
+                              />
+                            );
+                          })}
+                          <View style={styles.setColDelete} />
+                        </View>
+                      </View>
+                    );
+                  }
+
+                  return (
+                    <View key={s.uid} style={styles.setRow}>
+                      <Text style={[styles.setColIdx, styles.setIdxText, { color: C.textMuted }]}>{si + 1}</Text>
+                      {axes.map(leftInput)}
+                      {deleteBtn}
+                    </View>
+                  );
+                })}
 
                 <TouchableOpacity onPress={() => addSet(ei)} style={[styles.addSetBtn, { borderColor: C.borderSubtle }]}>
                   <Feather name="plus" size={13} color={C.accentText} />
@@ -649,6 +828,9 @@ const styles = StyleSheet.create({
   setHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
   setColLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.5 },
   setRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  // Unilateral L/R pair: badge + two input rows, grouped as one set.
+  uniBlock: { marginBottom: 8 },
+  uniBadge: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.5, marginBottom: 4, marginLeft: 2 },
   setColIdx: { width: 28 },
   setIdxText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, textAlign: 'center' },
   setColInput: { flex: 1 },

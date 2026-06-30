@@ -14,20 +14,46 @@
  * app/workout/[id].tsx), so the context is stable for that chat session. The
  * user reopens to refresh it after logging more sets.
  */
-import type { ActiveWorkoutExercise } from '@/lib/types';
+import type { ActiveWorkoutExercise, SetType } from '@/lib/types';
+import { metricTypeOf, metricTypeDef, type MetricType } from '@/lib/exercises';
+
+export interface WorkoutCoachSet {
+  weightKg: number;
+  reps: number;
+  // Phase B/C — so the coach reads the set faithfully (warmup vs working, effort,
+  // and the non-weight/rep axes for duration/distance/resistance exercises).
+  setType: SetType;
+  rpe: number | null;          // 1-10; RIR = 10 - rpe
+  durationSeconds: number | null;
+  distanceM: number | null;
+  resistance: number | null;
+  // Unilateral "L+R" (migration 0056/0059). One set trained one side at a time;
+  // reps/rpe = LEFT, repsRight/rpeRight = RIGHT; weightKg = LEFT weight,
+  // weightKgRight = RIGHT (null => same). Still ONE working set.
+  isUnilateral: boolean;
+  repsRight: number | null;
+  rpeRight: number | null;
+  weightKgRight: number | null;
+}
 
 export interface WorkoutCoachExercise {
   name: string;
   muscleGroup?: string;
   isCurrent: boolean;
   finished: boolean;
+  // Phase A — how this exercise is measured (drives how its sets read).
+  metricType: MetricType;
   targetSets: number;
   repsMin: number;
   repsMax: number;
   restSeconds: number;
   coachNote?: string;
-  loggedSets: { weightKg: number; reps: number }[];
+  loggedSets: WorkoutCoachSet[];
   previousSets?: { weightKg: number; reps: number }[];
+  // Supersets (migration 0060): grouping ordinal; same value = same superset (done
+  // back to back, rest only after the round). null = solo. Lets the coach read rest
+  // structure correctly instead of implying rest between paired lifts.
+  supersetGroup?: number | null;
 }
 
 export interface WorkoutCoachContext {
@@ -60,7 +86,56 @@ function repRange(min: number, max: number): string {
   return min === max ? `${min}` : `${min}-${max}`;
 }
 
-function setsToText(sets: { weightKg: number; reps: number }[]): string {
+const isWarmup = (s: WorkoutCoachSet) => s.setType === 'warmup';
+/** Working sets = everything except warmups (mirrors volume/1RM/PR + the server). */
+const workingSets = (sets: WorkoutCoachSet[]) => sets.filter((s) => !isWarmup(s));
+
+function fmtDur(sec: number | null): string {
+  const s = Math.max(0, Math.floor(sec ?? 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+const km = (m: number | null) => Math.round(((m ?? 0) / 1000) * 100) / 100;
+
+const SET_TYPE_LABEL: Record<SetType, string> = {
+  normal: '', warmup: 'warmup', dropset: 'drop set', failure: 'to failure',
+  negative: 'negative', left: 'left side', right: 'right side',
+};
+
+/** The set's core value, in the units the exercise's metric_type uses. For a
+ * unilateral set the rep count reads as left/right (weight is shared). */
+function setCore(s: WorkoutCoachSet, mt: MetricType): string {
+  const reps = s.isUnilateral ? `${s.reps}/${s.repsRight ?? 0}` : `${s.reps}`;
+  // Per-side weight (migration 0059): when the two sides used different loads, spell
+  // each side out (weight×reps / weight×reps); otherwise the compact shared form.
+  const wR = s.weightKgRight ?? s.weightKg;
+  const diffW = s.isUnilateral && wR !== s.weightKg;
+  switch (mt) {
+    case 'bodyweight_reps': return `${reps} reps`;
+    case 'weighted_bodyweight': return diffW ? `+${s.weightKg}kg×${s.reps}/+${wR}kg×${s.repsRight ?? 0}` : `+${s.weightKg}kg×${reps}`;
+    case 'assisted_bodyweight': return diffW ? `-${s.weightKg}kg×${s.reps}/-${wR}kg×${s.repsRight ?? 0}` : `-${s.weightKg}kg×${reps}`;
+    case 'duration': return fmtDur(s.durationSeconds);
+    case 'duration_weight': return `${s.weightKg}kg ${fmtDur(s.durationSeconds)}`;
+    case 'distance_duration': return `${km(s.distanceM)}km ${fmtDur(s.durationSeconds)}`;
+    case 'weight_distance': return `${s.weightKg}kg ${km(s.distanceM)}km`;
+    case 'resistance_duration': return `L${s.resistance ?? 0} ${fmtDur(s.durationSeconds)}`;
+    default: return diffW ? `${s.weightKg}kg×${s.reps}/${wR}kg×${s.repsRight ?? 0}` : `${s.weightKg}kg×${reps}`; // weight_reps
+  }
+}
+
+/** Trailing (set type, RPE) tags. Warmups/drop/failure/etc. + effort + unilateral. */
+function setSuffix(s: WorkoutCoachSet): string {
+  const tags: string[] = [];
+  if (s.setType !== 'normal' && SET_TYPE_LABEL[s.setType]) tags.push(SET_TYPE_LABEL[s.setType]);
+  if (s.isUnilateral) tags.push('unilateral L+R');
+  if (s.rpe != null) tags.push(s.isUnilateral && s.rpeRight != null ? `RPE ${s.rpe}/${s.rpeRight}` : `RPE ${s.rpe}`);
+  return tags.length ? ` (${tags.join(', ')})` : '';
+}
+
+function setsToText(sets: WorkoutCoachSet[], mt: MetricType): string {
+  return sets.map((s) => `${setCore(s, mt)}${setSuffix(s)}`).join(', ');
+}
+
+function prevSetsToText(sets: { weightKg: number; reps: number }[]): string {
   return sets.map((s) => `${s.weightKg}kg×${s.reps}`).join(', ');
 }
 
@@ -80,14 +155,27 @@ export function buildWorkoutCoachContext(params: {
   const { routineName, elapsedSeconds, exercises, currentIdx, finished, kind = 'live' } = params;
 
   const mapped: WorkoutCoachExercise[] = exercises.map((ex, i) => {
-    const logged = ex.sets
+    const logged: WorkoutCoachSet[] = ex.sets
       .filter((s) => s.completed)
-      .map((s) => ({ weightKg: s.weight_kg, reps: s.reps }));
+      .map((s) => ({
+        weightKg: s.weight_kg,
+        reps: s.reps,
+        setType: (s.set_type ?? 'normal') as SetType,
+        rpe: s.rpe ?? null,
+        durationSeconds: s.duration_seconds ?? null,
+        distanceM: s.distance_m ?? null,
+        resistance: s.resistance ?? null,
+        isUnilateral: !!s.is_unilateral,
+        repsRight: s.reps_right ?? null,
+        rpeRight: s.rpe_right ?? null,
+        weightKgRight: s.weight_kg_right ?? null,
+      }));
     return {
       name: ex.exercise.name,
       muscleGroup: ex.exercise.muscle_group || undefined,
       isCurrent: i === currentIdx,
       finished: !!finished[i],
+      metricType: metricTypeOf(ex.exercise),
       targetSets: ex.targetSets,
       repsMin: ex.repsMin,
       repsMax: ex.repsMax,
@@ -95,6 +183,7 @@ export function buildWorkoutCoachContext(params: {
       coachNote: ex.coachNote,
       loggedSets: logged,
       previousSets: ex.previousSets?.map((s) => ({ weightKg: s.weight_kg, reps: s.reps })),
+      supersetGroup: ex.supersetGroup ?? null,
     };
   });
 
@@ -108,7 +197,7 @@ export function buildWorkoutCoachContext(params: {
     exerciseCount: mapped.length,
     finishedCount: finished.filter(Boolean).length,
     currentExerciseName: hasCurrent ? current.name : null,
-    nextSetNumber: hasCurrent ? current.loggedSets.length + 1 : null,
+    nextSetNumber: hasCurrent ? workingSets(current.loggedSets).length + 1 : null,
     exercises: mapped,
   };
 }
@@ -138,17 +227,30 @@ export function workoutCoachContextToText(ctx: WorkoutCoachContext): string {
     const status = ex.finished
       ? 'DONE'
       : ex.isCurrent
-        ? `CURRENT (next: set ${ex.loggedSets.length + 1})`
+        ? `CURRENT (next: working set ${workingSets(ex.loggedSets).length + 1})`
         : 'not started';
     const muscle = ex.muscleGroup ? ` [${ex.muscleGroup}]` : '';
-    const rest = ex.restSeconds > 0 ? `, rest ${ex.restSeconds}s` : '';
+    // Supersets: tag the group and correct the rest wording — members are done back to
+    // back with NO rest between them; rest comes only after the round's last member.
+    const g = ex.supersetGroup ?? null;
+    let supersetTag = '';
+    let rest = ex.restSeconds > 0 ? `, rest ${ex.restSeconds}s` : '';
+    if (g != null) {
+      supersetTag = ` [Superset ${g <= 26 ? String.fromCharCode(64 + g) : g}]`;
+      const lastInGroup = !(ctx.exercises[i + 1] && ctx.exercises[i + 1].supersetGroup === g);
+      rest = lastInGroup
+        ? `, rest ${ex.restSeconds}s after the superset round`
+        : ', no rest (straight into the next exercise in the superset)';
+    }
+    // Only call out the measurement type when it isn't the plain weight×reps default.
+    const metric = ex.metricType !== 'weight_reps' ? ` (${metricTypeDef(ex.metricType).label})` : '';
     lines.push(
-      `${i + 1}. ${ex.name}${muscle} — target ${ex.targetSets}×${repRange(ex.repsMin, ex.repsMax)}${rest} — ${status}`,
+      `${i + 1}. ${ex.name}${muscle}${supersetTag}${metric} — target ${ex.targetSets}×${repRange(ex.repsMin, ex.repsMax)}${rest} — ${status}`,
     );
     if (ex.coachNote) lines.push(`   Coach cue: ${ex.coachNote}`);
-    if (ex.loggedSets.length > 0) lines.push(`   Logged so far: ${setsToText(ex.loggedSets)}`);
+    if (ex.loggedSets.length > 0) lines.push(`   Logged so far: ${setsToText(ex.loggedSets, ex.metricType)}`);
     if (ex.previousSets && ex.previousSets.length > 0) {
-      lines.push(`   Last session: ${setsToText(ex.previousSets)}`);
+      lines.push(`   Last session: ${prevSetsToText(ex.previousSets)}`);
     }
   });
 
@@ -174,7 +276,8 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
       '- Call out progression vs. last session wherever you can see it in the numbers.',
       '- Finish with 1-2 concrete things to change next time.',
       '- You may use your tools for deeper history if it genuinely helps.',
-      "- Don't just restate my numbers back to me — interpret them.",
+      "- Don't just restate my numbers back to me, interpret them.",
+      '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides. Exercises tagged [Superset X] are trained back to back as one group with no rest between them, resting only after each round.',
     ].join('\n');
   }
   return [
@@ -188,6 +291,7 @@ export function workoutCoachOpener(ctx: WorkoutCoachContext): string {
     '- Give a clear, immediately actionable call (weight, reps, rest, a swap, or stop/continue).',
     '- You may use your tools to check my training history if it genuinely helps, but don\'t stall.',
     "- Don't repeat this summary back to me.",
+    '- Reading the recap: each set shows its value then (set type, RPE) in parens. Warmups are excluded from set counts and volume. RPE is 1 to 10 (RIR = 10 minus RPE). Times are m:ss, distance is km. A unilateral (L+R) set logs both sides as ONE set; reps read left/right and its volume counts both sides. Exercises tagged [Superset X] are trained back to back as one group with no rest between them, resting only after each round.',
   ].join('\n');
 }
 
@@ -210,13 +314,19 @@ function shorten(name: string, max = 18): string {
  */
 export function workoutCoachStarter(ctx: WorkoutCoachContext): string {
   if (ctx.kind === 'review') {
-    const totalSets = ctx.exercises.reduce((n, e) => n + e.loggedSets.length, 0);
+    const totalSets = ctx.exercises.reduce((n, e) => n + workingSets(e.loggedSets).length, 0);
     const volume = ctx.exercises.reduce(
-      (sum, e) => sum + e.loggedSets.reduce((s, set) => s + set.weightKg * set.reps, 0),
+      (sum, e) => sum + workingSets(e.loggedSets).reduce(
+        (s, set) => s + set.weightKg * set.reps
+          + (set.isUnilateral ? (set.weightKgRight ?? set.weightKg) * (set.repsRight ?? 0) : 0),
+        0),
       0,
     );
     const mins = Math.round(ctx.elapsedSeconds / 60);
-    return `Session logged — “${ctx.routineName}”: ${totalSets} set${totalSets === 1 ? '' : 's'}, ${Math.round(volume)}kg of volume in ${mins} min. Let me take a look…`;
+    // Volume is weight×reps; a pure bodyweight / duration / distance session has
+    // none, so only surface the kg clause when there's actual load (no "0kg of volume").
+    const volPart = volume > 0 ? `, ${Math.round(volume)}kg of volume` : '';
+    return `Session logged, “${ctx.routineName}”: ${totalSets} set${totalSets === 1 ? '' : 's'}${volPart} in ${mins} min. Let me take a look…`;
   }
   if (ctx.exerciseCount === 0) {
     return `Blank canvas — “${ctx.routineName}” has no exercises yet. Tell me your goal and how much time you've got, and I'll get you moving.`;

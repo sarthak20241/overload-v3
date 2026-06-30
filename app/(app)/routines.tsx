@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -23,8 +23,11 @@ import Animated, {
   Easing,
   FadeIn,
   FadeOut,
+  useSharedValue,
+  useAnimatedScrollHandler,
 } from 'react-native-reanimated';
-import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
+import { haptics } from '@/lib/haptics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
@@ -61,6 +64,8 @@ interface RoutineExerciseRaw {
   // Phase 2.5: AI-generated routines carry the coach's per-exercise cue.
   // Optional — null/missing on editor-built routines.
   note?: string | null;
+  // Supersets (migration 0060): grouping ordinal; null/missing = solo.
+  superset_group?: number | null;
   exercises: {
     id: string;
     name: string;
@@ -98,6 +103,9 @@ interface EditorExercise {
   targetReps: string;
   restSeconds: number;
   notes: string;
+  /** Superset grouping ordinal (migration 0060); null = solo. Members share a value
+   *  and are kept contiguous in the list (order = list position). */
+  supersetGroup?: number | null;
 }
 
 // A fresh, collision-proof row id (Date.now() can repeat within a .map(), so mix
@@ -116,7 +124,32 @@ function newExercise(): EditorExercise {
     targetReps: '8-12',
     restSeconds: 90,
     notes: '',
+    supersetGroup: null,
   };
+}
+
+// Supersets (migration 0060): a group is a CONTIGUOUS run of rows sharing a value
+// (order = list position). This re-numbers each maximal contiguous run to a fresh
+// sequential id and dissolves singletons (a "group of 1" = solo). Run after any
+// link/unlink or reorder so groups stay contiguous + cleanly numbered.
+function normalizeGroups(exs: EditorExercise[]): EditorExercise[] {
+  const out = exs.map((e) => ({ ...e }));
+  let nextId = 1;
+  let i = 0;
+  while (i < out.length) {
+    const g = out[i].supersetGroup ?? null;
+    if (g == null) { i++; continue; }
+    let j = i;
+    while (j < out.length && (out[j].supersetGroup ?? null) === g) j++;
+    if (j - i >= 2) {
+      const id = nextId++;
+      for (let k = i; k < j; k++) out[k].supersetGroup = id;
+    } else {
+      out[i].supersetGroup = null;
+    }
+    i = j;
+  }
+  return out;
 }
 
 // ─── Exercise Tag Pills ───────────────────────────────────────────────────────
@@ -171,6 +204,14 @@ function RoutineCard({
     ),
   ].join(', ');
 
+  // How many supersets this routine contains, so a grouped routine doesn't read
+  // identical to a flat one on the collapsed card.
+  const supersetCount = new Set(
+    routine.routine_exercises
+      .map((re) => re.superset_group)
+      .filter((g): g is number => g != null),
+  ).size;
+
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.7}>
       <Animated.View
@@ -195,6 +236,7 @@ function RoutineCard({
           ) : null}
           <Text style={[styles.exerciseCount, { color: C.textMuted }]}>
             {routine.routine_exercises.length} exercise{routine.routine_exercises.length !== 1 ? 's' : ''}
+            {supersetCount > 0 ? ` · ${supersetCount} superset${supersetCount !== 1 ? 's' : ''}` : ''}
           </Text>
           {exerciseNames.length > 0 && <ExerciseTags exercises={exerciseNames} />}
         </View>
@@ -223,6 +265,127 @@ function RoutineCard({
   );
 }
 
+// ─── Rep Range Input ─────────────────────────────────────────────────────────
+// Two small number fields with a fixed "-" between them, so the user types the
+// low and high ends and never the separator. The canonical value stays a string
+// ("8-12", or just "8" for a fixed count) so the save path (parseReps) and the
+// collapsed-card summary keep working unchanged.
+function splitRange(value: string): { min: string; max: string } {
+  const t = (value ?? '').trim();
+  const dash = t.indexOf('-');
+  if (dash >= 0) return { min: t.slice(0, dash).trim(), max: t.slice(dash + 1).trim() };
+  return { min: t, max: '' };
+}
+
+function joinRange(min: string, max: string): string {
+  const a = min.trim();
+  const b = max.trim();
+  // Collapse to a single number when both ends match (or only one is set), so a
+  // fixed-rep target reads as "8 reps", not "8-8".
+  if (a && b) return a === b ? a : `${a}-${b}`;
+  return a || b;
+}
+
+function RepRangeInput({
+  value,
+  onChange,
+  onFocus,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onFocus?: () => void;
+}) {
+  const { C } = useTheme();
+  const initial = splitRange(value);
+  const [min, setMin] = useState(initial.min);
+  const [max, setMax] = useState(initial.max);
+  // Mirror state into refs so the deferred blur handler reads current values.
+  const minRef = useRef(min);
+  minRef.current = min;
+  const maxRef = useRef(max);
+  maxRef.current = max;
+  // How many of the two fields currently hold focus, so we only tidy up once
+  // focus leaves the range entirely (not while tabbing low <-> high).
+  const focusCount = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  // Re-sync from the parent only when `value` changes from OUTSIDE this field
+  // (e.g. a custom-exercise pick rewrites targetReps). After our own edits the
+  // parent already equals joinRange(min,max), so this no-ops and never clobbers
+  // a half-typed range.
+  useEffect(() => {
+    if (joinRange(min, max) !== (value ?? '').trim()) {
+      const next = splitRange(value);
+      setMin(next.min);
+      setMax(next.max);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const commit = (nextMin: string, nextMax: string) => {
+    setMin(nextMin);
+    setMax(nextMax);
+    onChange(joinRange(nextMin, nextMax));
+  };
+
+  const handleFocus = () => {
+    focusCount.current += 1;
+    onFocus?.();
+  };
+
+  // When focus leaves the whole range, fold a lone high value (the low end was
+  // cleared) into the low field. A single value is stored as just "12", which
+  // reloads into the low field — so settling it here keeps the two boxes showing
+  // exactly what a reopen would, instead of the number hopping high -> low.
+  const handleBlur = () => {
+    focusCount.current = Math.max(0, focusCount.current - 1);
+    // Defer past the sibling focus switch (blur fires before the new focus).
+    setTimeout(() => {
+      if (!mountedRef.current || focusCount.current > 0) return;
+      if (minRef.current === '' && maxRef.current !== '') {
+        commit(maxRef.current, '');
+      }
+    }, 0);
+  };
+
+  const digits = (v: string) => v.replace(/[^0-9]/g, '');
+  const inputStyle = [
+    styles.editorRangeInput,
+    { backgroundColor: C.card, borderColor: C.border, color: C.foreground },
+  ];
+
+  return (
+    <View style={styles.editorRangeRow}>
+      <TextInput
+        value={min}
+        onChangeText={(v) => commit(digits(v), max)}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        keyboardType="number-pad"
+        placeholder="8"
+        placeholderTextColor={C.textMuted}
+        maxLength={3}
+        style={inputStyle}
+        textAlign="center"
+      />
+      <Text style={[styles.editorRangeSep, { color: C.textMuted }]}>-</Text>
+      <TextInput
+        value={max}
+        onChangeText={(v) => commit(min, digits(v))}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        keyboardType="number-pad"
+        placeholder="12"
+        placeholderTextColor={C.textMuted}
+        maxLength={3}
+        style={inputStyle}
+        textAlign="center"
+      />
+    </View>
+  );
+}
+
 // ─── Exercise Editor Card ────────────────────────────────────────────────────
 // Rendered as a ReorderableList item, so it can use the library's drag hooks.
 function ExerciseEditorCard({
@@ -232,6 +395,7 @@ function ExerciseEditorCard({
   onOpenPicker,
   onInputFocus,
   canReorder = true,
+  grouped = false,
 }: {
   exercise: EditorExercise;
   onChange: (ex: EditorExercise) => void;
@@ -239,6 +403,8 @@ function ExerciseEditorCard({
   onOpenPicker: () => void;
   onInputFocus?: () => void;
   canReorder?: boolean;
+  /** Part of a superset — show a left accent so the group reads as a block. */
+  grouped?: boolean;
 }) {
   const { C } = useTheme();
   // react-native-reorderable-list: `drag` begins the drag for this row; isActive
@@ -254,7 +420,7 @@ function ExerciseEditorCard({
   const showBody = expanded && !isActive;
 
   return (
-    <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
+    <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }, grouped && { borderLeftColor: Colors.primary, borderLeftWidth: 3 }]}>
       {/* Header - always visible. The grip is the drag handle (hold to grab);
           the rest of the row still taps to expand / collapse. */}
       <View style={styles.editorHeader}>
@@ -340,16 +506,12 @@ function ExerciseEditorCard({
                 textAlign="center"
               />
             </View>
-            <View style={{ flex: 1 }}>
+            <View style={{ flex: 1.5 }}>
               <Text style={[styles.editorLabel, { color: C.textMuted }]}>Reps</Text>
-              <TextInput
+              <RepRangeInput
                 value={exercise.targetReps}
-                onChangeText={(v) => onChange({ ...exercise, targetReps: v })}
+                onChange={(v) => onChange({ ...exercise, targetReps: v })}
                 onFocus={onInputFocus}
-                placeholder="8-12"
-                placeholderTextColor={C.textMuted}
-                style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
-                textAlign="center"
               />
             </View>
             <View style={{ flex: 1 }}>
@@ -418,39 +580,62 @@ function RoutineEditorSheet({
   // The sheet handles its own search, keyboard lift, and custom creation.
   const [pickerTargetIdx, setPickerTargetIdx] = useState<number | null>(null);
 
-  // The reorderable list is its own scroller; we keep a ref to scroll a focused
-  // card above the keyboard on Android (SDK 54 edge-to-edge doesn't resize the
-  // window for the IME, so lower inputs would otherwise stay buried). We only
-  // need kbHeight from the keyboard hook here — its ScrollView helpers don't
-  // apply to a FlatList. Disabled while the picker is open (it lifts itself).
-  const { kbHeight } = useKeyboardAwareScroll(pickerTargetIdx === null);
+  // Supersets: link row i with the one above into a group (or split it off).
+  // normalizeGroups renumbers contiguous runs + dissolves singletons.
+  const toggleSupersetLink = (i: number) => {
+    if (i < 1) return;
+    haptics.selection();
+    setExercises((prev) => {
+      const next = prev.map((e) => ({ ...e }));
+      const linked = next[i].supersetGroup != null && next[i].supersetGroup === next[i - 1].supersetGroup;
+      if (linked) {
+        // Split the contiguous run AT this boundary: row i and everything below it in
+        // the same run start a fresh group; rows above keep the old id. (Nulling just
+        // row i would leave a 3+ giant set non-contiguous, and normalizeGroups would
+        // then dissolve BOTH remaining singletons — ejecting the member, not splitting.)
+        const oldGid = next[i].supersetGroup;
+        const newGid = 9000 + i;
+        for (let k = i; k < next.length && next[k].supersetGroup === oldGid; k++) {
+          next[k].supersetGroup = newGid;
+        }
+      } else {
+        const gid = next[i - 1].supersetGroup ?? 9000 + i;
+        next[i - 1].supersetGroup = gid;
+        next[i].supersetGroup = gid;
+      }
+      return normalizeGroups(next);
+    });
+  };
+
+  // The reorderable list is its own scroller. On Android (SDK 54 edge-to-edge
+  // doesn't resize the window for the IME) lower inputs would stay buried under
+  // the keyboard, so we lift the focused field above it ourselves. We hand the
+  // keyboard hook an imperative scroller backed by this list so it can reuse its
+  // measure-the-focused-field choreography rather than just scrolling the whole
+  // card to the top (a tall expanded card left its Reps/Notes fields behind the
+  // IME). getOffset reads the live scroll Y from an animated scroll handler (a
+  // shared value, readable on the JS thread); scrollToOffset drives the list.
+  // Disabled while the picker is open (it lifts itself).
   const listRef = useRef<any>(null);
-  // The card the user is editing — retried into view once the IME padding lands.
-  const focusedCardIndexRef = useRef<number | null>(null);
-
-  const scrollCardIntoView = useCallback((index: number) => {
-    if (Platform.OS !== 'android') return;
-    try {
-      listRef.current?.scrollToIndex({ index, viewPosition: 0, animated: true });
-    } catch {}
-  }, []);
-
-  // Bring a card's inputs above the keyboard when one is focused. Android only —
-  // iOS is handled by the KeyboardAvoidingView wrapper. We scroll once eagerly,
-  // then again once kbHeight lands (the bottom padding can arrive after this
-  // first scroll, otherwise leaving lower cards buried behind the IME).
-  const handleCardFocus = useCallback((index: number) => {
-    if (Platform.OS !== 'android') return;
-    focusedCardIndexRef.current = index;
-    setTimeout(() => scrollCardIntoView(index), 50);
-  }, [scrollCardIntoView]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    if (kbHeight <= 0) { focusedCardIndexRef.current = null; return; }
-    if (focusedCardIndexRef.current === null) return;
-    requestAnimationFrame(() => scrollCardIntoView(focusedCardIndexRef.current!));
-  }, [kbHeight, scrollCardIntoView]);
+  const listScrollY = useSharedValue(0);
+  const onListScroll = useAnimatedScrollHandler((e) => {
+    listScrollY.value = e.contentOffset.y;
+  });
+  const listScroller = useMemo(
+    () => ({
+      scrollToOffset: (y: number) => {
+        try {
+          listRef.current?.scrollToOffset?.({ offset: Math.max(0, y), animated: true });
+        } catch {}
+      },
+      getOffset: () => listScrollY.value,
+    }),
+    [listScrollY],
+  );
+  const { kbHeight, scrollFocusedIntoView, scrollProps } = useKeyboardAwareScroll(
+    pickerTargetIdx === null,
+    listScroller,
+  );
 
   // The editor renders via <Portal> (the main app window) instead of a native
   // <Modal>. That's deliberate: on Android a <Modal> is a separate Dialog
@@ -540,6 +725,7 @@ function RoutineEditorSheet({
                 : `${re.reps_min}-${re.reps_max}`,
               restSeconds: re.rest_seconds || 90,
               notes: re.note || '',
+              supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             }))
           : [newExercise()]
       );
@@ -559,6 +745,7 @@ function RoutineEditorSheet({
       // The DB column is `note` (singular). `re.notes` was a typo that silently
       // read undefined, so opening an AI-generated routine dropped its cues.
       notes: re.note || re.notes || '',
+      supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
     });
 
     // Cache-first: hydrate the editor from the cached routine so it is never
@@ -618,6 +805,7 @@ function RoutineEditorSheet({
           reps_min: repsMin,
           reps_max: repsMax,
           rest_seconds: ex.restSeconds,
+          superset_group: ex.supersetGroup ?? null,
           exercises: {
             id: exId,
             name: ex.name,
@@ -677,6 +865,7 @@ function RoutineEditorSheet({
           reps_max,
           rest_seconds: ex.restSeconds,
           note: ex.notes?.trim() ? ex.notes.trim() : null,
+          superset_group: ex.supersetGroup ?? null,
         };
       }),
       phase: 'queued',
@@ -714,7 +903,9 @@ function RoutineEditorSheet({
       setErrorMsg('Please enter a routine name');
       return;
     }
-    const validExercises = exercises.filter((e) => e.name.trim());
+    // Re-normalize after dropping blank-named rows: a filtered-out member could leave
+    // a superset with a single remaining member, which must dissolve to solo.
+    const validExercises = normalizeGroups(exercises.filter((e) => e.name.trim()));
     if (validExercises.length === 0) {
       setErrorMsg('Add at least one exercise');
       return;
@@ -824,22 +1015,43 @@ function RoutineEditorSheet({
               keyExtractor={(ex) => ex.id}
               shouldUpdateActiveItem
               onReorder={({ from, to }: ReorderableListReorderEvent) =>
-                setExercises((prev) => reorderItems(prev, from, to))
+                // Re-normalize so a reorder can't leave a superset's members
+                // non-contiguous (a split run dissolves; see normalizeGroups).
+                setExercises((prev) => normalizeGroups(reorderItems(prev, from, to)))
               }
-              renderItem={({ item: ex, index: i }) => (
+              renderItem={({ item: ex, index: i }) => {
+                const linkedAbove = i > 0 && ex.supersetGroup != null
+                  && ex.supersetGroup === exercises[i - 1].supersetGroup;
+                return (
                 <View style={styles.cardWrap}>
+                  {i > 0 && (
+                    <TouchableOpacity
+                      onPress={() => toggleSupersetLink(i)}
+                      style={[styles.linkRow, linkedAbove && { backgroundColor: colorWithAlpha(Colors.primary, 0.12) }]}
+                      hitSlop={{ top: 4, bottom: 4, left: 8, right: 8 }}
+                      accessibilityRole="button"
+                      accessibilityLabel={linkedAbove ? 'Split this superset' : 'Make a superset with the exercise above'}
+                    >
+                      <Feather name={linkedAbove ? 'link' : 'link-2'} size={11} color={linkedAbove ? Colors.primary : C.textMuted} />
+                      <Text style={[styles.linkRowText, { color: linkedAbove ? Colors.primary : C.textMuted }]}>
+                        {linkedAbove ? 'Superset — tap to split' : 'Superset with above'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                   <ExerciseEditorCard
                     exercise={ex}
+                    grouped={ex.supersetGroup != null}
                     canReorder={exercises.length > 1}
                     onChange={(updated) =>
                       setExercises((prev) => prev.map((e) => (e.id === ex.id ? updated : e)))
                     }
-                    onRemove={() => setExercises((prev) => prev.filter((e) => e.id !== ex.id))}
+                    onRemove={() => setExercises((prev) => normalizeGroups(prev.filter((e) => e.id !== ex.id)))}
                     onOpenPicker={() => setPickerTargetIdx(i)}
-                    onInputFocus={() => handleCardFocus(i)}
+                    onInputFocus={scrollFocusedIntoView}
                   />
                 </View>
-              )}
+                );
+              }}
               style={{ flex: 1 }}
               contentContainerStyle={[
                 styles.editorListContent,
@@ -850,16 +1062,11 @@ function RoutineEditorSheet({
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
-              onScrollToIndexFailed={(info) => {
-                setTimeout(() => {
-                  try {
-                    listRef.current?.scrollToOffset?.({
-                      offset: (info.averageItemLength || 80) * info.index,
-                      animated: true,
-                    });
-                  } catch {}
-                }, 60);
-              }}
+              // Track scroll position (animated handler → shared value) and the
+              // moment the IME padding lands, so the keyboard hook can lift the
+              // focused field above the keyboard. See the listScroller note above.
+              onScroll={onListScroll}
+              onContentSizeChange={scrollProps.onContentSizeChange}
               ListFooterComponent={
                 <TouchableOpacity
                   onPress={() => setExercises((prev) => [...prev, newExercise()])}
@@ -1555,6 +1762,8 @@ const styles = StyleSheet.create({
   },
   // Spacing between exercise cards (the list renders items flush).
   cardWrap: { marginBottom: 8 },
+  linkRow: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 4, paddingVertical: 3, paddingHorizontal: 10, borderRadius: Radius.full, marginBottom: 4 },
+  linkRowText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   sheetInput: {
     paddingHorizontal: Spacing.lg,
     paddingVertical: 14,
@@ -1649,6 +1858,24 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     borderWidth: 1,
     fontSize: FontSize.base,
+  },
+  editorRangeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  editorRangeInput: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 4,
+    paddingVertical: 10,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    fontSize: FontSize.base,
+  },
+  editorRangeSep: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
   },
 
   // Add Exercise Button

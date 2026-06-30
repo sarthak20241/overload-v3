@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type CacheEntity =
   | 'routines'
   | 'exercises'
+  | 'catalog'
   | 'dashboardWorkouts'
   | 'historyWorkouts'
   | 'analyticsWorkouts'
@@ -25,6 +26,7 @@ export type CacheEntity =
 const ENTITIES: CacheEntity[] = [
   'routines',
   'exercises',
+  'catalog',
   'dashboardWorkouts',
   'historyWorkouts',
   'analyticsWorkouts',

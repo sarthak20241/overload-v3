@@ -17,6 +17,23 @@ import type { ActiveWorkoutExercise } from '@/lib/types';
 const ACTIVE_WORKOUT_KEY = 'active_workout_v1';
 const SCHEMA_VERSION = 1 as const;
 
+/**
+ * Transient capture state that lives in the workout SCREEN (not the context), so
+ * it would otherwise be lost on an OS-kill mid-set. Optional + additive, so old
+ * snapshots without it stay valid (no schema bump).
+ */
+export interface ActiveWorkoutCapture {
+  /** Mid-unilateral "L+R": the first side logged but not yet committed to a set. */
+  pendingFirst: { side: 'left' | 'right'; weight_kg: number; reps: number; rpe: number | null } | null;
+  sideEntering: 'left' | 'right';
+  firstSide: 'left' | 'right';
+  /** Whether the open exercise is being logged one-side-at-a-time. */
+  activeUnilateral: boolean;
+  /** Inline duration stopwatch elapsed for the open set (restored paused — dead
+   * time while killed isn't training time). 0 when unused. */
+  stopwatchSeconds: number;
+}
+
 export interface ActiveWorkoutSnapshot {
   schema: typeof SCHEMA_VERSION;
   /** Clerk user id at start, or null for a guest session. */
@@ -41,6 +58,8 @@ export interface ActiveWorkoutSnapshot {
   isPaused: boolean;
   /** `pausedElapsedRef.current` — frozen elapsed seconds while paused. */
   pausedElapsedSeconds: number;
+  /** Transient per-set capture state from the workout screen (see above). */
+  capture?: ActiveWorkoutCapture | null;
   /** When this snapshot was written (epoch ms), for debugging/staleness. */
   savedAt: number;
 }
@@ -74,6 +93,22 @@ export function clearActiveWorkout() {
 /** The last-known active-workout snapshot, or null when there's nothing to resume. */
 export function getActiveWorkoutSnapshot(): ActiveWorkoutSnapshot | null {
   return _snapshot;
+}
+
+// One-shot guard so the resume restore applies a given snapshot's transient
+// capture AT MOST once — a workout-screen re-mount during the same session (tab
+// switch, mini-bar re-entry) must not re-stomp a half-set the user has moved past.
+let _resumeConsumedAt: number | null = null;
+/**
+ * Read a snapshot's transient capture for resume, at most once per snapshot
+ * (keyed on `savedAt`). Returns null if there's no capture or this snapshot's
+ * capture was already consumed.
+ */
+export function takeResumeCapture(snap: ActiveWorkoutSnapshot): ActiveWorkoutCapture | null {
+  if (!snap.capture) return null;
+  if (snap.savedAt === _resumeConsumedAt) return null;
+  _resumeConsumedAt = snap.savedAt;
+  return snap.capture;
 }
 
 // Hydrate the snapshot from AsyncStorage. Call once at app boot before the
