@@ -20,7 +20,7 @@ import { usePreferences, REST_BETWEEN_SIDES_SECONDS } from '@/hooks/usePreferenc
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
-import { getActiveWorkoutSnapshot, clearActiveWorkout } from '@/lib/activeWorkoutPersistence';
+import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture } from '@/lib/activeWorkoutPersistence';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, getPendingWorkouts, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
@@ -269,6 +269,11 @@ export default function ActiveWorkoutScreen() {
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
+  // A resume's transient capture (half-logged unilateral side + inline stopwatch),
+  // applied by the restore effect once currentIdx settles on the resumed index — so
+  // the index-change reset effect can't wipe it (it runs first; the restore effect,
+  // declared after it, wins the same commit).
+  const resumePendingRef = useRef<{ idx: number; cap: ActiveWorkoutCapture } | null>(null);
   const mainScrollRef = useRef<ScrollView>(null);
   // Which keyboard-sensitive input on the main scroll is focused — gates the
   // keyboard-show auto-scroll so the finish sheet / picker inputs don't
@@ -376,9 +381,20 @@ export default function ActiveWorkoutScreen() {
         setLoading(false);
         return;
       }
-      // Returning to the same active session (e.g. after a tab switch).
-      // Started/finished flags live in the context and are already in sync —
-      // don't reset them or completed exercises revert to grey.
+      // Returning to the same active session. This is the PRIMARY resume path:
+      // ResumeWorkoutPrompt flips isActive on (and seeds currentIdx) BEFORE pushing
+      // this screen, so we mount here, not in the cold branch below. Started/finished
+      // flags live in the context and are already in sync — don't reset them or
+      // completed exercises revert to grey.
+      const resumeSnap = getActiveWorkoutSnapshot();
+      if (resumeSnap && resumeSnap.workoutScreenId === id
+          && Date.now() - (resumeSnap.savedAt ?? 0) < 3 * 60 * 60 * 1000) {
+        // One-shot (keyed on savedAt) so a tab-switch / mini-bar re-entry doesn't
+        // re-stomp a half-set the user has moved past. currentIdx is already settled
+        // here, so the restore effect applies it on this same mount.
+        const cap = takeResumeCapture(resumeSnap);
+        if (cap) resumePendingRef.current = { idx: resumeSnap.currentIdx, cap };
+      }
       setLoading(false);
       return;
     }
@@ -402,6 +418,12 @@ export default function ActiveWorkoutScreen() {
     const snapFresh = !!snap && Date.now() - (snap.savedAt ?? 0) < 3 * 60 * 60 * 1000;
     if (snapMatches && snapFresh) {
       workout.hydrateFromSnapshot(snap!);
+      // Stash the transient capture (half-logged unilateral side + inline stopwatch)
+      // for the restore effect to apply once currentIdx settles on the resumed index.
+      // Applying it here would be wiped: hydrate's setCurrentIdx lands on a later
+      // commit, where the index-change reset effect fires and clears it.
+      const cap = takeResumeCapture(snap!);
+      if (cap) resumePendingRef.current = { idx: snap!.currentIdx, cap };
       // Restart the open exercise's sub-timer so its ELAPSED readout counts up
       // instead of sitting frozen at 0 (sub-timers aren't in the snapshot).
       if (snap!.exerciseStarted[snap!.currentIdx] && !snap!.exerciseFinished[snap!.currentIdx]) {
@@ -633,6 +655,37 @@ export default function ActiveWorkoutScreen() {
       else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
   }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises]);
+
+  // Apply a resume's transient capture once currentIdx settles on the resumed
+  // index. Declared AFTER the index-change reset effect so, on the commit where the
+  // index lands, this runs last and wins: the reset effect clears pendingFirst /
+  // the stopwatch, then we restore them. Restored PAUSED — time spent killed isn't
+  // training time. resumePendingRef is consumed (one-shot) so it applies exactly once.
+  useEffect(() => {
+    const pend = resumePendingRef.current;
+    if (!pend || pend.idx !== currentIdx) return;
+    resumePendingRef.current = null;
+    const { cap } = pend;
+    setActiveUnilateral(cap.activeUnilateral);
+    setFirstSide(cap.firstSide);
+    setSideEntering(cap.sideEntering);
+    setPendingFirst(cap.pendingFirst);
+    if (cap.stopwatchSeconds > 0) {
+      swBaseRef.current = cap.stopwatchSeconds;
+      setSwElapsed(cap.stopwatchSeconds);
+      setInputDuration(formatDuration(cap.stopwatchSeconds));
+    }
+  }, [currentIdx]);
+
+  // Mirror the transient per-set capture into the crash snapshot so an OS-kill
+  // mid-set survives: a half-logged unilateral side (buffered in pendingFirst, not
+  // yet a committed set) and the inline duration stopwatch. setCaptureState is a
+  // stable ref write (no context re-render); the on-background persist in useWorkout
+  // reads it live, so it lands on the same save that survives a swipe-away.
+  const setCaptureState = workout.setCaptureState;
+  useEffect(() => {
+    setCaptureState({ pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed });
+  }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
