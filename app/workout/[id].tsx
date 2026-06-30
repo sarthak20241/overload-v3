@@ -28,6 +28,7 @@ import { hydrateCache, readCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import { useSync } from '@/components/SyncProvider';
 import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
+import { linkWithNext, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
 import { SetTypeBadge, countsAsWorkingSet } from '@/components/workout/SetTypeBadge';
 import { SetTypeSheet } from '@/components/workout/SetTypeSheet';
 import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
@@ -1193,10 +1194,40 @@ export default function ActiveWorkoutScreen() {
     // reveal logic can't read a stale frame after a removal.
     pillLayoutsRef.current.splice(currentIdx, 1);
     pillLayoutsRef.current.length = updated.length;
-    workout.updateExercises(updated);
+    // Removing a member can leave a superset with one member — normalize dissolves it.
+    workout.updateExercises(normalizeSupersetGroups(updated));
     setExerciseStarted(newStarted);
     setExerciseFinished(newFinished);
     if (currentIdx >= updated.length) setCurrentIdx(Math.max(0, updated.length - 1));
+  };
+
+  // Ad-hoc supersets: group / ungroup the open exercise with its neighbour mid-workout.
+  // The grouping rides ActiveWorkoutExercise.supersetGroup, so the interleave kicks in on
+  // the next logged set and the group is stamped onto every set at finish (live + past).
+  const clearGroupRest = () => {
+    // Grouping changed: drop any pinned round-rest so its target/owner can't bleed onto
+    // the new shape (a plain between-sets rest is left to run).
+    setRestGroupTarget(null);
+    setRestGroupId(null);
+  };
+  const makeSupersetWithNext = () => {
+    if (currentIdx >= exercises.length - 1) return;
+    haptics.selection();
+    clearGroupRest();
+    const updated = linkWithNext(exercises, currentIdx);
+    workout.updateExercises(updated);
+    // If we're already training the current exercise, start the freshly-grouped member(s)
+    // too — you can't half-start a back-to-back superset, and the interleave hops into them.
+    if (exerciseStarted[currentIdx]) {
+      const g = updated[currentIdx]?.supersetGroup;
+      if (g != null) setExerciseStarted((prev) => prev.map((s, i) => (updated[i]?.supersetGroup === g ? true : s)));
+    }
+  };
+  const breakSuperset = () => {
+    if (currentEx?.supersetGroup == null) return;
+    haptics.selection();
+    clearGroupRest();
+    workout.updateExercises(dissolveGroupAt(exercises, currentIdx));
   };
 
   // Leave the workout screen. After a reload/deep-link this screen can be the
@@ -2114,6 +2145,32 @@ export default function ActiveWorkoutScreen() {
                         Superset · {members.map(m => m.exercise.name).join(' + ')}
                         {nextName ? <Text style={styles.supersetNext}>{`   ·   up next: ${nextName}`}</Text> : null}
                       </Text>
+                    </View>
+                  );
+                })()}
+                {(() => {
+                  // Ad-hoc superset controls: group the open exercise with the next one,
+                  // or break the superset it's in — without leaving the workout.
+                  const g = currentEx.supersetGroup;
+                  const grouped = g != null && exercises.filter(e => e.supersetGroup === g).length >= 2;
+                  const hasNext = currentIdx < exercises.length - 1;
+                  const nextInSameGroup = g != null && hasNext && exercises[currentIdx + 1]?.supersetGroup === g;
+                  const canAddNext = hasNext && !nextInSameGroup;
+                  if (!grouped && !canAddNext) return null;
+                  return (
+                    <View style={styles.supersetActions}>
+                      {grouped ? (
+                        <TouchableOpacity onPress={breakSuperset} style={[styles.supersetActionChip, { borderColor: C.border }]} hitSlop={6} accessibilityRole="button" accessibilityLabel="Break superset">
+                          <Feather name="x" size={10} color={C.textMuted} />
+                          <Text style={[styles.supersetActionText, { color: C.textMuted }]}>Break superset</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                      {canAddNext ? (
+                        <TouchableOpacity onPress={makeSupersetWithNext} style={[styles.supersetActionChip, { borderColor: colorWithAlpha(Colors.primary, 0.4) }]} hitSlop={6} accessibilityRole="button" accessibilityLabel="Superset with the next exercise">
+                          <Feather name="link-2" size={10} color={Colors.primary} />
+                          <Text style={[styles.supersetActionText, { color: Colors.primary }]}>{grouped ? 'Add next' : 'Superset with next'}</Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
                   );
                 })()}
@@ -3098,6 +3155,10 @@ const styles = StyleSheet.create({
   // The "up next" tail on the superset banner — same lime, lighter weight so the
   // member list stays the headline and the hop preview reads as a quiet aside.
   supersetNext: { fontWeight: FontWeight.medium },
+  // Ad-hoc superset action chips (group with next / break) under the exercise header.
+  supersetActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 7 },
+  supersetActionChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 9, borderRadius: Radius.full, borderWidth: 1 },
+  supersetActionText: { fontSize: 11, fontWeight: FontWeight.semibold },
   removeBtn: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.md },
 
   // Timers
