@@ -88,6 +88,25 @@ function nextSupersetStep(exs: ActiveWorkoutExercise[], fromIdx: number, finishe
   return { kind: 'round', idx: rotation[0], restTarget: exs[fromIdx].restSeconds ?? 0 };
 }
 
+// The member the pager WILL hop to after the current set on `fromIdx` is logged —
+// for a predictive "up next" cue in the banner. Mirrors nextSupersetStep but
+// simulates the current set as already logged (done(fromIdx)+1), so "up next" on a
+// pair shows the OTHER member, and the round-closing set shows the next round's
+// first member. Returns null when fromIdx isn't in a 2+ group or the group finishes
+// on this set (nothing to hop to).
+function predictNextMember(exs: ActiveWorkoutExercise[], fromIdx: number, finished: boolean[]): number | null {
+  const g = exs[fromIdx]?.supersetGroup;
+  if (g == null) return null;
+  const members = exs.map((e, i) => (e.supersetGroup === g ? i : -1)).filter((i) => i >= 0);
+  if (members.length < 2) return null;
+  const doneSim = (i: number) => exs[i].sets.filter((s) => s.completed).length + (i === fromIdx ? 1 : 0);
+  const target = (i: number) => exs[i].targetSets ?? 0;
+  const rotation = members.filter((i) => doneSim(i) < target(i) && !finished[i]);
+  if (rotation.length === 0) return null;
+  const minDone = Math.min(...rotation.map(doneSim));
+  return rotation.find((i) => doneSim(i) === minDone) ?? rotation[0];
+}
+
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -2085,11 +2104,15 @@ export default function ActiveWorkoutScreen() {
                   if (g == null) return null;
                   const members = exercises.filter(e => e.supersetGroup === g);
                   if (members.length < 2) return null;
+                  // Predict the hop so the auto-advance isn't a surprise: "up next: Row".
+                  const nextIdx = predictNextMember(exercises, currentIdx, exerciseFinished);
+                  const nextName = nextIdx != null ? exercises[nextIdx]?.exercise.name : null;
                   return (
                     <View style={styles.supersetBanner}>
                       <Feather name="repeat" size={11} color={Colors.primary} />
                       <Text style={[styles.supersetBannerText, { color: Colors.primary }]} numberOfLines={1}>
                         Superset · {members.map(m => m.exercise.name).join(' + ')}
+                        {nextName ? <Text style={styles.supersetNext}>{`   ·   up next: ${nextName}`}</Text> : null}
                       </Text>
                     </View>
                   );
@@ -2225,9 +2248,11 @@ export default function ActiveWorkoutScreen() {
                       ref={interactive ? inputCardRef : undefined}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
                     >
-                      {/* Set marker — tap to set the type (warmup/drop/failure/...). */}
+                      {/* Set marker — tap to set the type (warmup/drop/failure/...). The
+                          chevron makes the otherwise-plain number read as a tappable picker. */}
                       <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
                         <SetTypeBadge type={activeSetType} num={countsAsWorkingSet(activeSetType) ? completedWorking + 1 : undefined} numColor={C.accentText} />
+                        <Feather name="chevron-down" size={9} color={C.textMuted} style={{ marginTop: 1 }} />
                       </TouchableOpacity>
 
                       {/* Intensity (RPE / RIR) — a tappable value that opens the picker. */}
@@ -3070,6 +3095,9 @@ const styles = StyleSheet.create({
   coachCue: { fontSize: 12, fontStyle: 'italic', marginTop: 6, lineHeight: 16 },
   supersetBanner: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
   supersetBannerText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 0.3, flexShrink: 1 },
+  // The "up next" tail on the superset banner — same lime, lighter weight so the
+  // member list stays the headline and the hop preview reads as a quiet aside.
+  supersetNext: { fontWeight: FontWeight.medium },
   removeBtn: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.md },
 
   // Timers
