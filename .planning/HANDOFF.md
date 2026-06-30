@@ -59,9 +59,17 @@ B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
       SUPERSET resume needs no extra state — the round is derived from per-set completion counts.
       Known narrow edge (pre-existing, accepted): committing a 2nd side then minimizing within ~800ms and
       re-entering could transiently re-show the half-set; fresh saves + the savedAt one-shot make it rare.
-   5. Core-loop UX (LAST board theme, mostly subjective polish — get the user's prioritization): log
-      toast/undo, set-type discoverability, superset auto-hop "next: X" cue, rest-over sound/notification,
-      unsaved-changes guard on routine editor + coach output.
+   5. Core-loop UX (LAST board theme, subjective polish). Status 2026-06-30:
+      - DONE: superset auto-hop "up next: X" cue + set-type picker chevron affordance (logger). Type-clean,
+        not yet adversarially reviewed (session limit). User picked these two.
+      - DEFERRED (native dep): rest-over SOUND/notification needs expo-audio or expo-notifications, neither
+        installed — adding one requires a dev-client REBUILD and would break the user's current test build
+        until they rebuild. Offer open: implement with a prefs toggle + bundled chime on the next build.
+      - DEFERRED (wants review first): unsaved-changes guard on the routine editor + coach output. The user
+        wanted it explained (done: it's an "are you sure? discard?" prompt on exit-without-save, covering
+        Expo Router back / Android hardware back / mini-bar / swipe-dismiss as separate exit paths). Build
+        it only after an adversarial review (blocked until the session limit resets ~1:20am IST).
+      - NOT PICKED (this round): log-set toast + undo.
 
 C. NOTE: "steppers hidden until you tap the number" is INTENTIONAL — do not re-flag / do not change.
 
