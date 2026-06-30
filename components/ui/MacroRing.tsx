@@ -11,7 +11,7 @@
  */
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, Path } from 'react-native-svg';
 import Animated, {
   useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, useReducedMotion,
 } from 'react-native-reanimated';
@@ -45,6 +45,18 @@ interface MacroRingProps {
 }
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString();
+
+/** SVG arc path, angles in degrees clockwise from 12 o'clock. */
+function arcPath(cx: number, cy: number, r: number, startDeg: number, endDeg: number): string {
+  const pt = (deg: number) => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)] as const;
+  };
+  const [x0, y0] = pt(startDeg);
+  const [x1, y1] = pt(endDeg);
+  const large = Math.abs(endDeg - startDeg) % 360 > 180 ? 1 : 0;
+  return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
+}
 
 export function MacroRing({
   value, target, color, label, unit = '', size = 72, thickness = 6,
@@ -81,11 +93,12 @@ export function MacroRing({
   }, [overFrac, animate, reduced, overSv]);
   const overProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - overSv.value) }));
   const gap = gapColor ?? C.card;
-  // A short card-coloured gap that sits just AHEAD of the overshoot's rounded
-  // leading cap, so the second lap reads as floating over the base (Google Fit).
-  const gapArcLen = circ * 0.05;
-  const gapPad = thickness * 0.85;
-  const gapProps = useAnimatedProps(() => ({ strokeDashoffset: -(overSv.value * circ + gapPad) }));
+  // A short card-coloured gap drawn as a STATIC arc just past the overshoot's
+  // rounded leading cap (computed by angle, so it can never clip the cap), so the
+  // cap floats over the base ring — the Google Fit "how far the lap went" look.
+  const capDeg = ((thickness * 0.5) / r) * (180 / Math.PI);
+  const gapStartDeg = Math.min(overFrac, 1) * 360 + capDeg + 2;
+  const gapDeg = 12;
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
@@ -119,12 +132,11 @@ export function MacroRing({
                 strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
                 transform={`rotate(-90, ${cx}, ${cy})`}
               />
-              {/* a card-coloured gap just ahead of that cap, lifting it off the base
-                  ring so you read how far the lap has gone (Google Fit style). */}
-              <AnimatedCircle
-                cx={cx} cy={cy} r={r} stroke={gap} strokeWidth={thickness + 2} fill="none"
-                strokeLinecap="butt" strokeDasharray={`${gapArcLen} ${circ}`} animatedProps={gapProps}
-                transform={`rotate(-90, ${cx}, ${cy})`}
+              {/* a card-coloured gap just past that cap (static arc), lifting it off
+                  the base ring so you read how far the lap has gone (Google Fit). */}
+              <Path
+                d={arcPath(cx, cy, r, gapStartDeg, gapStartDeg + gapDeg)}
+                stroke={gap} strokeWidth={thickness + 2} fill="none" strokeLinecap="butt"
               />
             </>
           )}
