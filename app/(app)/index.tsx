@@ -25,14 +25,6 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition } from '@/lib/dietData';
-
-// Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
-const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
-const fmtK = (n: number) => Math.round(n).toLocaleString();
-const fuelCaption = (eaten: number, goal: number) =>
-  eaten > goal
-    ? `${fmtK(eaten)} / ${fmtK(goal)} · +${fmtK(eaten - goal)} kcal`
-    : `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -42,6 +34,12 @@ import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
+
+// Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
+const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
+const fmtK = (n: number) => Math.round(n).toLocaleString();
+const fuelCaption = (eaten: number, goal: number) =>
+  `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 
 // Figma-matched muscle group colors. Module-scoped so consumers get a stable
 // identity across renders.
@@ -656,10 +654,10 @@ export default function DashboardScreen() {
             onPress={() => router.push('/nutrition' as any)}
             style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
           >
-            <View style={[styles.cardGlow, { backgroundColor: Colors.macro.protein, opacity: 0.05 }]} />
+            <View style={[styles.cardGlow, { backgroundColor: C.macro.calories, opacity: 0.05 }]} />
             <View style={styles.statHeader}>
-              <Feather name="zap" size={12} color={Colors.macro.protein} />
-              <Text style={[styles.statLabel, { color: Colors.macro.protein }]}>FUEL</Text>
+              <Feather name="zap" size={12} color={C.macro.calories} />
+              <Text style={[styles.statLabel, { color: C.macro.calories }]}>FUEL</Text>
               <View style={{ flex: 1 }} />
               <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>

@@ -4,9 +4,10 @@
  * display='remaining': a graphite ring whose CENTER is two tiers — the big
  * "LEFT" (or "+OVER") number and a tiny LEFT/OVER caption — with the eaten / goal
  * line rendered as a caption BELOW the ring (via belowCaption) so the center
- * breathes and nothing touches the circumference. Over budget, a SAME-HUE second
- * lap rides just inside the base lap (inset radius, thinner, 0.55 opacity, rounded
- * leading cap) — the Apple/Google subtle overshoot, never a new colour; the signed
+ * breathes and nothing touches the circumference. Over budget, the ring stays
+ * fully lit and a SAME-HUE second lap rides over it; the tip is a rounded arch
+ * floating over the lap below — a clean background gap ahead of it (Google Fit)
+ * plus a soft shadow under the tip (Apple) — never a new colour; the signed
  * number always carries "over" too. Arcs tween previous→new; reduced-motion snaps.
  */
 import React, { useEffect } from 'react';
@@ -65,14 +66,16 @@ export function MacroRing({
 }: MacroRingProps) {
   const { C } = useTheme();
   const reduced = useReducedMotion();
+  const bleed = Math.max(2, thickness * 0.35);
+  const svgSize = size + bleed * 2;
   const r = (size - thickness) / 2;
-  const cx = size / 2;
-  const cy = size / 2;
+  const cx = size / 2 + bleed;
+  const cy = size / 2 + bleed;
   const circ = 2 * Math.PI * r;
 
   const baseFrac = target > 0 ? Math.min(Math.max(value, 0) / target, 1) : 0;
   const over = target > 0 && value > target;
-  const overFrac = over ? Math.min((value - target) / target, 1) : 0;
+  const overRawFrac = over ? (value - target) / target : 0;
 
   const progress = useSharedValue(animate && !reduced ? 0 : baseFrac);
   useEffect(() => {
@@ -83,19 +86,36 @@ export function MacroRing({
   const baseProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - progress.value) }));
 
   const gap = gapColor ?? C.card;
-  // Overshoot as STATIC arcs so the round cap is always clean. The second lap runs
-  // 12 o'clock -> overEnd with a rounded leading cap (the "arch"); a narrow,
-  // round-capped gap in the card colour sits just past that cap so it floats over
-  // the base ring — the graceful Google Fit overshoot. capDeg = half the stroke,
-  // as an angle, so the gap clears the cap's rounded tip.
-  const capDeg = ((thickness * 0.5) / r) * (180 / Math.PI);
-  const overEndDeg = Math.min(overFrac, 0.985) * 360;
-  const gapStartDeg = overEndDeg + capDeg * 2 + 1;
-  const gapDeg = 5;
+  // Google Fit / Apple-style over target: the ring stays fully lit, a same-hue
+  // second lap rides over it from 12 o'clock, and the tip is a rounded arch that
+  // floats over the lap below — separated by a clean full-thickness background
+  // gap ahead of the cap (Google) plus a soft shadow under the tip (Apple). For
+  // very large overages, keep the arch long and readable instead of wrapping to
+  // a tiny remainder; the exact surplus still lives in the center number.
+  const overLapFrac = overRawFrac > 0
+    ? (overRawFrac >= 1 ? Math.min(0.86, 0.74 + Math.min(overRawFrac - 1, 1) * 0.12) : overRawFrac)
+    : 0;
+  const overR = r;
+  const overThickness = thickness;
+  const capDeg = ((overThickness * 0.5) / overR) * (180 / Math.PI); // half-cap, in degrees
+  const gapDeg = Math.max(3, capDeg * 1.2); // visible background ahead of the arch
+  const overEndDeg = Math.min(
+    Math.max(overLapFrac * 360, capDeg * 1.6),
+    360 - (capDeg * 2 + gapDeg),
+  );
+  const shadowDxy = Math.max(thickness * 0.08, 0.8);
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
   const heroColor = valueColor ?? C.foreground;
+  const centerValue = Math.abs(over ? value - target : remaining);
+  const centerText = (over ? '+' : '') + fmtInt(centerValue);
+  const baseCenterFontSize = centerFontSize ?? (display === 'remaining' ? FontSize.xxl : FontSize.base);
+  const centerScale = centerText.length >= 7 ? 0.72 : centerText.length >= 6 ? 0.84 : 1;
+  const resolvedCenterFontSize = display === 'remaining'
+    ? Math.round(baseCenterFontSize * centerScale)
+    : baseCenterFontSize;
+  const centerMaxWidth = Math.max(size * 0.52, size - thickness * 2.6);
 
   const a11yUnit = unit || 'calories';
   const a11yText = over
@@ -107,10 +127,11 @@ export function MacroRing({
       style={{ alignItems: 'center' }}
       accessible
       accessibilityLabel={name ?? label}
-      accessibilityValue={{ text: a11yText }}
+      accessibilityRole="progressbar"
+      accessibilityValue={{ min: 0, max: Math.max(target, value, 0), now: Math.max(value, 0), text: a11yText }}
     >
-      <View style={{ width: size, height: size }}>
-        <Svg width={size} height={size}>
+      <View style={{ width: size, height: size, overflow: 'visible' }}>
+        <Svg width={svgSize} height={svgSize} style={{ position: 'absolute', left: -bleed, top: -bleed }}>
           <Circle cx={cx} cy={cy} r={r} stroke={trackColor ?? colorWithAlpha(color, 0.12)} strokeWidth={thickness} fill="none" />
           <AnimatedCircle
             cx={cx} cy={cy} r={r} stroke={color} strokeWidth={thickness} fill="none"
@@ -119,16 +140,29 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* the second lap, same hue, ending in a clean rounded cap (the arch). */}
+              {/* full-thickness break in the lap below, ahead of the arch */}
               <Path
-                d={arcPath(cx, cy, r, 0.01, overEndDeg)}
-                stroke={color} strokeWidth={thickness} fill="none" strokeLinecap="round"
+                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg + gapDeg)}
+                stroke={gap}
+                strokeWidth={overThickness + 2}
+                fill="none"
               />
-              {/* a narrow round-capped card gap just past the cap, so it floats over
-                  the continuous base ring — the graceful Google Fit overshoot. */}
+              {/* soft shadow under the tip so the arch floats over the lap below */}
               <Path
-                d={arcPath(cx, cy, r, gapStartDeg, gapStartDeg + gapDeg)}
-                stroke={gap} strokeWidth={thickness + 1} fill="none" strokeLinecap="round"
+                d={arcPath(cx, cy, overR, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
+                stroke={colorWithAlpha('#000000', 0.18)}
+                strokeWidth={overThickness}
+                fill="none"
+                strokeLinecap="round"
+                transform={`translate(${shadowDxy * 0.6}, ${shadowDxy})`}
+              />
+              {/* the overshoot lap; its rounded leading cap is the arch */}
+              <Path
+                d={arcPath(cx, cy, overR, 0.01, overEndDeg)}
+                stroke={color}
+                strokeWidth={overThickness}
+                fill="none"
+                strokeLinecap="round"
               />
             </>
           )}
@@ -138,10 +172,13 @@ export function MacroRing({
           {display === 'remaining' ? (
             <>
               <AnimatedNumber
-                value={Math.abs(over ? value - target : remaining)}
+                value={centerValue}
                 durationMs={dur}
                 format={(n) => (over ? '+' : '') + fmtInt(n)}
-                style={[styles.value, { color: heroColor, fontSize: centerFontSize ?? FontSize.xxl }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+                style={[styles.value, { color: heroColor, fontSize: resolvedCenterFontSize, maxWidth: centerMaxWidth }]}
               />
               <Text style={[styles.caption, { color: C.textDim }]}>{over ? 'OVER' : 'LEFT'}</Text>
             </>
@@ -151,7 +188,10 @@ export function MacroRing({
                 value={value}
                 durationMs={dur}
                 format={fmtInt}
-                style={[styles.value, { color: heroColor, fontSize: centerFontSize ?? FontSize.base }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+                style={[styles.value, { color: heroColor, fontSize: baseCenterFontSize, maxWidth: centerMaxWidth }]}
               />
               {showSubline && (
                 <Text style={[styles.subline, { color: C.textDim }]}>of {fmtInt(target)}{unit ? ` ${unit}` : ''}</Text>
@@ -161,7 +201,16 @@ export function MacroRing({
         </View>
       </View>
       {label ? <Text style={[styles.label, { color: C.textDim }]}>{label}</Text> : null}
-      {belowCaption ? <Text style={[styles.belowCaption, { color: C.textDim }]}>{belowCaption}</Text> : null}
+      {belowCaption ? (
+        <Text
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.82}
+          style={[styles.belowCaption, { color: C.textDim, maxWidth: Math.max(size + 44, 120) }]}
+        >
+          {belowCaption}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -170,8 +219,10 @@ const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   value: {
     fontWeight: FontWeight.black,
-    letterSpacing: LetterSpacing.tight,
+    letterSpacing: LetterSpacing.normal,
     fontVariant: ['tabular-nums'],
+    includeFontPadding: false,
+    textAlign: 'center',
   },
   caption: {
     fontSize: 9,

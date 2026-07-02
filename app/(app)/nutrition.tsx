@@ -27,9 +27,7 @@ import type { MealType } from '@/lib/foods';
 
 const fmtK = (n: number) => Math.round(n).toLocaleString();
 const calCaption = (eaten: number, goal: number) =>
-  eaten > goal
-    ? `${fmtK(eaten)} / ${fmtK(goal)} · +${fmtK(eaten - goal)} kcal`
-    : `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
+  `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 
 /** Open the full-screen food search targeting a meal (MFP model, not a drawer).
  *  The target meal goes through setLogMeal (a module store the screens read on
