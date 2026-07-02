@@ -420,7 +420,12 @@ function ExerciseEditorCard({
   const showBody = expanded && !isActive;
 
   return (
-    <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }, grouped && { borderLeftColor: Colors.primary, borderLeftWidth: 3 }]}>
+    <View style={[styles.editorCard, { backgroundColor: C.muted, borderColor: C.borderLight }]}>
+      {/* Superset accent as an overlay strip, NOT a borderLeftWidth toggle: changing a
+          per-side border on this rounded overflow-hidden card reconfigures its Android
+          drawable and (Fabric bug) stops the children painting — split a superset and
+          the card went blank until relinked. A mounted/unmounted child is safe. */}
+      {grouped && <View pointerEvents="none" style={styles.groupAccent} />}
       {/* Header - always visible. The grip is the drag handle (hold to grab);
           the rest of the row still taps to expand / collapse. */}
       <View style={styles.editorHeader}>
@@ -1789,6 +1794,17 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     borderWidth: 1,
     overflow: 'hidden',
+  },
+  // Lime left strip marking a superset member. Absolute overlay (the card's
+  // overflow:hidden clips it to the rounded corner) so the card's own border
+  // config never changes — see the render-site comment.
+  groupAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: Colors.primary,
   },
   editorHeader: {
     flexDirection: 'row',
