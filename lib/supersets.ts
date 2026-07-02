@@ -61,3 +61,52 @@ export function dissolveGroupAt<T extends HasSupersetGroup>(items: T[], i: numbe
   const next = items.map((e) => (e.supersetGroup === g ? { ...e, supersetGroup: null } : { ...e }));
   return normalizeSupersetGroups(next);
 }
+
+/**
+ * Group item `currentIdx` with the items at `picked` (any positions): the picked
+ * items are MOVED to sit directly after currentIdx's run (contiguity is the
+ * invariant), and all of them share one group. Extends currentIdx's existing
+ * group when it has one. A picked member of another group is pulled out of it
+ * (normalize dissolves any singleton it leaves behind).
+ *
+ * Returns the new array plus `indexMap` (old index -> new index) so callers can
+ * remap parallel per-exercise arrays (started/finished flags, layout caches) and
+ * the current index. Picks that are invalid or already in the run are ignored;
+ * with nothing left to do it returns the inputs unchanged (identity map).
+ */
+export function groupWithPartners<T extends HasSupersetGroup>(
+  items: T[],
+  currentIdx: number,
+  picked: number[],
+): { items: T[]; indexMap: number[] } {
+  const identity = { items, indexMap: items.map((_, i) => i) };
+  if (currentIdx < 0 || currentIdx >= items.length) return identity;
+  // currentIdx's contiguous run (just itself when solo).
+  const g = items[currentIdx].supersetGroup ?? null;
+  let start = currentIdx;
+  let end = currentIdx;
+  if (g != null) {
+    while (start > 0 && (items[start - 1].supersetGroup ?? null) === g) start--;
+    while (end < items.length - 1 && (items[end + 1].supersetGroup ?? null) === g) end++;
+  }
+  const pickedClean = [...new Set(picked)]
+    .filter((i) => i >= 0 && i < items.length && (i < start || i > end))
+    .sort((a, b) => a - b);
+  if (pickedClean.length === 0) return identity;
+  const pickedSet = new Set(pickedClean);
+  // New order, expressed as old indices: everything up to the run end (minus the
+  // picked), then the picked, then the rest (minus the picked).
+  const order: number[] = [];
+  for (let i = 0; i <= end; i++) if (!pickedSet.has(i)) order.push(i);
+  for (const i of pickedClean) order.push(i);
+  for (let i = end + 1; i < items.length; i++) if (!pickedSet.has(i)) order.push(i);
+  const gid = g ?? 9000 + currentIdx;
+  const inGroup = new Set<number>(pickedClean);
+  for (let i = start; i <= end; i++) inGroup.add(i);
+  const next = order.map((oldI) => ({
+    ...items[oldI],
+    supersetGroup: inGroup.has(oldI) ? gid : items[oldI].supersetGroup ?? null,
+  }));
+  const indexMap = items.map((_, oldI) => order.indexOf(oldI));
+  return { items: normalizeSupersetGroups(next), indexMap };
+}

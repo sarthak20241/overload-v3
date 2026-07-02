@@ -28,9 +28,10 @@ import { hydrateCache, readCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import { useSync } from '@/components/SyncProvider';
 import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
-import { linkWithNext, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
+import { groupWithPartners, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
 import { SetTypeBadge, countsAsWorkingSet } from '@/components/workout/SetTypeBadge';
 import { SetTypeSheet } from '@/components/workout/SetTypeSheet';
+import { SupersetSheet } from '@/components/workout/SupersetSheet';
 import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
 import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -204,6 +205,8 @@ export default function ActiveWorkoutScreen() {
   const [activeSetType, setActiveSetType] = useState<SetType>('normal');
   const [inputRpe, setInputRpe] = useState<number | null>(null);
   const [setTypeSheetIdx, setSetTypeSheetIdx] = useState<number | null>(null);
+  // Ad-hoc supersets: the partner-picker sheet (create / extend / break a group).
+  const [showSupersetSheet, setShowSupersetSheet] = useState(false);
   // Unilateral "L+R" (migration 0056/0059). The active set logs one side then the
   // other into ONE row. activeUnilateral persists across the exercise's sets (reset
   // on exercise change); firstSide is which side you log first (swappable via the ⇄);
@@ -1210,17 +1213,39 @@ export default function ActiveWorkoutScreen() {
     setRestGroupTarget(null);
     setRestGroupId(null);
   };
-  const makeSupersetWithNext = () => {
-    if (currentIdx >= exercises.length - 1) return;
+  const applySupersetPicks = (picked: number[]) => {
+    // Pair the open exercise with the picked ones: they MOVE to sit right after it
+    // (contiguity is the invariant), extending its group when it already has one.
+    const res = groupWithPartners(exercises, currentIdx, picked);
+    if (res.items === exercises) return; // no valid picks
     haptics.selection();
+    const map = res.indexMap;
+    const remap = <V,>(arr: V[]): V[] => {
+      const out = arr.slice();
+      map.forEach((ni, oi) => { out[ni] = arr[oi]; });
+      return out;
+    };
+    const newIdx = map[currentIdx];
+    const gAfter = res.items[newIdx]?.supersetGroup ?? null;
+    // If we're already training the open exercise, start the whole group — you can't
+    // half-start a back-to-back superset, and the interleave hops into the members.
+    let newStarted = remap(exerciseStarted);
+    if (exerciseStarted[currentIdx] && gAfter != null) {
+      newStarted = newStarted.map((st, i) => (res.items[i]?.supersetGroup === gAfter ? true : st));
+    }
+    const newFinished = remap(exerciseFinished);
+    // Keep the measured pill frames index-aligned with the reordered list.
+    pillLayoutsRef.current = remap(pillLayoutsRef.current);
+    pillLayoutsRef.current.length = res.items.length;
     clearGroupRest();
-    const updated = linkWithNext(exercises, currentIdx);
-    workout.updateExercises(updated);
-    // If we're already training the current exercise, start the freshly-grouped member(s)
-    // too — you can't half-start a back-to-back superset, and the interleave hops into them.
-    if (exerciseStarted[currentIdx]) {
-      const g = updated[currentIdx]?.supersetGroup;
-      if (g != null) setExerciseStarted((prev) => prev.map((s, i) => (updated[i]?.supersetGroup === g ? true : s)));
+    workout.updateExercises(res.items);
+    setExerciseStarted(newStarted);
+    setExerciseFinished(newFinished);
+    if (newIdx !== currentIdx) {
+      // Same exercise, new position: move the pager WITHOUT letting the index-change
+      // reset effect wipe the in-flight capture (stopwatch, half-logged side).
+      prevIdxRef.current = newIdx;
+      setCurrentIdx(newIdx);
     }
   };
   const breakSuperset = () => {
@@ -2149,28 +2174,28 @@ export default function ActiveWorkoutScreen() {
                   );
                 })()}
                 {(() => {
-                  // Ad-hoc superset controls: group the open exercise with the next one,
-                  // or break the superset it's in — without leaving the workout.
+                  // Ad-hoc supersets: ONE entry point. The sheet handles create /
+                  // extend / break, picking partners by NAME (they move adjacent).
                   const g = currentEx.supersetGroup;
                   const grouped = g != null && exercises.filter(e => e.supersetGroup === g).length >= 2;
-                  const hasNext = currentIdx < exercises.length - 1;
-                  const nextInSameGroup = g != null && hasNext && exercises[currentIdx + 1]?.supersetGroup === g;
-                  const canAddNext = hasNext && !nextInSameGroup;
-                  if (!grouped && !canAddNext) return null;
+                  const hasPartners = exercises.some((e, i) =>
+                    i !== currentIdx && !exerciseFinished[i] && (g == null || e.supersetGroup !== g));
+                  // Solo + finished (or nothing to pair with) → nothing to offer.
+                  if (!grouped && (!hasPartners || exerciseFinished[currentIdx])) return null;
                   return (
                     <View style={styles.supersetActions}>
-                      {grouped ? (
-                        <TouchableOpacity onPress={breakSuperset} style={[styles.supersetActionChip, { borderColor: C.border }]} hitSlop={6} accessibilityRole="button" accessibilityLabel="Break superset">
-                          <Feather name="x" size={10} color={C.textMuted} />
-                          <Text style={[styles.supersetActionText, { color: C.textMuted }]}>Break superset</Text>
-                        </TouchableOpacity>
-                      ) : null}
-                      {canAddNext ? (
-                        <TouchableOpacity onPress={makeSupersetWithNext} style={[styles.supersetActionChip, { borderColor: colorWithAlpha(Colors.primary, 0.4) }]} hitSlop={6} accessibilityRole="button" accessibilityLabel="Superset with the next exercise">
-                          <Feather name="link-2" size={10} color={Colors.primary} />
-                          <Text style={[styles.supersetActionText, { color: Colors.primary }]}>{grouped ? 'Add next' : 'Superset with next'}</Text>
-                        </TouchableOpacity>
-                      ) : null}
+                      <TouchableOpacity
+                        onPress={() => { haptics.selection(); setShowSupersetSheet(true); }}
+                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(Colors.primary, 0.4) }]}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel={grouped ? 'Edit superset' : 'Make a superset'}
+                      >
+                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : Colors.primary} />
+                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : Colors.primary }]}>
+                          {grouped ? 'Edit superset' : 'Superset'}
+                        </Text>
+                      </TouchableOpacity>
                     </View>
                   );
                 })()}
@@ -2525,11 +2550,15 @@ export default function ActiveWorkoutScreen() {
                       : isDone
                         ? C.primarySubtle
                         : C.muted,
+                    // Superset members share a lime outline so the group reads as a
+                    // bracket at the nav level too (restrained: alpha'd, not filled).
                     borderColor: isCurrent
                       ? Colors.primary
-                      : isDone
-                        ? C.primaryBorder
-                        : C.border,
+                      : ex.supersetGroup != null
+                        ? colorWithAlpha(Colors.primary, 0.55)
+                        : isDone
+                          ? C.primaryBorder
+                          : C.border,
                   },
                 ]}
               >
@@ -2736,6 +2765,28 @@ export default function ActiveWorkoutScreen() {
         onRemove={() => { if (setTypeSheetIdx !== null && setTypeSheetIdx >= 0) handleDeleteSet(setTypeSheetIdx); }}
         onClose={() => setSetTypeSheetIdx(null)}
       />
+
+      {currentEx && (
+        <SupersetSheet
+          visible={showSupersetSheet}
+          onClose={() => setShowSupersetSheet(false)}
+          exerciseName={currentEx.exercise.name}
+          members={(() => {
+            const g = currentEx.supersetGroup;
+            if (g == null) return [];
+            const names = exercises.filter((e) => e.supersetGroup === g).map((e) => e.exercise.name);
+            return names.length >= 2 ? names : [];
+          })()}
+          options={exercises
+            .map((e, i) => ({ e, i }))
+            .filter(({ e, i }) =>
+              i !== currentIdx && !exerciseFinished[i]
+              && (currentEx.supersetGroup == null || e.supersetGroup !== currentEx.supersetGroup))
+            .map(({ e, i }) => ({ idx: i, name: e.exercise.name, muscleGroup: e.exercise.muscle_group }))}
+          onConfirm={applySupersetPicks}
+          onBreak={breakSuperset}
+        />
+      )}
 
       <RpePickerSheet
         visible={showRpeSheet}
