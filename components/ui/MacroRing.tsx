@@ -147,6 +147,15 @@ export function MacroRing({
                 strokeWidth={overThickness + 2}
                 fill="none"
               />
+              {/* round the far edge of the gap too — the lap ahead ends in its
+                  own rounded cap facing the arch, mirroring Google Fit */}
+              <Path
+                d={arcPath(cx, cy, overR, overEndDeg + capDeg * 2 + gapDeg, overEndDeg + capDeg * 5 + gapDeg)}
+                stroke={color}
+                strokeWidth={overThickness}
+                fill="none"
+                strokeLinecap="round"
+              />
               {/* soft shadow under the tip so the arch floats over the lap below */}
               <Path
                 d={arcPath(cx, cy, overR, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
