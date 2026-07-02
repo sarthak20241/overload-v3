@@ -140,17 +140,21 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* full-thickness break in the lap below, ahead of the arch */}
+              {/* full-thickness break in the lap below — runs well past the
+                  visible gap so the straight cut edge of the lap underneath
+                  hides beneath the round-capped resume drawn next */}
               <Path
-                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg + gapDeg)}
+                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 4 + gapDeg)}
                 stroke={gap}
                 strokeWidth={overThickness + 2}
                 fill="none"
               />
-              {/* round the far edge of the gap too — the lap ahead ends in its
-                  own rounded cap facing the arch, mirroring Google Fit */}
+              {/* the lap ahead resumes with its own rounded cap facing the
+                  arch (Google Fit); its round tip lands exactly on the far
+                  edge of the visible gap and its tail blends into the
+                  untouched lap beyond the break */}
               <Path
-                d={arcPath(cx, cy, overR, overEndDeg + capDeg * 2 + gapDeg, overEndDeg + capDeg * 5 + gapDeg)}
+                d={arcPath(cx, cy, overR, overEndDeg + capDeg * 2 + gapDeg, overEndDeg + capDeg * 8 + gapDeg)}
                 stroke={color}
                 strokeWidth={overThickness}
                 fill="none"
