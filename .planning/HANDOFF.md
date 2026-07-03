@@ -70,6 +70,19 @@ B. **Board fixes** (from .planning/ux-bug-board.md), highest-leverage first:
         Expo Router back / Android hardware back / mini-bar / swipe-dismiss as separate exit paths). Build
         it only after an adversarial review (blocked until the session limit resets ~1:20am IST).
       - NOT PICKED (this round): log-set toast + undo.
+   6. AD-HOC SUPERSETS (user-requested, 2026-07-02/03): create/extend/break supersets mid-workout.
+      Shipped in three steps: 9990bcd (chips v1) -> 8b24e66 (partner-picker SHEET replaces chips: one
+      "Superset" chip under the exercise header opens components/workout/SupersetSheet.tsx; pick partners
+      by NAME, they MOVE adjacent via lib/supersets.ts groupWithPartners which returns an old->new
+      indexMap; grouped pills get a lime outline) -> a26643e (review fixes: 9 confirmed findings, 8 fixed
+      incl. HIGH input-prefill stomp via one-shot skipPrefillRef; any-member auto-start; steal disclosure
+      row; round-rest stop; break reverts auto-started; stale pill frame; pager same-beat offset; iOS
+      sheet scroll). a5ffc8f = user-side Android fix (split blanked cards).
+      DEFERRED (LOW): key pager pages + pills by a stable per-entry uid so an index change TRANSLATES the
+      open page instead of remounting it (today: vertical scroll + keyboard reset when picking an EARLIER
+      exercise). exercise.id alone is NOT a safe key — the picker permits duplicate ids; needs a uid field
+      on ActiveWorkoutExercise assigned at every creation site.
+      Editor cleanup (open): routines.tsx still has its own normalizeGroups — migrate it to lib/supersets.
 
 C. NOTE: "steppers hidden until you tap the number" is INTENTIONAL — do not re-flag / do not change.
 
