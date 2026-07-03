@@ -5,9 +5,10 @@
  * "LEFT" (or "+OVER") number and a tiny LEFT/OVER caption — with the eaten / goal
  * line rendered as a caption BELOW the ring (via belowCaption) so the center
  * breathes and nothing touches the circumference. Over budget, the ring stays
- * fully lit and a SAME-HUE second lap rides over it; the tip is a rounded arch
- * floating over the lap below — a clean background gap ahead of it (Google Fit)
- * plus a soft shadow under the tip (Apple) — never a new colour; the signed
+ * fully lit and a SAME-HUE second lap rides over it; the seam is a coil: the
+ * arch tip floats at the outer line (soft shadow beneath), and across a tight
+ * gap the lap ahead re-emerges tucked INWARD, easing back out to full radius —
+ * sliding under the lap above like Google Fit. Never a new colour; the signed
  * number always carries "over" too. Arcs tween previous→new; reduced-motion snaps.
  */
 import React, { useEffect } from 'react';
@@ -59,6 +60,30 @@ function arcPath(cx: number, cy: number, r: number, startDeg: number, endDeg: nu
   return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
 }
 
+/** Coil-tail path: starts at `startDeg` tucked INWARD (radius r - inset), eases
+ *  back out to the full radius by `riseEndDeg`, then continues on r to `endDeg`.
+ *  Stroked with round caps this is the Google Fit over-target seam — the lap
+ *  ahead dips under the arch riding over it. Angles clockwise from 12 o'clock. */
+function tuckPath(
+  cx: number, cy: number, r: number, inset: number,
+  startDeg: number, riseEndDeg: number, endDeg: number,
+): string {
+  const pt = (deg: number, rr: number) => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return `${cx + rr * Math.cos(a)} ${cy + rr * Math.sin(a)}`;
+  };
+  const steps = 14;
+  const parts: string[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const deg = startDeg + (riseEndDeg - startDeg) * t;
+    const rr = r - inset * ((1 + Math.cos(Math.PI * t)) / 2); // ease in-out
+    parts.push(`${i === 0 ? 'M' : 'L'} ${pt(deg, rr)}`);
+  }
+  parts.push(`A ${r} ${r} 0 0 1 ${pt(endDeg, r)}`);
+  return parts.join(' ');
+}
+
 export function MacroRing({
   value, target, color, label, unit = '', size = 72, thickness = 6,
   valueColor, trackColor, animate = true, display = 'progress', name,
@@ -98,7 +123,7 @@ export function MacroRing({
   const overR = r;
   const overThickness = thickness;
   const capDeg = ((overThickness * 0.5) / overR) * (180 / Math.PI); // half-cap, in degrees
-  const gapDeg = Math.max(3, capDeg * 1.2); // visible background ahead of the arch
+  const gapDeg = Math.max(3, capDeg); // visible background ahead of the arch (snug seam)
   const overEndDeg = Math.min(
     Math.max(overLapFrac * 360, capDeg * 1.6),
     360 - (capDeg * 2 + gapDeg),
@@ -140,25 +165,31 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* full-thickness break in the lap below — runs well past the
-                  visible gap so the straight cut edge of the lap underneath
-                  hides beneath the round-capped resume drawn next */}
+              {/* full-thickness break in the lap below — runs across the whole
+                  tuck transition so the straight cut edge of the lap underneath
+                  never shows above the dipping coil tail drawn next */}
               <Path
-                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 4 + gapDeg)}
+                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 6 + gapDeg)}
                 stroke={gap}
                 strokeWidth={overThickness + 2}
                 fill="none"
               />
-              {/* the lap ahead resumes with its own rounded cap facing the
-                  arch (Google Fit); its round tip lands exactly on the far
-                  edge of the visible gap and its tail blends into the
-                  untouched lap beyond the break */}
+              {/* the coil tail: the lap ahead starts tucked INWARD across the
+                  gap (its round tip a half-thickness inside the arch's line,
+                  sliding under the lap riding over it) and eases back out to
+                  the full radius — the Google Fit seam */}
               <Path
-                d={arcPath(cx, cy, overR, overEndDeg + capDeg * 2 + gapDeg, overEndDeg + capDeg * 8 + gapDeg)}
+                d={tuckPath(
+                  cx, cy, overR, overThickness * 0.5,
+                  overEndDeg + capDeg * 2 + gapDeg,
+                  overEndDeg + capDeg * 6 + gapDeg,
+                  overEndDeg + capDeg * 9 + gapDeg,
+                )}
                 stroke={color}
                 strokeWidth={overThickness}
                 fill="none"
                 strokeLinecap="round"
+                strokeLinejoin="round"
               />
               {/* soft shadow under the tip so the arch floats over the lap below */}
               <Path
