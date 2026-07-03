@@ -651,6 +651,11 @@ export default function ActiveWorkoutScreen() {
   // A light tick whenever the active exercise changes (chip tap, swipe pager, or
   // auto-advance). Seeded with the initial index so it doesn't fire on mount.
   const prevIdxRef = useRef(currentIdx);
+  // One-shot: skip the input-prefill effect on a superset reorder where the OPEN
+  // exercise only changed index (prevIdxRef suppresses the reset effect, but the
+  // prefill effect below would still stomp typed weight/reps — including a
+  // half-logged unilateral side's seeded values).
+  const skipPrefillRef = useRef(false);
   useEffect(() => {
     if (prevIdxRef.current !== currentIdx) {
       haptics.selection();
@@ -783,6 +788,9 @@ export default function ActiveWorkoutScreen() {
 
   // Sync input defaults when switching exercises
   useEffect(() => {
+    // A superset reorder moved the OPEN exercise to a new index — same exercise,
+    // same in-flight inputs; consuming the prefill here would stomp them.
+    if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
     if (!currentEx) return;
     const completedCount = currentEx.sets.filter(s => s.completed).length;
     const prev = currentEx.previousSets;
@@ -1208,10 +1216,15 @@ export default function ActiveWorkoutScreen() {
   // The grouping rides ActiveWorkoutExercise.supersetGroup, so the interleave kicks in on
   // the next logged set and the group is stamped onto every set at finish (live + past).
   const clearGroupRest = () => {
-    // Grouping changed: drop any pinned round-rest so its target/owner can't bleed onto
-    // the new shape (a plain between-sets rest is left to run).
-    setRestGroupTarget(null);
-    setRestGroupId(null);
+    // Grouping changed: a pinned round-rest belongs to the OLD group shape. Stop the
+    // whole rest when one is running — merely unpinning would silently retarget the
+    // countdown to the open exercise's (often shorter) rest and could fire an instant
+    // spurious "rest done" buzz. A plain between-sets rest (no pin) is left to run.
+    if (restGroupTarget != null) stopRestTimer();
+    else {
+      setRestGroupTarget(null);
+      setRestGroupId(null);
+    }
   };
   const applySupersetPicks = (picked: number[]) => {
     // Pair the open exercise with the picked ones: they MOVE to sit right after it
@@ -1227,11 +1240,20 @@ export default function ActiveWorkoutScreen() {
     };
     const newIdx = map[currentIdx];
     const gAfter = res.items[newIdx]?.supersetGroup ?? null;
-    // If we're already training the open exercise, start the whole group — you can't
-    // half-start a back-to-back superset, and the interleave hops into the members.
+    // If ANY member of the new group is already being trained, start them all — you
+    // can't half-start a back-to-back superset, and the interleave hops into the
+    // members. (Any-member, not just the open one: picking a started exercise from
+    // an unstarted one would otherwise leave the group half-started and the auto-hop
+    // would land on the Start gate mid-round.)
     let newStarted = remap(exerciseStarted);
-    if (exerciseStarted[currentIdx] && gAfter != null) {
-      newStarted = newStarted.map((st, i) => (res.items[i]?.supersetGroup === gAfter ? true : st));
+    if (gAfter != null) {
+      const anyStarted = res.items.some((e, i) => e.supersetGroup === gAfter && newStarted[i]);
+      if (anyStarted) {
+        newStarted = newStarted.map((st, i) => (res.items[i]?.supersetGroup === gAfter ? true : st));
+        // The open exercise may have just flipped live — bring up its sub-timer the
+        // way handleStartExercise would.
+        if (!exerciseStarted[currentIdx]) startExerciseTimer();
+      }
     }
     const newFinished = remap(exerciseFinished);
     // Keep the measured pill frames index-aligned with the reordered list.
@@ -1242,16 +1264,32 @@ export default function ActiveWorkoutScreen() {
     setExerciseStarted(newStarted);
     setExerciseFinished(newFinished);
     if (newIdx !== currentIdx) {
-      // Same exercise, new position: move the pager WITHOUT letting the index-change
-      // reset effect wipe the in-flight capture (stopwatch, half-logged side).
+      // Same exercise, new position. Move the pager WITHOUT letting the index-keyed
+      // effects treat it as navigation: prevIdxRef gates the reset effect (stopwatch,
+      // half-logged side), skipPrefillRef gates the input-prefill effect (typed
+      // weight/reps). Drop the remapped pill frame so the pill's remount re-measures
+      // and re-reveals against its true post-reorder position, and move the strip in
+      // the same beat so the reordered pager doesn't paint one frame at the old
+      // offset and then teleport (the currentIdx sync effect re-asserts the value).
       prevIdxRef.current = newIdx;
+      skipPrefillRef.current = true;
+      delete pillLayoutsRef.current[newIdx];
+      scrollX.value = -newIdx * winW;
       setCurrentIdx(newIdx);
     }
   };
   const breakSuperset = () => {
     if (currentEx?.supersetGroup == null) return;
-    haptics.selection();
     clearGroupRest();
+    const g = currentEx.supersetGroup;
+    // Members that grouping auto-started but the user never trained (zero completed
+    // sets) go back behind the Start gate; the open exercise keeps its state. Read
+    // membership BEFORE dissolveGroupAt nulls the group ids.
+    setExerciseStarted((prev) => prev.map((st, i) =>
+      st && i !== currentIdx
+        && exercises[i]?.supersetGroup === g
+        && !exercises[i].sets.some((s) => s.completed)
+        ? false : st));
     workout.updateExercises(dissolveGroupAt(exercises, currentIdx));
   };
 
@@ -2782,7 +2820,19 @@ export default function ActiveWorkoutScreen() {
             .filter(({ e, i }) =>
               i !== currentIdx && !exerciseFinished[i]
               && (currentEx.supersetGroup == null || e.supersetGroup !== currentEx.supersetGroup))
-            .map(({ e, i }) => ({ idx: i, name: e.exercise.name, muscleGroup: e.exercise.muscle_group }))}
+            .map(({ e, i }) => ({
+              idx: i,
+              name: e.exercise.name,
+              muscleGroup: e.exercise.muscle_group,
+              // Picking a member of ANOTHER superset pulls it out (and can dissolve
+              // what's left) — say so on the row instead of doing it silently.
+              pairedWith: e.supersetGroup != null
+                ? exercises
+                    .filter((x, j) => j !== i && x.supersetGroup === e.supersetGroup)
+                    .map((x) => x.exercise.name)
+                    .join(' + ') || undefined
+                : undefined,
+            }))}
           onConfirm={applySupersetPicks}
           onBreak={breakSuperset}
         />

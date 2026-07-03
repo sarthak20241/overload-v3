@@ -22,6 +22,9 @@ export interface SupersetOption {
   idx: number;
   name: string;
   muscleGroup?: string;
+  /** Names of the OTHER superset this exercise currently belongs to, if any —
+   * picking it pulls it out of that group, so the row must say so. */
+  pairedWith?: string;
 }
 
 interface Props {
@@ -82,7 +85,11 @@ export function SupersetSheet({ visible, onClose, exerciseName, members, options
                 </TouchableOpacity>
               </View>
 
-              <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" canCancelContentTouches={false}>
+              {/* No canCancelContentTouches={false} here: unlike the fixed-height
+                  sheets this list can outgrow the screen, and iOS needs to cancel a
+                  row press to start a drag — otherwise full-width rows swallow every
+                  scroll gesture and the CTA below the fold is unreachable. */}
+              <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 {options.length > 0 ? (
                   <>
                     <Text style={[s.sectionLabel, { color: C.textMuted }]}>
@@ -105,7 +112,14 @@ export function SupersetSheet({ visible, onClose, exerciseName, members, options
                           >
                             {on && <Feather name="check" size={13} color={Colors.primaryFg} />}
                           </View>
-                          <Text style={[s.rowTitle, { color: C.foreground, flex: 1 }]} numberOfLines={1}>{o.name}</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[s.rowTitle, { color: C.foreground }]} numberOfLines={1}>{o.name}</Text>
+                            {o.pairedWith ? (
+                              <Text style={[s.rowSub, { color: C.textMuted }]} numberOfLines={1}>
+                                In a superset with {o.pairedWith}. Picking it pulls it out.
+                              </Text>
+                            ) : null}
+                          </View>
                           {o.muscleGroup ? (
                             <Text style={[s.rowMuscle, { color: C.textMuted }]}>{o.muscleGroup}</Text>
                           ) : null}
