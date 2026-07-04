@@ -15,6 +15,7 @@ import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, typ
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { usePreferences, type IntensityScale } from '@/hooks/usePreferences';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
 import { abbreviateNumber } from '@/lib/format';
@@ -338,6 +339,24 @@ function MonthCalendar({
 }
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
+// Stored intensity is always raw RPE (1–10). Render it in the user's chosen
+// scale so history matches the logger: RIR = 10 − RPE (the app default), else
+// the raw RPE. `@` stays the RPE-only marker; RIR spells itself out so a
+// converted value can't be misread as a (much easier) RPE.
+function intensityLabel(
+  rpe: number | null | undefined,
+  rpeRight: number | null | undefined,
+  isUnilateral: boolean,
+  scale: IntensityScale,
+): string | null {
+  const hasRight = isUnilateral && rpeRight != null;
+  if (rpe == null && !hasRight) return null;
+  const conv = (r: number) => (scale === 'rir' ? 10 - r : r);
+  const left = rpe != null ? String(conv(rpe)) : '–';
+  const right = hasRight ? `/${conv(rpeRight!)}` : '';
+  return scale === 'rir' ? `${left}${right} RIR` : `@${left}${right}`;
+}
+
 function SessionCard({
   workout,
   colorIndex,
@@ -352,6 +371,8 @@ function SessionCard({
   openRowRef: { current: SwipeableMethods | null };
 }) {
   const { C } = useTheme();
+  const { prefs } = usePreferences();
+  const intensityScale = prefs.intensityScale;
   const [expanded, setExpanded] = useState(false);
   // Rotate the chevron 180deg as the card expands.
   const chevronRot = useSharedValue(0);
@@ -547,11 +568,12 @@ function SessionCard({
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
                             {setLabel(mt, set)}
                           </Text>
-                          {(set.rpe != null || (set.is_unilateral && set.rpe_right != null)) && (
-                            <Text style={[styles.setPillText, { color: C.textMuted }]}>
-                              @{set.rpe ?? '–'}{set.is_unilateral && set.rpe_right != null ? `/${set.rpe_right}` : ''}
-                            </Text>
-                          )}
+                          {(() => {
+                            const label = intensityLabel(set.rpe, set.rpe_right, !!set.is_unilateral, intensityScale);
+                            return label == null ? null : (
+                              <Text style={[styles.setPillText, { color: C.textMuted }]}>{label}</Text>
+                            );
+                          })()}
                         </View>
                       ))}
                     </View>
