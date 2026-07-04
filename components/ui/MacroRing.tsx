@@ -5,11 +5,12 @@
  * "LEFT" (or "+OVER") number and a tiny LEFT/OVER caption — with the eaten / goal
  * line rendered as a caption BELOW the ring (via belowCaption) so the center
  * breathes and nothing touches the circumference. Over budget, the ring stays
- * fully lit and a SAME-HUE second lap rides over it; the seam is a coil: the
- * arch tip floats at the outer line (soft shadow beneath), and across a tight
- * gap the lap ahead re-emerges tucked INWARD, easing back out to full radius —
- * sliding under the lap above like Google Fit. Never a new colour; the signed
- * number always carries "over" too. Arcs tween previous→new; reduced-motion snaps.
+ * fully lit and a SAME-HUE second lap rides over it; the seam is a spiral: the
+ * arch cap completes the circle at the outer line while the lap ahead dives
+ * smoothly INWARD beneath it — the bands overlap, no break in the silhouette,
+ * separated only by the cap's soft shadow (Google Fit's over-goal seam). Never
+ * a new colour; the signed number always carries "over" too. Arcs tween
+ * previous→new; reduced-motion snaps.
  */
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -62,25 +63,31 @@ function arcPath(cx: number, cy: number, r: number, startDeg: number, endDeg: nu
   return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
 }
 
-/** Coil-tail path: starts at `startDeg` tucked INWARD (radius r - inset), eases
- *  back out to the full radius by `riseEndDeg`, then continues on r to `endDeg`.
- *  Stroked with round caps this is the Google Fit over-target seam — the lap
- *  ahead dips under the arch riding over it. Angles clockwise from 12 o'clock. */
-function tuckPath(
+/** Seam-tail path: the lap ahead of the arch at an over-target seam. Starts at
+ *  `startDeg` a half-thickness INWARD, hidden UNDER the second lap riding at
+ *  full radius (the bands overlap radially — no break in the circle), holds
+ *  that inset until `holdEndDeg` (just past the arch cap), rises back out to
+ *  the full radius with a cosine ease by `riseEndDeg`, then continues on r to
+ *  `endDeg` to blend into the untouched lap. This is the Google Fit over-goal
+ *  seam: a completing cap at one end, a smooth diving curve at the other,
+ *  separated only by the cap's shadow. Angles clockwise from 12 o'clock. */
+function seamTailPath(
   cx: number, cy: number, r: number, inset: number,
-  startDeg: number, riseEndDeg: number, endDeg: number,
+  startDeg: number, holdEndDeg: number, riseEndDeg: number, endDeg: number,
 ): string {
   const pt = (deg: number, rr: number) => {
     const a = ((deg - 90) * Math.PI) / 180;
     return `${cx + rr * Math.cos(a)} ${cy + rr * Math.sin(a)}`;
   };
+  const ri = r - inset;
+  const parts: string[] = [`M ${pt(startDeg, ri)}`];
+  parts.push(`A ${ri} ${ri} 0 0 1 ${pt(holdEndDeg, ri)}`);
   const steps = 14;
-  const parts: string[] = [];
-  for (let i = 0; i <= steps; i++) {
+  for (let i = 1; i <= steps; i++) {
     const t = i / steps;
-    const deg = startDeg + (riseEndDeg - startDeg) * t;
+    const deg = holdEndDeg + (riseEndDeg - holdEndDeg) * t;
     const rr = r - inset * ((1 + Math.cos(Math.PI * t)) / 2); // ease in-out
-    parts.push(`${i === 0 ? 'M' : 'L'} ${pt(deg, rr)}`);
+    parts.push(`L ${pt(deg, rr)}`);
   }
   parts.push(`A ${r} ${r} 0 0 1 ${pt(endDeg, r)}`);
   return parts.join(' ');
@@ -125,10 +132,9 @@ export function MacroRing({
   const overR = r;
   const overThickness = thickness;
   const capDeg = ((overThickness * 0.5) / overR) * (180 / Math.PI); // half-cap, in degrees
-  const gapDeg = Math.max(3, capDeg); // visible background ahead of the arch (snug seam)
   const overEndDeg = Math.min(
     Math.max(overLapFrac * 360, capDeg * 1.6),
-    360 - (capDeg * 2 + gapDeg),
+    360 - capDeg * 2,
   );
   // Tip shadow: cast along the travel tangent (into the gap, ahead of the arch)
   // so the overhang reads correctly at ANY over-fraction; a fixed screen offset
@@ -213,27 +219,29 @@ export function MacroRing({
           />
           {overshoot && over && (
             <>
-              {/* full-thickness break in the lap below — runs across the whole
-                  tuck transition so the straight cut edge of the lap underneath
-                  never shows above the dipping coil tail drawn next */}
+              {/* erase the lap below across the dive zone so only the seam tail
+                  shows there — above its rising curve the card shows through as
+                  a tapering wedge that the arch cap plugs, keeping the circle's
+                  silhouette complete */}
               <AnimatedPath
                 animatedProps={seamProps}
-                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 6 + gapDeg)}
+                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 8.5)}
                 stroke={gap}
                 strokeWidth={overThickness + 2}
                 fill="none"
               />
-              {/* the coil tail: the lap ahead starts tucked INWARD across the
-                  gap (its round tip a half-thickness inside the arch's line,
-                  sliding under the lap riding over it) and eases back out to
-                  the full radius — the Google Fit seam */}
+              {/* the seam tail: the lap ahead dives INWARD and slides UNDER the
+                  second lap (its hidden tip starts behind the arch, the bands
+                  overlap radially — no break in the ring), then rises smoothly
+                  back to the full radius — the Google Fit seam */}
               <AnimatedPath
                 animatedProps={seamProps}
-                d={tuckPath(
-                  cx, cy, overR, overThickness * 0.5,
-                  overEndDeg + capDeg * 2 + gapDeg,
-                  overEndDeg + capDeg * 6 + gapDeg,
-                  overEndDeg + capDeg * 9 + gapDeg,
+                d={seamTailPath(
+                  cx, cy, overR, overThickness * 0.4,
+                  overEndDeg - capDeg * 1.5,
+                  overEndDeg + capDeg,
+                  overEndDeg + capDeg * 8.5,
+                  overEndDeg + capDeg * 11.5,
                 )}
                 stroke={color}
                 strokeWidth={overThickness}
