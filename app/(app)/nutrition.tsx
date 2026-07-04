@@ -58,6 +58,12 @@ export default function NutritionScreen() {
   const { byMeal, totals } = useTodayNutrition();
 
   const eaten = { kcal: totals.kcal, protein: totals.protein_g, carb: totals.carb_g, fat: totals.fat_g };
+  // One story, one narrator: Drona's line must agree with the ring. Placeholder
+  // logic until the coach reads the day for real (edge fn).
+  const surplus = eaten.kcal - TARGETS.kcal;
+  const dronaLine = surplus > 0
+    ? `You're ${fmtK(surplus)} over today. Ease up at dinner and the week still balances.`
+    : "Good start. Get one more protein hit in at lunch and you're on pace.";
 
   const s = makeStyles(C);
 
@@ -75,7 +81,7 @@ export default function NutritionScreen() {
           </Pressable>
           <Text style={s.title}>Today</Text>
           <View style={s.streak}>
-            <Feather name="zap" size={12} color={Colors.macro.protein} />
+            <Feather name="zap" size={12} color={Colors.stat.streak} />
             <Text style={s.streakTxt}>3</Text>
           </View>
         </View>
@@ -100,7 +106,7 @@ export default function NutritionScreen() {
         {/* Drona line */}
         <View style={s.drona}>
           <View style={s.avatar}><Feather name="zap" size={11} color={C.accentText} /></View>
-          <Text style={s.dronaTxt}>Good start. Get one more protein hit in at lunch and you're on pace.</Text>
+          <Text style={s.dronaTxt}>{dronaLine}</Text>
         </View>
 
         {/* Meal sections */}
@@ -126,8 +132,8 @@ export default function NutritionScreen() {
                   <View style={s.macros}>
                     <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
                     <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                    <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)} C</Text>
-                    <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)} F</Text>
+                    <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
+                    <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
                   </View>
                 </View>
               ))}

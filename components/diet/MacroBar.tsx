@@ -4,17 +4,19 @@
  * The decided macro encoding (round 3): three of these stacked on a shared left
  * baseline are directly length-comparable AND carry the numbers a ring center
  * can't — eaten, target, and (when over) the signed surplus, on one tabular line.
- * Over target stays the SAME hue (never amber/oxblood): the fill reaches 100% then a
- * same-hue 0.55-opacity over-segment rides over it from the left, and the value
- * prints the surplus. Two verbosities: compact (dashboard, "131/56 +75") and verbose
- * (diary, "131 / 56 g · +75 over"). Fills tween prev→new; reduced-motion snaps.
+ * Over target stays the SAME hue (never amber/oxblood): the fill reaches 100%, then
+ * a LIGHTER same-hue over-segment (the hue opaquely pre-blended toward the card,
+ * mixHex — same-hue alpha over the same solid fill is a no-op) rides over it from
+ * the left, and the value prints the surplus. Two verbosities: compact (dashboard,
+ * "131/56 +75") and verbose (diary, "131 / 56 g · +75 over"). Fills tween
+ * prev→new; reduced-motion snaps.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withDelay, Easing, useReducedMotion,
 } from 'react-native-reanimated';
-import { FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
+import { FontSize, FontWeight, colorWithAlpha, mixHex } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 
 interface Props {
@@ -38,7 +40,7 @@ export function MacroBar({ label, name, value, target, color, verbose = false, a
   const pct = target > 0 ? Math.min(value / target, 1) : 0;
   const over = target > 0 && value > target;
   const overFrac = over ? Math.min((value - target) / target, 1) : 0;
-  const overColor = colorWithAlpha(color, 0.55);
+  const overColor = mixHex(color, C.card, 0.45);
 
   const frac = useSharedValue(animate && !reduced ? 0 : pct);
   const oFrac = useSharedValue(animate && !reduced ? 0 : overFrac);
@@ -91,7 +93,7 @@ export function MacroBar({ label, name, value, target, color, verbose = false, a
       </View>
       <Text style={[verbose ? s.valueVerbose : s.valueCompact]} numberOfLines={1}>
         <Text style={{ color, fontWeight: FontWeight.bold }}>{r(value)}</Text>
-        <Text style={{ color: C.textDim }}>{verbose ? ` / ${r(target)} g` : `/${r(target)}`}</Text>
+        <Text style={{ color: C.textMuted }}>{verbose ? ` / ${r(target)} g` : `/${r(target)}`}</Text>
         {over && <Text style={{ color, fontWeight: FontWeight.semibold }}>{verbose ? ` · +${r(value - target)} over` : ` +${r(value - target)}`}</Text>}
       </Text>
     </View>
@@ -105,5 +107,5 @@ const s = StyleSheet.create({
   track: { flex: 1, overflow: 'hidden' },
   fill: { position: 'absolute', left: 0, top: 0 },
   valueCompact: { minWidth: 76, textAlign: 'right', fontSize: 11, fontVariant: ['tabular-nums'] },
-  valueVerbose: { minWidth: 118, textAlign: 'right', fontSize: FontSize.sm, fontVariant: ['tabular-nums'] },
+  valueVerbose: { minWidth: 132, textAlign: 'right', fontSize: FontSize.sm, fontVariant: ['tabular-nums'] },
 });

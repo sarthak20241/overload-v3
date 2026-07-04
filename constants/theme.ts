@@ -152,10 +152,9 @@ export const Colors = {
     max: '#facc15', // 3+ sessions
   },
 
-  // Macro accents (diet day-view rings, food rows). Categorical, theme-independent,
-  // in the muted register of `muscle`. Calories graphite reads as the neutral primary;
-  // protein/carbs/fat are earthy and co-equal — lime is reserved for the one action,
-  // never for data (see feedback: calm/mature, not flashy).
+  // @deprecated LEGACY macro palette — use the theme-aware C.macro
+  // (Colors.light.macro / Colors.dark.macro) via useTheme instead. These stale
+  // values drifted from the live hues and must not gain new call sites.
   macro: {
     calories: '#2c2c26',
     protein: '#b4623c',
@@ -172,6 +171,22 @@ export const Colors = {
   success: '#10b981',
   warning: '#f59e0b',
 };
+
+// Opaquely mix two hex colours (t = 0 → a, t = 1 → b). Use for "a lighter/darker
+// shade of this data hue on this surface" instead of stacking translucent layers:
+// an alpha of a colour drawn OVER that same solid colour is a pixel-identical
+// no-op, and stacked translucency needs per-theme hand tuning.
+export function mixHex(a: string, b: string, t: number): string {
+  const ch = (hex: string) => {
+    const h = hex.replace('#', '');
+    const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+  };
+  const [ar, ag, ab] = ch(a);
+  const [br, bg, bb] = ch(b);
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * t);
+  return `#${[mix(ar, br), mix(ag, bg), mix(ab, bb)].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+}
 
 // Convert a hex colour + alpha (0–1) to an rgba() string. Use instead of
 // hand-writing rgba() literals or `${hex}33`-style suffixes, so tinted fills

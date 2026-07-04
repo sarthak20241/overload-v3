@@ -11,17 +11,19 @@
  * sliding under the lap above like Google Fit. Never a new colour; the signed
  * number always carries "over" too. Arcs tween previous→new; reduced-motion snaps.
  */
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 import Animated, {
-  useSharedValue, useAnimatedProps, withTiming, Easing, useReducedMotion,
+  useSharedValue, useAnimatedProps, withTiming, withDelay, withSequence,
+  Easing, useReducedMotion, FadeIn,
 } from 'react-native-reanimated';
 import { FontWeight, FontSize, LetterSpacing, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 interface MacroRingProps {
   value: number;
@@ -128,7 +130,53 @@ export function MacroRing({
     Math.max(overLapFrac * 360, capDeg * 1.6),
     360 - (capDeg * 2 + gapDeg),
   );
-  const shadowDxy = Math.max(thickness * 0.08, 0.8);
+  // Tip shadow: cast along the travel tangent (into the gap, ahead of the arch)
+  // so the overhang reads correctly at ANY over-fraction; a fixed screen offset
+  // only works while the tip sits in the lower-right quadrant. In arcPath coords
+  // the clockwise tangent at angle-from-12 θ is (cos θ, sin θ).
+  const tipA = (overEndDeg * Math.PI) / 180;
+  const shadowLen = Math.max(thickness * 0.1, 1);
+  const shadowDx = Math.cos(tipA) * shadowLen;
+  const shadowDy = Math.sin(tipA) * shadowLen;
+
+  // The over-crossing in time: the second lap SWEEPS in from 12 o'clock after
+  // the base lap closes, and the seam accessories (break, coil tail, shadow)
+  // fade in only as the arch arrives — the cut never pre-scars a still-filling
+  // ring. Retargets while already over move the cap and briefly dip the seam.
+  const snap = !animate || reduced;
+  const overLapTarget = over ? overEndDeg / 360 : 0;
+  const overSweep = useSharedValue(snap ? overLapTarget : 0);
+  const seamSv = useSharedValue(snap && over ? 1 : 0);
+  const wasOverRef = useRef(false);
+  useEffect(() => {
+    const wasOver = wasOverRef.current;
+    wasOverRef.current = over;
+    if (snap) {
+      overSweep.value = overLapTarget;
+      seamSv.value = over ? 1 : 0;
+      return;
+    }
+    if (!over) {
+      overSweep.value = 0;
+      seamSv.value = 0;
+      return;
+    }
+    const sweepDur = Math.min(300 + 450 * overLapTarget, 750);
+    if (!wasOver) {
+      overSweep.value = 0;
+      seamSv.value = 0;
+      overSweep.value = withDelay(480, withTiming(overLapTarget, { duration: sweepDur, easing: Easing.out(Easing.cubic) }));
+      seamSv.value = withDelay(480 + Math.max(sweepDur - 150, 0), withTiming(1, { duration: 180 }));
+    } else {
+      overSweep.value = withTiming(overLapTarget, { duration: 300, easing: Easing.out(Easing.cubic) });
+      seamSv.value = withSequence(
+        withTiming(0, { duration: 90 }),
+        withDelay(230, withTiming(1, { duration: 180 })),
+      );
+    }
+  }, [over, overLapTarget, snap, overSweep, seamSv]);
+  const overProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - overSweep.value) }));
+  const seamProps = useAnimatedProps(() => ({ opacity: seamSv.value }));
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
@@ -168,7 +216,8 @@ export function MacroRing({
               {/* full-thickness break in the lap below — runs across the whole
                   tuck transition so the straight cut edge of the lap underneath
                   never shows above the dipping coil tail drawn next */}
-              <Path
+              <AnimatedPath
+                animatedProps={seamProps}
                 d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 6 + gapDeg)}
                 stroke={gap}
                 strokeWidth={overThickness + 2}
@@ -178,7 +227,8 @@ export function MacroRing({
                   gap (its round tip a half-thickness inside the arch's line,
                   sliding under the lap riding over it) and eases back out to
                   the full radius — the Google Fit seam */}
-              <Path
+              <AnimatedPath
+                animatedProps={seamProps}
                 d={tuckPath(
                   cx, cy, overR, overThickness * 0.5,
                   overEndDeg + capDeg * 2 + gapDeg,
@@ -191,22 +241,32 @@ export function MacroRing({
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
-              {/* soft shadow under the tip so the arch floats over the lap below */}
-              <Path
+              {/* two-pass tip shadow (wide faint + tight) cast into the gap —
+                  a fake penumbra, no hard printed edge, no SVG filters */}
+              <AnimatedPath
+                animatedProps={seamProps}
                 d={arcPath(cx, cy, overR, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
-                stroke={colorWithAlpha('#000000', 0.18)}
-                strokeWidth={overThickness}
+                stroke={colorWithAlpha('#000000', 0.06)}
+                strokeWidth={overThickness + 2.5}
                 fill="none"
                 strokeLinecap="round"
-                transform={`translate(${shadowDxy * 0.6}, ${shadowDxy})`}
+                transform={`translate(${shadowDx}, ${shadowDy})`}
               />
-              {/* the overshoot lap; its rounded leading cap is the arch */}
-              <Path
-                d={arcPath(cx, cy, overR, 0.01, overEndDeg)}
-                stroke={color}
+              <AnimatedPath
+                animatedProps={seamProps}
+                d={arcPath(cx, cy, overR, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
+                stroke={colorWithAlpha('#000000', 0.12)}
                 strokeWidth={overThickness}
                 fill="none"
                 strokeLinecap="round"
+                transform={`translate(${shadowDx}, ${shadowDy})`}
+              />
+              {/* the second lap sweeps in from 12 o'clock; its rounded leading
+                  cap is the arch */}
+              <AnimatedCircle
+                cx={cx} cy={cy} r={overR} stroke={color} strokeWidth={overThickness} fill="none"
+                strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
+                transform={`rotate(-90, ${cx}, ${cy})`}
               />
             </>
           )}
@@ -216,6 +276,7 @@ export function MacroRing({
           {display === 'remaining' ? (
             <>
               <AnimatedNumber
+                key={over ? 'over' : 'left'}
                 value={centerValue}
                 durationMs={dur}
                 format={(n) => (over ? '+' : '') + fmtInt(n)}
@@ -224,7 +285,13 @@ export function MacroRing({
                 minimumFontScale={0.7}
                 style={[styles.value, { color: heroColor, fontSize: resolvedCenterFontSize, maxWidth: centerMaxWidth }]}
               />
-              <Text style={[styles.caption, { color: C.textDim }]}>{over ? 'OVER' : 'LEFT'}</Text>
+              <Animated.Text
+                key={over ? 'OVER' : 'LEFT'}
+                entering={snap ? undefined : FadeIn.duration(160)}
+                style={[styles.caption, { color: C.textMuted }]}
+              >
+                {over ? 'OVER' : 'LEFT'}
+              </Animated.Text>
             </>
           ) : (
             <>
@@ -238,7 +305,7 @@ export function MacroRing({
                 style={[styles.value, { color: heroColor, fontSize: baseCenterFontSize, maxWidth: centerMaxWidth }]}
               />
               {showSubline && (
-                <Text style={[styles.subline, { color: C.textDim }]}>of {fmtInt(target)}{unit ? ` ${unit}` : ''}</Text>
+                <Text style={[styles.subline, { color: C.textMuted }]}>of {fmtInt(target)}{unit ? ` ${unit}` : ''}</Text>
               )}
             </>
           )}
@@ -250,7 +317,7 @@ export function MacroRing({
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.82}
-          style={[styles.belowCaption, { color: C.textDim, maxWidth: Math.max(size + 44, 120) }]}
+          style={[styles.belowCaption, { color: C.textMuted, maxWidth: Math.max(size + 44, 120) }]}
         >
           {belowCaption}
         </Text>
