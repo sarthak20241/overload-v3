@@ -16,6 +16,9 @@ import { Portal } from '@/components/ui/Portal';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
+import { setVolumeKg } from '@/lib/sets';
+import { metricTypeOf, type MetricType } from '@/lib/exercises';
+import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -48,7 +51,24 @@ interface WorkoutSetRaw {
   weight_kg: number;
   reps: number;
   exercise_id: string;
-  exercises?: { id: string; name: string; muscle_group: string };
+  duration_seconds?: number | null;
+  distance_m?: number | null;
+  resistance?: number | null;
+  set_type?: string | null;
+  is_unilateral?: boolean | null;
+  reps_right?: number | null;
+  weight_kg_right?: number | null;
+  exercises?: { id: string; name: string; muscle_group: string; metric_type?: string | null };
+}
+
+/** Metric type of the most recent session that logged `name` (defaults weight_reps).
+ * Pins one unit per exercise so a series/PR never mixes kg with seconds/metres. */
+function metricTypeForName(sessionsAsc: { workout_sets?: WorkoutSetRaw[] }[], name: string): MetricType {
+  for (let i = sessionsAsc.length - 1; i >= 0; i--) {
+    const s = (sessionsAsc[i].workout_sets || []).find((x) => x.exercises?.name === name);
+    if (s) return metricTypeOf({ metric_type: s.exercises?.metric_type });
+  }
+  return 'weight_reps';
 }
 
 function formatDateShort(iso: string) {
@@ -1204,7 +1224,9 @@ export default function AnalyticsScreen() {
     : 0;
   const weekSets = weekWorkouts.reduce((s, w) => s + (w.workout_sets?.length || 0), 0);
   const weekReps = weekWorkouts.reduce(
-    (s, w) => s + (w.workout_sets?.reduce((r, set) => r + (set.reps || 0), 0) || 0), 0
+    // Unilateral sets count both sides' reps (weight is shared); one row still = one set.
+    (s, w) => s + (w.workout_sets?.reduce((r, set) => r + (set.reps || 0)
+      + ((set as any).is_unilateral ? ((set as any).reps_right || 0) : 0), 0) || 0), 0
   );
 
   const volumeSeries = useMemo(() => get6WeekVolume(workouts), [workouts]);
@@ -1215,44 +1237,77 @@ export default function AnalyticsScreen() {
   )].sort(), [workouts]);
 
   const exerciseSessionData = useMemo(() => {
-    if (!selectedExercise) return { data: [] as number[], labels: [] as string[], weights: [] as number[] };
+    const empty = { data: [] as number[], labels: [] as string[], primaries: [] as number[], metricType: 'weight_reps' as MetricType, isWeight: true };
+    if (!selectedExercise) return empty;
     const sessions = workouts.slice().reverse();
-    const byDate: { date: string; weight: number; volume: number }[] = [];
+    // One metric type for the whole series — taken from the most recent session that
+    // logged this name — so every point and the PR are computed + formatted in the same
+    // unit even if a custom exercise shadows a library name with a different metric type.
+    const metricType = metricTypeForName(sessions, selectedExercise);
+    const byDate: { date: string; primary: number; volume: number }[] = [];
     sessions.forEach((w) => {
-      const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === selectedExercise);
+      const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === selectedExercise && s.set_type !== 'warmup');
       if (sets.length === 0) return;
-      const maxWeight = Math.max(...sets.map((s) => s.weight_kg || 0));
-      const volume = sets.reduce((v, s) => v + (s.weight_kg || 0) * (s.reps || 0), 0);
-      byDate.push({ date: w.started_at, weight: maxWeight, volume });
+      // Primary = the exercise's headline magnitude (heaviest / most reps / longest /
+      // farthest), in its native unit. Counts both sides of a unilateral set.
+      const primary = setBestValue(metricType, sets as DisplaySet[]);
+      // Volume (kg) only means something for loaded lifts; warmups already filtered.
+      const volume = sets.reduce((v, s) => v + setVolumeKg(s as any), 0);
+      byDate.push({ date: w.started_at, primary, volume });
     });
     const recent = byDate.slice(-10);
+    const isWeight = isWeightPrimary(metricType);
+    // Non-weight exercises have no meaningful kg volume, so always plot the primary.
+    const useVolume = isWeight && chartMode === 'volume';
     return {
-      data: recent.map((p) => chartMode === 'weight' ? p.weight : p.volume),
+      data: recent.map((p) => useVolume ? p.volume : p.primary),
       labels: recent.map((p) => formatDateShort(p.date)),
-      weights: recent.map((p) => p.weight),
+      primaries: recent.map((p) => p.primary),
+      metricType,
+      isWeight,
     };
   }, [workouts, selectedExercise, chartMode]);
 
-  const pr = exerciseSessionData.weights.length > 0 ? Math.max(...exerciseSessionData.weights) : null;
+  const prMetricType = exerciseSessionData.metricType;
+  const pr = exerciseSessionData.primaries.length > 0 ? Math.max(...exerciseSessionData.primaries) : null;
+  const prLabel = pr != null ? formatPrimaryValue(prMetricType, pr) : null;
+  // What the chart's current series should read as: kg volume when in volume mode,
+  // otherwise the metric's primary unit (kg / reps / mm:ss / km).
+  const showingVolume = exerciseSessionData.isWeight && chartMode === 'volume';
+  const formatChartValue = (v: number) =>
+    showingVolume ? `${abbreviateNumber(v)} kg` : formatPrimaryValue(prMetricType, v);
 
   // ── Personal records ──
   const personalRecords = useMemo(() => {
-    const prMap: Record<string, { max: number; trend: number }> = {};
+    const prMap: Record<string, { label: string; max: number; trend: number; isWeight: boolean }> = {};
+    const asc = workouts.slice().reverse();
     allExerciseNames.forEach((name) => {
-      const sessions: { date: string; weight: number }[] = [];
-      workouts.slice().reverse().forEach((w) => {
-        const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === name);
+      // One metric type per exercise (most recent session), so a session's "best" is
+      // always measured + formatted in the same unit (see exerciseSessionData).
+      const metricType = metricTypeForName(asc, name);
+      const sessions: { date: string; value: number }[] = [];
+      asc.forEach((w) => {
+        const sets = (w.workout_sets || []).filter((s) => s.exercises?.name === name && s.set_type !== 'warmup');
         if (sets.length > 0) {
-          sessions.push({ date: w.started_at, weight: Math.max(...sets.map((s) => s.weight_kg || 0)) });
+          sessions.push({ date: w.started_at, value: setBestValue(metricType, sets as DisplaySet[]) });
         }
       });
       if (sessions.length > 0) {
-        const max = Math.max(...sessions.map((s) => s.weight));
-        const trend = sessions.length >= 2 ? sessions[sessions.length - 1].weight - sessions[sessions.length - 2].weight : 0;
-        prMap[name] = { max, trend };
+        const max = Math.max(...sessions.map((s) => s.value));
+        const isWeight = isWeightPrimary(metricType);
+        // The trend arrow (last vs previous session) only reads cleanly in kg; suppress
+        // it for non-weight metrics rather than print "+2kg" on a reps/time PR.
+        const trend = isWeight && sessions.length >= 2
+          ? sessions[sessions.length - 1].value - sessions[sessions.length - 2].value
+          : 0;
+        prMap[name] = { label: formatPrimaryValue(metricType, max), max, trend, isWeight };
       }
     });
-    return Object.entries(prMap).sort((a, b) => b[1].max - a[1].max).slice(0, 6);
+    // Weight PRs first (ranked by kg), then non-weight (ranked within their own unit) —
+    // a mixed magnitude sort would rank a 300s plank above a 100kg squat.
+    return Object.entries(prMap)
+      .sort((a, b) => (Number(b[1].isWeight) - Number(a[1].isWeight)) || (b[1].max - a[1].max))
+      .slice(0, 6);
   }, [workouts, allExerciseNames]);
 
   // ── Handlers ──
@@ -1294,7 +1349,9 @@ export default function AnalyticsScreen() {
     const out: string[] = [];
     if (weekWorkouts.length > 0) out.push(`${weekWorkouts.length} sessions in the bag this week. That consistency is what moves the needle.`);
     if (weekVolume > 0) out.push(`You moved ${abbreviateNumber(weekVolume)}kg this week. Add a set somewhere next week and we keep climbing.`);
-    if (pr) out.push(`Your ${selectedExercise} top set sits at ${pr}kg. Next time, chase a clean 2.5kg jump.`);
+    if (pr != null) out.push(exerciseSessionData.isWeight
+      ? `Your ${selectedExercise} top set sits at ${prLabel}. Next time, chase a clean 2.5kg jump.`
+      : `Your ${selectedExercise} best is ${prLabel}. Aim to edge past it next time.`);
     if (avgDurationMin > 0) out.push(`Sessions average ${avgDurationMin} min. That is a solid window for volume and recovery both.`);
     if (out.length === 0) out.push('Log a few sessions and I will start reading your training for you.');
     return out;
@@ -1335,7 +1392,7 @@ export default function AnalyticsScreen() {
     }
 
     try {
-      const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr ? `, ${selectedExercise} top set ${pr}kg` : ''}.`;
+      const summary = `This week: ${weekWorkouts.length} sessions, ${weekVolume}kg volume, about ${avgDurationMin} min per session${pr != null ? `, ${selectedExercise} best ${prLabel}` : ''}.`;
       const messages = [{
         role: 'user',
         content: `${summary} Give me 3 short, specific insights on where my training is right now and what to focus on next. One line each, no intro, no bullets, no dashes.`,
@@ -1520,7 +1577,7 @@ export default function AnalyticsScreen() {
                   {pr != null && (
                     <View style={[styles.prBadge, { backgroundColor: C.primaryMuted }]}>
                       <Feather name="award" size={11} color={C.accentText} />
-                      <Text style={[styles.prText, { color: C.accentText }]}>PR: {pr}kg</Text>
+                      <Text style={[styles.prText, { color: C.accentText }]}>PR: {prLabel}</Text>
                     </View>
                   )}
                 </View>
@@ -1533,13 +1590,15 @@ export default function AnalyticsScreen() {
                   />
                 </View>
 
-                <View style={{ alignSelf: 'flex-start', marginBottom: Spacing.md }}>
-                  <SegmentedToggle
-                    options={[{ key: 'weight', label: 'Max Weight' }, { key: 'volume', label: 'Volume' }]}
-                    selected={chartMode}
-                    onSelect={(v) => setChartMode(v as any)}
-                  />
-                </View>
+                {exerciseSessionData.isWeight && (
+                  <View style={{ alignSelf: 'flex-start', marginBottom: Spacing.md }}>
+                    <SegmentedToggle
+                      options={[{ key: 'weight', label: 'Max Weight' }, { key: 'volume', label: 'Volume' }]}
+                      selected={chartMode}
+                      onSelect={(v) => setChartMode(v as any)}
+                    />
+                  </View>
+                )}
 
                 {exerciseSessionData.data.length === 0 ? (
                   <View style={styles.emptyTrend}>
@@ -1551,7 +1610,7 @@ export default function AnalyticsScreen() {
                 ) : exerciseSessionData.data.length === 1 ? (
                   <View style={styles.emptyTrend}>
                     <Text style={[styles.singleValue, { color: C.accentText }]}>
-                      {exerciseSessionData.data[0]}{chartMode === 'weight' ? 'kg' : ''}
+                      {formatChartValue(exerciseSessionData.data[0])}
                     </Text>
                     <Text style={[styles.emptyHint, { color: C.textDim }]}>Log more to see a trend</Text>
                   </View>
@@ -1563,7 +1622,7 @@ export default function AnalyticsScreen() {
                       width={bigChartWidth}
                       height={140}
                       color={Colors.primary}
-                      valueSuffix={chartMode === 'weight' ? 'kg' : ''}
+                      formatValue={formatChartValue}
                       tooltipBgColor={C.elevated}
                       tooltipTextColor={C.foreground}
                     />
@@ -1616,7 +1675,7 @@ export default function AnalyticsScreen() {
                   </View>
                 </View>
                 <View style={{ marginTop: Spacing.sm }}>
-                  {personalRecords.map(([name, { max, trend }], i) => (
+                  {personalRecords.map(([name, { label, trend, isWeight }], i) => (
                     <View
                       key={name}
                       style={[
@@ -1626,12 +1685,12 @@ export default function AnalyticsScreen() {
                     >
                       <Text style={[styles.prName, { color: C.foreground }]} numberOfLines={1}>{name}</Text>
                       <View style={styles.prRight}>
-                        {trend !== 0 && (
+                        {isWeight && trend !== 0 && (
                           <Text style={[styles.prTrend, { color: trend > 0 ? C.successText : C.dangerText }]}>
                             {trend > 0 ? '+' : ''}{trend}kg
                           </Text>
                         )}
-                        <Text style={[styles.prMax, { color: C.accentText }]}>{max}kg</Text>
+                        <Text style={[styles.prMax, { color: C.accentText }]}>{label}</Text>
                       </View>
                     </View>
                   ))}

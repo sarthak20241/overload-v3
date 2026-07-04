@@ -12,22 +12,28 @@ import Animated, {
   SlideInDown, SlideOutDown, Easing,
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSpring, runOnJS,
 } from 'react-native-reanimated';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { usePreferences } from '@/hooks/usePreferences';
+import { usePreferences, REST_BETWEEN_SIDES_SECONDS } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
-import { getActiveWorkoutSnapshot, clearActiveWorkout } from '@/lib/activeWorkoutPersistence';
+import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture } from '@/lib/activeWorkoutPersistence';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, getPendingWorkouts, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import { useSync } from '@/components/SyncProvider';
-import type { ActiveWorkoutExercise, ActiveSet } from '@/lib/types';
+import type { ActiveWorkoutExercise, ActiveSet, SetType } from '@/lib/types';
+import { groupWithPartners, dissolveGroupAt, normalizeSupersetGroups } from '@/lib/supersets';
+import { SetTypeBadge, countsAsWorkingSet } from '@/components/workout/SetTypeBadge';
+import { SetTypeSheet } from '@/components/workout/SetTypeSheet';
+import { SupersetSheet } from '@/components/workout/SupersetSheet';
+import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
+import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
@@ -35,8 +41,10 @@ import { BottomNav } from '@/components/ui/BottomNav';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
-import { roundVolume, abbreviateNumber, formatWeight } from '@/lib/format';
-import type { ExerciseDef } from '@/lib/exercises';
+import { roundVolume, abbreviateNumber, formatWeight, formatDuration, parseDuration, formatDistanceKm, parseDistanceKm } from '@/lib/format';
+import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
+import { setVolumeKg } from '@/lib/sets';
+import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
@@ -45,6 +53,61 @@ import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workou
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ─── Supersets (migration 0060) ──────────────────────────────────────────────
+// After a set is logged for exercise `fromIdx`, decide the next step within its
+// superset group (members share supersetGroup, kept contiguous in the array):
+//  - 'solo'      : not in a group of 2+ → normal one-exercise-at-a-time behaviour.
+//  - 'advance'   : a member is BEHIND this round → hop to it with NO rest (mid-round).
+//  - 'round'     : the round is complete → rest, then go to the next round's first
+//                  member (idx; restTarget = the group's pinned round rest).
+//  - 'groupDone' : every member has finished all its sets → normal rest, stay.
+// The "next to log" is always the in-rotation member with the fewest completed sets
+// (ties by array order), which also handles unequal target sets for free.
+type SupersetStep =
+  | { kind: 'solo' }
+  | { kind: 'advance'; idx: number }
+  | { kind: 'round'; idx: number; restTarget: number }
+  | { kind: 'groupDone' };
+
+function nextSupersetStep(exs: ActiveWorkoutExercise[], fromIdx: number, finished: boolean[]): SupersetStep {
+  const g = exs[fromIdx]?.supersetGroup;
+  if (g == null) return { kind: 'solo' };
+  const members = exs.map((e, i) => (e.supersetGroup === g ? i : -1)).filter((i) => i >= 0);
+  if (members.length < 2) return { kind: 'solo' };
+  const done = (i: number) => exs[i].sets.filter((s) => s.completed).length;
+  const target = (i: number) => exs[i].targetSets ?? 0;
+  // A member drops out of the rotation when it has hit its target OR the user has
+  // manually finished it — so finishing one member mid-superset can't wedge the hop.
+  const rotation = members.filter((i) => done(i) < target(i) && !finished[i]);
+  if (rotation.length === 0) return { kind: 'groupDone' };
+  const minDone = Math.min(...rotation.map(done));
+  if (minDone < done(fromIdx)) {
+    return { kind: 'advance', idx: rotation.find((i) => done(i) === minDone)! };
+  }
+  // Round-end rest = the just-logged (round-closing) member's rest, i.e. the rest set
+  // on the exercise you just finished the round on.
+  return { kind: 'round', idx: rotation[0], restTarget: exs[fromIdx].restSeconds ?? 0 };
+}
+
+// The member the pager WILL hop to after the current set on `fromIdx` is logged —
+// for a predictive "up next" cue in the banner. Mirrors nextSupersetStep but
+// simulates the current set as already logged (done(fromIdx)+1), so "up next" on a
+// pair shows the OTHER member, and the round-closing set shows the next round's
+// first member. Returns null when fromIdx isn't in a 2+ group or the group finishes
+// on this set (nothing to hop to).
+function predictNextMember(exs: ActiveWorkoutExercise[], fromIdx: number, finished: boolean[]): number | null {
+  const g = exs[fromIdx]?.supersetGroup;
+  if (g == null) return null;
+  const members = exs.map((e, i) => (e.supersetGroup === g ? i : -1)).filter((i) => i >= 0);
+  if (members.length < 2) return null;
+  const doneSim = (i: number) => exs[i].sets.filter((s) => s.completed).length + (i === fromIdx ? 1 : 0);
+  const target = (i: number) => exs[i].targetSets ?? 0;
+  const rotation = members.filter((i) => doneSim(i) < target(i) && !finished[i]);
+  if (rotation.length === 0) return null;
+  const minDone = Math.min(...rotation.map(doneSim));
+  return rotation.find((i) => doneSim(i) === minDone) ?? rotation[0];
+}
 
 function fmt(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -121,12 +184,50 @@ export default function ActiveWorkoutScreen() {
   const [loading, setLoading] = useState(!workout.isActive || isSwitchAttempt);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
+  // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
+  // Each is only rendered when the exercise's metric_type uses that axis.
+  const [inputDuration, setInputDuration] = useState('0:00');
+  const [inputDistance, setInputDistance] = useState('');
+  const [inputResistance, setInputResistance] = useState('');
+  // Inline stopwatch for duration exercises (gated on prefs.inlineTimerForDuration).
+  // swElapsed is the live seconds; it's the source of truth for the logged set
+  // while running, falling back to the typed inputDuration when stopped/manual.
+  const [swElapsed, setSwElapsed] = useState(0);
+  const [swRunning, setSwRunning] = useState(false);
   // Briefly true after logging a weight PR, to flash the celebration badge.
   const [prCelebrate, setPrCelebrate] = useState(false);
   // Which field in the active set row is "open" for adjustment. Null = the row
   // is a clean glance-and-confirm row; tapping a number opens that one field's
   // −/+ (and focuses it for optional typing), leaving the other a plain number.
-  const [editField, setEditField] = useState<null | 'weight' | 'reps'>(null);
+  const [editField, setEditField] = useState<null | 'weight' | 'reps' | 'duration' | 'distance' | 'resistance' | 'rpe'>(null);
+  // Phase B — the not-yet-logged set's type + intensity, and which set's badge
+  // opened the Set Type sheet (-1 = the active set; >=0 = a done set's real index).
+  const [activeSetType, setActiveSetType] = useState<SetType>('normal');
+  const [inputRpe, setInputRpe] = useState<number | null>(null);
+  const [setTypeSheetIdx, setSetTypeSheetIdx] = useState<number | null>(null);
+  // Ad-hoc supersets: the partner-picker sheet (create / extend / break a group).
+  const [showSupersetSheet, setShowSupersetSheet] = useState(false);
+  // Unilateral "L+R" (migration 0056/0059). The active set logs one side then the
+  // other into ONE row. activeUnilateral persists across the exercise's sets (reset
+  // on exercise change); firstSide is which side you log first (swappable via the ⇄);
+  // sideEntering tracks which side the inputs currently hold; pendingFirst buffers the
+  // first-logged side (its own weight/reps/rpe) between the two ✓ taps.
+  const [activeUnilateral, setActiveUnilateral] = useState(false);
+  const [firstSide, setFirstSide] = useState<'left' | 'right'>('left');
+  const [sideEntering, setSideEntering] = useState<'left' | 'right'>('left');
+  const [pendingFirst, setPendingFirst] = useState<{ side: 'left' | 'right'; weight_kg: number; reps: number; rpe: number | null } | null>(null);
+  // When set, the rest timer counts toward this (shorter, inter-side) target
+  // instead of the exercise's restSeconds. Cleared on a normal between-sets rest.
+  const [restOverrideTarget, setRestOverrideTarget] = useState<number | null>(null);
+  // Supersets: the pinned round-end rest target. Survives the pager auto-advancing
+  // to the next round's first member (a normal rest isn't torn down on index change),
+  // so the countdown/buzz stays correct even though currentEx hops. null = no group rest.
+  const [restGroupTarget, setRestGroupTarget] = useState<number | null>(null);
+  // Which superset group the pinned round rest belongs to. Lets the index-change
+  // effect keep the rest while hopping WITHIN the group but tear it down the moment
+  // the user navigates to a different group / a solo exercise.
+  const [restGroupId, setRestGroupId] = useState<number | null>(null);
+  const [showRpeSheet, setShowRpeSheet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -143,7 +244,6 @@ export default function ActiveWorkoutScreen() {
   const { exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished, currentIdx, setCurrentIdx } = workout;
   // Alert states
   const [showCancelAlert, setShowCancelAlert] = useState(false);
-  const [showFinishAlert, setShowFinishAlert] = useState(false);
   const [showNoSetsAlert, setShowNoSetsAlert] = useState(false);
   const [showErrorAlert, setShowErrorAlert] = useState('');
   // Prompt shown when a second routine is requested mid-session (see
@@ -152,15 +252,17 @@ export default function ActiveWorkoutScreen() {
   const [showSwitchAlert, setShowSwitchAlert] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [finishSetCount, setFinishSetCount] = useState(0);
-  // Finish sheet for blank workouts ("New Workout" sessions with no routine):
-  // lets the user name the session before it lands in history, add notes, and
-  // optionally save the performed exercises as a reusable routine. Routine
-  // workouts keep the lighter confirm alert since they already have a name.
+  // Save Workout sheet (Phase B.5) — shown on every finish (routine + blank).
+  // Lets the user set the title, backdate the start, add notes, see a summary,
+  // review with Coach, and (blank workouts only) save the session as a routine.
   const [showFinishSheet, setShowFinishSheet] = useState(false);
   const [finishName, setFinishName] = useState('');
   const [finishNotes, setFinishNotes] = useState('');
   const [saveAsRoutine, setSaveAsRoutine] = useState(false);
   const [routineNameInput, setRoutineNameInput] = useState('');
+  // Phase B.5 — editable start (backdating) shown in the save sheet. Defaults to
+  // start = now - elapsed when the sheet opens.
+  const [finishStartedAt, setFinishStartedAt] = useState<Date>(() => new Date());
   // Post-save offer to sync the source routine when the session's exercise
   // list deviated from it. Non-null renders the "Update Routine?" alert;
   // navigation to history is deferred until the user answers.
@@ -184,9 +286,17 @@ export default function ActiveWorkoutScreen() {
 
   const exerciseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const swTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const swStartRef = useRef<number | null>(null); // wall-clock ms at the current run's start
+  const swBaseRef = useRef(0);                     // seconds accumulated before the current run
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
+  // A resume's transient capture (half-logged unilateral side + inline stopwatch),
+  // applied by the restore effect once currentIdx settles on the resumed index — so
+  // the index-change reset effect can't wipe it (it runs first; the restore effect,
+  // declared after it, wins the same commit).
+  const resumePendingRef = useRef<{ idx: number; cap: ActiveWorkoutCapture } | null>(null);
   const mainScrollRef = useRef<ScrollView>(null);
   // Which keyboard-sensitive input on the main scroll is focused — gates the
   // keyboard-show auto-scroll so the finish sheet / picker inputs don't
@@ -294,9 +404,20 @@ export default function ActiveWorkoutScreen() {
         setLoading(false);
         return;
       }
-      // Returning to the same active session (e.g. after a tab switch).
-      // Started/finished flags live in the context and are already in sync —
-      // don't reset them or completed exercises revert to grey.
+      // Returning to the same active session. This is the PRIMARY resume path:
+      // ResumeWorkoutPrompt flips isActive on (and seeds currentIdx) BEFORE pushing
+      // this screen, so we mount here, not in the cold branch below. Started/finished
+      // flags live in the context and are already in sync — don't reset them or
+      // completed exercises revert to grey.
+      const resumeSnap = getActiveWorkoutSnapshot();
+      if (resumeSnap && resumeSnap.workoutScreenId === id
+          && Date.now() - (resumeSnap.savedAt ?? 0) < 3 * 60 * 60 * 1000) {
+        // One-shot (keyed on savedAt) so a tab-switch / mini-bar re-entry doesn't
+        // re-stomp a half-set the user has moved past. currentIdx is already settled
+        // here, so the restore effect applies it on this same mount.
+        const cap = takeResumeCapture(resumeSnap);
+        if (cap) resumePendingRef.current = { idx: resumeSnap.currentIdx, cap };
+      }
       setLoading(false);
       return;
     }
@@ -320,6 +441,12 @@ export default function ActiveWorkoutScreen() {
     const snapFresh = !!snap && Date.now() - (snap.savedAt ?? 0) < 3 * 60 * 60 * 1000;
     if (snapMatches && snapFresh) {
       workout.hydrateFromSnapshot(snap!);
+      // Stash the transient capture (half-logged unilateral side + inline stopwatch)
+      // for the restore effect to apply once currentIdx settles on the resumed index.
+      // Applying it here would be wiped: hydrate's setCurrentIdx lands on a later
+      // commit, where the index-change reset effect fires and clears it.
+      const cap = takeResumeCapture(snap!);
+      if (cap) resumePendingRef.current = { idx: snap!.currentIdx, cap };
       // Restart the open exercise's sub-timer so its ELAPSED readout counts up
       // instead of sitting frozen at 0 (sub-timers aren't in the snapshot).
       if (snap!.exerciseStarted[snap!.currentIdx] && !snap!.exerciseFinished[snap!.currentIdx]) {
@@ -413,6 +540,9 @@ export default function ActiveWorkoutScreen() {
               repsMin: re.reps_min,
               repsMax: re.reps_max,
               restSeconds: re.rest_seconds ?? 90,
+              // Supersets (migration 0060): carry the routine's grouping so the active
+              // workout interleaves grouped members + rests only after the round.
+              supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             };
           });
 
@@ -450,10 +580,12 @@ export default function ActiveWorkoutScreen() {
     exerciseStartTimeRef.current = null;
   }, []);
 
-  // Rest timer
-  const startRestTimer = useCallback(() => {
+  // Rest timer. overrideTarget (seconds) drives a shorter inter-side rest for
+  // unilateral sets; omit it for the normal between-sets rest (restSeconds).
+  const startRestTimer = useCallback((overrideTarget?: number | null) => {
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     lastSetTimeRef.current = Date.now();
+    setRestOverrideTarget(overrideTarget ?? null);
     setRestTimer(0);
     setIsResting(true);
     restTimerRef.current = setInterval(() => {
@@ -467,31 +599,126 @@ export default function ActiveWorkoutScreen() {
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     restTimerRef.current = null;
     lastSetTimeRef.current = null;
+    setRestOverrideTarget(null);
+    setRestGroupTarget(null);
+    setRestGroupId(null);
     setRestTimer(0);
     setIsResting(false);
+  }, []);
+
+  // Inline duration stopwatch (timestamp-based so it never drifts on a slow tick).
+  const startStopwatch = useCallback(() => {
+    if (swTimerRef.current) clearInterval(swTimerRef.current);
+    swStartRef.current = Date.now();
+    setSwRunning(true);
+    swTimerRef.current = setInterval(() => {
+      if (swStartRef.current != null) {
+        setSwElapsed(swBaseRef.current + (Date.now() - swStartRef.current) / 1000);
+      }
+    }, 200);
+  }, []);
+
+  const pauseStopwatch = useCallback(() => {
+    if (swTimerRef.current) clearInterval(swTimerRef.current);
+    swTimerRef.current = null;
+    if (swStartRef.current != null) {
+      const total = swBaseRef.current + (Date.now() - swStartRef.current) / 1000;
+      swBaseRef.current = total;
+      swStartRef.current = null;
+      setSwElapsed(total);
+      setInputDuration(formatDuration(total)); // keep the typed field / commit value in sync
+    }
+    setSwRunning(false);
+  }, []);
+
+  const resetStopwatch = useCallback(() => {
+    if (swTimerRef.current) clearInterval(swTimerRef.current);
+    swTimerRef.current = null;
+    swStartRef.current = null;
+    swBaseRef.current = 0;
+    setSwElapsed(0);
+    setSwRunning(false);
   }, []);
 
   useEffect(() => {
     return () => {
       if (exerciseTimerRef.current) clearInterval(exerciseTimerRef.current);
       if (restTimerRef.current) clearInterval(restTimerRef.current);
+      if (swTimerRef.current) clearInterval(swTimerRef.current);
     };
   }, []);
 
   // A light tick whenever the active exercise changes (chip tap, swipe pager, or
   // auto-advance). Seeded with the initial index so it doesn't fire on mount.
   const prevIdxRef = useRef(currentIdx);
+  // One-shot: skip the input-prefill effect on a superset reorder where the OPEN
+  // exercise only changed index (prevIdxRef suppresses the reset effect, but the
+  // prefill effect below would still stomp typed weight/reps — including a
+  // half-logged unilateral side's seeded values).
+  const skipPrefillRef = useRef(false);
   useEffect(() => {
     if (prevIdxRef.current !== currentIdx) {
       haptics.selection();
       prevIdxRef.current = currentIdx;
+      // The duration stopwatch belongs to one exercise's active set — clear it
+      // (and the typed fallback) so it never bleeds into the next exercise.
+      resetStopwatch();
+      setInputDuration('0:00');
+      // Per-set type + intensity are per-set; don't bleed across exercises.
+      setActiveSetType('normal');
+      setInputRpe(null);
+      // Unilateral is per-exercise; reset to bilateral and drop any half-entered
+      // left side so it can't carry into the next exercise.
+      setActiveUnilateral(false);
+      setFirstSide('left');
+      setSideEntering('left');
+      setPendingFirst(null);
+      // A short inter-side rest started for the first side must not bleed its 20s
+      // target onto the next exercise's rest; tear it down (a normal between-sets
+      // rest, override null, is left running).
+      if (restOverrideTarget != null) stopRestTimer();
+      // A pinned superset round rest survives auto-advancing WITHIN its group, but if
+      // the user manually navigates to a different group / a solo exercise, tear it
+      // down so its target can't bleed onto the new exercise's rest strip.
+      else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
+    }
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises]);
+
+  // Apply a resume's transient capture once currentIdx settles on the resumed
+  // index. Declared AFTER the index-change reset effect so, on the commit where the
+  // index lands, this runs last and wins: the reset effect clears pendingFirst /
+  // the stopwatch, then we restore them. Restored PAUSED — time spent killed isn't
+  // training time. resumePendingRef is consumed (one-shot) so it applies exactly once.
+  useEffect(() => {
+    const pend = resumePendingRef.current;
+    if (!pend || pend.idx !== currentIdx) return;
+    resumePendingRef.current = null;
+    const { cap } = pend;
+    setActiveUnilateral(cap.activeUnilateral);
+    setFirstSide(cap.firstSide);
+    setSideEntering(cap.sideEntering);
+    setPendingFirst(cap.pendingFirst);
+    if (cap.stopwatchSeconds > 0) {
+      swBaseRef.current = cap.stopwatchSeconds;
+      setSwElapsed(cap.stopwatchSeconds);
+      setInputDuration(formatDuration(cap.stopwatchSeconds));
     }
   }, [currentIdx]);
+
+  // Mirror the transient per-set capture into the crash snapshot so an OS-kill
+  // mid-set survives: a half-logged unilateral side (buffered in pendingFirst, not
+  // yet a committed set) and the inline duration stopwatch. setCaptureState is a
+  // stable ref write (no context re-render); the on-background persist in useWorkout
+  // reads it live, so it lands on the same save that survives a swipe-away.
+  const setCaptureState = workout.setCaptureState;
+  useEffect(() => {
+    setCaptureState({ pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed });
+  }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
   useEffect(() => {
-    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    const target = restOverrideTarget ?? restGroupTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
     if (isResting && target > 0 && restTimer >= target) {
       if (!restDoneFiredRef.current) {
         haptics.success();
@@ -500,19 +727,19 @@ export default function ActiveWorkoutScreen() {
     } else {
       restDoneFiredRef.current = false;
     }
-  }, [restTimer, isResting, currentIdx, exercises]);
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget]);
 
   // A gentle pulse on the rest timer as it nears zero (final 3s), building
   // anticipation before the done color-flip + success buzz.
   const restPulse = useSharedValue(1);
   useEffect(() => {
-    const target = exercises[currentIdx]?.restSeconds ?? 0;
+    const target = restOverrideTarget ?? restGroupTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
     const remaining = target - restTimer;
     const nearDone = isResting && target > 0 && remaining > 0 && remaining <= 3;
     restPulse.value = nearDone
       ? withRepeat(withTiming(1.08, { duration: 450, easing: Easing.inOut(Easing.quad) }), -1, true)
       : withTiming(1, { duration: 200 });
-  }, [restTimer, isResting, currentIdx, exercises]);
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget]);
   const restPulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: restPulse.value }] }));
 
   // Pause/resume per-exercise and rest timers in sync with the workout-level pause.
@@ -561,6 +788,9 @@ export default function ActiveWorkoutScreen() {
 
   // Sync input defaults when switching exercises
   useEffect(() => {
+    // A superset reorder moved the OPEN exercise to a new index — same exercise,
+    // same in-flight inputs; consuming the prefill here would stomp them.
+    if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
     if (!currentEx) return;
     const completedCount = currentEx.sets.filter(s => s.completed).length;
     const prev = currentEx.previousSets;
@@ -591,9 +821,13 @@ export default function ActiveWorkoutScreen() {
   // Start exercise
   const handleStartExercise = () => {
     haptics.tap();
+    // Supersets: starting one member starts the whole group — you train them back to
+    // back, so auto-advancing to a sibling must land on its logger, not the start gate.
+    const g = exercises[currentIdx]?.supersetGroup ?? null;
     setExerciseStarted(prev => {
       const next = [...prev];
       next[currentIdx] = true;
+      if (g != null) exercises.forEach((e, i) => { if (e.supersetGroup === g) next[i] = true; });
       return next;
     });
     startExerciseTimer();
@@ -603,29 +837,92 @@ export default function ActiveWorkoutScreen() {
   // Log a set
   const handleLogSet = () => {
     if (!currentEx) return;
-    const weight = parseFloat(inputWeight) || 0;
-    const reps = parseInt(inputReps) || 0;
+    const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
+    const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
+    const usesReps = axes.includes('reps');
+    const usesDuration = axes.includes('duration');
+    const usesDistance = axes.includes('distance');
+    const usesResistance = axes.includes('resistance');
+    const weight = usesWeight ? (parseFloat(inputWeight) || 0) : 0;
+    const reps = usesReps ? (parseFloat(inputReps) || 0) : 0;
 
     // A weight PR: this set beats the best weight seen on this lift (previous
     // sessions + earlier sets today). Celebrate it instead of the plain tap.
+    // previousSets is already warmup-free (filtered at the source); exclude this
+    // session's warmups too so a light primer never sets the bar for a PR.
+    // Prior best weight to beat: previous sessions + this session's working sets,
+    // counting BOTH sides of any unilateral set (per-side weight, migration 0059).
     const prevBest = Math.max(
       0,
       ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
-      ...currentEx.sets.filter(s => s.completed).map(s => s.weight_kg),
+      ...currentEx.sets.filter(s => s.completed && s.set_type !== 'warmup')
+        .flatMap(s => [s.weight_kg, s.is_unilateral ? (s.weight_kg_right ?? s.weight_kg) : 0]),
     );
-    // Only a PR if there's a prior record to beat (don't celebrate a brand-new lift's first set).
-    const isPR = weight > 0 && (currentEx.previousSets?.length ?? 0) > 0 && weight > prevBest;
-    if (isPR) {
+    // Mid-capture: a unilateral set logs its FIRST side first (left or right, per
+    // the swap). Only a real, completed set celebrates a PR — and it weighs the
+    // heavier of the two sides (the first side is already buffered in pendingFirst).
+    const enteringFirstSide = activeUnilateral && pendingFirst === null;
+    const prWeight = activeUnilateral && pendingFirst ? Math.max(weight, pendingFirst.weight_kg) : weight;
+
+    // Only a PR if there's a prior record to beat, and warmups never count.
+    const isPR = prWeight > 0 && activeSetType !== 'warmup'
+      && (currentEx.previousSets?.length ?? 0) > 0 && prWeight > prevBest;
+    if (isPR && !enteringFirstSide) {
       haptics.success();
       setPrCelebrate(true);
       setTimeout(() => setPrCelebrate(false), 2200);
     } else {
-      haptics.tap(); // set logged
+      haptics.tap(); // set logged (or first side captured)
+    }
+
+    const sessionRpe = prefs.intensityTrackingEnabled ? inputRpe : null;
+
+    // FIRST side of a unilateral set: buffer it (with its own weight), flip to the
+    // other side, seed that side's weight + reps from the first as a starting point
+    // (both editable), and optionally start a short inter-side rest. Nothing is
+    // written yet — the whole L+R round becomes ONE row when the second side is
+    // logged below (so it counts as one set).
+    if (enteringFirstSide) {
+      setPendingFirst({ side: sideEntering, weight_kg: weight, reps, rpe: sessionRpe });
+      setSideEntering(sideEntering === 'left' ? 'right' : 'left');
+      if (usesWeight) setInputWeight(String(weight));
+      setInputReps(String(reps));
+      if (prefs.restBetweenSides) startRestTimer(REST_BETWEEN_SIDES_SECONDS);
+      return;
     }
 
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
-    const newSet: ActiveSet = { weight_kg: weight, reps, completed: true };
+    // Duration prefers the live stopwatch (running or paused-with-value); falls
+    // back to the typed mm:ss field when the stopwatch was never used (manual mode).
+    const durationSecs =
+      swRunning || swElapsed > 0 ? Math.round(swElapsed) : parseDuration(inputDuration);
+    // For a unilateral set, combine the buffered first side with the current (second)
+    // inputs, then map them to left/right by their tagged side. Each side keeps its
+    // own weight + reps + rpe. Non-unilateral: a plain single-side set.
+    let leftW = weight, leftReps = reps, leftRpe = sessionRpe;
+    let rightW: number | null = null, rightReps: number | null = null, rightRpe: number | null = null;
+    if (activeUnilateral && pendingFirst) {
+      const current = { side: sideEntering, weight_kg: weight, reps, rpe: sessionRpe };
+      const L = pendingFirst.side === 'left' ? pendingFirst : current;
+      const R = pendingFirst.side === 'right' ? pendingFirst : current;
+      leftW = L.weight_kg; leftReps = L.reps; leftRpe = L.rpe;
+      rightW = R.weight_kg; rightReps = R.reps; rightRpe = R.rpe;
+    }
+    const newSet: ActiveSet = {
+      weight_kg: leftW,
+      reps: leftReps,
+      completed: true,
+      duration_seconds: usesDuration ? durationSecs : null,
+      distance_m: usesDistance ? parseDistanceKm(inputDistance) : null,
+      resistance: usesResistance ? (parseFloat(inputResistance) || 0) : null,
+      set_type: activeSetType,
+      rpe: leftRpe,
+      is_unilateral: activeUnilateral,
+      reps_right: activeUnilateral ? rightReps : null,
+      rpe_right: activeUnilateral ? rightRpe : null,
+      weight_kg_right: activeUnilateral ? rightW : null,
+    };
 
     // Find first incomplete set or add new
     const incompleteIdx = ex.sets.findIndex(s => !s.completed);
@@ -637,15 +934,58 @@ export default function ActiveWorkoutScreen() {
     }
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
-    startRestTimer();
 
-    // Advance input to next set's previous performance
+    // Next unilateral set starts fresh on the configured first side.
+    if (activeUnilateral) {
+      setPendingFirst(null);
+      setSideEntering(firstSide);
+    }
+
+    // Supersets (migration 0060): decide the next step within the group. For a normal
+    // (non-grouped) set this is 'solo' and the behaviour is exactly as before.
+    const step = nextSupersetStep(updated, currentIdx, exerciseFinished);
+    const willAdvance = step.kind === 'advance' || (step.kind === 'round' && step.idx !== currentIdx);
+
+    if (step.kind === 'advance') {
+      // Mid-round: hop to the next behind member with NO rest. End any running rest
+      // (logging a set ends the round rest from the previous round).
+      stopRestTimer();
+    } else if (step.kind === 'round') {
+      // Round complete: a pinned round rest that survives the hop to the next round's
+      // first member (a normal rest isn't torn down on the index change). Tag it with
+      // the group so manual navigation OUT of the group tears it down.
+      setRestGroupTarget(step.restTarget);
+      setRestGroupId(updated[currentIdx]?.supersetGroup ?? null);
+      startRestTimer();
+    } else {
+      // Solo or whole group finished: the normal between-sets rest.
+      setRestGroupTarget(null);
+      setRestGroupId(null);
+      startRestTimer();
+    }
+
+    if (willAdvance) {
+      // Hop the pager to the next member; the index-change effects prefill the new
+      // exercise's inputs + reset its per-set state, so skip the manual reset below.
+      setCurrentIdx(step.idx);
+      return;
+    }
+
+    // Advance input to next set's previous performance (solo / group-done / round-stay).
     const nextIdx = ex.sets.filter(s => s.completed).length;
     const prev = currentEx.previousSets;
     if (prev && prev[nextIdx]) {
       setInputWeight(String(prev[nextIdx].weight_kg));
       setInputReps(String(prev[nextIdx].reps));
     }
+    // Zero the duration stopwatch + field so the next set times from scratch.
+    if (usesDuration) {
+      resetStopwatch();
+      setInputDuration('0:00');
+    }
+    // Per-set type + intensity reset to defaults for the next set.
+    setActiveSetType('normal');
+    setInputRpe(null);
   };
 
   // Finish current exercise
@@ -699,16 +1039,19 @@ export default function ActiveWorkoutScreen() {
     try {
       const { data: rows } = await supabase
         .from('workout_sets')
-        .select('weight_kg, reps, "order", workout_id, workouts!inner(finished_at)')
+        .select('weight_kg, reps, "order", set_type, workout_id, workouts!inner(finished_at)')
         .eq('exercise_id', resolvedId)
         .not('workouts.finished_at', 'is', null);
       if (!rows || rows.length === 0) return undefined;
+      // Warmups never seed prefill / PR comparison.
+      const working = (rows as any[]).filter(r => r.set_type !== 'warmup');
+      if (working.length === 0) return undefined;
       // Sort client-side by workouts.finished_at DESC. PostgREST's
       // .order('finished_at', { foreignTable: 'workouts' }) silently no-ops
       // (workout_sets has no finished_at column), so trusting rows[0] would
       // return whichever workout Postgres happened to scan first — usually
       // the OLDEST one. Sorting locally guarantees most-recent first.
-      const sorted = (rows as any[]).slice().sort((a, b) => {
+      const sorted = working.slice().sort((a, b) => {
         const af = String(a.workouts?.finished_at ?? '');
         const bf = String(b.workouts?.finished_at ?? '');
         return bf.localeCompare(af);
@@ -743,7 +1086,7 @@ export default function ActiveWorkoutScreen() {
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const targetSets = 3;
     const newEx: ActiveWorkoutExercise = {
-      exercise: { id: tempId, name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
+      exercise: { id: tempId, name: ex.name, muscle_group: ex.muscle_group, category: ex.category, metric_type: ex.metric_type },
       sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: 10, completed: false })),
       notes: '',
       targetSets,
@@ -767,7 +1110,7 @@ export default function ActiveWorkoutScreen() {
     // the real exercise row and previous-set defaults in the background.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const newEx: ActiveWorkoutExercise = {
-      exercise: { id: tempId, name: def.name, muscle_group: def.muscle_group, category: def.category },
+      exercise: { id: tempId, name: def.name, muscle_group: def.muscle_group, category: def.category, metric_type: def.metric_type },
       sets: Array.from({ length: details.sets }, () => ({ weight_kg: 0, reps: details.repsMin, completed: false })),
       notes: '',
       targetSets: details.sets,
@@ -862,10 +1205,92 @@ export default function ActiveWorkoutScreen() {
     // reveal logic can't read a stale frame after a removal.
     pillLayoutsRef.current.splice(currentIdx, 1);
     pillLayoutsRef.current.length = updated.length;
-    workout.updateExercises(updated);
+    // Removing a member can leave a superset with one member — normalize dissolves it.
+    workout.updateExercises(normalizeSupersetGroups(updated));
     setExerciseStarted(newStarted);
     setExerciseFinished(newFinished);
     if (currentIdx >= updated.length) setCurrentIdx(Math.max(0, updated.length - 1));
+  };
+
+  // Ad-hoc supersets: group / ungroup the open exercise with its neighbour mid-workout.
+  // The grouping rides ActiveWorkoutExercise.supersetGroup, so the interleave kicks in on
+  // the next logged set and the group is stamped onto every set at finish (live + past).
+  const clearGroupRest = () => {
+    // Grouping changed: a pinned round-rest belongs to the OLD group shape. Stop the
+    // whole rest when one is running — merely unpinning would silently retarget the
+    // countdown to the open exercise's (often shorter) rest and could fire an instant
+    // spurious "rest done" buzz. A plain between-sets rest (no pin) is left to run.
+    if (restGroupTarget != null) stopRestTimer();
+    else {
+      setRestGroupTarget(null);
+      setRestGroupId(null);
+    }
+  };
+  const applySupersetPicks = (picked: number[]) => {
+    // Pair the open exercise with the picked ones: they MOVE to sit right after it
+    // (contiguity is the invariant), extending its group when it already has one.
+    const res = groupWithPartners(exercises, currentIdx, picked);
+    if (res.items === exercises) return; // no valid picks
+    haptics.selection();
+    const map = res.indexMap;
+    const remap = <V,>(arr: V[]): V[] => {
+      const out = arr.slice();
+      map.forEach((ni, oi) => { out[ni] = arr[oi]; });
+      return out;
+    };
+    const newIdx = map[currentIdx];
+    const gAfter = res.items[newIdx]?.supersetGroup ?? null;
+    // If ANY member of the new group is already being trained, start them all — you
+    // can't half-start a back-to-back superset, and the interleave hops into the
+    // members. (Any-member, not just the open one: picking a started exercise from
+    // an unstarted one would otherwise leave the group half-started and the auto-hop
+    // would land on the Start gate mid-round.)
+    let newStarted = remap(exerciseStarted);
+    if (gAfter != null) {
+      const anyStarted = res.items.some((e, i) => e.supersetGroup === gAfter && newStarted[i]);
+      if (anyStarted) {
+        newStarted = newStarted.map((st, i) => (res.items[i]?.supersetGroup === gAfter ? true : st));
+        // The open exercise may have just flipped live — bring up its sub-timer the
+        // way handleStartExercise would.
+        if (!exerciseStarted[currentIdx]) startExerciseTimer();
+      }
+    }
+    const newFinished = remap(exerciseFinished);
+    // Keep the measured pill frames index-aligned with the reordered list.
+    pillLayoutsRef.current = remap(pillLayoutsRef.current);
+    pillLayoutsRef.current.length = res.items.length;
+    clearGroupRest();
+    workout.updateExercises(res.items);
+    setExerciseStarted(newStarted);
+    setExerciseFinished(newFinished);
+    if (newIdx !== currentIdx) {
+      // Same exercise, new position. Move the pager WITHOUT letting the index-keyed
+      // effects treat it as navigation: prevIdxRef gates the reset effect (stopwatch,
+      // half-logged side), skipPrefillRef gates the input-prefill effect (typed
+      // weight/reps). Drop the remapped pill frame so the pill's remount re-measures
+      // and re-reveals against its true post-reorder position, and move the strip in
+      // the same beat so the reordered pager doesn't paint one frame at the old
+      // offset and then teleport (the currentIdx sync effect re-asserts the value).
+      prevIdxRef.current = newIdx;
+      skipPrefillRef.current = true;
+      delete pillLayoutsRef.current[newIdx];
+      scrollX.value = -newIdx * winW;
+      setCurrentIdx(newIdx);
+    }
+  };
+  const breakSuperset = () => {
+    if (currentEx?.supersetGroup == null) return;
+    clearGroupRest();
+    const g = currentEx.supersetGroup;
+    // Members that grouping auto-started but the user never trained (zero completed
+    // sets) go back behind the Start gate; the open exercise keeps its state. Read
+    // membership BEFORE dissolveGroupAt nulls the group ids.
+    setExerciseStarted((prev) => prev.map((st, i) =>
+      st && i !== currentIdx
+        && exercises[i]?.supersetGroup === g
+        && !exercises[i].sets.some((s) => s.completed)
+        ? false : st));
+    workout.updateExercises(dissolveGroupAt(exercises, currentIdx));
   };
 
   // Leave the workout screen. After a reload/deep-link this screen can be the
@@ -946,16 +1371,15 @@ export default function ActiveWorkoutScreen() {
       return;
     }
     setFinishSetCount(count);
-    if (workout.routineId === 'new') {
-      // Blank workout: open the naming/save sheet instead of the bare confirm.
-      setFinishName(suggestWorkoutName());
-      setFinishNotes('');
-      setSaveAsRoutine(false);
-      setRoutineNameInput('');
-      setShowFinishSheet(true);
-    } else {
-      setShowFinishAlert(true);
-    }
+    // Phase B.5 — the Save Workout sheet now shows for every finish (routine or
+    // blank). Title defaults to the routine name (or a smart name for blanks);
+    // start defaults to when the session began (editable for backdating).
+    setFinishStartedAt(new Date(Date.now() - workout.elapsed * 1000));
+    setFinishName(workout.routineId === 'new' ? suggestWorkoutName() : workout.routineName);
+    setFinishNotes('');
+    setSaveAsRoutine(false);
+    setRoutineNameInput('');
+    setShowFinishSheet(true);
   };
 
   // The routine name input is deliberately not pre-filled: while it stays
@@ -1039,6 +1463,8 @@ export default function ActiveWorkoutScreen() {
           reps_max: r.reps_max,
           rest_seconds: r.rest_seconds,
           note: null,
+          // Carry the superset grouping into the saved routine (migration 0060).
+          superset_group: ex.supersetGroup ?? null,
         };
       }),
       phase: 'queued',
@@ -1237,7 +1663,7 @@ export default function ActiveWorkoutScreen() {
     router.replace('/(app)/history');
   };
 
-  // Save from the blank-workout finish sheet.
+  // Save from the finish sheet (all workouts — routine and blank).
   const handleSheetSave = () => {
     if (saving) return;
     const name = finishName.trim();
@@ -1245,12 +1671,13 @@ export default function ActiveWorkoutScreen() {
     void confirmFinish({
       name,
       notes: finishNotes,
+      startedAtIso: finishStartedAt.toISOString(),
       routineNameToSave: saveAsRoutine ? (routineNameInput.trim() || name) : undefined,
     });
   };
 
   const finishingRef = useRef(false);
-  const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string }) => {
+  const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string; startedAtIso?: string }) => {
     // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
     // the confirm alert's Finish button (which has no disabled state during its
     // exit animation) could otherwise enqueue the same workout twice with two
@@ -1258,16 +1685,26 @@ export default function ActiveWorkoutScreen() {
     if (finishingRef.current) return;
     finishingRef.current = true;
     haptics.success(); // workout complete
-    setShowFinishAlert(false);
     setShowFinishSheet(false);
     Keyboard.dismiss();
     setSaving(true);
     toast.info('Saving workout…');
     try {
       const workoutName = opts?.name?.trim() || workout.routineName;
-      const workoutNotes = opts?.notes?.trim() || null;
+      // Fold any per-exercise notes jotted mid-workout into the saved note. The
+      // schema stores notes only at the workout level, so without this the
+      // "How did that feel?" per-exercise jots would be silently lost on finish.
+      // Labelled by exercise, appended after the user's summary note.
+      const perExerciseNotes = exercises
+        .filter((e) => e.sets.some((s) => s.completed) && e.notes.trim())
+        .map((e) => `${e.exercise.name}: ${e.notes.trim()}`);
+      const baseNotes = opts?.notes?.trim() ?? '';
+      const workoutNotes = [baseNotes, ...perExerciseNotes].filter(Boolean).join('\n') || null;
       const allCompleted = exercises.flatMap(e => e.sets.filter(s => s.completed));
-      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + s.weight_kg * s.reps, 0));
+      // Warmups are saved as rows but excluded from total_volume_kg, to match the
+      // live display + the server recompute (migration 0053). allCompleted stays
+      // unfiltered for the set-count + per-set inserts below.
+      const vol = roundVolume(allCompleted.reduce((sum, s) => sum + setVolumeKg(s), 0));
 
       // Create the routine first (when requested) so the workout row can link
       // to it — that link is what feeds "previous session" the next time the
@@ -1295,12 +1732,21 @@ export default function ActiveWorkoutScreen() {
         else toast.success('Workout saved');
       };
 
+      // Backdated start (from the save sheet) parsed once and guarded: a
+      // malformed ISO would make Date.parse return NaN and the derived
+      // finished_at throw / persist an Invalid Date into the sync queue. Fall
+      // back to now - elapsed when we can't trust the passed value.
+      const parsedStartMs = opts?.startedAtIso ? Date.parse(opts.startedAtIso) : NaN;
+      const startedAtMs = Number.isNaN(parsedStartMs) ? null : parsedStartMs;
+
       if (isGuestSession) {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
           name: workoutName,
-          started_at: new Date(Date.now() - workout.elapsed * 1000).toISOString(),
-          finished_at: new Date().toISOString(),
+          started_at: startedAtMs != null ? new Date(startedAtMs).toISOString() : new Date(Date.now() - workout.elapsed * 1000).toISOString(),
+          finished_at: startedAtMs != null
+            ? new Date(startedAtMs + workout.elapsed * 1000).toISOString()
+            : new Date().toISOString(),
           duration_seconds: workout.elapsed,
           total_volume_kg: vol,
           routine_id: linkedRoutineId,
@@ -1312,7 +1758,16 @@ export default function ActiveWorkoutScreen() {
               name: e.exercise.name,
               muscle_group: e.exercise.muscle_group,
               category: e.exercise.category,
-              sets: e.sets.filter(s => s.completed).map(s => ({ weight_kg: s.weight_kg, reps: s.reps })),
+              metric_type: metricTypeOf(e.exercise),
+              superset_group: e.supersetGroup ?? null,
+              sets: e.sets.filter(s => s.completed).map(s => ({
+                weight_kg: s.weight_kg, reps: s.reps,
+                duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
+                resistance: s.resistance ?? null,
+                set_type: s.set_type ?? 'normal', rpe: s.rpe ?? null,
+                is_unilateral: s.is_unilateral ?? false, reps_right: s.reps_right ?? null, rpe_right: s.rpe_right ?? null,
+                weight_kg_right: s.weight_kg_right ?? null,
+              })),
             })),
         });
         // Built before finishWorkout() clears the active session.
@@ -1329,7 +1784,11 @@ export default function ActiveWorkoutScreen() {
 
       const clerkId = user?.id;
       if (!clerkId) throw new Error('Not signed in');
-      const startedAtIso = new Date(Date.now() - workout.elapsed * 1000).toISOString();
+      // Editable start (backdating) from the save sheet; defaults to start = now - elapsed.
+      // The flusher derives finished_at = started_at + duration, so this is the only override needed.
+      const startedAtIso = startedAtMs != null
+        ? new Date(startedAtMs).toISOString()
+        : new Date(Date.now() - workout.elapsed * 1000).toISOString();
 
       // Save locally first, sync in the background. The finished workout is
       // written to the pending-sync queue and the SyncProvider pushes it to
@@ -1346,11 +1805,26 @@ export default function ActiveWorkoutScreen() {
             name: e.exercise.name,
             muscle_group: e.exercise.muscle_group || 'Other',
             category: e.exercise.category || 'Custom',
+            metric_type: e.exercise.metric_type,
           },
           resolvedExerciseId: String(e.exercise.id).startsWith('temp-') ? null : e.exercise.id,
+          supersetGroup: e.supersetGroup ?? null,
           sets: e.sets
             .filter(s => s.completed)
-            .map((s, idx) => ({ weight_kg: s.weight_kg, reps: s.reps, order: idx })),
+            .map((s, idx) => ({
+              weight_kg: s.weight_kg,
+              reps: s.reps,
+              order: idx,
+              duration_seconds: s.duration_seconds ?? null,
+              distance_m: s.distance_m ?? null,
+              resistance: s.resistance ?? null,
+              set_type: s.set_type ?? 'normal',
+              rpe: s.rpe ?? null,
+              is_unilateral: s.is_unilateral ?? false,
+              reps_right: s.reps_right ?? null,
+              rpe_right: s.rpe_right ?? null,
+              weight_kg_right: s.weight_kg_right ?? null,
+            })),
         }));
 
       const entry: PendingWorkout = {
@@ -1406,15 +1880,17 @@ export default function ActiveWorkoutScreen() {
 
   // Computed
   const completedSets = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
+  // Warmups are excluded from working volume to match the server recompute
+  // (migration 0053), so the optimistic total stays consistent with the trigger.
   const totalVolume = roundVolume(exercises
-    .flatMap(e => e.sets.filter(s => s.completed).map(s => s.weight_kg * s.reps))
+    .flatMap(e => e.sets.filter(s => s.completed).map(s => setVolumeKg(s)))
     .reduce((a, b) => a + b, 0));
   const finishedCount = exerciseFinished.filter(Boolean).length;
 
   // Rest timer: `restTimer` counts up since the last logged set. We present it
   // as a countdown against the exercise's recommended rest (restSeconds). A
   // restSeconds of 0 means "no target", so we just show elapsed rest instead.
-  const restTarget = currentEx?.restSeconds ?? 0;
+  const restTarget = restOverrideTarget ?? restGroupTarget ?? (currentEx?.restSeconds ?? 0);
   const restRemaining = restTarget - restTimer;
   const restDone = restTarget > 0 && restRemaining <= 0;
   const restPct = restTarget > 0 ? Math.min(100, Math.round((restTimer / restTarget) * 100)) : 0;
@@ -1539,8 +2015,177 @@ export default function ActiveWorkoutScreen() {
     const isStarted = exerciseStarted[idx];
     const isFinished = exerciseFinished[idx];
     const prevSets = currentEx.previousSets;
+    // Done sets paired with their REAL index in currentEx.sets, so the type-badge
+    // tap + delete target the right set even if an incomplete row sits earlier.
+    // workNum is the working-set ordinal: only `normal` sets get a number; warmup/
+    // drop/etc. show their letter, so [1][D][D][2] reads like Hevy (the next normal
+    // set after drops is 2, not 4).
+    let _workN = 0;
+    const doneSets = currentEx.sets
+      .map((s, realIdx) => ({ s, realIdx }))
+      .filter((x) => x.s.completed)
+      .map((x) => {
+        // Warmups (W) + drop sets (D) don't take a number; every other type counts
+        // as a working set (failure included) and shows its working number — with a
+        // small type letter for non-normal types. So [1][D][D][2] and [1][2·F][3].
+        const counts = countsAsWorkingSet(x.s.set_type);
+        if (counts) _workN += 1;
+        return { ...x, workNum: counts ? _workN : null };
+      });
+    const completedWorking = _workN; // active counting set's number = completedWorking + 1
     const completed = currentEx.sets.filter(s => s.completed);
     const doneCount = completed.length;
+
+    // Phase B — intensity column (RPE/RIR), shown only when the pref is on.
+    const showIntensity = prefs.intensityTrackingEnabled;
+    const rpeScale = prefs.intensityScale;
+    const dispRpe = (r: number | null | undefined): string =>
+      r == null ? '' : String(rpeScale === 'rir' ? 10 - r : r);
+
+    // Phase A — the set table is driven by the exercise's measurement type.
+    const axes = metricTypeDef(metricTypeOf(currentEx.exercise)).axes;
+    const axisHeader = (a: MetricAxis): string =>
+      a === 'weight' ? 'KG'
+      : a === 'added_weight' ? '+KG'
+      : a === 'assist_weight' ? '−KG'
+      : a === 'reps' ? 'REPS'
+      : a === 'duration' ? 'TIME'
+      : a === 'resistance' ? 'LEVEL'
+      : 'KM';
+    // A unilateral set reads as left/right per cell: reps "8/7", and weight "40/35"
+    // only when the two sides used different loads (else the shared weight).
+    const uniWeightDiffers = (s: ActiveSet) =>
+      !!s.is_unilateral && s.weight_kg_right != null && s.weight_kg_right !== s.weight_kg;
+    const axisDoneValue = (a: MetricAxis, s: ActiveSet): string =>
+      a === 'reps' ? (s.is_unilateral ? `${s.reps}/${s.reps_right ?? 0}` : String(s.reps))
+      : a === 'duration' ? formatDuration(s.duration_seconds)
+      : a === 'distance' ? formatDistanceKm(s.distance_m)
+      : a === 'resistance' ? String(s.resistance ?? 0)
+      : uniWeightDiffers(s) ? `${formatWeight(s.weight_kg)}/${formatWeight(s.weight_kg_right as number)}` : formatWeight(s.weight_kg);
+
+    // One input cell per axis in the active row. Weight-ish axes share the
+    // inputWeight/editField='weight' state (a type never uses two of them);
+    // reps/duration/distance each own their field.
+    const renderAxisInput = (a: MetricAxis) => {
+      // Duration with the inline-stopwatch preference on: a tap-to-start timer
+      // instead of a manual mm:ss field. swElapsed is the live value; logging the
+      // set reads it (see handleLogSet) and zeroes it for the next set.
+      if (a === 'duration' && prefs.inlineTimerForDuration) {
+        const hasValue = swElapsed > 0;
+        // Typing the time is always allowed (the stopwatch is just a shortcut):
+        // editing the field sets the stopwatch base so ▶ resumes from it and the
+        // logged set reads the same value.
+        const onTimeChange = (t: string) => {
+          setInputDuration(t);
+          const secs = parseDuration(t);
+          swBaseRef.current = secs;
+          setSwElapsed(secs);
+        };
+        return (
+          <View key={a} style={[styles.colVal, styles.swCell]}>
+            <TouchableOpacity
+              onPress={() => { haptics.tick(); if (swRunning) { pauseStopwatch(); } else { startStopwatch(); } }}
+              style={[styles.swBtn, { backgroundColor: swRunning ? C.muted : Colors.primary }]}
+              hitSlop={6}
+              accessibilityLabel={swRunning ? 'Pause timer' : 'Start timer'}
+            >
+              <Feather name={swRunning ? 'pause' : 'play'} size={13} color={swRunning ? C.foreground : Colors.primaryFg} />
+            </TouchableOpacity>
+            {swRunning ? (
+              <Text style={[styles.swTime, { color: C.foreground }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{formatDuration(swElapsed)}</Text>
+            ) : (
+              <TextInput
+                value={inputDuration}
+                onChangeText={onTimeChange}
+                keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'}
+                style={[styles.swTime, styles.swTimeInput, { color: C.foreground, backgroundColor: C.muted }]}
+                selectTextOnFocus
+                accessibilityLabel="Edit time"
+                onFocus={() => { setEditField('duration'); kbScrollTargetRef.current = 'logger'; }}
+                onBlur={() => { setEditField((p) => (p === 'duration' ? null : p)); kbScrollTargetRef.current = null; }}
+              />
+            )}
+            {/* Reset moved OUT of the cell — it lives on its own line below the set
+                row (see resetTimerBtn), so it can never collide with the commit ✓
+                on a stopwatch + second-axis row (the bug it used to cause). */}
+          </View>
+        );
+      }
+      const isWeight = a === 'weight' || a === 'added_weight' || a === 'assist_weight';
+      const field: typeof editField = isWeight ? 'weight' : (a as 'reps' | 'duration' | 'distance' | 'resistance');
+      const open = editField === field;
+      const cellStyle = [styles.colVal, open && styles.activeCellRow];
+      const inputStyle = [open ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, open && { backgroundColor: C.muted }];
+
+      // value + setter + keypad + ± step behavior per axis.
+      const cfg = isWeight
+        ? {
+            value: inputWeight,
+            onChangeText: setInputWeight,
+            keyboardType: 'decimal-pad' as const,
+            dec: () => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))),
+            inc: () => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)),
+          }
+        : a === 'reps'
+        ? {
+            // decimal-pad so a partial rep (e.g. 8.5) can be typed; ± steps stay whole.
+            value: inputReps,
+            onChangeText: setInputReps,
+            keyboardType: 'decimal-pad' as const,
+            dec: () => setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))),
+            inc: () => setInputReps(String((parseFloat(inputReps) || 0) + 1)),
+          }
+        : a === 'duration'
+        ? {
+            value: inputDuration,
+            onChangeText: setInputDuration,
+            keyboardType: (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default') as 'numbers-and-punctuation' | 'default',
+            dec: () => setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))),
+            inc: () => setInputDuration(formatDuration(parseDuration(inputDuration) + 15)),
+          }
+        : a === 'distance'
+        ? {
+            value: inputDistance,
+            onChangeText: setInputDistance,
+            keyboardType: 'decimal-pad' as const,
+            dec: () => setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))),
+            inc: () => setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)),
+          }
+        : {
+            value: inputResistance,
+            onChangeText: setInputResistance,
+            keyboardType: 'number-pad' as const,
+            dec: () => setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))),
+            inc: () => setInputResistance(String((parseFloat(inputResistance) || 0) + 1)),
+          };
+
+      return (
+        <View key={a} style={cellStyle}>
+          {open && (
+            <TouchableOpacity onPress={() => { haptics.tick(); cfg.dec(); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
+            </TouchableOpacity>
+          )}
+          <TextInput
+            value={cfg.value}
+            onChangeText={cfg.onChangeText}
+            keyboardType={cfg.keyboardType}
+            placeholder={a === 'duration' ? '0:00' : '0'}
+            placeholderTextColor={C.textMuted}
+            style={inputStyle}
+            selectTextOnFocus
+            onFocus={() => { setEditField(field); kbScrollTargetRef.current = 'logger'; }}
+            onBlur={() => { setEditField((p) => (p === field ? null : p)); kbScrollTargetRef.current = null; }}
+          />
+          {open && (
+            <TouchableOpacity onPress={() => { haptics.tick(); cfg.inc(); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
+              <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      );
+    };
+
     return (
           <>
             {/* Exercise Header */}
@@ -1555,6 +2200,52 @@ export default function ActiveWorkoutScreen() {
                 <Text style={[styles.exerciseMeta, { color: C.textMuted }]}>
                   {currentEx.targetSets} sets × {currentEx.repsMin === currentEx.repsMax ? currentEx.repsMin : `${currentEx.repsMin}-${currentEx.repsMax}`} reps{currentEx.restSeconds > 0 ? ` · ${currentEx.restSeconds}s rest` : ''}
                 </Text>
+                {(() => {
+                  // Supersets: name the group + the members so the back-to-back flow is
+                  // legible (the pager auto-hops between them; rest fires after the round).
+                  const g = currentEx.supersetGroup;
+                  if (g == null) return null;
+                  const members = exercises.filter(e => e.supersetGroup === g);
+                  if (members.length < 2) return null;
+                  // Predict the hop so the auto-advance isn't a surprise: "up next: Row".
+                  const nextIdx = predictNextMember(exercises, currentIdx, exerciseFinished);
+                  const nextName = nextIdx != null ? exercises[nextIdx]?.exercise.name : null;
+                  return (
+                    <View style={styles.supersetBanner}>
+                      <Feather name="repeat" size={11} color={Colors.primary} />
+                      <Text style={[styles.supersetBannerText, { color: Colors.primary }]} numberOfLines={1}>
+                        Superset · {members.map(m => m.exercise.name).join(' + ')}
+                        {nextName ? <Text style={styles.supersetNext}>{`   ·   up next: ${nextName}`}</Text> : null}
+                      </Text>
+                    </View>
+                  );
+                })()}
+                {(() => {
+                  // Ad-hoc supersets: ONE entry point. The sheet handles create /
+                  // extend / break, picking partners by NAME (they move adjacent).
+                  const g = currentEx.supersetGroup;
+                  const grouped = g != null && exercises.filter(e => e.supersetGroup === g).length >= 2;
+                  const hasPartners = exercises.some((e, i) =>
+                    i !== currentIdx && !exerciseFinished[i] && (g == null || e.supersetGroup !== g));
+                  // Solo + finished (or nothing to pair with) → nothing to offer.
+                  if (!grouped && (!hasPartners || exerciseFinished[currentIdx])) return null;
+                  return (
+                    <View style={styles.supersetActions}>
+                      <TouchableOpacity
+                        onPress={() => { haptics.selection(); setShowSupersetSheet(true); }}
+                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(Colors.primary, 0.4) }]}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel={grouped ? 'Edit superset' : 'Make a superset'}
+                      >
+                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : Colors.primary} />
+                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : Colors.primary }]}>
+                          {grouped ? 'Edit superset' : 'Superset'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })()}
                 {currentEx.coachNote ? (
                   <Text style={[styles.coachCue, { color: C.accentText }]} numberOfLines={3}>
                     {currentEx.coachNote}
@@ -1619,21 +2310,36 @@ export default function ActiveWorkoutScreen() {
                 )}
                 <View style={styles.setHeadRow}>
                   <Text style={[styles.setHeadCell, styles.colSet, { color: C.textDim }]}>SET</Text>
-                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>KG</Text>
-                  <Text style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>REPS</Text>
+                  {showIntensity && (
+                    <Text style={[styles.setHeadCell, styles.colRpe, { color: C.textDim }]}>{rpeScale === 'rir' ? 'RIR' : 'RPE'}</Text>
+                  )}
+                  {axes.map((a) => (
+                    <Text key={a} style={[styles.setHeadCell, styles.colVal, { color: C.textDim }]}>{axisHeader(a)}</Text>
+                  ))}
                   <View style={styles.colCheck} />
                 </View>
 
-                {/* Done sets — settled history, receded. */}
-                {completed.map((s, i) => (
-                  <Animated.View key={i} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
-                    <Text style={[styles.setNum, styles.colSet, { color: C.textDim }]}>{i + 1}</Text>
-                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.weight_kg}</Text>
-                    <Text style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{s.reps}</Text>
+                {/* Done sets — settled history, receded. The set marker is the
+                    type badge (tap to retype); warmups etc. read as W/D/F. */}
+                {doneSets.map(({ s, realIdx, workNum }, i) => (
+                  <Animated.View key={realIdx} entering={FadeInDown.duration(220)} style={[styles.setRowDone, { borderTopColor: C.borderSubtle }]}>
+                    <TouchableOpacity style={styles.colSet} onPress={() => { if (!isFinished) setSetTypeSheetIdx(realIdx); }} hitSlop={6} disabled={isFinished} accessibilityLabel={`Set ${i + 1} type`}>
+                      <SetTypeBadge type={s.set_type ?? 'normal'} num={workNum ?? undefined} numColor={C.textDim} />
+                    </TouchableOpacity>
+                    {showIntensity && (
+                      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={[styles.doneVal, styles.colRpe, { color: C.textMuted }]}>
+                        {s.is_unilateral && s.rpe_right != null
+                          ? `${dispRpe(s.rpe) || '–'}/${dispRpe(s.rpe_right)}`
+                          : (dispRpe(s.rpe) || '–')}
+                      </Text>
+                    )}
+                    {axes.map((a) => (
+                      <Text key={a} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={[styles.doneVal, styles.colVal, { color: C.textSecondary }]}>{axisDoneValue(a, s)}</Text>
+                    ))}
                     {isFinished ? (
                       <View style={styles.colCheck}><Feather name="check" size={14} color={C.accentText} /></View>
                     ) : (
-                      <TouchableOpacity onPress={() => handleDeleteSet(i)} style={styles.colCheck} hitSlop={6} accessibilityLabel={`Delete set ${i + 1}`}>
+                      <TouchableOpacity onPress={() => handleDeleteSet(realIdx)} style={styles.colCheck} hitSlop={6} accessibilityLabel={`Delete set ${i + 1}`}>
                         <Feather name="x" size={12} color={Colors.danger} />
                       </TouchableOpacity>
                     )}
@@ -1643,72 +2349,88 @@ export default function ActiveWorkoutScreen() {
                 {/* Active set — the one bright row asking for a tap. */}
                 {!isFinished && (
                   <>
+                    {/* Unilateral (L+R): which side this tap logs. On the first side the
+                        ⇄ swaps the order; the second side prefills from the first (editable). */}
+                    {activeUnilateral && (
+                      pendingFirst === null ? (
+                        <TouchableOpacity
+                          style={styles.sideHint}
+                          onPress={() => { haptics.selection(); const next = firstSide === 'left' ? 'right' : 'left'; setFirstSide(next); setSideEntering(next); }}
+                          hitSlop={8}
+                          accessibilityLabel="Swap which side you log first"
+                        >
+                          <Feather name="repeat" size={12} color={C.accentText} />
+                          <Text style={[styles.sideHintText, { color: C.accentText }]}>
+                            {sideEntering === 'left' ? 'Left side first' : 'Right side first'} · tap to swap
+                          </Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={styles.sideHint}>
+                          <Feather name="corner-down-right" size={12} color={C.accentText} />
+                          <Text style={[styles.sideHintText, { color: C.accentText }]}>
+                            Now {sideEntering} side · carried over, edit if different
+                          </Text>
+                        </View>
+                      )
+                    )}
                     <View
                       ref={interactive ? inputCardRef : undefined}
                       style={[styles.setRowActive, { backgroundColor: C.primaryMuted }]}
                     >
-                      <Text style={[styles.setNum, styles.colSet, { color: C.accentText }]}>{doneCount + 1}</Text>
+                      {/* Set marker — tap to set the type (warmup/drop/failure/...). The
+                          chevron makes the otherwise-plain number read as a tappable picker. */}
+                      <TouchableOpacity style={styles.colSet} onPress={() => setSetTypeSheetIdx(-1)} hitSlop={6} accessibilityLabel="Set type">
+                        <SetTypeBadge type={activeSetType} num={countsAsWorkingSet(activeSetType) ? completedWorking + 1 : undefined} numColor={C.accentText} />
+                        <Feather name="chevron-down" size={9} color={C.textMuted} style={{ marginTop: 1 }} />
+                      </TouchableOpacity>
 
-                      {/* Weight — a plain bright number until tapped; tapping focuses
-                          it (keypad) and reveals its −/+. Reps is untouched. */}
-                      <View style={[styles.colVal, editField === 'weight' && styles.activeCellRow]}>
-                        {editField === 'weight' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
-                          </TouchableOpacity>
-                        )}
-                        <TextInput
-                          value={inputWeight}
-                          onChangeText={setInputWeight}
-                          keyboardType="decimal-pad"
-                          style={[editField === 'weight' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'weight' && { backgroundColor: C.muted }]}
-                          selectTextOnFocus
-                          onFocus={() => { setEditField('weight'); kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { setEditField((p) => (p === 'weight' ? null : p)); kbScrollTargetRef.current = null; }}
-                        />
-                        {editField === 'weight' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
+                      {/* Intensity (RPE / RIR) — a tappable value that opens the picker. */}
+                      {showIntensity && (
+                        <TouchableOpacity
+                          style={styles.colRpe}
+                          onPress={() => { Keyboard.dismiss(); setEditField(null); if (inputRpe == null) setInputRpe(8); setShowRpeSheet(true); }}
+                          hitSlop={6}
+                          accessibilityLabel={rpeScale === 'rir' ? 'Set RIR' : 'Set RPE'}
+                        >
+                          <Text numberOfLines={1} style={[styles.rpeVal, { color: inputRpe == null ? C.textMuted : C.foreground }]}>{inputRpe == null ? '+' : dispRpe(inputRpe)}</Text>
+                        </TouchableOpacity>
+                      )}
 
-                      <View style={[styles.colVal, editField === 'reps' && styles.activeCellRow]}>
-                        {editField === 'reps' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String(Math.max(1, (parseInt(inputReps) || 0) - 1))); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>−</Text>
-                          </TouchableOpacity>
-                        )}
-                        <TextInput
-                          value={inputReps}
-                          onChangeText={setInputReps}
-                          keyboardType="number-pad"
-                          style={[editField === 'reps' ? styles.activeInput : styles.activeInputPlain, { color: C.foreground }, editField === 'reps' && { backgroundColor: C.muted }]}
-                          selectTextOnFocus
-                          onFocus={() => { setEditField('reps'); kbScrollTargetRef.current = 'logger'; }}
-                          onBlur={() => { setEditField((p) => (p === 'reps' ? null : p)); kbScrollTargetRef.current = null; }}
-                        />
-                        {editField === 'reps' && (
-                          <TouchableOpacity onPress={() => { haptics.tick(); setInputReps(String((parseInt(inputReps) || 0) + 1)); }} style={[styles.miniStep, { backgroundColor: C.muted }]} hitSlop={6}>
-                            <Text style={[styles.miniStepText, { color: C.mutedFg }]}>+</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
+                      {/* One input cell per measurement axis. A plain bright value
+                          until tapped; tapping focuses it (keypad) and reveals its −/+. */}
+                      {axes.map((a) => renderAxisInput(a))}
 
                       <TouchableOpacity onPress={() => { Keyboard.dismiss(); handleLogSet(); setEditField(null); }} style={[styles.colCheck, styles.commitBtn]} accessibilityLabel={`Log set ${doneCount + 1}`}>
                         <Feather name="check" size={18} color={Colors.primaryFg} />
                       </TouchableOpacity>
                     </View>
 
+                    {/* Reset stopwatch — on its own full-width line so it never
+                        crowds the commit ✓ (any stopwatch type, paused with a value). */}
+                    {prefs.inlineTimerForDuration && axes.includes('duration') && !swRunning && swElapsed > 0 && (
+                      <TouchableOpacity
+                        onPress={() => { haptics.tick(); resetStopwatch(); setInputDuration('0:00'); }}
+                        style={styles.resetTimerBtn}
+                        accessibilityLabel="Reset timer"
+                      >
+                        <Feather name="rotate-ccw" size={13} color={C.textMuted} />
+                        <Text style={[styles.resetTimerText, { color: C.textMuted }]}>Reset timer</Text>
+                      </TouchableOpacity>
+                    )}
+
                     {/* Always present so the layout never collapses under the
                         active row. Falls back in Drona's voice once you've gone
                         past last session's set count (or it's a brand-new lift). */}
                     <Text style={[styles.lastTime, { color: C.textMuted }]}>
-                      {prevSets && prevSets[doneCount]
-                        ? `Last time: ${formatWeight(prevSets[doneCount].weight_kg)} × ${prevSets[doneCount].reps}`
-                        : prevSets && prevSets.length > 0
-                          ? 'Past your last session. Keep going.'
-                          : 'First time on this one. Find a weight you own.'}
+                      {(() => {
+                        const usesWeightAxis = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
+                        const usesRepsAxis = axes.includes('reps');
+                        const prev = prevSets && prevSets[doneCount];
+                        if (prev && usesWeightAxis && usesRepsAxis) return `Last time: ${formatWeight(prev.weight_kg)} × ${prev.reps}`;
+                        if (prev && usesRepsAxis && !usesWeightAxis) return `Last time: ${prev.reps} reps`;
+                        if (prevSets && prevSets.length > 0) return 'Past your last session. Keep going.';
+                        return usesWeightAxis ? 'First time on this one. Find a weight you own.' : 'First time on this one. Set your baseline.';
+                      })()}
                     </Text>
 
                     {doneCount > 0 && (
@@ -1739,7 +2461,7 @@ export default function ActiveWorkoutScreen() {
                 </View>
                 <Text style={[styles.finishedText, { color: C.foreground }]}>Done</Text>
                 <Text style={[styles.finishedSub, { color: C.textMuted }]}>
-                  {currentEx.sets.filter(s => s.completed).length} sets · {abbreviateNumber(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + s.weight_kg * s.reps, 0))} kg total volume
+                  {currentEx.sets.filter(s => s.completed).length} sets · {abbreviateNumber(currentEx.sets.filter(s => s.completed).reduce((a, s) => a + setVolumeKg(s), 0))} kg total volume
                 </Text>
                 <TouchableOpacity
                   onPress={() => {
@@ -1875,11 +2597,15 @@ export default function ActiveWorkoutScreen() {
                       : isDone
                         ? C.primarySubtle
                         : C.muted,
+                    // Superset members share a lime outline so the group reads as a
+                    // bracket at the nav level too (restrained: alpha'd, not filled).
                     borderColor: isCurrent
                       ? Colors.primary
-                      : isDone
-                        ? C.primaryBorder
-                        : C.border,
+                      : ex.supersetGroup != null
+                        ? colorWithAlpha(Colors.primary, 0.55)
+                        : isDone
+                          ? C.primaryBorder
+                          : C.border,
                   },
                 ]}
               >
@@ -1943,7 +2669,11 @@ export default function ActiveWorkoutScreen() {
                     style={[styles.pagerPage, { width: winW, left: i * winW }]}
                     pointerEvents={isCur ? 'auto' : 'none'}
                   >
-                    <ScrollView
+                    {/* gesture-handler ScrollView so the inner vertical scroll
+                        coordinates with the horizontal pager Pan under the New
+                        Architecture (RN core ScrollView loses the touch handoff
+                        once the pager gesture fails on a vertical drag). */}
+                    <GHScrollView
                       ref={isCur ? mainScrollRef : undefined}
                       style={styles.mainScroll}
                       contentContainerStyle={[
@@ -1958,7 +2688,7 @@ export default function ActiveWorkoutScreen() {
                       automaticallyAdjustKeyboardInsets={isCur}
                     >
                       {renderExerciseBody(i, isCur)}
-                    </ScrollView>
+                    </GHScrollView>
                   </Animated.View>
                 );
               })}
@@ -2041,10 +2771,94 @@ export default function ActiveWorkoutScreen() {
 
       <WorkoutSettingsSheet visible={showSettings} onClose={() => setShowSettings(false)} />
 
-      {/* FINISH SHEET — blank workouts only. Rendered via root <Portal> like the
-          other sheets. Lets the user name the session (pre-filled from the
-          muscle groups trained) so history stays legible, jot optional notes,
-          and one-tap save the performed exercises as a reusable routine. */}
+      <SetTypeSheet
+        visible={setTypeSheetIdx !== null}
+        currentType={
+          setTypeSheetIdx === null ? 'normal'
+          : setTypeSheetIdx < 0 ? activeSetType
+          : (currentEx?.sets[setTypeSheetIdx]?.set_type ?? 'normal')
+        }
+        canRemove={setTypeSheetIdx !== null && setTypeSheetIdx >= 0}
+        onSelect={(t) => {
+          if (setTypeSheetIdx === null) return;
+          if (setTypeSheetIdx < 0) { setActiveSetType(t); return; }
+          const idx = setTypeSheetIdx;
+          workout.updateExercises(prev => prev.map((e, ei) =>
+            ei !== currentIdx ? e : { ...e, sets: e.sets.map((s, si) => si === idx ? { ...s, set_type: t } : s) }
+          ));
+        }}
+        unilateral={activeUnilateral}
+        onUnilateralChange={
+          // Unilateral is chosen at capture time, so the toggle only appears for
+          // the active (not-yet-logged) set. It's also gated to reps-bearing metric
+          // types — only reps/rpe/weight have per-side storage, so on a pure
+          // duration/distance/resistance exercise it would silently drop the first
+          // side's primary metric. Turning it off mid-round drops any half-entered
+          // side and cancels a running inter-side rest.
+          setTypeSheetIdx !== null && setTypeSheetIdx < 0 && currentEx
+          && metricTypeDef(metricTypeOf(currentEx.exercise)).axes.includes('reps')
+            ? (v: boolean) => {
+                setActiveUnilateral(v);
+                if (v) {
+                  setSideEntering(firstSide);
+                } else {
+                  setPendingFirst(null);
+                  setSideEntering(firstSide);
+                  if (restOverrideTarget != null) stopRestTimer();
+                }
+              }
+            : undefined
+        }
+        onRemove={() => { if (setTypeSheetIdx !== null && setTypeSheetIdx >= 0) handleDeleteSet(setTypeSheetIdx); }}
+        onClose={() => setSetTypeSheetIdx(null)}
+      />
+
+      {currentEx && (
+        <SupersetSheet
+          visible={showSupersetSheet}
+          onClose={() => setShowSupersetSheet(false)}
+          exerciseName={currentEx.exercise.name}
+          members={(() => {
+            const g = currentEx.supersetGroup;
+            if (g == null) return [];
+            const names = exercises.filter((e) => e.supersetGroup === g).map((e) => e.exercise.name);
+            return names.length >= 2 ? names : [];
+          })()}
+          options={exercises
+            .map((e, i) => ({ e, i }))
+            .filter(({ e, i }) =>
+              i !== currentIdx && !exerciseFinished[i]
+              && (currentEx.supersetGroup == null || e.supersetGroup !== currentEx.supersetGroup))
+            .map(({ e, i }) => ({
+              idx: i,
+              name: e.exercise.name,
+              muscleGroup: e.exercise.muscle_group,
+              // Picking a member of ANOTHER superset pulls it out (and can dissolve
+              // what's left) — say so on the row instead of doing it silently.
+              pairedWith: e.supersetGroup != null
+                ? exercises
+                    .filter((x, j) => j !== i && x.supersetGroup === e.supersetGroup)
+                    .map((x) => x.exercise.name)
+                    .join(' + ') || undefined
+                : undefined,
+            }))}
+          onConfirm={applySupersetPicks}
+          onBreak={breakSuperset}
+        />
+      )}
+
+      <RpePickerSheet
+        visible={showRpeSheet}
+        scale={prefs.intensityScale}
+        value={inputRpe}
+        onChange={(r) => setInputRpe(r)}
+        onClose={() => setShowRpeSheet(false)}
+      />
+
+      {/* SAVE WORKOUT SHEET (Phase B.5) — shown on every finish. Rendered via the
+          root <Portal> like the other sheets. Title (pre-filled), editable start
+          (backdating), notes, summary, Review with Coach, and — for blank
+          sessions only — one-tap save the performed exercises as a reusable routine. */}
       <Portal>
         {showFinishSheet && (
         <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowFinishSheet(false)}>
@@ -2076,6 +2890,7 @@ export default function ActiveWorkoutScreen() {
                 contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                canCancelContentTouches={false}
               >
                 {/* Session summary */}
                 <View style={styles.finishStatsRow}>
@@ -2115,7 +2930,13 @@ export default function ActiveWorkoutScreen() {
                   style={[styles.formInput, styles.finishNotesInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
                 />
 
-                {/* Save as routine */}
+                {/* Started — editable for backdating a forgotten workout */}
+                <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>STARTED</Text>
+                <StartTimeEditor value={finishStartedAt} onChange={setFinishStartedAt} />
+
+                {/* Save as routine — only for blank workouts; routine workouts are already routines */}
+                {workout.routineId === 'new' && (
+                <>
                 <TouchableOpacity
                   onPress={toggleSaveAsRoutine}
                   activeOpacity={0.8}
@@ -2162,6 +2983,8 @@ export default function ActiveWorkoutScreen() {
                       style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
                     />
                   </Animated.View>
+                )}
+                </>
                 )}
               </ScrollView>
 
@@ -2214,28 +3037,6 @@ export default function ActiveWorkoutScreen() {
           { text: 'Cancel Workout', style: 'destructive', onPress: confirmCancel },
         ]}
         onClose={() => setShowCancelAlert(false)}
-      />
-
-      <ThemedAlert
-        visible={showFinishAlert}
-        icon="check-circle"
-        iconColor={Colors.primary}
-        title="Finish Workout"
-        message={`Save ${finishSetCount} sets?`}
-        stats={[
-          { label: 'Sets', value: String(finishSetCount) },
-          { label: 'Duration', value: `${Math.floor(workout.elapsed / 60)}m` },
-          { label: 'Volume', value: `${totalVolume}kg` },
-        ]}
-        buttons={[
-          { text: 'Finish', style: 'primary', onPress: () => { void confirmFinish(); } },
-          {
-            text: 'Review with Coach',
-            onPress: () => { setShowFinishAlert(false); openCoachReview(); },
-          },
-          { text: 'Keep Going', onPress: () => setShowFinishAlert(false) },
-        ]}
-        onClose={() => setShowFinishAlert(false)}
       />
 
       <ThemedAlert
@@ -2459,6 +3260,15 @@ const styles = StyleSheet.create({
   // card so the user remembers the intent ("RIR 2", "Hams-focused", etc.)
   // while they're doing the set.
   coachCue: { fontSize: 12, fontStyle: 'italic', marginTop: 6, lineHeight: 16 },
+  supersetBanner: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
+  supersetBannerText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 0.3, flexShrink: 1 },
+  // The "up next" tail on the superset banner — same lime, lighter weight so the
+  // member list stays the headline and the hop preview reads as a quiet aside.
+  supersetNext: { fontWeight: FontWeight.medium },
+  // Ad-hoc superset action chips (group with next / break) under the exercise header.
+  supersetActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 7 },
+  supersetActionChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 9, borderRadius: Radius.full, borderWidth: 1 },
+  supersetActionText: { fontSize: 11, fontWeight: FontWeight.semibold },
   removeBtn: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', marginLeft: Spacing.md },
 
   // Timers
@@ -2642,19 +3452,33 @@ const styles = StyleSheet.create({
   setTable: { marginBottom: Spacing.xl },
   setHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
   setHeadCell: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5, textAlign: 'center' },
-  colSet: { width: 30, textAlign: 'center' },
-  colVal: { flex: 1, alignItems: 'center' },
+  colSet: { width: 30, textAlign: 'center', alignItems: 'center', justifyContent: 'center' },
+  colVal: { flex: 1, alignItems: 'center', minWidth: 0 },
   colCheck: { width: 44, alignItems: 'center', justifyContent: 'center' },
+  // Phase B intensity column — fixed width so the axis columns keep their layout.
+  // RPE column holds a single tappable value (the picker opens as a sheet), so a
+  // narrow fixed width is enough and never wraps (numberOfLines={1}).
+  colRpe: { width: 40, alignItems: 'center', justifyContent: 'center' },
+  rpeVal: { fontSize: FontSize.lg, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], textAlign: 'center' },
   setNum: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
   setRowDone: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth },
   doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
   setRowActive: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 6, borderRadius: Radius.lg, marginTop: 14 },
-  activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   activeInputPlain: { flex: 1, height: 44, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
   activeInput: { flex: 1, height: 44, minWidth: 36, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, borderRadius: Radius.sm, fontVariant: ['tabular-nums'] },
   miniStep: { width: 28, height: 30, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   miniStepText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  // Inline duration stopwatch cell.
+  swCell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minWidth: 0 },
+  swBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  swTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 40, flexShrink: 1, textAlign: 'center' },
+  swTimeInput: { height: 40, borderRadius: Radius.sm, paddingHorizontal: 6 },
   commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
+  resetTimerBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, marginTop: 10 },
+  resetTimerText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  sideHint: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 5, paddingVertical: 4, marginBottom: 2 },
+  sideHintText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 0.3 },
   lastTime: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 12 },
   bottomStatItem: { alignItems: 'center' },
   bottomStatValue: { fontSize: FontSize.base, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] as any },

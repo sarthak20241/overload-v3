@@ -5,6 +5,15 @@
 -- New columns / RLS policies / extensions are added with `if not exists` /
 -- `do $$` guards so applying this against an established prod DB only adds
 -- what's missing.
+--
+-- SCOPE: this is the curated CORE schema (user_profiles, exercises, routines,
+-- routine_exercises, workouts, workout_sets, per-user lift/volume stats), kept
+-- readable with rationale comments. It is NOT the whole database. The AI-coach /
+-- research-KB, diet, admin, and monetization subsystems exist only as numbered
+-- migrations in supabase/migrations/, and a few subsystem columns on core tables
+-- live there too (e.g. user_profiles tier/purchase + macro-target fields). The
+-- live DB is the source of truth and is changed only by applying those migrations
+-- (via the Supabase MCP; never `db push`); run them in order to stand up a full DB.
 
 -- Enable UUID generation
 create extension if not exists "uuid-ossp";
@@ -48,7 +57,11 @@ create table if not exists exercises (
   -- Client inserts never pass this — the default tags the row with the
   -- caller's JWT sub; seed/service-role inserts get null.
   created_by text default (auth.jwt()->>'sub'),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Phase A measurement type + Phase E catalog enrichment (migrations 0043/0052).
+  metric_type text not null default 'weight_reps',
+  instructions text[] not null default '{}',
+  image_urls text[] not null default '{}'
 );
 
 -- Idempotent re-apply: on databases where exercises already existed the
@@ -59,6 +72,21 @@ alter table exercises
   add column if not exists created_by text;
 alter table exercises
   alter column created_by set default (auth.jwt()->>'sub');
+alter table exercises
+  add column if not exists metric_type text not null default 'weight_reps';
+alter table exercises
+  add column if not exists instructions text[] not null default '{}';
+alter table exercises
+  add column if not exists image_urls text[] not null default '{}';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'exercises_metric_type_check') then
+    alter table exercises add constraint exercises_metric_type_check
+      check (metric_type in (
+        'weight_reps','bodyweight_reps','weighted_bodyweight','assisted_bodyweight',
+        'duration','duration_weight','distance_duration','weight_distance','resistance_duration'));
+  end if;
+end $$;
 
 -- ─── Routines ───────────────────────────────────────────────────────────────
 create table if not exists routines (
@@ -84,7 +112,10 @@ create table if not exists routine_exercises (
   -- generate_workout / generate_plan tool emits a `note` for the exercise
   -- (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Nullable —
   -- hand-built routines from the editor don't set this.
-  note text
+  note text,
+  -- Supersets (migration 0060). Grouping ordinal; members of one superset share a
+  -- value, NULL = solo. Members are kept contiguous (order = list position).
+  superset_group integer
 );
 
 -- Idempotent re-apply: the column above is INSIDE the create-if-not-exists
@@ -106,8 +137,18 @@ create table if not exists workouts (
   duration_seconds integer,
   total_volume_kg numeric,
   notes text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Client-generated id for offline-create idempotency (migration 0038). Null
+  -- for rows created server-side or before the column existed; the partial unique
+  -- index below dedupes re-uploads of the same client row per user.
+  client_id uuid
 );
+
+-- Idempotent re-apply: client_id sits inside the create-if-not-exists block, so
+-- mirror it for databases where workouts predates 0038.
+alter table workouts add column if not exists client_id uuid;
+create unique index if not exists uq_workouts_client_id
+  on workouts(user_id, client_id) where client_id is not null;
 
 -- ─── Workout Sets ───────────────────────────────────────────────────────────
 create table if not exists workout_sets (
@@ -115,9 +156,31 @@ create table if not exists workout_sets (
   workout_id uuid not null references workouts(id) on delete cascade,
   exercise_id uuid not null references exercises(id) on delete cascade,
   weight_kg numeric not null default 0,
-  reps integer not null default 0,
+  reps numeric not null default 0,
   completed boolean not null default false,
-  "order" integer not null default 0
+  "order" integer not null default 0,
+  -- Phase A non-weight/rep axes (migrations 0044, 0052). Nullable; only the axes
+  -- the exercise's metric_type uses are populated.
+  duration_seconds integer,
+  distance_m numeric,
+  resistance numeric,
+  -- Phase B per-set type + intensity (migration 0053). Warmups are excluded from
+  -- working volume / 1RM in the recompute functions below.
+  set_type text not null default 'normal'
+    check (set_type in ('normal','warmup','dropset','failure','negative','left','right')),
+  rpe numeric(3, 1) check (rpe is null or (rpe >= 1.0 and rpe <= 10.0)),
+  -- Unilateral "L+R" set (migration 0056). ONE row = one set trained one side at a time.
+  -- is_unilateral is orthogonal to set_type (a set can be e.g. failure AND unilateral).
+  -- weight_kg is shared across sides; reps_right/rpe_right hold the right side; volume
+  -- counts both sides. Legacy 'left'/'right' set_type values may exist on old rows.
+  is_unilateral boolean not null default false,
+  reps_right numeric,
+  rpe_right numeric check (rpe_right is null or (rpe_right >= 1.0 and rpe_right <= 10.0)),
+  -- Per-side weight (migration 0059). null => same as weight_kg (legacy shared dumbbell).
+  weight_kg_right numeric,
+  -- Supersets (migration 0060). Grouping ordinal carried from the active exercise so the
+  -- grouping persists into history; members of one superset share a value, NULL = solo.
+  superset_group integer
 );
 
 -- ─── AI Coach Rate Limit ────────────────────────────────────────────────────
@@ -388,101 +451,363 @@ create policy "workout_sets_self" on workout_sets
 -- and expose every user's custom exercises.
 drop policy if exists "exercises_read" on exercises;
 
--- ─── User Stats Materialized Views (Phase 1) ───────────────────────────────
--- Power the AI Coach's <user_context> block. Refreshed when a workout finishes
--- (see trigger below). Two views keep responsibilities separate: per-lift PR
--- estimates and per-muscle weekly volume.
+-- ─── User Stats Tables (incremental, trigger-maintained) ────────────────────
+-- Power the AI Coach's <user_context> block (the get_user_coach_context() RPC
+-- below reads these by name). The original Phase 1 design used two materialized
+-- views refreshed wholesale on workout finish; that was replaced by regular
+-- tables maintained INCREMENTALLY by a per-row trigger on workout_sets. Each set
+-- INSERT/UPDATE/DELETE recomputes only the affected (user, exercise) lift row
+-- and (user, muscle, week) volume row, scoped to the one user. This block
+-- mirrors the live schema (migrations 0008/0011/0012/0013/0045/0051).
 
-drop materialized view if exists user_lift_stats cascade;
-create materialized view user_lift_stats as
-with completed_sets as (
+create table if not exists user_lift_stats (
+  user_id           text          not null,
+  exercise_id       uuid          not null,
+  exercise_name     text          not null,
+  muscle_group      text          not null,
+  estimated_1rm     numeric(10, 2),
+  top_set_weight    numeric(10, 2),
+  top_set_reps      numeric,
+  last_set_weight   numeric(10, 2),
+  last_set_reps     numeric,
+  last_performed_at timestamptz,
+  sessions_last_28d integer       not null default 0,
+  updated_at        timestamptz   not null default now(),
+  primary key (user_id, exercise_id)
+);
+create index if not exists idx_user_lift_stats_user on user_lift_stats(user_id);
+
+create table if not exists user_volume_stats (
+  user_id          text           not null,
+  muscle_group     text           not null,
+  week_start       date           not null,
+  total_volume_kg  numeric(12, 2) not null default 0,
+  set_count        integer        not null default 0,
+  updated_at       timestamptz    not null default now(),
+  primary key (user_id, muscle_group, week_start)
+);
+create index if not exists idx_user_volume_stats_user on user_volume_stats(user_id);
+
+-- RLS: owner-only read (0008) plus owner-only write (0012). The recompute
+-- helpers run with the caller's privileges, so the per-user trigger writes the
+-- caller's own rows under these policies.
+alter table user_lift_stats   enable row level security;
+alter table user_volume_stats enable row level security;
+
+drop policy if exists "user_lift_stats_owner_read"   on user_lift_stats;
+create policy "user_lift_stats_owner_read"   on user_lift_stats
+  for select using (user_id = current_clerk_user_id());
+drop policy if exists "user_lift_stats_owner_insert" on user_lift_stats;
+create policy "user_lift_stats_owner_insert" on user_lift_stats
+  for insert with check (user_id = current_clerk_user_id());
+drop policy if exists "user_lift_stats_owner_update" on user_lift_stats;
+create policy "user_lift_stats_owner_update" on user_lift_stats
+  for update using (user_id = current_clerk_user_id())
+              with check (user_id = current_clerk_user_id());
+drop policy if exists "user_lift_stats_owner_delete" on user_lift_stats;
+create policy "user_lift_stats_owner_delete" on user_lift_stats
+  for delete using (user_id = current_clerk_user_id());
+
+drop policy if exists "user_volume_stats_owner_read"   on user_volume_stats;
+create policy "user_volume_stats_owner_read"   on user_volume_stats
+  for select using (user_id = current_clerk_user_id());
+drop policy if exists "user_volume_stats_owner_insert" on user_volume_stats;
+create policy "user_volume_stats_owner_insert" on user_volume_stats
+  for insert with check (user_id = current_clerk_user_id());
+drop policy if exists "user_volume_stats_owner_update" on user_volume_stats;
+create policy "user_volume_stats_owner_update" on user_volume_stats
+  for update using (user_id = current_clerk_user_id())
+              with check (user_id = current_clerk_user_id());
+drop policy if exists "user_volume_stats_owner_delete" on user_volume_stats;
+create policy "user_volume_stats_owner_delete" on user_volume_stats
+  for delete using (user_id = current_clerk_user_id());
+
+-- recompute_user_lift_stat(user, exercise): rebuild ONE row from raw
+-- workout_sets using min(Epley, Brzycki) for e1RM. Only rep-based loaded lifts
+-- get a 1RM; every other metric_type clears its row (1RM gating, migration
+-- 0045). last_set_weight / last_set_reps added in migration 0013.
+create or replace function recompute_user_lift_stat(p_user_id text, p_exercise_id uuid)
+returns void
+language plpgsql
+as $$
+declare
+  v_exercise_name text;
+  v_muscle_group  text;
+  v_metric_type   text;
+  v_e1rm          numeric(10, 2);
+  v_top_weight    numeric(10, 2);
+  v_top_reps      numeric;
+  v_last_weight   numeric(10, 2);
+  v_last_reps     numeric;
+  v_last_at       timestamptz;
+  v_sessions_28d  integer;
+begin
+  select e.name, e.muscle_group, coalesce(e.metric_type, 'weight_reps')
+    into v_exercise_name, v_muscle_group, v_metric_type
+  from exercises e
+  where e.id = p_exercise_id;
+
+  -- Only rep-based loaded lifts get a 1RM. Everything else (bodyweight reps,
+  -- duration, distance, weighted-duration, weighted-distance) clears its row.
+  if v_metric_type not in ('weight_reps', 'weighted_bodyweight', 'assisted_bodyweight') then
+    delete from user_lift_stats
+      where user_id = p_user_id and exercise_id = p_exercise_id;
+    return;
+  end if;
+
+  -- Unilateral sets (migration 0056) expand into TWO e1rm candidates (left + right);
+  -- non-unilateral rows (is_unilateral=false) yield only the left side => identical output.
+  -- A side ordinal (left=0, right=1, migration 0058) breaks the last-set tie toward the
+  -- left, since both expanded rows of one unilateral set share (started_at, set_order).
+  with expanded as (
+    select sd.w as weight_kg, w.started_at, s."order" as set_order, sd.r as reps, sd.side
+    from workout_sets s
+      join workouts w on w.id = s.workout_id
+      cross join lateral (values
+        (s.weight_kg, s.reps, 0),
+        (case when s.is_unilateral then coalesce(s.weight_kg_right, s.weight_kg) end,
+         case when s.is_unilateral then coalesce(s.reps_right, s.reps) end, 1)
+      ) as sd(w, r, side)
+    where w.user_id = p_user_id
+      and s.exercise_id = p_exercise_id
+      and s.completed = true
+      and s.weight_kg > 0
+      and s.set_type is distinct from 'warmup'
+      and w.user_id is not null
+      and sd.r is not null
+      and sd.w > 0
+  ), cs as (
+    select
+      weight_kg,
+      reps,
+      started_at,
+      set_order,
+      side,
+      -- reps flows through raw (0062: partials like 0.5 must not round into
+      -- top/last_set_reps); the >= 1 clamp is confined to the 1RM math here.
+      least(
+        weight_kg * (1.0 + greatest(reps, 1) / 30.0),
+        weight_kg * 36.0 / (37.0 - least(greatest(reps, 1), 36))
+      )::numeric(10, 2) as e1rm
+    from expanded
+  )
   select
-    w.user_id,
-    s.exercise_id,
-    e.name as exercise_name,
-    e.muscle_group,
-    s.weight_kg,
-    greatest(s.reps, 1) as reps,
-    w.started_at
+    max(e1rm),
+    (array_agg(weight_kg order by e1rm     desc))[1],
+    (array_agg(reps      order by e1rm     desc))[1],
+    (array_agg(weight_kg order by started_at desc, set_order desc, side asc))[1],
+    (array_agg(reps      order by started_at desc, set_order desc, side asc))[1],
+    max(started_at),
+    count(distinct date_trunc('day', started_at))
+      filter (where started_at >= now() - interval '28 days')
+    into v_e1rm, v_top_weight, v_top_reps,
+         v_last_weight, v_last_reps,
+         v_last_at, v_sessions_28d
+  from cs;
+
+  if v_e1rm is null then
+    delete from user_lift_stats
+      where user_id = p_user_id and exercise_id = p_exercise_id;
+    return;
+  end if;
+
+  insert into user_lift_stats (
+    user_id, exercise_id, exercise_name, muscle_group,
+    estimated_1rm, top_set_weight, top_set_reps,
+    last_set_weight, last_set_reps,
+    last_performed_at, sessions_last_28d, updated_at
+  )
+  values (
+    p_user_id, p_exercise_id, v_exercise_name, v_muscle_group,
+    v_e1rm, v_top_weight, v_top_reps,
+    v_last_weight, v_last_reps,
+    v_last_at, coalesce(v_sessions_28d, 0), now()
+  )
+  on conflict (user_id, exercise_id) do update set
+    exercise_name     = excluded.exercise_name,
+    muscle_group      = excluded.muscle_group,
+    estimated_1rm     = excluded.estimated_1rm,
+    top_set_weight    = excluded.top_set_weight,
+    top_set_reps      = excluded.top_set_reps,
+    last_set_weight   = excluded.last_set_weight,
+    last_set_reps     = excluded.last_set_reps,
+    last_performed_at = excluded.last_performed_at,
+    sessions_last_28d = excluded.sessions_last_28d,
+    updated_at        = now();
+end;
+$$;
+
+-- recompute_user_volume_stat(user, muscle, week): rebuild ONE row.
+create or replace function recompute_user_volume_stat(p_user_id text, p_muscle_group text, p_week_start date)
+returns void
+language plpgsql
+as $$
+declare
+  v_volume numeric(12, 2);
+  v_count  integer;
+begin
+  -- Unilateral sets (0056) add the right side to volume; per-side weight (0059) uses each
+  -- side's own load. coalesce(weight_kg_right, weight_kg) keeps legacy shared-weight rows.
+  -- count(*) stays 1 per set.
+  select
+    coalesce(sum(s.weight_kg * s.reps
+      + case when s.is_unilateral then coalesce(s.weight_kg_right, s.weight_kg) * coalesce(s.reps_right, 0) else 0 end), 0)::numeric(12, 2),
+    count(*)::integer
+  into v_volume, v_count
   from workout_sets s
     join workouts w on w.id = s.workout_id
     join exercises e on e.id = s.exercise_id
-  where s.completed = true
-    and s.weight_kg > 0
-    and w.user_id is not null
-),
-ranked as (
-  select
-    user_id, exercise_id, exercise_name, muscle_group,
-    weight_kg, reps, started_at,
-    -- min(Epley, Brzycki) — Brzycki diverges above ~8 reps; min is the
-    -- conservative estimate.
-    least(
-      weight_kg * (1.0 + reps / 30.0),                         -- Epley
-      weight_kg * 36.0 / (37.0 - least(reps, 36))              -- Brzycki
-    ) as e1rm
-  from completed_sets
-)
-select
-  user_id,
-  exercise_id,
-  exercise_name,
-  muscle_group,
-  max(e1rm)::numeric(10, 2) as estimated_1rm,
-  (array_agg(weight_kg order by e1rm desc))[1]::numeric(10, 2) as top_set_weight,
-  (array_agg(reps order by e1rm desc))[1] as top_set_reps,
-  max(started_at) as last_performed_at,
-  count(distinct date_trunc('day', started_at))
-    filter (where started_at >= now() - interval '28 days') as sessions_last_28d
-from ranked
-group by user_id, exercise_id, exercise_name, muscle_group;
+  where w.user_id = p_user_id
+    and e.muscle_group = p_muscle_group
+    and date_trunc('week', w.started_at)::date = p_week_start
+    and s.completed = true
+    and s.set_type is distinct from 'warmup'
+    and w.user_id is not null;
 
-create unique index if not exists idx_user_lift_stats_unique
-  on user_lift_stats(user_id, exercise_id);
+  if v_count = 0 then
+    delete from user_volume_stats
+      where user_id = p_user_id
+        and muscle_group = p_muscle_group
+        and week_start = p_week_start;
+    return;
+  end if;
 
-drop materialized view if exists user_volume_stats cascade;
-create materialized view user_volume_stats as
-select
-  w.user_id,
-  e.muscle_group,
-  date_trunc('week', w.started_at)::date as week_start,
-  sum(s.weight_kg * s.reps)::numeric(12, 2) as total_volume_kg,
-  count(*)::integer as set_count
-from workout_sets s
-  join workouts w on w.id = s.workout_id
-  join exercises e on e.id = s.exercise_id
-where s.completed = true
-  and w.user_id is not null
-group by w.user_id, e.muscle_group, date_trunc('week', w.started_at);
+  insert into user_volume_stats (
+    user_id, muscle_group, week_start, total_volume_kg, set_count, updated_at
+  ) values (
+    p_user_id, p_muscle_group, p_week_start, v_volume, v_count, now()
+  )
+  on conflict (user_id, muscle_group, week_start) do update set
+    total_volume_kg = excluded.total_volume_kg,
+    set_count       = excluded.set_count,
+    updated_at      = now();
+end;
+$$;
 
-create unique index if not exists idx_user_volume_stats_unique
-  on user_volume_stats(user_id, muscle_group, week_start);
-
--- Refresh trigger — when a workout transitions to finished, refresh both views
--- concurrently. `concurrently` avoids blocking reads but requires the unique
--- indexes above. For a small dataset this is cheap; revisit if it shows up in
--- workout-save latency.
-create or replace function refresh_user_stats_views() returns trigger
-language plpgsql as $$
+-- Per-row trigger on workout_sets: recompute the affected (user, exercise) and
+-- (user, muscle, week) rows around the changed set, resolving the user via the
+-- parent workout. An UPDATE that moves exercise_id recomputes the old row too.
+create or replace function update_user_stats_on_set_change()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_user_id        text;
+  v_started_at     timestamptz;
+  v_muscle_group   text;
+  v_old_muscle     text;
 begin
-  if (tg_op = 'INSERT' and new.finished_at is not null)
-     or (tg_op = 'UPDATE' and old.finished_at is null and new.finished_at is not null) then
-    refresh materialized view concurrently user_lift_stats;
-    refresh materialized view concurrently user_volume_stats;
+  if tg_op in ('INSERT', 'UPDATE') then
+    select w.user_id, w.started_at, e.muscle_group
+      into v_user_id, v_started_at, v_muscle_group
+    from workouts w
+      join exercises e on e.id = new.exercise_id
+    where w.id = new.workout_id;
+
+    if v_user_id is not null then
+      perform recompute_user_lift_stat(v_user_id, new.exercise_id);
+      perform recompute_user_volume_stat(
+        v_user_id, v_muscle_group, date_trunc('week', v_started_at)::date
+      );
+    end if;
+  end if;
+
+  if tg_op = 'UPDATE' and old.exercise_id is distinct from new.exercise_id then
+    select e.muscle_group into v_old_muscle
+      from exercises e where e.id = old.exercise_id;
+    if v_user_id is not null then
+      perform recompute_user_lift_stat(v_user_id, old.exercise_id);
+      if v_old_muscle is not null then
+        perform recompute_user_volume_stat(
+          v_user_id, v_old_muscle, date_trunc('week', v_started_at)::date
+        );
+      end if;
+    end if;
+  end if;
+
+  if tg_op = 'DELETE' then
+    select w.user_id, w.started_at, e.muscle_group
+      into v_user_id, v_started_at, v_muscle_group
+    from workouts w
+      join exercises e on e.id = old.exercise_id
+    where w.id = old.workout_id;
+
+    if v_user_id is not null then
+      perform recompute_user_lift_stat(v_user_id, old.exercise_id);
+      perform recompute_user_volume_stat(
+        v_user_id, v_muscle_group, date_trunc('week', v_started_at)::date
+      );
+    end if;
+  end if;
+
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists trg_user_stats_on_set_change on workout_sets;
+create trigger trg_user_stats_on_set_change
+  after insert or update or delete on workout_sets
+  for each row execute function update_user_stats_on_set_change();
+
+-- Deleting a workouts row cascades its workout_sets, but that FK cascade fires
+-- after the workout row is already gone, so the per-set trigger above can't
+-- resolve the parent and would leave orphaned lift / volume rows (migration
+-- 0051; same class of bug fixed for diet in 0050). Delete the sets in a BEFORE
+-- DELETE trigger while the parent still exists so the per-set trigger recomputes
+-- correctly; the FK cascade then no-ops. Matches the "delete sets before the
+-- workout" shape used by delete_user_data (0003) and lib/editQueue.ts.
+create or replace function delete_workout_sets_before_workout_delete()
+returns trigger
+language plpgsql
+as $$
+begin
+  delete from workout_sets where workout_id = old.id;
+  return old;
+end;
+$$;
+
+drop trigger if exists trg_delete_workout_sets_before_workout_delete on workouts;
+create trigger trg_delete_workout_sets_before_workout_delete
+  before delete on workouts
+  for each row execute function delete_workout_sets_before_workout_delete();
+
+-- Lock exercises.metric_type once the exercise is referenced by logged sets or
+-- routine usage (migration 0063). Read surfaces derive their axes from
+-- metric_type, so changing it would re-label existing history under a new
+-- contract. The client blocks this in the edit UI, but this trigger closes the
+-- read-before-write race and the out-of-band path. SECURITY DEFINER so the
+-- referencing-row check sees every user's rows (globals are shared).
+create or replace function enforce_metric_type_lock()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.metric_type is distinct from old.metric_type then
+    if exists (select 1 from workout_sets where exercise_id = old.id)
+       or exists (select 1 from routine_exercises where exercise_id = old.id) then
+      raise exception using
+        errcode = 'check_violation',
+        message = format(
+          'metric_type is locked for exercise %s: it already has logged sets or routine usage',
+          old.id
+        );
+    end if;
   end if;
   return new;
 end;
 $$;
 
-drop trigger if exists trg_refresh_user_stats on workouts;
-create trigger trg_refresh_user_stats
-  after insert or update of finished_at on workouts
-  for each row execute function refresh_user_stats_views();
+drop trigger if exists trg_exercises_metric_type_lock on exercises;
+create trigger trg_exercises_metric_type_lock
+  before update of metric_type on exercises
+  for each row execute function enforce_metric_type_lock();
 
 -- ─── Coach Context RPC (Phase 1) ────────────────────────────────────────────
 -- Returns a compact JSON blob the AI Coach edge function injects as
 -- <user_context>. SECURITY DEFINER runs with owner privileges so we can read
--- across the matviews from inside the RPC, but the function itself filters by
+-- across the user stats tables from inside the RPC, but the function itself filters by
 -- the authenticated Clerk subject — never by client-provided ID.
 create or replace function get_user_coach_context()
 returns jsonb

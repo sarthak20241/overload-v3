@@ -5,6 +5,7 @@ import {
   persistActiveWorkout,
   clearActiveWorkout,
   type ActiveWorkoutSnapshot,
+  type ActiveWorkoutCapture,
 } from '@/lib/activeWorkoutPersistence';
 
 /** Identity metadata stamped onto a persisted session, set at start time. */
@@ -39,6 +40,15 @@ interface WorkoutContextType {
   finishWorkout: () => void;
   /** Restore a persisted session after a crash / OS-kill / swipe-away. */
   hydrateFromSnapshot: (snap: ActiveWorkoutSnapshot) => void;
+  /**
+   * Mirror the workout screen's transient per-set capture (mid-unilateral side,
+   * inline stopwatch) into the next snapshot, so an OS-kill mid-set doesn't lose a
+   * half-logged set. Writes a ref only (no re-render). A capture-only change doesn't
+   * touch a context field, so it rides the on-background save (the kill-safety net)
+   * plus whatever debounced write the next context change triggers — not a debounce
+   * of its own.
+   */
+  setCaptureState: (capture: ActiveWorkoutCapture | null) => void;
   updateExercises: (
     exercisesOrUpdater:
       | ActiveWorkoutExercise[]
@@ -65,6 +75,7 @@ const WorkoutContext = createContext<WorkoutContextType>({
   startWorkout: () => {},
   finishWorkout: () => {},
   hydrateFromSnapshot: () => {},
+  setCaptureState: () => {},
   updateExercises: () => {},
   pauseWorkout: () => {},
   resumeWorkout: () => {},
@@ -87,11 +98,31 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   // Identity stamped at start, carried into every persisted snapshot. Lets the
   // resume flow tell whose session it is (guest vs a specific signed-in user).
   const metaRef = useRef<WorkoutOwnerMeta>({ ownerId: null, isGuestSession: false });
+  // Latest transient per-set capture from the workout screen (mid-unilateral side,
+  // inline stopwatch). A ref so the screen's 200ms stopwatch tick doesn't re-render
+  // the whole context; buildSnapshot reads it.
+  const captureRef = useRef<ActiveWorkoutCapture | null>(null);
+  const captureSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setCaptureState = useCallback((c: ActiveWorkoutCapture | null) => {
+    captureRef.current = c;
+    // Give capture the same ~800ms debounced safety write the committed sets get
+    // (the debounced auto-persist below keys off context state, which a buffered
+    // first side / stopwatch tick doesn't change). Guarded by isActiveRef on both
+    // ends so a late fire after finish can't resurrect a cleared snapshot.
+    // buildSnapshotRef / isActiveRef are assigned just below — referenced here via
+    // closure, so they're set by the time this callback runs.
+    if (!isActiveRef.current) return;
+    if (captureSaveRef.current) clearTimeout(captureSaveRef.current);
+    captureSaveRef.current = setTimeout(() => {
+      if (isActiveRef.current) persistActiveWorkout(buildSnapshotRef.current());
+    }, 800);
+  }, []);
 
   const startWorkout = useCallback((id: string, name: string, exs: ActiveWorkoutExercise[], meta?: WorkoutOwnerMeta) => {
     const now = Date.now();
     startTimeRef.current = now;
     pausedElapsedRef.current = 0;
+    captureRef.current = null; // fresh session: don't inherit a prior session's half-set
     metaRef.current = meta ?? { ownerId: null, isGuestSession: false };
     setRoutineId(id);
     setRoutineName(name);
@@ -182,6 +213,7 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     startTimeEpochMs: startTimeRef.current,
     isPaused,
     pausedElapsedSeconds: pausedElapsedRef.current,
+    capture: captureRef.current,
     savedAt: Date.now(),
   }), [routineId, routineName, exercises, exerciseStarted, exerciseFinished, currentIdx, isPaused]);
 
@@ -228,12 +260,12 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished,
     currentIdx, setCurrentIdx,
-    startWorkout, finishWorkout, hydrateFromSnapshot, updateExercises,
+    startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   }), [
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, currentIdx,
-    startWorkout, finishWorkout, hydrateFromSnapshot, updateExercises,
+    startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   ]);
 

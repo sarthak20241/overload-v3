@@ -10,6 +10,8 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { abbreviateNumber } from '@/lib/format';
+import { metricTypeOf, supports1RM } from '@/lib/exercises';
+import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
@@ -430,14 +432,33 @@ export default function DashboardScreen() {
       const prs: string[] = [];
       for (const s of (w.sets || []) as any[]) {
         if (!s.completed) continue;
+        if (s.set_type === 'warmup') continue; // warmups never flag a PR
         const exId = s.exercise_id || s.exercises?.id;
         const exName = s.exercises?.name;
-        if (!exId || !exName || s.weight_kg <= 0 || s.reps <= 0) continue;
-        const epley = s.weight_kg * (1 + s.reps / 30);
+        if (!exId || !exName) continue;
+        const metricType = metricTypeOf({ metric_type: s.exercises?.metric_type });
+        // Score = the metric's progress signal: Epley 1RM for loaded lifts, else the
+        // primary magnitude (most reps / longest time / farthest), so bodyweight,
+        // duration and distance work can flag a PR too — not just weighted lifts.
+        let score: number;
+        if (supports1RM(metricType)) {
+          // Score each side on its own, so a unilateral set with a blank/0 LEFT
+          // but a logged RIGHT still counts (its heavier side can be the real
+          // peak, per-side weight 0059). Mirrors lib/insights.ts + the server.
+          const left = s.weight_kg > 0 && s.reps > 0 ? s.weight_kg * (1 + s.reps / 30) : 0;
+          const wR = s.weight_kg_right ?? s.weight_kg;
+          const rR = s.reps_right ?? s.reps;
+          const right = s.is_unilateral && wR > 0 && rR > 0 ? wR * (1 + rR / 30) : 0;
+          score = Math.max(left, right);
+          if (score <= 0) continue;
+        } else {
+          score = setBestValue(metricType, [s as DisplaySet]);
+          if (score <= 0) continue;
+        }
         const prev = best[exId] ?? 0;
-        if (epley > prev) {
+        if (score > prev) {
           if (prev > 0 && !prs.includes(exName)) prs.push(exName);
-          best[exId] = epley;
+          best[exId] = score;
         }
       }
       if (prs.length > 0) result[w.id] = prs;
@@ -756,19 +777,28 @@ export default function DashboardScreen() {
                   const dotColor = ROUTINE_COLORS[idx % ROUTINE_COLORS.length];
                   const delta = volumeDeltas[w.id];
 
-                    // Group sets by exercise (in order of first appearance)
-                    const grouped: { name: string; sets: { weight: number; reps: number; completed: boolean }[] }[] = [];
+                    // Group sets by exercise (in order of first appearance). Carry
+                    // metric_type + every axis field so the pill reads correctly for
+                    // duration/distance/bodyweight work (not a hardcoded weight×reps).
+                    const grouped: { name: string; metricType: string | null | undefined; sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string | null; is_unilateral?: boolean | null; reps_right?: number | null; weight_kg_right?: number | null }[] }[] = [];
                     const groupIdx: Record<string, number> = {};
                     for (const s of (w.sets || []) as any[]) {
                       const name = s.exercises?.name || 'Unknown';
                       if (groupIdx[name] === undefined) {
                         groupIdx[name] = grouped.length;
-                        grouped.push({ name, sets: [] });
+                        grouped.push({ name, metricType: s.exercises?.metric_type, sets: [] });
                       }
                       grouped[groupIdx[name]].sets.push({
-                        weight: s.weight_kg,
+                        weight_kg: s.weight_kg,
                         reps: s.reps,
                         completed: s.completed,
+                        duration_seconds: s.duration_seconds,
+                        distance_m: s.distance_m,
+                        resistance: s.resistance,
+                        set_type: s.set_type,
+                        is_unilateral: s.is_unilateral,
+                        reps_right: s.reps_right,
+                        weight_kg_right: s.weight_kg_right,
                       });
                     }
 
@@ -897,7 +927,7 @@ export default function DashboardScreen() {
                                           ]}
                                         >
                                           <Text style={[styles.expandedSetText, { color: C.textSecondary }]}>
-                                            {s.weight > 0 ? `${s.weight}kg × ${s.reps}` : `${s.reps} reps`}
+                                            {setLabel(metricTypeOf({ metric_type: g.metricType }), s)}
                                           </Text>
                                         </View>
                                       ))}
