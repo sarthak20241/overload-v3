@@ -564,9 +564,9 @@ begin
     from workout_sets s
       join workouts w on w.id = s.workout_id
       cross join lateral (values
-        (s.weight_kg, greatest(s.reps, 1), 0),
+        (s.weight_kg, s.reps, 0),
         (case when s.is_unilateral then coalesce(s.weight_kg_right, s.weight_kg) end,
-         case when s.is_unilateral then greatest(coalesce(s.reps_right, s.reps), 1) end, 1)
+         case when s.is_unilateral then coalesce(s.reps_right, s.reps) end, 1)
       ) as sd(w, r, side)
     where w.user_id = p_user_id
       and s.exercise_id = p_exercise_id
@@ -583,9 +583,11 @@ begin
       started_at,
       set_order,
       side,
+      -- reps flows through raw (0062: partials like 0.5 must not round into
+      -- top/last_set_reps); the >= 1 clamp is confined to the 1RM math here.
       least(
-        weight_kg * (1.0 + reps / 30.0),
-        weight_kg * 36.0 / (37.0 - least(reps, 36))
+        weight_kg * (1.0 + greatest(reps, 1) / 30.0),
+        weight_kg * 36.0 / (37.0 - least(greatest(reps, 1), 36))
       )::numeric(10, 2) as e1rm
     from expanded
   )
@@ -768,6 +770,39 @@ drop trigger if exists trg_delete_workout_sets_before_workout_delete on workouts
 create trigger trg_delete_workout_sets_before_workout_delete
   before delete on workouts
   for each row execute function delete_workout_sets_before_workout_delete();
+
+-- Lock exercises.metric_type once the exercise is referenced by logged sets or
+-- routine usage (migration 0063). Read surfaces derive their axes from
+-- metric_type, so changing it would re-label existing history under a new
+-- contract. The client blocks this in the edit UI, but this trigger closes the
+-- read-before-write race and the out-of-band path. SECURITY DEFINER so the
+-- referencing-row check sees every user's rows (globals are shared).
+create or replace function enforce_metric_type_lock()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.metric_type is distinct from old.metric_type then
+    if exists (select 1 from workout_sets where exercise_id = old.id)
+       or exists (select 1 from routine_exercises where exercise_id = old.id) then
+      raise exception using
+        errcode = 'check_violation',
+        message = format(
+          'metric_type is locked for exercise %s: it already has logged sets or routine usage',
+          old.id
+        );
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_exercises_metric_type_lock on exercises;
+create trigger trg_exercises_metric_type_lock
+  before update of metric_type on exercises
+  for each row execute function enforce_metric_type_lock();
 
 -- ─── Coach Context RPC (Phase 1) ────────────────────────────────────────────
 -- Returns a compact JSON blob the AI Coach edge function injects as

@@ -106,6 +106,8 @@ export function SetTypeSheet({ visible, currentType, onSelect, onRemove, onClose
                         <Text style={[s.rowSub, { color: C.textMuted }]}>Log left then right as one set (L+R). Works with any type.</Text>
                       </View>
                       <Switch
+                        accessibilityLabel="One side at a time"
+                        accessibilityHint="Log the left side then the right as a single L+R set"
                         value={unilateral}
                         onValueChange={(v) => { haptics.selection(); onUnilateralChange(v); }}
                         trackColor={{ true: Colors.primary, false: C.border }}

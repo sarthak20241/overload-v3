@@ -442,12 +442,15 @@ export default function DashboardScreen() {
         // duration and distance work can flag a PR too — not just weighted lifts.
         let score: number;
         if (supports1RM(metricType)) {
-          if (s.weight_kg <= 0 || s.reps <= 0) continue;
-          // A unilateral set's heavier side can be the real peak (per-side weight, 0059);
-          // take the better side's Epley, mirroring lib/insights.ts + recompute_user_lift_stat.
-          score = s.is_unilateral
-            ? Math.max(s.weight_kg * (1 + s.reps / 30), (s.weight_kg_right ?? s.weight_kg) * (1 + (s.reps_right ?? s.reps) / 30))
-            : s.weight_kg * (1 + s.reps / 30);
+          // Score each side on its own, so a unilateral set with a blank/0 LEFT
+          // but a logged RIGHT still counts (its heavier side can be the real
+          // peak, per-side weight 0059). Mirrors lib/insights.ts + the server.
+          const left = s.weight_kg > 0 && s.reps > 0 ? s.weight_kg * (1 + s.reps / 30) : 0;
+          const wR = s.weight_kg_right ?? s.weight_kg;
+          const rR = s.reps_right ?? s.reps;
+          const right = s.is_unilateral && wR > 0 && rR > 0 ? wR * (1 + rR / 30) : 0;
+          score = Math.max(left, right);
+          if (score <= 0) continue;
         } else {
           score = setBestValue(metricType, [s as DisplaySet]);
           if (score <= 0) continue;

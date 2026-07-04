@@ -16,6 +16,7 @@
  */
 import type { ActiveWorkoutExercise, SetType } from '@/lib/types';
 import { metricTypeOf, metricTypeDef, type MetricType } from '@/lib/exercises';
+import { countsAsWorkingSet } from '@/components/workout/SetTypeBadge';
 
 export interface WorkoutCoachSet {
   weightKg: number;
@@ -89,6 +90,9 @@ function repRange(min: number, max: number): string {
 const isWarmup = (s: WorkoutCoachSet) => s.setType === 'warmup';
 /** Working sets = everything except warmups (mirrors volume/1RM/PR + the server). */
 const workingSets = (sets: WorkoutCoachSet[]) => sets.filter((s) => !isWarmup(s));
+/** Numbered sets = what the UI badge numbers (warmups AND drop sets take no
+ *  number), so the coach's "next working set N" matches the on-screen count. */
+const numberedSets = (sets: WorkoutCoachSet[]) => sets.filter((s) => countsAsWorkingSet(s.setType));
 
 function fmtDur(sec: number | null): string {
   const s = Math.max(0, Math.floor(sec ?? 0));
@@ -127,7 +131,13 @@ function setSuffix(s: WorkoutCoachSet): string {
   const tags: string[] = [];
   if (s.setType !== 'normal' && SET_TYPE_LABEL[s.setType]) tags.push(SET_TYPE_LABEL[s.setType]);
   if (s.isUnilateral) tags.push('unilateral L+R');
-  if (s.rpe != null) tags.push(s.isUnilateral && s.rpeRight != null ? `RPE ${s.rpe}/${s.rpeRight}` : `RPE ${s.rpe}`);
+  // A unilateral set can carry a right-side RPE with the left blank, so gate on
+  // either side rather than dropping the effort when only the right is logged.
+  const hasRightRpe = s.isUnilateral && s.rpeRight != null;
+  if (s.rpe != null || hasRightRpe) {
+    const left = s.rpe != null ? String(s.rpe) : '–';
+    tags.push(hasRightRpe ? `RPE ${left}/${s.rpeRight}` : `RPE ${s.rpe}`);
+  }
   return tags.length ? ` (${tags.join(', ')})` : '';
 }
 
@@ -197,7 +207,7 @@ export function buildWorkoutCoachContext(params: {
     exerciseCount: mapped.length,
     finishedCount: finished.filter(Boolean).length,
     currentExerciseName: hasCurrent ? current.name : null,
-    nextSetNumber: hasCurrent ? workingSets(current.loggedSets).length + 1 : null,
+    nextSetNumber: hasCurrent ? numberedSets(current.loggedSets).length + 1 : null,
     exercises: mapped,
   };
 }
@@ -227,7 +237,7 @@ export function workoutCoachContextToText(ctx: WorkoutCoachContext): string {
     const status = ex.finished
       ? 'DONE'
       : ex.isCurrent
-        ? `CURRENT (next: working set ${workingSets(ex.loggedSets).length + 1})`
+        ? `CURRENT (next: working set ${numberedSets(ex.loggedSets).length + 1})`
         : 'not started';
     const muscle = ex.muscleGroup ? ` [${ex.muscleGroup}]` : '';
     // Supersets: tag the group and correct the rest wording — members are done back to

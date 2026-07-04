@@ -177,13 +177,16 @@ function buildExerciseSeries(workouts: InsightWorkout[]) {
       if (!exId || !name) continue;
       const weight = s.weight_kg ?? 0;
       const reps = s.reps ?? 0;
-      if (weight <= 0 || reps <= 0) continue;
-      // Unilateral sets (migration 0056) share weight across sides; the heavier-reps
-      // side is the real peak. Mirror recompute_user_lift_stat's left+right max so the
-      // free PR/plateau insights agree with the server's estimated_1rm.
-      const e = s.is_unilateral
-        ? Math.max(epley1RM(weight, reps), epley1RM(s.weight_kg_right ?? weight, s.reps_right ?? reps))
-        : epley1RM(weight, reps);
+      // Score each side on its own so a unilateral set with a blank/0 LEFT but a
+      // logged RIGHT still reaches the max (its heavier side can be the real peak,
+      // per-side weight 0059). Mirrors recompute_user_lift_stat's left+right max so
+      // the free PR/plateau insights agree with the server's estimated_1rm.
+      const wR = s.weight_kg_right ?? weight;
+      const rR = s.reps_right ?? reps;
+      const left = weight > 0 && reps > 0 ? epley1RM(weight, reps) : 0;
+      const right = s.is_unilateral && wR > 0 && rR > 0 ? epley1RM(wR, rR) : 0;
+      const e = Math.max(left, right);
+      if (e <= 0) continue;
       if (e > (perEx.get(exId) ?? 0)) perEx.set(exId, e);
       if (!meta.has(exId)) meta.set(exId, { name, muscle: muscleOf(s) });
     }
