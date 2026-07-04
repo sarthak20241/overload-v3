@@ -1,16 +1,17 @@
 /**
- * MacroRing — the calorie goal-progress hero arc.
+ * MacroRing - the calorie goal-progress ring (Google Fit style, simple).
  *
- * display='remaining': a graphite ring whose CENTER is two tiers — the big
- * "LEFT" (or "+OVER") number and a tiny LEFT/OVER caption — with the eaten / goal
- * line rendered as a caption BELOW the ring (via belowCaption) so the center
- * breathes and nothing touches the circumference. Over budget, the ring stays
- * fully lit and a SAME-HUE second lap rides over it; the seam is a spiral: the
- * arch cap completes the circle at the outer line while the lap ahead dives
- * smoothly INWARD beneath it — the bands overlap, no break in the silhouette,
- * separated only by the cap's soft shadow (Google Fit's over-goal seam). Never
- * a new colour; the signed number always carries "over" too. Arcs tween
- * previous→new; reduced-motion snaps.
+ * One circle, always. A dim full-circle track sits under a rounded-cap arc that
+ * fills clockwise from 12 o'clock toward the target. Over target the ring stays
+ * a complete lit circle and the surplus continues as a second lap drawn ON TOP
+ * in the same hue; the only thing that marks it is the rounded cap resting over
+ * the ring with a soft shadow ahead of it (Google Fit's over-goal look). No
+ * gaps, no seams, no breaks in the silhouette. Never a new colour; the signed
+ * center number carries "over".
+ *
+ * display='remaining': center is the big "LEFT" (or "+OVER") number with a tiny
+ * caption, and the eaten / goal line renders BELOW the ring via belowCaption.
+ * The fill tweens previous -> new; reduced-motion snaps.
  */
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -41,10 +42,8 @@ interface MacroRingProps {
   name?: string;
   centerFontSize?: number;
   showSubline?: boolean;
-  /** render a same-hue second-lap overshoot when over (calorie hero). */
+  /** render the same-hue second-lap cap when over target (calorie hero). */
   overshoot?: boolean;
-  /** colour of the gap/moat that lifts the overshoot lap off the base (the card bg). */
-  gapColor?: string;
   /** small caption rendered BELOW the ring (e.g. "1,623 / 2,000 kcal"). */
   belowCaption?: string;
 }
@@ -63,40 +62,10 @@ function arcPath(cx: number, cy: number, r: number, startDeg: number, endDeg: nu
   return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
 }
 
-/** Seam-tail path: the lap ahead of the arch at an over-target seam. Starts at
- *  `startDeg` a half-thickness INWARD, hidden UNDER the second lap riding at
- *  full radius (the bands overlap radially — no break in the circle), holds
- *  that inset until `holdEndDeg` (just past the arch cap), rises back out to
- *  the full radius with a cosine ease by `riseEndDeg`, then continues on r to
- *  `endDeg` to blend into the untouched lap. This is the Google Fit over-goal
- *  seam: a completing cap at one end, a smooth diving curve at the other,
- *  separated only by the cap's shadow. Angles clockwise from 12 o'clock. */
-function seamTailPath(
-  cx: number, cy: number, r: number, inset: number,
-  startDeg: number, holdEndDeg: number, riseEndDeg: number, endDeg: number,
-): string {
-  const pt = (deg: number, rr: number) => {
-    const a = ((deg - 90) * Math.PI) / 180;
-    return `${cx + rr * Math.cos(a)} ${cy + rr * Math.sin(a)}`;
-  };
-  const ri = r - inset;
-  const parts: string[] = [`M ${pt(startDeg, ri)}`];
-  parts.push(`A ${ri} ${ri} 0 0 1 ${pt(holdEndDeg, ri)}`);
-  const steps = 14;
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const deg = holdEndDeg + (riseEndDeg - holdEndDeg) * t;
-    const rr = r - inset * ((1 + Math.cos(Math.PI * t)) / 2); // ease in-out
-    parts.push(`L ${pt(deg, rr)}`);
-  }
-  parts.push(`A ${r} ${r} 0 0 1 ${pt(endDeg, r)}`);
-  return parts.join(' ');
-}
-
 export function MacroRing({
   value, target, color, label, unit = '', size = 72, thickness = 6,
   valueColor, trackColor, animate = true, display = 'progress', name,
-  centerFontSize, showSubline = true, overshoot = false, gapColor, belowCaption,
+  centerFontSize, showSubline = true, overshoot = false, belowCaption,
 }: MacroRingProps) {
   const { C } = useTheme();
   const reduced = useReducedMotion();
@@ -108,8 +77,7 @@ export function MacroRing({
   const circ = 2 * Math.PI * r;
 
   const baseFrac = target > 0 ? Math.min(Math.max(value, 0) / target, 1) : 0;
-  const over = target > 0 && value > target;
-  const overRawFrac = over ? (value - target) / target : 0;
+  const over = overshoot && target > 0 && value > target;
 
   const progress = useSharedValue(animate && !reduced ? 0 : baseFrac);
   useEffect(() => {
@@ -117,78 +85,59 @@ export function MacroRing({
       ? withTiming(baseFrac, { duration: 650, easing: Easing.out(Easing.cubic) })
       : baseFrac;
   }, [baseFrac, animate, reduced, progress]);
-  const baseProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - progress.value) }));
+  const baseProps = useAnimatedProps(() => ({
+    strokeDashoffset: circ * (1 - progress.value),
+    // a zero-length dash with a round cap still prints a dot at 12 o'clock
+    opacity: progress.value > 0.001 ? 1 : 0,
+  }));
 
-  const gap = gapColor ?? C.card;
-  // Google Fit / Apple-style over target: the ring stays fully lit, a same-hue
-  // second lap rides over it from 12 o'clock, and the tip is a rounded arch that
-  // floats over the lap below — separated by a clean full-thickness background
-  // gap ahead of the cap (Google) plus a soft shadow under the tip (Apple). For
-  // very large overages, keep the arch long and readable instead of wrapping to
-  // a tiny remainder; the exact surplus still lives in the center number.
-  const overLapFrac = overRawFrac > 0
-    ? (overRawFrac >= 1 ? Math.min(0.86, 0.74 + Math.min(overRawFrac - 1, 1) * 0.12) : overRawFrac)
-    : 0;
-  const overR = r;
-  const overThickness = thickness;
-  const capDeg = ((overThickness * 0.5) / overR) * (180 / Math.PI); // half-cap, in degrees
-  const overEndDeg = Math.min(
-    Math.max(overLapFrac * 360, capDeg * 1.6),
-    360 - capDeg * 2,
-  );
-  // Tip shadow: cast along the travel tangent (into the gap, ahead of the arch)
-  // so the overhang reads correctly at ANY over-fraction; a fixed screen offset
-  // only works while the tip sits in the lower-right quadrant. In arcPath coords
-  // the clockwise tangent at angle-from-12 θ is (cos θ, sin θ).
+  // Over target the surplus wraps as extra laps on the same circle, so only the
+  // fractional part places the cap; a floor keeps a fresh lap visibly past 12.
+  const capDeg = ((thickness * 0.5) / r) * (180 / Math.PI); // half-cap, in degrees
+  const overRawFrac = over ? (value - target) / target : 0;
+  const overEndDeg = over ? Math.max((overRawFrac % 1) * 360, capDeg * 1.6) : 0;
+
+  // Tip shadow: cast along the travel tangent (ahead of the cap) so the overlap
+  // reads correctly at ANY angle. In arcPath coords the clockwise tangent at
+  // angle-from-12 θ is (cos θ, sin θ).
   const tipA = (overEndDeg * Math.PI) / 180;
   const shadowLen = Math.max(thickness * 0.1, 1);
   const shadowDx = Math.cos(tipA) * shadowLen;
   const shadowDy = Math.sin(tipA) * shadowLen;
 
-  // The over-crossing in time: the second lap SWEEPS in from 12 o'clock after
-  // the base lap closes, and the seam accessories (break, coil tail, shadow)
-  // fade in only as the arch arrives — the cut never pre-scars a still-filling
-  // ring. Retargets while already over move the cap and briefly dip the seam.
+  // The lap rides same-hue on the lit ring, so the sweep itself is invisible;
+  // the visible event is the cap + shadow settling in. Fade them in after the
+  // base ring closes; retargets while already over dip the tip briefly (the
+  // path jumps to its new angle at render, the dip masks it).
   const snap = !animate || reduced;
-  const overLapTarget = over ? overEndDeg / 360 : 0;
-  const overSweep = useSharedValue(snap ? overLapTarget : 0);
-  const seamSv = useSharedValue(snap && over ? 1 : 0);
+  const tipSv = useSharedValue(snap && over ? 1 : 0);
   const wasOverRef = useRef(false);
   useEffect(() => {
     const wasOver = wasOverRef.current;
     wasOverRef.current = over;
     if (snap) {
-      overSweep.value = overLapTarget;
-      seamSv.value = over ? 1 : 0;
+      tipSv.value = over ? 1 : 0;
       return;
     }
     if (!over) {
-      overSweep.value = 0;
-      seamSv.value = 0;
+      tipSv.value = withTiming(0, { duration: 120 });
       return;
     }
-    const sweepDur = Math.min(300 + 450 * overLapTarget, 750);
-    if (!wasOver) {
-      overSweep.value = 0;
-      seamSv.value = 0;
-      overSweep.value = withDelay(480, withTiming(overLapTarget, { duration: sweepDur, easing: Easing.out(Easing.cubic) }));
-      seamSv.value = withDelay(480 + Math.max(sweepDur - 150, 0), withTiming(1, { duration: 180 }));
-    } else {
-      overSweep.value = withTiming(overLapTarget, { duration: 300, easing: Easing.out(Easing.cubic) });
-      seamSv.value = withSequence(
-        withTiming(0, { duration: 90 }),
-        withDelay(230, withTiming(1, { duration: 180 })),
-      );
-    }
-  }, [over, overLapTarget, snap, overSweep, seamSv]);
-  const overProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - overSweep.value) }));
-  const seamProps = useAnimatedProps(() => ({ opacity: seamSv.value }));
+    tipSv.value = wasOver
+      ? withSequence(
+          withTiming(0, { duration: 90 }),
+          withDelay(140, withTiming(1, { duration: 180 })),
+        )
+      : withDelay(600, withTiming(1, { duration: 220 }));
+  }, [over, overEndDeg, snap, tipSv]);
+  const tipProps = useAnimatedProps(() => ({ opacity: tipSv.value }));
 
   const remaining = target - value;
   const dur = animate && !reduced ? 650 : 1;
   const heroColor = valueColor ?? C.foreground;
-  const centerValue = Math.abs(over ? value - target : remaining);
-  const centerText = (over ? '+' : '') + fmtInt(centerValue);
+  const isOverBudget = target > 0 && value > target;
+  const centerValue = Math.abs(isOverBudget ? value - target : remaining);
+  const centerText = (isOverBudget ? '+' : '') + fmtInt(centerValue);
   const baseCenterFontSize = centerFontSize ?? (display === 'remaining' ? FontSize.xxl : FontSize.base);
   const centerScale = centerText.length >= 7 ? 0.72 : centerText.length >= 6 ? 0.84 : 1;
   const resolvedCenterFontSize = display === 'remaining'
@@ -197,7 +146,7 @@ export function MacroRing({
   const centerMaxWidth = Math.max(size * 0.52, size - thickness * 2.6);
 
   const a11yUnit = unit || 'calories';
-  const a11yText = over
+  const a11yText = isOverBudget
     ? `${fmtInt(value)} of ${fmtInt(target)} ${a11yUnit}, ${fmtInt(value - target)} over`
     : `${fmtInt(value)} of ${fmtInt(target)} ${a11yUnit}, ${fmtInt(remaining)} ${display === 'remaining' ? 'left' : 'remaining'}`;
 
@@ -217,64 +166,37 @@ export function MacroRing({
             strokeLinecap="round" strokeDasharray={circ} animatedProps={baseProps}
             transform={`rotate(-90, ${cx}, ${cy})`}
           />
-          {overshoot && over && (
+          {over && (
             <>
-              {/* erase the lap below across the dive zone so only the seam tail
-                  shows there — above its rising curve the card shows through as
-                  a tapering wedge that the arch cap plugs, keeping the circle's
-                  silhouette complete */}
+              {/* two-pass tip shadow (wide faint + tight), cast ahead of the cap;
+                  the lap drawn on top covers all of it except the crescent that
+                  peeks past the cap, which is what makes the overlap read */}
               <AnimatedPath
-                animatedProps={seamProps}
-                d={arcPath(cx, cy, overR, overEndDeg, overEndDeg + capDeg * 8.5)}
-                stroke={gap}
-                strokeWidth={overThickness + 2}
-                fill="none"
-              />
-              {/* the seam tail: the lap ahead dives INWARD and slides UNDER the
-                  second lap (its hidden tip starts behind the arch, the bands
-                  overlap radially — no break in the ring), then rises smoothly
-                  back to the full radius — the Google Fit seam */}
-              <AnimatedPath
-                animatedProps={seamProps}
-                d={seamTailPath(
-                  cx, cy, overR, overThickness * 0.4,
-                  overEndDeg - capDeg * 1.5,
-                  overEndDeg + capDeg,
-                  overEndDeg + capDeg * 8.5,
-                  overEndDeg + capDeg * 11.5,
-                )}
-                stroke={color}
-                strokeWidth={overThickness}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              {/* two-pass tip shadow (wide faint + tight) cast into the gap —
-                  a fake penumbra, no hard printed edge, no SVG filters */}
-              <AnimatedPath
-                animatedProps={seamProps}
-                d={arcPath(cx, cy, overR, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
+                animatedProps={tipProps}
+                d={arcPath(cx, cy, r, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
                 stroke={colorWithAlpha('#000000', 0.06)}
-                strokeWidth={overThickness + 2.5}
+                strokeWidth={thickness + 2.5}
                 fill="none"
                 strokeLinecap="round"
                 transform={`translate(${shadowDx}, ${shadowDy})`}
               />
               <AnimatedPath
-                animatedProps={seamProps}
-                d={arcPath(cx, cy, overR, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
+                animatedProps={tipProps}
+                d={arcPath(cx, cy, r, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
                 stroke={colorWithAlpha('#000000', 0.12)}
-                strokeWidth={overThickness}
+                strokeWidth={thickness}
                 fill="none"
                 strokeLinecap="round"
                 transform={`translate(${shadowDx}, ${shadowDy})`}
               />
-              {/* the second lap sweeps in from 12 o'clock; its rounded leading
-                  cap is the arch */}
-              <AnimatedCircle
-                cx={cx} cy={cy} r={overR} stroke={color} strokeWidth={overThickness} fill="none"
-                strokeLinecap="round" strokeDasharray={circ} animatedProps={overProps}
-                transform={`rotate(-90, ${cx}, ${cy})`}
+              {/* the surplus lap: same hue, same circle, rounded cap on top */}
+              <AnimatedPath
+                animatedProps={tipProps}
+                d={arcPath(cx, cy, r, 0, overEndDeg)}
+                stroke={color}
+                strokeWidth={thickness}
+                fill="none"
+                strokeLinecap="round"
               />
             </>
           )}
@@ -284,21 +206,21 @@ export function MacroRing({
           {display === 'remaining' ? (
             <>
               <AnimatedNumber
-                key={over ? 'over' : 'left'}
+                key={isOverBudget ? 'over' : 'left'}
                 value={centerValue}
                 durationMs={dur}
-                format={(n) => (over ? '+' : '') + fmtInt(n)}
+                format={(n) => (isOverBudget ? '+' : '') + fmtInt(n)}
                 numberOfLines={1}
                 adjustsFontSizeToFit
                 minimumFontScale={0.7}
                 style={[styles.value, { color: heroColor, fontSize: resolvedCenterFontSize, maxWidth: centerMaxWidth }]}
               />
               <Animated.Text
-                key={over ? 'OVER' : 'LEFT'}
+                key={isOverBudget ? 'OVER' : 'LEFT'}
                 entering={snap ? undefined : FadeIn.duration(160)}
                 style={[styles.caption, { color: C.textMuted }]}
               >
-                {over ? 'OVER' : 'LEFT'}
+                {isOverBudget ? 'OVER' : 'LEFT'}
               </Animated.Text>
             </>
           ) : (
