@@ -230,6 +230,37 @@ export default function ExerciseLibraryScreen() {
       );
       return;
     }
+    // Every read surface derives its axes from exercises.metric_type, so
+    // switching the type re-labels history logged under the old one (a 60s
+    // hold would read back as 60kg). Once server rows reference this
+    // exercise, the type is locked. Guest + unsynced-local history embeds
+    // its values, so those paths can't re-render old logs and stay editable.
+    if (
+      !isGuest &&
+      !editTarget.id.startsWith('local-ex-') &&
+      editType !== metricTypeOf(editTarget)
+    ) {
+      setSaving(true);
+      const [re, ws] = await Promise.all([
+        supabase.from('routine_exercises').select('id', { count: 'exact', head: true }).eq('exercise_id', editTarget.id),
+        supabase.from('workout_sets').select('id', { count: 'exact', head: true }).eq('exercise_id', editTarget.id),
+      ]);
+      setSaving(false);
+      if (re.error || ws.error || re.count == null || ws.count == null) {
+        // Can't verify usage (offline / RLS / 5xx) — don't risk relabeling
+        // history on a blind save.
+        toast.error("Couldn't check this exercise's history, try again");
+        return;
+      }
+      if (re.count > 0 || ws.count > 0) {
+        toast.error(
+          ws.count > 0
+            ? "You've logged sets with this measurement. Create a new exercise to track it differently."
+            : 'A routine already uses this measurement. Create a new exercise to track it differently.'
+        );
+        return;
+      }
+    }
     setSaving(true);
     if (isGuest) {
       // Guest customs live on-device — patch the guest store directly.

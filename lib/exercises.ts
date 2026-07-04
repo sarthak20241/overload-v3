@@ -60,7 +60,7 @@ const METRIC_TYPE_BY_VALUE: Record<MetricType, MetricTypeDef> = Object.fromEntri
 /** Normalize any (possibly-missing or unknown) value to a valid MetricType. */
 export function metricTypeOf(ex: { metric_type?: string | null } | null | undefined): MetricType {
   const v = ex?.metric_type;
-  return v && v in METRIC_TYPE_BY_VALUE ? (v as MetricType) : DEFAULT_METRIC_TYPE;
+  return v && Object.hasOwn(METRIC_TYPE_BY_VALUE, v) ? (v as MetricType) : DEFAULT_METRIC_TYPE;
 }
 
 /** Descriptor for a metric type, falling back to the default. */
