@@ -4,10 +4,11 @@
  * One circle, always. A dim full-circle track sits under a rounded-cap arc that
  * fills clockwise from 12 o'clock toward the target. Over target the ring stays
  * a complete lit circle and the surplus continues as a second lap drawn ON TOP
- * in the same hue; the only thing that marks it is the rounded cap resting over
- * the ring with a soft shadow ahead of it (Google Fit's over-goal look). No
- * gaps, no seams, no breaks in the silhouette. Never a new colour; the signed
- * center number carries "over".
+ * in the same hue; the seam is the Google Fit one: a card-colored disc slightly
+ * larger than the cap is punched into the ring at the tip, then the lap draws
+ * over it, so the rounded cap floats in a small gap whose far edge is a concave
+ * socket concentric with the cap (a perfectly complementary shape, uniform
+ * moat). Never a new colour; the signed center number carries "over".
  *
  * display='remaining': center is the big "LEFT" (or "+OVER") number with a tiny
  * caption, and the eaten / goal line renders BELOW the ring via belowCaption.
@@ -44,6 +45,9 @@ interface MacroRingProps {
   showSubline?: boolean;
   /** render the same-hue second-lap cap when over target (calorie hero). */
   overshoot?: boolean;
+  /** colour of the seam gap punched around the cap; must match the surface
+   *  behind the ring (defaults to the card). */
+  gapColor?: string;
   /** small caption rendered BELOW the ring (e.g. "1,623 / 2,000 kcal"). */
   belowCaption?: string;
 }
@@ -65,7 +69,7 @@ function arcPath(cx: number, cy: number, r: number, startDeg: number, endDeg: nu
 export function MacroRing({
   value, target, color, label, unit = '', size = 72, thickness = 6,
   valueColor, trackColor, animate = true, display = 'progress', name,
-  centerFontSize, showSubline = true, overshoot = false, belowCaption,
+  centerFontSize, showSubline = true, overshoot = false, gapColor, belowCaption,
 }: MacroRingProps) {
   const { C } = useTheme();
   const reduced = useReducedMotion();
@@ -92,23 +96,23 @@ export function MacroRing({
   }));
 
   // Over target the surplus wraps as extra laps on the same circle, so only the
-  // fractional part places the cap; a floor keeps a fresh lap visibly past 12.
-  const capDeg = ((thickness * 0.5) / r) * (180 / Math.PI); // half-cap, in degrees
+  // fractional part places the cap. The seam is a card-colored disc punched
+  // into the ring at the tip: the lap drawn on top fills its trailing half, so
+  // what remains is a moat around the cap plus a concave socket ahead of it,
+  // concentric with the cap (the complementary Google Fit end).
+  const holeR = thickness * 0.9; // cap half (0.5t) + moat (0.4t)
+  const holeDeg = (holeR / r) * (180 / Math.PI); // angular reach of the punch
   const overRawFrac = over ? (value - target) / target : 0;
-  const overEndDeg = over ? Math.max((overRawFrac % 1) * 360, capDeg * 1.6) : 0;
-
-  // Tip shadow: cast along the travel tangent (ahead of the cap) so the overlap
-  // reads correctly at ANY angle. In arcPath coords the clockwise tangent at
-  // angle-from-12 θ is (cos θ, sin θ).
-  const tipA = (overEndDeg * Math.PI) / 180;
-  const shadowLen = Math.max(thickness * 0.1, 1);
-  const shadowDx = Math.cos(tipA) * shadowLen;
-  const shadowDy = Math.sin(tipA) * shadowLen;
+  // floor: the lap must reach past the punch so the bite never crosses 12
+  const overEndDeg = over ? Math.max((overRawFrac % 1) * 360, holeDeg * 1.25) : 0;
+  const tipA = ((overEndDeg - 90) * Math.PI) / 180;
+  const tipX = cx + r * Math.cos(tipA);
+  const tipY = cy + r * Math.sin(tipA);
 
   // The lap rides same-hue on the lit ring, so the sweep itself is invisible;
-  // the visible event is the cap + shadow settling in. Fade them in after the
-  // base ring closes; retargets while already over dip the tip briefly (the
-  // path jumps to its new angle at render, the dip masks it).
+  // the visible event is the gap + cap settling in. Fade them in after the
+  // base ring closes; retargets while already over dip the seam briefly (the
+  // punch jumps to its new angle at render, the dip masks it).
   const snap = !animate || reduced;
   const tipSv = useSharedValue(snap && over ? 1 : 0);
   const wasOverRef = useRef(false);
@@ -168,26 +172,13 @@ export function MacroRing({
           />
           {over && (
             <>
-              {/* two-pass tip shadow (wide faint + tight), cast ahead of the cap;
-                  the lap drawn on top covers all of it except the crescent that
-                  peeks past the cap, which is what makes the overlap read */}
-              <AnimatedPath
+              {/* the seam: a card-colored disc punched into the ring at the tip;
+                  the lap drawn on top fills its trailing half, leaving a moat
+                  around the cap and a concave socket ahead of it (Google Fit) */}
+              <AnimatedCircle
                 animatedProps={tipProps}
-                d={arcPath(cx, cy, r, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
-                stroke={colorWithAlpha('#000000', 0.06)}
-                strokeWidth={thickness + 2.5}
-                fill="none"
-                strokeLinecap="round"
-                transform={`translate(${shadowDx}, ${shadowDy})`}
-              />
-              <AnimatedPath
-                animatedProps={tipProps}
-                d={arcPath(cx, cy, r, Math.max(0.01, overEndDeg - capDeg * 2.5), overEndDeg)}
-                stroke={colorWithAlpha('#000000', 0.12)}
-                strokeWidth={thickness}
-                fill="none"
-                strokeLinecap="round"
-                transform={`translate(${shadowDx}, ${shadowDy})`}
+                cx={tipX} cy={tipY} r={holeR}
+                fill={gapColor ?? C.card}
               />
               {/* the surplus lap: same hue, same circle, rounded cap on top */}
               <AnimatedPath
