@@ -1732,13 +1732,20 @@ export default function ActiveWorkoutScreen() {
         else toast.success('Workout saved');
       };
 
+      // Backdated start (from the save sheet) parsed once and guarded: a
+      // malformed ISO would make Date.parse return NaN and the derived
+      // finished_at throw / persist an Invalid Date into the sync queue. Fall
+      // back to now - elapsed when we can't trust the passed value.
+      const parsedStartMs = opts?.startedAtIso ? Date.parse(opts.startedAtIso) : NaN;
+      const startedAtMs = Number.isNaN(parsedStartMs) ? null : parsedStartMs;
+
       if (isGuestSession) {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
           name: workoutName,
-          started_at: opts?.startedAtIso ?? new Date(Date.now() - workout.elapsed * 1000).toISOString(),
-          finished_at: opts?.startedAtIso
-            ? new Date(Date.parse(opts.startedAtIso) + workout.elapsed * 1000).toISOString()
+          started_at: startedAtMs != null ? new Date(startedAtMs).toISOString() : new Date(Date.now() - workout.elapsed * 1000).toISOString(),
+          finished_at: startedAtMs != null
+            ? new Date(startedAtMs + workout.elapsed * 1000).toISOString()
             : new Date().toISOString(),
           duration_seconds: workout.elapsed,
           total_volume_kg: vol,
@@ -1779,7 +1786,9 @@ export default function ActiveWorkoutScreen() {
       if (!clerkId) throw new Error('Not signed in');
       // Editable start (backdating) from the save sheet; defaults to start = now - elapsed.
       // The flusher derives finished_at = started_at + duration, so this is the only override needed.
-      const startedAtIso = opts?.startedAtIso ?? new Date(Date.now() - workout.elapsed * 1000).toISOString();
+      const startedAtIso = startedAtMs != null
+        ? new Date(startedAtMs).toISOString()
+        : new Date(Date.now() - workout.elapsed * 1000).toISOString();
 
       // Save locally first, sync in the background. The finished workout is
       // written to the pending-sync queue and the SyncProvider pushes it to
