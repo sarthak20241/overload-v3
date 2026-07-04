@@ -830,8 +830,12 @@ function ChatScreen({
     // conversation is sent as-is.
     // Cap the resent history to a sliding window of recent turns (see
     // MAX_SENT_MESSAGES). No-op for typical chats; bounds tokens on long ones.
-    const turns = [...messages, userMsg]
-      .slice(-MAX_SENT_MESSAGES)
+    // messages[0] is the assistant greeting, so the full array alternates from an
+    // assistant turn — a window of an even count can start on an assistant
+    // message. Anthropic requires the first message to be a user turn, so drop a
+    // leading assistant after slicing (the non-workout path sends turns as-is).
+    const rawTurns = [...messages, userMsg].slice(-MAX_SENT_MESSAGES);
+    const turns = (rawTurns[0]?.role === 'assistant' ? rawTurns.slice(1) : rawTurns)
       .map(m => ({ role: m.role, content: m.content }));
     const allMessages = workoutContext
       ? [{ role: 'user' as const, content: workoutCoachOpener(workoutContext) }, ...turns]
