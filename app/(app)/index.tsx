@@ -39,9 +39,6 @@ const ROUTINE_COLORS = Colors.routineColors;
 
 // Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
 const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
-const fmtK = (n: number) => Math.round(n).toLocaleString();
-const fuelCaption = (eaten: number, goal: number) =>
-  `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 
 // Figma-matched muscle group colors. Module-scoped so consumers get a stable
 // identity across renders.
@@ -601,10 +598,12 @@ export default function DashboardScreen() {
               <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>
             <View style={{ alignItems: 'center', marginTop: 2 }}>
+              {/* No eaten/target caption: the ring already says LEFT and the bars
+                  itemize consumption — the line restated both and cost the strip
+                  below the fold. The full eaten/goal readout lives in the diary. */}
               <MacroRing
                 value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
                 display="remaining" overshoot name="Calories" size={88} thickness={10} centerFontSize={21}
-                belowCaption={fuelCaption(fuel.totals.kcal, FUEL_TARGETS.kcal)}
               />
             </View>
             <View style={styles.fuelBars}>
@@ -1075,7 +1074,7 @@ const styles = StyleSheet.create({
   },
   expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
   // Nutrition card (diet entry point) — protein bar under the calories ring
-  fuelBars: { marginTop: Spacing.md, gap: 9 },
+  fuelBars: { marginTop: 10, gap: 8 },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,
