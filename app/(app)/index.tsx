@@ -603,7 +603,7 @@ export default function DashboardScreen() {
             <View style={{ alignItems: 'center', marginTop: 2 }}>
               <MacroRing
                 value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
-                display="remaining" overshoot name="Calories" size={92} thickness={10} centerFontSize={21}
+                display="remaining" overshoot name="Calories" size={88} thickness={10} centerFontSize={21}
                 belowCaption={fuelCaption(fuel.totals.kcal, FUEL_TARGETS.kcal)}
               />
             </View>
@@ -882,7 +882,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.xxl,
+    paddingTop: Spacing.xl,
     // xl (not lg): the week calendar that used to sit between the header and the
     // TODAY card is gone, so the header itself owns the standard section gap.
     paddingBottom: Spacing.xl,
@@ -926,7 +926,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
-    marginBottom: Spacing.xxl,
+    // xl like every other section (was the page's one xxl outlier) — the strip
+    // below must peek above the fold so "Coach noticed" lures the scroll.
+    marginBottom: Spacing.xl,
   },
   statCard: {
     width: '47%',
@@ -1078,7 +1080,10 @@ const styles = StyleSheet.create({
   aiCoachCard: {
     borderRadius: Radius.xl,
     borderWidth: 1,
-    padding: Spacing.lg,
+    // Slightly tighter vertically than lg: the hero is the tallest block on the
+    // dashboard and every pt here pushes Coach noticed below the fold.
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.lg,
     overflow: 'hidden',
     position: 'relative',
   },
@@ -1124,7 +1129,7 @@ const styles = StyleSheet.create({
   aiChipsRow: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 12,
+    marginTop: 10,
   },
   aiChip: {
     flexDirection: 'row',

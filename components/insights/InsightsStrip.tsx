@@ -135,7 +135,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.md,
+    // sm (not md): the header hugs its cards so the first card's title line
+    // clears the tab bar when the strip is the last thing above the fold.
+    marginBottom: Spacing.sm,
   },
   headerText: {
     fontSize: FontSize.base,
