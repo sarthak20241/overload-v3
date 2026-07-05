@@ -82,68 +82,6 @@ function StatCard({
   );
 }
 
-function WeeklyCalendar({ workouts }: { workouts: Workout[] }) {
-  const { C } = useTheme();
-  const now = new Date();
-  const day = now.getDay();
-  const diff = (day + 6) % 7;
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - diff);
-
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart);
-    d.setDate(weekStart.getDate() + i);
-    return d;
-  });
-
-  const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-
-  return (
-    <View style={styles.calendarRow}>
-      {days.map((day, i) => {
-        const hasWorkout = workouts.some(w => {
-          const wd = new Date(w.started_at);
-          return wd.toDateString() === day.toDateString();
-        });
-        const isToday = day.toDateString() === now.toDateString();
-        return (
-          <View key={i} style={styles.calendarDay}>
-            <Text style={[styles.calDayLabel, { color: isToday ? C.accentText : C.textMuted }]}>
-              {DAY_LABELS[i]}
-            </Text>
-            <View
-              style={[
-                styles.calDayCircle,
-                hasWorkout
-                  ? { backgroundColor: Colors.primary }
-                  : isToday
-                  ? { backgroundColor: C.primarySubtle, borderWidth: 1, borderColor: C.primaryBorder }
-                  : { backgroundColor: C.muted },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.calDayNum,
-                  {
-                    color: hasWorkout
-                      ? Colors.primaryFg
-                      : isToday
-                      ? C.accentText
-                      : C.textMuted,
-                    fontWeight: hasWorkout || isToday ? FontWeight.bold : FontWeight.regular,
-                  },
-                ]}
-              >
-                {day.getDate()}
-              </Text>
-            </View>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
 function XPBar({ xp }: { xp: number }) {
   const { C } = useTheme();
   const { level, xpInLevel, xpNeeded } = getLevelInfo(xp);
@@ -582,11 +520,6 @@ export default function DashboardScreen() {
           </View>
         </View>
 
-        {/* Weekly calendar */}
-        <View style={styles.calendarWrap}>
-          <WeeklyCalendar workouts={workouts} />
-        </View>
-
         {/* Today's suggestion (Element 2) — the coach's pick for today is the
             PRIMARY action, so it leads above the coach card (lead with the
             directive). Lime outline marks it as the primary action. */}
@@ -950,7 +883,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.xxl,
-    paddingBottom: Spacing.lg,
+    // xl (not lg): the week calendar that used to sit between the header and the
+    // TODAY card is gone, so the header itself owns the standard section gap.
+    paddingBottom: Spacing.xl,
   },
   greeting: { fontSize: 10, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 },
   userName: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: -0.5, marginBottom: 4 },
@@ -985,12 +920,6 @@ const styles = StyleSheet.create({
   xpFill: { height: '100%', borderRadius: 4 },
   xpText: { fontSize: 8, fontWeight: FontWeight.bold, marginLeft: 6 },
   // Calendar
-  calendarWrap: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl },
-  calendarRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  calendarDay: { alignItems: 'center', gap: 6 },
-  calDayLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
-  calDayCircle: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  calDayNum: { fontSize: FontSize.sm },
   // Stats
   statsGrid: {
     paddingHorizontal: Spacing.xl,
