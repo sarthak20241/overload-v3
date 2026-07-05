@@ -112,7 +112,10 @@ create table if not exists routine_exercises (
   -- generate_workout / generate_plan tool emits a `note` for the exercise
   -- (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Nullable —
   -- hand-built routines from the editor don't set this.
-  note text
+  note text,
+  -- Supersets (migration 0060). Grouping ordinal; members of one superset share a
+  -- value, NULL = solo. Members are kept contiguous (order = list position).
+  superset_group integer
 );
 
 -- Idempotent re-apply: the column above is INSIDE the create-if-not-exists
@@ -165,7 +168,19 @@ create table if not exists workout_sets (
   -- working volume / 1RM in the recompute functions below.
   set_type text not null default 'normal'
     check (set_type in ('normal','warmup','dropset','failure','negative','left','right')),
-  rpe numeric(3, 1) check (rpe is null or (rpe >= 1.0 and rpe <= 10.0))
+  rpe numeric(3, 1) check (rpe is null or (rpe >= 1.0 and rpe <= 10.0)),
+  -- Unilateral "L+R" set (migration 0056). ONE row = one set trained one side at a time.
+  -- is_unilateral is orthogonal to set_type (a set can be e.g. failure AND unilateral).
+  -- weight_kg is shared across sides; reps_right/rpe_right hold the right side; volume
+  -- counts both sides. Legacy 'left'/'right' set_type values may exist on old rows.
+  is_unilateral boolean not null default false,
+  reps_right numeric,
+  rpe_right numeric check (rpe_right is null or (rpe_right >= 1.0 and rpe_right <= 10.0)),
+  -- Per-side weight (migration 0059). null => same as weight_kg (legacy shared dumbbell).
+  weight_kg_right numeric,
+  -- Supersets (migration 0060). Grouping ordinal carried from the active exercise so the
+  -- grouping persists into history; members of one superset share a value, NULL = solo.
+  superset_group integer
 );
 
 -- ─── AI Coach Rate Limit ────────────────────────────────────────────────────
@@ -540,31 +555,48 @@ begin
     return;
   end if;
 
-  with cs as (
-    select
-      s.weight_kg,
-      greatest(s.reps, 1) as reps,
-      w.started_at,
-      s."order" as set_order,
-      least(
-        s.weight_kg * (1.0 + greatest(s.reps, 1) / 30.0),
-        s.weight_kg * 36.0 / (37.0 - least(greatest(s.reps, 1), 36))
-      )::numeric(10, 2) as e1rm
+  -- Unilateral sets (migration 0056) expand into TWO e1rm candidates (left + right);
+  -- non-unilateral rows (is_unilateral=false) yield only the left side => identical output.
+  -- A side ordinal (left=0, right=1, migration 0058) breaks the last-set tie toward the
+  -- left, since both expanded rows of one unilateral set share (started_at, set_order).
+  with expanded as (
+    select sd.w as weight_kg, w.started_at, s."order" as set_order, sd.r as reps, sd.side
     from workout_sets s
       join workouts w on w.id = s.workout_id
+      cross join lateral (values
+        (s.weight_kg, s.reps, 0),
+        (case when s.is_unilateral then coalesce(s.weight_kg_right, s.weight_kg) end,
+         case when s.is_unilateral then coalesce(s.reps_right, s.reps) end, 1)
+      ) as sd(w, r, side)
     where w.user_id = p_user_id
       and s.exercise_id = p_exercise_id
       and s.completed = true
       and s.weight_kg > 0
       and s.set_type is distinct from 'warmup'
       and w.user_id is not null
+      and sd.r is not null
+      and sd.w > 0
+  ), cs as (
+    select
+      weight_kg,
+      reps,
+      started_at,
+      set_order,
+      side,
+      -- reps flows through raw (0062: partials like 0.5 must not round into
+      -- top/last_set_reps); the >= 1 clamp is confined to the 1RM math here.
+      least(
+        weight_kg * (1.0 + greatest(reps, 1) / 30.0),
+        weight_kg * 36.0 / (37.0 - least(greatest(reps, 1), 36))
+      )::numeric(10, 2) as e1rm
+    from expanded
   )
   select
     max(e1rm),
     (array_agg(weight_kg order by e1rm     desc))[1],
     (array_agg(reps      order by e1rm     desc))[1],
-    (array_agg(weight_kg order by started_at desc, set_order desc))[1],
-    (array_agg(reps      order by started_at desc, set_order desc))[1],
+    (array_agg(weight_kg order by started_at desc, set_order desc, side asc))[1],
+    (array_agg(reps      order by started_at desc, set_order desc, side asc))[1],
     max(started_at),
     count(distinct date_trunc('day', started_at))
       filter (where started_at >= now() - interval '28 days')
@@ -614,8 +646,12 @@ declare
   v_volume numeric(12, 2);
   v_count  integer;
 begin
+  -- Unilateral sets (0056) add the right side to volume; per-side weight (0059) uses each
+  -- side's own load. coalesce(weight_kg_right, weight_kg) keeps legacy shared-weight rows.
+  -- count(*) stays 1 per set.
   select
-    coalesce(sum(s.weight_kg * s.reps), 0)::numeric(12, 2),
+    coalesce(sum(s.weight_kg * s.reps
+      + case when s.is_unilateral then coalesce(s.weight_kg_right, s.weight_kg) * coalesce(s.reps_right, 0) else 0 end), 0)::numeric(12, 2),
     count(*)::integer
   into v_volume, v_count
   from workout_sets s
@@ -734,6 +770,39 @@ drop trigger if exists trg_delete_workout_sets_before_workout_delete on workouts
 create trigger trg_delete_workout_sets_before_workout_delete
   before delete on workouts
   for each row execute function delete_workout_sets_before_workout_delete();
+
+-- Lock exercises.metric_type once the exercise is referenced by logged sets or
+-- routine usage (migration 0063). Read surfaces derive their axes from
+-- metric_type, so changing it would re-label existing history under a new
+-- contract. The client blocks this in the edit UI, but this trigger closes the
+-- read-before-write race and the out-of-band path. SECURITY DEFINER so the
+-- referencing-row check sees every user's rows (globals are shared).
+create or replace function enforce_metric_type_lock()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.metric_type is distinct from old.metric_type then
+    if exists (select 1 from workout_sets where exercise_id = old.id)
+       or exists (select 1 from routine_exercises where exercise_id = old.id) then
+      raise exception using
+        errcode = 'check_violation',
+        message = format(
+          'metric_type is locked for exercise %s: it already has logged sets or routine usage',
+          old.id
+        );
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_exercises_metric_type_lock on exercises;
+create trigger trg_exercises_metric_type_lock
+  before update of metric_type on exercises
+  for each row execute function enforce_metric_type_lock();
 
 -- ─── Coach Context RPC (Phase 1) ────────────────────────────────────────────
 -- Returns a compact JSON blob the AI Coach edge function injects as

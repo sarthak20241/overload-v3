@@ -40,7 +40,8 @@ export function parseDuration(input: string): number {
   const t = (input ?? '').trim();
   if (!t) return 0;
   if (t.includes(':')) {
-    const parts = t.split(':').map((p) => parseInt(p, 10) || 0);
+    const parts = t.split(':').map((p) => Number.parseInt(p, 10));
+    if (parts.some((p) => !Number.isFinite(p) || p < 0)) return 0;
     return parts.reduce((acc, p) => acc * 60 + p, 0);
   }
   return Math.max(0, parseInt(t, 10) || 0);

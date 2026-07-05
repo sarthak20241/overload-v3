@@ -1,4 +1,5 @@
--- 0053_daily_metrics.sql
+-- 0071_daily_metrics.sql (renumbered from 0053 when this branch merged behind
+-- the exercise-set-types work, which owns 0043-0063 on main).
 --
 -- Holistic tracking, Phase 1 foundation: the scalar daily-metric store.
 --
@@ -17,8 +18,10 @@
 -- separate metric_events table created when blood pressure ships (plan 3b / 7
 -- Phase 5). RLS follows the inline auth.jwt()->>'sub' idiom from 0001 / 0042.
 --
--- NOT YET APPLIED to the live DB. Before applying via Supabase MCP apply_migration
--- (never db push), re-run list_migrations to confirm 0053 / this name is free.
+-- Applied live as 0053_daily_metrics. Account-deletion cleanup for this table
+-- (and the full cross-workstream union) lives in 0072_delete_user_data_complete,
+-- NOT here — the original in-line rewrite regressed delete_user_data from a
+-- partial snapshot, which 0072 corrects.
 
 create table if not exists daily_metrics (
   user_id      text not null default (auth.jwt()->>'sub'),
@@ -60,47 +63,6 @@ create policy "own daily_metrics delete" on daily_metrics
 
 grant select, insert, update, delete on daily_metrics to authenticated;
 
--- ─── Account deletion ────────────────────────────────────────────────────────
--- APPLY-TIME NOTE: Postgres has no "append a statement to a function"; we must
--- create-or-replace the whole body. The body below reproduces the LIVE
--- definition as captured 2026-06-24 and adds the daily_metrics delete. Before
--- applying, RE-CAPTURE the live body (pg_get_functiondef) and re-add the
--- daily_metrics line, because create-or-replace silently overwrites any deletes
--- another workstream added in the meantime.
---
--- Known at capture time: the live body had already DROPPED the coach-conversation
--- deletes that disk migration 0042 added, and never had nutrition deletes. That
--- pre-existing orphan-on-delete bug is tracked separately and is intentionally
--- NOT addressed here, to keep this migration single-purpose. Do not let this
--- function definition silently re-clobber a fix that lands before it is applied.
-create or replace function delete_user_data(p_user_id text)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  delete from workout_sets ws
-    using workouts w
-    where ws.workout_id = w.id
-      and w.user_id = p_user_id;
-
-  delete from workouts where user_id = p_user_id;
-
-  delete from routine_exercises re
-    using routines r
-    where re.routine_id = r.id
-      and r.user_id = p_user_id;
-
-  delete from routines where user_id = p_user_id;
-
-  delete from daily_metrics where user_id = p_user_id;
-
-  delete from user_profiles where clerk_user_id = p_user_id;
-
-  delete from ai_coach_rate_limit where user_id = p_user_id;
-end;
-$$;
-
-revoke all on function delete_user_data(text) from public, anon, authenticated;
-grant execute on function delete_user_data(text) to service_role;
+-- Account-deletion cleanup for daily_metrics is folded into the complete,
+-- cross-workstream delete_user_data() rewrite in 0072 (single source of truth),
+-- so this migration stays single-purpose (just the table).

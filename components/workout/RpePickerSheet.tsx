@@ -1,11 +1,11 @@
 /**
  * RPE / RIR picker (Phase B). Tapping the intensity cell in the logger opens
- * this — a compact grid of values instead of an inline stepper, so the dense
- * multi-axis set row never gets crowded.
+ * this — a slider with a LIVE meaning, so logging a value tells you what it
+ * implies (e.g. RIR 2 = "2 reps left in the tank").
  *
- * Values are always stored as raw RPE (1-10, 0.5 grid). When the user's scale is
- * RIR the chips are labeled 10-rpe, but ordered easiest→hardest (left→right) the
- * same way regardless of scale.
+ * Values are stored as raw RPE (1-10, 0.5 grid); the display flips to RIR
+ * (10 - rpe) when the user's scale is RIR. onChange fires live as the slider
+ * moves; Done dismisses, Clear unsets.
  */
 import { useEffect } from 'react';
 import { View, Text, Pressable, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
@@ -16,19 +16,32 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
-
-// Practical hypertrophy/strength range, RPE 6 -> 10 in 0.5 steps (easiest first).
-const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
+import { RpeSlider } from '@/components/workout/RpeSlider';
 
 interface Props {
   visible: boolean;
   scale: 'rpe' | 'rir';
   value: number | null;
-  onSelect: (rpe: number | null) => void;
+  onChange: (rpe: number | null) => void;
   onClose: () => void;
 }
 
-export function RpePickerSheet({ visible, scale, value, onSelect, onClose }: Props) {
+/** What a given RPE actually means, in plain terms (RIR = reps in reserve + feel). */
+function meaning(rpe: number | null): { title: string; sub: string } {
+  if (rpe == null) return { title: 'How hard was that set?', sub: 'Slide to log effort' };
+  const rir = Math.round((10 - rpe) * 2) / 2;
+  const reps = rir === 0 ? 'Nothing left in the tank' : `${rir} rep${rir === 1 ? '' : 's'} in reserve`;
+  const feel =
+    rpe >= 10 ? 'All-out — true failure'
+    : rpe >= 9 ? 'Very hard — a grind'
+    : rpe >= 8 ? 'Hard — the growth zone'
+    : rpe >= 7 ? 'Solid, still in control'
+    : rpe >= 6 ? 'Comfortable'
+    : 'Easy — warm-up pace';
+  return { title: reps, sub: feel };
+}
+
+export function RpePickerSheet({ visible, scale, value, onChange, onClose }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -39,6 +52,8 @@ export function RpePickerSheet({ visible, scale, value, onSelect, onClose }: Pro
   }, [visible, onClose]);
 
   const label = scale === 'rir' ? 'RIR' : 'RPE';
+  const shown = value == null ? '—' : String(scale === 'rir' ? 10 - value : value);
+  const m = meaning(value);
 
   return (
     <Portal>
@@ -49,43 +64,42 @@ export function RpePickerSheet({ visible, scale, value, onSelect, onClose }: Pro
             exiting={SlideOutDown.duration(200)}
             style={[s.sheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom + Spacing.md }]}
           >
-            <Pressable style={{ flexShrink: 1 }}>
+            <Pressable>
               <View style={[s.handle, { backgroundColor: C.handle }]} />
               <View style={s.header}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.title, { color: C.foreground }]}>{label}</Text>
-                  <Text style={[s.subtitle, { color: C.mutedFg }]}>
-                    {scale === 'rir' ? 'Reps you had left in the tank' : 'How hard was that set, out of 10'}
-                  </Text>
-                </View>
+                <Text style={[s.title, { color: C.foreground }]}>{label}</Text>
                 <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityRole="button" accessibilityLabel="Close">
                   <Feather name="x" size={15} color={C.foreground} />
                 </TouchableOpacity>
               </View>
 
-              <View style={s.grid}>
-                {RPE_VALUES.map((rpe) => {
-                  const active = value === rpe;
-                  const shown = scale === 'rir' ? 10 - rpe : rpe;
-                  return (
-                    <TouchableOpacity
-                      key={rpe}
-                      onPress={() => { haptics.selection(); onSelect(rpe); onClose(); }}
-                      activeOpacity={0.8}
-                      style={[s.chip, { borderColor: active ? Colors.primary : C.border, backgroundColor: active ? Colors.primary : C.muted }]}
-                    >
-                      <Text style={[s.chipText, { color: active ? Colors.primaryFg : C.foreground }]}>{shown}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              {/* Big live value + what it means */}
+              <View style={s.readout}>
+                <View style={s.valueRow}>
+                  <Text style={[s.scaleTag, { color: C.textMuted }]}>{label}</Text>
+                  <Text style={[s.value, { color: value == null ? C.textMuted : Colors.primary }]}>{shown}</Text>
+                </View>
+                <Text style={[s.meaningTitle, { color: C.foreground }]}>{m.title}</Text>
+                <Text style={[s.meaningSub, { color: C.textMuted }]}>{m.sub}</Text>
               </View>
 
-              {value != null && (
-                <TouchableOpacity onPress={() => { haptics.selection(); onSelect(null); onClose(); }} style={s.clearRow} activeOpacity={0.7}>
-                  <Feather name="x-circle" size={15} color={C.textMuted} />
-                  <Text style={[s.clearText, { color: C.textMuted }]}>Clear</Text>
+              <RpeSlider value={value} onChange={(rpe) => onChange(rpe)} />
+              <View style={s.anchors}>
+                <Text style={[s.anchor, { color: C.textMuted }]}>{scale === 'rir' ? 'Easy (9)' : 'Easy (1)'}</Text>
+                <Text style={[s.anchor, { color: C.textMuted }]}>{scale === 'rir' ? 'Failure (0)' : 'Max (10)'}</Text>
+              </View>
+
+              <View style={s.footer}>
+                {value != null && (
+                  <TouchableOpacity onPress={() => { haptics.selection(); onChange(null); }} style={[s.clearBtn, { borderColor: C.border }]} activeOpacity={0.7}>
+                    <Feather name="x-circle" size={15} color={C.textMuted} />
+                    <Text style={[s.clearText, { color: C.textMuted }]}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={() => { haptics.selection(); onClose(); }} style={[s.doneBtn, { backgroundColor: Colors.primary }]} activeOpacity={0.85}>
+                  <Text style={s.doneText}>Done</Text>
                 </TouchableOpacity>
-              )}
+              </View>
             </Pressable>
           </Animated.View>
         </Pressable>
@@ -96,15 +110,22 @@ export function RpePickerSheet({ visible, scale, value, onSelect, onClose }: Pro
 
 const s = StyleSheet.create({
   backdrop: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
-  sheet: { borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, maxHeight: '90%' },
-  handle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.md },
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.lg },
+  sheet: { borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
+  handle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.sm },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { fontSize: FontSize.xl, fontWeight: FontWeight.black },
-  subtitle: { fontSize: FontSize.sm, marginTop: 2 },
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
-  chip: { width: 56, height: 48, borderRadius: Radius.lg, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  chipText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
-  clearRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: Spacing.md, marginTop: Spacing.sm },
+  readout: { alignItems: 'center', paddingVertical: Spacing.lg },
+  valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  scaleTag: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, textTransform: 'uppercase', letterSpacing: 1 },
+  value: { fontSize: 52, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], lineHeight: 56 },
+  meaningTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, marginTop: 6 },
+  meaningSub: { fontSize: FontSize.sm, marginTop: 2 },
+  anchors: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2, marginBottom: Spacing.lg },
+  anchor: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  footer: { flexDirection: 'row', gap: 10 },
+  clearBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 48, paddingHorizontal: 18, borderRadius: Radius.xl, borderWidth: 1 },
   clearText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  doneBtn: { flex: 1, height: 48, borderRadius: Radius.xl, alignItems: 'center', justifyContent: 'center' },
+  doneText: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
 });

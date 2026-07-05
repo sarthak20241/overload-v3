@@ -30,6 +30,8 @@ export interface PendingRoutineExercise {
   reps_max: number;
   rest_seconds: number;
   note: string | null;
+  /** Superset grouping ordinal (migration 0060); null = solo. */
+  superset_group: number | null;
 }
 
 export interface PendingRoutine {
@@ -148,6 +150,7 @@ export function pendingRoutineToCacheRow(p: PendingRoutine): any {
         reps_max: ex.reps_max,
         rest_seconds: ex.rest_seconds,
         note: ex.note,
+        superset_group: ex.superset_group,
         exercises: {
           id: exId,
           name: ex.def.name,
@@ -261,6 +264,7 @@ async function flushPendingRoutine(
         reps_max: ex.reps_max,
         rest_seconds: ex.rest_seconds,
         note: ex.note,
+        superset_group: ex.superset_group,
       }));
       const { error: insErr } = await supabase.from('routine_exercises').insert(rows);
       if (insErr) throw insErr;

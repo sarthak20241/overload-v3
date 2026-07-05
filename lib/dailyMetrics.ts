@@ -2,7 +2,7 @@
  * Holistic tracking descriptor layer (integration-first). The analog of the
  * METRIC_TYPES table in lib/exercises.ts, but for daily HEALTH metrics that are
  * READ from Apple HealthKit / Android Health Connect (with a manual fallback)
- * and mirrored into the `daily_metrics` table (migration 0053).
+ * and mirrored into the `daily_metrics` table (migration 0071).
  *
  * One closed vocabulary, one descriptor list, safe normalizers. The DB mirrors
  * this in the daily_metrics.metric_type check constraint. Plan:

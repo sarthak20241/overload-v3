@@ -7,7 +7,7 @@
  * renders flush to the bottom on Android edge-to-edge.
  */
 import { useEffect } from 'react';
-import { View, Text, Pressable, ScrollView, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
+import { View, Text, Pressable, ScrollView, Switch, TouchableOpacity, StyleSheet, BackHandler, Platform } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -26,12 +26,15 @@ interface Props {
   onClose: () => void;
   /** Hide the destructive Remove row (e.g. for the not-yet-logged active set). */
   canRemove?: boolean;
+  /** Unilateral "L+R" — orthogonal to the type list (a set can be failure AND unilateral). */
+  unilateral?: boolean;
+  onUnilateralChange?: (v: boolean) => void;
 }
 
 const COMMON = SET_TYPE_ORDER.filter((t) => SET_TYPE_META[t].tier === 'common');
 const MORE = SET_TYPE_ORDER.filter((t) => SET_TYPE_META[t].tier === 'more');
 
-export function SetTypeSheet({ visible, currentType, onSelect, onRemove, onClose, canRemove = true }: Props) {
+export function SetTypeSheet({ visible, currentType, onSelect, onRemove, onClose, canRemove = true, unilateral = false, onUnilateralChange }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -90,6 +93,30 @@ export function SetTypeSheet({ visible, currentType, onSelect, onRemove, onClose
                 {COMMON.map((t) => <Row key={t} t={t} />)}
                 <Text style={[s.sectionLabel, { color: C.textMuted, marginTop: Spacing.md }]}>More</Text>
                 {MORE.map((t) => <Row key={t} t={t} />)}
+
+                {onUnilateralChange && (
+                  <>
+                    <Text style={[s.sectionLabel, { color: C.textMuted, marginTop: Spacing.md }]}>How you train it</Text>
+                    <View style={[s.row, { borderColor: C.borderSubtle }]}>
+                      <View style={[s.badgeWrap, { backgroundColor: C.muted }]}>
+                        <Feather name="repeat" size={16} color={C.foreground} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[s.rowTitle, { color: C.foreground }]}>One side at a time</Text>
+                        <Text style={[s.rowSub, { color: C.textMuted }]}>Log left then right as one set (L+R). Works with any type.</Text>
+                      </View>
+                      <Switch
+                        accessibilityLabel="One side at a time"
+                        accessibilityHint="Log the left side then the right as a single L+R set"
+                        value={unilateral}
+                        onValueChange={(v) => { haptics.selection(); onUnilateralChange(v); }}
+                        trackColor={{ true: Colors.primary, false: C.border }}
+                        thumbColor={Platform.OS === 'android' ? (unilateral ? Colors.primaryFg : '#f4f4f5') : undefined}
+                        ios_backgroundColor={C.border}
+                      />
+                    </View>
+                  </>
+                )}
 
                 {canRemove && (
                   <TouchableOpacity

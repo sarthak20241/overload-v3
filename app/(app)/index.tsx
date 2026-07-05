@@ -10,6 +10,8 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constan
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { abbreviateNumber } from '@/lib/format';
+import { metricTypeOf, supports1RM } from '@/lib/exercises';
+import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
@@ -22,6 +24,9 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
+import { MacroRing } from '@/components/ui/MacroRing';
+import { MacroBar } from '@/components/diet/MacroBar';
+import { useTodayNutrition } from '@/lib/dietData';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -31,6 +36,12 @@ import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
+
+// Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
+const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
+const fmtK = (n: number) => Math.round(n).toLocaleString();
+const fuelCaption = (eaten: number, goal: number) =>
+  `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 
 // Figma-matched muscle group colors. Module-scoped so consumers get a stable
 // identity across renders.
@@ -167,6 +178,7 @@ function XPBar({ xp }: { xp: number }) {
 export default function DashboardScreen() {
   const router = useRouter();
   const { C } = useTheme();
+  const fuel = useTodayNutrition();
   // Coach card uses the flat, on-brand lime signature. The purple/teal gradient +
   // glow orbs were removed in the design polish: the coach's own menu is flat/lime,
   // so the dashboard entry now matches the room it opens into (and survives light mode).
@@ -433,12 +445,30 @@ export default function DashboardScreen() {
         if (s.set_type === 'warmup') continue; // warmups never flag a PR
         const exId = s.exercise_id || s.exercises?.id;
         const exName = s.exercises?.name;
-        if (!exId || !exName || s.weight_kg <= 0 || s.reps <= 0) continue;
-        const epley = s.weight_kg * (1 + s.reps / 30);
+        if (!exId || !exName) continue;
+        const metricType = metricTypeOf({ metric_type: s.exercises?.metric_type });
+        // Score = the metric's progress signal: Epley 1RM for loaded lifts, else the
+        // primary magnitude (most reps / longest time / farthest), so bodyweight,
+        // duration and distance work can flag a PR too — not just weighted lifts.
+        let score: number;
+        if (supports1RM(metricType)) {
+          // Score each side on its own, so a unilateral set with a blank/0 LEFT
+          // but a logged RIGHT still counts (its heavier side can be the real
+          // peak, per-side weight 0059). Mirrors lib/insights.ts + the server.
+          const left = s.weight_kg > 0 && s.reps > 0 ? s.weight_kg * (1 + s.reps / 30) : 0;
+          const wR = s.weight_kg_right ?? s.weight_kg;
+          const rR = s.reps_right ?? s.reps;
+          const right = s.is_unilateral && wR > 0 && rR > 0 ? wR * (1 + rR / 30) : 0;
+          score = Math.max(left, right);
+          if (score <= 0) continue;
+        } else {
+          score = setBestValue(metricType, [s as DisplaySet]);
+          if (score <= 0) continue;
+        }
         const prev = best[exId] ?? 0;
-        if (epley > prev) {
+        if (score > prev) {
           if (prev > 0 && !prs.includes(exName)) prs.push(exName);
-          best[exId] = epley;
+          best[exId] = score;
         }
       }
       if (prs.length > 0) result[w.id] = prs;
@@ -621,38 +651,35 @@ export default function DashboardScreen() {
 
         {/* Stats grid */}
         <View style={styles.statsGrid}>
-          {/* Volume card with area chart */}
-          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={[styles.cardGlow, { backgroundColor: Colors.stat.volume, opacity: 0.04 }]} />
+          {/* FUEL — one ink calorie ring (kcal LEFT) + three baseline-aligned P/C/F
+              bars (the decided encoding; NOT concentric rings). Taps to the diary.
+              The ring + bars fill on first appear and tween the delta when a food is
+              logged. Replaces the Volume card (volume still lives in Analytics). */}
+          <PressableScale
+            haptic="tap"
+            onPress={() => router.push('/nutrition' as any)}
+            style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+          >
+            <View style={[styles.cardGlow, { backgroundColor: C.macro.calories, opacity: 0.05 }]} />
             <View style={styles.statHeader}>
-              <Feather name="trending-up" size={12} color={Colors.stat.volume} />
-              <Text style={[styles.statLabel, { color: Colors.stat.volume }]}>VOLUME</Text>
+              <Feather name="zap" size={12} color={C.macro.calories} />
+              <Text style={[styles.statLabel, { color: C.macro.calories }]}>FUEL</Text>
+              <View style={{ flex: 1 }} />
+              <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>
-            <View style={styles.statValueRow}>
-              <AnimatedNumber
-                style={[styles.statValue, { color: C.foreground }]}
-                value={totalVolume}
-                format={abbreviateNumber}
+            <View style={{ alignItems: 'center', marginTop: 2 }}>
+              <MacroRing
+                value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
+                display="remaining" overshoot name="Calories" size={92} thickness={10} centerFontSize={21}
+                belowCaption={fuelCaption(fuel.totals.kcal, FUEL_TARGETS.kcal)}
               />
-              <Text style={[styles.statSuffix, { color: C.textMuted }]}> kg</Text>
             </View>
-            {weeklyVolumes.some(v => v > 0) ? (
-              <View style={{ marginTop: 6, marginHorizontal: -4, marginBottom: -4 }}>
-                <MiniAreaChart
-                  data={weeklyVolumes}
-                  labels={weeklyLabels}
-                  width={140}
-                  height={72}
-                  color={Colors.stat.volume}
-                  valueSuffix="kg"
-                  tooltipBgColor={C.elevated}
-                  tooltipTextColor={C.foreground}
-                />
-              </View>
-            ) : (
-              <Text style={[styles.statSub, { color: C.textDim }]}>No data yet</Text>
-            )}
-          </View>
+            <View style={styles.fuelBars}>
+              <MacroBar label="P" name="Protein" value={fuel.totals.protein_g} target={FUEL_TARGETS.protein} color={C.macro.protein} delayMs={0} />
+              <MacroBar label="C" name="Carbs" value={fuel.totals.carb_g} target={FUEL_TARGETS.carb} color={C.macro.carbs} delayMs={70} />
+              <MacroBar label="F" name="Fat" value={fuel.totals.fat_g} target={FUEL_TARGETS.fat} color={C.macro.fat} delayMs={140} />
+            </View>
+          </PressableScale>
 
           {/* Readiness card (muscle breakdown moved to Analytics). */}
           <ReadinessCard />
@@ -720,19 +747,28 @@ export default function DashboardScreen() {
                   const dotColor = ROUTINE_COLORS[idx % ROUTINE_COLORS.length];
                   const delta = volumeDeltas[w.id];
 
-                    // Group sets by exercise (in order of first appearance)
-                    const grouped: { name: string; sets: { weight: number; reps: number; completed: boolean }[] }[] = [];
+                    // Group sets by exercise (in order of first appearance). Carry
+                    // metric_type + every axis field so the pill reads correctly for
+                    // duration/distance/bodyweight work (not a hardcoded weight×reps).
+                    const grouped: { name: string; metricType: string | null | undefined; sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string | null; is_unilateral?: boolean | null; reps_right?: number | null; weight_kg_right?: number | null }[] }[] = [];
                     const groupIdx: Record<string, number> = {};
                     for (const s of (w.sets || []) as any[]) {
                       const name = s.exercises?.name || 'Unknown';
                       if (groupIdx[name] === undefined) {
                         groupIdx[name] = grouped.length;
-                        grouped.push({ name, sets: [] });
+                        grouped.push({ name, metricType: s.exercises?.metric_type, sets: [] });
                       }
                       grouped[groupIdx[name]].sets.push({
-                        weight: s.weight_kg,
+                        weight_kg: s.weight_kg,
                         reps: s.reps,
                         completed: s.completed,
+                        duration_seconds: s.duration_seconds,
+                        distance_m: s.distance_m,
+                        resistance: s.resistance,
+                        set_type: s.set_type,
+                        is_unilateral: s.is_unilateral,
+                        reps_right: s.reps_right,
+                        weight_kg_right: s.weight_kg_right,
                       });
                     }
 
@@ -861,7 +897,7 @@ export default function DashboardScreen() {
                                           ]}
                                         >
                                           <Text style={[styles.expandedSetText, { color: C.textSecondary }]}>
-                                            {s.weight > 0 ? `${s.weight}kg × ${s.reps}` : `${s.reps} reps`}
+                                            {setLabel(metricTypeOf({ metric_type: g.metricType }), s)}
                                           </Text>
                                         </View>
                                       ))}
@@ -1107,6 +1143,8 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
+  // Nutrition card (diet entry point) — protein bar under the calories ring
+  fuelBars: { marginTop: Spacing.md, gap: 9 },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,

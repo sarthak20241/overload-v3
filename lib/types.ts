@@ -53,6 +53,9 @@ export interface RoutineExercise {
   // (e.g. "RIR 2", "Hams-focused", "Top set to failure"). Optional — only
   // set on AI-generated routines, not editor-built ones.
   note?: string;
+  // Supersets (migration 0060). Grouping ordinal; members of one superset share a
+  // value, NULL/undefined = solo. Members are kept contiguous (order = list position).
+  superset_group?: number | null;
 }
 
 export interface Routine {
@@ -83,6 +86,18 @@ export interface WorkoutSet {
   // Phase B — per-set type + intensity. rpe is the raw 1-10 scale (RIR = 10 - rpe).
   set_type?: SetType;
   rpe?: number | null;
+  // Unilateral "L+R" (migration 0056). When true, this ONE row is a set trained one
+  // side at a time: reps/rpe hold the LEFT side, reps_right/rpe_right hold the RIGHT.
+  // weight_kg is the LEFT weight; weight_kg_right is the RIGHT (null => same as left,
+  // migration 0059). Orthogonal to set_type (a set can be failure AND unilateral).
+  // Volume counts both sides with their own weight; it still counts as ONE set.
+  is_unilateral?: boolean;
+  reps_right?: number | null;
+  rpe_right?: number | null;
+  weight_kg_right?: number | null;
+  // Supersets (migration 0060). Carried per set (stamped from the parent exercise at
+  // write time) so history can group members. NULL = not part of a superset.
+  superset_group?: number | null;
 }
 
 export interface Workout {
@@ -113,6 +128,10 @@ export interface ActiveWorkoutExercise {
   repsMin: number;
   repsMax: number;
   restSeconds: number;
+  // Supersets (migration 0060). Grouping ordinal carried from the routine (or set
+  // ad-hoc mid-session). Members of one superset share a value, NULL = solo. Drives
+  // the interleaved logging + round rest. Stamped onto each set's superset_group on save.
+  supersetGroup?: number | null;
 }
 
 export interface ActiveSet {
@@ -127,6 +146,13 @@ export interface ActiveSet {
   // Phase B — per-set type + intensity (rpe = raw 1-10; RIR = 10 - rpe).
   set_type?: SetType;
   rpe?: number | null;
+  // Unilateral "L+R" (migration 0056/0059). See WorkoutSet. reps/rpe = LEFT,
+  // reps_right/rpe_right = RIGHT; weight_kg = LEFT weight, weight_kg_right = RIGHT
+  // (null => same). One row = one set; volume counts both sides with their own weight.
+  is_unilateral?: boolean;
+  reps_right?: number | null;
+  rpe_right?: number | null;
+  weight_kg_right?: number | null;
 }
 
 export interface DashboardStats {

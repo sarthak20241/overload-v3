@@ -58,7 +58,7 @@ The connect screen NAMES these apps (so the promise "works with Google Fit / Sam
 Two new tables, additive and nullable, RLS keyed on `auth.jwt()->>'sub'`, applied via Supabase MCP `apply_migration` (never `db push`).
 
 **Migration numbering (reconciled against live).** The live DB tracks migrations by timestamp version; the `00XX_` filenames on disk are a local-ordering convention only. Disk currently tops out at `0052_resistance_duration_metric`. The diet workstream applied its nutrition migrations to the live DB (timestamps 2026-06-24) WITHOUT committing the files to disk, so disk and live have drifted (disk is missing the nutrition files; live has them). Therefore:
-- Use `0053_daily_metrics.sql` for this table (next free disk number after 0052), and a unique migration NAME the live DB does not already record.
+- Use `0071_daily_metrics.sql` for this table (next free disk number after 0052), and a unique migration NAME the live DB does not already record.
 - Before applying, re-run `list_migrations` against the live DB and confirm the name is not taken and nothing newer landed.
 - Separately, the nutrition disk/live drift is a hygiene problem worth fixing (dump the live nutrition migration bodies back to disk files) but that is the diet workstream's debt, not a blocker for this plan.
 
@@ -199,10 +199,10 @@ Build on a NEW branch `feat/holistic-tracking` cut from `feat/exercise-set-types
 ### Phase 0 — Gates (mostly cleared)
 - **Design polish**: DONE (was the prior active priority). No longer a gate.
 - **Set-types**: still in progress but no longer a blocking gate because we branch on top of it. Keep Phase 1 additive; do the write-queue-touching parts (Phase 3) after set-types stabilizes.
-- **Migration reconciliation**: run `list_migrations` against the live DB before applying; take `0053_daily_metrics` with a unique name. Disk and live have drifted on the nutrition files (diet workstream debt, not a blocker).
+- **Migration reconciliation**: run `list_migrations` against the live DB before applying; take `0071_daily_metrics` with a unique name. Disk and live have drifted on the nutrition files (diet workstream debt, not a blocker).
 
 ### Phase 1 — Native read foundation, BOTH platforms (XL, the wedge)
-`0053_daily_metrics` migration; `lib/dailyMetrics.ts` descriptor/types layer; `healthSync` pull module with BOTH the iOS HealthKit adapter (anchored + statistics queries) and the Android Health Connect adapter (time-range cursor + overlap + weekly reconcile + `READ_HEALTH_DATA_HISTORY`) behind one interface; config plugins + entitlements + usage strings + manifest activities + `expo-build-properties`; prebuild + fresh dev/EAS build; foreground-on-open sync; dedup; cursor persistence. Metrics: steps, sleep minutes, resting HR, HRV, active energy. Request read auth only for these (NOT blood pressure). Privacy policy v1 linked in App Store Connect + Play Console; start the ~1-2 week Google Play Health declaration review early.
+`0071_daily_metrics` migration; `lib/dailyMetrics.ts` descriptor/types layer; `healthSync` pull module with BOTH the iOS HealthKit adapter (anchored + statistics queries) and the Android Health Connect adapter (time-range cursor + overlap + weekly reconcile + `READ_HEALTH_DATA_HISTORY`) behind one interface; config plugins + entitlements + usage strings + manifest activities + `expo-build-properties`; prebuild + fresh dev/EAS build; foreground-on-open sync; dedup; cursor persistence. Metrics: steps, sleep minutes, resting HR, HRV, active energy. Request read auth only for these (NOT blood pressure). Privacy policy v1 linked in App Store Connect + Play Console; start the ~1-2 week Google Play Health declaration review early.
 
 ### Phase 2 — Readiness + Analytics surfaces (M)
 Readiness compute (Tier A1/A2 objective with explicit HRV-absent path; diet term left neutral) reading base workout tables; write `readiness_score` to `daily_metrics` (current-day only, frozen on rollover); Analytics TrendCards for each Tier-1 metric; the ONE dashboard readiness directive in Drona voice.

@@ -27,6 +27,8 @@ export interface GuestRoutineExercise {
   rest_seconds: number;
   /** AI Coach's per-exercise cue; null/missing on editor-built routines. */
   note?: string | null;
+  /** Superset grouping ordinal (migration 0060); null/missing = solo. */
+  superset_group?: number | null;
   exercises: { id: string; name: string; muscle_group: string; category: string };
 }
 
@@ -47,7 +49,9 @@ interface GuestWorkoutExercise {
   category?: string;
   /** Phase A — so a guest's duration/distance exercises render + persist right. */
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
+  /** Superset grouping ordinal (migration 0060), per exercise; null = solo. */
+  superset_group?: number | null;
+  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 
 export interface GuestWorkout {
@@ -192,7 +196,12 @@ export function getGuestWorkoutsDetailed() {
     const sets = (w.exercises ?? []).flatMap((ex, ei) => {
       const lib = EXERCISE_LIBRARY.find(e => e.name.toLowerCase() === ex.name.toLowerCase());
       const meta = {
-        id: `${w.id}-ex-${ei}`,
+        // Stable across workouts: same exercise → same id, so the dashboard's
+        // running-best map can detect PRs between two guest sessions. Library
+        // entries carry no id, so the lowercased name is the stable anchor (the
+        // PR memo already requires the name anyway). A per-workout id like
+        // `${w.id}-ex-${ei}` would be fresh every session, so a PR never fired.
+        id: `guest-ex-${ex.name.trim().toLowerCase()}`,
         name: ex.name,
         muscle_group: ex.muscle_group || lib?.muscle_group || 'Other',
         category: ex.category || lib?.category || 'Other',
@@ -211,6 +220,11 @@ export function getGuestWorkoutsDetailed() {
         resistance: s.resistance ?? null,
         set_type: s.set_type ?? 'normal',
         rpe: s.rpe ?? null,
+        is_unilateral: s.is_unilateral ?? false,
+        reps_right: s.reps_right ?? null,
+        rpe_right: s.rpe_right ?? null,
+        weight_kg_right: s.weight_kg_right ?? null,
+        superset_group: ex.superset_group ?? null,
       }));
     });
     return { ...w, workout_sets: sets, sets };

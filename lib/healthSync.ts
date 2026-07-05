@@ -5,7 +5,7 @@
  * (lib/syncQueue.ts). On app-open / AppState 'active' the platform adapter reads
  * daily-aggregated health data from the hub (Apple HealthKit on iOS, Android
  * Health Connect on Android), and we upsert it into the `daily_metrics` table
- * (migration 0053). The (user, day, type) tuple is the idempotency key, so a
+ * (migration 0071). The (user, day, type) tuple is the idempotency key, so a
  * re-read of a day overwrites with the latest deduped aggregate.
  *
  * Both native adapters ship in this PR (HealthKit on iOS, Health Connect on

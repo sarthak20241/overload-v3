@@ -322,31 +322,34 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     const repsMin = Math.max(1, parseInt(customRepsMin, 10) || 8);
     const repsMax = Math.max(repsMin, parseInt(customRepsMax, 10) || repsMin);
     const restSeconds = Math.max(0, parseInt(customRest, 10) || 90);
+    const key = trimmed.toLowerCase();
+    const details = { sets, repsMin, repsMax, restSeconds };
+    // If the name already lives in the merged library (customs + DB catalog +
+    // static seed), hand back that canonical def. Emitting a fresh one here
+    // would shadow the catalog row with a possibly different metric_type and
+    // race the backend's name-uniqueness on insert.
+    const existing = library.find(e => e.name.toLowerCase() === key);
+    if (existing) {
+      onSelect(existing, details);
+      return;
+    }
     // Optimistically remember the new custom (state + cache) so it shows on
     // the next open even before the consumer's background insert lands.
-    const key = trimmed.toLowerCase();
-    const exists = customExercises.some(e => e.name.toLowerCase() === key)
-      || EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === key);
-    if (!exists) {
-      const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType };
-      setCustomExercises(prev => [row, ...prev]);
-      if (isGuest) {
-        // No Supabase insert happens downstream for guests — persist to the
-        // local store so the custom survives restarts (dedupes internally).
-        addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType });
-      } else {
-        // Persist to the durable 'exercises' cache so the custom is reusable
-        // offline (picker + My Exercises) before it syncs to the server.
-        saveLocalCustomExercise(userId, { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType });
-        if (customExercisesCache && customExercisesCache.userId === userId) {
-          customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
-        }
+    const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType };
+    setCustomExercises(prev => [row, ...prev]);
+    if (isGuest) {
+      // No Supabase insert happens downstream for guests — persist to the
+      // local store so the custom survives restarts (dedupes internally).
+      addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType });
+    } else {
+      // Persist to the durable 'exercises' cache so the custom is reusable
+      // offline (picker + My Exercises) before it syncs to the server.
+      saveLocalCustomExercise(userId, { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType });
+      if (customExercisesCache && customExercisesCache.userId === userId) {
+        customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
       }
     }
-    onSelect(
-      { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType },
-      { sets, repsMin, repsMax, restSeconds }
-    );
+    onSelect(row, details);
   };
 
   const resetAndClose = () => {

@@ -23,6 +23,9 @@ export interface WorkoutPreferences {
   inlineTimerForDuration: boolean;
   // Screen stays on while the active workout screen is mounted. Live in Phase 0.
   keepAwake: boolean;
+  // Short rest between the LEFT and RIGHT side of a unilateral (L+R) set. Off =
+  // log both sides back to back. Migration 0056 / unilateral feature.
+  restBetweenSides: boolean;
 }
 
 export const DEFAULT_PREFERENCES: WorkoutPreferences = {
@@ -30,7 +33,12 @@ export const DEFAULT_PREFERENCES: WorkoutPreferences = {
   intensityScale: 'rir',
   inlineTimerForDuration: true,
   keepAwake: false,
+  restBetweenSides: false,
 };
+
+// Fixed inter-side rest target (seconds) when restBetweenSides is on. Kept a
+// constant (not a pref) to keep the settings sheet lean in v1.
+export const REST_BETWEEN_SIDES_SECONDS = 20;
 
 const PREFS_KEY = 'overload_workout_prefs';
 

@@ -15,11 +15,13 @@ import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, typ
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { usePreferences, type IntensityScale } from '@/hooks/usePreferences';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
-import { abbreviateNumber, formatWeight, formatDuration as formatSetDuration, formatDistanceKm } from '@/lib/format';
-import { metricTypeDef, metricTypeOf } from '@/lib/exercises';
+import { abbreviateNumber } from '@/lib/format';
+import { metricTypeOf } from '@/lib/exercises';
 import type { MetricType } from '@/lib/exercises';
+import { setLabel, setBestLabel } from '@/lib/setDisplay';
 import { SetTypeBadge, setTypeOf } from '@/components/workout/SetTypeBadge';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
@@ -52,40 +54,15 @@ const MONTH_FULL = [
 interface ExerciseDetail {
   name: string;
   metric_type?: MetricType;
-  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null }[];
+  // Superset group. Signed-in/pending rows carry it per-set; guest workouts carry
+  // it at the exercise level. groupOf() reads exercise-level first, then per-set.
+  superset_group?: number | null;
+  sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null; superset_group?: number | null }[];
 }
 type HistorySet = ExerciseDetail['sets'][number];
 
-/** Per-set pill text, axis-aware ("60kg × 8", "+10kg × 6", "0:45", "5km · 22:30", "12"). */
-function historySetLabel(metricType: MetricType, s: HistorySet): string {
-  const axes = metricTypeDef(metricType).axes;
-  const parts = axes.map((a) =>
-    a === 'reps' ? `${s.reps}`
-    : a === 'duration' ? formatSetDuration(s.duration_seconds)
-    : a === 'distance' ? `${formatDistanceKm(s.distance_m)}km`
-    : a === 'resistance' ? `Lv ${s.resistance ?? 0}`
-    : a === 'assist_weight' ? `-${formatWeight(s.weight_kg)}kg`
-    : a === 'added_weight' ? `+${formatWeight(s.weight_kg)}kg`
-    : `${formatWeight(s.weight_kg)}kg`,
-  );
-  const usesWeight = axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight');
-  return usesWeight && axes.includes('reps') ? parts.join(' × ') : parts.join(' · ');
-}
-
-/** Headline "best" stat for an exercise's completed sets (heaviest / longest / farthest / most reps). */
-function historyBest(metricType: MetricType, sets: HistorySet[]): string {
-  const axes = metricTypeDef(metricType).axes;
-  if (axes.includes('distance')) {
-    return `${formatDistanceKm(Math.max(0, ...sets.map(s => s.distance_m ?? 0)))}km`;
-  }
-  if (axes.includes('duration') && !axes.some(a => a === 'weight')) {
-    return formatSetDuration(Math.max(0, ...sets.map(s => s.duration_seconds ?? 0)));
-  }
-  if (axes.some(a => a === 'weight' || a === 'added_weight' || a === 'assist_weight')) {
-    return `${formatWeight(Math.max(0, ...sets.map(s => s.weight_kg)))}kg`;
-  }
-  return `${Math.max(0, ...sets.map(s => s.reps))} reps`;
-}
+// Per-set pill text + headline "best" now live in lib/setDisplay (setLabel /
+// setBestLabel) so the dashboard, analytics and coach share the exact formatting.
 
 interface WorkoutRaw {
   id: string;
@@ -362,6 +339,24 @@ function MonthCalendar({
 }
 
 // ─── Session Card ─────────────────────────────────────────────────────────────
+// Stored intensity is always raw RPE (1–10). Render it in the user's chosen
+// scale so history matches the logger: RIR = 10 − RPE (the app default), else
+// the raw RPE. `@` stays the RPE-only marker; RIR spells itself out so a
+// converted value can't be misread as a (much easier) RPE.
+function intensityLabel(
+  rpe: number | null | undefined,
+  rpeRight: number | null | undefined,
+  isUnilateral: boolean,
+  scale: IntensityScale,
+): string | null {
+  const hasRight = isUnilateral && rpeRight != null;
+  if (rpe == null && !hasRight) return null;
+  const conv = (r: number) => (scale === 'rir' ? 10 - r : r);
+  const left = rpe != null ? String(conv(rpe)) : '–';
+  const right = hasRight ? `/${conv(rpeRight!)}` : '';
+  return scale === 'rir' ? `${left}${right} RIR` : `@${left}${right}`;
+}
+
 function SessionCard({
   workout,
   colorIndex,
@@ -376,6 +371,8 @@ function SessionCard({
   openRowRef: { current: SwipeableMethods | null };
 }) {
   const { C } = useTheme();
+  const { prefs } = usePreferences();
+  const intensityScale = prefs.intensityScale;
   const [expanded, setExpanded] = useState(false);
   // Rotate the chevron 180deg as the card expands.
   const chevronRot = useSharedValue(0);
@@ -540,8 +537,23 @@ function SessionCard({
               const completedSets = ex.sets?.filter(s => s.completed) || [];
               if (completedSets.length === 0) return null;
               const mt = metricTypeOf(ex);
+              // Superset grouping rides on the sets (per-set superset_group). Members
+              // stay contiguous under the first-seen ordering, so flag the first of
+              // each run for a "SUPERSET" caption + a lime left accent down the group.
+              const groupOf = (e?: ExerciseDetail) =>
+                e?.superset_group ?? (e?.sets || []).find(s => s.superset_group != null)?.superset_group ?? null;
+              const g = groupOf(ex);
+              const grouped = g != null;
+              const firstInGroup = grouped && g !== groupOf(workout.exercises?.[i - 1]);
               return (
-                <View key={i} style={styles.exerciseRow}>
+                <View key={i}>
+                  {firstInGroup ? (
+                    <View style={styles.supersetLabelRow}>
+                      <Feather name="link" size={9} color={C.accentText} />
+                      <Text style={[styles.supersetLabelText, { color: C.accentText }]}>SUPERSET</Text>
+                    </View>
+                  ) : null}
+                  <View style={[styles.exerciseRow, grouped ? { borderLeftWidth: 3, borderLeftColor: Colors.primary, paddingLeft: 10 } : null]}>
                   <View style={styles.exerciseInfo}>
                     <Text style={[styles.exerciseName, { color: C.foreground }]}>{ex.name}</Text>
                     <View style={styles.setPills}>
@@ -554,18 +566,22 @@ function SessionCard({
                             <SetTypeBadge type={setTypeOf(set.set_type)} size={15} />
                           )}
                           <Text style={[styles.setPillText, { color: C.mutedFg }]}>
-                            {historySetLabel(mt, set)}
+                            {setLabel(mt, set)}
                           </Text>
-                          {set.rpe != null && (
-                            <Text style={[styles.setPillText, { color: C.textMuted }]}>@{set.rpe}</Text>
-                          )}
+                          {(() => {
+                            const label = intensityLabel(set.rpe, set.rpe_right, !!set.is_unilateral, intensityScale);
+                            return label == null ? null : (
+                              <Text style={[styles.setPillText, { color: C.textMuted }]}>{label}</Text>
+                            );
+                          })()}
                         </View>
                       ))}
                     </View>
                   </View>
                   <View style={styles.exerciseBest}>
-                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{historyBest(mt, completedSets)}</Text>
+                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{setBestLabel(mt, completedSets)}</Text>
                     <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
+                  </View>
                   </View>
                 </View>
               );
@@ -680,7 +696,7 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, exercises(name, metric_type))')
+      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -695,7 +711,7 @@ export default function HistoryScreen() {
           if (!exerciseMap[exId]) {
             exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, sets: [] };
           }
-          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe });
+          exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe, is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right, superset_group: s.superset_group });
         });
         return {
           ...w,
@@ -1317,6 +1333,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+  },
+  // "SUPERSET" caption above the first member of a superset run in the expanded card.
+  supersetLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  supersetLabelText: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
   },
   exerciseInfo: {
     flex: 1,

@@ -61,6 +61,12 @@ export interface InsightSet {
   completed?: boolean;
   weight_kg?: number;
   reps?: number;
+  // Unilateral "L+R" (migration 0056/0059). Either side (its own weight × reps) can
+  // be the real peak; included so client 1RM/PR detection matches recompute_user_lift_stat,
+  // which expands each unilateral set into left + right e1rm candidates.
+  is_unilateral?: boolean;
+  reps_right?: number | null;
+  weight_kg_right?: number | null;
   exercise_id?: string;
   muscle_group?: string;
   exercises?: { id?: string; name?: string; muscle_group?: string } | null;
@@ -171,8 +177,16 @@ function buildExerciseSeries(workouts: InsightWorkout[]) {
       if (!exId || !name) continue;
       const weight = s.weight_kg ?? 0;
       const reps = s.reps ?? 0;
-      if (weight <= 0 || reps <= 0) continue;
-      const e = epley1RM(weight, reps);
+      // Score each side on its own so a unilateral set with a blank/0 LEFT but a
+      // logged RIGHT still reaches the max (its heavier side can be the real peak,
+      // per-side weight 0059). Mirrors recompute_user_lift_stat's left+right max so
+      // the free PR/plateau insights agree with the server's estimated_1rm.
+      const wR = s.weight_kg_right ?? weight;
+      const rR = s.reps_right ?? reps;
+      const left = weight > 0 && reps > 0 ? epley1RM(weight, reps) : 0;
+      const right = s.is_unilateral && wR > 0 && rR > 0 ? epley1RM(wR, rR) : 0;
+      const e = Math.max(left, right);
+      if (e <= 0) continue;
       if (e > (perEx.get(exId) ?? 0)) perEx.set(exId, e);
       if (!meta.has(exId)) meta.set(exId, { name, muscle: muscleOf(s) });
     }
