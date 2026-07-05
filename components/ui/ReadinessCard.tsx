@@ -110,7 +110,10 @@ const styles = StyleSheet.create({
   glow: { position: 'absolute', top: -20, left: -20, width: 80, height: 80, borderRadius: 40 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
   label: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.6, textTransform: 'uppercase' },
-  center: { alignItems: 'center', justifyContent: 'center', marginTop: 2, minHeight: 116 },
+  // flex:1 so the content fills the card height the taller FUEL sibling sets
+  // (the row stretches both), centering the state vertically instead of leaving
+  // dead space below it. minHeight keeps a floor if the card ever isn't stretched.
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 2, minHeight: 116 },
   ringLabel: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   score: { fontSize: 28, fontWeight: FontWeight.black, letterSpacing: -1 },
   pill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full, marginTop: 6 },
