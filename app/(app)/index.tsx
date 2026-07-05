@@ -15,7 +15,6 @@ import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
-import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
