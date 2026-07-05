@@ -6,23 +6,20 @@ name: Deploy to app stores
 #
 # Paths filter: backend and docs changes don't alter the app binary, so they
 # shouldn't burn a build + store-submission cycle. Everything else triggers.
-# TEMPORARILY PAUSED (2026-07-04): the push trigger is disabled while the
-# set-types, diet, and holistic feature branches merge into main one after
-# another. Re-enable it after the last merge, then run one manual dispatch.
 on:
-  # push:
-  #   branches:
-  #     - main
-  #   paths:
-  #     - '**'
-  #     - '!supabase/**'        # DB migrations + edge functions deploy separately
-  #     - '!.planning/**'
-  #     - '!.github/**'
-  #     - '!.claude/**'
-  #     - '!.eas/**'            # editing workflows shouldn't rebuild the app
-  #     - '!store-assets/**'
-  #     - '!sketches/**'
-  #     - '!**/*.md'
+  push:
+    branches:
+      - main
+    paths:
+      - '**'
+      - '!supabase/**'        # DB migrations + edge functions deploy separately
+      - '!.planning/**'
+      - '!.github/**'
+      - '!.claude/**'
+      - '!.eas/**'            # editing workflows shouldn't rebuild the app
+      - '!store-assets/**'
+      - '!sketches/**'
+      - '!**/*.md'
   workflow_dispatch: {}
 
 jobs:
