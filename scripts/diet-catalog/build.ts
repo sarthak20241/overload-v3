@@ -304,16 +304,31 @@ function emitSeedSql(rows: FoodRow[]) {
       .map((s) => `('${esc(s.label)}',${s.grams},${s.is_default},'${s.source}',${s.seq})`)
       .join(', ');
     // do update (not do nothing) so the CTE still returns the id for an
-    // already-seeded food — otherwise the food_servings insert below is skipped
-    // on every rerun and servings never converge. name = excluded.name is a
-    // no-op (the conflict is on lower(name)); it just surfaces the existing row.
+    // already-seeded food (otherwise the food_servings insert below is skipped on
+    // every rerun) AND so regenerated data converges: core macros + descriptors
+    // are overwritten (always present in the seed), while the nullable extended
+    // nutrients use coalesce(existing, excluded) — fill a missing value without
+    // clobbering enrichment a later source (e.g. ingest-usda) already applied.
     // Assumes a food's default serving label is stable across regenerations; a
     // same-label upsert can't trip uq_food_servings_default.
     return `with f as (
   insert into public.foods
     (name, food_category, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, brand, barcode, source)
   values ('${esc(r.name)}','${r.food_category}','${r.base_unit}',${r.kcal},${r.protein_g},${r.carb_g},${r.fat_g},${r.fiber_g},${r.sugar_g},${r.sat_fat_g},${r.sodium_mg},${sqlStr(r.brand)},${sqlStr(r.barcode)},'${r.source}')
-  on conflict (lower(name)) where created_by is null do update set name = excluded.name
+  on conflict (lower(name)) where created_by is null do update set
+    food_category = excluded.food_category,
+    base_unit     = excluded.base_unit,
+    kcal          = excluded.kcal,
+    protein_g     = excluded.protein_g,
+    carb_g        = excluded.carb_g,
+    fat_g         = excluded.fat_g,
+    fiber_g       = coalesce(public.foods.fiber_g,   excluded.fiber_g),
+    sugar_g       = coalesce(public.foods.sugar_g,   excluded.sugar_g),
+    sat_fat_g     = coalesce(public.foods.sat_fat_g, excluded.sat_fat_g),
+    sodium_mg     = coalesce(public.foods.sodium_mg, excluded.sodium_mg),
+    brand         = excluded.brand,
+    barcode       = excluded.barcode,
+    source        = excluded.source
   returning id
 )
 insert into public.food_servings (food_id, label, grams, is_default, source, seq)
