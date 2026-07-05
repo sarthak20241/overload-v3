@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
-import { Tabs, useRouter, Redirect } from 'expo-router';
+import { Tabs, useRouter, Redirect, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   Easing,
@@ -240,6 +240,12 @@ export default function AppLayout() {
   const [modalOpen, setModalOpen] = useState(false);
   const { isSignedIn, isLoaded } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
+  const pathname = usePathname();
+  // The nutrition day view is a focused full screen with its own bottom input
+  // (Journable model). Hide the workout tab bar + workout overlays there so the
+  // input is reachable and the screen reads as its own destination.
+  const hideWorkoutChrome =
+    pathname === '/nutrition' || pathname === '/food-search' || pathname === '/food-detail';
 
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore
@@ -277,6 +283,15 @@ export default function AppLayout() {
         */}
         <Tabs.Screen name="exercises" options={{ href: null }} />
         {/*
+          Nutrition day view (diet tracking). Hidden from the bottom nav for now —
+          reached via a dashboard card / deep-link (`/nutrition`) until the nav
+          placement lands post-design-polish.
+        */}
+        <Tabs.Screen name="nutrition" options={{ href: null }} />
+        {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
+        <Tabs.Screen name="food-search" options={{ href: null }} />
+        <Tabs.Screen name="food-detail" options={{ href: null }} />
+        {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link
           (`/admin/research`) or the "Admin Tools" button rendered for
@@ -286,9 +301,11 @@ export default function AppLayout() {
         <Tabs.Screen name="admin/research" options={{ href: null }} />
       </Tabs>
 
-      <BottomNav onOpenModal={() => setModalOpen(true)} />
-      <StartWorkoutModal visible={modalOpen} onClose={() => setModalOpen(false)} />
-      <ResumeWorkoutPrompt />
+      {!hideWorkoutChrome && <BottomNav onOpenModal={() => setModalOpen(true)} />}
+      {!hideWorkoutChrome && (
+        <StartWorkoutModal visible={modalOpen} onClose={() => setModalOpen(false)} />
+      )}
+      {!hideWorkoutChrome && <ResumeWorkoutPrompt />}
       <OfflineBanner />
     </>
   );
