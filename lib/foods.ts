@@ -2,7 +2,7 @@
  * Shared food catalog + diet domain types for the macro tracker.
  *
  * CANONICAL MODEL (matches USDA / Open Food Facts / FatSecret / Cronometer and the
- * DB after migration 0051): each food stores its nutrients ONCE per 100 base-units
+ * DB after migration 0065): each food stores its nutrients ONCE per 100 base-units
  * (`base_unit` = 'g' for solids, 'ml' for liquids). Portions are a SEPARATE list
  * (`servings`): each is a label mapped to a weight in the food's base unit, e.g.
  * egg -> ["100 g", "1 large egg" = 50 g], dal -> ["1 katori" = 150 g, "100 g"].
@@ -22,7 +22,7 @@
 
 import { MASS_UNITS, VOLUME_UNITS, massToGrams, volumeToMl } from './units';
 
-// ── Enums (mirror the DB CHECK constraints in migrations 0046 + 0051) ────────
+// ── Enums (mirror the DB CHECK constraints in migrations 0046 + 0065) ────────
 
 export type FoodCategory =
   | 'protein' | 'legume' | 'dairy' | 'grain' | 'vegetable' | 'fruit' | 'fat_oil'
@@ -55,14 +55,19 @@ export interface Nutrients {
   protein_g: number;
   carb_g: number;
   fat_g: number;
-  /** Extended (good-to-have). Optional on definitions; default 0. */
-  fiber_g?: number;
-  sugar_g?: number;
-  sat_fat_g?: number;
-  sodium_mg?: number;
+  /** Extended (good-to-have). Optional on definitions; null = genuinely unknown
+   *  (distinct from a real 0), preserved through logging (migrations 0066/0069). */
+  fiber_g?: number | null;
+  sugar_g?: number | null;
+  sat_fat_g?: number | null;
+  sodium_mg?: number | null;
 }
 
-export const ZERO_NUTRIENTS: Required<Nutrients> = {
+/** Nutrients with every field resolved to a plain number — unknown extended
+ *  values are coerced to 0 for display/math (nutrientsForAmount, sumNutrients). */
+export type ResolvedNutrients = { [K in keyof Required<Nutrients>]: number };
+
+export const ZERO_NUTRIENTS: ResolvedNutrients = {
   kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0,
   fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sodium_mg: 0,
 };
@@ -133,10 +138,10 @@ export interface MealEntry {
   protein_g: number;
   carb_g: number;
   fat_g: number;
-  fiber_g?: number;
-  sugar_g?: number;
-  sat_fat_g?: number;
-  sodium_mg?: number;
+  fiber_g?: number | null;
+  sugar_g?: number | null;
+  sat_fat_g?: number | null;
+  sodium_mg?: number | null;
   position: number;
 }
 
@@ -151,7 +156,7 @@ export interface NutritionTargets {
 // ── Nutrient maths ───────────────────────────────────────────────────────────
 
 /** Nutrients for `amount` base-units of a food (per-100 scaled). Pure; round in UI. */
-export function nutrientsForAmount(food: Nutrients, amount: number): Required<Nutrients> {
+export function nutrientsForAmount(food: Nutrients, amount: number): ResolvedNutrients {
   const f = amount / 100;
   return {
     kcal: food.kcal * f,
@@ -166,8 +171,8 @@ export function nutrientsForAmount(food: Nutrients, amount: number): Required<Nu
 }
 
 /** Sum nutrient rows (e.g. a meal, or a day). */
-export function sumNutrients(rows: Nutrients[]): Required<Nutrients> {
-  return rows.reduce<Required<Nutrients>>((a, m) => ({
+export function sumNutrients(rows: Nutrients[]): ResolvedNutrients {
+  return rows.reduce<ResolvedNutrients>((a, m) => ({
     kcal: a.kcal + m.kcal,
     protein_g: a.protein_g + m.protein_g,
     carb_g: a.carb_g + m.carb_g,

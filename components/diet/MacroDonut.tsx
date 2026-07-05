@@ -45,6 +45,9 @@ export function MacroDonut({ kcal, protein_g, carb_g, fat_g, size = 116, thickne
         <Circle cx={cx} cy={cy} r={r} stroke={C.muted} strokeWidth={thickness} fill="none" />
         {total > 0 &&
           segs.map((s, i) => {
+            // Skip zero-value macros — a floored 0.001 sliver would otherwise
+            // misstate the composition of a pure-fat/protein/carb food.
+            if (s.val <= 0) return null;
             const frac = s.val / total;
             const len = Math.max(frac * circ - gap, 0.001);
             const node = (

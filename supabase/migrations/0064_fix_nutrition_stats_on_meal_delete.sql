@@ -1,4 +1,4 @@
--- 0050: fix user_nutrition_stats orphaned when a meal is deleted.
+-- 0064: fix user_nutrition_stats orphaned when a meal is deleted.
 --
 -- The entry-delete trigger (0049) finds (user, day) via the parent meal, but on a
 -- cascade delete (delete meal -> cascade meal_entries) the parent meal is already

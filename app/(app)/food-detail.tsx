@@ -58,11 +58,16 @@ export default function FoodDetailScreen() {
     if (!food) { setLoadingServ(false); return; }
     let on = true;
     (async () => {
-      const s = await loadServings(supabase, food);
-      if (!on) return;
-      setServings(s);
-      setServingLabel(defaultServing({ ...food, servings: s }).label);
-      setLoadingServ(false);
+      try {
+        const s = await loadServings(supabase, food);
+        if (!on) return;
+        setServings(s);
+        setServingLabel(defaultServing({ ...food, servings: s }).label);
+      } finally {
+        // Always drop the spinner, even if loadServings rejects — otherwise the
+        // serving chips stay in a permanent loading state for this screen.
+        if (on) setLoadingServ(false);
+      }
     })();
     return () => { on = false; };
   }, [food, supabase]);
@@ -102,19 +107,25 @@ export default function FoodDetailScreen() {
   async function add() {
     if (busy || !supabase || qtyNum <= 0) return;
     setBusy(true);
-    const { error } = await logFood(supabase, {
-      mealType: meal,
-      food: { ...food!, servings },
-      servingLabel,
-      quantity: qtyNum,
-    });
-    setBusy(false);
-    if (error) { haptics.warning(); return; }
-    haptics.success();
-    // Return to the day view (MFP: logging a food returns you to the diary). The
-    // (app) group is a Tabs navigator, so navigate() jumps back to the nutrition
-    // tab (dismissTo is Stack-only and no-ops here); it refetches on focus.
-    router.navigate('/nutrition');
+    try {
+      const { error } = await logFood(supabase, {
+        mealType: meal,
+        food: { ...food!, servings },
+        servingLabel,
+        quantity: qtyNum,
+      });
+      if (error) { haptics.warning(); return; }
+      haptics.success();
+      // Return to the day view (MFP: logging a food returns you to the diary). The
+      // (app) group is a Tabs navigator, so navigate() jumps back to the nutrition
+      // tab (dismissTo is Stack-only and no-ops here); it refetches on focus.
+      router.navigate('/nutrition');
+    } catch {
+      haptics.warning();
+    } finally {
+      // Re-enable the button whether the write succeeded, errored, or threw.
+      setBusy(false);
+    }
   }
 
   const s = makeStyles(C);

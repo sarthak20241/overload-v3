@@ -15,9 +15,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { useSupabaseClient } from '@/lib/supabase';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   type MealType, type FoodDef, type FoodServing,
-  nutrientsForAmount, resolveBaseAmount, foodCategoryOf,
+  nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
 } from '@/lib/foods';
 
 type Supa = NonNullable<ReturnType<typeof useSupabaseClient>>;
@@ -72,14 +73,24 @@ function dayKey(): string {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
+/** Cache key scoped to BOTH the signed-in user and the local day, so signing out
+ *  and back in as someone else on the same day can't seed the second session with
+ *  the first user's meals. */
+function cacheKey(userId: string | null): string {
+  return `${userId ?? 'anon'}:${dayKey()}`;
+}
+
 /** Process-lifetime cache of today's grouped entries, so opening the diary paints
  *  instantly from what the dashboard already loaded (no 5s cold re-fetch), then
- *  revalidates silently. Keyed by local day so it never shows stale cross-day data. */
+ *  revalidates silently. Keyed by user + local day so it never bleeds across
+ *  accounts or midnight. */
 let _navCache: { key: string; byMeal: Record<MealType, LoggedEntry[]> } | null = null;
 
 export function useTodayNutrition(): DayData {
   const supabase = useSupabaseClient();
-  const seed = _navCache && _navCache.key === dayKey() ? _navCache.byMeal : null;
+  const { user } = useClerkUser();
+  const key = cacheKey(user?.id ?? null);
+  const seed = _navCache && _navCache.key === key ? _navCache.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   const [loading, setLoading] = useState(!seed);
   const [tick, setTick] = useState(0);
@@ -89,9 +100,9 @@ export function useTodayNutrition(): DayData {
     let cancelled = false;
     (async () => {
       if (!supabase) { setLoading(false); return; }
-      // Only show the loading state on a true cold load; a same-day cache means we
+      // Only show the loading state on a true cold load; a same-key cache means we
       // already painted real numbers, so revalidate silently (no zeros flash).
-      if (!(_navCache && _navCache.key === dayKey())) setLoading(true);
+      if (!(_navCache && _navCache.key === key)) setLoading(true);
       const { start, end } = todayRange();
       const { data: meals } = await supabase
         .from('meals').select('id, meal_type')
@@ -99,7 +110,7 @@ export function useTodayNutrition(): DayData {
       if (cancelled) return;
       if (!meals || meals.length === 0) {
         const empty = emptyByMeal();
-        _navCache = { key: dayKey(), byMeal: empty };
+        _navCache = { key, byMeal: empty };
         setByMeal(empty); setLoading(false); return;
       }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
@@ -119,12 +130,12 @@ export function useTodayNutrition(): DayData {
           carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
         });
       }
-      _navCache = { key: dayKey(), byMeal: grouped };
+      _navCache = { key, byMeal: grouped };
       setByMeal(grouped);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [supabase, tick]);
+  }, [supabase, tick, key]);
 
   // Refetch when the consuming screen regains focus, so the dashboard FUEL card
   // reflects a food logged on the nutrition screen the moment the user returns.
@@ -170,20 +181,40 @@ function rowToPickerFood(d: any): PickerFood {
     food_category: foodCategoryOf(d.food_category),
     base_unit: d.base_unit === 'ml' ? 'ml' : 'g',
     kcal: num(d.kcal), protein_g: num(d.protein_g), carb_g: num(d.carb_g), fat_g: num(d.fat_g),
-    fiber_g: num(d.fiber_g), sugar_g: num(d.sugar_g), sat_fat_g: num(d.sat_fat_g), sodium_mg: num(d.sodium_mg),
+    // Keep null (genuinely unknown) distinct from a real 0 so logging can persist
+    // it instead of collapsing unknown extended nutrients to 0 (migration 0069).
+    fiber_g: d.fiber_g == null ? null : Number(d.fiber_g),
+    sugar_g: d.sugar_g == null ? null : Number(d.sugar_g),
+    sat_fat_g: d.sat_fat_g == null ? null : Number(d.sat_fat_g),
+    sodium_mg: d.sodium_mg == null ? null : Number(d.sodium_mg),
     servings: [],
   };
 }
 
-/** Search the global catalog, relevance-ranked (real foods before branded variants)
- *  via the search_foods_ranked RPC (migration 0054). Empty query returns nothing —
- *  the picker shows Recents for that case (see recentFoods). */
+/** Search the catalog: the bundled FOOD_LIBRARY (Indian staples, always offline)
+ *  merged with the Supabase `foods` table (relevance-ranked via the
+ *  search_foods_ranked RPC, migration 0068), deduped by name with the curated
+ *  bundled matches first. The bundled set is always included, so search still
+ *  works offline or when the RPC fails. Empty query returns nothing — the picker
+ *  shows Recents for that case (see recentFoods). */
 export async function searchCatalog(supabase: Supa | null, query: string): Promise<PickerFood[]> {
   const q = query.trim();
-  if (!q || !supabase) return [];
-  const { data, error } = await supabase.rpc('search_foods_ranked', { q, lim: 40 });
-  if (error || !data) return [];
-  return (data as any[]).map(rowToPickerFood);
+  if (!q) return [];
+  const bundled: PickerFood[] = searchFoods(q);
+  let remote: PickerFood[] = [];
+  if (supabase) {
+    const { data, error } = await supabase.rpc('search_foods_ranked', { q, lim: 40 });
+    if (!error && data) remote = (data as any[]).map(rowToPickerFood);
+  }
+  const seen = new Set<string>();
+  const out: PickerFood[] = [];
+  for (const f of [...bundled, ...remote]) {
+    const name = f.name.trim().toLowerCase();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(f);
+  }
+  return out;
 }
 
 /** The user's recently-logged foods, most recent first, deduped by name — the
@@ -268,6 +299,14 @@ export async function logFood(
 
   const grams = resolveBaseAmount(food, servingLabel, quantity) ?? 100 * quantity;
   const n = nutrientsForAmount(food, grams);
+  // Extended nutrients scale per-100 -> grams while PRESERVING null: an unknown
+  // value on the food stays unknown in the snapshot (meal_entries is nullable as
+  // of 0069) instead of being logged as a real 0.
+  const scaleExt = (per100: number | null | undefined, round0 = false): number | null => {
+    if (per100 == null) return null;
+    const v = per100 * (grams / 100);
+    return round0 ? r0(v) : r1(v);
+  };
   const { count } = await supabase
     .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
 
@@ -279,7 +318,8 @@ export async function logFood(
     serving_unit: servingLabel,
     grams_logged: r1(grams),
     kcal: r0(n.kcal), protein_g: r1(n.protein_g), carb_g: r1(n.carb_g), fat_g: r1(n.fat_g),
-    fiber_g: r1(n.fiber_g), sugar_g: r1(n.sugar_g), sat_fat_g: r1(n.sat_fat_g), sodium_mg: r0(n.sodium_mg),
+    fiber_g: scaleExt(food.fiber_g), sugar_g: scaleExt(food.sugar_g),
+    sat_fat_g: scaleExt(food.sat_fat_g), sodium_mg: scaleExt(food.sodium_mg, true),
     position: count ?? 0,
   });
   return { error: error?.message };

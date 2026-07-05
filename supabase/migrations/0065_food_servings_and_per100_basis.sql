@@ -1,4 +1,4 @@
--- 0051: per-100 nutrient basis + named serving options + extended macros.
+-- 0065: per-100 nutrient basis + named serving options + extended macros.
 --
 -- Adopts the canonical tracker model (USDA FoodData Central / Open Food Facts /
 -- FatSecret / Cronometer): store each food's nutrients ONCE per 100 base-units

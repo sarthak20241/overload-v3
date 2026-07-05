@@ -5,7 +5,7 @@
  * the whole filtered SR Legacy generic catalog (~6.8k foods) into a seed SQL for
  * Supabase `foods` + `food_servings`. It writes ENRICHING UPSERTS: insert new
  * foods, and on a name conflict fill missing extended/micro fields, merge servings,
- * and append the source (see migration 0052). This same upsert shape is what every
+ * and append the source (see migration 0066). This same upsert shape is what every
  * later dataset (OFF, IFCT, INDB) reuses to enrich what USDA laid down.
  *
  * Run:   npx tsx scripts/diet-catalog/ingest-usda.ts
@@ -207,15 +207,38 @@ on conflict (lower(name)) where created_by is null do update set
   sources   = (select array(select distinct e from unnest(public.foods.sources || excluded.sources) e));
 `;
     const servValues = batch.flatMap((r) =>
-      r.servings.map((s) => `('${esc(r.name)}','${esc(s.label)}',${s.grams},${s.is_default},${s.seq})`),
+      r.servings.map((s) => `('${esc(r.name)}','${esc(s.label)}',${s.grams},${s.seq})`),
     ).join(',\n');
+    const batchNames = batch.map((r) => `'${esc(r.name.toLowerCase())}'`).join(', ');
+    const defaultPairs = batch.map((r) => {
+      const def = r.servings.find((s) => s.is_default) ?? r.servings[0];
+      return `('${esc(r.name)}','${esc(def.label)}')`;
+    }).join(',\n');
+    // Servings: converge grams/seq for existing labels and add new ones as
+    // non-default (do update, not do nothing, so reruns actually refresh them).
     sql += `\ninsert into public.food_servings (food_id, label, grams, is_default, source, seq)
-select f.id, v.label, v.grams, v.is_default, 'usda', v.seq
+select f.id, v.label, v.grams, false, 'usda', v.seq
 from (values
 ${servValues}
-) as v(food_name, label, grams, is_default, seq)
+) as v(food_name, label, grams, seq)
 join public.foods f on lower(f.name) = lower(v.food_name) and f.created_by is null
-on conflict (food_id, lower(label)) do nothing;
+on conflict (food_id, lower(label)) do update set grams = excluded.grams, seq = excluded.seq;
+`;
+    // Exactly one default serving per food (uq_food_servings_default): clear then
+    // set, in two statements so a changed default (100 g on a first load without
+    // food_portion.csv -> a real portion on a later rerun) can't momentarily
+    // leave two defaults and trip the partial unique index.
+    sql += `\nupdate public.food_servings s set is_default = false
+from public.foods f
+where s.food_id = f.id and f.created_by is null and s.is_default
+  and lower(f.name) in (${batchNames});
+
+update public.food_servings s set is_default = true
+from (values
+${defaultPairs}
+) as d(food_name, label)
+join public.foods f on lower(f.name) = lower(d.food_name) and f.created_by is null
+where s.food_id = f.id and lower(s.label) = lower(d.label);
 `;
   }
 

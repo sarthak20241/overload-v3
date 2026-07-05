@@ -1,4 +1,4 @@
--- 0053: add the owner write policies that 0049 forgot on user_nutrition_stats.
+-- 0067: add the owner write policies that 0049 forgot on user_nutrition_stats.
 --
 -- 0049 created user_nutrition_stats with ONLY an owner-read (SELECT) policy,
 -- unlike user_lift_stats / user_volume_stats (migration 0008) which also carry

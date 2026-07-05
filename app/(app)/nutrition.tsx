@@ -29,6 +29,17 @@ const fmtK = (n: number) => Math.round(n).toLocaleString();
 const calCaption = (eaten: number, goal: number) =>
   `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 
+/** The meal a quick-add should default to when opened from the global logger
+ *  (not a specific meal row). Infer from the clock instead of always seeding
+ *  Snacks, so a morning quick-add lands in Breakfast. */
+function mealForNow(): MealType {
+  const h = new Date().getHours();
+  if (h >= 4 && h < 11) return 'breakfast';
+  if (h >= 11 && h < 16) return 'lunch';
+  if (h >= 16 && h < 22) return 'dinner';
+  return 'snack';
+}
+
 /** Open the full-screen food search targeting a meal (MFP model, not a drawer).
  *  The target meal goes through setLogMeal (a module store the screens read on
  *  focus) because food-search is a retained Tabs screen and router params went
@@ -150,7 +161,7 @@ export default function NutritionScreen() {
       {/* Bottom logging bar — opens the full-screen search. Becomes the Drona NL
           input once the parse edge fn lands. */}
       <View style={[s.inputWrap, { paddingBottom: insets.bottom + 12 }]}>
-        <Pressable style={s.input} onPress={() => openSearch('snack')}>
+        <Pressable style={s.input} onPress={() => openSearch(mealForNow())}>
           <Feather name="plus-circle" size={16} color={C.accentText} />
           <Text style={[s.inputText, { color: C.textDim }]}>Tell Drona what you ate</Text>
           <Feather name="camera" size={16} color={C.textSecondary} style={{ marginHorizontal: 4 }} />

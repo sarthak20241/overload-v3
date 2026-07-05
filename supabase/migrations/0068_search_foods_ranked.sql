@@ -1,4 +1,4 @@
--- 0054: relevance-ranked food search RPC.
+-- 0068: relevance-ranked food search RPC.
 --
 -- The picker previously did a plain `name ilike '%q%'` + alphabetical order, so
 -- searching "almond" surfaced "Candies, ALMOND JOY..." long before "Nuts,

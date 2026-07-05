@@ -1,4 +1,4 @@
--- 0052: make the catalog enrichment-ready for ingesting datasets one by one.
+-- 0066: make the catalog enrichment-ready for ingesting datasets one by one.
 --
 -- We ingest sources in sequence (USDA, then OFF, then IFCT/INDB). When a later,
 -- richer source matches a food we already have, we want to fill missing fields,

@@ -341,10 +341,14 @@ design-polish. P4 (card) and P5 (tab) are the polish-gated surfaces.
 
 ## Migration numbering
 
-Migrations **0046 to 0051 are APPLIED to live prod** (rjmmslierxhvwdjgjilb) via Supabase MCP: 0046 foods,
-0047 meals+meal_entries, 0048 nutrition_targets, 0049 user_nutrition_stats, 0050 meal-delete rollup fix,
-0051 per-100 basis + food_servings + extended nutrients. Next free number is **0052**. Verify with
-`ls supabase/migrations/` before applying, and apply via Supabase MCP only.
+All diet migrations are **APPLIED to live prod** (rjmmslierxhvwdjgjilb) via Supabase MCP. The files were
+renumbered when this branch merged behind the exercise-set-types work (which occupies 0043–0063 on main),
+so the colliding files 0050–0054 moved to **0064–0068**; live is unaffected (migrations apply under
+timestamp versions, not the file prefix). Current diet files: 0046 foods, 0047 meals+meal_entries,
+0048 nutrition_targets, 0049 user_nutrition_stats, 0064 meal-delete rollup fix, 0065 per-100 basis +
+food_servings + extended nutrients, 0066 enrichment nullable + sources, 0067 nutrition-stats owner write
+policies, 0068 ranked food search, 0069 diet CHECK constraints + nullable meal_entries snapshot. Next free
+number is **0070**. Verify with `ls supabase/migrations/` before applying, and apply via Supabase MCP only.
 
 ---
 

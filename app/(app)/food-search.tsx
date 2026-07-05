@@ -69,8 +69,14 @@ export default function FoodSearchScreen() {
     setSearching(true);
     let cancelled = false;
     const t = setTimeout(async () => {
-      const r = await searchCatalog(supabase, qq);
-      if (!cancelled) { setResults(r); setSearching(false); }
+      try {
+        const r = await searchCatalog(supabase, qq);
+        if (!cancelled) setResults(r);
+      } finally {
+        // Always clear the spinner, even if searchCatalog rejects — otherwise
+        // the search stays stuck "searching…" for the rest of the session.
+        if (!cancelled) setSearching(false);
+      }
     }, 220);
     return () => { cancelled = true; clearTimeout(t); };
   }, [query, supabase]);
@@ -94,21 +100,27 @@ export default function FoodSearchScreen() {
   async function quickAdd(food: PickerFood, key: string) {
     if (!supabase || busyKey) return;
     setBusyKey(key);
-    const ds = defaultServing(food);
-    const { error } = await logFood(supabase, {
-      mealType: meal,
-      food: { ...food, servings: food.servings.length ? food.servings : [ds] },
-      servingLabel: ds.label,
-      quantity: 1,
-    });
-    setBusyKey(null);
-    if (error) { haptics.warning(); return; }
-    haptics.success();
-    setToast(`Added to ${labelOf(meal)}`);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 1600);
-    const r = await recentFoods(supabase, 20);
-    setRecents(r);
+    try {
+      const ds = defaultServing(food);
+      const { error } = await logFood(supabase, {
+        mealType: meal,
+        food: { ...food, servings: food.servings.length ? food.servings : [ds] },
+        servingLabel: ds.label,
+        quantity: 1,
+      });
+      if (error) { haptics.warning(); return; }
+      haptics.success();
+      setToast(`Added to ${labelOf(meal)}`);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(null), 1600);
+      const r = await recentFoods(supabase, 20);
+      setRecents(r);
+    } catch {
+      haptics.warning();
+    } finally {
+      // Always unlock the row, even if logFood/recentFoods rejects.
+      setBusyKey(null);
+    }
   }
 
   const s = makeStyles(C);
