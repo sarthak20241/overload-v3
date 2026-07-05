@@ -53,6 +53,7 @@ export async function loadReadiness(
   const { data, error } = await supabase
     .from('daily_metrics')
     .select('metric_date, metric_type, value')
+    .eq('user_id', userId)
     .in('metric_type', RECOVERY_TYPES as unknown as string[])
     .gte('metric_date', since)
     .lte('metric_date', today);
@@ -69,7 +70,7 @@ export async function loadReadiness(
     else if (baseline[r.metric_type]) baseline[r.metric_type].push(v);
   }
 
-  const acuteLoad = await loadAcuteLoad(supabase, today);
+  const acuteLoad = await loadAcuteLoad(supabase, userId, today);
 
   return computeReadiness({
     today: {
@@ -93,6 +94,7 @@ export async function loadReadiness(
  */
 async function loadAcuteLoad(
   supabase: SupabaseClient,
+  userId: string,
   today: string,
 ): Promise<{ last7dSets: number; typicalWeeklySets: number } | null> {
   try {
@@ -104,6 +106,7 @@ async function loadAcuteLoad(
     const { data, error } = await supabase
       .from('workouts')
       .select('started_at, workout_sets(count)')
+      .eq('user_id', userId)
       .gte('started_at', since28);
     if (error || !data) return null;
     let last7 = 0;

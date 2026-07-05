@@ -94,7 +94,10 @@ export const healthConnectAdapter: HealthAdapter = {
         })) as ReadonlyArray<{ startTime: string; result: Record<string, unknown> }>;
         for (const g of groups) {
           const v = extract(g.result);
-          if (v == null || !Number.isFinite(v) || v === 0) continue;
+          // Skip only missing/invalid readings, not a legitimate 0 — a real
+          // 0-step or 0-active-energy day should record as 0, otherwise it reads
+          // as a sync gap in "Your signals" instead of a real sedentary day.
+          if (v == null || !Number.isFinite(v)) continue;
           out.push({ type: metric, date: localISO(new Date(g.startTime)), value: Math.round(v), source: 'health_connect' });
         }
       } catch {
