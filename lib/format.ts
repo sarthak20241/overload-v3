@@ -22,3 +22,40 @@ export function formatWeight(kg: number): string {
   const v = Math.round(kg * 10) / 10;
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
+
+// ── Phase A axes: duration (seconds) and distance (meters) ──────────────────
+
+/** Seconds -> "m:ss" (or "h:mm:ss" past an hour). Display + done-row cells. */
+export function formatDuration(totalSeconds: number | null | undefined): string {
+  const s = Math.max(0, Math.round(totalSeconds ?? 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+/** Parse a duration field. Accepts "m:ss", "h:mm:ss", or a plain seconds count. */
+export function parseDuration(input: string): number {
+  const t = (input ?? '').trim();
+  if (!t) return 0;
+  if (t.includes(':')) {
+    const parts = t.split(':').map((p) => Number.parseInt(p, 10));
+    if (parts.some((p) => !Number.isFinite(p) || p < 0)) return 0;
+    return parts.reduce((acc, p) => acc * 60 + p, 0);
+  }
+  return Math.max(0, parseInt(t, 10) || 0);
+}
+
+/** Meters -> km string, trimming trailing zeros ("5", "1.5", "0.42"). */
+export function formatDistanceKm(meters: number | null | undefined): string {
+  const km = Math.max(0, meters ?? 0) / 1000;
+  const v = Math.round(km * 100) / 100;
+  return Number.isInteger(v) ? String(v) : String(v);
+}
+
+/** Parse a km field into meters (stored SI). */
+export function parseDistanceKm(input: string): number {
+  const km = parseFloat((input ?? '').trim());
+  return Number.isFinite(km) && km > 0 ? Math.round(km * 1000) : 0;
+}

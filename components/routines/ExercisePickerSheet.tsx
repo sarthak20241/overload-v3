@@ -6,21 +6,24 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, BackHandler, Pressable, ScrollView, Keyboard, Platform,
-  useWindowDimensions,
+  useWindowDimensions, Image,
 } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Feather } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises } from '@/lib/exercises';
-import type { ExerciseDef } from '@/lib/exercises';
+import {
+  EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises,
+  METRIC_TYPES, metricTypeDef, metricTypeOf, DEFAULT_METRIC_TYPE,
+} from '@/lib/exercises';
+import type { ExerciseDef, MetricType } from '@/lib/exercises';
 import { useSupabaseClient, isSupabaseConfigured } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
-import { hydrateCache, readCache } from '@/lib/localCache';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { saveLocalCustomExercise, type CachedExercise } from '@/lib/exerciseResolve';
 
 // Custom exercises can be tagged beyond the library's lifting groups — the
@@ -39,6 +42,13 @@ const MAX_CUSTOM_SETS = 20;
 let customExercisesCache: { userId: string; rows: ExerciseDef[]; at: number } | null = null;
 const CUSTOM_CACHE_TTL_MS = 30_000;
 
+// Module cache of the GLOBAL catalog (the ~800 DB library rows, created_by null).
+// Globals are identical for every user, so this isn't keyed by user. The picker
+// reads this instead of the static EXERCISE_LIBRARY; the static list is only the
+// offline cold-start seed (hybrid). Longer TTL — the global catalog rarely changes.
+let globalCatalogCache: { rows: ExerciseDef[]; at: number } | null = null;
+const GLOBAL_CACHE_TTL_MS = 10 * 60_000;
+
 // Drop the cache after a mutation elsewhere (e.g. the My Exercises screen
 // renames or deletes a custom) so the picker can't serve the stale list for
 // the rest of the TTL.
@@ -50,7 +60,7 @@ export function invalidateCustomExercisesCache() {
 // the FlatList keys by name and the library is always appended, so a custom
 // named after a library exercise would otherwise render twice.
 function dedupeAgainstLibrary(
-  rows: { name: string; muscle_group: string; category: string }[]
+  rows: { name: string; muscle_group: string; category: string; metric_type?: string }[]
 ): ExerciseDef[] {
   const seen = new Set(EXERCISE_LIBRARY.map(e => e.name.toLowerCase()));
   const own: ExerciseDef[] = [];
@@ -58,7 +68,12 @@ function dedupeAgainstLibrary(
     const key = row.name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    own.push({ name: row.name, muscle_group: row.muscle_group, category: row.category });
+    own.push({
+      name: row.name,
+      muscle_group: row.muscle_group,
+      category: row.category,
+      metric_type: metricTypeOf(row),
+    });
   }
   return own;
 }
@@ -92,9 +107,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const [search, setSearch] = useState('');
   const [muscleFilter, setMuscleFilter] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
+  // Sub-screen: the "Select Exercise Type" card list, opened from the Type row.
+  const [showTypePicker, setShowTypePicker] = useState(false);
   const [customName, setCustomName] = useState('');
   const [customMuscle, setCustomMuscle] = useState('Other');
   const [customCategory, setCustomCategory] = useState('Other');
+  const [customType, setCustomType] = useState<MetricType>(DEFAULT_METRIC_TYPE);
   const [customSets, setCustomSets] = useState('3');
   const [customRepsMin, setCustomRepsMin] = useState('8');
   const [customRepsMax, setCustomRepsMax] = useState('12');
@@ -120,6 +138,10 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     const cached = customExercisesCache;
     return !isGuest && cached && cached.userId === userId ? cached.rows : [];
   });
+  // The DB global catalog (~800 rows). Seeded from the module cache; revalidated
+  // below. When non-empty it REPLACES the static EXERCISE_LIBRARY as the picker's
+  // base list (see the `library` memo).
+  const [globalCatalog, setGlobalCatalog] = useState<ExerciseDef[]>(() => globalCatalogCache?.rows ?? []);
   useEffect(() => {
     if (!visible) return;
     // Guest sessions never touch the signed-in cache: read the local store
@@ -151,7 +173,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       try {
         const { data, error } = await supabase
           .from('exercises')
-          .select('name, muscle_group, category')
+          .select('name, muscle_group, category, metric_type')
           .not('created_by', 'is', null)
           .order('created_at', { ascending: false });
         if (error) throw error;
@@ -161,7 +183,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
         const serverNames = new Set((data as any[]).map((r) => String(r.name).toLowerCase()));
         const localCustoms = (readCache<CachedExercise[]>('exercises', userId) ?? [])
           .filter((r) => typeof r.id === 'string' && r.id.startsWith('local-ex-') && !serverNames.has(r.name.toLowerCase()))
-          .map((r) => ({ name: r.name, muscle_group: r.muscle_group, category: r.category }));
+          .map((r) => ({ name: r.name, muscle_group: r.muscle_group, category: r.category, metric_type: r.metric_type }));
         const own = dedupeAgainstLibrary([...localCustoms, ...data]);
         customExercisesCache = { userId, rows: own, at: Date.now() };
         setCustomExercises(own);
@@ -172,22 +194,73 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     return () => { cancelled = true; };
   }, [visible, isGuest, userId]);
 
-  // Customs list first so they're the first thing seen on open.
-  const library = useMemo(
-    () => [...customExercises, ...EXERCISE_LIBRARY],
-    [customExercises]
-  );
+  // Global catalog (created_by null) — the DB-backed library. Cache-first, then
+  // revalidate. Guests never fetch (no session): they fall back to the static
+  // EXERCISE_LIBRARY via the `library` memo.
+  useEffect(() => {
+    if (!visible || isGuest || !isSupabaseConfigured || !userId) return;
+    if (globalCatalogCache && Date.now() - globalCatalogCache.at < GLOBAL_CACHE_TTL_MS) {
+      setGlobalCatalog(globalCatalogCache.rows);
+      return; // module cache fresh — skip refetch
+    }
+    let cancelled = false;
+    (async () => {
+      await hydrateCache(userId);
+      const cached = readCache<ExerciseDef[]>('catalog', userId);
+      if (cached?.length) setGlobalCatalog(cached);
+      try {
+        const { data, error } = await supabase
+          .from('exercises')
+          .select('name, muscle_group, category, metric_type, image_urls')
+          .is('created_by', null)
+          .order('name', { ascending: true });
+        if (error) throw error;
+        if (cancelled || !data) return;
+        const rows: ExerciseDef[] = (data as any[]).map((r) => ({
+          name: r.name,
+          muscle_group: r.muscle_group,
+          category: r.category,
+          metric_type: metricTypeOf(r),
+          image_urls: r.image_urls ?? [],
+        }));
+        globalCatalogCache = { rows, at: Date.now() };
+        writeCache('catalog', userId, rows);
+        setGlobalCatalog(rows);
+      } catch {
+        // Offline — keep the cache-seeded catalog (or the static seed downstream).
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [visible, isGuest, userId]);
+
+  // Customs first, then the catalog base. Base = the DB global catalog once
+  // loaded, else the static EXERCISE_LIBRARY (offline cold-start / guests).
+  // Deduped by name (customs win) so a custom named like a global — or the dirty
+  // duplicate global rows — never collide on the FlatList key.
+  const library = useMemo(() => {
+    const base = (!isGuest && globalCatalog.length > 0) ? globalCatalog : EXERCISE_LIBRARY;
+    const merged = [...customExercises, ...base];
+    const seen = new Set<string>();
+    const out: ExerciseDef[] = [];
+    for (const e of merged) {
+      const k = e.name.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(e);
+    }
+    return out;
+  }, [customExercises, globalCatalog, isGuest]);
   const customNames = useMemo(
     () => new Set(customExercises.map(e => e.name.toLowerCase())),
     [customExercises]
   );
-  // Customs can be tagged Cardio/Other, which aren't library filter pills —
-  // surface those groups so filtered customs stay reachable.
+  // Customs (Cardio/Other) and catalog rows mapped to "Other" aren't in the base
+  // filter pills — surface any extra groups present so those rows stay reachable.
   const muscleOptions = useMemo(() => {
-    const extras = [...new Set(customExercises.map(e => e.muscle_group))]
+    const extras = [...new Set(library.map(e => e.muscle_group))]
       .filter(mg => !(MUSCLE_GROUPS as readonly string[]).includes(mg));
     return [...MUSCLE_GROUPS, ...extras];
-  }, [customExercises]);
+  }, [library]);
   useEffect(() => {
     if (!visible) { setKbHeight(0); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -210,6 +283,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       setSearch('');
       setMuscleFilter(null);
       setShowCustom(false);
+      setShowTypePicker(false);
       setCustomName('');
       Keyboard.dismiss();
     }
@@ -231,6 +305,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     setCustomName(search.trim());
     setCustomMuscle('Other');
     setCustomCategory('Other');
+    setCustomType(DEFAULT_METRIC_TYPE);
     setCustomSets('3');
     setCustomRepsMin('8');
     setCustomRepsMax('12');
@@ -247,31 +322,34 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     const repsMin = Math.max(1, parseInt(customRepsMin, 10) || 8);
     const repsMax = Math.max(repsMin, parseInt(customRepsMax, 10) || repsMin);
     const restSeconds = Math.max(0, parseInt(customRest, 10) || 90);
+    const key = trimmed.toLowerCase();
+    const details = { sets, repsMin, repsMax, restSeconds };
+    // If the name already lives in the merged library (customs + DB catalog +
+    // static seed), hand back that canonical def. Emitting a fresh one here
+    // would shadow the catalog row with a possibly different metric_type and
+    // race the backend's name-uniqueness on insert.
+    const existing = library.find(e => e.name.toLowerCase() === key);
+    if (existing) {
+      onSelect(existing, details);
+      return;
+    }
     // Optimistically remember the new custom (state + cache) so it shows on
     // the next open even before the consumer's background insert lands.
-    const key = trimmed.toLowerCase();
-    const exists = customExercises.some(e => e.name.toLowerCase() === key)
-      || EXERCISE_LIBRARY.some(e => e.name.toLowerCase() === key);
-    if (!exists) {
-      const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory };
-      setCustomExercises(prev => [row, ...prev]);
-      if (isGuest) {
-        // No Supabase insert happens downstream for guests — persist to the
-        // local store so the custom survives restarts (dedupes internally).
-        addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory });
-      } else {
-        // Persist to the durable 'exercises' cache so the custom is reusable
-        // offline (picker + My Exercises) before it syncs to the server.
-        saveLocalCustomExercise(userId, { name: trimmed, muscle_group: customMuscle, category: customCategory });
-        if (customExercisesCache && customExercisesCache.userId === userId) {
-          customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
-        }
+    const row: ExerciseDef = { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType };
+    setCustomExercises(prev => [row, ...prev]);
+    if (isGuest) {
+      // No Supabase insert happens downstream for guests — persist to the
+      // local store so the custom survives restarts (dedupes internally).
+      addGuestExercise({ name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType });
+    } else {
+      // Persist to the durable 'exercises' cache so the custom is reusable
+      // offline (picker + My Exercises) before it syncs to the server.
+      saveLocalCustomExercise(userId, { name: trimmed, muscle_group: customMuscle, category: customCategory, metric_type: customType });
+      if (customExercisesCache && customExercisesCache.userId === userId) {
+        customExercisesCache = { ...customExercisesCache, rows: [row, ...customExercisesCache.rows] };
       }
     }
-    onSelect(
-      { name: trimmed, muscle_group: customMuscle, category: customCategory },
-      { sets, repsMin, repsMax, restSeconds }
-    );
+    onSelect(row, details);
   };
 
   const resetAndClose = () => {
@@ -286,13 +364,14 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   useEffect(() => {
     if (!visible) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (showTypePicker) { setShowTypePicker(false); return true; }
       if (showCustom) { setShowCustom(false); return true; }
       resetAndClose();
       return true;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, showCustom]);
+  }, [visible, showCustom, showTypePicker]);
 
   return (
     <Portal>
@@ -323,20 +402,68 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
 
             {/* Header */}
             <View style={s.header}>
-              <View>
-                <Text style={[s.title, { color: C.foreground }]}>
-                  {showCustom ? 'Create Exercise' : 'Add Exercise'}
-                </Text>
-                <Text style={[s.subtitle, { color: C.mutedFg }]}>
-                  {showCustom ? 'Set name, muscle group, sets & reps' : `${library.length} exercises available`}
-                </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1 }}>
+                {showTypePicker && (
+                  <TouchableOpacity onPress={() => setShowTypePicker(false)} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
+                    <Feather name="arrow-left" size={15} color={C.foreground} />
+                  </TouchableOpacity>
+                )}
+                <View style={{ flexShrink: 1 }}>
+                  <Text style={[s.title, { color: C.foreground }]}>
+                    {showTypePicker ? 'Exercise Type' : showCustom ? 'Create Exercise' : 'Add Exercise'}
+                  </Text>
+                  <Text style={[s.subtitle, { color: C.mutedFg }]}>
+                    {showTypePicker
+                      ? 'How is this exercise measured?'
+                      : showCustom
+                        ? 'Set name, muscle group, sets & reps'
+                        : `${library.length} exercises available`}
+                  </Text>
+                </View>
               </View>
               <TouchableOpacity onPress={resetAndClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
                 <Feather name="x" size={15} color={C.foreground} />
               </TouchableOpacity>
             </View>
 
-            {showCustom ? (
+            {showTypePicker ? (
+              /* ── Select Exercise Type — 8 cards, one per measurement type.
+                    Picking one sets customType and returns to the custom form. ── */
+              <ScrollView
+                style={{ flexGrow: 0, flexShrink: 1 }}
+                contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xl, gap: 8 }}
+                showsVerticalScrollIndicator
+                keyboardShouldPersistTaps="handled"
+              >
+                {METRIC_TYPES.map((mt) => {
+                  const active = customType === mt.value;
+                  return (
+                    <TouchableOpacity
+                      key={mt.value}
+                      onPress={() => { setCustomType(mt.value); setShowTypePicker(false); }}
+                      activeOpacity={0.7}
+                      style={[
+                        s.typeCard,
+                        { borderColor: active ? Colors.primary : C.border, backgroundColor: active ? C.primarySubtle : C.muted },
+                      ]}
+                    >
+                      <View style={[s.typeIcon, { backgroundColor: active ? Colors.primary : C.elevated }]}>
+                        <MaterialCommunityIcons
+                          name={mt.icon as any}
+                          size={20}
+                          color={active ? Colors.primaryFg : C.mutedFg}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[s.typeCardTitle, { color: C.foreground }]}>{mt.label}</Text>
+                        <Text style={[s.typeCardSub, { color: C.textMuted }]}>{mt.sublabel}</Text>
+                      </View>
+                      {active && <Feather name="check" size={18} color={Colors.primary} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            ) : showCustom ? (
               /* ── Custom Exercise Form — mirrors the active workout screen's
                     "Create Exercise" sheet: wrapped chip rows, set/rep/rest
                     targets, pinned save button. ── */
@@ -402,6 +529,23 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                       );
                     })}
                   </View>
+
+                  {/* Type — opens the Select Exercise Type sub-screen */}
+                  <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>TYPE</Text>
+                  <TouchableOpacity
+                    onPress={() => { Keyboard.dismiss(); setShowTypePicker(true); }}
+                    activeOpacity={0.7}
+                    style={[s.typeRow, { backgroundColor: C.muted, borderColor: C.border }]}
+                  >
+                    <View style={[s.typeRowIcon, { backgroundColor: C.elevated }]}>
+                      <MaterialCommunityIcons name={metricTypeDef(customType).icon as any} size={16} color={C.mutedFg} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.typeRowLabel, { color: C.foreground }]}>{metricTypeDef(customType).label}</Text>
+                      <Text style={[s.typeRowSub, { color: C.textMuted }]}>{metricTypeDef(customType).sublabel}</Text>
+                    </View>
+                    <Feather name="chevron-right" size={18} color={C.textMuted} />
+                  </TouchableOpacity>
 
                   {/* Sets / Rest */}
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: Spacing.lg }}>
@@ -538,6 +682,13 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                         style={[s.exerciseRow, { borderColor: C.borderSubtle }]}
                         activeOpacity={0.7}
                       >
+                        <View style={[s.thumb, { backgroundColor: C.muted }]}>
+                          {item.image_urls && item.image_urls[0] ? (
+                            <Image source={{ uri: item.image_urls[0] }} style={s.thumbImg} resizeMode="cover" />
+                          ) : (
+                            <MaterialCommunityIcons name={metricTypeDef(item.metric_type).icon as any} size={16} color={C.textMuted} />
+                          )}
+                        </View>
                         <View style={s.exerciseInfo}>
                           <View style={s.exerciseNameRow}>
                             <Text style={[s.exerciseName, { color: C.foreground }]}>{item.name}</Text>
@@ -601,6 +752,15 @@ const s = StyleSheet.create({
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: Radius.full, borderWidth: 1 },
   chipText: { fontSize: 11, fontWeight: FontWeight.semibold },
+  // Type row (in the custom form) + the Select Exercise Type cards.
+  typeRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingVertical: 10, borderRadius: Radius.lg, borderWidth: 1 },
+  typeRowIcon: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  typeRowLabel: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  typeRowSub: { fontSize: FontSize.sm, marginTop: 1 },
+  typeCard: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 14, paddingVertical: 14, borderRadius: Radius.xl, borderWidth: 1 },
+  typeIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  typeCardTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  typeCardSub: { fontSize: FontSize.sm, marginTop: 2 },
   formFooter: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.md, borderTopWidth: 1 },
   formSaveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 48, borderRadius: Radius.xl },
   formSaveBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
@@ -610,6 +770,8 @@ const s = StyleSheet.create({
   filterPill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: Radius.full, borderWidth: 1 },
   filterPillText: { fontSize: 11, fontWeight: FontWeight.semibold },
   exerciseRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1 },
+  thumb: { width: 40, height: 40, borderRadius: 8, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  thumbImg: { width: '100%', height: '100%' },
   exerciseInfo: { flex: 1 },
   exerciseNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   exerciseName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, flexShrink: 1 },

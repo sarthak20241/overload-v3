@@ -40,8 +40,22 @@ const ABOVE_KEYBOARD = 60;
  * @param enabled Pass false while another overlay (a Portal sheet with its own
  *   keyboard handling) is open, so this hook doesn't fight it by scrolling the
  *   now-hidden background scroll.
+ * @param external Optional imperative scroller for a non-ScrollView list (e.g. a
+ *   FlatList / reorderable list). When provided, the focus-lift drives it by
+ *   offset instead of the internal `scrollRef`, so a list that can't accept
+ *   `scrollProps`/`scrollRef` still reuses all the keyboard timing and
+ *   measure-the-focused-field choreography. `getOffset` must return the list's
+ *   current scroll Y; `scrollToOffset` scrolls it to an absolute Y.
  */
-export function useKeyboardAwareScroll(enabled: boolean = true) {
+export interface ExternalScroller {
+  scrollToOffset: (y: number) => void;
+  getOffset: () => number;
+}
+
+export function useKeyboardAwareScroll(
+  enabled: boolean = true,
+  external?: ExternalScroller,
+) {
   const scrollRef = useRef<ScrollView>(null);
   const scrollYRef = useRef(0);
   // Top edge (window Y) of the keyboard while it's up; 0 when it's down.
@@ -50,6 +64,11 @@ export function useKeyboardAwareScroll(enabled: boolean = true) {
   // scroll; consumed by onContentSizeChange or the timeout fallback.
   const pendingScrollRef = useRef(false);
   const [kbHeight, setKbHeight] = useState(0);
+  // Latest external scroller, held in a ref so performScroll keeps a stable
+  // identity (the keyboard listeners depend on it) even as the caller passes a
+  // fresh object each render.
+  const externalRef = useRef(external);
+  externalRef.current = external;
 
   // Lift the currently focused input clear of the keyboard. Android-only and a
   // no-op until the keyboard is up (kbTopRef known); iOS handles itself.
@@ -57,15 +76,20 @@ export function useKeyboardAwareScroll(enabled: boolean = true) {
     if (Platform.OS !== 'android') return;
     const kbTop = kbTopRef.current;
     if (kbTop <= 0) return;
-    const scroll = scrollRef.current;
     const focused = TextInput.State.currentlyFocusedInput?.();
-    if (!scroll || !focused?.measureInWindow) return;
+    if (!focused?.measureInWindow) return;
+    const ext = externalRef.current;
     focused.measureInWindow((_x, y, _w, h) => {
       // How far the field's bottom edge sits below the target line (keyboard top
       // minus the toolbar gap). Positive => scroll up by exactly that much, so
       // the field lands just above the keyboard. Negative => already clear.
       const overlap = y + h + ABOVE_KEYBOARD - kbTop;
-      if (overlap > 0) scroll.scrollTo({ y: scrollYRef.current + overlap, animated: true });
+      if (overlap <= 0) return;
+      if (ext) {
+        ext.scrollToOffset(ext.getOffset() + overlap);
+      } else {
+        scrollRef.current?.scrollTo({ y: scrollYRef.current + overlap, animated: true });
+      }
     });
   }, []);
 

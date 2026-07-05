@@ -79,15 +79,22 @@ const DATA_SCHEMA = `<data_schema>
 You have read-only access to the user's training data via tools (below). Schema reference for the SQL escape valve:
 
 - workouts(id uuid, user_id text, routine_id uuid, name text, started_at timestamptz, finished_at timestamptz, duration_seconds int, total_volume_kg numeric)
-- workout_sets(id uuid, workout_id uuid, exercise_id uuid, weight_kg numeric, reps int, completed boolean, "order" int)
-- exercises(id uuid, name text, muscle_group text, category text)
+- workout_sets(id uuid, workout_id uuid, exercise_id uuid, weight_kg numeric, reps numeric, completed boolean, "order" int, duration_seconds int, distance_m numeric, resistance numeric, set_type text, rpe numeric, is_unilateral boolean, reps_right numeric, rpe_right numeric, weight_kg_right numeric, superset_group int)
+- exercises(id uuid, name text, muscle_group text, category text, metric_type text)
 - routines(id uuid, user_id text, name text, description text, color text, created_at timestamptz)
-- routine_exercises(routine_id uuid, exercise_id uuid, sets int, reps_min int, reps_max int, rest_seconds int, "order" int, note text)
+- routine_exercises(routine_id uuid, exercise_id uuid, sets int, reps_min int, reps_max int, rest_seconds int, "order" int, note text, superset_group int)
 - user_profiles(clerk_user_id text, name text, email text, gender text, height_cm numeric, weight_kg numeric, goal text, experience_level text, training_age_months int, date_of_birth date, weekly_target_sessions int, level int, xp int, streak int)
-- user_lift_stats(user_id text, exercise_id uuid, exercise_name text, muscle_group text, estimated_1rm numeric, top_set_weight numeric, top_set_reps int, last_set_weight numeric, last_set_reps int, last_performed_at timestamptz, sessions_last_28d int)
+- user_lift_stats(user_id text, exercise_id uuid, exercise_name text, muscle_group text, estimated_1rm numeric, top_set_weight numeric, top_set_reps numeric, last_set_weight numeric, last_set_reps numeric, last_performed_at timestamptz, sessions_last_28d int)
 - user_volume_stats(user_id text, muscle_group text, week_start date, total_volume_kg numeric, set_count int)
 
-All rows are filtered to the calling user by RLS — you do not need (and cannot) add user_id filters yourself.
+Reading the newer fields:
+- workout_sets.set_type is one of normal, warmup, dropset, failure, negative (legacy left, right may appear on old rows). WARMUP sets are excluded from working volume, estimated 1RM, and PRs (user_lift_stats and user_volume_stats already exclude them; in raw SQL add "and set_type is distinct from 'warmup'" to match).
+- workout_sets.is_unilateral = true means ONE set trained one side at a time (L+R). It still counts as one set. reps/rpe are the LEFT side and reps_right/rpe_right the RIGHT; weight_kg is the LEFT weight and weight_kg_right the RIGHT (null => same as left). Working volume counts both sides with their own weight: weight_kg*reps + coalesce(weight_kg_right,weight_kg)*coalesce(reps_right,0). is_unilateral is orthogonal to set_type (a set can be e.g. failure AND unilateral).
+- workout_sets.rpe is effort on a 1 to 10 scale. RIR (reps in reserve) = 10 minus rpe. Null means not logged.
+- superset_group (on workout_sets and routine_exercises) groups exercises trained back to back as one superset (rest only after each round). Exercises/sets sharing a non-null value are one group; NULL = a normal standalone exercise. It does not change set counts or volume, only logging order + rest.
+- exercises.metric_type is how the exercise is measured: weight_reps (weight x reps), bodyweight_reps, weighted_bodyweight, assisted_bodyweight, duration (uses duration_seconds), duration_weight, distance_duration (distance_m + duration_seconds), weight_distance, resistance_duration (resistance level + duration_seconds). For non weight_reps types, weight_kg/reps can be 0 and the real work is in duration_seconds/distance_m/resistance.
+
+All rows are filtered to the calling user by RLS, so you do not need (and cannot) add user_id filters yourself.
 </data_schema>`;
 
 const ANSWER_POLICY = `<answer_policy>
@@ -166,7 +173,7 @@ export const COACH_TOOLS: AnthropicTool[] = [
   {
     name: 'coach_get_exercise_history',
     description:
-      'Get the most recent completed sets for a specific exercise. Use this when the user asks about a specific exercise\'s recent history (e.g. "what was my last bench set", "show me my squat progression", "have I been increasing my deadlift").',
+      'Get the most recent completed sets for a specific exercise. Use this when the user asks about a specific exercise\'s recent history (e.g. "what was my last bench set", "show me my squat progression", "have I been increasing my deadlift"). Returns WORKING sets only (warmups excluded), each with set_type, rpe, the exercise metric_type, and the non weight/rep axes (duration_seconds, distance_m, resistance).',
     input_schema: {
       type: 'object',
       properties: {
@@ -203,7 +210,7 @@ export const COACH_TOOLS: AnthropicTool[] = [
   {
     name: 'coach_get_workout_detail',
     description:
-      'Get the full set list for one specific workout, by its UUID. Typically called after coach_get_recent_workouts has yielded an interesting workout id, when the user wants details on that session ("what did I do on yesterday\'s session", "tell me more about my last leg day").',
+      'Get the full set list for one specific workout, by its UUID. Typically called after coach_get_recent_workouts has yielded an interesting workout id, when the user wants details on that session ("what did I do on yesterday\'s session", "tell me more about my last leg day"). Lists EVERY set including warmups (each with set_type, rpe, metric_type, and the duration/distance/resistance axes), plus working_volume_kg which excludes warmups.',
     input_schema: {
       type: 'object',
       properties: {
