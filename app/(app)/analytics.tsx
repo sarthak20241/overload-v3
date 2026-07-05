@@ -21,6 +21,7 @@ import { metricTypeOf, type MetricType } from '@/lib/exercises';
 import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
+import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
@@ -1432,6 +1433,21 @@ export default function AnalyticsScreen() {
   const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
 
+  // Muscle split — moved here from the dashboard (the readiness card took that slot).
+  const muscleData = useMemo(() => {
+    const counts: Record<string, number> = {};
+    workouts.forEach((w) => {
+      (w.workout_sets || []).forEach((s) => {
+        const mg = s.exercises?.muscle_group;
+        if (mg) counts[mg] = (counts[mg] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value, color: Colors.muscle[name] || '#6b7280' }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+  }, [workouts]);
+
   const hasAny = workouts.length > 0 || weightLog.length > 0 || bodyFatLog.length > 0;
 
   if (loading) {
@@ -1562,6 +1578,31 @@ export default function AnalyticsScreen() {
                   progress={weekReps / 500}
                   target="Target: 500/week"
                 />
+              </View>
+            )}
+
+            {/* 3.5 Muscle Split (moved here from the dashboard). */}
+            {muscleData.length > 0 && (
+              <View style={[styles.bigCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+                <View style={[styles.cardGlow, { backgroundColor: Colors.stat.muscles, opacity: 0.04 }]} />
+                <View style={styles.trendHeader}>
+                  <View style={styles.trendHeaderLeft}>
+                    <Feather name="activity" size={14} color={Colors.stat.muscles} />
+                    <Text style={[styles.trendTitle, { color: C.foreground }]}>Muscle Split</Text>
+                  </View>
+                </View>
+                <View style={styles.muscleSplitRow}>
+                  <MiniDonutChart data={muscleData} size={132} thickness={22} gap={2} subColor={C.textMuted} />
+                  <View style={styles.muscleLegend}>
+                    {muscleData.map((m) => (
+                      <View key={m.name} style={styles.muscleLegendRow}>
+                        <View style={[styles.muscleDot, { backgroundColor: m.color }]} />
+                        <Text style={[styles.muscleLegendName, { color: C.foreground }]} numberOfLines={1}>{m.name}</Text>
+                        <Text style={[styles.muscleLegendVal, { color: C.textMuted }]}>{m.value}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
               </View>
             )}
 
@@ -1812,6 +1853,12 @@ const styles = StyleSheet.create({
   trendHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   trendHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   trendTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  muscleSplitRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg, marginTop: Spacing.md },
+  muscleLegend: { flex: 1, gap: 6 },
+  muscleLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  muscleDot: { width: 9, height: 9, borderRadius: 5 },
+  muscleLegendName: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  muscleLegendVal: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   trendLatest: { fontSize: FontSize.base, fontWeight: FontWeight.black },
   trendUnit: { fontSize: 10, fontWeight: FontWeight.medium },
   diffText: { fontSize: 10, fontWeight: FontWeight.bold },

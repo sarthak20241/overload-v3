@@ -59,3 +59,13 @@ export function parseDistanceKm(input: string): number {
   const km = parseFloat((input ?? '').trim());
   return Number.isFinite(km) && km > 0 ? Math.round(km * 1000) : 0;
 }
+
+// ── Holistic tracking: sleep ────────────────────────────────────────────────
+
+/** Sleep is stored in whole minutes. Render as "7h 32m" (or "32m" under an hour). */
+export function formatSleepMinutes(totalMinutes: number | null | undefined): string {
+  const m = Math.max(0, Math.round(totalMinutes ?? 0));
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return h > 0 ? `${h}h ${min}m` : `${min}m`;
+}

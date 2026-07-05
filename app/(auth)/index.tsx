@@ -12,7 +12,6 @@ import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
-import * as AuthSession from 'expo-auth-session';
 import { setGuestMode } from '@/lib/guestMode';
 
 function useWarmUpBrowser() {
@@ -269,7 +268,7 @@ export default function AuthScreen() {
       // Clerk creates the session. Apple OAuth must be enabled in the Clerk
       // Dashboard (Configure → SSO Connections → Apple) and the Services ID
       // configured in Apple Developer Portal.
-      const redirectUrl = AuthSession.makeRedirectUri({ path: 'sso-callback' });
+      const redirectUrl = 'overload://sso-callback';
       const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
         strategy: 'oauth_apple',
         redirectUrl,
@@ -306,9 +305,13 @@ export default function AuthScreen() {
     setGoogleLoading(true);
     setError('');
     try {
-      // No scheme override: lets makeRedirectUri pick `exp://` in Expo Go
-      // and `overload://` in dev/prod builds automatically.
-      const redirectUrl = AuthSession.makeRedirectUri({ path: 'sso-callback' });
+      // Use the exact native-scheme callback that is on Clerk's mobile SSO
+      // allowlist. makeRedirectUri in a dev client can produce an exp://host:port
+      // URL that is NOT allowlisted, which makes Clerk return no external
+      // verification URL ("Missing external verification redirect URL for SSO
+      // flow"). This app only ships as a dev client / standalone build (native
+      // health modules rule out Expo Go), so the custom scheme is always valid.
+      const redirectUrl = 'overload://sso-callback';
       const { createdSessionId, setActive, authSessionResult, signUp: su } = await startSSOFlow({
         strategy: 'oauth_google',
         redirectUrl,

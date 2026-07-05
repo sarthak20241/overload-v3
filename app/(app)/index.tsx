@@ -15,8 +15,7 @@ import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
-import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
-import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
+import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { detectInsights } from '@/lib/insights';
@@ -39,9 +38,6 @@ const ROUTINE_COLORS = Colors.routineColors;
 
 // Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
 const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
-const fmtK = (n: number) => Math.round(n).toLocaleString();
-const fuelCaption = (eaten: number, goal: number) =>
-  `${fmtK(eaten)} / ${fmtK(goal)} kcal`;
 
 // Figma-matched muscle group colors. Module-scoped so consumers get a stable
 // identity across renders.
@@ -78,68 +74,6 @@ function StatCard({
       <Text style={[styles.statValue, { color: C.foreground }]}>{value}</Text>
       <Text style={[styles.statLabel, { color: C.textSecondary }]}>{label}</Text>
       <Text style={[styles.statCaption, { color: C.textDim }]}>{caption}</Text>
-    </View>
-  );
-}
-
-function WeeklyCalendar({ workouts }: { workouts: Workout[] }) {
-  const { C } = useTheme();
-  const now = new Date();
-  const day = now.getDay();
-  const diff = (day + 6) % 7;
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - diff);
-
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart);
-    d.setDate(weekStart.getDate() + i);
-    return d;
-  });
-
-  const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-
-  return (
-    <View style={styles.calendarRow}>
-      {days.map((day, i) => {
-        const hasWorkout = workouts.some(w => {
-          const wd = new Date(w.started_at);
-          return wd.toDateString() === day.toDateString();
-        });
-        const isToday = day.toDateString() === now.toDateString();
-        return (
-          <View key={i} style={styles.calendarDay}>
-            <Text style={[styles.calDayLabel, { color: isToday ? C.accentText : C.textMuted }]}>
-              {DAY_LABELS[i]}
-            </Text>
-            <View
-              style={[
-                styles.calDayCircle,
-                hasWorkout
-                  ? { backgroundColor: Colors.primary }
-                  : isToday
-                  ? { backgroundColor: C.primarySubtle, borderWidth: 1, borderColor: C.primaryBorder }
-                  : { backgroundColor: C.muted },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.calDayNum,
-                  {
-                    color: hasWorkout
-                      ? Colors.primaryFg
-                      : isToday
-                      ? C.accentText
-                      : C.textMuted,
-                    fontWeight: hasWorkout || isToday ? FontWeight.bold : FontWeight.regular,
-                  },
-                ]}
-              >
-                {day.getDate()}
-              </Text>
-            </View>
-          </View>
-        );
-      })}
     </View>
   );
 }
@@ -543,21 +477,6 @@ export default function DashboardScreen() {
   const weeklyVolumes = useMemo(() => weeklyTrend.map(w => w.volume), [weeklyTrend]);
   const weeklyLabels = useMemo(() => weeklyTrend.map(w => w.label), [weeklyTrend]);
 
-  // Muscle breakdown — powers the Muscles donut card.
-  const muscleData = useMemo(() => {
-    const counts: Record<string, number> = {};
-    workouts.forEach(w => {
-      (w.sets || []).forEach((s: any) => {
-        const mg = s.exercises?.muscle_group || s.muscle_group;
-        if (mg) counts[mg] = (counts[mg] || 0) + 1;
-      });
-    });
-    return Object.entries(counts)
-      .map(([name, value]) => ({ name, value, color: Colors.muscle[name] || '#6b7280' }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
-  }, [workouts]);
-
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: C.background }]} edges={['top']}>
       <ScrollView
@@ -595,11 +514,6 @@ export default function DashboardScreen() {
               </Text>
             </TouchableOpacity>
           </View>
-        </View>
-
-        {/* Weekly calendar */}
-        <View style={styles.calendarWrap}>
-          <WeeklyCalendar workouts={workouts} />
         </View>
 
         {/* Today's suggestion (Element 2) — the coach's pick for today is the
@@ -683,10 +597,12 @@ export default function DashboardScreen() {
               <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>
             <View style={{ alignItems: 'center', marginTop: 2 }}>
+              {/* No eaten/target caption: the ring already says LEFT and the bars
+                  itemize consumption — the line restated both and cost the strip
+                  below the fold. The full eaten/goal readout lives in the diary. */}
               <MacroRing
                 value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
-                display="remaining" overshoot name="Calories" size={92} thickness={10} centerFontSize={21}
-                belowCaption={fuelCaption(fuel.totals.kcal, FUEL_TARGETS.kcal)}
+                display="remaining" overshoot name="Calories" size={88} thickness={10} centerFontSize={21}
               />
             </View>
             <View style={styles.fuelBars}>
@@ -696,30 +612,8 @@ export default function DashboardScreen() {
             </View>
           </PressableScale>
 
-          {/* Muscles card with interactive donut chart */}
-          <View style={[styles.statCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-            <View style={[styles.cardGlow, { backgroundColor: Colors.stat.muscles, opacity: 0.04 }]} />
-            <View style={styles.statHeader}>
-              <Feather name="activity" size={12} color={Colors.stat.muscles} />
-              <Text style={[styles.statLabel, { color: Colors.stat.muscles }]}>MUSCLES</Text>
-            </View>
-            {muscleData.length > 0 ? (
-              <View style={{ alignItems: 'center', marginTop: 2 }}>
-                <MiniDonutChart
-                  data={muscleData}
-                  size={100}
-                  thickness={18}
-                  gap={2}
-                  subColor={C.textMuted}
-                />
-              </View>
-            ) : (
-              <>
-                <Text style={[styles.statValue, { color: C.foreground }]}>-</Text>
-                <Text style={[styles.statSub, { color: C.textDim }]}>Track workouts</Text>
-              </>
-            )}
-          </View>
+          {/* Readiness card (muscle breakdown moved to Analytics). */}
+          <ReadinessCard />
         </View>
 
         {/* Proactive insights — "Coach noticed" */}
@@ -986,8 +880,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.xxl,
-    paddingBottom: Spacing.lg,
+    paddingTop: Spacing.xl,
+    // xl (not lg): the week calendar that used to sit between the header and the
+    // TODAY card is gone, so the header itself owns the standard section gap.
+    paddingBottom: Spacing.xl,
   },
   greeting: { fontSize: 10, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 },
   userName: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: -0.5, marginBottom: 4 },
@@ -1022,19 +918,15 @@ const styles = StyleSheet.create({
   xpFill: { height: '100%', borderRadius: 4 },
   xpText: { fontSize: 8, fontWeight: FontWeight.bold, marginLeft: 6 },
   // Calendar
-  calendarWrap: { paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl },
-  calendarRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  calendarDay: { alignItems: 'center', gap: 6 },
-  calDayLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
-  calDayCircle: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  calDayNum: { fontSize: FontSize.sm },
   // Stats
   statsGrid: {
     paddingHorizontal: Spacing.xl,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
-    marginBottom: Spacing.xxl,
+    // xl like every other section (was the page's one xxl outlier) — the strip
+    // below must peek above the fold so "Coach noticed" lures the scroll.
+    marginBottom: Spacing.xl,
   },
   statCard: {
     width: '47%',
@@ -1181,12 +1073,15 @@ const styles = StyleSheet.create({
   },
   expandedSetText: { fontSize: 11, fontWeight: FontWeight.medium },
   // Nutrition card (diet entry point) — protein bar under the calories ring
-  fuelBars: { marginTop: Spacing.md, gap: 9 },
+  fuelBars: { marginTop: 10, gap: 8 },
   // AI Coach hero card
   aiCoachCard: {
     borderRadius: Radius.xl,
     borderWidth: 1,
-    padding: Spacing.lg,
+    // Slightly tighter vertically than lg: the hero is the tallest block on the
+    // dashboard and every pt here pushes Coach noticed below the fold.
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.lg,
     overflow: 'hidden',
     position: 'relative',
   },
@@ -1232,7 +1127,7 @@ const styles = StyleSheet.create({
   aiChipsRow: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 12,
+    marginTop: 10,
   },
   aiChip: {
     flexDirection: 'row',
