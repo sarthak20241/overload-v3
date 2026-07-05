@@ -13,7 +13,7 @@ Supersedes the manual-logging framing of peripheral health tracking. Workout and
 
 Integration-first is the wedge. Reading Apple HealthKit (iOS) and Health Connect (Android) transitively inherits data that Whoop, Oura, Garmin, Fitbit, Apple Watch, and Omron already write into those platform stores, so a solo dev gets broad device coverage from TWO native integrations instead of N vendor OAuth pipelines that are variously gated (Garmin closed), sunsetting (Fitbit legacy API ~Sept 2026), or slow to approve (Whoop monthly review).
 
-The payoff Drona narrates is the readiness score: a single composite that fuses the integrated recovery signals (HRV, resting HR, sleep) with workout load (read from base `workouts`/`workout_sets`) and diet (the nutrition aggregates are already live). The user never sees a wall of biometrics on the dashboard. They see one directive from Drona ("Your recovery is thin today. Cut the top set, keep the volume."). Raw numbers and trends live on Analytics. The integration layer is plumbing; the readiness narrative is the product.
+The payoff Drona narrates is the readiness score: a single composite that fuses the integrated recovery signals (HRV, resting HR, sleep) with workout load (read from base `workouts`/`workout_sets`). Diet is deliberately OUT of readiness v1 (locked — see §4 Mechanics); the composite leaves a neutral-default extension point so the diet workstream can wire it in later without reworking the formula. The user never sees a wall of biometrics on the dashboard. They see one directive from Drona ("Your recovery is thin today. Cut the top set, keep the volume."). Raw numbers and trends live on Analytics. The integration layer is plumbing; the readiness narrative is the product.
 
 What we explicitly do NOT chase: proprietary scores (Whoop Recovery/Strain, Oura Readiness, Garmin Body Battery) are deliberately withheld from the platform stores by their vendors. We compute our OWN readiness from the raw biometrics that DO flow through. That keeps us off the gated direct APIs and makes the score ours, in Drona's voice, not a re-skin of someone else's number.
 
@@ -46,9 +46,8 @@ Users think in app names, not platform stores. We present a "connect your data" 
 
 The connect screen NAMES these apps (so the promise "works with Google Fit / Samsung Health" is real and recognizable) and, for Android sources, points the user to enable Health Connect sharing inside that app's own settings. The catalog is `lib/healthSources.ts`. We still do NOT build direct vendor OAuth (see Tier 2); naming an app as a source is a UI affordance over the hub, not a new pipeline.
 
-### Build-first / skip recommendation
-- Build first: iOS HealthKit adapter for the Tier-1 reliable metrics (steps, sleep+stages, active energy, bodyweight, resting HR) + foreground pull + readiness.
-- Build second: Android Health Connect adapter behind the same interface.
+### Build / skip recommendation
+- Build both native adapters together behind one `HealthAdapter` interface (iOS HealthKit + Android Health Connect) for the Tier-1 reliable metrics (steps, sleep+stages, active energy, bodyweight, resting HR) + foreground pull + readiness. Both ship in this PR (matches the locked cross-platform decision in §1 and the Phase 1 rollout).
 - Defer: iOS background delivery, Android WorkManager background, blood-pressure event table (only if a BP-cuff user appears), any Tier-2 aggregator.
 - Skip indefinitely: direct vendor APIs.
 
@@ -230,4 +229,4 @@ XP note: integrated daily metrics do NOT grant XP (XP is workout-derived via the
 5. **Manual-fallback scope.** Beyond the recovery/mood check-in (locked as manual), do we allow manual entry of bodyweight only, or also sleep/RHR for users with no wearable? More manual fields = more write-queue surface and a blurrier integration-first story. Recommend bodyweight + check-in only.
 6. RESOLVED: bodyweight canonical = `daily_metrics` time series. `user_profiles.weight_kg` becomes a derived latest-value cache (set on each bodyweight write to the most-recent `metric_date` value, so set-types math reads it unchanged). One-time import from `bodyStats.ts` with a per-user guard, then retire those keys as weight sources (measurements stay in `bodyStats.ts`). Reconcile with the profile-keyboard-and-weight-autolog branch so there is exactly one writer to `weight_kg`.
 7. RESOLVED: do NOT touch nutrition. The coach RPC gets the recovery block only; nutrition (in both the coach context and readiness) is owned by the diet workstream. Capture the live function body and extend additively so the diet agent's later edit composes.
-8. **Background delivery priority.** Default treats it as Phase 6 polish. If users expect fresh readiness without opening the app, promote iOS background delivery earlier (entitlement + observer at launch + the must-call completion handler discipline).
+8. **Background delivery priority.** Default treats it as post-v1 polish (Phase 5 refinement). If users expect fresh readiness without opening the app, promote iOS background delivery earlier (entitlement + observer at launch + the must-call completion handler discipline).

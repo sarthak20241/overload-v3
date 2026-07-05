@@ -58,12 +58,17 @@ export const healthConnectAdapter: HealthAdapter = {
 
   async requestAuthorization() {
     try {
-      // Also request history access so the baseline backfill can reach past 30 days.
-      await requestPermission([
-        ...READ_PERMISSIONS,
-        { accessType: 'read', recordType: 'ReadHealthDataHistory' } as unknown as Permission,
-      ]);
-      return true;
+      // requestPermission returns ONLY the permissions actually allowed (a cancel
+      // returns none), so gate on the result instead of assuming success. Report
+      // connected if at least one requested read was granted — a full cancel then
+      // can't advance the connect flow into a half-synced state, and partial
+      // grants still connect the metrics that were allowed (per-metric connection
+      // is inferred downstream from data presence). No history permission: the
+      // backfill only reaches 28 days, well inside the 30-day no-history window.
+      const granted = await requestPermission(READ_PERMISSIONS);
+      return READ_PERMISSIONS.some((req) =>
+        granted.some((g) => g.accessType === req.accessType && g.recordType === req.recordType),
+      );
     } catch {
       return false;
     }

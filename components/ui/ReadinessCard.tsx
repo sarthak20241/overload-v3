@@ -37,12 +37,17 @@ export function ReadinessCard() {
       setState({ loading: false, result: null });
       return;
     }
+    // userId can flip null -> real after auth resolves; show the spinner during
+    // the (re)load so a signed-in user never sees the empty "Connect health" CTA
+    // mid-fetch. On a transient read failure, keep the last-known result rather
+    // than nulling it (which would misreport "no readiness" on the dashboard).
+    setState((prev) => ({ ...prev, loading: true }));
     loadReadiness(supabase, userId)
       .then((r) => {
         if (!cancelled) setState({ loading: false, result: r });
       })
       .catch(() => {
-        if (!cancelled) setState({ loading: false, result: null });
+        if (!cancelled) setState((prev) => ({ loading: false, result: prev.result }));
       });
     return () => {
       cancelled = true;

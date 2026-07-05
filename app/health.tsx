@@ -157,19 +157,25 @@ export default function HealthScreen() {
       setLoading(false);
       return;
     }
-    // Keep the readiness read distinct: a failed read must NOT look like no-data.
+    // Keep each read distinct: a failed read must NOT look like no-data. A failed
+    // connected-metrics read in particular can't flip a connected user back to the
+    // first-run "Connect health" CTA — preserve the previous connected set instead.
     let readinessFailed = false;
+    let connectedFailed = false;
     const [r, c, h, s] = await Promise.all([
       loadReadiness(supabase, userId).catch(() => {
         readinessFailed = true;
         return null;
       }),
-      loadConnectedMetrics(supabase, userId).catch(() => new Set<ReadableMetric>()),
+      loadConnectedMetrics(supabase, userId).catch(() => {
+        connectedFailed = true;
+        return null;
+      }),
       loadReadinessHistory(supabase, userId).catch(() => []),
       loadMetricSeries(supabase, userId).catch(() => ({})),
     ]);
     setResult(r);
-    setConnected(c);
+    if (!connectedFailed && c) setConnected(c);
     setHistory(h);
     setSeries(s);
     setLoadError(readinessFailed);
@@ -595,6 +601,7 @@ function SignalCard({
             color={col}
             autoScale
             baseline={baseline}
+            formatValue={def.format}
             tooltipBgColor={C.elevated}
             tooltipTextColor={C.foreground}
           />

@@ -36,7 +36,7 @@ export interface HealthSourceDef {
 export const HEALTH_SOURCES: HealthSourceDef[] = [
   {
     id: 'apple_health', name: 'Apple Health', hubs: ['healthkit'], icon: 'heart',
-    setupHint: 'On, the moment you allow Overload to read Apple Health.',
+    setupHint: 'On as soon as you let Overload read Apple Health.',
   },
   {
     id: 'apple_watch', name: 'Apple Watch', hubs: ['healthkit'], icon: 'watch',

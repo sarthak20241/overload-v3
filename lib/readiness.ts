@@ -181,9 +181,12 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
 
 function rationaleFor(score: number, band: ReadinessBand, tier: ReadinessTier): string {
   const lens = tier === 'B' ? 'how you feel today' : tier === 'A2' ? 'your sleep and resting heart rate' : 'your recovery markers';
-  if (band === 'high') return `Readiness ${score}. ${capitalize(lens)} look strong, so push today.`;
-  if (band === 'moderate') return `Readiness ${score}. ${capitalize(lens)} are about normal, so train as planned.`;
-  return `Readiness ${score}. ${capitalize(lens)} are down, so ease off and protect recovery.`;
+  // The tier-B lens ("how you feel today") is singular; the A1/A2 lenses are
+  // plural. Agree the verb so the narration doesn't read "how you feel today are…".
+  const singular = tier === 'B';
+  if (band === 'high') return `Readiness ${score}. ${capitalize(lens)} ${singular ? 'looks' : 'look'} strong, so push today.`;
+  if (band === 'moderate') return `Readiness ${score}. ${capitalize(lens)} ${singular ? 'is' : 'are'} about normal, so train as planned.`;
+  return `Readiness ${score}. ${capitalize(lens)} ${singular ? 'is' : 'are'} down, so ease off and protect recovery.`;
 }
 
 function capitalize(s: string): string {

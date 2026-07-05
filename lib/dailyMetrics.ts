@@ -103,12 +103,12 @@ const BY_TYPE: Record<DailyMetricType, DailyMetricDef> = Object.fromEntries(
 
 /** Is this string a known daily metric type? */
 export function isDailyMetricType(v: string | null | undefined): v is DailyMetricType {
-  return !!v && v in BY_TYPE;
+  return !!v && Object.hasOwn(BY_TYPE, v);
 }
 
 /** Descriptor for a metric type, or undefined if unknown (callers decide the fallback). */
 export function dailyMetricDef(type: string | null | undefined): DailyMetricDef | undefined {
-  return type && type in BY_TYPE ? BY_TYPE[type as DailyMetricType] : undefined;
+  return type && Object.hasOwn(BY_TYPE, type) ? BY_TYPE[type as DailyMetricType] : undefined;
 }
 
 /** Format a stored value for a given metric type; empty string if the type/value is unusable. */

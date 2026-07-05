@@ -8,11 +8,12 @@
  * (migration 0053). The (user, day, type) tuple is the idempotency key, so a
  * re-read of a day overwrites with the latest deduped aggregate.
  *
- * The native adapters are NOT wired yet: they need `expo install` of the
- * HealthKit / Health Connect libs + config plugins + prebuild + a fresh dev
- * client. Until then getHealthAdapter() returns null and syncHealthData() is a
- * safe no-op. This file is the platform-agnostic backbone the adapters plug into
- * so installing them later is "implement two read functions," not a rewrite.
+ * Both native adapters ship in this PR (HealthKit on iOS, Health Connect on
+ * Android), so getHealthAdapter() returns the platform adapter and
+ * syncHealthData() reads real data once the libs are installed + prebuilt.
+ * getHealthAdapter() still returns null on web / unsupported platforms, where
+ * syncHealthData() stays a safe no-op. This file is the platform-agnostic
+ * backbone the adapters plug into.
  *
  * Plan: .planning/holistic-tracking-plan.md (sections 2, 3d, 3e).
  */
@@ -154,7 +155,11 @@ export async function syncHealthData(
   const today = todayLocalISO();
 
   if (readings.length === 0) {
-    await setCursor(userId, today);
+    // Don't advance the cursor here: on iOS a read denial is indistinguishable
+    // from "no data", and a foreground sync can run before the user grants
+    // access. Advancing to today would shrink the next sync to just the overlap
+    // window and skip most of the initial readiness baseline once permission is
+    // actually granted — so leave the cursor and let the next run retry `since`.
     return { written: 0 };
   }
 
@@ -193,6 +198,7 @@ export async function loadConnectedMetrics(
   const { data, error } = await supabase
     .from('daily_metrics')
     .select('metric_type')
+    .eq('user_id', userId)
     .in('metric_type', READABLE_METRICS as unknown as string[])
     .gte('metric_date', since);
   if (error) throw error;
@@ -219,6 +225,7 @@ export async function loadMetricSeries(
   const { data, error } = await supabase
     .from('daily_metrics')
     .select('metric_type, metric_date, value')
+    .eq('user_id', userId)
     .in('metric_type', READABLE_METRICS as unknown as string[])
     .gte('metric_date', since)
     .order('metric_date', { ascending: true });

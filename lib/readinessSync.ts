@@ -97,7 +97,10 @@ async function loadAcuteLoad(
 ): Promise<{ last7dSets: number; typicalWeeklySets: number } | null> {
   try {
     const since28 = shiftDaysISO(today, -28);
-    const since7Ms = new Date(shiftDaysISO(today, -7)).getTime();
+    // Parse as LOCAL midnight (append T00:00:00) — new Date('YYYY-MM-DD') is UTC
+    // midnight, which on non-UTC offsets pushes late workouts into the wrong
+    // 7-day bucket and skews the persisted readiness_score.
+    const since7Ms = new Date(shiftDaysISO(today, -7) + 'T00:00:00').getTime();
     const { data, error } = await supabase
       .from('workouts')
       .select('started_at, workout_sets(count)')
@@ -129,11 +132,14 @@ export async function loadReadinessHistory(
 ): Promise<{ date: string; value: number }[]> {
   if (!userId) return [];
   const today = todayLocalISO();
-  const since = shiftDaysISO(today, -days);
+  // Both ends inclusive, so subtract days-1 to return exactly `days` points
+  // (today plus the days-1 prior dates) instead of overfetching a 15th.
+  const since = shiftDaysISO(today, -(days - 1));
   const { data, error } = await supabase
     .from('daily_metrics')
     .select('metric_date, value')
     .eq('metric_type', 'readiness_score')
+    .eq('user_id', userId)
     .gte('metric_date', since)
     .lte('metric_date', today)
     .order('metric_date', { ascending: true });
