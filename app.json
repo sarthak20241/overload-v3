@@ -78,7 +78,7 @@
         "@kingstinct/react-native-healthkit",
         {
           "NSHealthShareUsageDescription": "Overload reads your steps, sleep, heart rate and bodyweight so Drona can gauge how recovered you are and coach you accordingly.",
-          "NSHealthUpdateUsageDescription": false,
+          "NSHealthUpdateUsageDescription": "Overload only reads from Apple Health to gauge your recovery. It never writes or changes your health data.",
           "background": false
         }
       ],
