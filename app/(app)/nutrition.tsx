@@ -46,7 +46,9 @@ type ParseFlow =
   | { status: 'analysing'; raw: string }
   | { status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType }
   | { status: 'declined'; raw: string; message: string }
-  | { status: 'error'; raw: string; message: string };
+  // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
+  // WRITE, not the whole AI parse (which would burn an API call + could differ).
+  | { status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType };
 
 const fmtK = (n: number) => Math.round(n).toLocaleString();
 const calCaption = (eaten: number, goal: number) =>
@@ -171,13 +173,24 @@ export default function NutritionScreen() {
     setAdding(true);
     const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate);
     setAdding(false);
-    if (error) { setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.' }); return; }
+    if (error) {
+      // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
+      setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType });
+      return;
+    }
     reload();
     setFlow({ status: 'idle' });
   }, [flow, supabase, adding, reload, viewDate]);
 
   const onRetry = useCallback(() => {
-    if (flow.status === 'error') void runParse(flow.raw);
+    if (flow.status !== 'error') return;
+    // A write failure kept the meal → re-show the review card (tapping Add re-writes
+    // it, to the current day). Only re-run the AI parse if the meal is gone.
+    if (flow.meal && flow.mealType) {
+      setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType });
+    } else {
+      void runParse(flow.raw);
+    }
   }, [flow, runParse]);
 
   const onDismiss = useCallback(() => setFlow({ status: 'idle' }), []);
