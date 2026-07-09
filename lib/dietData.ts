@@ -94,11 +94,6 @@ function loggedAtFor(date: Date): string {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0).toISOString();
 }
 
-/** Local-day key so a cached read can't bleed across midnight. */
-function dayKey(date: Date): string {
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-
 /** Find the meal row of `mealType` on `date`, or create it (on the right day).
  *  Centralises the find-or-create every log path needs, and stamps a new row's
  *  logged_at so it lands on `date` rather than always today. */

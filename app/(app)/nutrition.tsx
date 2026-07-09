@@ -125,13 +125,12 @@ export default function NutritionScreen() {
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
 
   // Keep the log-date store synced to the viewed day so every log/edit path
-  // (parse bar, food-search, saved meals, entry move) writes to that day. Reset
-  // to today when leaving the diary, so a stray log elsewhere never lands in the past.
+  // (parse bar, food-search, saved meals, entry move) writes to that day. Mirror
+  // _logMeal: set it — including right before we navigate to food-search/detail —
+  // and NEVER reset on blur. A blur cleanup would fire the instant openSearch()
+  // pushes food-search, silently reverting a past-day log back to today.
   useEffect(() => { setLogDate(viewDate); }, [viewDate]);
-  useFocusEffect(useCallback(() => {
-    setLogDate(viewDate);
-    return () => setLogDate(new Date());
-  }, [viewDate]));
+  useFocusEffect(useCallback(() => { setLogDate(viewDate); }, [viewDate]));
 
   // Step the diary a day back/forward; never past today.
   const stepDay = useCallback((delta: number) => {
