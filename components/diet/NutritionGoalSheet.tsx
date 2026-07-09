@@ -87,7 +87,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     };
     const { error } = await saveNutritionTargets(supabase, clerkId, next);
     setBusy(false);
-    if (error) return;
+    if (error) { haptics.warning(); return; }
     onSaved(next);
   };
 

@@ -58,18 +58,20 @@ export function SaveMealSheet({ open, items, onClose, onSaved }: Props) {
   );
 
   const onSave = async () => {
+    const trimmed = name.trim();
     if (!supabase || busy) { onClose(); return; }
+    if (!trimmed) { haptics.warning(); return; } // don't persist a blank-named meal
     setBusy(true);
     haptics.selection();
     const { error } = await createSavedMeal(supabase, {
-      name,
+      name: trimmed,
       kind: 'meal',
       servings: 1,
       serving_label: null,
       items,
     });
     setBusy(false);
-    if (error) return;
+    if (error) { haptics.warning(); return; }
     onSaved();
   };
 

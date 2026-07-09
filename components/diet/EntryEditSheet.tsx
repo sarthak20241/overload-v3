@@ -92,11 +92,11 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
     haptics.selection();
     if (qty !== entry.quantity) {
       const { error } = await updateEntryQuantity(supabase, entry, qty);
-      if (error) { setBusy(false); return; }
+      if (error) { setBusy(false); haptics.warning(); return; }
     }
     if (section !== entry.meal_type) {
       const { error } = await moveEntry(supabase, entry, section);
-      if (error) { setBusy(false); return; }
+      if (error) { setBusy(false); haptics.warning(); return; }
     }
     onSaved();
   };
@@ -106,7 +106,7 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
     setBusy(true);
     haptics.warning();
     const { error } = await deleteMealEntry(supabase, entry);
-    if (error) { setBusy(false); return; }
+    if (error) { setBusy(false); haptics.warning(); return; }
     onSaved();
   };
 

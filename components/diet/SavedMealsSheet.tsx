@@ -59,7 +59,7 @@ export function SavedMealsSheet({ open, defaultMeal, mealLabel, onClose, onLogge
     haptics.success();
     const { error } = await logSavedMeal(supabase, m, defaultMeal, 1);
     setBusyId(null);
-    if (error) return;
+    if (error) { haptics.warning(); return; }
     onLogged();
     setFlash(m.id);
     setTimeout(() => setFlash((f) => (f === m.id ? null : f)), 1600);
@@ -69,8 +69,9 @@ export function SavedMealsSheet({ open, defaultMeal, mealLabel, onClose, onLogge
     if (!supabase || busyId) return;
     setBusyId(m.id);
     haptics.warning();
-    await deleteSavedMeal(supabase, m.id);
+    const { error } = await deleteSavedMeal(supabase, m.id);
     setBusyId(null);
+    if (error) { haptics.warning(); return; } // don't reload; the row would just reappear
     void load();
   };
 
