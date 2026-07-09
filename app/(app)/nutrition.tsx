@@ -11,11 +11,11 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
@@ -27,8 +27,9 @@ import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
+import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
-  useTodayNutrition, useNutritionTargets, setLogMeal,
+  useDayNutrition, useNutritionTargets, setLogMeal, setLogDate, ymd,
   parseMeal, logParsedMeal,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
@@ -62,6 +63,15 @@ function mealForNow(): MealType {
   return 'snack';
 }
 
+/** "Today" / "Yesterday" / "Wed, Jul 9" for the diary date header. */
+function dayLabel(date: Date): string {
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (ymd(date) === ymd(today)) return 'Today';
+  if (ymd(date) === ymd(yesterday)) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 /** Open the full-screen food search targeting a meal (MFP model, not a drawer).
  *  The target meal goes through setLogMeal (a module store the screens read on
  *  focus) because food-search is a retained Tabs screen and router params went
@@ -85,7 +95,13 @@ const round = (n: number) => Math.round(n);
 export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
-  const { byMeal, totals, reload } = useTodayNutrition();
+  // Which calendar day the diary is showing. Defaults to today; ‹ › + the calendar
+  // move it. Logging/editing on a past day writes to that day (see the sync below).
+  const [viewDate, setViewDate] = useState<Date>(() => new Date());
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const viewIso = ymd(viewDate);
+  const isToday = viewIso === ymd(new Date());
+  const { byMeal, totals, reload } = useDayNutrition(viewIso);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
@@ -105,6 +121,23 @@ export default function NutritionScreen() {
   const [savedListOpen, setSavedListOpen] = useState(false);
   const nowMeal = mealForNow();
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
+
+  // Keep the log-date store synced to the viewed day so every log/edit path
+  // (parse bar, food-search, saved meals, entry move) writes to that day. Reset
+  // to today when leaving the diary, so a stray log elsewhere never lands in the past.
+  useEffect(() => { setLogDate(viewDate); }, [viewDate]);
+  useFocusEffect(useCallback(() => {
+    setLogDate(viewDate);
+    return () => setLogDate(new Date());
+  }, [viewDate]));
+
+  // Step the diary a day back/forward; never past today.
+  const stepDay = useCallback((delta: number) => {
+    setViewDate((d) => {
+      const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta);
+      return ymd(next) > ymd(new Date()) ? d : next;
+    });
+  }, []);
 
   const runParse = useCallback(async (raw: string) => {
     const t = raw.trim();
@@ -136,12 +169,12 @@ export default function NutritionScreen() {
   const onAdd = useCallback(async () => {
     if (flow.status !== 'review' || !supabase || adding) return;
     setAdding(true);
-    const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType });
+    const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate);
     setAdding(false);
     if (error) { setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.' }); return; }
     reload();
     setFlow({ status: 'idle' });
-  }, [flow, supabase, adding, reload]);
+  }, [flow, supabase, adding, reload, viewDate]);
 
   const onRetry = useCallback(() => {
     if (flow.status === 'error') void runParse(flow.raw);
@@ -166,12 +199,23 @@ export default function NutritionScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* Header — back + a day stepper (‹ Today ›, tap the label for the calendar) */}
         <View style={s.header}>
           <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
             <Feather name="chevron-left" size={22} color={C.foreground} />
           </Pressable>
-          <Text style={s.title}>Today</Text>
+          <View style={s.dayNav}>
+            <Pressable onPress={() => stepDay(-1)} hitSlop={8} style={s.dayArrow} accessibilityLabel="Previous day">
+              <Feather name="chevron-left" size={18} color={C.textSecondary} />
+            </Pressable>
+            <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6} style={s.dayLabelBtn} accessibilityLabel="Pick a day">
+              <Text style={s.title}>{dayLabel(viewDate)}</Text>
+              <Feather name="calendar" size={13} color={C.textMuted} />
+            </Pressable>
+            <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
+              <Feather name="chevron-right" size={18} color={C.textSecondary} />
+            </Pressable>
+          </View>
           <View style={{ flex: 1 }} />
           <Pressable onPress={() => setSavedListOpen(true)} hitSlop={10} style={s.headerBtn} accessibilityLabel="Saved meals">
             <Feather name="bookmark" size={17} color={C.foreground} />
@@ -339,6 +383,14 @@ export default function NutritionScreen() {
         onClose={() => setSavedListOpen(false)}
         onLogged={reload}
       />
+
+      {/* Jump the diary to any past day. */}
+      <DayPickerSheet
+        open={calendarOpen}
+        date={viewDate}
+        onClose={() => setCalendarOpen(false)}
+        onPick={setViewDate}
+      />
     </View>
   );
 }
@@ -349,6 +401,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, height: 44 },
     back: { width: 32, height: 32, justifyContent: 'center', marginLeft: -8 },
     headerBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+    dayNav: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+    dayArrow: { width: 28, height: 32, alignItems: 'center', justifyContent: 'center' },
+    dayLabelBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 2, minWidth: 92, justifyContent: 'center' },
     title: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: LetterSpacing.tight, color: C.foreground },
     streak: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 'auto' },
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
