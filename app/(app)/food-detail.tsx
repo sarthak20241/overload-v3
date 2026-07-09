@@ -17,7 +17,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { FoodCompositionCard, NutritionFactsPanel } from '@/components/diet/FoodFacts';
 import { useSupabaseClient } from '@/lib/supabase';
-import { loadServings, logFood, getLogMeal, setLogMeal, type PickerFood } from '@/lib/dietData';
+import { loadServings, logFood, logParsedMeal, getLogMeal, setLogMeal, type PickerFood, type ParsedMealItem } from '@/lib/dietData';
 import {
   defaultServing, nutrientsForAmount, resolveBaseAmount,
   type FoodServing, type MealType,
@@ -38,11 +38,20 @@ export default function FoodDetailScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const supabase = useSupabaseClient();
-  const params = useLocalSearchParams<{ meal?: string; food?: string }>();
+  const params = useLocalSearchParams<{ meal?: string; food?: string; source?: string; assumption?: string }>();
 
   const food = useMemo<PickerFood | null>(() => {
     try { return params.food ? JSON.parse(decodeURIComponent(params.food)) : null; } catch { return null; }
   }, [params.food]);
+
+  // Set when the food came from Drona's fallback (off/web/estimate) rather than a
+  // catalog tap — drives the provenance badge and logs the entry as AI-found.
+  const aiSource = (params.source as 'off' | 'web' | 'estimate' | undefined) || null;
+  const provenance =
+    aiSource === 'off' ? 'Drona found this on a product label'
+    : aiSource === 'web' ? 'Drona found this on the web'
+    : aiSource === 'estimate' ? "Drona's estimate — numbers are approximate"
+    : null;
 
   const [meal, setMeal] = useState<MealType>(getLogMeal());
   // Sync the target meal from the store on focus (params go stale on this retained
@@ -103,12 +112,26 @@ export default function FoodDetailScreen() {
     if (busy || !supabase || qtyNum <= 0) return;
     setBusy(true);
     try {
-      const { error } = await logFood(supabase, {
-        mealType: meal,
-        food: { ...food!, servings },
-        servingLabel,
-        quantity: qtyNum,
-      });
+      let error: string | undefined;
+      if (aiSource) {
+        // AI-found food: log through the parse path so it's recorded as logged_via='ai',
+        // preserving its source + assumption on the entry snapshot.
+        const item: ParsedMealItem = {
+          food_id: food!.id ?? null, food_name: food!.name, quantity: qtyNum,
+          serving_label: servingLabel, grams: nutr!.grams,
+          kcal: n.kcal, protein_g: n.protein_g, carb_g: n.carb_g, fat_g: n.fat_g, fiber_g: n.fiber_g ?? null,
+          source: aiSource, assumption: params.assumption || null,
+          confidence: aiSource === 'estimate' ? 'low' : aiSource === 'web' ? 'medium' : 'high',
+        };
+        ({ error } = await logParsedMeal(supabase, { meal_type: meal, items: [item], drona_line: '' }));
+      } else {
+        ({ error } = await logFood(supabase, {
+          mealType: meal,
+          food: { ...food!, servings },
+          servingLabel,
+          quantity: qtyNum,
+        }));
+      }
       if (error) { haptics.warning(); return; }
       haptics.success();
       // Return to the day view (MFP: logging a food returns you to the diary). The
@@ -141,6 +164,13 @@ export default function FoodDetailScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <Text style={s.title}>{food.name}</Text>
+
+        {provenance && (
+          <View style={[s.provenance, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
+            <Feather name="zap" size={12} color={C.accentText} />
+            <Text style={[s.provenanceTxt, { color: C.accentText }]}>{provenance}</Text>
+          </View>
+        )}
 
         {/* Composition: donut + macro split */}
         <FoodCompositionCard n={n} C={C} />
@@ -226,6 +256,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: C.foreground },
 
     title: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, letterSpacing: LetterSpacing.tight, color: C.foreground, paddingHorizontal: Spacing.xl, marginTop: Spacing.sm },
+    provenance: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginHorizontal: Spacing.xl, marginTop: Spacing.sm, paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.full, borderWidth: 1 },
+    provenanceTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 
     eyebrow: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim, paddingHorizontal: Spacing.xl, marginTop: Spacing.xl, marginBottom: Spacing.sm },
 

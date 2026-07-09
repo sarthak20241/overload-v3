@@ -19,9 +19,10 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { useSupabaseClient } from '@/lib/supabase';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal,
-  listSavedMeals, logSavedMeal, type PickerFood, type SavedMeal,
+  listSavedMeals, logSavedMeal, parseMeal, type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
 import { defaultServing, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
@@ -45,6 +46,11 @@ export default function FoodSearchScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const supabase = useSupabaseClient();
+  const { isSignedIn } = useClerkUser();
+
+  // "Ask Drona" fallback when the catalog has no match (AI resolves via OFF/web/estimate).
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   const [meal, setMeal] = useState<MealType>(getLogMeal());
   const [mealOpen, setMealOpen] = useState(false);
@@ -79,6 +85,7 @@ export default function FoodSearchScreen() {
 
   useEffect(() => {
     const qq = query.trim();
+    setAiError(null); // a new search invalidates any prior "Ask Drona" error
     if (!qq) { setResults([]); setSearching(false); return; }
     setSearching(true);
     let cancelled = false;
@@ -115,6 +122,58 @@ export default function FoodSearchScreen() {
     Keyboard.dismiss();
     setLogMeal(meal);
     router.push({ pathname: '/meal-builder', params: { meal } });
+  }
+
+  // Catalog had no match → hand the (possibly partial) query to Drona's fallback
+  // ladder (live Open Food Facts → web → estimate). The resolved food opens in the
+  // normal picker, tagged with where it came from so the log records it as AI-found.
+  async function askDrona() {
+    const q = query.trim();
+    if (!q || !supabase || aiBusy) return;
+    Keyboard.dismiss();
+    setAiBusy(true); setAiError(null);
+    const res = await parseMeal(supabase, { text: q, mealHint: meal });
+    setAiBusy(false);
+    if (res.kind === 'declined') { setAiError(res.message); haptics.warning(); return; }
+    if (res.kind === 'error') { setAiError(res.message); haptics.warning(); return; }
+    if (!res.meal.items.length) { setAiError('Drona could not pin that one down. Try a fuller name.'); haptics.warning(); return; }
+    haptics.success();
+    openDetailFromParsed(res.meal.items);
+  }
+
+  // Parsed AI item(s) → a per-100 PickerFood the food-detail picker can rescale,
+  // carrying the source so food-detail badges it and logs it as AI-found. A single
+  // item keeps its own name/serving; multiple items (a composite dish) aggregate
+  // into one food named after the query, so no component is silently dropped.
+  function openDetailFromParsed(items: ParsedMealItem[]) {
+    const single = items.length === 1;
+    const grams = items.reduce((a, it) => a + (it.grams > 0 ? it.grams : 0), 0) || 100;
+    const per100 = 100 / grams;
+    const sum = items.reduce(
+      (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g, fib: a.fib + (it.fiber_g ?? 0) }),
+      { kcal: 0, p: 0, c: 0, f: 0, fib: 0 },
+    );
+    const servingQty = single && items[0].quantity > 0 ? items[0].quantity : 1;
+    const food: PickerFood = {
+      id: single ? (items[0].food_id ?? null) : null,
+      name: single ? items[0].food_name : query.trim(),
+      base_unit: 'g',
+      food_category: 'other',
+      kcal: sum.kcal * per100, protein_g: sum.p * per100, carb_g: sum.c * per100, fat_g: sum.f * per100,
+      fiber_g: sum.fib * per100,
+      servings: [{ label: single ? items[0].serving_label : '1 serving', grams: grams / servingQty, is_default: true }],
+    };
+    // Provenance = the least-confident source across items (estimate > web > off).
+    const rank: Record<ParsedMealItem['source'], number> = { estimate: 3, web: 2, off: 1, catalog: 0 };
+    const src = items.reduce<ParsedMealItem['source']>((worst, it) => (rank[it.source] > rank[worst] ? it.source : worst), 'catalog');
+    setLogMeal(meal);
+    router.push({
+      pathname: '/food-detail',
+      params: {
+        meal, food: encodeURIComponent(JSON.stringify(food)),
+        source: src, assumption: single ? (items[0].assumption ?? '') : '',
+      },
+    });
   }
 
   async function quickAdd(food: PickerFood, key: string) {
@@ -354,8 +413,23 @@ export default function FoodSearchScreen() {
               <Text style={s.emptySub}>
                 {showingRecents
                   ? 'Search the catalog to log your first food. It’ll show up here next time.'
-                  : 'Try a simpler or more common name.'}
+                  : 'Not in the catalog? Drona can look it up from product labels and the web.'}
               </Text>
+              {!showingRecents && isSignedIn && (
+                <>
+                  <Pressable onPress={askDrona} disabled={aiBusy} style={[s.askBtn, { opacity: aiBusy ? 0.6 : 1 }]}>
+                    {aiBusy ? (
+                      <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    ) : (
+                      <>
+                        <Feather name="zap" size={15} color={Colors.primaryFg} />
+                        <Text style={s.askBtnTxt}>Ask Drona to find it</Text>
+                      </>
+                    )}
+                  </Pressable>
+                  {aiError && <Text style={[s.askErr, { color: C.textMuted }]}>{aiError}</Text>}
+                </>
+              )}
             </View>
           )
         }
@@ -413,6 +487,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     empty: { alignItems: 'center', paddingTop: 64, paddingHorizontal: Spacing.xxxl, gap: 8 },
     emptyTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: C.textSecondary, marginTop: 4 },
     emptySub: { fontSize: FontSize.sm, color: C.textMuted, textAlign: 'center', lineHeight: 19 },
+    askBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, minWidth: 200, height: 46, paddingHorizontal: Spacing.xl, borderRadius: Radius.full, backgroundColor: Colors.primary, marginTop: Spacing.lg },
+    askBtnTxt: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: Colors.primaryFg },
+    askErr: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 4, paddingHorizontal: Spacing.lg },
 
     toast: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: Colors.primary, paddingHorizontal: Spacing.lg, paddingVertical: 10, borderRadius: Radius.full, ...Shadow.elevated },
     toastTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryFg },
