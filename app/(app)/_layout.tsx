@@ -246,7 +246,8 @@ export default function AppLayout() {
   // (Journable model). Hide the workout tab bar + workout overlays there so the
   // input is reachable and the screen reads as its own destination.
   const hideWorkoutChrome =
-    pathname === '/nutrition' || pathname === '/food-search' || pathname === '/food-detail';
+    pathname === '/nutrition' || pathname === '/food-search' || pathname === '/food-detail'
+    || pathname === '/meal-builder';
 
   // Mirror health-hub data + recompute readiness on app-open / foreground.
   // No-op for guests and when no hub adapter exists. Called before the early
@@ -297,6 +298,7 @@ export default function AppLayout() {
         {/* Diet logging: full-screen catalog search + food detail (MFP model). */}
         <Tabs.Screen name="food-search" options={{ href: null }} />
         <Tabs.Screen name="food-detail" options={{ href: null }} />
+        <Tabs.Screen name="meal-builder" options={{ href: null }} />
         {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link

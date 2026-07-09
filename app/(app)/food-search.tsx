@@ -19,9 +19,18 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { useSupabaseClient } from '@/lib/supabase';
-import { searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal, type PickerFood } from '@/lib/dietData';
+import {
+  searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal,
+  listSavedMeals, logSavedMeal, type PickerFood, type SavedMeal,
+} from '@/lib/dietData';
 import { defaultServing, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
+
+type SearchTab = 'all' | 'meals';
+const TABS: { key: SearchTab; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'meals', label: 'My Meals' },
+];
 
 const MEALS: { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }[] = [
   { type: 'breakfast', label: 'Breakfast', icon: 'sunrise' },
@@ -40,15 +49,20 @@ export default function FoodSearchScreen() {
   const [meal, setMeal] = useState<MealType>(getLogMeal());
   const [mealOpen, setMealOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<SearchTab>('all');
+  const [savedMeals, setSavedMeals] = useState<SavedMeal[]>([]);
 
   // Re-sync the target meal from the store + clear the stale query each time this
   // retained Tabs screen is reopened (focus fires reliably even when router params
-  // go stale — which was making every food log land in breakfast).
+  // go stale — which was making every food log land in breakfast). Also reload
+  // saved meals so one just created in the builder shows up on return.
   useFocusEffect(
     useCallback(() => {
       setMeal(getLogMeal());
       setQuery('');
-    }, []),
+      setTab('all'); // retained Tabs screen: reset to the catalog every reopen (deterministic)
+      if (supabase) listSavedMeals(supabase).then(setSavedMeals).catch(() => {});
+    }, [supabase]),
   );
   const [results, setResults] = useState<PickerFood[]>([]);
   const [recents, setRecents] = useState<PickerFood[]>([]);
@@ -97,6 +111,12 @@ export default function FoodSearchScreen() {
     });
   }
 
+  function openBuilder() {
+    Keyboard.dismiss();
+    setLogMeal(meal);
+    router.push({ pathname: '/meal-builder', params: { meal } });
+  }
+
   async function quickAdd(food: PickerFood, key: string) {
     if (!supabase || busyKey) return;
     setBusyKey(key);
@@ -123,7 +143,66 @@ export default function FoodSearchScreen() {
     }
   }
 
+  // One-tap log a saved meal into the target meal (MFP "My Meals" +), then return
+  // to the diet day view — same as logging a single food from food-detail.
+  async function logSaved(m: SavedMeal, key: string) {
+    if (!supabase || busyKey) return;
+    setBusyKey(key);
+    try {
+      const { error } = await logSavedMeal(supabase, m, meal, 1);
+      if (error) { haptics.warning(); return; }
+      haptics.success();
+      router.navigate('/nutrition');
+    } catch {
+      haptics.warning();
+    } finally {
+      setBusyKey(null); // food-search is a retained Tabs screen, so always clear
+    }
+  }
+
+  // Tap a saved meal's row → open it in the builder to edit or log (detail view).
+  function openEditMeal(m: SavedMeal) {
+    Keyboard.dismiss();
+    setLogMeal(meal); // the builder's "Log" writes to this section
+    router.push({ pathname: '/meal-builder', params: { saved: encodeURIComponent(JSON.stringify(m)), meal } });
+  }
+
+  const savedFiltered = savedMeals.filter((m) => {
+    const q = query.trim().toLowerCase();
+    return !q || m.name.toLowerCase().includes(q);
+  });
+
   const s = makeStyles(C);
+
+  const renderSaved = ({ item }: { item: SavedMeal }) => {
+    const key = `saved-${item.id}`;
+    return (
+      <View style={s.row}>
+        {/* Tap the row → open the meal to edit or log; tap + → quick-log it. */}
+        <Pressable style={{ flex: 1, paddingRight: Spacing.md }} onPress={() => openEditMeal(item)} android_ripple={{ color: C.surfaceHover }}>
+          <Text style={s.rowName} numberOfLines={2}>{item.name}</Text>
+          <Text style={s.rowMeta}>
+            {round(item.kcal)} cal<Text style={s.rowDot}>  ·  </Text>
+            {`${item.items.length} item${item.items.length === 1 ? '' : 's'}`}
+          </Text>
+          <View style={s.rowMacros}>
+            <Text style={[s.macro, { color: C.macro.protein }]}>{round(item.protein_g)}<Text style={s.macroU}> P</Text></Text>
+            <Text style={[s.macro, { color: C.macro.carbs }]}>{round(item.carb_g)}<Text style={s.macroU}> C</Text></Text>
+            <Text style={[s.macro, { color: C.macro.fat }]}>{round(item.fat_g)}<Text style={s.macroU}> F</Text></Text>
+          </View>
+        </Pressable>
+        <Pressable
+          onPress={() => logSaved(item, key)}
+          hitSlop={10}
+          style={[s.addBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
+        >
+          {busyKey === key
+            ? <ActivityIndicator size="small" color={C.accentText} />
+            : <Feather name="plus" size={18} color={C.accentText} />}
+        </Pressable>
+      </View>
+    );
+  };
 
   const renderItem = ({ item, index }: { item: PickerFood; index: number }) => {
     const ds = defaultServing(item);
@@ -192,13 +271,13 @@ export default function FoodSearchScreen() {
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="Search foods"
+          placeholder={tab === 'meals' ? 'Search for a meal' : 'Search foods'}
           placeholderTextColor={C.textDim}
           style={s.searchInput}
           autoCorrect={false}
           autoCapitalize="none"
           returnKeyType="search"
-          autoFocus
+          autoFocus={tab === 'all'}
         />
         {query.length > 0 && (
           <Pressable onPress={() => setQuery('')} hitSlop={8}>
@@ -207,6 +286,48 @@ export default function FoodSearchScreen() {
         )}
       </View>
 
+      {/* Tabs — All / My Meals (MFP model). */}
+      <View style={s.tabs}>
+        {TABS.map((t) => {
+          const on = t.key === tab;
+          return (
+            <Pressable key={t.key} onPress={() => { setTab(t.key); haptics.tick(); }} style={s.tab}>
+              <Text style={[s.tabTxt, { color: on ? C.foreground : C.textMuted }]}>{t.label}</Text>
+              <View style={[s.tabUnderline, { backgroundColor: on ? C.accentText : 'transparent' }]} />
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {tab !== 'all' ? (
+        <FlatList
+          data={savedFiltered}
+          keyExtractor={(m) => m.id}
+          renderItem={renderSaved}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={{ paddingBottom: insets.bottom + 80, flexGrow: 1 }}
+          ItemSeparatorComponent={() => <View style={[s.sep, { backgroundColor: C.borderSubtle }]} />}
+          ListHeaderComponent={
+            <Pressable style={s.createRow} onPress={openBuilder}>
+              <View style={[s.createIcon, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}>
+                <Feather name="plus" size={16} color={C.accentText} />
+              </View>
+              <Text style={s.createTxt}>Create a meal</Text>
+            </Pressable>
+          }
+          ListEmptyComponent={
+            <View style={s.empty}>
+              <Feather name="bookmark" size={26} color={C.textDim} />
+              <Text style={s.emptyTitle}>No meals yet</Text>
+              <Text style={s.emptySub}>
+                Tap “Create a meal” to build one, or save one from a meal you logged.
+              </Text>
+            </View>
+          }
+        />
+      ) : (
+        <>
       {showingRecents && (
         <View style={s.listHead}>
           <Text style={s.listHeadTxt}>Recent</Text>
@@ -239,6 +360,8 @@ export default function FoodSearchScreen() {
           )
         }
       />
+        </>
+      )}
 
       {toast && (
         <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(200)} style={[s.toast, { bottom: insets.bottom + 20 }]}>
@@ -264,6 +387,15 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     search: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: Spacing.xl, marginTop: Spacing.xs, borderWidth: 1, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, height: 44 },
     searchInput: { flex: 1, fontSize: FontSize.lg, color: C.foreground, padding: 0 },
+
+    tabs: { flexDirection: 'row', marginTop: Spacing.md, marginHorizontal: Spacing.xl, borderBottomWidth: 1, borderBottomColor: C.borderSubtle },
+    tab: { flex: 1, alignItems: 'center', paddingBottom: Spacing.sm, gap: 6 },
+    tabTxt: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+    tabUnderline: { height: 2, width: '70%', borderRadius: 1 },
+
+    createRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.xl, paddingVertical: 16 },
+    createIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+    createTxt: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: C.accentText },
 
     listHead: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, paddingBottom: Spacing.xs },
     listHeadTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim },
