@@ -22,6 +22,7 @@ import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } fr
 import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
+import { NutritionTrendsCard } from '@/components/diet/NutritionTrendsCard';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
@@ -1580,6 +1581,9 @@ export default function AnalyticsScreen() {
                 />
               </View>
             )}
+
+            {/* 3.6 Nutrition trends (self-gating: renders only if food is logged). */}
+            <NutritionTrendsCard />
 
             {/* 3.5 Muscle Split (moved here from the dashboard). */}
             {muscleData.length > 0 && (

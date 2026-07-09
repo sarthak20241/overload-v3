@@ -35,6 +35,13 @@ let _logMeal: MealType = 'breakfast';
 export const setLogMeal = (m: MealType) => { _logMeal = m; };
 export const getLogMeal = (): MealType => _logMeal;
 
+// The calendar day new logs land on. Set alongside the meal target when the diet
+// screen is showing a day other than today, so logging from food-search /
+// food-detail / the builder writes to THAT day (same stale-param fix as _logMeal).
+let _logDate: Date = new Date();
+export const setLogDate = (d: Date) => { _logDate = d; };
+export const getLogDate = (): Date => _logDate;
+
 const r0 = (n: number) => Math.round(n);
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const num = (v: unknown) => (v == null ? 0 : Number(v));
@@ -62,37 +69,68 @@ const emptyByMeal = (): Record<MealType, LoggedEntry[]> =>
 
 /** Local-day [start,end] as UTC ISO strings, so a logged_at timestamptz filters
  *  by the user's calendar day rather than the server's. */
-function todayRange(): { start: string; end: string } {
-  const now = new Date();
-  const s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+function dayRange(date: Date): { start: string; end: string } {
+  const s = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+  const e = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
   return { start: s.toISOString(), end: e.toISOString() };
+}
+/** YYYY-MM-DD in LOCAL time — the stable key the diet screen passes for a day. */
+export function ymd(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+/** Parse a YYYY-MM-DD key back to a local Date. */
+export function dateFromYmd(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+const isSameDay = (a: Date, b: Date) =>
+  a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+/** logged_at for a NEW meal row on `date`: now() for today (keep the real time),
+ *  else local noon so the row lands squarely inside dayRange(date). */
+function loggedAtFor(date: Date): string {
+  const now = new Date();
+  if (isSameDay(date, now)) return now.toISOString();
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0).toISOString();
 }
 
 /** Local-day key so a cached read can't bleed across midnight. */
-function dayKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-/** Cache key scoped to BOTH the signed-in user and the local day, so signing out
- *  and back in as someone else on the same day can't seed the second session with
- *  the first user's meals. */
-function cacheKey(userId: string | null): string {
-  return `${userId ?? 'anon'}:${dayKey()}`;
+/** Find the meal row of `mealType` on `date`, or create it (on the right day).
+ *  Centralises the find-or-create every log path needs, and stamps a new row's
+ *  logged_at so it lands on `date` rather than always today. */
+async function findOrCreateMeal(
+  supabase: Supa, mealType: MealType, date: Date,
+): Promise<{ id?: string; created?: boolean; error?: string }> {
+  const { start, end } = dayRange(date);
+  const { data: existing } = await supabase
+    .from('meals').select('id').eq('meal_type', mealType)
+    .gte('logged_at', start).lte('logged_at', end).limit(1);
+  const found = (existing?.[0] as any)?.id as string | undefined;
+  if (found) return { id: found, created: false };
+  const { data: created, error } = await supabase
+    .from('meals').insert({ meal_type: mealType, logged_at: loggedAtFor(date) }).select('id').single();
+  if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
+  return { id: (created as any).id, created: true };
 }
 
-/** Process-lifetime cache of today's grouped entries, so opening the diary paints
+/** Process-lifetime cache of TODAY's grouped entries, so opening the diary paints
  *  instantly from what the dashboard already loaded (no 5s cold re-fetch), then
- *  revalidates silently. Keyed by user + local day so it never bleeds across
- *  accounts or midnight. */
+ *  revalidates silently. Only today is cached (past days cold-load); keyed by user
+ *  + day so it never bleeds across accounts or midnight. */
 let _navCache: { key: string; byMeal: Record<MealType, LoggedEntry[]> } | null = null;
 
-export function useTodayNutrition(): DayData {
+/** Grouped entries + totals for a single calendar day (dayIso = YYYY-MM-DD). */
+export function useDayNutrition(dayIso: string): DayData {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
-  const key = cacheKey(user?.id ?? null);
-  const seed = _navCache && _navCache.key === key ? _navCache.byMeal : null;
+  const isToday = dayIso === ymd(new Date());
+  const key = `${user?.id ?? 'anon'}:${dayIso}`;
+  // Instant-paint cache is today-only (the dashboard preloads it); past days load fresh.
+  const seed = isToday && _navCache && _navCache.key === key ? _navCache.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   const [loading, setLoading] = useState(!seed);
   const [tick, setTick] = useState(0);
@@ -102,17 +140,18 @@ export function useTodayNutrition(): DayData {
     let cancelled = false;
     (async () => {
       if (!supabase) { setLoading(false); return; }
+      const cached = isToday && _navCache && _navCache.key === key;
       // Only show the loading state on a true cold load; a same-key cache means we
       // already painted real numbers, so revalidate silently (no zeros flash).
-      if (!(_navCache && _navCache.key === key)) setLoading(true);
-      const { start, end } = todayRange();
+      if (!cached) setLoading(true);
+      const { start, end } = dayRange(dateFromYmd(dayIso));
       const { data: meals } = await supabase
         .from('meals').select('id, meal_type')
         .gte('logged_at', start).lte('logged_at', end);
       if (cancelled) return;
       if (!meals || meals.length === 0) {
         const empty = emptyByMeal();
-        _navCache = { key, byMeal: empty };
+        if (isToday) _navCache = { key, byMeal: empty };
         setByMeal(empty); setLoading(false); return;
       }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
@@ -133,12 +172,12 @@ export function useTodayNutrition(): DayData {
           carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
         });
       }
-      _navCache = { key, byMeal: grouped };
+      if (isToday) _navCache = { key, byMeal: grouped };
       setByMeal(grouped);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [supabase, tick, key]);
+  }, [supabase, tick, key, dayIso, isToday]);
 
   // Refetch when the consuming screen regains focus, so the dashboard FUEL card
   // reflects a food logged on the nutrition screen the moment the user returns.
@@ -162,6 +201,51 @@ export function useTodayNutrition(): DayData {
   }, [byMeal]);
 
   return { byMeal, totals, loading, reload };
+}
+
+/** Today's diary — the dashboard + default diet view. Thin wrapper so existing
+ *  callers don't change; ymd(new Date()) is a stable string per render. */
+export function useTodayNutrition(): DayData {
+  return useDayNutrition(ymd(new Date()));
+}
+
+export interface DayNutrition { dayIso: string; kcal: number; protein_g: number; carb_g: number; fat_g: number }
+
+/** Per-day macro totals for the last `days` calendar days (oldest → newest), for
+ *  the Analytics nutrition trends. Days with no log come back as zeros so the
+ *  chart has a continuous x-axis. */
+export async function loadNutritionHistory(supabase: Supa | null, days = 14): Promise<DayNutrition[]> {
+  const today = new Date();
+  const startDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
+  // Empty per-day skeleton first, so gaps render as zeros in order.
+  const out: DayNutrition[] = [];
+  const idx = new Map<string, number>();
+  for (let i = 0; i < days; i++) {
+    const d = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
+    const iso = ymd(d);
+    idx.set(iso, out.length);
+    out.push({ dayIso: iso, kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 });
+  }
+  if (!supabase) return out;
+  const { start } = dayRange(startDate);
+  const { end } = dayRange(today);
+  const { data: meals } = await supabase
+    .from('meals').select('id, logged_at')
+    .gte('logged_at', start).lte('logged_at', end);
+  if (!meals || meals.length === 0) return out;
+  const mealDay = new Map<string, string>();
+  for (const m of meals as any[]) mealDay.set(m.id, ymd(new Date(m.logged_at)));
+  const { data: entries } = await supabase
+    .from('meal_entries').select('meal_id, kcal, protein_g, carb_g, fat_g')
+    .in('meal_id', (meals as any[]).map((m) => m.id));
+  for (const e of (entries ?? []) as any[]) {
+    const iso = mealDay.get(e.meal_id);
+    const i = iso == null ? undefined : idx.get(iso);
+    if (i == null) continue;
+    out[i].kcal += num(e.kcal); out[i].protein_g += num(e.protein_g);
+    out[i].carb_g += num(e.carb_g); out[i].fat_g += num(e.fat_g);
+  }
+  return out;
 }
 
 /** Tidy a raw USDA catalog name for display: de-SHOUT all-caps brand fragments
@@ -386,20 +470,12 @@ export interface LoggedParseRef {
 export async function logParsedMeal(
   supabase: Supa,
   meal: ParsedMeal,
+  date: Date = getLogDate(),
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
-  const { start, end } = todayRange();
-  const { data: existing } = await supabase
-    .from('meals').select('id').eq('meal_type', meal.meal_type)
-    .gte('logged_at', start).lte('logged_at', end).limit(1);
-  let mealId = (existing?.[0] as any)?.id as string | undefined;
-  let createdMeal = false;
-  if (!mealId) {
-    const { data: created, error } = await supabase
-      .from('meals').insert({ meal_type: meal.meal_type }).select('id').single();
-    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
-    mealId = (created as any).id;
-    createdMeal = true;
-  }
+  const m = await findOrCreateMeal(supabase, meal.meal_type, date);
+  if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
+  const mealId = m.id;
+  const createdMeal = !!m.created;
 
   const { count } = await supabase
     .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
@@ -634,19 +710,12 @@ export async function logSavedMeal(
   saved: SavedMeal,
   mealType: MealType,
   servings = 1,
+  date: Date = getLogDate(),
 ): Promise<{ error?: string }> {
-  const { start, end } = todayRange();
-  const { data: existing } = await supabase
-    .from('meals').select('id').eq('meal_type', mealType)
-    .gte('logged_at', start).lte('logged_at', end).limit(1);
-  let mealId = (existing?.[0] as any)?.id as string | undefined;
-  let createdMeal = false;
-  if (!mealId) {
-    const { data: created, error } = await supabase
-      .from('meals').insert({ meal_type: mealType }).select('id').single();
-    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
-    mealId = (created as any).id; createdMeal = true;
-  }
+  const m = await findOrCreateMeal(supabase, mealType, date);
+  if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
+  const mealId = m.id;
+  const createdMeal = !!m.created;
   const { count } = await supabase
     .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
   const base = count ?? 0;
@@ -772,19 +841,12 @@ export async function moveEntry(
   supabase: Supa,
   entry: LoggedEntry,
   target: MealType,
+  date: Date = getLogDate(),
 ): Promise<{ error?: string }> {
   if (target === entry.meal_type) return {};
-  const { start, end } = todayRange();
-  const { data: existing } = await supabase
-    .from('meals').select('id').eq('meal_type', target)
-    .gte('logged_at', start).lte('logged_at', end).limit(1);
-  let targetMealId = (existing?.[0] as any)?.id as string | undefined;
-  if (!targetMealId) {
-    const { data: created, error } = await supabase
-      .from('meals').insert({ meal_type: target }).select('id').single();
-    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
-    targetMealId = (created as any).id;
-  }
+  const m = await findOrCreateMeal(supabase, target, date);
+  if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
+  const targetMealId = m.id;
   const { error } = await supabase.from('meal_entries').update({ meal_id: targetMealId }).eq('id', entry.id);
   if (error) return { error: error.message };
   const { count } = await supabase
@@ -793,25 +855,17 @@ export async function moveEntry(
   return {};
 }
 
-/** Log a food to today's meal of `mealType` (find-or-create the meal, insert the
- *  entry with the macro snapshot). Returns { error } on failure. */
+/** Log a food to the day's meal of `mealType` (find-or-create the meal, insert the
+ *  entry with the macro snapshot). Targets getLogDate() so a food logged while
+ *  viewing a past day lands on that day. Returns { error } on failure. */
 export async function logFood(
   supabase: Supa,
-  args: { mealType: MealType; food: PickerFood; servingLabel: string; quantity: number },
+  args: { mealType: MealType; food: PickerFood; servingLabel: string; quantity: number; date?: Date },
 ): Promise<{ error?: string }> {
   const { mealType, food, servingLabel, quantity } = args;
-  const { start, end } = todayRange();
-
-  const { data: existing } = await supabase
-    .from('meals').select('id').eq('meal_type', mealType)
-    .gte('logged_at', start).lte('logged_at', end).limit(1);
-  let mealId = (existing?.[0] as any)?.id as string | undefined;
-  if (!mealId) {
-    const { data: created, error } = await supabase
-      .from('meals').insert({ meal_type: mealType }).select('id').single();
-    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
-    mealId = (created as any).id;
-  }
+  const m = await findOrCreateMeal(supabase, mealType, args.date ?? getLogDate());
+  if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
+  const mealId = m.id;
 
   const grams = resolveBaseAmount(food, servingLabel, quantity) ?? 100 * quantity;
   const n = nutrientsForAmount(food, grams);
