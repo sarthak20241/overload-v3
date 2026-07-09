@@ -25,7 +25,7 @@ import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
-import { useTodayNutrition } from '@/lib/dietData';
+import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -35,9 +35,6 @@ import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 
 const ROUTINE_COLORS = Colors.routineColors;
-
-// Daily macro goals (gram targets). Hardcoded for now; reads from user_profiles next.
-const FUEL_TARGETS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
 
 // Figma-matched muscle group colors. Module-scoped so consumers get a stable
 // identity across renders.
@@ -113,6 +110,7 @@ export default function DashboardScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const fuel = useTodayNutrition();
+  const { targets: fuelTargets } = useNutritionTargets();
   // Coach card uses the flat, on-brand lime signature. The purple/teal gradient +
   // glow orbs were removed in the design polish: the coach's own menu is flat/lime,
   // so the dashboard entry now matches the room it opens into (and survives light mode).
@@ -601,14 +599,14 @@ export default function DashboardScreen() {
                   itemize consumption — the line restated both and cost the strip
                   below the fold. The full eaten/goal readout lives in the diary. */}
               <MacroRing
-                value={fuel.totals.kcal} target={FUEL_TARGETS.kcal} color={C.macro.calories} valueColor={C.macro.calories}
+                value={fuel.totals.kcal} target={fuelTargets.kcal} color={C.macro.calories} valueColor={C.macro.calories}
                 display="remaining" overshoot name="Calories" size={88} thickness={10} centerFontSize={21}
               />
             </View>
             <View style={styles.fuelBars}>
-              <MacroBar label="P" name="Protein" value={fuel.totals.protein_g} target={FUEL_TARGETS.protein} color={C.macro.protein} delayMs={0} />
-              <MacroBar label="C" name="Carbs" value={fuel.totals.carb_g} target={FUEL_TARGETS.carb} color={C.macro.carbs} delayMs={70} />
-              <MacroBar label="F" name="Fat" value={fuel.totals.fat_g} target={FUEL_TARGETS.fat} color={C.macro.fat} delayMs={140} />
+              <MacroBar label="P" name="Protein" value={fuel.totals.protein_g} target={fuelTargets.protein} color={C.macro.protein} delayMs={0} />
+              <MacroBar label="C" name="Carbs" value={fuel.totals.carb_g} target={fuelTargets.carb} color={C.macro.carbs} delayMs={70} />
+              <MacroBar label="F" name="Fat" value={fuel.totals.fat_g} target={fuelTargets.fat} color={C.macro.fat} delayMs={140} />
             </View>
           </PressableScale>
 

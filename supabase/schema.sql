@@ -930,6 +930,20 @@ create index if not exists idx_ai_coach_rl_recent
 
 alter table ai_coach_rate_limit enable row level security;
 
+-- ─── parse_meal Rate Limit (matches migration 0073_ai_food_logging.sql) ─────
+-- Own sliding-window bucket for the ai-coach `parse_meal` mode (AI food
+-- logging), separate from ai_coach_rate_limit so meal parses never consume
+-- coach-chat quota. Service-role only; RLS on with no policies.
+create table if not exists parse_meal_rate_limit (
+  user_id text not null,
+  request_at timestamptz not null default now()
+);
+
+create index if not exists idx_parse_meal_rl_recent
+  on parse_meal_rate_limit(user_id, request_at desc);
+
+alter table parse_meal_rate_limit enable row level security;
+
 -- ─── Seed: Common Exercises ─────────────────────────────────────────────────
 insert into exercises (name, muscle_group, category) values
   ('Bench Press', 'Chest', 'Barbell'),

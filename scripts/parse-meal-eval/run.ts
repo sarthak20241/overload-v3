@@ -1,0 +1,268 @@
+// parse_meal eval harness (P0 quality gate).
+//
+// Drives the EXACT production pipeline (supabase/functions/ai-coach/
+// parseMeal.ts) from Node against the real catalog: tier-1 search hits live
+// Supabase (anon key, global rows only), tier-2 hits the live Open Food
+// Facts API in DRY-RUN mode (no backfill writes), tier-3 web search is OFF
+// unless EVAL_WEB_SEARCH=1, tier-4 estimates run as in prod.
+//
+// Run from the repo root:
+//   ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
+//   # optional: EVAL_WEB_SEARCH=1  ONLY=roti-dal,whey-scoop  MODEL=claude-haiku-4-5
+//
+// Supabase URL/key come from env (EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY) or
+// a .env.local in the cwd. Costs: ~40 Haiku calls per full run (well under
+// $0.10); web search adds ~$0.01 per search when enabled.
+
+import { readFileSync } from "node:fs";
+import { createClient } from "@supabase/supabase-js";
+import {
+  type CandidateFood,
+  type ParseMealDeps,
+  type ParseMealResult,
+  runParseMeal,
+} from "../../supabase/functions/ai-coach/parseMeal";
+import { CASES, type EvalCase } from "./cases";
+
+// ── Env ─────────────────────────────────────────────────────────────────────
+
+function loadDotEnvLocal(): Record<string, string> {
+  try {
+    const out: Record<string, string> = {};
+    for (const line of readFileSync(".env.local", "utf8").split("\n")) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+const dotenv = loadDotEnvLocal();
+const env = (k: string) => process.env[k] ?? dotenv[k] ?? "";
+
+const SUPABASE_URL = env("EXPO_PUBLIC_SUPABASE_URL");
+const SUPABASE_ANON_KEY = env("EXPO_PUBLIC_SUPABASE_ANON_KEY");
+const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
+const MODEL = env("MODEL") || "claude-haiku-4-5";
+const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
+const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.trim())) : null;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.error("Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local in cwd).");
+  process.exit(1);
+}
+if (!ANTHROPIC_API_KEY) {
+  console.error("Missing ANTHROPIC_API_KEY.");
+  process.exit(1);
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+
+// ── Deps: mirrors handleParseMealRequest's wiring, minus writes ─────────────
+
+async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
+  const { data, error } = await supabase.rpc("search_foods_ranked", { q: query, lim: 8 });
+  if (error || !Array.isArray(data) || data.length === 0) return [];
+  const rows = data.slice(0, 6) as Array<Record<string, unknown>>;
+  const ids = rows.map((r) => String(r.id));
+  const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
+  const { data: servings } = await supabase
+    .from("food_servings")
+    .select("food_id, label, grams, is_default")
+    .in("food_id", ids)
+    .order("seq", { ascending: true });
+  for (const s of (servings ?? []) as Array<Record<string, unknown>>) {
+    const key = String(s.food_id);
+    const list = servingsByFood.get(key) ?? [];
+    list.push({ label: String(s.label), grams: Number(s.grams), is_default: !!s.is_default });
+    servingsByFood.set(key, list);
+  }
+  return rows.map((r) => ({
+    food_id: String(r.id),
+    name: String(r.name),
+    brand: r.brand ? String(r.brand) : null,
+    base_unit: r.base_unit === "ml" ? ("ml" as const) : ("g" as const),
+    kcal: Number(r.kcal ?? 0),
+    protein_g: Number(r.protein_g ?? 0),
+    carb_g: Number(r.carb_g ?? 0),
+    fat_g: Number(r.fat_g ?? 0),
+    fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
+    servings: servingsByFood.get(String(r.id)) ?? [],
+    source: "catalog" as const,
+  }));
+}
+
+let offLookups = 0;
+const deps: ParseMealDeps = {
+  anthropicApiKey: ANTHROPIC_API_KEY,
+  model: MODEL,
+  maxTokens: 1600,
+  timeoutMs: 30000,
+  webSearchEnabled: WEB_SEARCH,
+  searchFoods: searchCatalogWithServings,
+  backfillOffFood: async () => {
+    // DRY RUN: never write to prod from the eval. The model still receives
+    // the OFF macros; the candidate just carries no food_id.
+    offLookups++;
+    return null;
+  },
+  getFoodPer100: async (foodId) => {
+    const { data } = await supabase
+      .from("foods")
+      .select("base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
+      .eq("id", foodId)
+      .maybeSingle();
+    if (!data) return null;
+    const row = data as Record<string, unknown>;
+    return {
+      base_unit: String(row.base_unit ?? "g"),
+      kcal: Number(row.kcal ?? 0),
+      protein_g: Number(row.protein_g ?? 0),
+      carb_g: Number(row.carb_g ?? 0),
+      fat_g: Number(row.fat_g ?? 0),
+      fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
+    };
+  },
+  log: () => {},
+};
+
+// ── Scoring ─────────────────────────────────────────────────────────────────
+
+interface CaseOutcome {
+  id: string;
+  pass: boolean;
+  failures: string[];
+  tiers: string[];
+  ms: number;
+  tokens: number;
+  summary: string;
+}
+
+function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
+  const failures: string[] = [];
+  const exp = c.expect;
+
+  if (exp.declined) {
+    if (!result.declined) failures.push("expected decline, but it logged");
+    return failures;
+  }
+  if (result.declined) {
+    failures.push(`expected a log, got decline: "${result.declined.message}"`);
+    return failures;
+  }
+  const items = result.parsed!.items;
+  if (exp.minItems !== undefined && items.length < exp.minItems) {
+    failures.push(`items ${items.length} < min ${exp.minItems}`);
+  }
+  if (exp.maxItems !== undefined && items.length > exp.maxItems) {
+    failures.push(`items ${items.length} > max ${exp.maxItems}`);
+  }
+  if (exp.mealType && result.parsed!.meal_type !== exp.mealType) {
+    failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
+  }
+  for (const ie of exp.items ?? []) {
+    const match = items.find((i) => i.food_name.toLowerCase().includes(ie.nameIncludes.toLowerCase()));
+    if (!match) {
+      failures.push(`no item matching "${ie.nameIncludes}" (got: ${items.map((i) => i.food_name).join(" | ")})`);
+      continue;
+    }
+    if (ie.tiers && !ie.tiers.includes(match.source)) {
+      failures.push(`"${ie.nameIncludes}" tier ${match.source} not in [${ie.tiers.join(",")}]`);
+    }
+    if (ie.gramsBetween) {
+      const [lo, hi] = ie.gramsBetween;
+      if (match.grams < lo || match.grams > hi) {
+        failures.push(`"${ie.nameIncludes}" grams ${match.grams} outside [${lo}, ${hi}]`);
+      }
+    }
+    if (ie.proteinBetween) {
+      const [lo, hi] = ie.proteinBetween;
+      if (match.protein_g < lo || match.protein_g > hi) {
+        failures.push(`"${ie.nameIncludes}" protein ${match.protein_g} outside [${lo}, ${hi}]`);
+      }
+    }
+  }
+  return failures;
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const cases = CASES.filter((c) => !ONLY || ONLY.has(c.id))
+    .filter((c) => !c.expect.needsWebSearch || WEB_SEARCH);
+  console.log(
+    `parse_meal eval: ${cases.length} cases | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | OFF backfill=DRY RUN\n`,
+  );
+
+  const outcomes: CaseOutcome[] = [];
+  let totalTokens = 0;
+
+  for (const c of cases) {
+    const started = Date.now();
+    try {
+      const result = await runParseMeal(deps, {
+        text: c.text,
+        localHour: c.hour ?? null,
+        mealHint: null,
+        recentFoods: [],
+        todayTotals: null,
+        targets: { daily_calorie_target: 2400, protein_target_g: 140 },
+      });
+      const failures = scoreCase(c, result);
+      const tokens = result.usage.input_tokens + result.usage.output_tokens;
+      totalTokens += tokens;
+      const tiers = result.parsed ? [...new Set(result.parsed.items.map((i) => i.source))] : [];
+      outcomes.push({
+        id: c.id,
+        pass: failures.length === 0,
+        failures,
+        tiers,
+        ms: Date.now() - started,
+        tokens,
+        summary: result.parsed
+          ? result.parsed.items
+            .map((i) => `${i.food_name} ${i.grams}g ${i.kcal}kcal/${i.protein_g}p [${i.source}]`)
+            .join("; ") + ` :: "${result.parsed.drona_line}"`
+          : `DECLINED: ${result.declined?.message ?? ""}`,
+      });
+    } catch (e) {
+      outcomes.push({
+        id: c.id, pass: false, failures: [`threw: ${String(e).slice(0, 160)}`],
+        tiers: [], ms: Date.now() - started, tokens: 0, summary: "",
+      });
+    }
+    const last = outcomes[outcomes.length - 1];
+    console.log(`${last.pass ? "PASS" : "FAIL"}  ${c.id.padEnd(24)} ${last.ms}ms  [${last.tiers.join(",")}]`);
+    if (!last.pass) for (const f of last.failures) console.log(`      - ${f}`);
+    if (last.summary) console.log(`      ${last.summary}`);
+    // Be gentle with the API and OFF.
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  const passed = outcomes.filter((o) => o.pass).length;
+  const declineCases = cases.filter((c) => c.expect.declined).length;
+  const tierCounts: Record<string, number> = {};
+  for (const o of outcomes) for (const t of o.tiers) tierCounts[t] = (tierCounts[t] ?? 0) + 1;
+  const avgMs = Math.round(outcomes.reduce((a, o) => a + o.ms, 0) / Math.max(outcomes.length, 1));
+
+  console.log("\n──────── summary ────────");
+  console.log(`passed:        ${passed}/${outcomes.length}  (${declineCases} decline cases)`);
+  console.log(`tier mix:      ${JSON.stringify(tierCounts)}`);
+  console.log(`avg latency:   ${avgMs}ms`);
+  console.log(`total tokens:  ${totalTokens}`);
+  console.log(`OFF lookups:   ${offLookups} (dry run, nothing written)`);
+  const hardFails = outcomes.filter((o) => !o.pass);
+  if (hardFails.length > 0) {
+    console.log(`\nfailed cases: ${hardFails.map((o) => o.id).join(", ")}`);
+  }
+  process.exit(passed === outcomes.length ? 0 : 1);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

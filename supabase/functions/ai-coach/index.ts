@@ -2,6 +2,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { buildSystemPrompt, TERMINAL_TOOLS } from "./prompt.ts";
+import {
+  type CandidateFood,
+  type MealType,
+  type OffProduct,
+  type RecentFoodContext,
+  runParseMeal,
+} from "./parseMeal.ts";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
 // NOT Edge Functions. We deploy verify_jwt:false and verify the Clerk JWT
@@ -49,6 +56,17 @@ const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // covers Sonnet's worst-case latency at our max_tokens for plans (≤4k) plus
 // streaming overhead; tighten if we see false positives in coach_traces.
 const ANTHROPIC_TIMEOUT_MS = 30000;
+
+// parse_meal mode (AI food logging). Haiku for speed + cost: this fires on
+// every meal, and the catalog does the nutrition work — the model only
+// matches and converts quantities. Own rate bucket (parse_meal_rate_limit),
+// NOT the coach 30/24h window: meals happen several times a day and must not
+// eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
+// it can be killed without a redeploy if costs or quality surprise us.
+const PARSE_MEAL_MODEL = "claude-haiku-4-5";
+const PARSE_MEAL_MAX_TOKENS = 1600;
+const PARSE_RATE_LIMIT_MAX = 40;
+const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 
 // Retrieval (Phase 2.2). VOYAGE_API_KEY is optional — if missing, we skip
 // retrieval and the coach falls back to user_context + core_principles. That
@@ -602,6 +620,355 @@ async function runStreamingToolLoop(
   return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
 }
 
+// ── parse_meal mode (AI food logging) ───────────────────────────────────────
+// Free text in, catalog-grounded meal entries out. The loop itself lives in
+// parseMeal.ts (runtime-agnostic so the eval harness replays it); this
+// function supplies the Supabase-backed deps, its own rate bucket, context
+// gathering, and observability.
+
+function escapeIlike(s: string): string {
+  return s.replace(/([\\%_])/g, "\\$1");
+}
+
+// Tier 2 backfill: persist an OFF product as a GLOBAL foods row (service
+// role => created_by null) so the next lookup for it is a tier-1 catalog
+// hit for every user. ODbL guardrail: source 'off' keeps the row in the
+// segregated partition. Races and name collisions with existing global rows
+// both land in the unique-violation path and resolve to the existing row.
+async function backfillOffFoodRow(admin: SupabaseClient, p: OffProduct): Promise<string | null> {
+  try {
+    const { data: inserted, error } = await admin
+      .from("foods")
+      .insert({
+        name: p.name,
+        brand: p.brand,
+        barcode: p.barcode,
+        base_unit: p.base_unit,
+        kcal: p.kcal,
+        protein_g: p.protein_g,
+        carb_g: p.carb_g,
+        fat_g: p.fat_g,
+        fiber_g: p.fiber_g,
+        sugar_g: p.sugar_g,
+        sat_fat_g: p.sat_fat_g,
+        sodium_mg: p.sodium_mg,
+        source: "off",
+        sources: ["off"],
+        created_by: null,
+        // Packaged products span every category; 'other' is the codebase
+        // default (lib/foods.ts DEFAULT_FOOD_CATEGORY) and always CHECK-safe.
+        food_category: "other",
+      })
+      .select("id")
+      .single();
+
+    let foodId: string | null = (inserted as { id?: string } | null)?.id ?? null;
+
+    if (error) {
+      // Unique violation on lower(name) for global rows (or a race): reuse
+      // the existing row instead. Any other error => give up quietly; the
+      // model still gets the OFF macros, just without a food_id.
+      const { data: existing } = await admin
+        .from("foods")
+        .select("id")
+        .is("created_by", null)
+        .ilike("name", escapeIlike(p.name))
+        .limit(1)
+        .maybeSingle();
+      foodId = (existing as { id?: string } | null)?.id ?? null;
+      if (!foodId) {
+        console.log("[parse_meal] OFF backfill failed:", error.message?.slice(0, 160));
+        return null;
+      }
+    }
+
+    if (foodId && p.serving) {
+      // Best-effort: a label-derived default serving. Unique (food_id,
+      // lower(label)) + single-default indexes make retries no-ops.
+      const { error: servErr } = await admin.from("food_servings").insert({
+        food_id: foodId,
+        label: p.serving.label,
+        grams: p.serving.grams,
+        is_default: true,
+        source: "off",
+      });
+      if (servErr && servErr.code !== "23505") {
+        console.log("[parse_meal] serving backfill failed:", servErr.message?.slice(0, 120));
+      }
+    }
+    return foodId;
+  } catch (e) {
+    console.log("[parse_meal] OFF backfill threw:", String(e).slice(0, 160));
+    return null;
+  }
+}
+
+async function searchCatalogWithServings(
+  userClient: SupabaseClient,
+  query: string,
+): Promise<CandidateFood[]> {
+  const { data, error } = await userClient.rpc("search_foods_ranked", { q: query, lim: 8 });
+  if (error || !Array.isArray(data) || data.length === 0) {
+    if (error) console.log("[parse_meal] search_foods_ranked error:", error.message);
+    return [];
+  }
+  const rows = data.slice(0, 6) as Array<Record<string, unknown>>;
+  const ids = rows.map((r) => String(r.id));
+  const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
+  const { data: servings } = await userClient
+    .from("food_servings")
+    .select("food_id, label, grams, is_default")
+    .in("food_id", ids)
+    .order("seq", { ascending: true });
+  for (const s of (servings ?? []) as Array<Record<string, unknown>>) {
+    const key = String(s.food_id);
+    const list = servingsByFood.get(key) ?? [];
+    list.push({ label: String(s.label), grams: Number(s.grams), is_default: !!s.is_default });
+    servingsByFood.set(key, list);
+  }
+  return rows.map((r) => ({
+    food_id: String(r.id),
+    name: String(r.name),
+    brand: r.brand ? String(r.brand) : null,
+    base_unit: r.base_unit === "ml" ? "ml" as const : "g" as const,
+    kcal: Number(r.kcal ?? 0),
+    protein_g: Number(r.protein_g ?? 0),
+    carb_g: Number(r.carb_g ?? 0),
+    fat_g: Number(r.fat_g ?? 0),
+    fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
+    servings: servingsByFood.get(String(r.id)) ?? [],
+    source: "catalog" as const,
+  }));
+}
+
+// Recents give the prompt this user's staples ("milk" => their toned milk).
+// meal_entries has no timestamps of its own, so walk recent meals and
+// flatten, deduping by lowercased name.
+async function fetchRecentFoods(userClient: SupabaseClient): Promise<RecentFoodContext[]> {
+  const sinceIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await userClient
+    .from("meals")
+    .select("logged_at, meal_entries(food_name, quantity, serving_unit)")
+    .gte("logged_at", sinceIso)
+    .order("logged_at", { ascending: false })
+    .limit(25);
+  if (error || !Array.isArray(data)) return [];
+  const seen = new Set<string>();
+  const out: RecentFoodContext[] = [];
+  for (const meal of data as Array<Record<string, unknown>>) {
+    const entries = Array.isArray(meal.meal_entries) ? meal.meal_entries : [];
+    for (const e of entries as Array<Record<string, unknown>>) {
+      const name = typeof e.food_name === "string" ? e.food_name.trim() : "";
+      if (!name || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      out.push({
+        food_name: name,
+        quantity: Number(e.quantity ?? 1) || 1,
+        serving_unit: typeof e.serving_unit === "string" ? e.serving_unit : "g",
+      });
+      if (out.length >= 20) return out;
+    }
+  }
+  return out;
+}
+
+async function handleParseMealRequest(args: {
+  admin: SupabaseClient;
+  userClient: SupabaseClient;
+  trace: CoachTrace;
+  userId: string;
+  startedAtMs: number;
+  body: Record<string, unknown>;
+  respond: (body: unknown, status: number) => Promise<Response>;
+}): Promise<Response> {
+  const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
+
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!text) {
+    trace.status = "bad_request";
+    trace.error_message = "parse_meal requires non-empty text";
+    return respond({ error: trace.error_message }, 400);
+  }
+  trace.model = PARSE_MEAL_MODEL;
+  trace.last_user_message_preview = preview(text);
+  trace.message_count = 1;
+
+  // Own bucket, same sliding-window mechanics as the coach limiter. Parse
+  // failures still count a slot here (the Anthropic call was made); client
+  // retries after hard errors are rare enough that this is acceptable v1.
+  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
+  const { count, error: countErr } = await admin
+    .from("parse_meal_rate_limit")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .gte("request_at", sinceIso);
+  if (countErr) {
+    trace.status = "internal_error";
+    trace.error_message = `parse_rate_limit_check_failed: ${countErr.message}`;
+    return respond({ error: "Rate limit check failed" }, 500);
+  }
+  if ((count ?? 0) >= PARSE_RATE_LIMIT_MAX) {
+    trace.status = "rate_limited";
+    trace.error_message = `parse count=${count} cap=${PARSE_RATE_LIMIT_MAX}`;
+    let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+    const { data: oldest } = await admin
+      .from("parse_meal_rate_limit")
+      .select("request_at")
+      .eq("user_id", userId)
+      .gte("request_at", sinceIso)
+      .order("request_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (oldest?.request_at) {
+      const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
+      retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
+    }
+    return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+  }
+  const { error: logErr } = await admin
+    .from("parse_meal_rate_limit")
+    .insert({ user_id: userId });
+  if (logErr) {
+    trace.status = "internal_error";
+    trace.error_message = `parse_rate_limit_log_failed: ${logErr.message}`;
+    return respond({ error: "Rate limit log failed" }, 500);
+  }
+
+  // Context: recents + targets + today's totals, all non-fatal on failure.
+  const rawHour = body.local_hour;
+  const localHour = typeof rawHour === "number" && Number.isFinite(rawHour) ? rawHour : null;
+  const rawDate = body.local_date;
+  const localDate = typeof rawDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
+  const rawHint = body.meal_hint;
+  const mealHint: MealType | null =
+    rawHint === "breakfast" || rawHint === "lunch" || rawHint === "dinner" || rawHint === "snack"
+      ? rawHint
+      : null;
+
+  const [recentFoods, targetsRes, totalsRes] = await Promise.all([
+    fetchRecentFoods(userClient).catch(() => [] as RecentFoodContext[]),
+    userClient.from("user_profiles").select("daily_calorie_target, protein_target_g").maybeSingle(),
+    localDate
+      ? userClient.from("user_nutrition_stats").select("kcal, protein_g").eq("day", localDate).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]);
+  const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
+  const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+
+  try {
+    const result = await runParseMeal(
+      {
+        anthropicApiKey: ANTHROPIC_API_KEY!,
+        model: PARSE_MEAL_MODEL,
+        maxTokens: PARSE_MEAL_MAX_TOKENS,
+        timeoutMs: ANTHROPIC_TIMEOUT_MS,
+        webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
+        searchFoods: (q) => searchCatalogWithServings(userClient, q),
+        backfillOffFood: (p) => backfillOffFoodRow(admin, p),
+        getFoodPer100: async (foodId) => {
+          const { data } = await userClient
+            .from("foods")
+            .select("base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
+            .eq("id", foodId)
+            .maybeSingle();
+          if (!data) return null;
+          const row = data as Record<string, unknown>;
+          return {
+            base_unit: String(row.base_unit ?? "g"),
+            kcal: Number(row.kcal ?? 0),
+            protein_g: Number(row.protein_g ?? 0),
+            carb_g: Number(row.carb_g ?? 0),
+            fat_g: Number(row.fat_g ?? 0),
+            fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
+          };
+        },
+        log: (msg) => console.log(msg),
+      },
+      {
+        text,
+        localHour,
+        mealHint,
+        recentFoods,
+        todayTotals: totalsRow
+          ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
+          : null,
+        targets: targetsRow
+          ? {
+            daily_calorie_target: targetsRow.daily_calorie_target === null
+              ? null
+              : Number(targetsRow.daily_calorie_target),
+            protein_target_g: targetsRow.protein_target_g === null
+              ? null
+              : Number(targetsRow.protein_target_g),
+          }
+          : null,
+      },
+    );
+
+    trace.status = "success";
+    trace.input_tokens = result.usage.input_tokens || null;
+    trace.output_tokens = result.usage.output_tokens || null;
+    trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
+    trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
+    trace.tool_calls = result.tool_calls;
+    trace.response_preview = preview(
+      result.parsed
+        ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
+        : result.declined?.message ?? null,
+    );
+
+    void logTokenUsage(admin, {
+      pipeline: "parse_meal",
+      provider: "anthropic",
+      model: PARSE_MEAL_MODEL,
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens,
+      cache_read_tokens: result.usage.cache_read_input_tokens,
+      cache_creation_tokens: result.usage.cache_creation_input_tokens,
+      latency_ms: Date.now() - startedAtMs,
+      status: "success",
+      metadata: {
+        user_id: userId,
+        mode: "parse_meal",
+        item_count: result.parsed?.items.length ?? 0,
+        sources: result.parsed?.items.map((i) => i.source) ?? [],
+        declined: result.declined !== null,
+        web_search_requests: result.usage.web_search_requests,
+        tool_calls: result.tool_calls,
+      },
+    });
+
+    return respond(
+      {
+        parsed: result.parsed,
+        declined: result.declined,
+        usage: result.usage,
+        tool_calls: result.tool_calls,
+      },
+      200,
+    );
+  } catch (e) {
+    trace.status = "anthropic_error";
+    trace.error_message = `parse_meal_threw: ${String(e)}`.slice(0, 200);
+    void logTokenUsage(admin, {
+      pipeline: "parse_meal",
+      provider: "anthropic",
+      model: PARSE_MEAL_MODEL,
+      latency_ms: Date.now() - startedAtMs,
+      status: "error",
+      error_message: trace.error_message,
+      metadata: { user_id: userId, mode: "parse_meal" },
+    });
+    return respond(
+      {
+        error: "parse_failed",
+        message: "Drona could not read that one. Give it another shot in a moment.",
+      },
+      502,
+    );
+  }
+}
+
 // ── Main handler ────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -647,6 +1014,32 @@ Deno.serve(async (req) => {
     global: { headers: { Authorization: authHeader! } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+  // 2.5 Parse the body ONCE, up front. parse_meal branches here so it runs
+  // for ANY signed-in user (product decision 2026-07-07): AI food logging is
+  // NOT behind the paid Drona gate, only behind a valid JWT + its own 40/day
+  // rate bucket. It must therefore branch BEFORE the paid access gate below.
+  // Coach chat parses the same body here and reuses it (body.messages).
+  let body: { messages?: { role: string; content: string }[] };
+  try {
+    body = await req.json();
+  } catch {
+    trace.status = "bad_request";
+    trace.error_message = "invalid JSON body";
+    return respond({ error: "Invalid JSON body" }, 400);
+  }
+
+  if ((body as Record<string, unknown>).mode === "parse_meal") {
+    return await handleParseMealRequest({
+      admin,
+      userClient,
+      trace,
+      userId,
+      startedAtMs,
+      body: body as Record<string, unknown>,
+      respond,
+    });
+  }
 
   // 3. Drona access gate. Reads the user's current state via
   // get_coach_access_status() — paid / trialing / trial_ended / eligible_for_trial.
@@ -764,16 +1157,7 @@ Deno.serve(async (req) => {
     return typeof g === "string" && g.length > 0 ? g : null;
   })();
 
-  // 5. Parse messages
-  let body: { messages?: { role: string; content: string }[] };
-  try {
-    body = await req.json();
-  } catch {
-    trace.status = "bad_request";
-    trace.error_message = "invalid JSON body";
-    return respond({ error: "Invalid JSON body" }, 400);
-  }
-
+  // 5. Validate messages (body was parsed once above, before the rate gate)
   const incomingMessages = body.messages;
   if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
     trace.status = "bad_request";

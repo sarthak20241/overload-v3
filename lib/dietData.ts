@@ -41,10 +41,12 @@ const num = (v: unknown) => (v == null ? 0 : Number(v));
 
 export interface LoggedEntry {
   id: string;
+  meal_id: string;              // parent meal, for move + empty-meal cleanup
   meal_type: MealType;
   food_name: string;
   serving_unit: string;
   quantity: number;
+  grams_logged: number | null;  // to rescale macros on a quantity edit
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
 }
 export interface DayTotals { kcal: number; protein_g: number; carb_g: number; fat_g: number }
@@ -116,7 +118,7 @@ export function useTodayNutrition(): DayData {
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
       const { data: entries } = await supabase
         .from('meal_entries')
-        .select('id, meal_id, food_name, quantity, serving_unit, kcal, protein_g, carb_g, fat_g')
+        .select('id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g')
         .in('meal_id', meals.map((m: any) => m.id))
         .order('position');
       if (cancelled) return;
@@ -124,8 +126,9 @@ export function useTodayNutrition(): DayData {
       for (const e of entries ?? []) {
         const mt = typeOf.get((e as any).meal_id) ?? 'snack';
         grouped[mt].push({
-          id: (e as any).id, meal_type: mt, food_name: (e as any).food_name,
+          id: (e as any).id, meal_id: (e as any).meal_id, meal_type: mt, food_name: (e as any).food_name,
           serving_unit: (e as any).serving_unit, quantity: num((e as any).quantity),
+          grams_logged: (e as any).grams_logged == null ? null : num((e as any).grams_logged),
           kcal: num((e as any).kcal), protein_g: num((e as any).protein_g),
           carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
         });
@@ -275,6 +278,519 @@ export async function loadServings(supabase: Supa | null, food: PickerFood): Pro
     label: s.label, grams: num(s.grams), is_default: !!s.is_default,
   }));
   return servings.length > 0 ? servings : [fallback];
+}
+
+// ── AI food logging (Drona parse) ───────────────────────────────────────────
+// The nutrition bar's free text ("2 roti and dal") is parsed by the ai-coach
+// edge function's parse_meal mode, which resolves each item against the catalog
+// and returns FINAL per-line macros. The client just calls it, then writes the
+// returned entries straight to meal_entries with logged_via='ai' — no re-derive.
+
+/** One resolved food line from the parser. Macros are the totals for this line
+ *  (already scaled to grams), not per-100. Mirrors the edge ParsedItem. */
+export interface ParsedMealItem {
+  food_id: string | null;
+  food_name: string;
+  quantity: number;
+  serving_label: string;
+  grams: number;
+  kcal: number; protein_g: number; carb_g: number; fat_g: number;
+  fiber_g: number | null;
+  source: 'catalog' | 'off' | 'web' | 'estimate';
+  assumption: string | null;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface ParsedMeal {
+  meal_type: MealType;
+  items: ParsedMealItem[];
+  drona_line: string;
+}
+
+/** parse_meal outcome: either a parsed meal to log, or a decline (non-food
+ *  input) carrying Drona's redirect line, or a transport/parse error. */
+export type ParseMealResult =
+  | { kind: 'parsed'; meal: ParsedMeal }
+  | { kind: 'declined'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Call the ai-coach edge function in parse_meal mode. The Clerk JWT rides on
+ *  the client's fetch wrapper automatically, so a signed-out client (base anon
+ *  client) would 401 — callers gate on isSignedIn before invoking. */
+export async function parseMeal(
+  supabase: Supa,
+  args: { text: string; mealHint?: MealType | null },
+): Promise<ParseMealResult> {
+  const text = args.text.trim();
+  if (!text) return { kind: 'error', message: 'Type what you ate first.' };
+
+  const now = new Date();
+  const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  let data: any;
+  try {
+    const res = await supabase.functions.invoke('ai-coach', {
+      body: {
+        mode: 'parse_meal',
+        text,
+        local_hour: now.getHours(),
+        local_date: localDate,
+        ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
+      },
+    });
+    if (res.error) return { kind: 'error', message: res.error.message ?? 'Drona could not reach the kitchen. Try again.' };
+    data = res.data;
+  } catch (e) {
+    return { kind: 'error', message: 'No connection. Type it again when you are back online.' };
+  }
+
+  if (data?.declined?.message) {
+    return { kind: 'declined', message: String(data.declined.message) };
+  }
+  const parsed = data?.parsed;
+  if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) {
+    return { kind: 'error', message: 'Drona could not read that one. Give it another shot.' };
+  }
+  const mealType: MealType =
+    parsed.meal_type === 'breakfast' || parsed.meal_type === 'lunch' ||
+    parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
+      ? parsed.meal_type : 'snack';
+  const items: ParsedMealItem[] = (parsed.items as any[]).map((i) => ({
+    food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
+    food_name: String(i.food_name ?? 'Food'),
+    quantity: num(i.quantity) || 1,
+    serving_label: String(i.serving_label ?? 'serving'),
+    grams: num(i.grams),
+    kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
+    fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
+    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' ? i.source : 'estimate',
+    assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
+    confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
+  }));
+  return {
+    kind: 'parsed',
+    meal: { meal_type: mealType, items, drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.') },
+  };
+}
+
+/** The result of writing a parsed meal — carries the ids needed to Undo. */
+export interface LoggedParseRef {
+  mealId: string;
+  entryIds: string[];
+  createdMeal: boolean; // true if we created the meal row (so Undo can remove it)
+}
+
+/** Write a parsed meal to today's log: find-or-create the meal of parsed.meal_type,
+ *  then batch-insert each item as a meal_entry with the parser's FINAL macros and
+ *  logged_via='ai'. Returns ids for Undo, or { error }. */
+export async function logParsedMeal(
+  supabase: Supa,
+  meal: ParsedMeal,
+): Promise<{ ref?: LoggedParseRef; error?: string }> {
+  const { start, end } = todayRange();
+  const { data: existing } = await supabase
+    .from('meals').select('id').eq('meal_type', meal.meal_type)
+    .gte('logged_at', start).lte('logged_at', end).limit(1);
+  let mealId = (existing?.[0] as any)?.id as string | undefined;
+  let createdMeal = false;
+  if (!mealId) {
+    const { data: created, error } = await supabase
+      .from('meals').insert({ meal_type: meal.meal_type }).select('id').single();
+    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
+    mealId = (created as any).id;
+    createdMeal = true;
+  }
+
+  const { count } = await supabase
+    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
+  const base = count ?? 0;
+
+  const rows = meal.items.map((it, idx) => ({
+    meal_id: mealId,
+    food_id: it.food_id,
+    food_name: it.food_name,
+    quantity: it.quantity,
+    serving_unit: it.serving_label,
+    grams_logged: r1(it.grams),
+    kcal: r0(it.kcal), protein_g: r1(it.protein_g), carb_g: r1(it.carb_g), fat_g: r1(it.fat_g),
+    // The parser returns fiber per line; sugar/sat_fat/sodium aren't parsed, so
+    // they stay null (meal_entries snapshot columns are nullable as of 0069).
+    fiber_g: it.fiber_g == null ? null : r1(it.fiber_g),
+    sugar_g: null, sat_fat_g: null, sodium_mg: null,
+    position: base + idx,
+    logged_via: 'ai',
+  }));
+
+  const { data: inserted, error } = await supabase
+    .from('meal_entries').insert(rows).select('id');
+  if (error) {
+    // If we created an empty meal and the entries failed, don't leave the
+    // orphan meal behind.
+    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    return { error: error.message };
+  }
+  const entryIds = (inserted ?? []).map((r: any) => String(r.id));
+  return { ref: { mealId: mealId!, entryIds, createdMeal } };
+}
+
+/** Undo an AI-logged meal: delete the inserted entries, and the meal too if we
+ *  created it for this log and it is now empty. Best-effort. */
+export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<void> {
+  if (ref.entryIds.length > 0) {
+    await supabase.from('meal_entries').delete().in('id', ref.entryIds);
+  }
+  if (ref.createdMeal) {
+    const { count } = await supabase
+      .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', ref.mealId);
+    if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', ref.mealId);
+  }
+}
+
+// ── Daily targets (the lifter framing: protein ring + calorie band) ─────────
+// Stored as nullable columns on user_profiles; the ai-coach parse_meal fn reads
+// them too. When unset we fall back to DEFAULT_TARGETS per-field so the ring
+// always has a goal to draw against.
+export interface NutritionTargets { kcal: number; protein: number; carb: number; fat: number }
+export const DEFAULT_TARGETS: NutritionTargets = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
+
+/** Read the user's daily targets. isCustom = they've set at least one real goal
+ *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
+export function useNutritionTargets(): {
+  targets: NutritionTargets; isCustom: boolean; reload: () => void;
+  apply: (t: NutritionTargets) => void;
+} {
+  const supabase = useSupabaseClient();
+  const { user } = useClerkUser();
+  const clerkId = user?.id ?? null;
+  const [targets, setTargets] = useState<NutritionTargets>(DEFAULT_TARGETS);
+  const [isCustom, setIsCustom] = useState(false);
+  const [tick, setTick] = useState(0);
+  const reload = useCallback(() => setTick((t) => t + 1), []);
+  // Optimistic update so the ring/pill reflect a saved goal instantly, without
+  // waiting out read-after-write lag on the refetch.
+  const apply = useCallback((t: NutritionTargets) => { setTargets(t); setIsCustom(true); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!supabase) return;
+      const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
+      const { data } = clerkId
+        ? await supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
+        : await supabase.from('user_profiles').select(cols).limit(1).maybeSingle();
+      if (cancelled || !data) return;
+      const d = data as Record<string, unknown>;
+      const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
+      setTargets({
+        kcal: pick(d.daily_calorie_target, DEFAULT_TARGETS.kcal),
+        protein: pick(d.protein_target_g, DEFAULT_TARGETS.protein),
+        carb: pick(d.carb_target_g, DEFAULT_TARGETS.carb),
+        fat: pick(d.fat_target_g, DEFAULT_TARGETS.fat),
+      });
+      setIsCustom(
+        d.daily_calorie_target != null || d.protein_target_g != null ||
+        d.carb_target_g != null || d.fat_target_g != null,
+      );
+    })();
+    return () => { cancelled = true; };
+  }, [supabase, clerkId, tick]);
+
+  // Refetch when a consuming screen regains focus, so the dashboard FUEL card
+  // reflects a goal set on the nutrition screen the moment the user returns.
+  const firstFocus = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) { firstFocus.current = false; return; }
+      reload();
+    }, [reload]),
+  );
+
+  return { targets, isCustom, reload, apply };
+}
+
+/** Persist daily targets to user_profiles (upsert on clerk_user_id, like the
+ *  profile screen). Pass the Clerk id from useClerkUser().user?.id. */
+export async function saveNutritionTargets(
+  supabase: Supa,
+  clerkId: string,
+  t: NutritionTargets,
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from('user_profiles').upsert({
+    clerk_user_id: clerkId,
+    daily_calorie_target: t.kcal,
+    protein_target_g: t.protein,
+    carb_target_g: t.carb,
+    fat_target_g: t.fat,
+  }, { onConflict: 'clerk_user_id' });
+  return error ? { error: error.message } : {};
+}
+
+// ── Saved meals + recipes (P3: create once, re-log in one tap) ──────────────
+// A 'meal' is a named bundle of foods (logging expands to one meal_entry each);
+// a 'recipe' is a batch you portion out (logging inserts a single per-serving
+// entry named after the recipe). Cached macros are the WHOLE-batch totals, so
+// per-serving = totals / servings for both (meal servings = 1).
+
+export interface SavedMealItem {
+  food_id: string | null;
+  food_name: string;
+  quantity: number;
+  serving_unit: string;
+  grams_logged: number | null;
+  kcal: number; protein_g: number; carb_g: number; fat_g: number;
+  fiber_g: number | null;
+}
+export interface SavedMeal {
+  id: string;
+  name: string;
+  kind: 'meal' | 'recipe';
+  servings: number;
+  serving_label: string | null;
+  kcal: number; protein_g: number; carb_g: number; fat_g: number; // whole-batch totals
+  items: SavedMealItem[];
+  created_at: string;
+}
+
+/** Create a saved meal/recipe from parsed items. Header caches the summed
+ *  whole-batch macros; items copy the parse snapshot. */
+export async function createSavedMeal(
+  supabase: Supa,
+  args: { name: string; kind: 'meal' | 'recipe'; servings: number; serving_label: string | null; items: ParsedMealItem[] },
+): Promise<{ id?: string; error?: string }> {
+  const items = args.items;
+  if (items.length === 0) return { error: 'Nothing to save' };
+  const sum = items.reduce(
+    (a, it) => ({
+      kcal: a.kcal + num(it.kcal), protein: a.protein + num(it.protein_g),
+      carb: a.carb + num(it.carb_g), fat: a.fat + num(it.fat_g),
+    }),
+    { kcal: 0, protein: 0, carb: 0, fat: 0 },
+  );
+  const { data: created, error } = await supabase.from('saved_meals').insert({
+    name: args.name.trim().slice(0, 80) || 'Saved meal',
+    kind: args.kind,
+    servings: Math.max(num(args.servings) || 1, 0.5),
+    serving_label: args.kind === 'recipe' ? (args.serving_label?.trim().slice(0, 40) || 'serving') : null,
+    kcal: r0(sum.kcal), protein_g: r1(sum.protein), carb_g: r1(sum.carb), fat_g: r1(sum.fat),
+  }).select('id').single();
+  if (error || !created) return { error: error?.message ?? 'Could not save' };
+  const savedId = (created as any).id as string;
+
+  const rows = items.map((it, i) => ({
+    saved_meal_id: savedId,
+    food_id: it.food_id,
+    food_name: it.food_name,
+    quantity: num(it.quantity) || 1,
+    serving_unit: it.serving_label,
+    grams_logged: it.grams == null ? null : r1(num(it.grams)),
+    kcal: r0(num(it.kcal)), protein_g: r1(num(it.protein_g)), carb_g: r1(num(it.carb_g)), fat_g: r1(num(it.fat_g)),
+    fiber_g: it.fiber_g == null ? null : r1(num(it.fiber_g)),
+    position: i,
+  }));
+  const { error: itemsErr } = await supabase.from('saved_meal_items').insert(rows);
+  if (itemsErr) {
+    await supabase.from('saved_meals').delete().eq('id', savedId); // no orphan header
+    return { error: itemsErr.message };
+  }
+  return { id: savedId };
+}
+
+/** All of the user's saved meals + recipes, newest first, with their items. */
+export async function listSavedMeals(supabase: Supa): Promise<SavedMeal[]> {
+  const { data: heads, error } = await supabase
+    .from('saved_meals')
+    .select('id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, created_at')
+    .order('created_at', { ascending: false });
+  if (error || !heads || heads.length === 0) return [];
+  const ids = (heads as any[]).map((h) => h.id);
+  const { data: items } = await supabase
+    .from('saved_meal_items')
+    .select('saved_meal_id, food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g')
+    .in('saved_meal_id', ids)
+    .order('position');
+  const byMeal = new Map<string, SavedMealItem[]>();
+  for (const it of (items ?? []) as any[]) {
+    const arr = byMeal.get(it.saved_meal_id) ?? [];
+    arr.push({
+      food_id: it.food_id ?? null, food_name: it.food_name, quantity: num(it.quantity),
+      serving_unit: it.serving_unit, grams_logged: it.grams_logged == null ? null : num(it.grams_logged),
+      kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
+      fiber_g: it.fiber_g == null ? null : num(it.fiber_g),
+    });
+    byMeal.set(it.saved_meal_id, arr);
+  }
+  return (heads as any[]).map((h) => ({
+    id: h.id, name: h.name, kind: h.kind, servings: num(h.servings), serving_label: h.serving_label ?? null,
+    kcal: num(h.kcal), protein_g: num(h.protein_g), carb_g: num(h.carb_g), fat_g: num(h.fat_g),
+    items: byMeal.get(h.id) ?? [], created_at: h.created_at,
+  }));
+}
+
+/** Log a saved meal/recipe into today's meal of `mealType`. A MEAL expands its
+ *  items (scaled by `servings`, default 1×); a RECIPE inserts one entry with
+ *  per-serving macros times `servings` eaten. */
+export async function logSavedMeal(
+  supabase: Supa,
+  saved: SavedMeal,
+  mealType: MealType,
+  servings = 1,
+): Promise<{ error?: string }> {
+  const { start, end } = todayRange();
+  const { data: existing } = await supabase
+    .from('meals').select('id').eq('meal_type', mealType)
+    .gte('logged_at', start).lte('logged_at', end).limit(1);
+  let mealId = (existing?.[0] as any)?.id as string | undefined;
+  let createdMeal = false;
+  if (!mealId) {
+    const { data: created, error } = await supabase
+      .from('meals').insert({ meal_type: mealType }).select('id').single();
+    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
+    mealId = (created as any).id; createdMeal = true;
+  }
+  const { count } = await supabase
+    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
+  const base = count ?? 0;
+
+  let rows: Record<string, unknown>[];
+  if (saved.kind === 'recipe') {
+    // Fraction of the whole batch eaten = servings / recipe yield.
+    const f = saved.servings > 0 ? servings / saved.servings : servings;
+    rows = [{
+      meal_id: mealId, food_id: null, food_name: saved.name,
+      quantity: servings, serving_unit: saved.serving_label ?? 'serving', grams_logged: null,
+      kcal: r0(saved.kcal * f), protein_g: r1(saved.protein_g * f), carb_g: r1(saved.carb_g * f), fat_g: r1(saved.fat_g * f),
+      fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null,
+      position: base, logged_via: 'manual',
+    }];
+  } else {
+    rows = saved.items.map((it, i) => ({
+      meal_id: mealId, food_id: it.food_id, food_name: it.food_name,
+      quantity: r1(it.quantity * servings), serving_unit: it.serving_unit,
+      grams_logged: it.grams_logged == null ? null : r1(it.grams_logged * servings),
+      kcal: r0(it.kcal * servings), protein_g: r1(it.protein_g * servings), carb_g: r1(it.carb_g * servings), fat_g: r1(it.fat_g * servings),
+      fiber_g: it.fiber_g == null ? null : r1(it.fiber_g * servings), sugar_g: null, sat_fat_g: null, sodium_mg: null,
+      position: base + i, logged_via: 'manual',
+    }));
+  }
+  const { error } = await supabase.from('meal_entries').insert(rows);
+  if (error) {
+    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    return { error: error.message };
+  }
+  return {};
+}
+
+/** Update a saved meal in place: rename + replace its items (whole-batch macros
+ *  recomputed from the new items). Items are a small list, so we replace them
+ *  wholesale rather than diffing. */
+export async function updateSavedMeal(
+  supabase: Supa,
+  id: string,
+  args: { name: string; items: ParsedMealItem[] },
+): Promise<{ error?: string }> {
+  const items = args.items;
+  if (items.length === 0) return { error: 'Nothing to save' };
+  const sum = items.reduce(
+    (a, it) => ({
+      kcal: a.kcal + num(it.kcal), protein: a.protein + num(it.protein_g),
+      carb: a.carb + num(it.carb_g), fat: a.fat + num(it.fat_g),
+    }),
+    { kcal: 0, protein: 0, carb: 0, fat: 0 },
+  );
+  const { error: headErr } = await supabase.from('saved_meals').update({
+    name: args.name.trim().slice(0, 80) || 'Saved meal',
+    kcal: r0(sum.kcal), protein_g: r1(sum.protein), carb_g: r1(sum.carb), fat_g: r1(sum.fat),
+  }).eq('id', id);
+  if (headErr) return { error: headErr.message };
+  const { error: delErr } = await supabase.from('saved_meal_items').delete().eq('saved_meal_id', id);
+  if (delErr) return { error: delErr.message };
+  const rows = items.map((it, i) => ({
+    saved_meal_id: id,
+    food_id: it.food_id,
+    food_name: it.food_name,
+    quantity: num(it.quantity) || 1,
+    serving_unit: it.serving_label,
+    grams_logged: it.grams == null ? null : r1(num(it.grams)),
+    kcal: r0(num(it.kcal)), protein_g: r1(num(it.protein_g)), carb_g: r1(num(it.carb_g)), fat_g: r1(num(it.fat_g)),
+    fiber_g: it.fiber_g == null ? null : r1(num(it.fiber_g)),
+    position: i,
+  }));
+  const { error: insErr } = await supabase.from('saved_meal_items').insert(rows);
+  if (insErr) return { error: insErr.message };
+  return {};
+}
+
+/** Delete a saved meal/recipe (its items cascade). */
+export async function deleteSavedMeal(supabase: Supa, id: string): Promise<{ error?: string }> {
+  const { error } = await supabase.from('saved_meals').delete().eq('id', id);
+  return error ? { error: error.message } : {};
+}
+
+// ── Editing logged entries (P2 fix-it affordances) ──────────────────────────
+
+/** Delete a logged entry. If its parent meal is now empty, delete the meal too
+ *  (so an emptied section collapses back to its "Add" prompt). Best-effort. */
+export async function deleteMealEntry(
+  supabase: Supa,
+  entry: { id: string; meal_id: string },
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from('meal_entries').delete().eq('id', entry.id);
+  if (error) return { error: error.message };
+  const { count } = await supabase
+    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
+  if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
+  return {};
+}
+
+/** Rescale a logged entry to a new quantity, scaling grams + the macro snapshot
+ *  linearly from the current values (macros are linear in amount). Clamps to a
+ *  sane range so a fat-fingered stepper can't write absurd rows. */
+export async function updateEntryQuantity(
+  supabase: Supa,
+  entry: LoggedEntry,
+  newQuantity: number,
+): Promise<{ error?: string }> {
+  const q1 = Math.min(Math.max(newQuantity, 0.25), 50);
+  const q0 = entry.quantity > 0 ? entry.quantity : 1;
+  const f = q1 / q0;
+  const patch: Record<string, number> = {
+    quantity: q1,
+    kcal: r0(entry.kcal * f),
+    protein_g: r1(entry.protein_g * f),
+    carb_g: r1(entry.carb_g * f),
+    fat_g: r1(entry.fat_g * f),
+  };
+  if (entry.grams_logged != null) patch.grams_logged = r1(entry.grams_logged * f);
+  const { error } = await supabase.from('meal_entries').update(patch).eq('id', entry.id);
+  return error ? { error: error.message } : {};
+}
+
+/** Move an entry to a different meal section for today: find-or-create the target
+ *  meal, reassign the entry, and delete the source meal if it empties. No-op when
+ *  the entry is already in the target section. */
+export async function moveEntry(
+  supabase: Supa,
+  entry: LoggedEntry,
+  target: MealType,
+): Promise<{ error?: string }> {
+  if (target === entry.meal_type) return {};
+  const { start, end } = todayRange();
+  const { data: existing } = await supabase
+    .from('meals').select('id').eq('meal_type', target)
+    .gte('logged_at', start).lte('logged_at', end).limit(1);
+  let targetMealId = (existing?.[0] as any)?.id as string | undefined;
+  if (!targetMealId) {
+    const { data: created, error } = await supabase
+      .from('meals').insert({ meal_type: target }).select('id').single();
+    if (error || !created) return { error: error?.message ?? 'Could not create the meal' };
+    targetMealId = (created as any).id;
+  }
+  const { error } = await supabase.from('meal_entries').update({ meal_id: targetMealId }).eq('id', entry.id);
+  if (error) return { error: error.message };
+  const { count } = await supabase
+    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
+  if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
+  return {};
 }
 
 /** Log a food to today's meal of `mealType` (find-or-create the meal, insert the
