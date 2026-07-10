@@ -114,7 +114,10 @@ export default function FoodSearchScreen() {
     setLogMeal(meal); // detail reads the target meal from the store on focus
     router.push({
       pathname: '/food-detail',
-      params: { meal, food: encodeURIComponent(JSON.stringify(food)) },
+      // Explicitly blank the AI params: /food-detail is a retained route, so a
+      // prior "Ask Drona" visit's source/assumption would otherwise linger and
+      // wrongly badge + AI-log this plain catalog tap.
+      params: { meal, food: encodeURIComponent(JSON.stringify(food)), source: '', assumption: '' },
     });
   }
 
