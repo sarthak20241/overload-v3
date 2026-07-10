@@ -90,7 +90,7 @@ export default function FoodDetailScreen() {
   if (!food) {
     return (
       <View style={{ flex: 1, backgroundColor: C.background, paddingTop: insets.top }}>
-        <Pressable onPress={() => router.back()} style={{ padding: Spacing.xl }}>
+        <Pressable onPress={() => router.navigate('/food-search')} style={{ padding: Spacing.xl }}>
           <Feather name="chevron-left" size={24} color={C.foreground} />
         </Pressable>
         <Text style={{ color: C.textMuted, textAlign: 'center', marginTop: 40 }}>Food not found.</Text>
@@ -151,7 +151,7 @@ export default function FoodDetailScreen() {
   return (
     <View style={[s.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
       <View style={s.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
+        <Pressable onPress={() => router.navigate('/food-search')} hitSlop={12} style={s.back}>
           <Feather name="chevron-left" size={24} color={C.foreground} />
         </Pressable>
         <Text style={s.headerTitle}>Add Food</Text>
