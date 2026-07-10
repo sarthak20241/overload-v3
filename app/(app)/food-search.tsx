@@ -24,7 +24,7 @@ import {
   searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal,
   listSavedMeals, logSavedMeal, parseMeal, type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
-import { defaultServing, type MealType } from '@/lib/foods';
+import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
 
 type SearchTab = 'all' | 'meals';
@@ -90,6 +90,10 @@ export default function FoodSearchScreen() {
     setSearching(true);
     let cancelled = false;
     const t = setTimeout(async () => {
+      // Paint the offline staple matches instantly (no network wait); the full
+      // catalog (the RPC, now trigram-indexed) replaces them a moment later.
+      const bundled = searchFoods(qq);
+      if (!cancelled && bundled.length > 0) { setResults(bundled); setSearching(false); }
       try {
         const r = await searchCatalog(supabase, qq);
         if (!cancelled) setResults(r);
@@ -98,7 +102,7 @@ export default function FoodSearchScreen() {
         // the search stays stuck "searching…" for the rest of the session.
         if (!cancelled) setSearching(false);
       }
-    }, 220);
+    }, 140);
     return () => { cancelled = true; clearTimeout(t); };
   }, [query, supabase]);
 
