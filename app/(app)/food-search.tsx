@@ -299,7 +299,10 @@ export default function FoodSearchScreen() {
     <View style={[s.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
       {/* Header with meal selector */}
       <View style={s.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
+        {/* Back returns to the diet day view. The (app) group is a Tabs navigator,
+            so router.back() pops to the previously focused tab (the Dashboard);
+            navigate() jumps straight to the nutrition tab. */}
+        <Pressable onPress={() => router.navigate('/nutrition')} hitSlop={12} style={s.back}>
           <Feather name="chevron-left" size={24} color={C.foreground} />
         </Pressable>
         <Pressable style={s.mealSel} onPress={() => setMealOpen((o) => !o)} hitSlop={8}>
@@ -416,7 +419,7 @@ export default function FoodSearchScreen() {
               <Text style={s.emptySub}>
                 {showingRecents
                   ? 'Search the catalog to log your first food. It’ll show up here next time.'
-                  : 'Not in the catalog? Drona can look it up from product labels and the web.'}
+                  : 'Not in the catalog. Type the full name above if it’s short, then let Drona look it up from product labels and the web.'}
               </Text>
               {!showingRecents && isSignedIn && (
                 <>
@@ -426,7 +429,7 @@ export default function FoodSearchScreen() {
                     ) : (
                       <>
                         <Feather name="zap" size={15} color={Colors.primaryFg} />
-                        <Text style={s.askBtnTxt}>Ask Drona to find it</Text>
+                        <Text style={s.askBtnTxt} numberOfLines={1}>Ask Drona to find “{query.trim()}”</Text>
                       </>
                     )}
                   </Pressable>

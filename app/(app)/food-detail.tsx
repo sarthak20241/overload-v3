@@ -45,13 +45,11 @@ export default function FoodDetailScreen() {
   }, [params.food]);
 
   // Set when the food came from Drona's fallback (off/web/estimate) rather than a
-  // catalog tap — drives the provenance badge and logs the entry as AI-found.
+  // catalog tap — logs the entry as AI-found and shows a reassuring "saved" note.
+  // No accuracy caveat in the UI (the exact source is still recorded internally,
+  // migration 0076); once logged it appears in Recents for one-tap re-logging.
   const aiSource = (params.source as 'off' | 'web' | 'estimate' | undefined) || null;
-  const provenance =
-    aiSource === 'off' ? 'Drona found this on a product label'
-    : aiSource === 'web' ? 'Drona found this on the web'
-    : aiSource === 'estimate' ? "Drona's estimate — numbers are approximate"
-    : null;
+  const savedNote = aiSource ? 'Saved for easy logging next time' : null;
 
   const [meal, setMeal] = useState<MealType>(getLogMeal());
   // Sync the target meal from the store on focus (params go stale on this retained
@@ -167,10 +165,10 @@ export default function FoodDetailScreen() {
       >
         <Text style={s.title}>{food.name}</Text>
 
-        {provenance && (
+        {savedNote && (
           <View style={[s.provenance, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
-            <Feather name="zap" size={12} color={C.accentText} />
-            <Text style={[s.provenanceTxt, { color: C.accentText }]}>{provenance}</Text>
+            <Feather name="bookmark" size={12} color={C.accentText} />
+            <Text style={[s.provenanceTxt, { color: C.accentText }]}>{savedNote}</Text>
           </View>
         )}
 
