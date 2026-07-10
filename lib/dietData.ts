@@ -490,6 +490,9 @@ export async function logParsedMeal(
     sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: base + idx,
     logged_via: 'ai',
+    // Where the macros came from (catalog / off / web / estimate) so the diary can
+    // later tell a real label/web hit from a pure estimate (migration 0076).
+    source: it.source,
   }));
 
   const { data: inserted, error } = await supabase

@@ -115,10 +115,9 @@ export default function FoodDetailScreen() {
       let error: string | undefined;
       if (aiSource) {
         // AI-found food: log through the parse path so the entry is marked
-        // logged_via='ai'. meal_entries has no per-source column, so the exact
-        // source (off/web/estimate) isn't persisted — the picker's provenance
-        // badge surfaces it at log time. (source/assumption are carried on the
-        // item for shape parity with the parser; the DB write ignores them.)
+        // logged_via='ai' and its source (off/web/estimate) is persisted on the
+        // meal_entries snapshot (migration 0076). assumption is carried on the
+        // item only for shape parity with the parser; it isn't stored.
         const item: ParsedMealItem = {
           food_id: food!.id ?? null, food_name: food!.name, quantity: qtyNum,
           serving_label: servingLabel, grams: nutr!.grams,
