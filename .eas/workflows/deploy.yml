@@ -45,10 +45,18 @@ jobs:
       build_id: ${{ needs.build_ios.outputs.build_id }}
       profile: production
 
-  submit_android:
-    name: Submit to Play Store (internal testing)
-    type: submit
-    needs: [build_android]
-    params:
-      build_id: ${{ needs.build_android.outputs.build_id }}
-      profile: production
+  # Android Play Store submission is PAUSED. Since the health-tracking feature
+  # (Health Connect / HealthKit) shipped, Google Play rejects every API
+  # submission with "You must let us know whether your app includes any health
+  # features" until the Health apps declaration (App content -> Health) is
+  # completed in the Play Console. That is a manual, legal-attestation form.
+  # The Android build above still runs, so a signed AAB is ready to upload
+  # manually. Re-enable this job once the declaration is filled in.
+  #
+  # submit_android:
+  #   name: Submit to Play Store (internal testing)
+  #   type: submit
+  #   needs: [build_android]
+  #   params:
+  #     build_id: ${{ needs.build_android.outputs.build_id }}
+  #     profile: production
