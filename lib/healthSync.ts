@@ -82,14 +82,17 @@ async function setCursor(userId: string, isoDay: string): Promise<void> {
 }
 
 // ── local-day helpers (app runtime; bucket on the user's local calendar day) ──
-function toLocalISO(d: Date): string {
+// Exported so manual-entry call sites (profile weight field, Analytics add
+// weight) bucket on the same local day as the platform sync, matching the
+// daily_metrics.metric_date "user's LOCAL calendar day" invariant.
+export function toLocalISO(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
-function todayLocalISO(): string {
+export function todayLocalISO(): string {
   return toLocalISO(new Date());
 }
 
@@ -208,6 +211,51 @@ export async function loadConnectedMetrics(
     }
   }
   return present;
+}
+
+/**
+ * Manual fallback write for a single day (the profile weight field, the
+ * Analytics "add weight" flow). Same idempotency key as the platform sync
+ * (user, day, type), so a manual entry cleanly overwrites/coexists with a
+ * platform-synced value for the same day.
+ */
+export async function upsertManualMetric(
+  supabase: SupabaseClient,
+  userId: string,
+  type: ReadableMetric,
+  date: string,
+  value: number,
+): Promise<void> {
+  if (!userId) return;
+  const { error } = await supabase.from('daily_metrics').upsert(
+    {
+      user_id: userId,
+      metric_date: date,
+      metric_type: type,
+      value,
+      unit: dailyMetricDef(type)?.storedUnit ?? null,
+      source: 'manual',
+    },
+    { onConflict: 'user_id,metric_date,metric_type' },
+  );
+  if (error) throw error;
+}
+
+/** Delete a single day's entry for a metric (e.g. removing a manual weight log entry). */
+export async function deleteMetric(
+  supabase: SupabaseClient,
+  userId: string,
+  type: ReadableMetric,
+  date: string,
+): Promise<void> {
+  if (!userId) return;
+  const { error } = await supabase
+    .from('daily_metrics')
+    .delete()
+    .eq('user_id', userId)
+    .eq('metric_date', date)
+    .eq('metric_type', type);
+  if (error) throw error;
 }
 
 /**

@@ -36,6 +36,7 @@ import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/local
 import { clearCoachConversations } from '@/lib/coachConversations';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
+import { upsertManualMetric, todayLocalISO } from '@/lib/healthSync';
 
 type Gender = 'M' | 'F' | 'O';
 type WeightUnit = 'kg' | 'lbs';
@@ -517,7 +518,7 @@ export default function ProfileScreen() {
     weightLogTimer.current = setTimeout(async () => {
       const num = parseFloat(v);
       if (isNaN(num) || num <= 0) return;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayLocalISO();
       const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
       const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
       const updated = latest && latest.date.slice(0, 10) === today
@@ -525,6 +526,18 @@ export default function ProfileScreen() {
         : [...weightLog, entry];
       setWeightLog(updated);
       await saveWeightLog(updated);
+      // Canonical write: daily_metrics.bodyweight_kg. user_profiles.weight_kg
+      // is derived from this by the DB trigger (migration 0073) — no direct
+      // write to it here. The AsyncStorage mirror above is a legacy fallback,
+      // not the source of truth.
+      if (!isGuestSession && user?.id && isSupabaseConfigured) {
+        try {
+          await upsertManualMetric(supabase, user.id, 'bodyweight_kg', today, num);
+        } catch {
+          // Offline or transient error — the local log above already has it;
+          // the next successful write reconciles daily_metrics.
+        }
+      }
       flashLogged('weight');
     }, 900);
   };
@@ -786,7 +799,6 @@ export default function ProfileScreen() {
                     onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setWeight(v);
-                      persistField({ weight_kg: parseFloat(v) || null });
                       scheduleWeightLog(v);
                     }}
                     placeholder={weightUnit === 'kg' ? '75' : '165'}

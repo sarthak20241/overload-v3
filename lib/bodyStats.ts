@@ -51,6 +51,32 @@ export async function saveWeightLog(log: WeightEntry[]): Promise<void> {
   await AsyncStorage.setItem(WEIGHT_KEY, JSON.stringify(log));
 }
 
+const WEIGHT_LOG_IMPORTED_KEY = (userId: string) => `overload_weight_log_imported::${userId}`;
+
+/**
+ * Per-user guard for the one-time import of this local WEIGHT_KEY log into
+ * daily_metrics (holistic-tracking-plan.md Phase 3). Once true, the Analytics
+ * screen stops treating this AsyncStorage log as a write target for existing
+ * data — new entries still land here as a legacy mirror, but the import loop
+ * never re-runs.
+ */
+export async function hasImportedWeightLog(userId: string): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(WEIGHT_LOG_IMPORTED_KEY(userId))) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export async function markWeightLogImported(userId: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(WEIGHT_LOG_IMPORTED_KEY(userId), '1');
+  } catch {
+    // Non-fatal — worst case the import loop re-runs next launch, which is
+    // idempotent (upsert on the same user/day/type key).
+  }
+}
+
 export async function loadBodyFatLog(): Promise<BodyFatEntry[]> {
   try {
     const raw = await AsyncStorage.getItem(BF_KEY);

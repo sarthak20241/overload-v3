@@ -24,6 +24,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["expo", "start", "--web"],
       "port": 19006
+    },
+    {
+      "name": "Expo Worktree iOS",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["expo", "start", "--ios", "--port", "8083"],
+      "port": 8083
     }
   ]
 }

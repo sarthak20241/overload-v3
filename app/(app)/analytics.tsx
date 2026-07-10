@@ -33,8 +33,10 @@ import { useSync } from '@/components/SyncProvider';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   loadMeasurements, saveMeasurements,
-  type WeightEntry, type BodyFatEntry, type MeasurementEntry, type MeasurementsData,
+  hasImportedWeightLog, markWeightLogImported,
+  type BodyFatEntry, type MeasurementEntry, type MeasurementsData,
 } from '@/lib/bodyStats';
+import { upsertManualMetric, deleteMetric, loadMetricSeries, todayLocalISO } from '@/lib/healthSync';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -454,6 +456,17 @@ function HistoryDrawer({
 }
 
 // ─── Trend Card (Weight / Body Fat) ───────────────────────────────────────────
+// Chart window options. A day-to-day 0.1-0.2kg wobble is invisible once the
+// y-axis auto-scales to a 90-day range dominated by a real multi-kg trend, so
+// the chart defaults to a narrow 7-day window (auto-scaled to ITS OWN small
+// range, per MiniAreaChart's autoScale) and lets the user zoom out from there.
+const TREND_PERIODS: { key: string; label: string; days: number | null }[] = [
+  { key: '7d', label: '7D', days: 7 },
+  { key: '30d', label: '30D', days: 30 },
+  { key: '90d', label: '90D', days: 90 },
+  { key: 'all', label: 'All', days: null },
+];
+
 function TrendCard({
   title, icon, color, unit, log, goal, chartWidth, onAdd, onDelete, onRefreshLog,
 }: {
@@ -470,13 +483,28 @@ function TrendCard({
 }) {
   const { C } = useTheme();
   const [historyOpen, setHistoryOpen] = useState(false);
-  const sorted = useMemo(() => [...log].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()), [log]);
-  const latest = sorted[sorted.length - 1];
+  const [period, setPeriod] = useState('7d');
+  const fullSorted = useMemo(() => [...log].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()), [log]);
+
+  // Window anchors on the latest LOGGED day, not "today" — a user who hasn't
+  // weighed in today shouldn't see an empty 7D chart just because of that gap.
+  const sorted = useMemo(() => {
+    const opt = TREND_PERIODS.find((p) => p.key === period);
+    if (!opt?.days || fullSorted.length === 0) return fullSorted;
+    const latestTime = new Date(fullSorted[fullSorted.length - 1].date).getTime();
+    const cutoff = latestTime - opt.days * 24 * 60 * 60 * 1000;
+    return fullSorted.filter((e) => new Date(e.date).getTime() >= cutoff);
+  }, [fullSorted, period]);
+
+  // The header's current value always reflects the true latest entry
+  // regardless of window; only the trend line and the diff badge zoom with it.
+  const latest = fullSorted[fullSorted.length - 1];
   const first = sorted[0];
-  const diff = sorted.length >= 2 ? latest.value - first.value : 0;
+  const diff = sorted.length >= 2 ? sorted[sorted.length - 1].value - first.value : 0;
   const hasChart = sorted.length >= 2;
   const data = sorted.map((e) => e.value);
   const labels = sorted.map((e) => formatDateShort(e.date));
+  const periodLabel = TREND_PERIODS.find((p) => p.key === period)?.label ?? '';
 
   return (
     <>
@@ -488,9 +516,9 @@ function TrendCard({
             <Text style={[styles.trendTitle, { color: C.foreground }]}>{title}</Text>
           </View>
           <View style={styles.trendHeaderRight}>
-            {sorted.length === 0 ? null : (
+            {fullSorted.length === 0 ? null : (
               <>
-                {diff !== 0 && (
+                {sorted.length >= 2 && diff !== 0 && (
                   <Text style={[styles.diffText, { color: diff > 0 ? C.dangerText : C.successText, fontWeight: FontWeight.bold }]}>
                     {diff > 0 ? '+' : ''}{diff.toFixed(1)} {unit}
                   </Text>
@@ -506,42 +534,56 @@ function TrendCard({
           </View>
         </View>
 
-        {sorted.length === 0 ? (
+        {fullSorted.length === 0 ? (
           <View style={styles.emptyTrend}>
             <Text style={[styles.emptyText, { color: C.textMuted }]}>No {title.toLowerCase()} entries yet</Text>
             <Text style={[styles.emptyHint, { color: C.textDim }]}>Tap + to log your first entry</Text>
           </View>
-        ) : hasChart ? (
-          <View style={{ marginTop: 8 }}>
-            <MiniAreaChart
-              data={data}
-              labels={labels}
-              width={chartWidth}
-              height={120}
-              color={color}
-              valueSuffix={unit}
-              tooltipBgColor={C.elevated}
-              tooltipTextColor={C.foreground}
-            />
-            {goal != null && (
-              <Text style={[styles.goalLabel, { color: C.warningText }]}>Goal: {goal} {unit}</Text>
-            )}
-          </View>
         ) : (
-          <View style={styles.emptyTrend}>
-            <Text style={[styles.singleValue, { color: C.accentText }]}>{latest.value} {unit}</Text>
-            <Text style={[styles.emptyHint, { color: C.textDim }]}>Log more to see a trend</Text>
-          </View>
+          <>
+            <View style={{ marginTop: 8 }}>
+              <SegmentedToggle options={TREND_PERIODS} selected={period} onSelect={setPeriod} />
+            </View>
+            {hasChart ? (
+              <View style={{ marginTop: 8 }}>
+                <MiniAreaChart
+                  data={data}
+                  labels={labels}
+                  width={chartWidth}
+                  height={120}
+                  color={color}
+                  valueSuffix={unit}
+                  tooltipBgColor={C.elevated}
+                  tooltipTextColor={C.foreground}
+                />
+                {goal != null && (
+                  <Text style={[styles.goalLabel, { color: C.warningText }]}>Goal: {goal} {unit}</Text>
+                )}
+              </View>
+            ) : sorted.length === 1 ? (
+              <View style={styles.emptyTrend}>
+                <Text style={[styles.singleValue, { color: C.accentText }]}>{sorted[0].value} {unit}</Text>
+                <Text style={[styles.emptyHint, { color: C.textDim }]}>
+                  {fullSorted.length > 1 ? `Only 1 entry in ${periodLabel} — try a wider range` : 'Log more to see a trend'}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.emptyTrend}>
+                <Text style={[styles.emptyText, { color: C.textMuted }]}>No entries in the last {periodLabel}</Text>
+                <Text style={[styles.emptyHint, { color: C.textDim }]}>Try a wider range above</Text>
+              </View>
+            )}
+          </>
         )}
 
-        {sorted.length > 0 && (
+        {fullSorted.length > 0 && (
           <TouchableOpacity
             onPress={() => setHistoryOpen(true)}
             style={[styles.showHistoryBtn, { borderTopColor: C.borderSubtle }]}
           >
             <Feather name="calendar" size={10} color={C.accentText} />
             <Text style={[styles.showHistoryText, { color: C.accentText }]}>
-              Show history ({sorted.length})
+              Show history ({fullSorted.length})
             </Text>
           </TouchableOpacity>
         )}
@@ -551,7 +593,7 @@ function TrendCard({
         visible={historyOpen}
         onClose={() => setHistoryOpen(false)}
         title={`${title} History`}
-        entries={sorted}
+        entries={fullSorted}
         unit={unit}
         color={color}
         icon={icon}
@@ -1131,8 +1173,11 @@ export default function AnalyticsScreen() {
   // stays retryable.
   const [insightsFromCoach, setInsightsFromCoach] = useState(false);
 
-  // Body stats
-  const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
+  // Body stats. Weight is canonically daily_metrics.bodyweight_kg (holistic-
+  // tracking-plan.md Phase 3) — {date, value} already matches TrendCard's shape,
+  // so no separate `weightEntries` mapping is needed. Body fat stays on the
+  // legacy AsyncStorage log (bodyStats.ts); out of scope for the reconcile.
+  const [weightSeries, setWeightSeries] = useState<{ date: string; value: number }[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   const { goalWeight: ctxGoal, weightUnit } = useBasicInfo();
   const goalWeight = ctxGoal ?? null;
@@ -1197,24 +1242,60 @@ export default function AnalyticsScreen() {
     }
   }, [user?.id, isGuestSession]);
 
+  // Weight lives in daily_metrics for signed-in users (guests have no Supabase
+  // account, so their weight log stays local). On first run per user, imports
+  // any pre-existing local weightLog entries into daily_metrics once, then
+  // always reads the canonical series back.
+  const fetchWeightSeries = useCallback(async () => {
+    if (isGuestSession) {
+      const local = await loadWeightLog();
+      setWeightSeries(local.map((e) => ({ date: e.date, value: e.weight })));
+      return;
+    }
+    const clerkId = user?.id;
+    if (!clerkId) return;
+
+    // Import failures must never block the read below — a bad legacy entry
+    // (or a mid-loop network drop) would otherwise hide already-synced
+    // daily_metrics data every time this runs. The guard is only set after a
+    // fully successful loop, so a failed import safely retries next call.
+    try {
+      if (!(await hasImportedWeightLog(clerkId))) {
+        const local = await loadWeightLog();
+        for (const e of local) {
+          await upsertManualMetric(supabase, clerkId, 'bodyweight_kg', e.date.slice(0, 10), e.weight);
+        }
+        await markWeightLogImported(clerkId);
+      }
+    } catch {
+      // Offline or import failed — fall through and still try the read.
+    }
+
+    try {
+      const series = await loadMetricSeries(supabase, clerkId, 180);
+      setWeightSeries(series['bodyweight_kg'] ?? []);
+    } catch {
+      // Offline — leave the current series as-is.
+    }
+  }, [isGuestSession, user?.id, supabase]);
+
   useEffect(() => {
     // Mid-hydration Clerk has no user yet, so isGuestSession reads true and a
     // signed-in user would flash empty guest analytics on cold launch.
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
     if (!clerkLoaded) return;
     fetchData().finally(() => setLoading(false));
-    loadWeightLog().then(setWeightLog);
+    fetchWeightSeries();
     loadBodyFatLog().then(setBodyFatLog);
-  }, [fetchData, clerkLoaded, pendingCount]);
+  }, [fetchData, fetchWeightSeries, clerkLoaded, pendingCount]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchData();
-    const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
-    setWeightLog(wl);
+    const [, bfl] = await Promise.all([fetchWeightSeries(), loadBodyFatLog()]);
     setBodyFatLog(bfl);
     setRefreshing(false);
-  }, [fetchData]);
+  }, [fetchData, fetchWeightSeries]);
 
   // ── Stats ──
   const weekStart = getWeekStart();
@@ -1313,19 +1394,37 @@ export default function AnalyticsScreen() {
 
   // ── Handlers ──
   const addWeight = async (v: number) => {
-    const today = new Date().toISOString().slice(0, 10);
-    const filtered = weightLog.filter((e) => e.date.slice(0, 10) !== today);
-    const next = [...filtered, { date: new Date().toISOString(), weight: v }].sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
-    setWeightLog(next);
-    await saveWeightLog(next);
+    if (isGuestSession) {
+      const today = new Date().toISOString().slice(0, 10);
+      const local = await loadWeightLog();
+      const filtered = local.filter((e) => e.date.slice(0, 10) !== today);
+      const next = [...filtered, { date: new Date().toISOString(), weight: v }].sort(
+        (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+      );
+      await saveWeightLog(next);
+      setWeightSeries(next.map((e) => ({ date: e.date, value: e.weight })));
+      return;
+    }
+    const clerkId = user?.id;
+    if (!clerkId) return;
+    const today = todayLocalISO();
+    await upsertManualMetric(supabase, clerkId, 'bodyweight_kg', today, v);
+    const filtered = weightSeries.filter((e) => e.date !== today);
+    setWeightSeries([...filtered, { date: today, value: v }].sort((a, b) => a.date.localeCompare(b.date)));
   };
 
   const deleteWeight = async (date: string) => {
-    const next = weightLog.filter((e) => e.date !== date);
-    setWeightLog(next);
-    await saveWeightLog(next);
+    if (isGuestSession) {
+      const local = await loadWeightLog();
+      const next = local.filter((e) => e.date !== date);
+      await saveWeightLog(next);
+      setWeightSeries(next.map((e) => ({ date: e.date, value: e.weight })));
+      return;
+    }
+    const clerkId = user?.id;
+    if (!clerkId) return;
+    await deleteMetric(supabase, clerkId, 'bodyweight_kg', date);
+    setWeightSeries(weightSeries.filter((e) => e.date !== date));
   };
 
   const addBodyFat = async (v: number) => {
@@ -1430,7 +1529,6 @@ export default function AnalyticsScreen() {
     setInsightsFromCoach(false);
   }, [weekWorkouts.length, weekVolume, avgDurationMin, selectedExercise, pr]);
 
-  const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
 
   // Muscle split — moved here from the dashboard (the readiness card took that slot).
@@ -1448,7 +1546,7 @@ export default function AnalyticsScreen() {
       .slice(0, 6);
   }, [workouts]);
 
-  const hasAny = workouts.length > 0 || weightLog.length > 0 || bodyFatLog.length > 0;
+  const hasAny = workouts.length > 0 || weightSeries.length > 0 || bodyFatLog.length > 0;
 
   if (loading) {
     return (
@@ -1678,7 +1776,7 @@ export default function AnalyticsScreen() {
               icon="trending-up"
               color="#10b981"
               unit={weightUnit}
-              log={weightEntries}
+              log={weightSeries}
               goal={goalWeight}
               chartWidth={bigChartWidth}
               onAdd={() => setAddWeightOpen(true)}
@@ -1751,7 +1849,7 @@ export default function AnalyticsScreen() {
         unit={weightUnit}
         color="#10b981"
         icon="trending-up"
-        initial={weightLog.length > 0 ? String(weightLog[weightLog.length - 1].weight) : ''}
+        initial={weightSeries.length > 0 ? String(weightSeries[weightSeries.length - 1].value) : ''}
         onSave={addWeight}
       />
       <AddEntryModal
