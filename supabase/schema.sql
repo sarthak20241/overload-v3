@@ -944,6 +944,39 @@ create index if not exists idx_parse_meal_rl_recent
 
 alter table parse_meal_rate_limit enable row level security;
 
+-- ─── User Exercise Notes (matches migration 0076) ───────────────────────────
+-- Sticky per-exercise personal note: one per (user, exercise), a persistent
+-- reminder ("seat at 4", "elbows tucked") shown under the exercise header in
+-- every session. Distinct from workouts.notes (per-session reflection) and
+-- routine_exercises.note (coach cue on a routine slot).
+create table if not exists user_exercise_notes (
+  user_id     text not null default (auth.jwt()->>'sub'),
+  exercise_id uuid not null references exercises(id) on delete cascade,
+  note        text not null,
+  updated_at  timestamptz not null default now(),
+  primary key (user_id, exercise_id)
+);
+
+alter table user_exercise_notes enable row level security;
+
+drop policy if exists "own exercise notes select" on user_exercise_notes;
+create policy "own exercise notes select" on user_exercise_notes
+  for select to authenticated using (user_id = auth.jwt()->>'sub');
+
+drop policy if exists "own exercise notes insert" on user_exercise_notes;
+create policy "own exercise notes insert" on user_exercise_notes
+  for insert to authenticated with check (user_id = auth.jwt()->>'sub');
+
+drop policy if exists "own exercise notes update" on user_exercise_notes;
+create policy "own exercise notes update" on user_exercise_notes
+  for update to authenticated
+  using (user_id = auth.jwt()->>'sub')
+  with check (user_id = auth.jwt()->>'sub');
+
+drop policy if exists "own exercise notes delete" on user_exercise_notes;
+create policy "own exercise notes delete" on user_exercise_notes
+  for delete to authenticated using (user_id = auth.jwt()->>'sub');
+
 -- ─── Seed: Common Exercises ─────────────────────────────────────────────────
 insert into exercises (name, muscle_group, category) values
   ('Bench Press', 'Chest', 'Barbell'),
