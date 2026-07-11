@@ -157,6 +157,7 @@ export default function HealthScreen() {
   const [deviceMetrics, setDeviceMetrics] = useState<Set<ReadableMetric>>(new Set());
   const [connStatus, setConnStatus] = useState<HealthConnectionStatus>('unknown');
   const [recentSleep, setRecentSleep] = useState<{ today: SleepEntry | null; yesterday: SleepEntry | null }>({ today: null, yesterday: null });
+  const [recentSleepReady, setRecentSleepReady] = useState(false);
   const [history, setHistory] = useState<{ date: string; value: number }[]>([]);
   const [series, setSeries] = useState<Record<string, { date: string; value: number }[]>>({});
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
@@ -186,7 +187,12 @@ export default function HealthScreen() {
     loadConnectedMetrics(supabase, userId)
       .then((c) => { setMetrics(c.metrics); setDeviceMetrics(c.deviceMetrics); })
       .catch(() => {});
-    loadRecentSleep(supabase, userId).then(setRecentSleep).catch(() => {});
+    // recentSleepReady (set on settle, success or failure) gates the ?log=1
+    // auto-open below, since progressive load no longer holds `loading` for this.
+    loadRecentSleep(supabase, userId)
+      .then(setRecentSleep)
+      .catch(() => {})
+      .finally(() => setRecentSleepReady(true));
     loadReadinessHistory(supabase, userId).then(setHistory).catch(() => {});
     loadMetricSeries(supabase, userId).then(setSeries).catch(() => {});
 
@@ -210,16 +216,17 @@ export default function HealthScreen() {
   // Deep link overload://health?log=1 (and the dashboard "Log last night" card)
   // opens the sleep sheet once. One-shot: the param persists on the route, so a
   // re-render or pull-to-refresh must not reopen a sheet the user dismissed.
-  // Gate on !loading so the sheet opens AFTER recentSleep is populated, otherwise
-  // it prefills with defaults (8h, no quality) and never picks up an existing
-  // entry, since the sheet only reads its prefill when `visible` flips true.
+  // Gate on recentSleepReady (not just !loading) so the sheet opens AFTER the
+  // prefill has settled; progressive load resolves `loading` on the readiness
+  // hero alone, while the sheet only reads its prefill when `visible` flips true,
+  // so opening early would show 8h/no-quality defaults over an existing entry.
   const autoOpenedRef = useRef(false);
   useEffect(() => {
-    if (params.log === '1' && !autoOpenedRef.current && !loading && userId) {
+    if (params.log === '1' && !autoOpenedRef.current && recentSleepReady && userId) {
       autoOpenedRef.current = true;
       setSheetOpen(true);
     }
-  }, [params.log, userId, loading]);
+  }, [params.log, userId, recentSleepReady]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

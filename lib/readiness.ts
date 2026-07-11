@@ -220,14 +220,18 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
   // ── Layered recovery signals (personal baseline only) ───────────────────────
   const zHrv = zPersonal(input.today.hrvMs, input.baseline.hrvMs, SD_FLOOR.hrv);
   const zRhr = zPersonal(input.today.restingHrBpm, input.baseline.restingHrBpm, SD_FLOOR.rhr, true);
-  const haveHrv = zHrv != null;
   const haveRhr = zRhr != null;
+  // HRV only counts alongside RHR (they come from the same wearable). This keeps
+  // the A1 tier honest: it never labels "HRV, resting heart rate and sleep" or
+  // folds HRV into the score when resting HR is absent. A lone HRV reading (rare)
+  // falls through to sleep-only rather than inventing a half-A1.
+  const haveHrv = zHrv != null && haveRhr;
 
   // Tier weights; renormalized below over the signals actually present.
   const weights = haveHrv ? { hrv: 0.5, rhr: 0.3, sleep: 0.2 } : { hrv: 0, rhr: 0.5, sleep: 0.5 };
   let wSum = 0;
   let zSum = 0;
-  if (zHrv != null) { zSum += weights.hrv * zHrv; wSum += weights.hrv; contributors.push({ key: 'hrv', z: zHrv, note: 'HRV vs your baseline' }); }
+  if (haveHrv && zHrv != null) { zSum += weights.hrv * zHrv; wSum += weights.hrv; contributors.push({ key: 'hrv', z: zHrv, note: 'HRV vs your baseline' }); }
   if (zRhr != null) { zSum += weights.rhr * zRhr; wSum += weights.rhr; contributors.push({ key: 'rhr', z: zRhr, note: 'resting heart rate vs your baseline' }); }
   zSum += weights.sleep * zSleep; wSum += weights.sleep; contributors.push({ key: 'sleep', z: zSleep, note: 'sleep vs your baseline' });
 

@@ -133,7 +133,11 @@ async function loadNutritionFactor(
         .eq('clerk_user_id', userId)
         .maybeSingle(),
     ]);
-    if (statsRes.error) return null;
+    // Either query erroring means we can't trust the ratios; skip the factor
+    // rather than silently scoring against fallback targets (the "any failure
+    // returns null" contract). A profile that simply has no custom targets set is
+    // NOT an error, and legitimately uses the defaults below.
+    if (statsRes.error || profileRes.error) return null;
     const days = (statsRes.data ?? []) as { kcal: number | string; protein_g: number | string }[];
     // Only days with actual food logged count toward the average.
     const logged = days

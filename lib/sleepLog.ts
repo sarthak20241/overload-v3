@@ -66,6 +66,19 @@ export async function logSleepForToday(
     .upsert(rows, { onConflict: 'user_id,metric_date,metric_type' });
   if (error) throw error;
 
+  // Clearing quality (null) must REMOVE any prior sleep_quality row, otherwise a
+  // stale rating keeps feeding readiness and the sheet's prefill. The upsert above
+  // only writes quality when present, so the delete handles the cleared case.
+  if (input.quality == null) {
+    const { error: delErr } = await supabase
+      .from('daily_metrics')
+      .delete()
+      .eq('user_id', userId)
+      .eq('metric_date', date)
+      .eq('metric_type', 'sleep_quality');
+    if (delErr) throw delErr;
+  }
+
   return computeAndStoreReadiness(supabase, userId);
 }
 
