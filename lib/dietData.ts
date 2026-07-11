@@ -249,10 +249,12 @@ export async function loadNutritionHistory(supabase: Supa | null, days = 14): Pr
  *  grouped by the user's LOCAL calendar day. */
 export async function nutritionStreak(supabase: Supa | null): Promise<number> {
   if (!supabase) return 0;
+  // 1000 rows of just logged_at is a tiny payload and, at ≤4 meals/day, covers a
+  // ~250-day streak — well beyond any realistic run before it would undercount.
   const { data } = await supabase
     .from('meals').select('logged_at')
     .order('logged_at', { ascending: false })
-    .limit(400);
+    .limit(1000);
   if (!data || data.length === 0) return 0;
   const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   const logged = new Set<string>();
@@ -277,7 +279,12 @@ export function useNutritionStreak(dep?: unknown): number {
     if (supabase) nutritionStreak(supabase).then(setStreak).catch(() => {});
   }, [supabase]);
   useEffect(() => { load(); }, [load, dep]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Skip the first focus — mount's effect already loaded — so we don't double-query.
+  const firstFocus = useRef(true);
+  useFocusEffect(useCallback(() => {
+    if (firstFocus.current) { firstFocus.current = false; return; }
+    load();
+  }, [load]));
   return streak;
 }
 

@@ -775,12 +775,17 @@ async function fetchRecentFoods(userClient: SupabaseClient): Promise<RecentFoodC
 // Full agent-flow observability for parse_meal: one parse_traces row per request
 // (logged or not), capturing the input, the tool-call trail, and the resolved
 // items. Fire-and-forget; never let a trace failure break the parse response.
-async function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): Promise<void> {
-  try {
-    await admin.from("parse_traces").insert(row);
-  } catch (e) {
-    console.log("[parse_meal] parse_trace insert failed:", String(e));
-  }
+function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): void {
+  const p = (async () => {
+    try {
+      await admin.from("parse_traces").insert(row);
+    } catch (e) {
+      console.log("[parse_meal] parse_trace insert failed:", String(e));
+    }
+  })();
+  // Keep the insert alive past the response so a fast return can't drop the trace.
+  const er = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
 async function handleParseMealRequest(args: {
