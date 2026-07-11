@@ -20,6 +20,15 @@
  * real row (and name is already how previousPerformance identifies exercises
  * across local caches). The DB id attaches to the entry when known; the flush
  * skips entries that don't have one yet.
+ *
+ * Name-as-key leans on the DB invariant that an exercise name resolves to ONE
+ * row per user (unique index on the global catalog + per-user custom names,
+ * migration exercise_name_unique + lib/exerciseResolve.ts). setExerciseNote
+ * takes the caller's exerciseId over a previously attached one on purpose:
+ * under the invariant they only differ when the row was deleted and recreated,
+ * where the fresh id is the live one (a stale id would FK-fail on flush and
+ * stay dirty forever). If the uniqueness invariant is ever relaxed, this
+ * becomes last-editor-wins across same-named rows — revisit the keying then.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';

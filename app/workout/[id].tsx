@@ -2645,6 +2645,7 @@ export default function ActiveWorkoutScreen() {
                   onChangeText={workout.setSessionNotes}
                   multiline
                   autoFocus
+                  maxLength={1000}
                   style={[styles.stickyNoteInput, { backgroundColor: C.muted, color: C.mutedFg }]}
                   onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
                   onBlur={() => { kbScrollTargetRef.current = null; }}
@@ -3100,6 +3101,7 @@ export default function ActiveWorkoutScreen() {
                   placeholder="How did it go?"
                   placeholderTextColor={C.textMuted}
                   multiline
+                  maxLength={1000}
                   style={[styles.formInput, styles.finishNotesInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
                 />
 
