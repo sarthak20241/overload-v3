@@ -29,7 +29,7 @@ import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
-  useDayNutrition, useNutritionTargets, setLogMeal, setLogDate, ymd,
+  useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   parseMeal, logParsedMeal,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
@@ -116,6 +116,9 @@ export default function NutritionScreen() {
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
   const { targets, isCustom, apply: applyTargets } = useNutritionTargets();
+  // Real logging streak (consecutive days with a meal). Pass today's kcal so the
+  // first log of the day bumps it immediately, not just on the next screen focus.
+  const streak = useNutritionStreak(totals.kcal);
   const [goalOpen, setGoalOpen] = useState(false);
   // Saved meals: save a parse for later; log a saved one in a tap.
   const [saveItems, setSaveItems] = useState<ParsedMealItem[] | null>(null);
@@ -232,10 +235,12 @@ export default function NutritionScreen() {
           <Pressable onPress={() => setSavedListOpen(true)} hitSlop={10} style={s.headerBtn} accessibilityLabel="Saved meals">
             <Feather name="bookmark" size={17} color={C.foreground} />
           </Pressable>
-          <View style={[s.streak, { marginLeft: Spacing.md }]}>
-            <Feather name="zap" size={12} color={Colors.stat.streak} />
-            <Text style={s.streakTxt}>3</Text>
-          </View>
+          {streak > 0 && (
+            <View style={[s.streak, { marginLeft: Spacing.md }]}>
+              <Feather name="zap" size={12} color={Colors.stat.streak} />
+              <Text style={s.streakTxt}>{streak}</Text>
+            </View>
+          )}
         </View>
 
         {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue

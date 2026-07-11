@@ -243,6 +243,44 @@ export async function loadNutritionHistory(supabase: Supa | null, days = 14): Pr
   return out;
 }
 
+/** Consecutive days (ending today) on which the user logged at least one meal.
+ *  Today not-yet-logged does NOT break the streak (mirrors the workout streak):
+ *  we start the count from yesterday in that case. Derived from meals.logged_at,
+ *  grouped by the user's LOCAL calendar day. */
+export async function nutritionStreak(supabase: Supa | null): Promise<number> {
+  if (!supabase) return 0;
+  const { data } = await supabase
+    .from('meals').select('logged_at')
+    .order('logged_at', { ascending: false })
+    .limit(400);
+  if (!data || data.length === 0) return 0;
+  const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const logged = new Set<string>();
+  for (const m of data as { logged_at: string }[]) logged.add(key(new Date(m.logged_at)));
+
+  const cursor = new Date();
+  if (!logged.has(key(cursor))) cursor.setDate(cursor.getDate() - 1); // today unlogged: don't break it
+  let streak = 0;
+  while (logged.has(key(cursor))) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+/** Reactive nutrition streak for the day header. Reloads whenever the caller's
+ *  `dep` changes (pass the day totals so a first-log-of-today bumps it) + on focus. */
+export function useNutritionStreak(dep?: unknown): number {
+  const supabase = useSupabaseClient();
+  const [streak, setStreak] = useState(0);
+  const load = useCallback(() => {
+    if (supabase) nutritionStreak(supabase).then(setStreak).catch(() => {});
+  }, [supabase]);
+  useEffect(() => { load(); }, [load, dep]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+  return streak;
+}
+
 /** Tidy a raw USDA catalog name for display: de-SHOUT all-caps brand fragments
  *  ("SNICKERS" -> "Snickers", "HERSHEY'S" -> "Hershey's") while leaving normal
  *  mixed-case words and possessives intact. Applied so logged history reads clean. */
