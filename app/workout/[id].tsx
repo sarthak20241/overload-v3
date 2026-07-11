@@ -328,6 +328,10 @@ export default function ActiveWorkoutScreen() {
   const notesOwner = isGuestSession ? 'guest' : user?.id;
   const [stickyNotes, setStickyNotes] = useState<Record<string, string>>({});
   const [editingStickyNote, setEditingStickyNote] = useState(false);
+  // Session note editor (workout-level reflection). Same collapsed-line
+  // pattern as the sticky note so the screen carries two quiet rows, not an
+  // always-open text box.
+  const [editingSessionNote, setEditingSessionNote] = useState(false);
   const stickyFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Local-first load, then reconcile with the server: push edits a previous
@@ -360,10 +364,13 @@ export default function ActiveWorkoutScreen() {
     }
   }, [notesOwner, exercises]);
 
-  // Collapse the note editor when the pager moves to another exercise or a new
+  // Collapse the note editors when the pager moves to another exercise or a new
   // session starts (the screen instance is reused across workouts, so stale
   // edit state would otherwise leak into the next session's first exercise).
-  useEffect(() => { setEditingStickyNote(false); }, [currentIdx, workout.routineId]);
+  useEffect(() => {
+    setEditingStickyNote(false);
+    setEditingSessionNote(false);
+  }, [currentIdx, workout.routineId]);
 
   // Flush any pending note edit when leaving the screen.
   useEffect(() => () => {
@@ -2329,18 +2336,37 @@ export default function ActiveWorkoutScreen() {
                   // page, and mounting six autoFocus inputs at once makes them
                   // steal focus from each other (instant open-then-blur).
                   if (editingStickyNote && interactive) {
+                    // The note saves on every keystroke; this editor is just the
+                    // expanded view. A ScrollView tap on empty space doesn't blur
+                    // a TextInput here (gesture-handler ScrollView), so an explicit
+                    // Done gives the user a clear "it's saved, collapse now" action.
                     return (
-                      <TextInput
-                        value={noteText}
-                        onChangeText={handleStickyNoteChange}
-                        onBlur={() => setEditingStickyNote(false)}
-                        placeholder="Note to self. Stays with this exercise."
-                        placeholderTextColor={C.textMuted}
-                        multiline
-                        autoFocus
-                        maxLength={500}
-                        style={[styles.stickyNoteInput, { backgroundColor: C.muted, color: C.mutedFg }]}
-                      />
+                      <View style={styles.stickyNoteEditor}>
+                        <View style={styles.stickyNoteEditorHead}>
+                          <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>NOTE TO SELF</Text>
+                          <TouchableOpacity
+                            onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingStickyNote(false); }}
+                            style={styles.stickyNoteDone}
+                            hitSlop={10}
+                            accessibilityRole="button"
+                            accessibilityLabel="Save exercise note"
+                          >
+                            <Feather name="check" size={13} color={Colors.primary} />
+                            <Text style={[styles.stickyNoteDoneText, { color: Colors.primary }]}>Done</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <TextInput
+                          value={noteText}
+                          onChangeText={handleStickyNoteChange}
+                          onSubmitEditing={() => { Keyboard.dismiss(); setEditingStickyNote(false); }}
+                          placeholder="Stays with this exercise. Form cues, setup, reminders."
+                          placeholderTextColor={C.textMuted}
+                          multiline
+                          autoFocus
+                          maxLength={500}
+                          style={[styles.stickyNoteInput, { backgroundColor: C.muted, color: C.mutedFg }]}
+                        />
+                      </View>
                     );
                   }
                   const hasNote = noteText.trim().length > 0;
@@ -2592,20 +2618,55 @@ export default function ActiveWorkoutScreen() {
 
             {/* Session note — the workout-level reflection (for you and your
                 coach), saved to workouts.notes. Same value the finish sheet
-                shows: jot mid-session, polish at finish. Exercise-specific
-                reminders belong in the sticky note under the header instead. */}
-            <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.xl }]}>SESSION NOTE</Text>
-            <TextInput
-              placeholder="How's the session going?"
-              placeholderTextColor={C.textMuted}
-              value={workout.sessionNotes}
-              onChangeText={workout.setSessionNotes}
-              multiline
-              numberOfLines={2}
-              style={[styles.notesInput, { backgroundColor: C.muted, color: C.mutedFg }]}
-              onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
-              onBlur={() => { kbScrollTargetRef.current = null; }}
-            />
+                shows: jot mid-session, polish at finish. Collapsed to the same
+                quiet one-line pattern as the sticky exercise note so the page
+                doesn't carry an always-open text box; position + label tell
+                the two apart (under the header = this exercise, down here =
+                today's session). */}
+            {editingSessionNote && interactive ? (
+              <View style={[styles.stickyNoteEditor, { marginTop: Spacing.xl }]}>
+                <View style={styles.stickyNoteEditorHead}>
+                  <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>SESSION NOTE</Text>
+                  <TouchableOpacity
+                    onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingSessionNote(false); }}
+                    style={styles.stickyNoteDone}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel="Save session note"
+                  >
+                    <Feather name="check" size={13} color={Colors.primary} />
+                    <Text style={[styles.stickyNoteDoneText, { color: Colors.primary }]}>Done</Text>
+                  </TouchableOpacity>
+                </View>
+                <TextInput
+                  placeholder="How's the session going?"
+                  placeholderTextColor={C.textMuted}
+                  value={workout.sessionNotes}
+                  onChangeText={workout.setSessionNotes}
+                  multiline
+                  autoFocus
+                  style={[styles.stickyNoteInput, { backgroundColor: C.muted, color: C.mutedFg }]}
+                  onFocus={() => { kbScrollTargetRef.current = 'notes'; }}
+                  onBlur={() => { kbScrollTargetRef.current = null; }}
+                />
+              </View>
+            ) : (
+              <TouchableOpacity
+                onPress={() => { haptics.selection(); setEditingSessionNote(true); }}
+                style={[styles.stickyNoteRow, { marginTop: Spacing.xl }]}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={workout.sessionNotes.trim() ? 'Edit session note' : 'Add session note'}
+              >
+                <Feather name="file-text" size={10} color={C.textMuted} />
+                <Text
+                  numberOfLines={1}
+                  style={[styles.stickyNoteText, { color: workout.sessionNotes.trim() ? C.mutedFg : C.textMuted }]}
+                >
+                  {workout.sessionNotes.trim() || 'Session note'}
+                </Text>
+              </TouchableOpacity>
+            )}
             {renderSettingsLink()}
           </>
     );
@@ -3535,15 +3596,6 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
   },
   addMoreSetsBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
-  notesInput: {
-    marginTop: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 12,
-    borderRadius: Radius.lg,
-    fontSize: FontSize.xs,
-    minHeight: 56,
-    textAlignVertical: 'top',
-  },
   // Sticky exercise note (header): quiet one-line row, expands to an editor.
   stickyNoteRow: {
     flexDirection: 'row',
@@ -3552,8 +3604,27 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   stickyNoteText: { fontSize: 12, lineHeight: 16, flexShrink: 1 },
+  stickyNoteEditor: { marginTop: 6 },
+  stickyNoteEditorHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  stickyNoteEditorLabel: {
+    fontSize: 10,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: 1,
+  },
+  stickyNoteDone: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+  },
+  stickyNoteDoneText: { fontSize: 12, fontWeight: FontWeight.semibold },
   stickyNoteInput: {
-    marginTop: 6,
     paddingHorizontal: Spacing.md,
     paddingVertical: 8,
     borderRadius: Radius.md,
