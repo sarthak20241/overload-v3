@@ -325,7 +325,11 @@ export default function ActiveWorkoutScreen() {
   // adds carry a temp id until reconcile lands (lib/exerciseNotes attaches the
   // real id). Every keystroke mirrors to the local store, so the note survives
   // a discarded workout; a debounced flush pushes signed-in edits to Supabase.
-  const notesOwner = isGuestSession ? 'guest' : user?.id;
+  // Gated on clerkLoaded: during Clerk hydration user?.id is still undefined,
+  // so isGuestSession briefly reads true for a signed-in user — an edit in
+  // that window would be filed under the guest bucket and look lost once the
+  // owner flips. Null owner makes every note effect and edit a no-op instead.
+  const notesOwner = !clerkLoaded ? null : isGuestSession ? 'guest' : user?.id;
   const [stickyNotes, setStickyNotes] = useState<Record<string, string>>({});
   const [editingStickyNote, setEditingStickyNote] = useState(false);
   // Session note editor (workout-level reflection). Same collapsed-line
@@ -2363,7 +2367,7 @@ export default function ActiveWorkoutScreen() {
                           placeholderTextColor={C.textMuted}
                           multiline
                           autoFocus
-                          maxLength={500}
+                          maxLength={1000}
                           style={[styles.stickyNoteInput, { backgroundColor: C.muted, color: C.mutedFg }]}
                         />
                       </View>

@@ -952,10 +952,25 @@ alter table parse_meal_rate_limit enable row level security;
 create table if not exists user_exercise_notes (
   user_id     text not null default (auth.jwt()->>'sub'),
   exercise_id uuid not null references exercises(id) on delete cascade,
-  note        text not null,
+  -- Client caps input at 1000 (TextInput maxLength); the check makes the
+  -- limit hold for direct API writes too (migration 0077). Named explicitly
+  -- so the idempotent re-apply block below recognizes it on fresh databases.
+  note        text not null constraint user_exercise_notes_note_length_check
+                check (char_length(note) <= 1000),
   updated_at  timestamptz not null default now(),
   primary key (user_id, exercise_id)
 );
+
+-- Idempotent re-apply: the check above is inside the create-if-not-exists
+-- block, so databases where the table already existed (created by 0076)
+-- wouldn't gain it from re-running this file. Mirror it explicitly.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'user_exercise_notes_note_length_check') then
+    alter table user_exercise_notes add constraint user_exercise_notes_note_length_check
+      check (char_length(note) <= 1000);
+  end if;
+end $$;
 
 alter table user_exercise_notes enable row level security;
 
