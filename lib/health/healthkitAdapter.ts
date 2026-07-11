@@ -84,6 +84,13 @@ export const healthkitAdapter: HealthAdapter = {
     }
   },
 
+  // iOS deliberately hides whether READ access was granted (a privacy feature), so
+  // there is nothing truthful to report. Return null; connection is inferred from
+  // the presence of fresh data plus the local "we asked" flag instead.
+  async getGrantedReadTypes() {
+    return null;
+  },
+
   async readDaily(sinceDate) {
     const startDate = localMidnight(sinceDate);
     const endDate = new Date();

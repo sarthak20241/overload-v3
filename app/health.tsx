@@ -4,12 +4,13 @@
  * Root-level full-screen route (like workout/[id]), reached from the dashboard
  * ReadinessCard and the deep link overload://health. It is NOT a connect button:
  * once data is flowing it shows the readiness score, WHY it moved (contributors
- * vs the user's own baseline), the trend, and WHAT is feeding it (the hub + which
- * metrics, honestly, since iOS never reports read grants). The connect action is
- * demoted to a "Sync now" footer once connected. Fully theme-aware (no hardcoded
- * light). Plan: .planning/holistic-tracking-plan.md.
+ * vs the user's own baseline), the trend, and WHAT is feeding it. Sleep is the
+ * anchor of the score, so a phone-only user can log last night by hand (the sleep
+ * sheet) and get a read without any wearable. The "Sharpen the read" section then
+ * shows, honestly, which extra signals would tighten it. Fully theme-aware.
+ * Plan: .planning/holistic-tracking-plan.md.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -24,16 +25,27 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
-import { loadConnectedMetrics, loadMetricSeries, requestHealthAuthorization, type ReadableMetric } from '@/lib/healthSync';
+import {
+  loadConnectedMetrics,
+  loadMetricSeries,
+  requestHealthAuthorization,
+  markHealthConnected,
+  getHealthConnectionStatus,
+  type ReadableMetric,
+  type HealthConnectionStatus,
+} from '@/lib/healthSync';
+import { logSleepForToday, loadRecentSleep, type SleepEntry } from '@/lib/sleepLog';
 import { bandColor, directive, bandPillTextColor, contributorImpact, bandForScore, type ReadinessBand, type ReadinessContributor, type ReadinessResult, type ReadinessTier } from '@/lib/readiness';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { SleepLogSheet } from '@/components/health/SleepLogSheet';
+import { haptics } from '@/lib/haptics';
 import { dailyMetricDef, type DailyMetricDef } from '@/lib/dailyMetrics';
 import { sourcesForHub, type HealthHub } from '@/lib/healthSources';
 import { Colors, Spacing, Radius, FontSize, FontWeight, IconSize, Shadow, colorWithAlpha } from '@/constants/theme';
@@ -44,6 +56,7 @@ const CHART_W = Math.round(Dimensions.get('window').width - Spacing.xl * 2 - Spa
 // Recovery signals (HRV/RHR/sleep) live in the hero's contributor bars, told once.
 // "Your signals" carries only activity/body, the stuff not already in the score.
 const SIGNAL_ORDER: ReadableMetric[] = ['steps', 'active_energy_kcal', 'bodyweight_kg'];
+const DEFAULT_SLEEP_MINUTES = 480; // 8h, the prefill when we have no prior night.
 
 // Band-specific next move; the line is tappable into Drona.
 function actionLine(band: ReadinessBand): { text: string; prompt: string } {
@@ -93,10 +106,11 @@ type Status =
   | { kind: 'idle' }
   | { kind: 'working' }
   | { kind: 'done'; written: number | null }
+  | { kind: 'logged' }
   | { kind: 'unavailable' }
   | { kind: 'error'; message: string };
 
-// contributor key -> daily-metric type (load/subjective have no metric)
+// contributor key -> daily-metric type (load has no metric)
 const CONTRIB_METRIC: Record<string, string | undefined> = {
   hrv: 'hrv_sdnn_ms',
   rhr: 'resting_hr_bpm',
@@ -123,8 +137,6 @@ function contributorNote(c: ReadinessContributor): string {
         : 'Sleep is about your usual.';
     case 'load':
       return 'Recent training load is high this week, so readiness leaves room to recover.';
-    case 'subjective':
-      return 'Built from how you said you feel today.';
     default:
       return c.note;
   }
@@ -137,10 +149,14 @@ export default function HealthScreen() {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const userId = user?.id ?? null;
+  const params = useLocalSearchParams<{ log?: string }>();
 
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<ReadinessResult | null>(null);
-  const [connected, setConnected] = useState<Set<ReadableMetric>>(new Set());
+  const [metrics, setMetrics] = useState<Set<ReadableMetric>>(new Set());
+  const [deviceMetrics, setDeviceMetrics] = useState<Set<ReadableMetric>>(new Set());
+  const [connStatus, setConnStatus] = useState<HealthConnectionStatus>('unknown');
+  const [recentSleep, setRecentSleep] = useState<{ today: SleepEntry | null; yesterday: SleepEntry | null }>({ today: null, yesterday: null });
   const [history, setHistory] = useState<{ date: string; value: number }[]>([]);
   const [series, setSeries] = useState<Record<string, { date: string; value: number }[]>>({});
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
@@ -148,6 +164,8 @@ export default function HealthScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachPrompt, setCoachPrompt] = useState<string | undefined>(undefined);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const accent = stat.readiness;
   const metricColor = (colorKey: string) => stat[colorKey] ?? C.textSecondary;
@@ -157,34 +175,51 @@ export default function HealthScreen() {
       setLoading(false);
       return;
     }
-    // Keep each read distinct: a failed read must NOT look like no-data. A failed
-    // connected-metrics read in particular can't flip a connected user back to the
-    // first-run "Connect health" CTA — preserve the previous connected set instead.
-    let readinessFailed = false;
-    let connectedFailed = false;
-    const [r, c, h, s] = await Promise.all([
-      loadReadiness(supabase, userId).catch(() => {
-        readinessFailed = true;
-        return null;
-      }),
-      loadConnectedMetrics(supabase, userId).catch(() => {
-        connectedFailed = true;
-        return null;
-      }),
-      loadReadinessHistory(supabase, userId).catch(() => []),
-      loadMetricSeries(supabase, userId).catch(() => ({})),
-    ]);
-    setResult(r);
-    if (!connectedFailed && c) setConnected(c);
-    setHistory(h);
-    setSeries(s);
-    setLoadError(readinessFailed);
-    setLoading(false);
+    // Progressive load: unblock the screen the moment readiness (the hero) is
+    // known, and let the trend / signals / sharpen data stream in behind it. Each
+    // of those sections already renders nothing until its query lands, so the
+    // score no longer waits on the slowest of six round-trips (the old Promise.all
+    // meant one slow query held the whole screen on a spinner).
+    getHealthConnectionStatus(userId).then(setConnStatus).catch(() => {});
+    // A failed connected-metrics read must NOT flip a connected user back to the
+    // first-run "Connect health" state, so only apply a successful result.
+    loadConnectedMetrics(supabase, userId)
+      .then((c) => { setMetrics(c.metrics); setDeviceMetrics(c.deviceMetrics); })
+      .catch(() => {});
+    loadRecentSleep(supabase, userId).then(setRecentSleep).catch(() => {});
+    loadReadinessHistory(supabase, userId).then(setHistory).catch(() => {});
+    loadMetricSeries(supabase, userId).then(setSeries).catch(() => {});
+
+    // The hero gates the spinner. On a transient failure keep the last-known
+    // result (nulling it would misreport "no readiness") and surface a retry banner.
+    try {
+      const r = await loadReadiness(supabase, userId);
+      setResult(r);
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [userId, supabase]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Deep link overload://health?log=1 (and the dashboard "Log last night" card)
+  // opens the sleep sheet once. One-shot: the param persists on the route, so a
+  // re-render or pull-to-refresh must not reopen a sheet the user dismissed.
+  // Gate on !loading so the sheet opens AFTER recentSleep is populated, otherwise
+  // it prefills with defaults (8h, no quality) and never picks up an existing
+  // entry, since the sheet only reads its prefill when `visible` flips true.
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (params.log === '1' && !autoOpenedRef.current && !loading && userId) {
+      autoOpenedRef.current = true;
+      setSheetOpen(true);
+    }
+  }, [params.log, userId, loading]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -212,7 +247,7 @@ export default function HealthScreen() {
     setCoachOpen(true);
   }
 
-  // A one-shot status (synced / error) should not stay pinned forever.
+  // A one-shot status (synced / logged / error) should not stay pinned forever.
   useEffect(() => {
     if (status.kind === 'idle' || status.kind === 'working') return;
     const t = setTimeout(() => setStatus({ kind: 'idle' }), 5000);
@@ -233,6 +268,8 @@ export default function HealthScreen() {
           setStatus({ kind: 'unavailable' });
           return;
         }
+        // Remember we connected, so status reads 'granted' even before data lands.
+        await markHealthConnected(userId);
       }
       const { synced } = await runHealthSyncAndReadiness(supabase, userId);
       setStatus({ kind: 'done', written: synced });
@@ -242,13 +279,45 @@ export default function HealthScreen() {
     }
   }
 
+  function openSleepSheet() {
+    if (!userId) {
+      setStatus({ kind: 'error', message: 'Sign in first so your sleep saves to your account.' });
+      return;
+    }
+    setSheetOpen(true);
+  }
+
+  async function handleSaveSleep(minutes: number, quality: number | null) {
+    if (!userId) {
+      setSheetOpen(false);
+      setStatus({ kind: 'error', message: 'Sign in first so your sleep saves to your account.' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await logSleepForToday(supabase, userId, { minutes, quality });
+      haptics.success();
+      setSheetOpen(false);
+      setStatus({ kind: 'logged' });
+      await load();
+    } catch (e) {
+      setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'Could not save your sleep just now.' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const hasScore = result?.score != null && result.band != null;
-  const calibrating = !hasScore && result?.calibrating === true;
-  const hasData = connected.size > 0;
-  const notConnected = !hasScore && !calibrating && !hasData;
+  const connected = connStatus === 'granted' || deviceMetrics.size > 0;
+  const hasData = metrics.size > 0;
+  const anyPresence = connected || hasData;
+  const notConnected = !anyPresence;
   const working = status.kind === 'working';
 
-  const contributors = (result?.contributors ?? []).filter((c) => c.key !== 'subjective' || result?.tier === 'B');
+  const contributors = result?.contributors ?? [];
+  const sleepManual = recentSleep.today?.source === 'manual';
+  const prefillMinutes = recentSleep.today?.minutes ?? recentSleep.yesterday?.minutes ?? DEFAULT_SLEEP_MINUTES;
+  const prefillQuality = recentSleep.today?.quality ?? null;
 
   return (
     <View style={[styles.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
@@ -297,10 +366,13 @@ export default function HealthScreen() {
                   <View style={[styles.pill, { backgroundColor: colorWithAlpha(bandColor(result!.band!), 0.12) }]}>
                     <Text style={[styles.pillText, { color: bandPillTextColor(result!.band!, C) }]}>{directive(result!.band!)}</Text>
                   </View>
+                  {result!.provisional && (
+                    <Text style={[styles.earlyTag, { color: C.textMuted }]}>Early read. Sharpens as I learn your normal.</Text>
+                  )}
                   <Text style={[styles.tierChip, { color: C.textMuted }]}>
                     {result!.tier === 'A1' ? 'From HRV, resting heart rate and sleep'
                       : result!.tier === 'A2' ? 'From resting heart rate and sleep'
-                      : 'From your check-in'}
+                      : 'From your sleep'}
                   </Text>
                   <Text style={[styles.rationale, { color: C.textSecondary }]}>{result!.rationale}</Text>
                   <ContributorBars contributors={contributors} tier={result!.tier} C={C} />
@@ -313,28 +385,51 @@ export default function HealthScreen() {
                     <Feather name="chevron-right" size={IconSize.sm} color={C.textMuted} />
                   </Pressable>
                 </View>
+              ) : anyPresence ? (
+                <View style={styles.heroBody}>
+                  <ReadinessRing score={0} color={accent} track={C.muted} size={140} stroke={12}>
+                    {working ? <ActivityIndicator color={accent} /> : <Feather name="moon" size={26} color={C.textMuted} />}
+                  </ReadinessRing>
+                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>Log last night</Text>
+                  <Text style={[styles.emptySub, { color: C.textMuted }]}>
+                    Sleep is the one signal readiness needs. Takes ten seconds.
+                  </Text>
+                  <Pressable
+                    onPress={openSleepSheet}
+                    style={({ pressed }) => [styles.cta, styles.heroCta, { backgroundColor: Colors.primary }, pressed && { opacity: 0.85 }]}
+                  >
+                    <Feather name="moon" size={IconSize.md} color={Colors.primaryFg} />
+                    <Text style={[styles.ctaText, { color: Colors.primaryFg }]}>Log last night</Text>
+                  </Pressable>
+                  {connected && !deviceMetrics.has('sleep_minutes') && (
+                    <Text style={[styles.emptySub, { color: C.textMuted }]}>
+                      Have a tracker? Wear it to bed and sleep syncs on its own.
+                    </Text>
+                  )}
+                </View>
               ) : (
                 <View style={styles.heroBody}>
                   <ReadinessRing score={0} color={accent} track={C.muted} size={140} stroke={12}>
-                    {working ? (
-                      <ActivityIndicator color={accent} />
-                    ) : (
-                      <Feather name={notConnected ? 'plus-circle' : 'moon'} size={26} color={C.textMuted} />
-                    )}
+                    {working ? <ActivityIndicator color={accent} /> : <Feather name="plus-circle" size={26} color={C.textMuted} />}
                   </ReadinessRing>
-                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>
-                    {notConnected ? 'Connect health' : calibrating ? 'Building your baseline' : 'Connected'}
-                  </Text>
+                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>Connect health</Text>
                   <Text style={[styles.emptySub, { color: C.textMuted }]}>
-                    {notConnected
-                      ? `Sync your sleep and recovery and Drona reads how recovered you are each morning.`
-                      : calibrating
-                        ? `Still learning your normal. Give it a week or two of data and readiness kicks in.`
-                        : `Connected. Waiting on your first night of data.`}
+                    Sync your sleep and recovery and Drona reads how recovered you are each morning. No wearable? Log sleep by hand.
                   </Text>
                 </View>
               )}
             </View>
+
+            {/* SHARPEN THE READ — honest, unpushy: what would tighten the score */}
+            {hasScore && (
+              <SharpenSection
+                result={result!}
+                metrics={metrics}
+                sleepManual={sleepManual}
+                onEditSleep={openSleepSheet}
+                C={C}
+              />
+            )}
 
             {/* TREND */}
             {history.length >= 2 && (
@@ -386,11 +481,15 @@ export default function HealthScreen() {
               </View>
             )}
 
-            {/* Compact, honest connection line (replaces the old source catalog). */}
-            {hasData && (
+            {/* Compact, honest connection line. */}
+            {anyPresence && (
               <View style={styles.connLine}>
-                <View style={[styles.statusDot, { backgroundColor: Colors.success }]} />
-                <Text style={[styles.connText, { color: C.textMuted }]}>Syncing from {HUB_LABEL}.</Text>
+                <View style={[styles.statusDot, { backgroundColor: deviceMetrics.size > 0 ? Colors.success : C.textMuted }]} />
+                <Text style={[styles.connText, { color: C.textMuted }]}>
+                  {deviceMetrics.size > 0
+                    ? `Syncing from ${HUB_LABEL}.`
+                    : 'Logged by hand. Connect a wearable any time and it syncs on its own.'}
+                </Text>
               </View>
             )}
 
@@ -410,6 +509,14 @@ export default function HealthScreen() {
                       <Text style={[styles.ctaText, { color: Colors.primaryFg }]}>Connect {HUB_LABEL}</Text>
                     </>
                   )}
+                </Pressable>
+                <Pressable
+                  onPress={openSleepSheet}
+                  disabled={working}
+                  style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
+                >
+                  <Feather name="moon" size={IconSize.md} color={C.foreground} />
+                  <Text style={[styles.ghostText, { color: C.foreground }]}>Log sleep by hand</Text>
                 </Pressable>
                 <Text style={[styles.worksWith, { color: C.textMuted }]}>
                   Works with {sourcesForHub(HUB).map((s) => s.name).join(', ')}.
@@ -438,28 +545,40 @@ export default function HealthScreen() {
                   styles.statusBox,
                   {
                     backgroundColor:
-                      status.kind === 'done' ? colorWithAlpha(Colors.success, 0.1)
+                      status.kind === 'done' || status.kind === 'logged' ? colorWithAlpha(Colors.success, 0.1)
                         : status.kind === 'error' ? Colors.dangerBg
                         : C.muted,
                   },
                 ]}
               >
                 <Text style={[styles.statusText, { color: C.foreground }]}>
-                  {status.kind === 'done'
-                    ? (status.written ?? 0) > 0
-                      ? `Synced ${status.written} readings. Drona folded them into your readiness.`
-                      : Platform.OS === 'ios' && !hasData
-                        ? 'If you just allowed access, give it a moment. If nothing shows, check Apple Health, then Sharing, then Overload.'
-                        : 'Connected. No new readings yet, so nothing to pull right now.'
-                    : status.kind === 'unavailable'
-                      ? `${HUB_LABEL} is not set up on this device yet. Open it, allow Overload, then try again.`
-                      : status.message}
+                  {status.kind === 'logged'
+                    ? 'Logged. Drona folded it into your readiness.'
+                    : status.kind === 'done'
+                      ? (status.written ?? 0) > 0
+                        ? `Synced ${status.written} readings. Drona folded them into your readiness.`
+                        : Platform.OS === 'ios' && !hasData
+                          ? 'If you just allowed access, give it a moment. If nothing shows, check Apple Health, then Sharing, then Overload.'
+                          : 'Connected. No new readings yet, so nothing to pull right now.'
+                      : status.kind === 'unavailable'
+                        ? `${HUB_LABEL} is not set up on this device yet. Open it, allow Overload, then try again.`
+                        : status.message}
                 </Text>
               </View>
             )}
           </>
         )}
       </ScrollView>
+
+      <SleepLogSheet
+        visible={sheetOpen}
+        initialMinutes={prefillMinutes}
+        initialQuality={prefillQuality}
+        editing={sleepManual}
+        saving={saving}
+        onSave={handleSaveSleep}
+        onClose={() => setSheetOpen(false)}
+      />
 
       <AICoachModal
         visible={coachOpen}
@@ -492,7 +611,7 @@ function TrendDelta({ history, C }: { history: { value: number }[]; C: ReturnTyp
 }
 
 // Ranked "what moved my score today": diverging bars, length = weight x deviation,
-// right = lifted the score, left = dragged it down. Replaces the unlabeled ZBar.
+// right = lifted the score, left = dragged it down.
 function ContributorBars({ contributors, tier, C }: {
   contributors: ReadinessContributor[];
   tier: ReadinessTier;
@@ -527,6 +646,93 @@ function ContributorBars({ contributors, tier, C }: {
         );
       })}
       <Text style={[styles.cbNote, { color: C.textMuted }]}>{contributorNote(rows[0].c)}</Text>
+    </View>
+  );
+}
+
+type SharpenState = 'active' | 'building' | 'missing';
+
+// Honest "what would tighten the read" panel. One row per recovery signal plus
+// training load, each with its live status. Never nags; it just tells the truth
+// about which inputs are feeding the score and what a wearable would add.
+function SharpenSection({
+  result,
+  metrics,
+  sleepManual,
+  onEditSleep,
+  C,
+}: {
+  result: ReadinessResult;
+  metrics: Set<ReadableMetric>;
+  sleepManual: boolean;
+  onEditSleep: () => void;
+  C: ReturnType<typeof useTheme>['C'];
+}) {
+  const contribKeys = new Set(result.contributors.map((c) => c.key));
+  const rhrState: SharpenState = contribKeys.has('rhr') ? 'active' : metrics.has('resting_hr_bpm') ? 'building' : 'missing';
+  const hrvState: SharpenState = contribKeys.has('hrv') ? 'active' : metrics.has('hrv_sdnn_ms') ? 'building' : 'missing';
+  // Diet is factored in only when the user logs food (a 'diet' contributor exists).
+  const dietContrib = result.contributors.find((c) => c.key === 'diet');
+
+  const rows: { icon: keyof typeof Feather.glyphMap; label: string; state: SharpenState; note: string; onEdit?: () => void }[] = [
+    {
+      icon: 'moon',
+      label: 'Sleep',
+      state: 'active',
+      note: sleepManual ? 'Logged by hand.' : 'Synced from your tracker.',
+      onEdit: sleepManual ? onEditSleep : undefined,
+    },
+    {
+      icon: 'heart',
+      label: 'Resting heart rate',
+      state: rhrState,
+      note: rhrState === 'active' ? 'Reading your recovery.'
+        : rhrState === 'building' ? 'Coming in. A few more days and it joins your score.'
+        : 'Add a heart rate wearable and I can read recovery, not just rest.',
+    },
+    {
+      icon: 'wind',
+      label: 'HRV',
+      state: hrvState,
+      note: hrvState === 'active' ? 'Tuning how recovered you are.'
+        : hrvState === 'building' ? 'Coming in. A few more days and it joins your score.'
+        : 'HRV needs a tracker worn overnight (watch, ring, or band).',
+    },
+    { icon: 'activity', label: 'Training load', state: 'active', note: 'Already tracked from your workouts.' },
+    {
+      icon: 'pie-chart',
+      label: 'Nutrition',
+      state: dietContrib ? 'active' : 'missing',
+      note: dietContrib ? dietContrib.note : 'Log your food and I factor your fueling into recovery.',
+    },
+  ];
+
+  return (
+    <View style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
+      <Text style={[styles.sectionTitle, { color: C.foreground, marginBottom: Spacing.sm }]}>Sharpen the read</Text>
+      {rows.map((row) => {
+        const statusColor = row.state === 'active' ? C.successText : row.state === 'building' ? C.warningText : C.textMuted;
+        const statusIcon: keyof typeof Feather.glyphMap = row.state === 'active' ? 'check-circle' : row.state === 'building' ? 'clock' : 'plus-circle';
+        return (
+          <View key={row.label} style={styles.sharpRow}>
+            <View style={[styles.sharpTile, { backgroundColor: colorWithAlpha(statusColor, 0.12) }]}>
+              <Feather name={row.icon} size={IconSize.sm} color={statusColor} />
+            </View>
+            <View style={styles.sharpBody}>
+              <View style={styles.sharpLabelRow}>
+                <Text style={[styles.sharpLabel, { color: C.foreground }]}>{row.label}</Text>
+                {row.onEdit && (
+                  <Pressable onPress={row.onEdit} hitSlop={8}>
+                    <Text style={[styles.sharpEdit, { color: C.accentText }]}>Edit</Text>
+                  </Pressable>
+                )}
+              </View>
+              <Text style={[styles.sharpNote, { color: C.textMuted }]}>{row.note}</Text>
+            </View>
+            <Feather name={statusIcon} size={IconSize.sm} color={statusColor} />
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -627,16 +833,16 @@ const styles = StyleSheet.create({
   heroOutOf: { fontSize: FontSize.sm, marginTop: -6 },
   pill: { paddingHorizontal: Spacing.md, paddingVertical: 6, borderRadius: Radius.full },
   pillText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  earlyTag: { fontSize: FontSize.xs, fontStyle: 'italic' },
   tierChip: { fontSize: FontSize.xs },
   rationale: { fontSize: FontSize.base, lineHeight: 21, textAlign: 'center', paddingHorizontal: Spacing.md },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, marginTop: Spacing.xs },
   emptySub: { fontSize: FontSize.sm, lineHeight: 19, textAlign: 'center', paddingHorizontal: Spacing.lg },
+  heroCta: { alignSelf: 'stretch', marginTop: Spacing.sm },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md },
   sectionHeaderSplit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   tile: { width: 28, height: 28, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
   sectionTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  contribRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
-  contribNote: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
   caption: { fontSize: FontSize.xs, marginTop: Spacing.sm },
   actionLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, alignSelf: 'stretch', marginTop: Spacing.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, borderWidth: 1, borderRadius: Radius.lg },
   actionText: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
@@ -648,38 +854,27 @@ const styles = StyleSheet.create({
   cbBar: { position: 'absolute', height: 8, borderRadius: 4 },
   cbDot: { position: 'absolute', left: '50%', marginLeft: -3, width: 6, height: 6, borderRadius: 3 },
   cbNote: { fontSize: FontSize.sm, lineHeight: 18, marginTop: 4 },
-  signalsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: Spacing.lg },
-  signalCard: { width: '47%', borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.md, overflow: 'hidden' },
-  signalHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
-  signalLabel: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.4, textTransform: 'uppercase' },
-  signalValue: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: -0.5 },
-  signalSub: { fontSize: 10, marginTop: 6 },
-  connLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.xs },
-  connText: { fontSize: FontSize.sm },
-  worksWith: { fontSize: FontSize.sm, lineHeight: 18, textAlign: 'center', marginTop: Spacing.md, paddingHorizontal: Spacing.lg },
+  sharpRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm },
+  sharpTile: { width: 32, height: 32, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  sharpBody: { flex: 1 },
+  sharpLabelRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  sharpLabel: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  sharpEdit: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  sharpNote: { fontSize: FontSize.sm, lineHeight: 17, marginTop: 1 },
   signalsTitle: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.6, textTransform: 'uppercase' },
   sigHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sigHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flex: 1 },
+  signalLabel: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.4, textTransform: 'uppercase' },
   askChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.full },
   askText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   sigValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.sm, marginTop: Spacing.sm, flexWrap: 'wrap' },
   sigValue: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, letterSpacing: -0.5 },
   sigCaption: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   sigMeaning: { fontSize: FontSize.sm, lineHeight: 18, marginTop: 2 },
-  sourceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingVertical: Spacing.sm },
-  sourceNameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  sourceName: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
+  connLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.xs },
+  connText: { flex: 1, fontSize: FontSize.sm },
+  worksWith: { fontSize: FontSize.sm, lineHeight: 18, textAlign: 'center', marginTop: Spacing.xs, paddingHorizontal: Spacing.lg },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
-  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
-  chip: { borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
-  chipText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
-  missingRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: 6 },
-  missingText: { flex: 1, fontSize: FontSize.sm },
-  divider: { height: 1, marginVertical: Spacing.md },
-  compatRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: 6 },
-  compatName: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  caveatRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingLeft: 40, paddingBottom: 6 },
-  caveatText: { flex: 1, fontSize: FontSize.sm, lineHeight: 18 },
   cta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: Spacing.lg, borderRadius: Radius.lg, minHeight: 52 },
   ctaText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   ghost: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: Spacing.md, borderRadius: Radius.lg, borderWidth: 1, minHeight: 48 },
