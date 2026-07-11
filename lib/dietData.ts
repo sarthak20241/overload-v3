@@ -243,6 +243,51 @@ export async function loadNutritionHistory(supabase: Supa | null, days = 14): Pr
   return out;
 }
 
+/** Consecutive days (ending today) on which the user logged at least one meal.
+ *  Today not-yet-logged does NOT break the streak (mirrors the workout streak):
+ *  we start the count from yesterday in that case. Derived from meals.logged_at,
+ *  grouped by the user's LOCAL calendar day. */
+export async function nutritionStreak(supabase: Supa | null): Promise<number> {
+  if (!supabase) return 0;
+  // 1000 rows of just logged_at is a tiny payload and, at ≤4 meals/day, covers a
+  // ~250-day streak — well beyond any realistic run before it would undercount.
+  const { data } = await supabase
+    .from('meals').select('logged_at')
+    .order('logged_at', { ascending: false })
+    .limit(1000);
+  if (!data || data.length === 0) return 0;
+  const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const logged = new Set<string>();
+  for (const m of data as { logged_at: string }[]) logged.add(key(new Date(m.logged_at)));
+
+  const cursor = new Date();
+  if (!logged.has(key(cursor))) cursor.setDate(cursor.getDate() - 1); // today unlogged: don't break it
+  let streak = 0;
+  while (logged.has(key(cursor))) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+/** Reactive nutrition streak for the day header. Reloads whenever the caller's
+ *  `dep` changes (pass the day totals so a first-log-of-today bumps it) + on focus. */
+export function useNutritionStreak(dep?: unknown): number {
+  const supabase = useSupabaseClient();
+  const [streak, setStreak] = useState(0);
+  const load = useCallback(() => {
+    if (supabase) nutritionStreak(supabase).then(setStreak).catch(() => {});
+  }, [supabase]);
+  useEffect(() => { load(); }, [load, dep]);
+  // Skip the first focus — mount's effect already loaded — so we don't double-query.
+  const firstFocus = useRef(true);
+  useFocusEffect(useCallback(() => {
+    if (firstFocus.current) { firstFocus.current = false; return; }
+    load();
+  }, [load]));
+  return streak;
+}
+
 /** Tidy a raw USDA catalog name for display: de-SHOUT all-caps brand fragments
  *  ("SNICKERS" -> "Snickers", "HERSHEY'S" -> "Hershey's") while leaving normal
  *  mixed-case words and possessives intact. Applied so logged history reads clean. */
@@ -490,6 +535,9 @@ export async function logParsedMeal(
     sugar_g: null, sat_fat_g: null, sodium_mg: null,
     position: base + idx,
     logged_via: 'ai',
+    // Where the macros came from (catalog / off / web / estimate) so the diary can
+    // later tell a real label/web hit from a pure estimate (migration 0076).
+    source: it.source,
   }));
 
   const { data: inserted, error } = await supabase

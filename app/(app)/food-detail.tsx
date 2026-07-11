@@ -17,7 +17,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { FoodCompositionCard, NutritionFactsPanel } from '@/components/diet/FoodFacts';
 import { useSupabaseClient } from '@/lib/supabase';
-import { loadServings, logFood, getLogMeal, setLogMeal, type PickerFood } from '@/lib/dietData';
+import { loadServings, logFood, logParsedMeal, getLogMeal, setLogMeal, type PickerFood, type ParsedMealItem } from '@/lib/dietData';
 import {
   defaultServing, nutrientsForAmount, resolveBaseAmount,
   type FoodServing, type MealType,
@@ -38,11 +38,18 @@ export default function FoodDetailScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const supabase = useSupabaseClient();
-  const params = useLocalSearchParams<{ meal?: string; food?: string }>();
+  const params = useLocalSearchParams<{ meal?: string; food?: string; source?: string; assumption?: string }>();
 
   const food = useMemo<PickerFood | null>(() => {
     try { return params.food ? JSON.parse(decodeURIComponent(params.food)) : null; } catch { return null; }
   }, [params.food]);
+
+  // Set when the food came from Drona's fallback (off/web/estimate) rather than a
+  // catalog tap — logs the entry as AI-found and shows a reassuring "saved" note.
+  // No accuracy caveat in the UI (the exact source is still recorded internally,
+  // migration 0076); once logged it appears in Recents for one-tap re-logging.
+  const aiSource = (params.source as 'off' | 'web' | 'estimate' | undefined) || null;
+  const savedNote = aiSource ? 'Saved for easy logging next time' : null;
 
   const [meal, setMeal] = useState<MealType>(getLogMeal());
   // Sync the target meal from the store on focus (params go stale on this retained
@@ -83,7 +90,7 @@ export default function FoodDetailScreen() {
   if (!food) {
     return (
       <View style={{ flex: 1, backgroundColor: C.background, paddingTop: insets.top }}>
-        <Pressable onPress={() => router.back()} style={{ padding: Spacing.xl }}>
+        <Pressable onPress={() => router.navigate('/food-search')} style={{ padding: Spacing.xl }}>
           <Feather name="chevron-left" size={24} color={C.foreground} />
         </Pressable>
         <Text style={{ color: C.textMuted, textAlign: 'center', marginTop: 40 }}>Food not found.</Text>
@@ -103,12 +110,28 @@ export default function FoodDetailScreen() {
     if (busy || !supabase || qtyNum <= 0) return;
     setBusy(true);
     try {
-      const { error } = await logFood(supabase, {
-        mealType: meal,
-        food: { ...food!, servings },
-        servingLabel,
-        quantity: qtyNum,
-      });
+      let error: string | undefined;
+      if (aiSource) {
+        // AI-found food: log through the parse path so the entry is marked
+        // logged_via='ai' and its source (off/web/estimate) is persisted on the
+        // meal_entries snapshot (migration 0076). assumption is carried on the
+        // item only for shape parity with the parser; it isn't stored.
+        const item: ParsedMealItem = {
+          food_id: food!.id ?? null, food_name: food!.name, quantity: qtyNum,
+          serving_label: servingLabel, grams: nutr!.grams,
+          kcal: n.kcal, protein_g: n.protein_g, carb_g: n.carb_g, fat_g: n.fat_g, fiber_g: n.fiber_g ?? null,
+          source: aiSource, assumption: params.assumption || null,
+          confidence: aiSource === 'estimate' ? 'low' : aiSource === 'web' ? 'medium' : 'high',
+        };
+        ({ error } = await logParsedMeal(supabase, { meal_type: meal, items: [item], drona_line: '' }));
+      } else {
+        ({ error } = await logFood(supabase, {
+          mealType: meal,
+          food: { ...food!, servings },
+          servingLabel,
+          quantity: qtyNum,
+        }));
+      }
       if (error) { haptics.warning(); return; }
       haptics.success();
       // Return to the day view (MFP: logging a food returns you to the diary). The
@@ -128,7 +151,7 @@ export default function FoodDetailScreen() {
   return (
     <View style={[s.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
       <View style={s.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
+        <Pressable onPress={() => router.navigate('/food-search')} hitSlop={12} style={s.back}>
           <Feather name="chevron-left" size={24} color={C.foreground} />
         </Pressable>
         <Text style={s.headerTitle}>Add Food</Text>
@@ -141,6 +164,13 @@ export default function FoodDetailScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <Text style={s.title}>{food.name}</Text>
+
+        {savedNote && (
+          <View style={[s.provenance, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
+            <Feather name="bookmark" size={12} color={C.accentText} />
+            <Text style={[s.provenanceTxt, { color: C.accentText }]}>{savedNote}</Text>
+          </View>
+        )}
 
         {/* Composition: donut + macro split */}
         <FoodCompositionCard n={n} C={C} />
@@ -226,6 +256,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     headerTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: C.foreground },
 
     title: { fontSize: FontSize.xxl, fontWeight: FontWeight.black, letterSpacing: LetterSpacing.tight, color: C.foreground, paddingHorizontal: Spacing.xl, marginTop: Spacing.sm },
+    provenance: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginHorizontal: Spacing.xl, marginTop: Spacing.sm, paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.full, borderWidth: 1 },
+    provenanceTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 
     eyebrow: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim, paddingHorizontal: Spacing.xl, marginTop: Spacing.xl, marginBottom: Spacing.sm },
 

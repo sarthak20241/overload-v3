@@ -772,6 +772,22 @@ async function fetchRecentFoods(userClient: SupabaseClient): Promise<RecentFoodC
   return out;
 }
 
+// Full agent-flow observability for parse_meal: one parse_traces row per request
+// (logged or not), capturing the input, the tool-call trail, and the resolved
+// items. Fire-and-forget; never let a trace failure break the parse response.
+function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): void {
+  const p = (async () => {
+    try {
+      await admin.from("parse_traces").insert(row);
+    } catch (e) {
+      console.log("[parse_meal] parse_trace insert failed:", String(e));
+    }
+  })();
+  // Keep the insert alive past the response so a fast return can't drop the trace.
+  const er = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (er?.waitUntil) er.waitUntil(p); else void p;
+}
+
 async function handleParseMealRequest(args: {
   admin: SupabaseClient;
   userClient: SupabaseClient;
@@ -938,6 +954,24 @@ async function handleParseMealRequest(args: {
       },
     });
 
+    // Full agent-flow trace (input -> tool trail -> resolved items) for
+    // observability + eval, whether or not the user ends up logging it.
+    void recordParseTrace(admin, {
+      user_id: userId,
+      input_text: text.slice(0, 500),
+      meal_hint: mealHint,
+      model: PARSE_MEAL_MODEL,
+      outcome: result.parsed ? "meal" : "declined",
+      message: result.declined?.message ?? null,
+      iterations: result.iterations,
+      steps: result.steps,
+      items: result.parsed?.items ?? null,
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens,
+      web_search_requests: result.usage.web_search_requests,
+      latency_ms: Date.now() - startedAtMs,
+    });
+
     return respond(
       {
         parsed: result.parsed,
@@ -958,6 +992,15 @@ async function handleParseMealRequest(args: {
       status: "error",
       error_message: trace.error_message,
       metadata: { user_id: userId, mode: "parse_meal" },
+    });
+    void recordParseTrace(admin, {
+      user_id: userId,
+      input_text: text.slice(0, 500),
+      meal_hint: mealHint,
+      model: PARSE_MEAL_MODEL,
+      outcome: "error",
+      message: trace.error_message,
+      latency_ms: Date.now() - startedAtMs,
     });
     return respond(
       {

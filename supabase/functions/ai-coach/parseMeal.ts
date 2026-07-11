@@ -59,6 +59,15 @@ export interface ParsedItem {
   confidence: "high" | "medium" | "low";
 }
 
+// One entry in the agent's tool-call trail, captured for observability + eval.
+// `input` is the tool's args; `result` is a compact summary of what it returned.
+export interface ParseStep {
+  iter: number;
+  tool: string;
+  input?: unknown;
+  result?: unknown;
+}
+
 export interface ParseMealResult {
   parsed: {
     meal_type: MealType;
@@ -75,6 +84,10 @@ export interface ParseMealResult {
     web_search_requests: number;
   };
   tool_calls: string[];
+  // The full tool-call trail (search_foods / lookup_packaged_food / web_search /
+  // log_meal) with args + result summaries, plus how many loop turns it took.
+  steps: ParseStep[];
+  iterations: number;
 }
 
 export interface RecentFoodContext {
@@ -625,6 +638,22 @@ function sanitizeItems(raw: unknown): ParsedItem[] {
   return items;
 }
 
+// Compact a tool result for the trace: arrays -> {count, top names}; big objects
+// -> a truncated preview. Keeps parse_traces.steps small + readable for eval.
+function summarizeToolResult(result: unknown): unknown {
+  if (Array.isArray(result)) {
+    return {
+      count: result.length,
+      top: result.slice(0, 5).map((r) => (r as Record<string, unknown>)?.name ?? (r as Record<string, unknown>)?.food_name ?? r),
+    };
+  }
+  if (result && typeof result === "object") {
+    const s = JSON.stringify(result);
+    if (s.length > 600) return { preview: s.slice(0, 600) };
+  }
+  return result;
+}
+
 export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
@@ -645,6 +674,7 @@ export async function runParseMeal(
     web_search_requests: 0,
   };
   const toolCalls: string[] = [];
+  const steps: ParseStep[] = [];
 
   for (let iter = 0; iter < MAX_PARSE_ITERATIONS; iter++) {
     // Last iteration: force log_meal so a model stuck re-searching settles
@@ -677,6 +707,7 @@ export async function runParseMeal(
     // Server-side web search paused mid-loop: re-send as-is to resume.
     if (stopReason === "pause_turn") {
       toolCalls.push("web_search");
+      steps.push({ iter, tool: "web_search" });
       conversation.push({ role: "assistant", content: blocks });
       continue;
     }
@@ -696,6 +727,8 @@ export async function runParseMeal(
         },
         usage,
         tool_calls: toolCalls,
+        steps,
+        iterations: iter + 1,
       };
     }
 
@@ -705,6 +738,11 @@ export async function runParseMeal(
     if (terminal) {
       toolCalls.push(PARSE_TERMINAL_TOOL);
       const raw = (terminal.input ?? {}) as Record<string, unknown>;
+      steps.push({
+        iter,
+        tool: PARSE_TERMINAL_TOOL,
+        input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
+      });
       const items = await verifyItems(deps, sanitizeItems(raw.items));
       if (items.length === 0) {
         return {
@@ -714,6 +752,8 @@ export async function runParseMeal(
           },
           usage,
           tool_calls: toolCalls,
+          steps,
+          iterations: iter + 1,
         };
       }
       const mealType: MealType =
@@ -729,6 +769,8 @@ export async function runParseMeal(
         declined: null,
         usage,
         tool_calls: toolCalls,
+        steps,
+        iterations: iter + 1,
       };
     }
 
@@ -737,8 +779,10 @@ export async function runParseMeal(
     // API itself; we only answer the client-tool blocks.
     const toolResults = await Promise.all(
       toolUses.map(async (block) => {
-        toolCalls.push(String(block.name ?? "<unknown>"));
-        const result = await executeParseTool(deps, String(block.name ?? ""), block.input ?? {});
+        const toolName = String(block.name ?? "<unknown>");
+        toolCalls.push(toolName);
+        const result = await executeParseTool(deps, toolName, block.input ?? {});
+        steps.push({ iter, tool: toolName, input: block.input ?? {}, result: summarizeToolResult(result) });
         return {
           type: "tool_result" as const,
           tool_use_id: String(block.id ?? ""),
