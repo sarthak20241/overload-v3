@@ -111,9 +111,9 @@ function buildDishes(): FoodRow[] {
       protein_g: round1(per100(total.protein_g)),
       carb_g: round1(per100(total.carb_g)),
       fat_g: round1(per100(total.fat_g)),
-      fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sodium_mg: 0,
+      fiber_g: round1(per100(total.fiber_g)), sugar_g: 0, sat_fat_g: 0, sodium_mg: 0,
       servings: [
-        { label: '1 bowl', grams: Math.round(grams), is_default: true, source: 'curated', seq: 0 },
+        { label: d.serving ?? '1 serving', grams: Math.round(grams), is_default: true, source: 'curated', seq: 0 },
         canonicalServing('g', 1, 'curated'),
       ],
       source: 'curated',

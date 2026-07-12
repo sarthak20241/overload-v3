@@ -22,7 +22,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DATA_DIR = path.join(__dirname, 'data', 'usda');
+// Parameterized so one ingester serves SR Legacy + Foundation + FNDDS (all share the
+// FDC food.csv/food_nutrient.csv/food_portion.csv schema):
+//   USDA_DIR       subdir under data/ (default 'usda' = SR Legacy)
+//   USDA_REGION    region tag (default 'usa')
+//   USDA_DATA_TYPE if set, keep only rows of this data_type (e.g. 'foundation_food',
+//                  'survey_fndds_food') — drops the sub-sample/acquisition noise
+//   USDA_OUT       output seed filename (default 'usda_foods.generated.sql')
+const DATA_DIR = path.join(__dirname, 'data', process.env.USDA_DIR || 'usda');
+const REGION = process.env.USDA_REGION || 'usa';
+const DATA_TYPE = process.env.USDA_DATA_TYPE || '';
+const OUT = process.env.USDA_OUT || 'usda_foods.generated.sql';
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const CHUNK = 400; // foods per SQL batch (one upsert + one servings insert)
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -67,6 +77,43 @@ const CATEGORY_MAP: Record<string, string> = {
   '22': 'prepared_dish', '23': 'snack', '24': 'other', '25': 'prepared_dish',
 };
 
+// FNDDS uses WWEIA category ids (a different id space), so map via the category's
+// text description instead. Loaded from wweia_food_category.csv when present.
+function wweiaCategory(desc: string): string {
+  const s = desc.toLowerCase();
+  const has = (...ws: string[]) => ws.some((w) => s.includes(w));
+  if (has('milk', 'cheese', 'yogurt', 'cream', 'dairy', 'butter')) return 'dairy';
+  if (has('beef', 'pork', 'chicken', 'turkey', 'fish', 'seafood', 'egg', 'meat', 'poultry', 'sausage', 'bacon', 'ham', 'lamb', 'shrimp')) return 'protein';
+  if (has('bean', 'lentil', 'legume', 'pea', 'tofu', 'soy')) return 'legume';
+  if (has('bread', 'rice', 'pasta', 'cereal', 'grain', 'oat', 'tortilla', 'noodle', 'cracker', 'bagel', 'pancake')) return 'grain';
+  if (has('fruit', 'apple', 'banana', 'berry', 'melon', 'citrus', 'juice')) return has('juice') ? 'beverage' : 'fruit';
+  if (has('vegetable', 'potato', 'tomato', 'salad', 'carrot', 'bean green')) return 'vegetable';
+  if (has('candy', 'cookie', 'cake', 'pie', 'ice cream', 'dessert', 'sweet', 'sugar', 'chocolate', 'pastry', 'doughnut')) return 'sweet';
+  if (has('chip', 'popcorn', 'pretzel', 'snack')) return 'snack';
+  if (has('soft drink', 'soda', 'coffee', 'tea', 'water', 'beer', 'wine', 'alcohol', 'drink', 'beverage', 'smoothie')) return 'beverage';
+  if (has('oil', 'fat', 'margarine', 'dressing', 'mayonnaise')) return 'fat_oil';
+  if (has('nut', 'seed', 'peanut')) return 'nuts_seeds';
+  if (has('sauce', 'condiment', 'gravy', 'dip', 'spread', 'syrup')) return 'condiment';
+  // WWEIA is dominated by mixed/prepared dishes ("Meat mixed dishes", "Pizza"...) -> default
+  return 'prepared_dish';
+}
+
+/** id -> description from wweia_food_category.csv (FNDDS only; empty otherwise). */
+function loadWweia(dir: string): Map<string, string> {
+  const file = findFirst(dir, 'wweia_food_category.csv');
+  const map = new Map<string, string>();
+  if (!file) return map;
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const h = parseCsvLine(lines[0]);
+  const iId = h.indexOf('wweia_food_category'), iDesc = h.indexOf('wweia_food_category_description');
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const r = parseCsvLine(lines[i]);
+    if (r[iId]) map.set(r[iId], r[iDesc] ?? '');
+  }
+  return map;
+}
+
 // nutrient_id -> column field
 const MACRO_MAP: Record<string, string> = {
   '1008': 'kcal', '1003': 'protein_g', '1005': 'carb_g', '1004': 'fat_g',
@@ -88,6 +135,54 @@ interface Row {
   servings: { label: string; grams: number; is_default: boolean; seq: number }[];
 }
 
+// Resolve nutrients by NAME from the dataset's nutrient.csv, indexed by BOTH the FDC
+// `id` (SR Legacy/Foundation use these, e.g. 1008) and the legacy `nutrient_nbr`
+// (FNDDS uses these, e.g. 208) so one code path handles every FDC dataset.
+const MACRO_NAMES: [RegExp, string, string?][] = [
+  [/^energy$/i, 'kcal', 'KCAL'], // exclude the kJ Energy row via the unit guard
+  [/^energy \(atwater (general|specific) factors\)$/i, 'kcal', 'KCAL'], // Foundation foods often only carry Atwater energy
+  [/^total sugars$/i, 'sugar_g'],
+  [/^protein$/i, 'protein_g'],
+  [/^carbohydrate, by difference$/i, 'carb_g'],
+  [/^total lipid \(fat\)$/i, 'fat_g'],
+  [/^fiber, total dietary$/i, 'fiber_g'],
+  [/^(sugars, total.*|total sugars.*)$/i, 'sugar_g'],
+  [/^fatty acids, total saturated$/i, 'sat_fat_g'],
+  [/^sodium, na$/i, 'sodium_mg'],
+];
+const MICRO_NAMES: [RegExp, string][] = [
+  [/^calcium, ca$/i, 'calcium_mg'], [/^iron, fe$/i, 'iron_mg'], [/^magnesium, mg$/i, 'magnesium_mg'],
+  [/^potassium, k$/i, 'potassium_mg'], [/^zinc, zn$/i, 'zinc_mg'],
+  [/^vitamin c, total ascorbic acid$/i, 'vit_c_mg'], [/^vitamin a, rae$/i, 'vit_a_ug'],
+  [/^vitamin d \(d2 \+ d3\)$/i, 'vit_d_ug'], [/^vitamin b-12$/i, 'vit_b12_ug'],
+  [/^folate, total$/i, 'folate_ug'], [/^cholesterol$/i, 'cholesterol_mg'],
+];
+function loadNutrientMaps(dir: string): { macro: Map<string, string>; micro: Map<string, string> } {
+  const macro = new Map<string, string>(), micro = new Map<string, string>();
+  const file = findFirst(dir, 'nutrient.csv');
+  if (!file) { // fall back to hardcoded FDC ids if no nutrient.csv (older SR Legacy layout)
+    for (const [k, v] of Object.entries(MACRO_MAP)) macro.set(k, v);
+    for (const [k, v] of Object.entries(MICRO_MAP)) micro.set(k, v);
+    return { macro, micro };
+  }
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const h = parseCsvLine(lines[0]);
+  const iId = h.indexOf('id'), iName = h.indexOf('name'), iUnit = h.indexOf('unit_name'), iNbr = h.indexOf('nutrient_nbr');
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const r = parseCsvLine(lines[i]);
+    const name = r[iName] ?? '', unit = (r[iUnit] ?? '').toUpperCase();
+    const keys = [r[iId], r[iNbr], r[iNbr]?.split('.')[0]].filter(Boolean) as string[];
+    for (const [re, field, unitReq] of MACRO_NAMES) {
+      if (re.test(name) && (!unitReq || unit === unitReq)) { for (const k of keys) if (!macro.has(k)) macro.set(k, field); }
+    }
+    for (const [re, field] of MICRO_NAMES) {
+      if (re.test(name)) { for (const k of keys) if (!micro.has(k)) micro.set(k, field); }
+    }
+  }
+  return { macro, micro };
+}
+
 function main() {
   const foodCsv = findFirst(DATA_DIR, 'food.csv');
   const nutrientCsv = findFirst(DATA_DIR, 'food_nutrient.csv');
@@ -98,19 +193,24 @@ function main() {
   }
 
   // 1. food.csv -> kept fdc_ids with mapped category + description
+  const wweia = loadWweia(DATA_DIR);
   const kept = new Map<string, { desc: string; cat: string }>();
   const foodLines = fs.readFileSync(foodCsv, 'utf8').split('\n');
   const fH = parseCsvLine(foodLines[0]);
   const iId = fH.indexOf('fdc_id'), iDesc = fH.indexOf('description'), iCat = fH.indexOf('food_category_id');
+  const iType = fH.indexOf('data_type');
   for (let i = 1; i < foodLines.length; i++) {
     if (!foodLines[i]) continue;
     const r = parseCsvLine(foodLines[i]);
-    const cat = CATEGORY_MAP[r[iCat]];
+    if (DATA_TYPE && r[iType] !== DATA_TYPE) continue; // e.g. keep only foundation_food / survey_fndds_food
+    // SR Legacy/Foundation category ids map directly; FNDDS WWEIA ids map via description.
+    const cat = CATEGORY_MAP[r[iCat]] ?? (wweia.has(r[iCat]) ? wweiaCategory(wweia.get(r[iCat])!) : undefined);
     if (!cat) continue; // dropped category
     kept.set(r[iId], { desc: r[iDesc], cat });
   }
 
   // 2. food_nutrient.csv -> macros + micros for kept fdc_ids
+  const { macro: macroMap, micro: microMap } = loadNutrientMaps(DATA_DIR);
   const macros = new Map<string, Record<string, number>>();
   const micros = new Map<string, Record<string, number>>();
   const nLines = fs.readFileSync(nutrientCsv, 'utf8').split('\n');
@@ -122,10 +222,10 @@ function main() {
     const fdc = r[nFdc];
     if (!kept.has(fdc)) continue;
     const id = r[nNut];
-    const macroField = MACRO_MAP[id];
-    const microKey = MICRO_MAP[id];
+    const macroField = macroMap.get(id);
+    const microField = microMap.get(id);
     if (macroField) { const m = macros.get(fdc) ?? {}; m[macroField] = Number(r[nAmt]); macros.set(fdc, m); }
-    else if (microKey) { const m = micros.get(fdc) ?? {}; m[microKey] = Number(r[nAmt]); micros.set(fdc, m); }
+    else if (microField) { const m = micros.get(fdc) ?? {}; m[microField] = Number(r[nAmt]); micros.set(fdc, m); }
   }
 
   // 3. food_portion.csv -> servings for kept fdc_ids
@@ -184,27 +284,21 @@ function main() {
   const microsSql = (m: Record<string, number> | null) => (m ? `'${esc(JSON.stringify(m))}'::jsonb` : 'null');
 
   let sql = `-- GENERATED by scripts/diet-catalog/ingest-usda.ts — do not edit by hand.
--- Full USDA SR Legacy (CC0) server catalog: ${rows.length} foods.
--- Apply as SERVICE ROLE (so created_by stays null = global). Enriching upsert:
--- on a name conflict, fills missing extended/micro fields, merges servings, appends
--- the source. Reversible: delete from public.foods where 'usda' = any(sources).
+-- USDA (CC0) server catalog: ${rows.length} foods (region='${REGION}'${DATA_TYPE ? `, data_type=${DATA_TYPE}` : ''}).
+-- Apply as SERVICE ROLE (created_by stays null = global). DO NOTHING on name conflict
+-- (segregation-safe: never merges into a non-usda row); usda servings attach only to
+-- usda rows. Reversible: delete from public.foods where 'usda' = any(sources).
 `;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const batch = rows.slice(i, i + CHUNK);
     const foodValues = batch.map((r) =>
-      `('${esc(r.name)}','${r.food_category}','g',${r.kcal},${r.protein_g},${r.carb_g},${r.fat_g},${num(r.fiber_g)},${num(r.sugar_g)},${num(r.sat_fat_g)},${num(r.sodium_mg)},${microsSql(r.micros)},'usda',array['usda'])`,
+      `('${esc(r.name)}','${r.food_category}','g',${r.kcal},${r.protein_g},${r.carb_g},${r.fat_g},${num(r.fiber_g)},${num(r.sugar_g)},${num(r.sat_fat_g)},${num(r.sodium_mg)},${microsSql(r.micros)},'usda',array['usda'],'${REGION}')`,
     ).join(',\n');
     sql += `\ninsert into public.foods
-  (name, food_category, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, micros, source, sources)
+  (name, food_category, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g, sugar_g, sat_fat_g, sodium_mg, micros, source, sources, region)
 values
 ${foodValues}
-on conflict (lower(name)) where created_by is null do update set
-  fiber_g   = coalesce(public.foods.fiber_g,   excluded.fiber_g),
-  sugar_g   = coalesce(public.foods.sugar_g,   excluded.sugar_g),
-  sat_fat_g = coalesce(public.foods.sat_fat_g, excluded.sat_fat_g),
-  sodium_mg = coalesce(public.foods.sodium_mg, excluded.sodium_mg),
-  micros    = coalesce(public.foods.micros,    excluded.micros),
-  sources   = (select array(select distinct e from unnest(public.foods.sources || excluded.sources) e));
+on conflict (lower(name)) where created_by is null do nothing;
 `;
     const servValues = batch.flatMap((r) =>
       r.servings.map((s) => `('${esc(r.name)}','${esc(s.label)}',${s.grams},${s.seq})`),
@@ -221,7 +315,7 @@ select f.id, v.label, v.grams, false, 'usda', v.seq
 from (values
 ${servValues}
 ) as v(food_name, label, grams, seq)
-join public.foods f on lower(f.name) = lower(v.food_name) and f.created_by is null
+join public.foods f on lower(f.name) = lower(v.food_name) and f.created_by is null and 'usda' = any(f.sources)
 on conflict (food_id, lower(label)) do update set grams = excluded.grams, seq = excluded.seq;
 `;
     // Exactly one default serving per food (uq_food_servings_default): clear then
@@ -230,21 +324,21 @@ on conflict (food_id, lower(label)) do update set grams = excluded.grams, seq = 
     // leave two defaults and trip the partial unique index.
     sql += `\nupdate public.food_servings s set is_default = false
 from public.foods f
-where s.food_id = f.id and f.created_by is null and s.is_default
+where s.food_id = f.id and f.created_by is null and 'usda' = any(f.sources) and s.is_default
   and lower(f.name) in (${batchNames});
 
 update public.food_servings s set is_default = true
 from (values
 ${defaultPairs}
 ) as d(food_name, label)
-join public.foods f on lower(f.name) = lower(d.food_name) and f.created_by is null
+join public.foods f on lower(f.name) = lower(d.food_name) and f.created_by is null and 'usda' = any(f.sources)
 where s.food_id = f.id and lower(s.label) = lower(d.label);
 `;
   }
 
   const destDir = path.join(REPO_ROOT, 'supabase/seed');
   fs.mkdirSync(destDir, { recursive: true });
-  const dest = path.join(destDir, 'usda_foods.generated.sql');
+  const dest = path.join(destDir, OUT);
   fs.writeFileSync(dest, sql);
 
   const withMicros = rows.filter((r) => r.micros).length;

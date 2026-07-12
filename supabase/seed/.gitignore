@@ -3,3 +3,4 @@
 # bundled-offline seed (foods_seed.generated.sql) IS committed.
 usda_foods.generated.sql
 off_foods.generated.sql
+off_supplements.generated.sql

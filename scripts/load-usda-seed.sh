@@ -4,14 +4,19 @@
 # so it is split at batch boundaries and POSTed one batch at a time.
 #
 # Usage:
-#   SB_PAT=<supabase-access-token> bash scripts/load-usda-seed.sh
+#   SB_PAT=<supabase-access-token> bash scripts/load-usda-seed.sh [seed-file]
 #   (create a token at https://supabase.com/dashboard/account/tokens)
+#   seed-file defaults to the USDA seed; pass another to load a different catalog,
+#   e.g.  bash scripts/load-usda-seed.sh supabase/seed/off_foods.generated.sql
 #
-# Reversible: delete from public.foods where 'usda' = any(sources);
+# Reversible (USDA): delete from public.foods where 'usda' = any(sources);
+# Reversible (OFF):  delete from public.foods where 'off'  = any(sources);
 set -euo pipefail
 
 REF="rjmmslierxhvwdjgjilb"
-SEED="$(cd "$(dirname "$0")/.." && pwd)/supabase/seed/usda_foods.generated.sql"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SEED="${1:-$ROOT/supabase/seed/usda_foods.generated.sql}"
+case "$SEED" in /*) : ;; *) SEED="$ROOT/$SEED" ;; esac  # allow a repo-relative arg
 API="https://api.supabase.com/v1/projects/${REF}/database/query"
 
 TOKEN="${SB_PAT:-}"
@@ -26,13 +31,14 @@ post() { # $1 = sql file; echoes "HTTPCODE\nbody"
 }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-# split before each foods-insert: each chunk = one foods upsert + its servings insert.
-# (portable awk, not csplit — macOS csplit lacks GNU -z/{*}.)
-awk -v dir="$TMP" '/^insert into public\.foods/{n++} n>0{print > sprintf("%s/chunk_%03d.sql", dir, n)}' "$SEED"
+# split before each foods-insert (catalog seeds) OR each "-- BATCH" sentinel (enrich
+# seeds, which UPDATE existing rows and have no foods-insert). Each chunk is one
+# self-contained batch. (portable awk, not csplit — macOS csplit lacks GNU -z/{*}.)
+awk -v dir="$TMP" '/^insert into public\.foods/||/^-- BATCH/{n++} n>0{print > sprintf("%s/chunk_%03d.sql", dir, n)}' "$SEED"
 
 n=0; ok=0
 for f in "$TMP"/chunk_*.sql; do
-  grep -q '^insert into' "$f" || continue   # skip the header chunk
+  grep -qE '^(insert|update)' "$f" || continue   # skip the header chunk
   n=$((n+1))
   resp="$(post "$f")"; code="$(printf '%s' "$resp" | tail -1)"
   if [ "$code" = "200" ] || [ "$code" = "201" ]; then
