@@ -188,7 +188,15 @@ export function toRow(hit: OffHit, kind: Kind): Row | null {
     const label = (hit.serving_size && hit.serving_size.trim()) ? cleanName(hit.serving_size) : `1 serving (${fmtAmount(round1(sq))} ${base_unit})`;
     servings.push({ label: label.slice(0, 60), grams: round1(sq), is_default: true, seq: 0 });
   }
-  servings.push({ label: `100 ${base_unit}`, grams: 100, is_default: servings.length === 0, seq: 999 });
+  // Only add the canonical 100-unit fallback if the real serving didn't already clean
+  // to exactly "100 g"/"100 ml" — else emitSeed's servings upsert gets two rows with
+  // the same (food_id, lower(label)) and Postgres errors "ON CONFLICT DO UPDATE command
+  // cannot affect row a second time". Latent today (search-a-licious omits serving_quantity)
+  // but real for any richer source (see ingest-off-supplements.ts).
+  const fallbackLabel = `100 ${base_unit}`;
+  if (!servings.some((s) => s.label.toLowerCase() === fallbackLabel.toLowerCase())) {
+    servings.push({ label: fallbackLabel, grams: 100, is_default: servings.length === 0, seq: 999 });
+  }
 
   return {
     name,

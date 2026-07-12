@@ -26,8 +26,10 @@ import { cleanName, emitSeed, type OffHit, type Row } from './ingest-off';
 const round1 = (n: number) => Math.round(n * 10) / 10;
 const fmtAmount = (n: number) => (Number.isInteger(n) ? String(n) : String(round1(n)));
 
-// Normalize a brand string to an OFF brand slug ("As-It-Is Nutrition" -> "as-it-is-nutrition").
-const toTag = (b: string) => b.toLowerCase().trim().replace(/[\s']+/g, '-').replace(/-+/g, '-');
+// Normalize a brand string to an OFF brand slug the way OFF does: lowercase, every run
+// of non-alphanumerics -> a single '-', trimmed. So "As-It-Is Nutrition" -> "as-it-is-nutrition"
+// and "Fast&Up" -> "fast-up" (matching OFF, not the literal "fast&up").
+const toTag = (b: string) => b.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 // OFF brands_tags carry a language prefix ("xx:optimum-nutrition", sometimes "en:..."),
 // so compare on the prefix-stripped slug.
 const stripPrefix = (t: string) => t.replace(/^[a-z]{2,3}:/, '');

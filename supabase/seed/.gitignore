@@ -1,6 +1,6 @@
 # Large generated dataset seeds (regenerate via scripts/diet-catalog/*). Bulk-load
-# via the Supabase SQL editor / psql; kept out of git to stay lean. The small
-# bundled-offline seed (foods_seed.generated.sql) IS committed.
-usda_foods.generated.sql
-off_foods.generated.sql
-off_supplements.generated.sql
+# via the Supabase SQL editor / psql; kept out of git to stay lean. All *.generated.sql
+# are ignored (usda/off/off_supplements/off_popular/off_countries/off_enrich/cofid/
+# ciqual/curated_dishes...) EXCEPT the small bundled-offline seed, which IS committed.
+*.generated.sql
+!foods_seed.generated.sql
