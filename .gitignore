@@ -44,3 +44,4 @@ supabase/.temp/
 
 # One-off data migration workspace (contains user data dumps)
 migration/
+graphify-out/

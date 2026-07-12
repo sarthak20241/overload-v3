@@ -944,6 +944,54 @@ create index if not exists idx_parse_meal_rl_recent
 
 alter table parse_meal_rate_limit enable row level security;
 
+-- ─── User Exercise Notes (matches migration 0076) ───────────────────────────
+-- Sticky per-exercise personal note: one per (user, exercise), a persistent
+-- reminder ("seat at 4", "elbows tucked") shown under the exercise header in
+-- every session. Distinct from workouts.notes (per-session reflection) and
+-- routine_exercises.note (coach cue on a routine slot).
+create table if not exists user_exercise_notes (
+  user_id     text not null default (auth.jwt()->>'sub'),
+  exercise_id uuid not null references exercises(id) on delete cascade,
+  -- Client caps input at 1000 (TextInput maxLength); the check makes the
+  -- limit hold for direct API writes too (migration 0077). Named explicitly
+  -- so the idempotent re-apply block below recognizes it on fresh databases.
+  note        text not null constraint user_exercise_notes_note_length_check
+                check (char_length(note) <= 1000),
+  updated_at  timestamptz not null default now(),
+  primary key (user_id, exercise_id)
+);
+
+-- Idempotent re-apply: the check above is inside the create-if-not-exists
+-- block, so databases where the table already existed (created by 0076)
+-- wouldn't gain it from re-running this file. Mirror it explicitly.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'user_exercise_notes_note_length_check') then
+    alter table user_exercise_notes add constraint user_exercise_notes_note_length_check
+      check (char_length(note) <= 1000);
+  end if;
+end $$;
+
+alter table user_exercise_notes enable row level security;
+
+drop policy if exists "own exercise notes select" on user_exercise_notes;
+create policy "own exercise notes select" on user_exercise_notes
+  for select to authenticated using (user_id = auth.jwt()->>'sub');
+
+drop policy if exists "own exercise notes insert" on user_exercise_notes;
+create policy "own exercise notes insert" on user_exercise_notes
+  for insert to authenticated with check (user_id = auth.jwt()->>'sub');
+
+drop policy if exists "own exercise notes update" on user_exercise_notes;
+create policy "own exercise notes update" on user_exercise_notes
+  for update to authenticated
+  using (user_id = auth.jwt()->>'sub')
+  with check (user_id = auth.jwt()->>'sub');
+
+drop policy if exists "own exercise notes delete" on user_exercise_notes;
+create policy "own exercise notes delete" on user_exercise_notes
+  for delete to authenticated using (user_id = auth.jwt()->>'sub');
+
 -- ─── Seed: Common Exercises ─────────────────────────────────────────────────
 insert into exercises (name, muscle_group, category) values
   ('Bench Press', 'Chest', 'Barbell'),

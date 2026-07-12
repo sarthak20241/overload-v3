@@ -31,6 +31,12 @@ interface WorkoutContextType {
   // instead of snapping back to the first one.
   currentIdx: number;
   setCurrentIdx: Dispatch<SetStateAction<number>>;
+  // Mid-session workout note (the session reflection saved to workouts.notes).
+  // One shared value: the field on the workout screen and the finish sheet's
+  // notes input both bind to it. Lives here (not the screen) so it survives
+  // tab switches, and rides the crash snapshot so it survives an OS-kill.
+  sessionNotes: string;
+  setSessionNotes: Dispatch<SetStateAction<string>>;
   startWorkout: (
     routineId: string,
     routineName: string,
@@ -72,6 +78,8 @@ const WorkoutContext = createContext<WorkoutContextType>({
   setExerciseFinished: () => {},
   currentIdx: 0,
   setCurrentIdx: () => {},
+  sessionNotes: '',
+  setSessionNotes: () => {},
   startWorkout: () => {},
   finishWorkout: () => {},
   hydrateFromSnapshot: () => {},
@@ -92,6 +100,7 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   const [exerciseStarted, setExerciseStarted] = useState<boolean[]>([]);
   const [exerciseFinished, setExerciseFinished] = useState<boolean[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
+  const [sessionNotes, setSessionNotes] = useState('');
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef(0);
   const pausedElapsedRef = useRef(0);
@@ -130,6 +139,7 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setExerciseStarted(exs.map(() => false));
     setExerciseFinished(exs.map(() => false));
     setCurrentIdx(0);
+    setSessionNotes('');
     setElapsed(0);
     setIsPaused(false);
     setIsActive(true);
@@ -149,6 +159,7 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setExerciseStarted(snap.exerciseStarted);
     setExerciseFinished(snap.exerciseFinished);
     setCurrentIdx(snap.currentIdx);
+    setSessionNotes(snap.sessionNotes ?? '');
     setIsPaused(snap.isPaused);
     setElapsed(snap.isPaused
       ? snap.pausedElapsedSeconds
@@ -166,6 +177,7 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setExerciseStarted([]);
     setExerciseFinished([]);
     setCurrentIdx(0);
+    setSessionNotes('');
     if (timerRef.current) clearInterval(timerRef.current);
     // Drop the crash-recovery snapshot — this session is done (saved or cancelled).
     clearActiveWorkout();
@@ -213,9 +225,10 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     startTimeEpochMs: startTimeRef.current,
     isPaused,
     pausedElapsedSeconds: pausedElapsedRef.current,
+    sessionNotes,
     capture: captureRef.current,
     savedAt: Date.now(),
-  }), [routineId, routineName, exercises, exerciseStarted, exerciseFinished, currentIdx, isPaused]);
+  }), [routineId, routineName, exercises, exerciseStarted, exerciseFinished, currentIdx, isPaused, sessionNotes]);
 
   // Always keep a ref to the latest snapshot builder so the once-mounted
   // AppState listener can persist current state without re-subscribing.
@@ -259,12 +272,12 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished,
-    currentIdx, setCurrentIdx,
+    currentIdx, setCurrentIdx, sessionNotes, setSessionNotes,
     startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   }), [
     isActive, isPaused, routineId, routineName, elapsed, exercises,
-    exerciseStarted, exerciseFinished, currentIdx,
+    exerciseStarted, exerciseFinished, currentIdx, sessionNotes,
     startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   ]);

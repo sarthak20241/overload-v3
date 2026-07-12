@@ -58,6 +58,9 @@ export interface ActiveWorkoutSnapshot {
   isPaused: boolean;
   /** `pausedElapsedRef.current` — frozen elapsed seconds while paused. */
   pausedElapsedSeconds: number;
+  /** Mid-session workout note (pre-seeds the finish sheet). Optional + additive
+   * like `capture`, so old snapshots stay valid (no schema bump). */
+  sessionNotes?: string;
   /** Transient per-set capture state from the workout screen (see above). */
   capture?: ActiveWorkoutCapture | null;
   /** When this snapshot was written (epoch ms), for debugging/staleness. */
