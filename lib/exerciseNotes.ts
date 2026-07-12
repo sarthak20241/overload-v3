@@ -21,14 +21,23 @@
  * across local caches). The DB id attaches to the entry when known; the flush
  * skips entries that don't have one yet.
  *
- * Name-as-key leans on the DB invariant that an exercise name resolves to ONE
- * row per user (unique index on the global catalog + per-user custom names,
- * migration exercise_name_unique + lib/exerciseResolve.ts). setExerciseNote
- * takes the caller's exerciseId over a previously attached one on purpose:
- * under the invariant they only differ when the row was deleted and recreated,
- * where the fresh id is the live one (a stale id would FK-fail on flush and
- * stay dirty forever). If the uniqueness invariant is ever relaxed, this
- * becomes last-editor-wins across same-named rows — revisit the keying then.
+ * Name-as-key assumes an exercise name maps to ONE row the user actually
+ * trains under. Note this is NOT a hard DB guarantee: migration
+ * 0037_exercise_name_unique has TWO partial unique indexes (one for the global
+ * catalog `created_by is null`, one per-owner `created_by is not null`), so a
+ * user's custom "Bench Press" *can* coexist with the global "Bench Press" in
+ * the table. What actually keeps it single in practice is app-level
+ * find-before-create: every add path (ExercisePickerSheet + resolveExerciseRow)
+ * looks the name up in the merged library first and reuses the existing row
+ * rather than minting a duplicate. So the note attaches to whichever row the
+ * user works with, and there's only ever one.
+ *
+ * setExerciseNote takes the caller's exerciseId over a previously attached one
+ * on purpose: given the above they only differ when the row was deleted and
+ * recreated, where the fresh id is the live one (a stale id would FK-fail on
+ * flush and stay dirty forever). If that app-level dedupe is ever bypassed and
+ * two same-named rows coexist, this degrades to last-editor-wins across them —
+ * revisit the keying (add a `created_by`/id dimension) then.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -130,14 +139,18 @@ export async function flushExerciseNotes(client: SupabaseClient, userId: string)
   for (const [k, e] of Object.entries(s)) {
     if (!e.dirty || !e.exerciseId || e.exerciseId.startsWith('temp-')) continue;
     try {
-      if (e.note.trim()) {
+      const trimmed = e.note.trim();
+      if (trimmed) {
+        // Store the trimmed value: the branch already gates on trim(), and
+        // surrounding whitespace is never meaningful for a note. Keeps the DB
+        // canonical rather than persisting stray leading/trailing spaces.
         const { error } = await client
           .from('user_exercise_notes')
           .upsert(
             {
               user_id: userId,
               exercise_id: e.exerciseId,
-              note: e.note,
+              note: trimmed,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'user_id,exercise_id' },
