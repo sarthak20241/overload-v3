@@ -108,7 +108,7 @@ begin
          when f.search_text like %L escape '\'    then 2
          else 3
        end),
-      similarity(f.search_text, %L) desc,
+      word_similarity(%L, f.search_text) desc,
       length(f.name),
       f.name
     limit %s
@@ -117,7 +117,8 @@ begin
     nq,                 -- exact
     pat || '%',         -- prefix
     '%' || pat || '%',  -- contiguous substring
-    nq,                 -- similarity tiebreak
+    nq,                 -- fuzzy tiebreak: best-matching WORD in the name (not
+                        -- whole-string similarity, which favours short names)
     greatest(1, least(lim, 60)));
 end
 $fn$;
