@@ -12,7 +12,9 @@ import { computeReadiness, type BaselineStat, type ReadinessResult } from './rea
 import { syncHealthData } from './healthSync';
 
 const BASELINE_DAYS = 28;
-const RECOVERY_TYPES = ['sleep_minutes', 'resting_hr_bpm', 'hrv_sdnn_ms'] as const;
+// sleep_quality rides along for today's read only; it is a subjective modifier, so
+// it never enters a baseline (see the baseline loop below).
+const RECOVERY_TYPES = ['sleep_minutes', 'sleep_quality', 'resting_hr_bpm', 'hrv_sdnn_ms'] as const;
 
 function toLocalISO(d: Date): string {
   const y = d.getFullYear();
@@ -50,17 +52,25 @@ export async function loadReadiness(
   const today = todayLocalISO();
   const since = shiftDaysISO(today, -BASELINE_DAYS);
 
-  const { data, error } = await supabase
-    .from('daily_metrics')
-    .select('metric_date, metric_type, value')
-    .eq('user_id', userId)
-    .in('metric_type', RECOVERY_TYPES as unknown as string[])
-    .gte('metric_date', since)
-    .lte('metric_date', today);
+  // The recovery-metrics, acute-load and nutrition reads are independent, so fire
+  // them together: the hero waits on one round-trip instead of three in series.
+  const [metricsRes, acuteLoad, nutrition] = await Promise.all([
+    supabase
+      .from('daily_metrics')
+      .select('metric_date, metric_type, value')
+      .eq('user_id', userId)
+      .in('metric_type', RECOVERY_TYPES as unknown as string[])
+      .gte('metric_date', since)
+      .lte('metric_date', today),
+    loadAcuteLoad(supabase, userId, today),
+    loadNutritionFactor(supabase, userId, today),
+  ]);
+  const { data, error } = metricsRes;
   if (error) throw error;
 
   const rows = (data ?? []) as { metric_date: string; metric_type: string; value: number | string }[];
-  const todayVal: Record<string, number | null> = { sleep_minutes: null, resting_hr_bpm: null, hrv_sdnn_ms: null };
+  const todayVal: Record<string, number | null> = { sleep_minutes: null, sleep_quality: null, resting_hr_bpm: null, hrv_sdnn_ms: null };
+  // sleep_quality is intentionally absent here: it feeds today only, never a baseline.
   const baseline: Record<string, number[]> = { sleep_minutes: [], resting_hr_bpm: [], hrv_sdnn_ms: [] };
 
   for (const r of rows) {
@@ -70,11 +80,10 @@ export async function loadReadiness(
     else if (baseline[r.metric_type]) baseline[r.metric_type].push(v);
   }
 
-  const acuteLoad = await loadAcuteLoad(supabase, userId, today);
-
   return computeReadiness({
     today: {
       sleepMinutes: todayVal.sleep_minutes,
+      sleepQuality: todayVal.sleep_quality,
       restingHrBpm: todayVal.resting_hr_bpm,
       hrvMs: todayVal.hrv_sdnn_ms,
     },
@@ -84,7 +93,70 @@ export async function loadReadiness(
       hrvMs: stat(baseline.hrv_sdnn_ms),
     },
     acuteLoad,
+    nutrition,
   });
+}
+
+/** Fallback daily targets, mirroring lib/dietData DEFAULT_TARGETS. */
+const DEFAULT_PROTEIN_TARGET = 125;
+const DEFAULT_KCAL_TARGET = 2000;
+/** How many COMPLETED days back to average nutrition over (excludes today). */
+const NUTRITION_LOOKBACK = 3;
+
+/**
+ * Nutrition recovery signal: average intake over the last few COMPLETED days
+ * (yesterday back NUTRITION_LOOKBACK), as ratios to the user's targets. Today is
+ * excluded on purpose (it is still being eaten, and overnight recovery ran on
+ * fuel already consumed). Returns null when the user logged no food in that
+ * window, so readiness stays neutral for non-loggers. Reads the trigger-maintained
+ * user_nutrition_stats table + targets from user_profiles. Defensive: any failure
+ * returns null so nutrition never blocks the score.
+ */
+async function loadNutritionFactor(
+  supabase: SupabaseClient,
+  userId: string,
+  today: string,
+): Promise<{ proteinRatio: number; energyRatio: number } | null> {
+  try {
+    const from = shiftDaysISO(today, -NUTRITION_LOOKBACK);
+    const to = shiftDaysISO(today, -1);
+    const [statsRes, profileRes] = await Promise.all([
+      supabase
+        .from('user_nutrition_stats')
+        .select('day, kcal, protein_g')
+        .eq('user_id', userId)
+        .gte('day', from)
+        .lte('day', to),
+      supabase
+        .from('user_profiles')
+        .select('protein_target_g, daily_calorie_target')
+        .eq('clerk_user_id', userId)
+        .maybeSingle(),
+    ]);
+    // Either query erroring means we can't trust the ratios; skip the factor
+    // rather than silently scoring against fallback targets (the "any failure
+    // returns null" contract). A profile that simply has no custom targets set is
+    // NOT an error, and legitimately uses the defaults below.
+    if (statsRes.error || profileRes.error) return null;
+    const days = (statsRes.data ?? []) as { kcal: number | string; protein_g: number | string }[];
+    // Only days with actual food logged count toward the average.
+    const logged = days
+      .map((d) => ({ kcal: Number(d.kcal), protein: Number(d.protein_g) }))
+      .filter((d) => (Number.isFinite(d.kcal) && d.kcal > 0) || (Number.isFinite(d.protein) && d.protein > 0));
+    if (logged.length === 0) return null;
+
+    const avgProtein = logged.reduce((a, d) => a + d.protein, 0) / logged.length;
+    const avgKcal = logged.reduce((a, d) => a + d.kcal, 0) / logged.length;
+
+    const prof = (profileRes.data ?? {}) as { protein_target_g?: number | string | null; daily_calorie_target?: number | string | null };
+    const proteinTarget = Number(prof.protein_target_g) || DEFAULT_PROTEIN_TARGET;
+    const kcalTarget = Number(prof.daily_calorie_target) || DEFAULT_KCAL_TARGET;
+    if (proteinTarget <= 0 || kcalTarget <= 0) return null;
+
+    return { proteinRatio: avgProtein / proteinTarget, energyRatio: avgKcal / kcalTarget };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -14,6 +14,7 @@ import { abbreviateNumber, formatSleepMinutes, formatWeight } from './format';
 export type DailyMetricType =
   | 'steps'
   | 'sleep_minutes'
+  | 'sleep_quality'
   | 'bodyweight_kg'
   | 'resting_hr_bpm'
   | 'hrv_sdnn_ms'
@@ -69,6 +70,14 @@ export const DAILY_METRICS: DailyMetricDef[] = [
     type: 'sleep_minutes', label: 'Sleep', shortLabel: 'Sleep', unit: 'h:m', storedUnit: 'minutes',
     icon: 'moon', colorKey: 'sleep', aggregation: 'last', grantsXp: false, derived: false,
     format: (v) => formatSleepMinutes(v),
+  },
+  {
+    // Manual-only subjective 1-5 rating that rides alongside sleep_minutes. Never
+    // a "Your signals" chart card (it is a modifier on the sleep component of
+    // readiness), never read from a hub. Sits next to sleep so pickers group them.
+    type: 'sleep_quality', label: 'Sleep quality', shortLabel: 'Quality', unit: '/5', storedUnit: 'score',
+    icon: 'moon', colorKey: 'sleep', aggregation: 'last', grantsXp: false, derived: false,
+    format: (v) => `${Math.round(v)}/5`,
   },
   {
     type: 'bodyweight_kg', label: 'Bodyweight', shortLabel: 'Weight', unit: 'kg', storedUnit: 'kg',

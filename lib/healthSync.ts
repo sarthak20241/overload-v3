@@ -23,8 +23,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { dailyMetricDef, type DailyMetricType, type MetricSource } from './dailyMetrics';
 import type { HealthHub } from './healthSources';
 
-/** The metric types a platform hub can populate (everything except the derived readiness score). */
-export type ReadableMetric = Exclude<DailyMetricType, 'readiness_score'>;
+/**
+ * The metric types a platform hub can populate. Excludes the derived readiness
+ * score AND sleep_quality (a manual-only subjective rating no hub exposes), so the
+ * adapters, connected-metric queries and trend cards all ignore both.
+ */
+export type ReadableMetric = Exclude<DailyMetricType, 'readiness_score' | 'sleep_quality'>;
 
 export const READABLE_METRICS: ReadableMetric[] = [
   'steps',
@@ -56,6 +60,12 @@ export interface HealthAdapter {
   requestAuthorization(types: ReadableMetric[]): Promise<boolean>;
   /** Daily-aggregated readings for [sinceDate, today], already deduped by the platform's statistics/aggregate query. */
   readDaily(sinceDate: string, types: ReadableMetric[]): Promise<DailyReading[]>;
+  /**
+   * Which read permissions are actually granted right now, or null when the
+   * platform can't tell us (iOS never reports read grants). Android Health
+   * Connect can, so this is our one source of truth for "denied" there.
+   */
+  getGrantedReadTypes?(): Promise<ReadableMetric[] | null>;
 }
 
 // ── cursors (per-user, AsyncStorage, same keying convention as syncQueue) ─────
@@ -160,17 +170,45 @@ export async function syncHealthData(
     // access. Advancing to today would shrink the next sync to just the overlap
     // window and skip most of the initial readiness baseline once permission is
     // actually granted — so leave the cursor and let the next run retry `since`.
+    // NB: this check is on the UNFILTERED readings on purpose. Filtering first (for
+    // the manual-wins guard below) would reintroduce that baseline-skip bug.
     return { written: 0 };
   }
 
-  const rows = readings.map((r) => ({
-    user_id: userId,
-    metric_date: r.date,
-    metric_type: r.type,
-    value: r.value,
-    unit: dailyMetricDef(r.type)?.storedUnit ?? null,
-    source: r.source,
-  }));
+  // Manual-wins guard: an explicit in-app entry owns its (day, type) and must not
+  // be silently overwritten by the next hub sync. Drop any reading that collides
+  // with a manual row in the same window. Fail closed on a select error (never
+  // fall through to an unguarded upsert that could clobber a correction).
+  const { data: manualRows, error: manualErr } = await supabase
+    .from('daily_metrics')
+    .select('metric_date, metric_type')
+    .eq('user_id', userId)
+    .eq('source', 'manual')
+    .in('metric_type', READABLE_METRICS as unknown as string[])
+    .gte('metric_date', since);
+  if (manualErr) throw manualErr;
+  const manualKeys = new Set(
+    (manualRows ?? []).map((r: { metric_date: string; metric_type: string }) => `${r.metric_date}::${r.metric_type}`),
+  );
+
+  const rows = readings
+    .filter((r) => !manualKeys.has(`${r.date}::${r.type}`))
+    .map((r) => ({
+      user_id: userId,
+      metric_date: r.date,
+      metric_type: r.type,
+      value: r.value,
+      unit: dailyMetricDef(r.type)?.storedUnit ?? null,
+      source: r.source,
+    }));
+
+  // The hub returned data (readings.length > 0), so advance the cursor even when
+  // every reading was a manual collision — otherwise a user whose only hub metric
+  // is one they corrected by hand would re-scan the full window forever.
+  if (rows.length === 0) {
+    await setCursor(userId, today);
+    return { written: 0 };
+  }
 
   const { error } = await supabase
     .from('daily_metrics')
@@ -181,33 +219,87 @@ export async function syncHealthData(
   return { written: rows.length };
 }
 
+/** Split of which readable metrics have fresh data, by whether a hub feeds them. */
+export interface ConnectedMetrics {
+  /** Any readable metric with a fresh row, manual or synced. Drives "there is data". */
+  metrics: Set<ReadableMetric>;
+  /** Only hub-sourced (non-manual) fresh metrics. Gates honest "Syncing from ..." copy. */
+  deviceMetrics: Set<ReadableMetric>;
+}
+
 /**
  * Which readable metrics have FRESH data (a daily_metrics row within the last
- * `freshDays`). This is our honest "what's connected" signal: iOS never reports
- * read-grant, so we infer a source is feeding from the presence of its rows
- * rather than from any permission read-back. Read-only.
+ * `freshDays`), split into all-sources vs device-only. iOS never reports
+ * read-grant, so presence of rows is our honest "what's feeding" signal; the
+ * device-only split keeps a manual-only logger from being told a hub is syncing.
+ * Read-only.
  */
 export async function loadConnectedMetrics(
   supabase: SupabaseClient,
   userId: string,
   freshDays = 3,
-): Promise<Set<ReadableMetric>> {
-  const present = new Set<ReadableMetric>();
-  if (!userId) return present;
+): Promise<ConnectedMetrics> {
+  const metrics = new Set<ReadableMetric>();
+  const deviceMetrics = new Set<ReadableMetric>();
+  if (!userId) return { metrics, deviceMetrics };
   const since = shiftDaysISO(todayLocalISO(), -freshDays);
   const { data, error } = await supabase
     .from('daily_metrics')
-    .select('metric_type')
+    .select('metric_type, source')
     .eq('user_id', userId)
     .in('metric_type', READABLE_METRICS as unknown as string[])
     .gte('metric_date', since);
   if (error) throw error;
-  for (const r of (data ?? []) as { metric_type: string }[]) {
-    if ((READABLE_METRICS as unknown as string[]).includes(r.metric_type)) {
-      present.add(r.metric_type as ReadableMetric);
+  for (const r of (data ?? []) as { metric_type: string; source: string }[]) {
+    if (!(READABLE_METRICS as unknown as string[]).includes(r.metric_type)) continue;
+    const m = r.metric_type as ReadableMetric;
+    metrics.add(m);
+    if (r.source !== 'manual') deviceMetrics.add(m);
+  }
+  return { metrics, deviceMetrics };
+}
+
+// ── connection status (per-user "have we ever connected a hub") ───────────────
+const CONNECTED_KEY = (userId: string) => `health_connected_v1::${userId}`;
+
+/** Remember that the user completed the hub auth flow (called on a successful connect). */
+export async function markHealthConnected(userId: string): Promise<void> {
+  if (!userId) return;
+  try {
+    await AsyncStorage.setItem(CONNECTED_KEY(userId), '1');
+  } catch {
+    // A lost flag just downgrades status to 'unknown', which the data-presence
+    // check still recovers from; not worth surfacing.
+  }
+}
+
+export type HealthConnectionStatus = 'granted' | 'denied' | 'unknown';
+
+/**
+ * Best honest read of whether a hub is connected. Android Health Connect can tell
+ * us the truth (granted/denied) via permission read-back, so that wins. Otherwise
+ * (iOS, or read-back unavailable) fall back to the local "we asked" flag, and
+ * finally 'unknown'. Callers combine this with fresh device data for the final
+ * connected predicate, so a stale flag alone never fakes a connection.
+ */
+export async function getHealthConnectionStatus(userId: string): Promise<HealthConnectionStatus> {
+  if (!userId) return 'unknown';
+  const adapter = getHealthAdapter();
+  if (adapter?.getGrantedReadTypes) {
+    try {
+      const granted = await adapter.getGrantedReadTypes();
+      if (granted != null) return granted.length > 0 ? 'granted' : 'denied';
+    } catch {
+      // fall through to the flag
     }
   }
-  return present;
+  try {
+    const flag = await AsyncStorage.getItem(CONNECTED_KEY(userId));
+    if (flag === '1') return 'granted';
+  } catch {
+    // ignore
+  }
+  return 'unknown';
 }
 
 /**

@@ -13,6 +13,7 @@
 import {
   initialize,
   getSdkStatus,
+  getGrantedPermissions,
   requestPermission,
   readRecords,
   aggregateGroupByPeriod,
@@ -20,7 +21,7 @@ import {
   SleepStageType,
   type Permission,
 } from 'react-native-health-connect';
-import type { DailyReading, HealthAdapter } from '../healthSync';
+import type { DailyReading, HealthAdapter, ReadableMetric } from '../healthSync';
 
 const READ_PERMISSIONS: Permission[] = [
   { accessType: 'read', recordType: 'Steps' },
@@ -30,6 +31,16 @@ const READ_PERMISSIONS: Permission[] = [
   { accessType: 'read', recordType: 'Weight' },
   { accessType: 'read', recordType: 'SleepSession' },
 ];
+
+/** Record type -> the daily_metrics metric it feeds, for permission read-back. */
+const RECORD_TO_METRIC: Record<string, ReadableMetric> = {
+  Steps: 'steps',
+  ActiveCaloriesBurned: 'active_energy_kcal',
+  RestingHeartRate: 'resting_hr_bpm',
+  HeartRateVariabilityRmssd: 'hrv_sdnn_ms',
+  Weight: 'bodyweight_kg',
+  SleepSession: 'sleep_minutes',
+};
 
 function localISO(d: Date): string {
   const y = d.getFullYear();
@@ -71,6 +82,25 @@ export const healthConnectAdapter: HealthAdapter = {
       );
     } catch {
       return false;
+    }
+  },
+
+  async getGrantedReadTypes() {
+    try {
+      // The client must be initialized before this call, and getGrantedPermissions
+      // can throw if Health Connect is not ready. Any failure returns null (unknown)
+      // rather than a false "denied", so we never lock a truly-connected user out.
+      if (!(await this.isAvailable())) return null;
+      const granted = (await getGrantedPermissions()) as ReadonlyArray<{ accessType?: string; recordType?: string }>;
+      const out: ReadableMetric[] = [];
+      for (const g of granted) {
+        if (g.accessType !== 'read' || !g.recordType) continue;
+        const metric = RECORD_TO_METRIC[g.recordType];
+        if (metric && !out.includes(metric)) out.push(metric);
+      }
+      return out;
+    } catch {
+      return null;
     }
   },
 

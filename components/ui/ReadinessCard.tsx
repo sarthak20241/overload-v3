@@ -4,21 +4,38 @@
  * Takes the half-width stat slot vacated by the muscle donut (moved to Analytics).
  * Leads with the decision: a band-coloured score ring + a short directive derived
  * from readiness, in Drona's voice. Reads (does not write) today's readiness from
- * daily_metrics; the foreground sync owns the write. Falls back to a connect /
- * calibrating prompt when there is no score yet. Tapping opens the health screen.
+ * daily_metrics; the foreground sync owns the write. Three honest states:
+ *   score        -> ring + directive
+ *   needs sleep  -> we have a connection or recent data but no score today, so the
+ *                   one missing input is sleep. Tap deep-links into the log sheet.
+ *   not connected-> nothing at all yet. Tap opens the health hub.
+ * This kills the old bug where a connected steps-only user saw "Connect health".
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
-import { useRouter } from 'expo-router';
+import { Feather } from '@expo/vector-icons';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness } from '@/lib/readinessSync';
+import { getHealthConnectionStatus, loadConnectedMetrics } from '@/lib/healthSync';
 import { bandColor, directive, bandPillTextColor } from '@/lib/readiness';
 import type { ReadinessResult } from '@/lib/readiness';
 import { Colors, Radius, Spacing, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
 import { ReadinessRing } from '@/components/ui/ReadinessRing';
+
+// Widen the has-data window well past the sync freshness window: a manual logger
+// who lapses a few days must stay "log last night", not regress to "connect".
+const HAS_DATA_DAYS = 14;
+
+interface CardState {
+  loading: boolean;
+  result: ReadinessResult | null;
+  /** A hub is connected, OR any readable metric has data in the last HAS_DATA_DAYS. */
+  hasData: boolean;
+}
 
 export function ReadinessCard() {
   const { C } = useTheme();
@@ -26,41 +43,50 @@ export function ReadinessCard() {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const userId = user?.id ?? null;
-  const [state, setState] = useState<{ loading: boolean; result: ReadinessResult | null }>({
-    loading: true,
-    result: null,
-  });
+  const [state, setState] = useState<CardState>({ loading: true, result: null, hasData: false });
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!userId) {
-      setState({ loading: false, result: null });
-      return;
-    }
-    // userId can flip null -> real after auth resolves; show the spinner during
-    // the (re)load so a signed-in user never sees the empty "Connect health" CTA
-    // mid-fetch. On a transient read failure, keep the last-known result rather
-    // than nulling it (which would misreport "no readiness" on the dashboard).
-    setState((prev) => ({ ...prev, loading: true }));
-    loadReadiness(supabase, userId)
-      .then((r) => {
-        if (!cancelled) setState({ loading: false, result: r });
-      })
-      .catch(() => {
-        if (!cancelled) setState((prev) => ({ loading: false, result: prev.result }));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, supabase]);
+  // Reload every time the dashboard REGAINS FOCUS, not just on mount: after the
+  // user logs sleep on the /health hub and comes back, the tab screen stays
+  // mounted, so a plain useEffect would never re-read and the card would keep
+  // showing the stale pre-log state (no score, which also makes it deep-link
+  // log=1 and reopen the sheet forever). useFocusEffect refires on return.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      if (!userId) {
+        setState({ loading: false, result: null, hasData: false });
+        return;
+      }
+      // Only show the spinner on the FIRST load (no result yet). On a refocus
+      // reload keep the current card visible so returning doesn't flash a spinner.
+      setState((prev) => ({ ...prev, loading: prev.result == null }));
+      Promise.all([
+        loadReadiness(supabase, userId).catch(() => null),
+        getHealthConnectionStatus(userId).catch(() => 'unknown' as const),
+        loadConnectedMetrics(supabase, userId, HAS_DATA_DAYS).catch(() => ({ metrics: new Set(), deviceMetrics: new Set() })),
+      ])
+        .then(([result, status, connected]) => {
+          if (cancelled) return;
+          const hasData = status === 'granted' || connected.deviceMetrics.size > 0 || connected.metrics.size > 0;
+          setState({ loading: false, result, hasData });
+        })
+        .catch(() => {
+          if (!cancelled) setState((prev) => ({ ...prev, loading: false }));
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [userId, supabase]),
+  );
 
   const result = state.result;
   const hasScore = result != null && result.score != null && result.band != null;
+  const needsSleep = !hasScore && state.hasData;
   const accent = Colors.stat.readiness;
 
   return (
     <Pressable
-      onPress={() => router.push('/health')}
+      onPress={() => router.push(needsSleep ? { pathname: '/health', params: { log: '1' } } : '/health')}
       style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
     >
       <View style={[styles.glow, { backgroundColor: accent, opacity: 0.04 }]} />
@@ -89,15 +115,13 @@ export function ReadinessCard() {
       ) : (
         <View style={styles.center}>
           <View style={[styles.emptyChip, { backgroundColor: colorWithAlpha(accent, 0.12) }]}>
-            <Svg width={18} height={18} viewBox="0 0 24 24">
-              <Circle cx={12} cy={12} r={7} fill="none" stroke={accent} strokeWidth={2} />
-            </Svg>
+            <Feather name={needsSleep ? 'moon' : 'plus-circle'} size={18} color={accent} />
           </View>
           <Text style={[styles.emptyTitle, { color: C.foreground }]}>
-            {result?.calibrating ? 'Calibrating' : 'Connect health'}
+            {needsSleep ? 'Log last night' : 'Connect health'}
           </Text>
           <Text style={[styles.emptySub, { color: C.textDim }]}>
-            {result?.calibrating ? 'A week of data and readiness kicks in.' : 'Sync sleep + recovery to see readiness.'}
+            {needsSleep ? 'Readiness starts with sleep. Ten seconds.' : 'Sync a wearable or log sleep by hand.'}
           </Text>
         </View>
       )}
