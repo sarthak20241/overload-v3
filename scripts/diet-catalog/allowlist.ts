@@ -82,6 +82,77 @@ export const OFF_FILTER = {
   ],
   /** drop products missing any of these nutriment fields (per 100 g) */
   requireNutriments: ['energy-kcal_100g', 'proteins_100g', 'carbohydrates_100g', 'fat_100g'],
-  /** also keep popular Indian FMCG brands for packaged staples */
-  fmcgBrands: ['amul', 'britannia', 'mtr', 'haldiram', 'mother dairy', 'nestle', 'kelloggs'],
+  /** popular Indian FMCG/packaged brands — SCOPED to countries:en:india (else global
+   *  megabrands like Nestlé pull 10k non-India SKUs). Includes both `haldiram` and
+   *  `haldiram's` (OFF stores them as separate brand tags). */
+  fmcgBrands: [
+    'amul', 'britannia', 'mtr', 'haldiram', "haldiram's", 'mother dairy', 'nestle', 'kelloggs',
+    'parle', 'itc', 'sunfeast', 'bingo', 'patanjali', 'dabur', 'cadbury', 'mondelez', 'maggi',
+    'bikaji', 'lays', 'kurkure', 'saffola', 'fortune', 'aashirvaad', 'tata', 'tropicana', 'real',
+    'paper boat', 'bisleri', 'mdh', 'everest', 'too yumm', "kwality wall's", 'gowardhan', 'epigamia',
+  ],
+  /** restaurant / QSR chains — kept GLOBAL (OFF has ~0 India-tagged chain items; its
+   *  chain data is US/EU menus). English-filtered like gym brands. NOTE: India-specific
+   *  menu items (McAloo Tikki, McSpicy Paneer) are NOT in OFF; those need a curated
+   *  source (official chain nutrition) if we want them. */
+  restaurantBrands: [
+    "mcdonald's", 'kfc', 'burger king', 'subway', 'starbucks', 'dunkin', 'taco bell',
+    'pizza hut', "domino's", 'wow momo',
+  ],
+};
+
+/**
+ * Supplement / health-brand sweep for the BULK Open Food Facts export
+ * (scripts/diet-catalog/ingest-off-supplements.ts). When OFF's search API is down
+ * we stream the full `openfoodfacts-products.jsonl.gz` dump and keep any product
+ * that matches EITHER a supplement CATEGORY tag (captures every brand at once) OR a
+ * known supplement/health BRAND tag (rescues rows the community mis-categorised).
+ * Same ODbL segregation as OFF_FILTER: kept rows are source='off'.
+ *
+ * Category-first is deliberate: "all health and supplement brands" is really "all
+ * products in the supplement categories" — the brand list only widens the net and
+ * lets us region-tag India D2C brands. Pure 0-calorie supplements (plain creatine,
+ * most vitamins/minerals) are dropped downstream by the complete-macro + kcal>0
+ * plausibility guard — they carry no macros worth logging in a diet diary.
+ */
+export const SUPPLEMENT_FILTER = {
+  /** categories_tags — any match includes the product (OFF stores these lang-prefixed) */
+  categoryTags: [
+    'en:dietary-supplements', 'en:food-supplements', 'en:sports-nutrition',
+    'en:bodybuilding-supplements', 'en:protein-powders', 'en:whey-proteins',
+    'en:whey-protein', 'en:plant-proteins', 'en:pea-proteins', 'en:soy-proteins',
+    'en:caseins', 'en:protein-shakes', 'en:protein-drinks', 'en:mass-gainers',
+    'en:gainers', 'en:weight-gainers', 'en:meal-replacement', 'en:meal-replacements',
+    'en:protein-bars', 'en:high-protein-bars', 'en:sports-bars', 'en:energy-bars',
+    'en:creatine', 'en:bcaa', 'en:amino-acids', 'en:pre-workout',
+    'en:workout-supplements', 'en:electrolytes', 'en:multivitamins', 'en:vitamins',
+  ],
+  /** brands_tags — normalized (lowercase, spaces/apostrophes -> '-'); matched against
+   *  the product's brands_tags. Global + Indian supplement & health-nutrition brands. */
+  brands: [
+    // --- global sports-nutrition / protein ---
+    'optimum nutrition', 'myprotein', 'dymatize', 'muscletech', 'bsn', 'cellucor',
+    'gaspari nutrition', 'universal nutrition', 'ronnie coleman', 'rule one proteins',
+    'rule 1', 'scitec nutrition', 'gnc', 'isopure', 'ultimate nutrition', 'labrada',
+    'bpi sports', 'quest nutrition', 'ghost', 'transparent labs', 'jym', 'redcon1',
+    'mutant', 'allmax nutrition', 'applied nutrition', 'grenade', 'phd nutrition',
+    'sci-mx', 'usn', 'bulk', 'bulk powders', 'foodspring', 'esn', 'prozis',
+    'biotechusa', 'weider', 'scivation', 'xtend', 'evlution nutrition', 'evl',
+    'kaged', 'nutrex research', 'pescience', 'six star', 'body fortress',
+    'premier protein', 'muscle milk', 'cytosport', 'fairlife', 'orgain', 'vega',
+    'sunwarrior', 'huel', 'soylent', "ka'chava", 'now sports', 'now foods',
+    // --- global health / vitamins / wellness ---
+    'garden of life', "nature's bounty", 'centrum', 'nature made', 'solgar',
+    'herbalife', 'amway', 'nutrilite', 'gnc live well',
+    // --- india sports-nutrition / protein ---
+    'muscleblaze', 'avvatar', 'bigmuscles nutrition', 'bigmuscles', 'as-it-is',
+    'asitis', 'as-it-is nutrition', 'atom', 'the whole truth', 'nakpro', 'healthkart',
+    'hk vitals', 'musclexp', 'myfitfuel', 'proburst', 'ripped up nutrition',
+    'nutrify', 'wellcore', 'beast life', 'truebasics', 'true basics', 'sinew nutrition',
+    'steadfast nutrition', 'absolute nutrition', 'endura mass', 'nutrabay',
+    // --- india health / wellness / nutrition drinks ---
+    'fast&up', 'fast and up', 'wellbeing nutrition', 'oziva', 'kapiva', 'plix',
+    'carbamide forte', 'inlife', 'boldfit', 'gritzo', 'unived', 'protinex', 'ensure',
+    'horlicks', 'bournvita', 'complan', 'pediasure', 'yfit',
+  ],
 };

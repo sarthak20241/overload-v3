@@ -72,8 +72,19 @@ npx tsx scripts/diet-catalog/build.ts
   `food_nutrient.csv`, matches the `USDA_ALLOWLIST`, emits authoritative per-100 g
   rows (`source='usda'`). Verified: chicken breast 165 kcal/31 g P, oats 379 kcal,
   olive oil 884 kcal. 31 picks land today; expand `USDA_ALLOWLIST` for more breadth.
-- **OFF ingest: stubbed.** `buildOff()` has the filter structure; needs the India
-  bulk dump dropped in `data/off/` and the JSONL/Parquet parser wired.
+- **OFF ingest: working (server catalog).** `scripts/diet-catalog/ingest-off.ts`
+  pulls branded SKUs from the **search-a-licious** API (`search.openfoodfacts.org`) —
+  no multi-GB dump needed. Gym brands global, Indian FMCG scoped to `en:india`,
+  English/India names only, complete macro panels + plausibility guards. Emits
+  `supabase/seed/off_foods.generated.sql` (`source='off'`, segregated per ODbL),
+  loaded via `scripts/load-usda-seed.sh <seed>`. **LOADED to prod 2026-07-07: 788
+  branded foods.** Reversible: `delete from public.foods where 'off' = any(sources)`.
+  KNOWN GAP: search-a-licious does not expose `serving_quantity`/micros, so OFF rows
+  ship with a canonical `100 g` serving only. Real servings + micros need OFF's
+  per-barcode product API (`/api/v2/product/{barcode}`), which was returning 503 at
+  build time — barcodes are stored on every row for a later backfill enrichment pass.
+  The `buildOff()` in `build.ts` (the small bundled-offline library) is still a stub
+  and unused for the server catalog.
 
 Latest run emits 35 foods (31 USDA + 4 dishes) to `lib/foods.generated.ts` +
 `supabase/seed/foods_seed.generated.sql`.
