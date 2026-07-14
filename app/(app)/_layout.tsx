@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import { useForegroundHealthSync } from '@/lib/useHealthSync';
+import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import type { Routine } from '@/lib/types';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -239,9 +240,47 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
 
 export default function AppLayout() {
   const [modalOpen, setModalOpen] = useState(false);
-  const { isSignedIn, isLoaded } = useClerkUser();
+  const { isSignedIn, isLoaded, user } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
+  const { C } = useTheme();
   const pathname = usePathname();
+
+  // First-run gate: route brand-new users through /onboarding once. null =
+  // still resolving (flag read, plus a server look for legacy accounts with
+  // no local flag). Errors resolve to false inside resolveNeedsOnboarding so
+  // a network blip can never lock an existing user out of the app.
+  const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+  // The per-request-auth client (stable identity): it fails loudly when no
+  // Clerk token is available, so the check can't mistake an anon empty-rows
+  // response for a brand-new account.
+  const onboardingCheckClient = useSupabaseClient();
+  useEffect(() => {
+    if (!isLoaded || !guestLoaded) return;
+    if (!isSignedIn && !isGuest) return; // the auth redirect below handles this
+    let cancelled = false;
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (cancelled || settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      setNeedsOnboarding(value);
+    };
+    // Auth token acquisition is bounded in useSupabaseClient, but the request
+    // itself can still stall indefinitely. Never leave the app behind this
+    // first-run spinner when that happens.
+    const timeout = setTimeout(() => settle(false), 6000);
+    resolveNeedsOnboarding({
+      isGuest: !isSignedIn,
+      clerkId: isSignedIn ? user?.id ?? null : null,
+      client: onboardingCheckClient,
+    })
+      .then(settle)
+      .catch(() => settle(false));
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [isLoaded, guestLoaded, isSignedIn, isGuest, user?.id, onboardingCheckClient]);
   // The nutrition day view is a focused full screen with its own bottom input
   // (Journable model). Hide the workout tab bar + workout overlays there so the
   // input is reachable and the screen reads as its own destination.
@@ -272,6 +311,23 @@ export default function AppLayout() {
   // silently handing out access.
   if (!isSignedIn && !isGuest) {
     return <Redirect href="/(auth)" />;
+  }
+
+  // Hold rendering until the first-run check settles (a flag read, ~ms, for
+  // anyone who has been through this once), then bounce new users to
+  // onboarding. Completing or skipping onboarding sets the flag, so the
+  // remount after router.replace('/(app)') passes straight through. The
+  // no-flag case round-trips to Supabase, so show a spinner, not a blank
+  // screen, while it resolves on a slow connection.
+  if (needsOnboarding === null) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.background }}>
+        <ActivityIndicator size="small" color={C.textMuted} />
+      </View>
+    );
+  }
+  if (needsOnboarding) {
+    return <Redirect href="/onboarding" />;
   }
 
   return (
