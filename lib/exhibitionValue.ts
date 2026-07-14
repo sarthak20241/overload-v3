@@ -18,6 +18,10 @@ export type ArtworkType = 'painting' | 'sculpture' | 'digital';
  *   digital:    base + specialAttribute * 50 + base * 0.5   (tech innovation)
  *
  * The subtotal is then multiplied by condition/10 and truncated to an integer.
+ *
+ * All arithmetic is done in doubled integer units so digital's base*0.5 bonus
+ * and the condition/10 multiplier stay exact — floor(subtotal * (condition/10))
+ * in floats is off by one for conditions 3/6/7 (e.g. 90 * 0.7 === 62.999…993).
  */
 export function valueForArtwork(artwork: string): number {
   const [type, , baseValueStr, ageStr, conditionStr, specialStr] = artwork.split(':');
@@ -27,23 +31,25 @@ export function valueForArtwork(artwork: string): number {
   const condition = Number(conditionStr);
   const special = Number(specialStr);
 
-  let subtotal: number;
+  // sub2 = 2 * subtotal, always an exact integer
+  let sub2: number;
   switch (type as ArtworkType) {
     case 'painting':
-      subtotal = baseValue + age * 10 + special * 100;
+      sub2 = 2 * (baseValue + age * 10 + special * 100);
       break;
     case 'sculpture':
-      subtotal = baseValue + age * 15 + special * 500;
+      sub2 = 2 * (baseValue + age * 15 + special * 500);
       break;
     case 'digital':
-      subtotal = baseValue + special * 50 + baseValue * 0.5;
+      // 2 * (base + special*50 + base*0.5)
+      sub2 = baseValue * 3 + special * 100;
       break;
     default:
-      subtotal = baseValue;
+      sub2 = 2 * baseValue;
       break;
   }
 
-  return Math.floor(subtotal * (condition / 10));
+  return Math.floor((sub2 * condition) / 20);
 }
 
 /**
