@@ -127,20 +127,27 @@ export async function resolveNeedsOnboarding(opts: {
   // Look for existing data before showing onboarding to a legacy user.
   if (!isSupabaseConfigured) return false;
   try {
-    const [{ data: profile, error: pErr }, { count, error: rErr }] = await Promise.all([
+    const [{ data: profile, error: pErr }, { count: routineCount, error: rErr }, { count: workoutCount, error: wErr }] = await Promise.all([
       opts.client
         .from('user_profiles')
-        .select('goal, experience_level, weekly_target_sessions')
+        .select('goal, experience_level, weekly_target_sessions, training_age_months, gender, height_cm, weight_kg, goal_weight_kg, body_fat_percent, date_of_birth')
         .eq('clerk_user_id', opts.clerkId)
         .maybeSingle(),
       opts.client
         .from('routines')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', opts.clerkId),
+      opts.client
+        .from('workouts')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', opts.clerkId),
     ]);
-    if (pErr || rErr) throw pErr || rErr;
+    if (pErr || rErr || wErr) throw pErr || rErr || wErr;
     const hasData =
-      !!profile?.goal || !!profile?.experience_level || !!profile?.weekly_target_sessions || (count ?? 0) > 0;
+      !!profile?.goal || !!profile?.experience_level || !!profile?.weekly_target_sessions
+      || profile?.training_age_months != null || profile?.gender != null || profile?.height_cm != null
+      || profile?.weight_kg != null || profile?.goal_weight_kg != null || profile?.body_fat_percent != null
+      || profile?.date_of_birth != null || (routineCount ?? 0) > 0 || (workoutCount ?? 0) > 0;
     if (hasData) {
       await markOnboardingDone(identity);
       return false;

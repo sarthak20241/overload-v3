@@ -258,14 +258,28 @@ export default function AppLayout() {
     if (!isLoaded || !guestLoaded) return;
     if (!isSignedIn && !isGuest) return; // the auth redirect below handles this
     let cancelled = false;
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (cancelled || settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      setNeedsOnboarding(value);
+    };
+    // Auth token acquisition is bounded in useSupabaseClient, but the request
+    // itself can still stall indefinitely. Never leave the app behind this
+    // first-run spinner when that happens.
+    const timeout = setTimeout(() => settle(false), 6000);
     resolveNeedsOnboarding({
       isGuest: !isSignedIn,
       clerkId: isSignedIn ? user?.id ?? null : null,
       client: onboardingCheckClient,
     })
-      .then((v) => { if (!cancelled) setNeedsOnboarding(v); })
-      .catch(() => { if (!cancelled) setNeedsOnboarding(false); });
-    return () => { cancelled = true; };
+      .then(settle)
+      .catch(() => settle(false));
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [isLoaded, guestLoaded, isSignedIn, isGuest, user?.id, onboardingCheckClient]);
   // The nutrition day view is a focused full screen with its own bottom input
   // (Journable model). Hide the workout tab bar + workout overlays there so the

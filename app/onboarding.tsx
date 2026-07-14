@@ -70,6 +70,20 @@ import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const LBS_PER_KG = 2.20462;
+const MIN_AGE_YEARS = 13;
+const MAX_AGE_YEARS = 120;
+const MIN_WEIGHT_KG = 25;
+const MAX_WEIGHT_KG = 500;
+const MIN_HEIGHT_CM = 100;
+const MAX_HEIGHT_CM = 250;
+
+function inRange(value: number, min: number, max: number): boolean {
+  return Number.isFinite(value) && value >= min && value <= max;
+}
+
+function formatMeasurement(value: number): string {
+  return String(Math.round(value * 10) / 10);
+}
 
 type Step = 'welcome' | 'goal' | 'experience' | 'frequency' | 'body' | 'target' | 'plan';
 const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'body', 'target', 'plan'];
@@ -174,24 +188,67 @@ export default function OnboardingScreen() {
 
   const parsedWeightKg = useMemo(() => {
     const w = parseFloat(weightStr);
-    if (isNaN(w) || w <= 0) return null;
-    return weightUnit === 'lbs' ? Math.round((w / LBS_PER_KG) * 10) / 10 : w;
+    if (!Number.isFinite(w)) return null;
+    const kg = weightUnit === 'lbs' ? Math.round((w / LBS_PER_KG) * 10) / 10 : w;
+    return inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null;
   }, [weightStr, weightUnit]);
+
+  const toggleWeightUnit = useCallback(() => {
+    const nextUnit = weightUnit === 'kg' ? 'lbs' : 'kg';
+    const convert = (value: string) => {
+      const parsed = parseFloat(value);
+      if (!Number.isFinite(parsed)) return value;
+      const converted = nextUnit === 'lbs' ? parsed * LBS_PER_KG : parsed / LBS_PER_KG;
+      return formatMeasurement(converted);
+    };
+    setWeightStr(convert);
+    setTargetStr(convert);
+    setWeightUnit(nextUnit);
+  }, [weightUnit]);
+
+  const toggleHeightUnit = useCallback(() => {
+    if (heightUnit === 'cm') {
+      const cm = parseFloat(heightCmStr);
+      if (Number.isFinite(cm) && cm > 0) {
+        const totalInches = cm / 2.54;
+        let feet = Math.floor(totalInches / 12);
+        let inches = Math.round((totalInches - feet * 12) * 10) / 10;
+        if (inches >= 12) {
+          feet += 1;
+          inches = 0;
+        }
+        setHeightFtStr(String(feet));
+        setHeightInStr(formatMeasurement(inches));
+      }
+      setHeightUnit('ft');
+      return;
+    }
+
+    const feet = parseFloat(heightFtStr);
+    const inches = parseFloat(heightInStr) || 0;
+    if (Number.isFinite(feet) && feet >= 0 && inRange(inches, 0, 11)) {
+      setHeightCmStr(formatMeasurement(feet * 30.48 + inches * 2.54));
+    }
+    setHeightUnit('cm');
+  }, [heightUnit, heightCmStr, heightFtStr, heightInStr]);
 
   const commitBodyStep = useCallback(() => {
     const age = parseInt(ageStr, 10);
     let heightCm: number | null = null;
     if (heightUnit === 'cm') {
       const h = parseFloat(heightCmStr);
-      if (!isNaN(h) && h > 0) heightCm = h;
+      if (inRange(h, MIN_HEIGHT_CM, MAX_HEIGHT_CM)) heightCm = h;
     } else {
       const ft = parseFloat(heightFtStr);
       const inch = parseFloat(heightInStr) || 0;
-      if (!isNaN(ft) && ft > 0) heightCm = Math.round((ft * 30.48 + inch * 2.54) * 10) / 10;
+      const cm = Math.round((ft * 30.48 + inch * 2.54) * 10) / 10;
+      if (Number.isFinite(ft) && ft > 0 && inRange(inch, 0, 11) && inRange(cm, MIN_HEIGHT_CM, MAX_HEIGHT_CM)) {
+        heightCm = cm;
+      }
     }
     setAnswers((a) => ({
       ...a,
-      ageYears: !isNaN(age) && age > 0 ? age : null,
+      ageYears: inRange(age, MIN_AGE_YEARS, MAX_AGE_YEARS) ? age : null,
       heightCm,
       weightKg: parsedWeightKg,
     }));
@@ -200,7 +257,10 @@ export default function OnboardingScreen() {
 
   const commitTargetStep = useCallback(() => {
     const t = parseFloat(targetStr);
-    const kg = !isNaN(t) && t > 0 ? (weightUnit === 'lbs' ? Math.round((t / LBS_PER_KG) * 10) / 10 : t) : null;
+    const candidateKg = Number.isFinite(t)
+      ? (weightUnit === 'lbs' ? Math.round((t / LBS_PER_KG) * 10) / 10 : t)
+      : null;
+    const kg = candidateKg != null && inRange(candidateKg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? candidateKg : null;
     setAnswers((a) => ({ ...a, goalWeightKg: kg }));
     goTo('plan');
   }, [targetStr, weightUnit, goTo]);
@@ -573,7 +633,7 @@ export default function OnboardingScreen() {
                       style={[s.input, { color: C.foreground }]}
                     />
                     <TouchableOpacity
-                      onPress={() => setWeightUnit((u) => (u === 'kg' ? 'lbs' : 'kg'))}
+                      onPress={toggleWeightUnit}
                       accessibilityRole="button"
                       accessibilityLabel={`Switch weight unit, currently ${weightUnit}`}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -599,7 +659,7 @@ export default function OnboardingScreen() {
                       style={[s.input, { color: C.foreground }]}
                     />
                     <TouchableOpacity
-                      onPress={() => setHeightUnit('ft')}
+                      onPress={toggleHeightUnit}
                       accessibilityRole="button"
                       accessibilityLabel="Switch height unit, currently centimeters"
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -621,7 +681,7 @@ export default function OnboardingScreen() {
                         style={[s.input, { color: C.foreground }]}
                       />
                       <TouchableOpacity
-                        onPress={() => setHeightUnit('cm')}
+                        onPress={toggleHeightUnit}
                         accessibilityRole="button"
                         accessibilityLabel="Switch height unit, currently feet and inches"
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
