@@ -2045,6 +2045,9 @@ export default function ActiveWorkoutScreen() {
   }, [setCurrentIdx]);
 
   const pagerPan = useMemo(() => Gesture.Pan()
+    // On iOS a recognizer cancels touches in native children by default. Keep
+    // number inputs/buttons responsive even if a tap contains a little drift.
+    .cancelsTouchesInView(false)
     // Claim only clearly-horizontal drags; vertical ones fall through to the
     // page's own ScrollView.
     .activeOffsetX([-14, 14])
@@ -2249,6 +2252,7 @@ export default function ActiveWorkoutScreen() {
             value={cfg.value}
             onChangeText={cfg.onChangeText}
             keyboardType={cfg.keyboardType}
+            accessibilityLabel={`${axisHeader(a)} value`}
             placeholder={a === 'duration' ? '0:00' : '0'}
             placeholderTextColor={C.textMuted}
             style={inputStyle}
@@ -2393,7 +2397,13 @@ export default function ActiveWorkoutScreen() {
                   );
                 })()}
               </View>
-              <TouchableOpacity onPress={removeExercise} style={[styles.removeBtn, { backgroundColor: C.muted }]}>
+              <TouchableOpacity
+                onPress={removeExercise}
+                style={[styles.removeBtn, { backgroundColor: C.muted }]}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${currentEx.exercise.name}`}
+              >
                 <Feather name="trash-2" size={13} color={C.textDim} />
               </TouchableOpacity>
             </View>
@@ -2704,7 +2714,13 @@ export default function ActiveWorkoutScreen() {
     <View style={[styles.container, { backgroundColor: C.background }]}>
       {/* TOP BAR */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity onPress={handleCancel} style={styles.cancelBtn}>
+        <TouchableOpacity
+          onPress={handleCancel}
+          style={styles.cancelBtn}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel workout"
+        >
           <Feather name="x" size={14} color={Colors.danger} />
         </TouchableOpacity>
 
@@ -2726,6 +2742,7 @@ export default function ActiveWorkoutScreen() {
         <TouchableOpacity
           onPress={handleFinishWorkout}
           disabled={saving}
+          hitSlop={6}
           style={[styles.finishBtn, saving && { opacity: 0.6 }]}
         >
           {saving ? (
@@ -2757,6 +2774,7 @@ export default function ActiveWorkoutScreen() {
               <TouchableOpacity
                 key={`${ex.exercise.id}-${i}`}
                 onPress={() => goTo(i)}
+                hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
                 onLayout={(e) => {
                   const firstMeasure = pillLayoutsRef.current[i] === undefined;
                   pillLayoutsRef.current[i] = { x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width };
@@ -2808,6 +2826,9 @@ export default function ActiveWorkoutScreen() {
           <TouchableOpacity
             onPress={() => { Keyboard.dismiss(); setShowAddExercise(true); }}
             style={[styles.addPill, { borderColor: C.border }]}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Add exercise"
           >
             <Feather name="plus" size={13} color={C.textMuted} />
           </TouchableOpacity>
@@ -2862,6 +2883,7 @@ export default function ActiveWorkoutScreen() {
                       onScroll={isCur ? (e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; } : undefined}
                       scrollEventThrottle={16}
                       keyboardShouldPersistTaps="handled"
+                      canCancelContentTouches={false}
                       automaticallyAdjustKeyboardInsets={isCur}
                     >
                       {renderExerciseBody(i, isCur)}
@@ -2883,6 +2905,7 @@ export default function ActiveWorkoutScreen() {
           <TouchableOpacity
             onPress={() => goTo(currentIdx - 1)}
             disabled={currentIdx === 0}
+            hitSlop={4}
             style={[styles.navArrow, { backgroundColor: C.muted }, currentIdx === 0 && { opacity: 0.2 }]}
           >
             <Feather name="chevron-left" size={18} color={C.mutedFg} />
@@ -2928,6 +2951,7 @@ export default function ActiveWorkoutScreen() {
           <TouchableOpacity
             onPress={() => goTo(currentIdx + 1)}
             disabled={currentIdx >= exercises.length - 1}
+            hitSlop={4}
             style={[styles.navArrow, { backgroundColor: C.muted }, currentIdx >= exercises.length - 1 && { opacity: 0.2 }]}
           >
             <Feather name="chevron-right" size={18} color={C.mutedFg} />
@@ -3057,7 +3081,13 @@ export default function ActiveWorkoutScreen() {
               <View style={[styles.handle, { backgroundColor: C.handle }]} />
               <View style={styles.modalHeader}>
                 <Text style={[styles.modalTitle, { color: C.foreground }]}>Finish Workout</Text>
-                <TouchableOpacity onPress={() => setShowFinishSheet(false)} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
+                <TouchableOpacity
+                  onPress={() => setShowFinishSheet(false)}
+                  style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close finish workout"
+                >
                   <Feather name="x" size={15} color={C.foreground} />
                 </TouchableOpacity>
               </View>
@@ -3671,7 +3701,7 @@ const styles = StyleSheet.create({
   doneVal: { fontSize: FontSize.base, fontVariant: ['tabular-nums'], textAlign: 'center' },
   setRowActive: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 6, borderRadius: Radius.lg, marginTop: 14 },
   activeCellRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
-  activeInputPlain: { flex: 1, height: 44, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
+  activeInputPlain: { flex: 1, alignSelf: 'stretch', height: 44, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'] },
   activeInput: { flex: 1, height: 44, minWidth: 36, textAlign: 'center', fontSize: FontSize.xl, fontWeight: FontWeight.black, borderRadius: Radius.sm, fontVariant: ['tabular-nums'] },
   miniStep: { width: 28, height: 30, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   miniStepText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold },
@@ -3679,7 +3709,7 @@ const styles = StyleSheet.create({
   swCell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minWidth: 0 },
   swBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   swTime: { fontSize: FontSize.xl, fontWeight: FontWeight.black, fontVariant: ['tabular-nums'], minWidth: 40, flexShrink: 1, textAlign: 'center' },
-  swTimeInput: { height: 40, borderRadius: Radius.sm, paddingHorizontal: 6 },
+  swTimeInput: { flex: 1, height: 40, borderRadius: Radius.sm, paddingHorizontal: 6 },
   commitBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, alignSelf: 'stretch', minHeight: 48 },
   resetTimerBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, marginTop: 10 },
   resetTimerText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },

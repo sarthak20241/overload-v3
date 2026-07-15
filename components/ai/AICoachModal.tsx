@@ -973,7 +973,7 @@ function ChatScreen({
     <View style={{ flex: 1 }}>
       {/* Header */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} />
@@ -1433,6 +1433,9 @@ function GeneratePlanScreen({
           <TouchableOpacity
             onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
@@ -1527,7 +1530,7 @@ function GeneratePlanScreen({
     return (
       <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
           <SparkleIcon size={16} color={C.accentText} />
@@ -1548,7 +1551,7 @@ function GeneratePlanScreen({
   return (
     <View style={{ flex: 1 }}>
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} />
@@ -1848,6 +1851,9 @@ function GenerateWorkoutScreen({
           <TouchableOpacity
             onPress={() => { setResult(null); setShowRefineChat(false); conversationRef.current = []; }}
             style={[s.backBtn, { backgroundColor: C.muted }]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
@@ -1899,7 +1905,7 @@ function GenerateWorkoutScreen({
     return (
       <View style={{ flex: 1 }}>
         <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+          <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
             <Feather name="arrow-left" size={16} color={C.foreground} />
           </TouchableOpacity>
           <SparkleIcon size={16} color={C.accentText} />
@@ -1920,7 +1926,7 @@ function GenerateWorkoutScreen({
   return (
     <View style={{ flex: 1 }}>
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} />
@@ -2368,7 +2374,7 @@ function RefineChatScreen({
     <View style={{ flex: 1 }}>
       {/* Header */}
       <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
-        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]}>
+        <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} />
@@ -2785,6 +2791,9 @@ export function AICoachModal({
                   <TouchableOpacity
                     onPress={handleClose}
                     style={[s.closeCircle, { backgroundColor: C.muted }]}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Close Coach Drona"
                   >
                     <Feather name="x" size={16} color={C.foreground} />
                   </TouchableOpacity>

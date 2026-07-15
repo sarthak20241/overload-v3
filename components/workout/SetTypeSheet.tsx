@@ -83,7 +83,7 @@ export function SetTypeSheet({ visible, currentType, onSelect, onRemove, onClose
                   <Text style={[s.title, { color: C.foreground }]}>Set type</Text>
                   <Text style={[s.subtitle, { color: C.mutedFg }]}>Tag what this set was</Text>
                 </View>
-                <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityRole="button" accessibilityLabel="Close">
+                <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
                   <Feather name="x" size={15} color={C.foreground} />
                 </TouchableOpacity>
               </View>

@@ -80,7 +80,7 @@ export function SupersetSheet({ visible, onClose, exerciseName, members, options
                     {grouped ? members.join(' + ') : `Pair ${exerciseName} with another lift`}
                   </Text>
                 </View>
-                <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityRole="button" accessibilityLabel="Close">
+                <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
                   <Feather name="x" size={15} color={C.foreground} />
                 </TouchableOpacity>
               </View>

@@ -404,7 +404,13 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
             <View style={s.header}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1 }}>
                 {showTypePicker && (
-                  <TouchableOpacity onPress={() => setShowTypePicker(false)} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
+                  <TouchableOpacity
+                    onPress={() => setShowTypePicker(false)}
+                    style={[s.closeBtn, { backgroundColor: C.closeBtn }]}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to create exercise"
+                  >
                     <Feather name="arrow-left" size={15} color={C.foreground} />
                   </TouchableOpacity>
                 )}
@@ -421,7 +427,13 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   </Text>
                 </View>
               </View>
-              <TouchableOpacity onPress={resetAndClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]}>
+              <TouchableOpacity
+                onPress={resetAndClose}
+                style={[s.closeBtn, { backgroundColor: C.closeBtn }]}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Close exercise picker"
+              >
                 <Feather name="x" size={15} color={C.foreground} />
               </TouchableOpacity>
             </View>
@@ -619,7 +631,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                       style={[s.searchInput, { color: C.foreground }]}
                     />
                     {search.length > 0 && (
-                      <TouchableOpacity onPress={() => setSearch('')}>
+                      <TouchableOpacity onPress={() => setSearch('')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
                         <Feather name="x" size={14} color={C.textMuted} />
                       </TouchableOpacity>
                     )}
