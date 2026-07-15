@@ -24,19 +24,23 @@
  *     Only purchase / paywall UI is affected.
  */
 import { useEffect, useRef } from 'react';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { hasClerkKey } from '@/hooks/useClerkUser';
 import { ensureConfigured, ensureIdentity, logOutRevenueCat } from '@/lib/revenuecat';
 
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
 export function RevenueCatBridge() {
   // Configure as early as possible so getOfferings() (paywall) works even
-  // before the user signs in. ensureConfigured is idempotent.
+  // before the user signs in. Expo Go does not support the app's native-store
+  // key, so skip both configuration and identity sync in that environment.
   useEffect(() => {
-    ensureConfigured();
+    if (!isExpoGo) ensureConfigured();
   }, []);
 
   // Identity sync only when Clerk is configured. In guest mode, RC stays
   // anonymous — there's no Clerk id to tie purchases to.
-  return hasClerkKey ? <ClerkIdentitySync /> : null;
+  return hasClerkKey && !isExpoGo ? <ClerkIdentitySync /> : null;
 }
 
 /**
