@@ -193,6 +193,9 @@ export default function ActiveWorkoutScreen() {
   const [loading, setLoading] = useState(!workout.isActive || isSwitchAttempt);
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
+  // Previous performance can resolve after an exercise is already on screen.
+  // Track direct edits so that late data never replaces a value the user chose.
+  const inputEditedRef = useRef(false);
   // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
   // Each is only rendered when the exercise's metric_type uses that axis.
   const [inputDuration, setInputDuration] = useState('0:00');
@@ -870,13 +873,24 @@ export default function ActiveWorkoutScreen() {
     }
   }, [workout.isPaused]);
 
-  // Sync input defaults when switching exercises
+  // A new exercise starts with no local input edits. This is deliberately reset
+  // by index rather than by the exercise object: reconciliation replaces the
+  // object after resolving previous performance and must preserve this guard.
+  useEffect(() => {
+    inputEditedRef.current = false;
+  }, [currentIdx]);
+
+  // Sync input defaults when switching exercises or when its previous
+  // performance resolves in the background. Only an untouched start gate may
+  // receive this seed; logging or editing always wins over asynchronous data.
   useEffect(() => {
     // A superset reorder moved the OPEN exercise to a new index — same exercise,
     // same in-flight inputs; consuming the prefill here would stomp them.
     if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
-    if (!currentEx) return;
-    const completedCount = currentEx.sets.filter(s => s.completed).length;
+    if (!currentEx || exerciseStarted[currentIdx] || inputEditedRef.current) return;
+    // previousSets excludes warmups, so warmups must not advance its index.
+    const completedCount = currentEx.sets
+      .filter(s => s.completed && s.set_type !== 'warmup').length;
     const prev = currentEx.previousSets;
     if (prev && prev[completedCount]) {
       setInputWeight(String(prev[completedCount].weight_kg));
@@ -894,7 +908,7 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
-  }, [currentIdx, exercises.length]);
+  }, [currentIdx, currentEx?.previousSets, exerciseStarted]);
 
   // Navigate exercises
   const goTo = (idx: number) => {
@@ -908,9 +922,10 @@ export default function ActiveWorkoutScreen() {
     // An exercise added mid-workout resolves its previous performance in the
     // background. The preview updates when that finishes, but the logger inputs
     // are separate local state, so seed the first editable set at the start gate.
-    const nextSetIndex = currentEx?.sets.filter(s => s.completed).length ?? 0;
+    const nextSetIndex = currentEx?.sets
+      .filter(s => s.completed && s.set_type !== 'warmup').length ?? 0;
     const previousSet = currentEx?.previousSets?.[nextSetIndex];
-    if (previousSet) {
+    if (previousSet && !inputEditedRef.current) {
       setInputWeight(String(previousSet.weight_kg));
       setInputReps(String(previousSet.reps));
     }
@@ -1065,7 +1080,7 @@ export default function ActiveWorkoutScreen() {
     }
 
     // Advance input to next set's previous performance (solo / group-done / round-stay).
-    const nextIdx = ex.sets.filter(s => s.completed).length;
+    const nextIdx = ex.sets.filter(s => s.completed && s.set_type !== 'warmup').length;
     const prev = currentEx.previousSets;
     if (prev && prev[nextIdx]) {
       setInputWeight(String(prev[nextIdx].weight_kg));
@@ -2167,6 +2182,7 @@ export default function ActiveWorkoutScreen() {
         // editing the field sets the stopwatch base so ▶ resumes from it and the
         // logged set reads the same value.
         const onTimeChange = (t: string) => {
+          inputEditedRef.current = true;
           setInputDuration(t);
           const secs = parseDuration(t);
           swBaseRef.current = secs;
@@ -2212,42 +2228,42 @@ export default function ActiveWorkoutScreen() {
       const cfg = isWeight
         ? {
             value: inputWeight,
-            onChangeText: setInputWeight,
+            onChangeText: (value: string) => { inputEditedRef.current = true; setInputWeight(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))),
-            inc: () => setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)),
+            dec: () => { inputEditedRef.current = true; setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); },
+            inc: () => { inputEditedRef.current = true; setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); },
           }
         : a === 'reps'
         ? {
             // decimal-pad so a partial rep (e.g. 8.5) can be typed; ± steps stay whole.
             value: inputReps,
-            onChangeText: setInputReps,
+            onChangeText: (value: string) => { inputEditedRef.current = true; setInputReps(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))),
-            inc: () => setInputReps(String((parseFloat(inputReps) || 0) + 1)),
+            dec: () => { inputEditedRef.current = true; setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))); },
+            inc: () => { inputEditedRef.current = true; setInputReps(String((parseFloat(inputReps) || 0) + 1)); },
           }
         : a === 'duration'
         ? {
             value: inputDuration,
-            onChangeText: setInputDuration,
+            onChangeText: (value: string) => { inputEditedRef.current = true; setInputDuration(value); },
             keyboardType: (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default') as 'numbers-and-punctuation' | 'default',
-            dec: () => setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))),
-            inc: () => setInputDuration(formatDuration(parseDuration(inputDuration) + 15)),
+            dec: () => { inputEditedRef.current = true; setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))); },
+            inc: () => { inputEditedRef.current = true; setInputDuration(formatDuration(parseDuration(inputDuration) + 15)); },
           }
         : a === 'distance'
         ? {
             value: inputDistance,
-            onChangeText: setInputDistance,
+            onChangeText: (value: string) => { inputEditedRef.current = true; setInputDistance(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))),
-            inc: () => setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)),
+            dec: () => { inputEditedRef.current = true; setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))); },
+            inc: () => { inputEditedRef.current = true; setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)); },
           }
         : {
             value: inputResistance,
-            onChangeText: setInputResistance,
+            onChangeText: (value: string) => { inputEditedRef.current = true; setInputResistance(value); },
             keyboardType: 'number-pad' as const,
-            dec: () => setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))),
-            inc: () => setInputResistance(String((parseFloat(inputResistance) || 0) + 1)),
+            dec: () => { inputEditedRef.current = true; setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))); },
+            inc: () => { inputEditedRef.current = true; setInputResistance(String((parseFloat(inputResistance) || 0) + 1)); },
           };
 
       return (
