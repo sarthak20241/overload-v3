@@ -905,6 +905,15 @@ export default function ActiveWorkoutScreen() {
   // Start exercise
   const handleStartExercise = () => {
     haptics.tap();
+    // An exercise added mid-workout resolves its previous performance in the
+    // background. The preview updates when that finishes, but the logger inputs
+    // are separate local state, so seed the first editable set at the start gate.
+    const nextSetIndex = currentEx?.sets.filter(s => s.completed).length ?? 0;
+    const previousSet = currentEx?.previousSets?.[nextSetIndex];
+    if (previousSet) {
+      setInputWeight(String(previousSet.weight_kg));
+      setInputReps(String(previousSet.reps));
+    }
     // Supersets: starting one member starts the whole group — you train them back to
     // back, so auto-advancing to a sibling must land on its logger, not the start gate.
     const g = exercises[currentIdx]?.supersetGroup ?? null;
