@@ -64,10 +64,41 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 // ── Deps: mirrors handleParseMealRequest's wiring, minus writes ─────────────
 
+// Semantic fallback mirror (0080): same behavior as index.ts — embed the
+// query and hit search_foods_semantic only when trigram returns nothing.
+// Needs VOYAGE_API_KEY in env/.env.local; silently skipped without it.
+const VOYAGE_API_KEY = env("VOYAGE_API_KEY");
+async function embedQueryForEval(text: string): Promise<number[] | null> {
+  if (!VOYAGE_API_KEY) return null;
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
+      body: JSON.stringify({ input: [text], model: "voyage-3", input_type: "query" }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
   const { data, error } = await supabase.rpc("search_foods_ranked", { q: query, lim: 8 });
-  if (error || !Array.isArray(data) || data.length === 0) return [];
-  const rows = data.slice(0, 6) as Array<Record<string, unknown>>;
+  if (error) console.error(`  search_foods_ranked error: ${error.message}`);
+  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
+  if (rows.length === 0) {
+    const vec = await embedQueryForEval(query);
+    if (vec) {
+      const { data: sem } = await supabase.rpc("search_foods_semantic", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
+    }
+  }
+  if (rows.length === 0) return [];
   const ids = rows.map((r) => String(r.id));
   const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
   const { data: servings } = await supabase
@@ -165,9 +196,13 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
     failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
   }
   for (const ie of exp.items ?? []) {
-    const match = items.find((i) => i.food_name.toLowerCase().includes(ie.nameIncludes.toLowerCase()));
+    // nameIncludes plus optional nameIncludesAny alternates: a "roasted
+    // edamame" line is equally correct as "Edamame..." or "Soybeans, mature
+    // seeds, roasted..." — same food under two names.
+    const needles = [ie.nameIncludes, ...(ie.nameIncludesAny ?? [])].map((n) => n.toLowerCase());
+    const match = items.find((i) => needles.some((n) => i.food_name.toLowerCase().includes(n)));
     if (!match) {
-      failures.push(`no item matching "${ie.nameIncludes}" (got: ${items.map((i) => i.food_name).join(" | ")})`);
+      failures.push(`no item matching "${needles.join('|')}" (got: ${items.map((i) => i.food_name).join(" | ")})`);
       continue;
     }
     if (ie.tiers && !ie.tiers.includes(match.source)) {

@@ -11,6 +11,9 @@ export type Tier = "catalog" | "off" | "web" | "estimate";
 export interface ItemExpectation {
   // Case-insensitive substring that must appear in some logged item's name.
   nameIncludes: string;
+  // Alternate acceptable substrings (same food under another name, e.g.
+  // "edamame" vs "soybeans"). Any one match satisfies the expectation.
+  nameIncludesAny?: string[];
   // Acceptable resolution tiers for that item. Omit = any.
   tiers?: Tier[];
   // Inclusive bounds on the item's total grams. Omit = not checked.
@@ -374,5 +377,89 @@ export const CASES: EvalCase[] = [
     text: "feeling tired today man",
     hour: 22,
     expect: { declined: true },
+  },
+
+  // ── Household-unit conversion (spoons/cups are food-dependent) ──────────
+  // Regression suite for the 2026-07-16 prod miscount: "2 tblspn roasted
+  // edameme" logged as 30 g / 130 kcal (one full label serving) when 2 tbsp
+  // of dry-roasted edamame is ~12-16 g / ~60-70 kcal. Spoon weights must
+  // reflect the food's density, not water's, and roasted must never resolve
+  // to a cooked/boiled row.
+  {
+    id: "edamame-tbsp-regression",
+    text: "2 tblspn roasted edameme", // typo preserved from the real log
+    hour: 9,
+    expect: {
+      // meal_type deliberately unasserted: a lone spoonful at 9am reads as
+      // breakfast or snack depending on the model's mood; this case is about
+      // grams and macros, not meal buckets.
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "edamame",
+        nameIncludesAny: ["soybean", "soya bean"],
+        gramsBetween: [10, 22],
+        proteinBetween: [3, 10],
+      }],
+    },
+  },
+  {
+    id: "peanut-butter-tbsp",
+    text: "2 tbsp peanut butter",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "peanut butter", gramsBetween: [24, 44], proteinBetween: [5, 12] }],
+    },
+  },
+  {
+    id: "ghee-tsp",
+    text: "1 tsp ghee on my roti",
+    hour: 13,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "ghee", gramsBetween: [3, 7] },
+        { nameIncludes: "roti", gramsBetween: [30, 75] },
+      ],
+    },
+  },
+  {
+    id: "chia-tbsp",
+    text: "1 tbsp chia seeds in curd",
+    hour: 9,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "chia", gramsBetween: [8, 16] },
+        { nameIncludes: "curd", nameIncludesAny: ["dahi", "yogurt"] },
+      ],
+    },
+  },
+  {
+    id: "cup-cooked-rice",
+    text: "1 cup cooked rice",
+    hour: 14,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "rice", gramsBetween: [140, 210] }],
+    },
+  },
+  {
+    id: "roasted-chana-spoons",
+    text: "2 spoons roasted chana",
+    hour: 17,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "chana", nameIncludesAny: ["chickpea"], gramsBetween: [10, 30] }],
+    },
+  },
+  {
+    id: "honey-tbsp",
+    text: "1 tbsp honey in warm water",
+    hour: 7,
+    expect: {
+      minItems: 1,
+      items: [{ nameIncludes: "honey", gramsBetween: [14, 25] }],
+    },
   },
 ];
