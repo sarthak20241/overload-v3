@@ -351,6 +351,9 @@ export default function NutritionScreen() {
               returnKeyType="send"
               onSubmitEditing={onSend}
               blurOnSubmit={false}
+              // Wrap + grow for long entries (e.g. several metrics at once)
+              // instead of scrolling off one clipped line. Submit via the arrow.
+              multiline
             />
             <Pressable
               onPress={onSend}
@@ -452,8 +455,10 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     addTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.medium },
 
     inputWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, backgroundColor: C.background },
-    input: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 10, ...Shadow.card },
-    inputText: { flex: 1, fontSize: FontSize.base, color: C.foreground, padding: 0 },
+    // alignItems flex-end keeps the search + send icons on the bottom line as the field grows.
+    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 10, ...Shadow.card },
+    // maxHeight caps growth (~4 lines) then scrolls; textAlignVertical top for Android multiline.
+    inputText: { flex: 1, fontSize: FontSize.base, color: C.foreground, padding: 0, maxHeight: 96, textAlignVertical: 'top' },
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }

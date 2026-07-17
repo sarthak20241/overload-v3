@@ -68,7 +68,7 @@ export function RpePickerSheet({ visible, scale, value, onChange, onClose }: Pro
               <View style={[s.handle, { backgroundColor: C.handle }]} />
               <View style={s.header}>
                 <Text style={[s.title, { color: C.foreground }]}>{label}</Text>
-                <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityRole="button" accessibilityLabel="Close">
+                <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
                   <Feather name="x" size={15} color={C.foreground} />
                 </TouchableOpacity>
               </View>
