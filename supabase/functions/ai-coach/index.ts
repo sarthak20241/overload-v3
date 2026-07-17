@@ -705,14 +705,31 @@ async function backfillOffFoodRow(admin: SupabaseClient, p: OffProduct): Promise
 
 async function searchCatalogWithServings(
   userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
   query: string,
 ): Promise<CandidateFood[]> {
   const { data, error } = await userClient.rpc("search_foods_ranked", { q: query, lim: 8 });
-  if (error || !Array.isArray(data) || data.length === 0) {
-    if (error) console.log("[parse_meal] search_foods_ranked error:", error.message);
-    return [];
+  if (error) console.log("[parse_meal] search_foods_ranked error:", error.message);
+  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
+
+  // Semantic fallback (0080): trigram search cannot bridge synonyms
+  // ("roasted edamame" vs "Soybeans, mature seeds, roasted, salted"), and a
+  // zero-candidate result is what pushes the model to OFF lookups or blind
+  // estimates. Only the miss path pays the embedding latency.
+  if (rows.length === 0) {
+    const vec = await embedQuery(query, admin, userId);
+    if (vec) {
+      const { data: sem, error: semErr } = await userClient.rpc("search_foods_semantic", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      if (semErr) console.log("[parse_meal] search_foods_semantic error:", semErr.message);
+      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
+    }
   }
-  const rows = data.slice(0, 6) as Array<Record<string, unknown>>;
+
+  if (rows.length === 0) return [];
   const ids = rows.map((r) => String(r.id));
   const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
   const { data: servings } = await userClient
@@ -879,7 +896,7 @@ async function handleParseMealRequest(args: {
         maxTokens: PARSE_MEAL_MAX_TOKENS,
         timeoutMs: ANTHROPIC_TIMEOUT_MS,
         webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
-        searchFoods: (q) => searchCatalogWithServings(userClient, q),
+        searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
         backfillOffFood: (p) => backfillOffFoodRow(admin, p),
         getFoodPer100: async (foodId) => {
           const { data } = await userClient
