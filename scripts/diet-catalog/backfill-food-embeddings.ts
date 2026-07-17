@@ -42,6 +42,10 @@ if (!SUPABASE_URL || !SERVICE_KEY || !VOYAGE_API_KEY) {
 
 const VOYAGE_BATCH = 128;          // voyage-3 max inputs per request
 const UPDATE_CONCURRENCY = 16;
+// Free-tier voyage keys are limited to 3 RPM / 10K TPM; a paid key takes
+// VOYAGE_RPM=60 or higher. Batches of 128 short names stay well under TPM.
+const VOYAGE_RPM = Number(process.env.VOYAGE_RPM || "3");
+const REQUEST_GAP_MS = Math.ceil(60_000 / Math.max(VOYAGE_RPM, 1));
 
 interface FoodRow { id: string; name: string; brand: string | null; food_category: string | null }
 
@@ -51,15 +55,20 @@ function embedText(f: FoodRow): string {
   return `${f.name}${brand}${cat}`.slice(0, 200);
 }
 
+let lastRequestMs = 0;
+
 async function voyageEmbed(texts: string[]): Promise<number[][]> {
   for (let attempt = 0; ; attempt++) {
+    const wait = lastRequestMs + REQUEST_GAP_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastRequestMs = Date.now();
     const res = await fetch("https://api.voyageai.com/v1/embeddings", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
       body: JSON.stringify({ input: texts, model: "voyage-3", input_type: "document" }),
     });
-    if (res.status === 429 && attempt < 5) {
-      await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+    if (res.status === 429 && attempt < 30) {
+      await new Promise((r) => setTimeout(r, REQUEST_GAP_MS));
       continue;
     }
     if (!res.ok) throw new Error(`voyage ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -76,15 +85,21 @@ async function main() {
   let done = 0, failed = 0;
   for (;;) {
     // Re-query page 0 each loop: updated rows drop out of the null filter.
-    const { data, error } = await supabase
-      .from("foods")
-      .select("id, name, brand, food_category")
-      .is("embedding", null)
-      .is("created_by", null)
-      .order("id")
-      .limit(VOYAGE_BATCH * 4);
-    if (error) throw new Error(`select failed: ${error.message}`);
-    const rows = (data ?? []) as FoodRow[];
+    // (idx_foods_embedding_pending keeps this fast; retry transient timeouts.)
+    let rows: FoodRow[] = [];
+    for (let attempt = 0; ; attempt++) {
+      const { data, error } = await supabase
+        .from("foods")
+        .select("id, name, brand, food_category")
+        .is("embedding", null)
+        .is("created_by", null)
+        .order("id")
+        .limit(VOYAGE_BATCH * 4);
+      if (!error) { rows = (data ?? []) as FoodRow[]; break; }
+      if (attempt >= 3) throw new Error(`select failed: ${error.message}`);
+      console.error(`  select retry after: ${error.message}`);
+      await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+    }
     if (rows.length === 0) break;
 
     for (let i = 0; i < rows.length; i += VOYAGE_BATCH) {
