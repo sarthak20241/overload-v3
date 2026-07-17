@@ -435,7 +435,9 @@ Search budget: at most TWO search rounds total. Round one: search_foods for ever
 <quantity_rules>
 - Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; compute line macros as per100 * grams / 100, times nothing else (quantity is already inside grams).
 - Use the candidate's serving options to convert household units. When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving default.
+- Spoon and cup weights DEPEND ON THE FOOD; a tablespoon is 15 g only for water-like liquids. If the candidate has a cup serving, derive from it (1 cup = 16 tbsp = 48 tsp). Otherwise: 1 tbsp of nuts, seeds, or roasted snacks ~8 g; powders (protein, flour, spices) ~7-9 g; oil or ghee ~14 g; nut butter, honey ~16-20 g. A guessed spoon weight is never confidence high.
 - Indian household defaults when the user gives no amount and no serving option fits: 1 roti ~40 g, 1 katori ~150 g cooked, 1 glass ~250 ml, 1 cup ~200 ml, 1 bowl ~250 g, 1 scoop whey ~32 g, 1 egg ~50 g. Record any such guess in assumption.
+- Match the preparation state the user typed: "roasted" or "dried" foods are 2-3x more calorie-dense per gram than "cooked" or "boiled" ones. Never log a roasted/dried item against a cooked/boiled candidate row; prefer a correct-state candidate or estimate instead.
 - "half" quantities are fine (quantity 0.5).
 </quantity_rules>
 
@@ -638,6 +640,105 @@ function sanitizeItems(raw: unknown): ParsedItem[] {
   return items;
 }
 
+// ── Deterministic guardrails ────────────────────────────────────────────────
+// Pure-code checks on model output. These are safety nets for whole CLASSES of
+// error (impossible densities, kcal that contradicts the macros, roasted-vs-
+// cooked mismatches), not precision tools; precision comes from catalog
+// serving anchors and server-side macro recompute.
+
+const ML_PER_SPOON_UNIT: Record<string, number> = {
+  tsp: 4.93, teaspoon: 4.93, tbsp: 14.79, tablespoon: 14.79, cup: 236.59,
+};
+// Broad food-density envelope in g/ml: puffed cereal ~0.15 up to honey ~1.5.
+const DENSITY_MIN = 0.15;
+const DENSITY_MAX = 1.6;
+
+// "tbsp" / "2 tbsp" / "1 tablespoon" -> total ml for the label itself.
+function labelVolumeMl(label: string): number | null {
+  const m = label.toLowerCase().match(/^(\d+(?:\.\d+)?)?\s*(tsp|teaspoon|tbsp|tablespoon|cup)s?\b/);
+  if (!m) return null;
+  return (m[1] ? parseFloat(m[1]) : 1) * ML_PER_SPOON_UNIT[m[2]];
+}
+
+function appendAssumption(item: ParsedItem, note: string): string {
+  return item.assumption ? `${item.assumption}. ${note}` : note;
+}
+
+// Volumetric sanity: grams for a spoon/cup line must imply a physically
+// possible density. Runs BEFORE verifyItems so corrected grams drive the
+// macro recompute; estimate items get their macros scaled proportionally.
+export function clampVolumetricGrams(items: ParsedItem[]): ParsedItem[] {
+  return items.map((item) => {
+    const perLabelMl = labelVolumeMl(item.serving_label);
+    if (perLabelMl === null || !(item.grams > 0) || !(item.quantity > 0)) return item;
+    const totalMl = perLabelMl * item.quantity;
+    const density = item.grams / totalMl;
+    if (density >= DENSITY_MIN && density <= DENSITY_MAX) return item;
+    const bound = density > DENSITY_MAX ? DENSITY_MAX : DENSITY_MIN;
+    const grams = round1(totalMl * bound);
+    const scale = grams / item.grams;
+    return {
+      ...item,
+      grams,
+      kcal: round1(item.kcal * scale),
+      protein_g: round1(item.protein_g * scale),
+      carb_g: round1(item.carb_g * scale),
+      fat_g: round1(item.fat_g * scale),
+      fiber_g: item.fiber_g === null ? null : round1(item.fiber_g * scale),
+      confidence: "low",
+      assumption: appendAssumption(item, `Adjusted to ${grams} g, the logged weight was not physically possible for ${item.serving_label}`),
+    };
+  });
+}
+
+// Atwater consistency: kcal must roughly match 4P + 4C + 9F. Runs AFTER
+// verifyItems. Generous 30% tolerance absorbs fiber/rounding conventions.
+// Model-estimated lines get kcal recomputed from their macros; catalog/off
+// lines that fail have a bad source row, so flag rather than trust.
+export function checkAtwater(items: ParsedItem[]): ParsedItem[] {
+  return items.map((item) => {
+    const atwater = 4 * item.protein_g + 4 * item.carb_g + 9 * item.fat_g;
+    if (atwater < 20 && item.kcal < 20) return item;
+    const ref = Math.max(item.kcal, atwater);
+    if (ref <= 0 || Math.abs(item.kcal - atwater) / ref <= 0.3) return item;
+    if (item.source === "estimate" || item.source === "web") {
+      return { ...item, kcal: round1(atwater) };
+    }
+    return {
+      ...item,
+      confidence: "low",
+      assumption: appendAssumption(item, "Calories and macros disagree on the source label, treat this line as rough"),
+    };
+  });
+}
+
+// Preparation-state mismatch: the user typed roasted/dried/fried but the
+// matched row is a cooked/boiled food (or vice versa). Water content differs
+// 2-3x, so macros are systematically wrong; surface it and drop confidence.
+const DRY_PREP_RE = /\b(roasted|dry.?roasted|toasted|dried|dehydrated|fried|crispy|crunchy)\b/i;
+const WET_PREP_RE = /\b(cooked|boiled|steamed|stewed)\b/i;
+
+export function flagPrepMismatch(items: ParsedItem[], inputText: string): ParsedItem[] {
+  const textDry = DRY_PREP_RE.test(inputText);
+  return items.map((item) => {
+    if (!textDry || !WET_PREP_RE.test(item.food_name)) return item;
+    // Only flag when the mismatch is about THIS item: some content word of the
+    // matched food name must appear in the user's text. Prefix match (>=4
+    // chars) rather than exact: logs are typo-heavy ("edameme", "panner").
+    const foodWords = item.food_name.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4 && !WET_PREP_RE.test(w));
+    const textWords = inputText.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4);
+    const overlaps = foodWords.some((fw) =>
+      textWords.some((tw) => tw.startsWith(fw.slice(0, 4)) || fw.startsWith(tw.slice(0, 4)))
+    );
+    if (!overlaps) return item;
+    return {
+      ...item,
+      confidence: "low",
+      assumption: appendAssumption(item, "You said roasted or dried but I matched a cooked entry, calories may read low"),
+    };
+  });
+}
+
 // Compact a tool result for the trace: arrays -> {count, top names}; big objects
 // -> a truncated preview. Keeps parse_traces.steps small + readable for eval.
 function summarizeToolResult(result: unknown): unknown {
@@ -743,7 +844,10 @@ export async function runParseMeal(
         tool: PARSE_TERMINAL_TOOL,
         input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
       });
-      const items = await verifyItems(deps, sanitizeItems(raw.items));
+      const items = flagPrepMismatch(
+        checkAtwater(await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)))),
+        input.text,
+      );
       if (items.length === 0) {
         return {
           parsed: null,
