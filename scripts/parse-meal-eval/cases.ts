@@ -252,7 +252,9 @@ export const CASES: EvalCase[] = [
     text: "fish curry with rice",
     hour: 13,
     expect: {
-      minItems: 2, maxItems: 2,
+      // One composite catalog row ("Fish curry with rice") or two separate
+      // items are both correct resolutions; both name checks must land.
+      minItems: 1, maxItems: 2,
       items: [{ nameIncludes: "fish" }, { nameIncludes: "rice" }],
     },
   },

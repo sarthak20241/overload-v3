@@ -4,18 +4,23 @@
 // harness in scripts/parse-meal-eval/ can drive the exact production pipeline
 // from Node against real catalog data.
 //
-// The trust model is a fallback LADDER, not a single guess:
-//   Tier 1  search_foods         -> our catalog (macros come from the row)
-//   Tier 2  lookup_packaged_food -> live Open Food Facts, backfilled into
-//                                   `foods` (source 'off') so the catalog
-//                                   compounds with usage
-//   Tier 3  web_search           -> Anthropic server tool, label data for
-//                                   named items neither lookup has (capped)
-//   Tier 4  model estimate       -> flagged, food_id null, lowest trust
+// Architecture: extract -> resolve -> decide.
+//   1. EXTRACT  one fast model call, no tools: segment the text into items
+//               ({name, brand, quantity, unit, prep}), or decline non-food.
+//   2. RESOLVE  pure code, all items in parallel: catalog search (trigram +
+//               semantic fallback via deps.searchFoods), then live Open Food
+//               Facts on a miss (backfilled into `foods`, source 'off', so
+//               the catalog compounds with usage). Spoon anchors (1 tbsp =
+//               cup/16) are synthesized here, in code.
+//   3. DECIDE   one model call with candidates inline: pick per item,
+//               convert to grams, emit log_meal. Server web_search remains
+//               available for named products neither lookup has (capped);
+//               model estimate is the flagged last resort (food_id null).
 //
-// For tier 1/2 items the model only MATCHES and converts quantity to grams;
-// the macros are recomputed server-side from the food row (verifyItems), so
-// catalog-backed numbers are never model-invented.
+// The model only MATCHES candidates and converts quantities; macros for
+// catalog/off rows are recomputed server-side (verifyItems) and every line
+// passes the deterministic guardrails (density clamp, Atwater, prep-state),
+// so catalog-backed numbers are never model-invented.
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -249,40 +254,69 @@ export async function searchOpenFoodFacts(
 
 export const PARSE_TERMINAL_TOOL = "log_meal";
 
-const SEARCH_FOODS_TOOL = {
-  name: "search_foods",
+// Stage 1 of the extract -> resolve -> decide workflow: segment the text into
+// items. Forced via tool_choice, so declines are fields, not free text.
+const EXTRACT_TOOL = {
+  name: "extract_meal",
   description:
-    "Search the Overload food catalog (USDA + Open Food Facts India + curated Indian staples). " +
-    "ALWAYS call this first for EVERY food item in the user's text, using plain food words " +
-    '("toor dal", "roti", "whey protein") rather than the user\'s full phrasing. For multi-item ' +
-    "meals you MUST batch: emit ALL search_foods calls together in your FIRST tool turn, one per " +
-    "item, in parallel. Never search one item, wait, then search the next. Returns candidates " +
-    "with per-100 macros and named serving options (label plus grams).",
+    "Report every distinct food or drink in the text as a separate item. Extraction only: " +
+    "no nutrition numbers, no serving-size guessing beyond what the text says.",
   input_schema: {
     type: "object",
     properties: {
-      query: {
-        type: "string",
-        description: 'Short generic food name, e.g. "curd" not "a small bowl of homemade curd".',
+      declined: {
+        type: "boolean",
+        description:
+          "true ONLY when the text contains NOTHING loggable as food or drink (a pure " +
+          "question, an exercise log, or chatter). Any real food, however vague, is false.",
+      },
+      decline_message: {
+        type: ["string", "null"],
+        description:
+          "When declined: one short sentence in Coach Drona's voice (direct, warm, no em " +
+          "dashes) redirecting the user to log food. null otherwise.",
+      },
+      meal_type_from_text: {
+        type: ["string", "null"],
+        enum: ["breakfast", "lunch", "dinner", "snack", null],
+        description:
+          'The meal the TEXT names ("for lunch", "dinner was"). null when the text does not ' +
+          "name one; never infer it from the food or the time.",
+      },
+      items: {
+        type: "array",
+        description: "One entry per distinct food/drink. Empty when declined.",
+        items: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description:
+                'The food\'s COMMON name in 1-3 words, spelling corrected: "roasted edamame", ' +
+                'not "2 tblspn roasted edameme"; "almonds", not "almonds raw whole". Keep a ' +
+                "prep word only when it names a different food (roasted vs plain); drop " +
+                "filler adjectives (raw, whole, fresh, homemade). No brand, no quantity.",
+            },
+            brand: { type: ["string", "null"], description: "Brand if the text names one." },
+            quantity: { type: "number", description: "How many of unit, e.g. 2 for '2 rotis'. 1 if unstated." },
+            unit: {
+              type: "string",
+              description:
+                'The unit as the user gave it: "g", "ml", "tbsp", "tsp", "cup", "roti", ' +
+                '"katori", "glass", "scoop", "piece"... "serving" when unstated.',
+            },
+            prep: {
+              type: ["string", "null"],
+              description:
+                'Preparation state the text implies: "roasted", "fried", "cooked", "raw", ' +
+                "etc. null when unstated.",
+            },
+          },
+          required: ["name", "quantity", "unit"],
+        },
       },
     },
-    required: ["query"],
-  },
-};
-
-const LOOKUP_PACKAGED_TOOL = {
-  name: "lookup_packaged_food",
-  description:
-    "Look up a BRANDED or packaged product in the live Open Food Facts database. Use ONLY when " +
-    "search_foods returned no acceptable match for a branded/packaged item (bars, drinks, snacks, " +
-    'supplements). Query with brand plus product words, e.g. "yogabar multigrain energy bar". ' +
-    "Slower than search_foods; never use it for generic foods like rice or dal.",
-  input_schema: {
-    type: "object",
-    properties: {
-      query: { type: "string", description: "Brand + product words." },
-    },
-    required: ["query"],
+    required: ["declined", "items"],
   },
 };
 
@@ -395,7 +429,9 @@ export function mealForHour(hour: number | null): MealType {
   return "snack";
 }
 
-export function buildParseSystemPrompt(input: ParseMealInput, webSearchEnabled: boolean): string {
+const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+
+export function buildDecideSystemPrompt(input: ParseMealInput, webSearchEnabled: boolean): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
   const recents = input.recentFoods.length > 0
@@ -417,26 +453,23 @@ export function buildParseSystemPrompt(input: ParseMealInput, webSearchEnabled: 
   })();
 
   const webTier = webSearchEnabled
-    ? `3. web_search (LAST network resort, max 2 searches): only for a NAMED product or restaurant item that both lookups missed. Search for the official nutrition label ("<brand> <product> nutrition facts per 100g"). Read numbers only from the brand's own site or a label photo listing; set source "web" and name the source in assumption.\n`
+    ? `- web_search (max 2, LAST resort): only for a NAMED product or restaurant item with no acceptable candidate. Search the official nutrition label ("<brand> <product> nutrition facts per 100g"), read numbers only from the brand's own site or a label listing, set source "web", name the source in assumption.\n`
     : "";
-  const estimateTier = webSearchEnabled ? "4" : "3";
 
-  return `You parse free-text food logs for OVERLOAD, a lifting app. The user typed what they ate; you resolve it into precise entries and log them with the log_meal tool. Coach Drona's voice appears only in drona_line and assumption strings: direct, warm, coach-like, never robotic. Never use em dashes anywhere in user-facing strings.
+  return `You finalize food log entries for OVERLOAD, a lifting app. Each extracted item below carries CANDIDATE foods (per-100 macros plus serving options) already fetched from the catalog. Pick the right candidate per item, convert the quantity to grams, and log everything with ONE log_meal call. Coach Drona's voice appears only in drona_line and assumption strings: direct, warm, coach-like, never robotic. Never use em dashes anywhere in user-facing strings.
 
-<resolution_ladder>
-Resolve every item down this ladder, stopping at the first tier that gives a trustworthy match:
-1. search_foods (ALWAYS first, every item): match against the catalog. Prefer exact/close name matches; for generic Indian foods prefer the curated staples (Roti, Toor Dal, Curd, Toned Milk) over obscure branded rows. When the user names a plain whole food ("chicken breast", "rice", "milk"), prefer the plain/cooked/generic row over processed, fat-free, dried, deli, or flavored variants unless they actually named that variant. A match is acceptable when the food is genuinely the same thing, not merely similar.
-2. lookup_packaged_food: branded/packaged items only, when tier 1 misses.
-${webTier}${estimateTier}. Estimate from your own knowledge: set food_id null, source "estimate", confidence low or medium, and write an assumption naming what you assumed. Never refuse to log a real food just because lookups missed.
-
-Search budget: at most TWO search rounds total. Round one: search_foods for every item at once. Round two (only if needed): retry misses with ONE alternate phrasing or lookup_packaged_food. After that, estimate whatever is still unresolved and log. Never keep re-searching variants of the same dish.
-</resolution_ladder>
+<candidate_rules>
+- Choose the candidate that IS the food, not one merely similar. For generic Indian foods prefer the curated staples (Roti, Toor Dal, Curd, Toned Milk) over obscure branded rows. For a plain whole food ("chicken breast", "rice", "milk") prefer the plain/cooked/generic row over processed, fat-free, dried, deli, or flavored variants unless the user named that variant.
+- Respect the item's prep state: never log a roasted/dried/fried item against a cooked/boiled candidate (2-3x density difference). If only a wrong-state candidate exists, estimate instead.
+- No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
+${webTier}</candidate_rules>
 
 <quantity_rules>
 - Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; compute line macros as per100 * grams / 100, times nothing else (quantity is already inside grams).
 - Use the candidate's serving options to convert household units. When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving default.
 - Spoon and cup weights DEPEND ON THE FOOD; a tablespoon is 15 g only for water-like liquids. If the candidate has a cup serving, derive from it (1 cup = 16 tbsp = 48 tsp). Otherwise: 1 tbsp of nuts, seeds, or roasted snacks ~8 g; powders (protein, flour, spices) ~7-9 g; oil or ghee ~14 g; nut butter, honey ~16-20 g. A guessed spoon weight is never confidence high.
 - Indian household defaults when the user gives no amount and no serving option fits: 1 roti ~40 g, 1 katori ~150 g cooked, 1 glass ~250 ml, 1 cup ~200 ml, 1 bowl ~250 g, 1 scoop whey ~32 g, 1 egg ~50 g. Record any such guess in assumption.
+- Piece counts for small foods use the candidate's per-piece serving when one exists; otherwise: 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g. "5 almonds" is ~6 g, never 25.
 - Match the preparation state the user typed: "roasted" or "dried" foods are 2-3x more calorie-dense per gram than "cooked" or "boiled" ones. Never log a roasted/dried item against a cooked/boiled candidate row; prefer a correct-state candidate or estimate instead.
 - "half" quantities are fine (quantity 0.5).
 </quantity_rules>
@@ -446,9 +479,8 @@ Search budget: at most TWO search rounds total. Round one: search_foods for ever
 - meal_type: if the text names a meal ("for lunch", "dinner was"), use that. Otherwise use the hint EXACTLY: ${hint}. Do NOT infer the meal from what the food "usually" is: paneer bhurji at 9pm is dinner, not breakfast. Time of day decides, never the dish.
 - Multiple foods in one text = multiple items in ONE log_meal call.
 - NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE standard serving (use the household defaults above) and note it in assumption, e.g. "Took that as one katori, 150 g." If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
-- "No catalog match" is NEVER a reason to stop. If search_foods and lookup_packaged_food both miss, estimate the macros from your own knowledge (source "estimate"), note it in assumption, and log anyway. A branded snack you recognize (Haldiram's bhujia, Epigamia yogurt, etc.) always gets logged with an estimate, never declined.
-- ONLY decline (reply with text instead of log_meal) when the text contains NOTHING loggable as food or drink at all: a pure question, an exercise, or chatter. Any real food or drink, however vague, MUST be logged. When you decline, reply with one short Drona-voice sentence redirecting them to log food.
-- Except for that decline case, you MUST finish by calling log_meal exactly once. Never write the parsed meal, macros, or a follow-up question as assistant text.
+- An item with no candidates is NEVER dropped: estimate the macros from your own knowledge (source "estimate"), note it in assumption, and log it. A branded snack you recognize (Haldiram's bhujia, Epigamia yogurt, etc.) always gets logged with an estimate, never skipped.
+- You MUST finish by calling log_meal exactly once, covering every extracted item. Never write the parsed meal, macros, or a follow-up question as assistant text.
 - drona_line reacts to the meal against the day so far (see context): protein lands first, praise effort, nudge gaps. One sentence, max ~15 words.
 </behavior>
 
@@ -460,9 +492,7 @@ ${day}
 </user_context>`;
 }
 
-// ── Tool loop ───────────────────────────────────────────────────────────────
-
-const MAX_PARSE_ITERATIONS = 6;
+// ── Anthropic plumbing ──────────────────────────────────────────────────────
 
 interface AnthropicMsg {
   role: "user" | "assistant";
@@ -521,27 +551,78 @@ function candidatePayload(c: CandidateFood): Record<string, unknown> {
   };
 }
 
-async function executeParseTool(
+// ── Stage 2: resolve (pure code, all items in parallel) ─────────────────────
+
+export interface ExtractedItem {
+  name: string;
+  brand: string | null;
+  quantity: number;
+  unit: string;
+  prep: string | null;
+}
+
+interface ResolvedItem extends ExtractedItem {
+  candidates: CandidateFood[];
+}
+
+// A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
+// spoon weights in code hands the decide model real numbers instead of a
+// water-density guess (the 2x roasted-edamame bug).
+function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
+  if (c.base_unit !== "g") return c;
+  const has = (re: RegExp) => c.servings.some((s) => re.test(s.label.toLowerCase()));
+  const cup = c.servings.find((s) => /(^|\b)1?\s*cup\b/.test(s.label.toLowerCase()) && s.grams > 30 && s.grams < 400);
+  if (!cup) return c;
+  const derived: ServingOption[] = [];
+  if (!has(/\b(tbsp|tablespoon)\b/)) derived.push({ label: "1 tbsp", grams: round1(cup.grams / 16) });
+  if (!has(/\b(tsp|teaspoon)\b/)) derived.push({ label: "1 tsp", grams: round1(cup.grams / 48) });
+  return derived.length > 0 ? { ...c, servings: [...c.servings, ...derived] } : c;
+}
+
+async function resolveOneItem(
   deps: ParseMealDeps,
-  name: string,
-  input: Record<string, unknown>,
-): Promise<unknown> {
-  try {
-    if (name === "search_foods") {
-      const q = String(input.query ?? "").trim();
-      if (!q) return { candidates: [] };
-      const candidates = await deps.searchFoods(q);
-      return { candidates: candidates.slice(0, 6).map(candidatePayload) };
+  item: ExtractedItem,
+  steps: ParseStep[],
+  toolCalls: string[],
+): Promise<ResolvedItem> {
+  // Query ladder: full name, brand-qualified, then progressively fewer words
+  // (the 0079 search requires EVERY word to match, so an over-specified name
+  // like "almonds raw whole" returns nothing while "almonds" hits). A
+  // generalized retry only fires when the specific query found zero rows.
+  const queries = [item.name];
+  if (item.brand) queries.push(`${item.brand} ${item.name}`);
+  const words = item.name.split(/\s+/).filter(Boolean);
+  for (let n = words.length - 1; n >= 1; n--) {
+    const q = words.slice(0, n).join(" ");
+    if (!queries.includes(q)) queries.push(q);
+  }
+  let candidates: CandidateFood[] = [];
+  for (const q of queries.slice(0, 4)) {
+    if (candidates.length > 0) break;
+    toolCalls.push("search_foods");
+    try {
+      candidates = (await deps.searchFoods(q)).slice(0, 6);
+    } catch (e) {
+      deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
     }
-    if (name === "lookup_packaged_food") {
-      const q = String(input.query ?? "").trim();
-      if (!q) return { candidates: [] };
+    steps.push({
+      iter: 1,
+      tool: "search_foods",
+      input: { query: q },
+      result: { count: candidates.length, top: candidates.slice(0, 5).map((c) => c.name) },
+    });
+  }
+
+  // OFF fallback on a total catalog miss (branded or not; OFF carries both).
+  // Backfill first so the candidate carries a real food_id and the NEXT
+  // user's catalog search finds it at tier 1.
+  if (candidates.length === 0) {
+    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    toolCalls.push("lookup_packaged_food");
+    try {
       const fetchFn = deps.fetchFn ?? fetch;
       const products = await searchOpenFoodFacts(q, fetchFn, deps.log);
-      const candidates: CandidateFood[] = [];
       for (const p of products) {
-        // Backfill first so the candidate carries a real food_id and the
-        // NEXT user's search_foods finds it at tier 1.
         const foodId = await deps.backfillOffFood(p);
         candidates.push({
           food_id: foodId,
@@ -557,12 +638,18 @@ async function executeParseTool(
           source: "off",
         });
       }
-      return { candidates: candidates.map(candidatePayload) };
+    } catch (e) {
+      deps.log?.(`[parse_meal] OFF resolve threw for "${q}": ${String(e).slice(0, 120)}`);
     }
-    return { error: `unknown tool: ${name}` };
-  } catch (e) {
-    return { error: String(e).slice(0, 200) };
+    steps.push({
+      iter: 1,
+      tool: "lookup_packaged_food",
+      input: { query: q },
+      result: { count: candidates.length, top: candidates.slice(0, 5).map((c) => c.name) },
+    });
   }
+
+  return { ...item, candidates: candidates.map(synthesizeVolumeAnchors) };
 }
 
 function round1(n: number): number {
@@ -739,34 +826,14 @@ export function flagPrepMismatch(items: ParsedItem[], inputText: string): Parsed
   });
 }
 
-// Compact a tool result for the trace: arrays -> {count, top names}; big objects
-// -> a truncated preview. Keeps parse_traces.steps small + readable for eval.
-function summarizeToolResult(result: unknown): unknown {
-  if (Array.isArray(result)) {
-    return {
-      count: result.length,
-      top: result.slice(0, 5).map((r) => (r as Record<string, unknown>)?.name ?? (r as Record<string, unknown>)?.food_name ?? r),
-    };
-  }
-  if (result && typeof result === "object") {
-    const s = JSON.stringify(result);
-    if (s.length > 600) return { preview: s.slice(0, 600) };
-  }
-  return result;
-}
-
+// Extract -> resolve -> decide. Two model calls on the common path (three
+// or four only when server web_search fires), with every catalog lookup a
+// deterministic parallel fetch between them — versus 3-6 sequential model
+// turns in the old tool-loop design.
 export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
-  const system = buildParseSystemPrompt(input, deps.webSearchEnabled);
-  const tools: unknown[] = [SEARCH_FOODS_TOOL, LOOKUP_PACKAGED_TOOL, LOG_MEAL_TOOL];
-  if (deps.webSearchEnabled) tools.push(WEB_SEARCH_TOOL);
-
-  const conversation: AnthropicMsg[] = [
-    { role: "user", content: input.text.trim().slice(0, 500) },
-  ];
-
   const usage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -776,128 +843,175 @@ export async function runParseMeal(
   };
   const toolCalls: string[] = [];
   const steps: ParseStep[] = [];
+  let anthropicCalls = 0;
 
-  for (let iter = 0; iter < MAX_PARSE_ITERATIONS; iter++) {
-    // Last iteration: force log_meal so a model stuck re-searching settles
-    // with what it has (estimates included) instead of erroring out. The
-    // eval's composite-dish cases (rajma chawal) hit exactly this.
-    const lastIteration = iter === MAX_PARSE_ITERATIONS - 1;
-    const result = await callAnthropicOnce(deps, {
-      model: deps.model,
-      max_tokens: deps.maxTokens,
-      system,
-      tools,
-      messages: conversation,
-      ...(lastIteration ? { tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL } } : {}),
-    });
-    if (!result.ok) {
-      throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
-    }
-
-    const data = result.data;
+  const accumulate = (data: any) => {
     const u = data.usage ?? {};
     usage.input_tokens += u.input_tokens ?? 0;
     usage.output_tokens += u.output_tokens ?? 0;
     usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
     usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
     usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
+  };
+  const declineResult = (message: string): ParseMealResult => ({
+    parsed: null,
+    declined: { message },
+    usage,
+    tool_calls: toolCalls,
+    steps,
+    iterations: anthropicCalls,
+  });
 
-    const stopReason = data.stop_reason;
-    const blocks: Array<Record<string, any>> = data.content ?? [];
+  // ── Stage 1: extract ──────────────────────────────────────────────────────
+  const extractRes = await callAnthropicOnce(deps, {
+    model: deps.model,
+    max_tokens: 700,
+    system: EXTRACT_SYSTEM,
+    tools: [EXTRACT_TOOL],
+    tool_choice: { type: "tool", name: "extract_meal" },
+    messages: [{ role: "user", content: input.text.trim().slice(0, 500) }],
+  });
+  if (!extractRes.ok) {
+    throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
+  }
+  anthropicCalls++;
+  accumulate(extractRes.data);
+  toolCalls.push("extract_meal");
 
-    // Server-side web search paused mid-loop: re-send as-is to resume.
+  const extractBlock = ((extractRes.data.content ?? []) as Array<Record<string, any>>)
+    .find((b) => b.type === "tool_use" && b.name === "extract_meal");
+  const ext = (extractBlock?.input ?? {}) as Record<string, unknown>;
+  const extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
+    .slice(0, 12)
+    .flatMap((r: unknown): ExtractedItem[] => {
+      if (!r || typeof r !== "object") return [];
+      const o = r as Record<string, unknown>;
+      const name = typeof o.name === "string" ? o.name.trim().slice(0, 80) : "";
+      if (!name) return [];
+      return [{
+        name,
+        brand: typeof o.brand === "string" && o.brand.trim() ? o.brand.trim().slice(0, 60) : null,
+        quantity: typeof o.quantity === "number" && Number.isFinite(o.quantity) && o.quantity > 0
+          ? Math.min(o.quantity, 100)
+          : 1,
+        unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
+        prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
+      }];
+    });
+  const mealFromText: MealType | null =
+    ext.meal_type_from_text === "breakfast" || ext.meal_type_from_text === "lunch" ||
+    ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
+      ? ext.meal_type_from_text
+      : null;
+  steps.push({
+    iter: 0,
+    tool: "extract_meal",
+    input: { item_count: extItems.length, declined: ext.declined === true },
+  });
+
+  if (ext.declined === true || extItems.length === 0) {
+    const msg = typeof ext.decline_message === "string" && ext.decline_message.trim()
+      ? scrubDashes(ext.decline_message).slice(0, 200)
+      : "That did not look like food to me. Tell me what you ate and I will log it.";
+    return declineResult(msg);
+  }
+
+  // ── Stage 2: resolve, all items in parallel ───────────────────────────────
+  const resolved = await Promise.all(
+    extItems.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
+  );
+
+  // ── Stage 3: decide (single call; short loop only for server web_search) ──
+  const decideSystem = buildDecideSystemPrompt(input, deps.webSearchEnabled);
+  const decideTools: unknown[] = [LOG_MEAL_TOOL];
+  if (deps.webSearchEnabled) decideTools.push(WEB_SEARCH_TOOL);
+  const decidePayload = {
+    user_text: input.text.trim().slice(0, 500),
+    meal_type_from_text: mealFromText,
+    items: resolved.map((r) => ({
+      name: r.name,
+      ...(r.brand ? { brand: r.brand } : {}),
+      quantity: r.quantity,
+      unit: r.unit,
+      ...(r.prep ? { prep: r.prep } : {}),
+      candidates: r.candidates.map(candidatePayload),
+    })),
+  };
+  const conversation: AnthropicMsg[] = [
+    { role: "user", content: JSON.stringify(decidePayload) },
+  ];
+
+  const MAX_DECIDE_TURNS = 3;
+  for (let turn = 0; turn < MAX_DECIDE_TURNS; turn++) {
+    // Web search needs tool_choice auto to be usable; without it (or on the
+    // final turn) force log_meal so the flow always terminates in one shot.
+    const forceLog = !deps.webSearchEnabled || turn === MAX_DECIDE_TURNS - 1;
+    const result = await callAnthropicOnce(deps, {
+      model: deps.model,
+      max_tokens: deps.maxTokens,
+      system: decideSystem,
+      tools: decideTools,
+      messages: conversation,
+      ...(forceLog ? { tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL } } : {}),
+    });
+    if (!result.ok) {
+      throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
+    }
+    anthropicCalls++;
+    accumulate(result.data);
+
+    const stopReason = result.data.stop_reason;
+    const blocks: Array<Record<string, any>> = result.data.content ?? [];
+
+    // Server-side web search paused the turn: re-send as-is to resume.
     if (stopReason === "pause_turn") {
       toolCalls.push("web_search");
-      steps.push({ iter, tool: "web_search" });
+      steps.push({ iter: 2, tool: "web_search" });
       conversation.push({ role: "assistant", content: blocks });
       continue;
     }
 
-    if (stopReason !== "tool_use") {
-      // No tool call: the model declined (non-food) or drifted. Either way,
-      // nothing was logged; surface the text as the decline message.
-      const text = blocks
-        .filter((b) => b.type === "text")
-        .map((b) => b.text ?? "")
-        .join(" ")
-        .trim();
-      return {
-        parsed: null,
-        declined: {
-          message: text || "That did not look like food to me. Tell me what you ate and I will log it.",
-        },
-        usage,
-        tool_calls: toolCalls,
-        steps,
-        iterations: iter + 1,
-      };
+    const terminal = blocks.find((b) => b.type === "tool_use" && b.name === PARSE_TERMINAL_TOOL);
+    if (!terminal) {
+      // Text or an unexpected stop: push the turn and force log_meal next.
+      conversation.push({ role: "assistant", content: blocks });
+      conversation.push({ role: "user", content: "Call log_meal now with your best final entries for every item." });
+      continue;
     }
 
-    const toolUses = blocks.filter((b) => b.type === "tool_use");
-    const terminal = toolUses.find((b) => b.name === PARSE_TERMINAL_TOOL);
-
-    if (terminal) {
-      toolCalls.push(PARSE_TERMINAL_TOOL);
-      const raw = (terminal.input ?? {}) as Record<string, unknown>;
-      steps.push({
-        iter,
-        tool: PARSE_TERMINAL_TOOL,
-        input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
-      });
-      const items = flagPrepMismatch(
-        checkAtwater(await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)))),
-        input.text,
-      );
-      if (items.length === 0) {
-        return {
-          parsed: null,
-          declined: {
-            message: "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
-          },
-          usage,
-          tool_calls: toolCalls,
-          steps,
-          iterations: iter + 1,
-        };
-      }
-      const mealType: MealType =
-        raw.meal_type === "breakfast" || raw.meal_type === "lunch" ||
-        raw.meal_type === "dinner" || raw.meal_type === "snack"
-          ? raw.meal_type
-          : (input.mealHint ?? mealForHour(input.localHour));
-      const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
-        ? scrubDashes(raw.drona_line).slice(0, 200)
-        : "Logged. Keep the protein coming.";
-      return {
-        parsed: { meal_type: mealType, items, drona_line: dronaLine },
-        declined: null,
-        usage,
-        tool_calls: toolCalls,
-        steps,
-        iterations: iter + 1,
-      };
-    }
-
-    // Client tools (search_foods / lookup_packaged_food): execute in parallel.
-    // Any server web_search blocks in this turn were already handled by the
-    // API itself; we only answer the client-tool blocks.
-    const toolResults = await Promise.all(
-      toolUses.map(async (block) => {
-        const toolName = String(block.name ?? "<unknown>");
-        toolCalls.push(toolName);
-        const result = await executeParseTool(deps, toolName, block.input ?? {});
-        steps.push({ iter, tool: toolName, input: block.input ?? {}, result: summarizeToolResult(result) });
-        return {
-          type: "tool_result" as const,
-          tool_use_id: String(block.id ?? ""),
-          content: JSON.stringify(result),
-        };
-      }),
+    toolCalls.push(PARSE_TERMINAL_TOOL);
+    const raw = (terminal.input ?? {}) as Record<string, unknown>;
+    steps.push({
+      iter: 2,
+      tool: PARSE_TERMINAL_TOOL,
+      input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
+    });
+    const items = flagPrepMismatch(
+      checkAtwater(await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)))),
+      input.text,
     );
-
-    conversation.push({ role: "assistant", content: blocks });
-    conversation.push({ role: "user", content: toolResults });
+    if (items.length === 0) {
+      return declineResult(
+        "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
+      );
+    }
+    const mealType: MealType =
+      raw.meal_type === "breakfast" || raw.meal_type === "lunch" ||
+      raw.meal_type === "dinner" || raw.meal_type === "snack"
+        ? raw.meal_type
+        : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
+    const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
+      ? scrubDashes(raw.drona_line).slice(0, 200)
+      : "Logged. Keep the protein coming.";
+    return {
+      parsed: { meal_type: mealType, items, drona_line: dronaLine },
+      declined: null,
+      usage,
+      tool_calls: toolCalls,
+      steps,
+      iterations: anthropicCalls,
+    };
   }
 
-  throw new Error(`parse_meal hit the ${MAX_PARSE_ITERATIONS}-iteration cap without logging`);
+  throw new Error(`parse_meal decide stage hit the ${MAX_DECIDE_TURNS}-turn cap without logging`);
 }
