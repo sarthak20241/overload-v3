@@ -20,6 +20,8 @@ export interface ItemExpectation {
   gramsBetween?: [number, number];
   // Inclusive bounds on the item's total protein. Omit = not checked.
   proteinBetween?: [number, number];
+  // Inclusive bounds on the item's total kcal. Omit = not checked.
+  kcalBetween?: [number, number];
 }
 
 export interface EvalCase {
@@ -356,7 +358,9 @@ export const CASES: EvalCase[] = [
     hour: 20,
     expect: {
       minItems: 1, maxItems: 1,
-      items: [{ nameIncludes: "tikki", tiers: ["off", "web", "estimate"] }],
+      // catalog is now a legitimate (best) tier: a prior parse's OFF/estimate
+      // backfill seeded the row, which is exactly how the catalog compounds.
+      items: [{ nameIncludes: "tikki", tiers: ["catalog", "off", "web", "estimate"] }],
       needsWebSearch: false,
     },
   },
@@ -462,6 +466,33 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 1,
       items: [{ nameIncludes: "honey", gramsBetween: [14, 25] }],
+    },
+  },
+
+  // ── Indian beverage defaults ────────────────────────────────────────────
+  // Regression for the 2026-07-18 prod log: "Half cup tea" matched
+  // "Tea, hot, herbal" at 1.2 kcal (confidence high). Unqualified tea for
+  // this audience is MILK chai: ~45 kcal/100 ml, so half a cup is ~25-60
+  // kcal, never ~1.
+  {
+    id: "tea-milk-default",
+    text: "Half cup tea and 2 good day biscuit", // exact prod input
+    hour: 17,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130], kcalBetween: [20, 80] },
+        { nameIncludes: "good day", nameIncludesAny: ["goodday", "biscuit", "cookie"], kcalBetween: [50, 250] },
+      ],
+    },
+  },
+  {
+    id: "black-tea-stays-plain",
+    text: "1 cup black tea no sugar",
+    hour: 8,
+    expect: {
+      minItems: 1,
+      items: [{ nameIncludes: "tea", kcalBetween: [0, 15] }],
     },
   },
 ];

@@ -410,6 +410,166 @@ const WEB_SEARCH_TOOL = {
   max_uses: 2,
 };
 
+// Terminal tool for the HEDGED web lookup: a compact side-call that races the
+// decide call for items the catalog could not resolve. The decide model
+// estimates those items immediately; if this lookup lands label data within
+// the grace window, the estimate lines are upgraded server-side.
+const WEB_LOOKUP_TOOL = {
+  name: "report_labels",
+  description:
+    "Report the official nutrition-label data you found for each food, exactly once, " +
+    "after your web searches. found=false when no trustworthy label surfaced.",
+  input_schema: {
+    type: "object",
+    properties: {
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            for_item: { type: "string", description: "The item name EXACTLY as given to you." },
+            found: { type: "boolean" },
+            per_100: {
+              type: ["object", "null"],
+              description: "Label macros per 100 g (or 100 ml for liquids). null when not found.",
+              properties: {
+                kcal: { type: "number" },
+                protein_g: { type: "number" },
+                carb_g: { type: "number" },
+                fat_g: { type: "number" },
+                fiber_g: { type: ["number", "null"] },
+              },
+              required: ["kcal", "protein_g", "carb_g", "fat_g"],
+            },
+            source_note: {
+              type: ["string", "null"],
+              description: 'Short source for the user, e.g. "per the Britannia label". No URLs.',
+            },
+          },
+          required: ["for_item", "found"],
+        },
+      },
+    },
+    required: ["results"],
+  },
+};
+
+interface WebLabel {
+  per_100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+  source_note: string | null;
+}
+
+// Typo-tolerant word overlap ("edameme" vs "Edamame, cooked"): any pair of
+// content words sharing a 4-char prefix. Shared by the prep-state guard and
+// the web-label merge.
+function wordsOverlap(a: string, b: string): boolean {
+  const words = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4);
+  const aw = words(a), bw = words(b);
+  return aw.some((x) => bw.some((y) => x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4))));
+}
+
+const WEB_LOOKUP_MAX_TURNS = 4;
+const WEB_LOOKUP_TIMEOUT_MS = 20000;
+// How long past the decide call the hedge may hold the response. Web label
+// lookups typically take 4-10s; the decide call ~4s. A short grace converts
+// most of that overlap into "free" — anything slower ships as an estimate.
+const WEB_MERGE_GRACE_MS = 4000;
+
+// Runs concurrently with the decide call (the hedge). Own bounded mini-loop:
+// server web_search pauses resume, and the final turn forces report_labels.
+async function runWebLookup(
+  deps: ParseMealDeps,
+  items: ExtractedItem[],
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<Map<string, WebLabel> | null> {
+  const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
+  const system =
+    "You look up nutrition labels for foods a fitness app could not find in its catalog. " +
+    'For EACH item, run ONE web search for the official label ("<brand> <product> nutrition facts per 100g"), ' +
+    "read numbers only from the brand's own site or a reputable label listing, then call report_labels " +
+    "exactly once with per-100 macros for everything you found. Speed matters: no extra searches, no prose.";
+  const conversation: AnthropicMsg[] = [{
+    role: "user",
+    content: JSON.stringify(items.map((i) => ({ name: i.name, ...(i.brand ? { brand: i.brand } : {}) }))),
+  }];
+
+  for (let turn = 0; turn < WEB_LOOKUP_MAX_TURNS; turn++) {
+    const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
+    const result = await callAnthropicOnce(webDeps, {
+      model: deps.model,
+      max_tokens: 800,
+      system,
+      tools: [WEB_SEARCH_TOOL, WEB_LOOKUP_TOOL],
+      messages: conversation,
+      ...(lastTurn ? { tool_choice: { type: "tool", name: "report_labels" } } : {}),
+    });
+    if (!result.ok) {
+      deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
+      return null;
+    }
+    onCall();
+    onUsage(result.data);
+    const blocks: Array<Record<string, any>> = result.data.content ?? [];
+
+    if (result.data.stop_reason === "pause_turn") {
+      conversation.push({ role: "assistant", content: blocks });
+      continue;
+    }
+    const report = blocks.find((b) => b.type === "tool_use" && b.name === "report_labels");
+    if (!report) {
+      conversation.push({ role: "assistant", content: blocks });
+      conversation.push({ role: "user", content: "Call report_labels now with what you have." });
+      continue;
+    }
+    const out = new Map<string, WebLabel>();
+    const results = (report.input as Record<string, unknown>)?.results;
+    for (const r of Array.isArray(results) ? results : []) {
+      const o = r as Record<string, any>;
+      const p = o.per_100;
+      if (o.found !== true || !p || typeof o.for_item !== "string") continue;
+      const nums = [p.kcal, p.protein_g, p.carb_g, p.fat_g];
+      if (!nums.every((n: unknown) => typeof n === "number" && Number.isFinite(n) && (n as number) >= 0)) continue;
+      out.set(o.for_item, {
+        per_100: {
+          kcal: p.kcal, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
+          fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) ? p.fiber_g : null,
+        },
+        source_note: typeof o.source_note === "string" && o.source_note.trim()
+          ? scrubDashes(o.source_note).slice(0, 80)
+          : null,
+      });
+    }
+    return out.size > 0 ? out : null;
+  }
+  return null;
+}
+
+// Upgrade estimate lines with label data the hedge brought back in time.
+// Grams stay the model's (portioning already went through the guardrails);
+// only the per-gram nutrition is replaced.
+function mergeWebLabels(items: ParsedItem[], labels: Map<string, WebLabel>): ParsedItem[] {
+  return items.map((item) => {
+    if (item.source !== "estimate" || !(item.grams > 0)) return item;
+    for (const [forItem, label] of labels) {
+      if (!wordsOverlap(item.food_name, forItem)) continue;
+      const f = item.grams / 100;
+      return {
+        ...item,
+        kcal: round1(label.per_100.kcal * f),
+        protein_g: round1(label.per_100.protein_g * f),
+        carb_g: round1(label.per_100.carb_g * f),
+        fat_g: round1(label.per_100.fat_g * f),
+        fiber_g: label.per_100.fiber_g === null ? item.fiber_g : round1(label.per_100.fiber_g * f),
+        source: "web" as const,
+        confidence: "medium" as const,
+        assumption: appendAssumption(item, label.source_note ?? "Macros from a web label lookup"),
+      };
+    }
+    return item;
+  });
+}
+
 // ── Prompt ──────────────────────────────────────────────────────────────────
 
 const HOUR_TO_MEAL: Array<[number, number, MealType]> = [
@@ -429,9 +589,9 @@ export function mealForHour(hour: number | null): MealType {
   return "snack";
 }
 
-const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
 
-export function buildDecideSystemPrompt(input: ParseMealInput, webSearchEnabled: boolean): string {
+export function buildDecideSystemPrompt(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
   const recents = input.recentFoods.length > 0
@@ -452,24 +612,21 @@ export function buildDecideSystemPrompt(input: ParseMealInput, webSearchEnabled:
     return parts.length > 0 ? parts.join(" ") : "No targets set.";
   })();
 
-  const webTier = webSearchEnabled
-    ? `- web_search (max 2, LAST resort): only for a NAMED product or restaurant item with no acceptable candidate. Search the official nutrition label ("<brand> <product> nutrition facts per 100g"), read numbers only from the brand's own site or a label listing, set source "web", name the source in assumption.\n`
-    : "";
-
   return `You finalize food log entries for OVERLOAD, a lifting app. Each extracted item below carries CANDIDATE foods (per-100 macros plus serving options) already fetched from the catalog. Pick the right candidate per item, convert the quantity to grams, and log everything with ONE log_meal call. Coach Drona's voice appears only in drona_line and assumption strings: direct, warm, coach-like, never robotic. Never use em dashes anywhere in user-facing strings.
 
 <candidate_rules>
 - Choose the candidate that IS the food, not one merely similar. For generic Indian foods prefer the curated staples (Roti, Toor Dal, Curd, Toned Milk) over obscure branded rows. For a plain whole food ("chicken breast", "rice", "milk") prefer the plain/cooked/generic row over processed, fat-free, dried, deli, or flavored variants unless the user named that variant.
 - Respect the item's prep state: never log a roasted/dried/fried item against a cooked/boiled candidate (2-3x density difference). If only a wrong-state candidate exists, estimate instead.
+- Indian beverage defaults: unqualified "tea" or "chai" means MILK tea (the Chai / Milk Tea row, ~45 kcal/100 ml), and unqualified "coffee" means milk coffee. Herbal, black, green, or lemon tea ONLY when the user says so; picking a 1-2 kcal plain-tea row for unqualified "tea" is wrong. Any such default is never confidence high; name it in assumption.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
-${webTier}</candidate_rules>
+</candidate_rules>
 
 <quantity_rules>
 - Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; compute line macros as per100 * grams / 100, times nothing else (quantity is already inside grams).
 - Use the candidate's serving options to convert household units. When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving default.
 - Spoon and cup weights DEPEND ON THE FOOD; a tablespoon is 15 g only for water-like liquids. If the candidate has a cup serving, derive from it (1 cup = 16 tbsp = 48 tsp). Otherwise: 1 tbsp of nuts, seeds, or roasted snacks ~8 g; powders (protein, flour, spices) ~7-9 g; oil or ghee ~14 g; nut butter, honey ~16-20 g. A guessed spoon weight is never confidence high.
 - Indian household defaults when the user gives no amount and no serving option fits: 1 roti ~40 g, 1 katori ~150 g cooked, 1 glass ~250 ml, 1 cup ~200 ml, 1 bowl ~250 g, 1 scoop whey ~32 g, 1 egg ~50 g. Record any such guess in assumption.
-- Piece counts for small foods use the candidate's per-piece serving when one exists; otherwise: 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g. "5 almonds" is ~6 g, never 25.
+- Piece counts for small foods use the candidate's per-piece serving when one exists; otherwise: 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g, 1 small packaged biscuit (Good Day, Marie, Parle-G) ~5-10 g. "5 almonds" is ~6 g, never 25; "2 biscuits" is ~15-20 g, never 90.
 - Match the preparation state the user typed: "roasted" or "dried" foods are 2-3x more calorie-dense per gram than "cooked" or "boiled" ones. Never log a roasted/dried item against a cooked/boiled candidate row; prefer a correct-state candidate or estimate instead.
 - "half" quantities are fine (quantity 0.5).
 </quantity_rules>
@@ -937,16 +1094,28 @@ export async function runParseMeal(
     extItems.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
   );
 
-  // ── Stage 3: decide (single forced-tool call on the common path) ──────────
-  // web_search only earns its latency when an item resolved to NOTHING; with a
-  // candidate in hand the model just picks and converts. Gating it here means
-  // the common fully-resolved meal is one forced log_meal call (no auto-tool
-  // deliberation, no web tool schema) instead of an open-ended turn.
-  const anyUnresolved = resolved.some((r) => r.candidates.length === 0);
-  const useWebSearch = deps.webSearchEnabled && anyUnresolved;
-  const decideSystem = buildDecideSystemPrompt(input, useWebSearch);
-  const decideTools: unknown[] = [LOG_MEAL_TOOL];
-  if (useWebSearch) decideTools.push(WEB_SEARCH_TOOL);
+  // ── Stage 3: decide + hedged web lookup ───────────────────────────────────
+  // The decide call is ALWAYS one forced log_meal call: unresolved items get
+  // an immediate model estimate, never a blocking web turn. When web search
+  // is enabled and something resolved to zero candidates, a compact label
+  // lookup RACES the decide call; if it lands within the grace window its
+  // label data upgrades the estimate lines server-side. Web results never
+  // delay a fully-resolved meal and add at most the grace window otherwise.
+  const unresolvedItems = resolved.filter((r) => r.candidates.length === 0);
+  const webPromise: Promise<Map<string, WebLabel> | null> | null =
+    deps.webSearchEnabled && unresolvedItems.length > 0
+      ? runWebLookup(deps, unresolvedItems, accumulate, () => anthropicCalls++)
+        .catch((e) => {
+          deps.log?.(`[parse_meal] web lookup threw: ${String(e).slice(0, 120)}`);
+          return null;
+        })
+      : null;
+  if (webPromise) {
+    toolCalls.push("web_lookup");
+    steps.push({ iter: 2, tool: "web_lookup", input: { items: unresolvedItems.map((i) => i.name) } });
+  }
+
+  const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
     user_text: input.text.trim().slice(0, 500),
     meal_type_from_text: mealFromText,
@@ -961,81 +1130,73 @@ export async function runParseMeal(
       candidates: r.candidates.slice(0, 4).map(candidatePayload),
     })),
   };
-  const conversation: AnthropicMsg[] = [
-    { role: "user", content: JSON.stringify(decidePayload) },
-  ];
 
-  const MAX_DECIDE_TURNS = 3;
-  for (let turn = 0; turn < MAX_DECIDE_TURNS; turn++) {
-    // Web search needs tool_choice auto to be usable; without it (or on the
-    // final turn) force log_meal so the flow always terminates in one shot.
-    const forceLog = !useWebSearch || turn === MAX_DECIDE_TURNS - 1;
-    const result = await callAnthropicOnce(deps, {
-      model: deps.model,
-      max_tokens: deps.maxTokens,
-      system: cacheableSystem(decideSystem),
-      tools: withToolCache(decideTools),
-      messages: conversation,
-      ...(forceLog ? { tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL } } : {}),
-    });
-    if (!result.ok) {
-      throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
-    }
-    anthropicCalls++;
-    accumulate(result.data);
+  const result = await callAnthropicOnce(deps, {
+    model: deps.model,
+    max_tokens: deps.maxTokens,
+    system: cacheableSystem(decideSystem),
+    tools: withToolCache([LOG_MEAL_TOOL]),
+    tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL },
+    messages: [{ role: "user", content: JSON.stringify(decidePayload) }],
+  });
+  if (!result.ok) {
+    throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
+  }
+  anthropicCalls++;
+  accumulate(result.data);
 
-    const stopReason = result.data.stop_reason;
-    const blocks: Array<Record<string, any>> = result.data.content ?? [];
-
-    // Server-side web search paused the turn: re-send as-is to resume.
-    if (stopReason === "pause_turn") {
-      toolCalls.push("web_search");
-      steps.push({ iter: 2, tool: "web_search" });
-      conversation.push({ role: "assistant", content: blocks });
-      continue;
-    }
-
-    const terminal = blocks.find((b) => b.type === "tool_use" && b.name === PARSE_TERMINAL_TOOL);
-    if (!terminal) {
-      // Text or an unexpected stop: push the turn and force log_meal next.
-      conversation.push({ role: "assistant", content: blocks });
-      conversation.push({ role: "user", content: "Call log_meal now with your best final entries for every item." });
-      continue;
-    }
-
-    toolCalls.push(PARSE_TERMINAL_TOOL);
-    const raw = (terminal.input ?? {}) as Record<string, unknown>;
-    steps.push({
-      iter: 2,
-      tool: PARSE_TERMINAL_TOOL,
-      input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
-    });
-    const items = flagPrepMismatch(
-      checkAtwater(await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)))),
-      input.text,
+  const blocks: Array<Record<string, any>> = result.data.content ?? [];
+  const terminal = blocks.find((b) => b.type === "tool_use" && b.name === PARSE_TERMINAL_TOOL);
+  if (!terminal) {
+    // Forced tool_choice makes this near-impossible; fail soft as a decline.
+    return declineResult(
+      "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
     );
-    if (items.length === 0) {
-      return declineResult(
-        "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
-      );
-    }
-    const mealType: MealType =
-      raw.meal_type === "breakfast" || raw.meal_type === "lunch" ||
-      raw.meal_type === "dinner" || raw.meal_type === "snack"
-        ? raw.meal_type
-        : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
-    const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
-      ? scrubDashes(raw.drona_line).slice(0, 200)
-      : "Logged. Keep the protein coming.";
-    return {
-      parsed: { meal_type: mealType, items, drona_line: dronaLine },
-      declined: null,
-      usage,
-      tool_calls: toolCalls,
-      steps,
-      iterations: anthropicCalls,
-    };
   }
 
-  throw new Error(`parse_meal decide stage hit the ${MAX_DECIDE_TURNS}-turn cap without logging`);
+  toolCalls.push(PARSE_TERMINAL_TOOL);
+  const raw = (terminal.input ?? {}) as Record<string, unknown>;
+  steps.push({
+    iter: 2,
+    tool: PARSE_TERMINAL_TOOL,
+    input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
+  });
+
+  let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)));
+
+  // Hedge settlement: give the parallel lookup a short grace beyond the
+  // decide call, then take whatever it brought (or move on without it).
+  if (webPromise) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const labels = await Promise.race([
+      webPromise,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), WEB_MERGE_GRACE_MS); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    steps.push({ iter: 2, tool: "web_lookup_merge", result: { found: labels ? labels.size : 0 } });
+    if (labels) items = mergeWebLabels(items, labels);
+  }
+
+  items = flagPrepMismatch(checkAtwater(items), input.text);
+  if (items.length === 0) {
+    return declineResult(
+      "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
+    );
+  }
+  const mealType: MealType =
+    raw.meal_type === "breakfast" || raw.meal_type === "lunch" ||
+    raw.meal_type === "dinner" || raw.meal_type === "snack"
+      ? raw.meal_type
+      : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
+  const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
+    ? scrubDashes(raw.drona_line).slice(0, 200)
+    : "Logged. Keep the protein coming.";
+  return {
+    parsed: { meal_type: mealType, items, drona_line: dronaLine },
+    declined: null,
+    usage,
+    tool_calls: toolCalls,
+    steps,
+    iterations: anthropicCalls,
+  };
 }

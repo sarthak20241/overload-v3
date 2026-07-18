@@ -220,6 +220,12 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
         failures.push(`"${ie.nameIncludes}" protein ${match.protein_g} outside [${lo}, ${hi}]`);
       }
     }
+    if (ie.kcalBetween) {
+      const [lo, hi] = ie.kcalBetween;
+      if (match.kcal < lo || match.kcal > hi) {
+        failures.push(`"${ie.nameIncludes}" kcal ${match.kcal} outside [${lo}, ${hi}]`);
+      }
+    }
   }
   return failures;
 }
