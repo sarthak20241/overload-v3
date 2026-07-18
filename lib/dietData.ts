@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
+import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
@@ -454,6 +455,12 @@ export async function parseMeal(
   let data: any;
   try {
     const res = await supabase.functions.invoke('ai-coach', {
+      // Pin execution to us-east-1 (the DB + Anthropic region). By default the
+      // function runs nearest the USER (ap-south-1 for India), so every DB query
+      // and both model calls cross India->US; co-locating removes that on the
+      // many internal round trips, at the cost of one cross-ocean user hop.
+      // Measured: pre_parse 1.3s -> 0.34s, total ~8s -> ~5s for a 2-item meal.
+      region: FunctionRegion.UsEast1,
       body: {
         mode: 'parse_meal',
         text,
