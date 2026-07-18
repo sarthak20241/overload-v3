@@ -58,6 +58,7 @@ import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/ro
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
@@ -3295,7 +3296,7 @@ export default function ActiveWorkoutScreen() {
           },
         ]}
       >
-        <Feather name="zap" size={15} color={Colors.primaryFg} />
+        <DronaMark size={15} color={Colors.primaryFg} state="static" />
         <Text style={styles.coachFabText}>Coach</Text>
       </TouchableOpacity>
 

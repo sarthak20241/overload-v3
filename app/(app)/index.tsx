@@ -33,6 +33,7 @@ import { getPendingWorkouts } from '@/lib/syncQueue';
 import { pendingToDashboardWorkout, pendingXp } from '@/lib/pendingAdapters';
 import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -532,7 +533,7 @@ export default function DashboardScreen() {
               {/* Icon — the lime bolt is the coach's signature mark, gently breathing */}
               <Animated.View style={boltStyle}>
                 <View style={[styles.aiCoachIconWrap, { backgroundColor: Colors.primary }]}>
-                  <Feather name="zap" size={18} color={Colors.primaryFg} />
+                  <DronaMark size={18} color={Colors.primaryFg} state="static" />
                 </View>
               </Animated.View>
 
@@ -559,7 +560,7 @@ export default function DashboardScreen() {
             <View style={styles.aiChipsRow}>
               {([
                 { icon: 'message-circle' as const, label: 'Chat', screen: 'chat' as const },
-                { icon: 'zap' as const, label: 'Quick Workout', screen: 'workout' as const },
+                { icon: 'fast-forward' as const, label: 'Quick Workout', screen: 'workout' as const },
                 { icon: 'activity' as const, label: 'Full Plan', screen: 'plan' as const },
               ]).map(({ icon, label, screen }) => (
                 <TouchableOpacity

@@ -18,6 +18,7 @@ import { Spacing, FontSize, FontWeight, Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import type { Insight } from '@/lib/insights';
 import { InsightCard } from './InsightCard';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 const DISMISS_KEY = 'insights:dismissed:v1';
 const GAP = 12;
@@ -82,7 +83,7 @@ export function InsightsStrip({
   return (
     <View style={styles.wrap}>
       <View style={styles.header}>
-        <Feather name="zap" size={14} color={C.accentText} />
+        <DronaMark size={14} color={C.accentText} state="static" />
         <Text style={[styles.headerText, { color: C.accentText }]}>Coach noticed</Text>
         {visible.length > 1 && (
           <View style={[styles.countPill, { backgroundColor: C.primaryMuted }]}>

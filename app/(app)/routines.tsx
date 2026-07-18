@@ -51,6 +51,7 @@ import ReorderableList, {
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
 import type { ExerciseDef } from '@/lib/exercises';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -1218,7 +1219,7 @@ function EmptyState({ onAdd, onAI }: { onAdd: () => void; onAI: () => void }) {
           onPress={onAI}
           style={[styles.emptyBtnAI, { borderColor: C.primaryBorder, backgroundColor: C.primaryMuted }]}
         >
-          <Feather name="zap" size={13} color={C.accentText} />
+          <DronaMark size={13} color={C.accentText} state="static" />
           <Text style={[styles.emptyBtnAIText, { color: C.accentText }]}>Build with Drona</Text>
         </TouchableOpacity>
       </View>
@@ -1415,7 +1416,7 @@ export default function RoutinesScreen() {
             onPress={() => setAiCoachOpen(true)}
             style={[styles.aiBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
           >
-            <Feather name="zap" size={13} color={C.accentText} />
+            <DronaMark size={13} color={C.accentText} state="static" />
             <Text style={[styles.aiBtnText, { color: C.accentText }]}>AI</Text>
           </TouchableOpacity>
           <TouchableOpacity
