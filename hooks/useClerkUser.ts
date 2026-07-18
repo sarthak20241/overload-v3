@@ -19,16 +19,18 @@ export interface ClerkUserState {
   isLoaded: boolean;
   isSignedIn: boolean;
   signOut: () => Promise<void>;
+  /** Clerk JWT for authenticated edge-function calls. Null when signed out. */
+  getToken: (() => Promise<string | null>) | null;
 }
 
 export function useClerkUser(): ClerkUserState {
   if (!hasClerkKey) {
-    return { user: null, isLoaded: true, isSignedIn: false, signOut: async () => {} };
+    return { user: null, isLoaded: true, isSignedIn: false, signOut: async () => {}, getToken: null };
   }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { useUser, useAuth } = require('@clerk/clerk-expo');
   const { user, isLoaded: userLoaded } = useUser();
-  const { isSignedIn, signOut } = useAuth();
+  const { isSignedIn, signOut, getToken } = useAuth();
   return {
     user: user ?? null,
     isLoaded: !!userLoaded,
@@ -36,5 +38,6 @@ export function useClerkUser(): ClerkUserState {
     signOut: async () => {
       if (signOut) await signOut();
     },
+    getToken: isSignedIn && getToken ? getToken : null,
   };
 }

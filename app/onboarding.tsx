@@ -83,6 +83,12 @@ import {
   onboardingIdentity,
   splitNameFor,
 } from '@/lib/onboarding';
+import {
+  buildOnboardingIntakeMessage,
+  dronaPlanToStarterRoutines,
+  requestDronaOnboardingPlan,
+  type DronaOnboardingPlan,
+} from '@/lib/onboardingDrona';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 
 const LBS_PER_KG = 2.20462;
@@ -142,7 +148,7 @@ const PLAN_TITLES: Record<CoachGoal, string> = {
 export default function OnboardingScreen() {
   const router = useRouter();
   const { C } = useTheme();
-  const { user, isSignedIn, isLoaded } = useClerkUser();
+  const { user, isSignedIn, isLoaded, getToken } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
   const { flushNow } = useSync();
   const supabaseClient = useSupabaseClient();
@@ -191,7 +197,17 @@ export default function OnboardingScreen() {
     [weightUnit],
   );
 
+  // Deterministic engine: instant, curated, always available. It is the
+  // fallback and the floor of quality; Drona's generated plan replaces it
+  // when generation succeeds (Phase 3b).
   const plan = useMemo(() => buildStarterRoutines(answers), [answers]);
+
+  // Drona generation state. `buildReady` gates BuildMoment's final tick, so
+  // the build screen elastically holds the thinking state while the LLM runs.
+  const [dronaPlan, setDronaPlan] = useState<DronaOnboardingPlan | null>(null);
+  const [buildReady, setBuildReady] = useState(false);
+  const generationStarted = useRef(false);
+  const finalPlan = dronaPlan?.routines ?? plan;
 
   // Live pace context for the target step: uses the DRAFT target value (not
   // yet committed to answers) so the outcome card updates as the ruler moves.
@@ -246,6 +262,56 @@ export default function OnboardingScreen() {
     }
     return PLAN_TITLES[answers.goal ?? 'general'];
   }, [paceCtx, paceDate, targetVal, weightVal, toKg, answers.goal]);
+
+  // Fire Drona generation the moment the commit step mounts: the hold ritual
+  // and confetti buy ~4 s of overlap before the build screen even appears,
+  // and BuildMoment absorbs the rest elastically. One shot per session; any
+  // failure quietly falls back to the deterministic plan (never surfaced).
+  useEffect(() => {
+    if (step !== 'commit' || generationStarted.current) return;
+    generationStarted.current = true;
+    if (!isSignedIn || !getToken) {
+      setBuildReady(true); // guests get the curated starter plan for now
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) throw new Error('no token');
+        const direction =
+          answers.goalWeightKg && answers.weightKg && Math.abs(answers.goalWeightKg - answers.weightKg) >= 1
+            ? answers.goalWeightKg < answers.weightKg ? 'loss' as const : 'gain' as const
+            : null;
+        const message = buildOnboardingIntakeMessage(answers, { weeklyRateKg: weeklyRate, direction });
+        const input = await requestDronaOnboardingPlan({ token, message });
+        const mapped = dronaPlanToStarterRoutines(input);
+        if (!cancelled && mapped) setDronaPlan(mapped);
+      } catch {
+        /* fall back to the deterministic plan; the reveal never knows */
+      } finally {
+        if (!cancelled) setBuildReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on commit entry
+  }, [step]);
+
+  // The weekly rhythm, said out loud. With fewer workouts than training days
+  // ("3 days but only Full Body A and B?"), spell out the rotation so the plan
+  // never reads like it shrank.
+  const rhythmNote = useMemo(() => {
+    const freq = answers.frequency ?? 3;
+    if (finalPlan.length === 0 || finalPlan.length >= freq) return null;
+    const week = Array.from({ length: freq }, (_, idx) => finalPlan[idx % finalPlan.length].name);
+    const short = (n: string) => n.replace('Full Body ', '');
+    const seq = week.map(short).join(', ');
+    return finalPlan.length === 2
+      ? `${freq} sessions from ${finalPlan.length} workouts: this week goes ${seq}. Next week flips.`
+      : `${freq} sessions from ${finalPlan.length} workouts: rotate ${seq}, and keep rolling.`;
+  }, [answers.frequency, finalPlan]);
   const identity = onboardingIdentity(isSignedIn ? user?.id ?? null : null);
 
   const goTo = useCallback((next: Step) => {
@@ -383,7 +449,7 @@ export default function OnboardingScreen() {
         // so Profile reflects the intake immediately.
         basicInfo.setWeightUnit(weightUnit);
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
-        if (opts.createPlan) await createStarterRoutines(plan, target);
+        if (opts.createPlan) await createStarterRoutines(finalPlan, target);
         await markOnboardingDone(identity);
         if (opts.createPlan) {
           void flushNow();
@@ -400,7 +466,7 @@ export default function OnboardingScreen() {
         setFinishing(false);
       }
     },
-    [answers, targets, plan, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
+    [answers, targets, finalPlan, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
   );
 
   const skipEverything = useCallback(async () => {
@@ -826,7 +892,7 @@ export default function OnboardingScreen() {
                 'Setting fuel targets',
                 'Locking your first week',
               ]}
-              ready
+              ready={buildReady}
               onDone={() => goTo('plan')}
             />
           </Animated.View>
@@ -886,7 +952,7 @@ export default function OnboardingScreen() {
               </Animated.View>
 
               <View style={s.planCards}>
-                {plan.map((r, idx) => {
+                {finalPlan.map((r, idx) => {
                   const names = r.exercises.map((e) => e.name);
                   const preview =
                     names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '');
@@ -906,6 +972,14 @@ export default function OnboardingScreen() {
                     </Animated.View>
                   );
                 })}
+                {rhythmNote && (
+                  <Animated.Text
+                    entering={FadeInDown.delay(300).duration(400)}
+                    style={[s.rhythmNote, { color: C.textMuted }]}
+                  >
+                    {rhythmNote}
+                  </Animated.Text>
+                )}
               </View>
 
               {/* Daily fuel targets: the diet half of the intake payoff */}
@@ -963,9 +1037,8 @@ export default function OnboardingScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[s.coachText, { color: C.foreground }]}>
-                    Log every session, even the rough ones. I read your sets, watch the trend, and tell
-                    you when to add weight. {targets ? 'Eat to your targets, show' : 'Show'} up{' '}
-                    {answers.frequency ?? 3} days a week and the numbers take care of themselves.
+                    {dronaPlan?.rationale ??
+                      `Log every session, even the rough ones. I read your sets, watch the trend, and tell you when to add weight. ${targets ? 'Eat to your targets, show' : 'Show'} up ${answers.frequency ?? 3} days a week and the numbers take care of themselves.`}
                   </Text>
                   <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>
                 </View>
@@ -1084,6 +1157,7 @@ const s = StyleSheet.create({
   planDot: { width: 8, height: 8, borderRadius: 4 },
   planName: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   planMeta: { fontSize: FontSize.sm, marginTop: 2 },
+  rhythmNote: { fontSize: FontSize.sm, lineHeight: 19, paddingHorizontal: Spacing.xs },
   fuelCard: {
     borderRadius: Radius.xl,
     borderWidth: 1,
