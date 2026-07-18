@@ -1,6 +1,6 @@
 /**
  * The frequency step's story (Phase 1b): choosing training days should FEEL
- * like choosing momentum, not picking a number. A detented slider (2-6 days)
+ * like choosing momentum, not picking a number. A detented slider (1-7 days)
  * drives a journey track above it where Drona's arrowhead glides on loop, its
  * speed scaling with the chosen days, plus an honest coach-voice caption per
  * count. The captions never claim more days is linearly faster; the top end
@@ -27,27 +27,31 @@ import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { DronaMark } from '@/components/coach/DronaMark';
 
-const MIN_DAYS = 2;
-const MAX_DAYS = 6;
-const STEPS = MAX_DAYS - MIN_DAYS; // 4 intervals
+const MIN_DAYS = 1;
+const MAX_DAYS = 7;
+const STEPS = MAX_DAYS - MIN_DAYS; // 6 intervals
 const THUMB = 30;
 const MARK_W = 20;
 
 const STORY: Record<number, string> = {
+  1: 'One day a week is a real start. We will make it count.',
   2: 'Twice a week still moves the needle. Slow and steady.',
   3: 'Full Body, three days. The consistency sweet spot.',
   4: 'Upper Lower, four days. Faster progress, still easy to recover from.',
   5: 'Push Pull Legs, five days. Serious pace.',
   6: 'PPL twice over. The fastest route, and recovery becomes part of the job.',
+  7: 'Every single day. Only works if sleep and food keep up.',
 };
 
 // Loop duration per day count: more days, faster glide.
 const GLIDE_MS: Record<number, number> = {
+  1: 6500,
   2: 5200,
   3: 4000,
   4: 3000,
   5: 2100,
   6: 1400,
+  7: 1000,
 };
 
 function GlideTrack({ days, width }: { days: number; width: number }) {

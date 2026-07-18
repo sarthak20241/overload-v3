@@ -6,7 +6,8 @@
  *   goal       what the user trains for (rep ranges, calorie direction)
  *   experience how long they've lifted (starting volume)
  *   frequency  days per week as a story slider (split choice, activity factor)
- *   about      gender + age (BMR math)
+ *   gender     one tap, auto-advance (BMR math)
+ *   age        age wheel, the page hero (BMR math)
  *   height     height wheel (BMR math)
  *   weight     current weight ruler (BMR + coach context)
  *   target     goal weight (diet direction)
@@ -93,10 +94,10 @@ function formatMeasurement(value: number): string {
 
 type Step =
   | 'welcome' | 'goal' | 'experience' | 'frequency'
-  | 'about' | 'height' | 'weight' | 'target' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'about', 'height', 'weight', 'target', 'plan'];
+  | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'plan';
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'plan'];
 // Steps counted by the progress header (welcome has no header).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'about', 'height', 'weight', 'target', 'plan'];
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
@@ -240,7 +241,7 @@ export default function OnboardingScreen() {
     setHeightUnit('cm');
   }, [heightUnit, heightCm, heightFt, heightIn]);
 
-  const commitAboutStep = useCallback(() => {
+  const commitAgeStep = useCallback(() => {
     setAnswers((a) => ({
       ...a,
       ageYears: inRange(ageYears, MIN_AGE_YEARS, MAX_AGE_YEARS) ? ageYears : null,
@@ -467,7 +468,7 @@ export default function OnboardingScreen() {
             question="How many days a week?"
             sub="Be honest. A plan you keep beats a plan you admire."
             caption={`${splitNameFor(answers.frequency)} split`}
-            footer={<PrimaryCta label="Continue" onPress={() => goTo('about')} />}
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('gender')} />}
           >
               <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
                 <FrequencyStory
@@ -478,59 +479,59 @@ export default function OnboardingScreen() {
           </QuestionStep>
         )}
 
-        {step === 'about' && (
+        {step === 'gender' && (
           <QuestionStep
-            stepKey="about"
-            question="A little about you"
-            sub="Gender and age shape the calorie math underneath your plan."
-            footer={<PrimaryCta label="Continue" onPress={commitAboutStep} />}
+            stepKey="gender"
+            question="How should the math read you?"
+            sub="Gender changes the calorie equation, nothing else."
           >
-              <Animated.View entering={FadeInDown.delay(100).duration(400)}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>GENDER</Text>
-                <View style={s.genderRow}>
-                  {(
-                    [
-                      { value: 'M', label: 'Male' },
-                      { value: 'F', label: 'Female' },
-                      { value: 'O', label: 'Other' },
-                    ] as const
-                  ).map((g) => {
-                    const selected = answers.gender === g.value;
-                    return (
-                      <PressableScale
-                        key={g.value}
-                        onPress={() =>
-                          setAnswers((a) => ({ ...a, gender: selected ? null : g.value }))
-                        }
+              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
+                {(
+                  [
+                    { value: 'M', label: 'Male' },
+                    { value: 'F', label: 'Female' },
+                    { value: 'O', label: 'Other' },
+                  ] as const
+                ).map((g) => {
+                  const selected = answers.gender === g.value;
+                  return (
+                    <PressableScale
+                      key={g.value}
+                      onPress={() => selectAndAdvance({ gender: g.value })}
+                      style={[
+                        s.genderChip,
+                        {
+                          backgroundColor: selected ? C.primaryMuted : C.card,
+                          borderColor: selected ? C.primaryBorder : C.borderSubtle,
+                        },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={g.label}
+                      accessibilityState={{ selected }}
+                    >
+                      <Text
                         style={[
-                          s.genderChip,
-                          {
-                            backgroundColor: selected ? C.primaryMuted : C.card,
-                            borderColor: selected ? C.primaryBorder : C.borderSubtle,
-                          },
+                          s.genderChipText,
+                          { color: selected ? C.accentText : C.textSecondary },
                         ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={g.label}
-                        accessibilityState={{ selected }}
                       >
-                        <Text
-                          style={[
-                            s.genderChipText,
-                            { color: selected ? C.accentText : C.textSecondary },
-                          ]}
-                        >
-                          {g.label}
-                        </Text>
-                      </PressableScale>
-                    );
-                  })}
-                </View>
+                        {g.label}
+                      </Text>
+                    </PressableScale>
+                  );
+                })}
               </Animated.View>
+          </QuestionStep>
+        )}
 
-              {/* Plain View: the wheel mis-measures its initial scroll inside an
-                  entering animation (showed 19 for value 24), so it mounts static. */}
-              <View style={s.wheelCenter}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>AGE</Text>
+        {step === 'age' && (
+          <QuestionStep
+            stepKey="age"
+            question="How old are you?"
+            sub="Age tunes your calorie baseline."
+            footer={<PrimaryCta label="Continue" onPress={commitAgeStep} />}
+          >
+              <View style={s.heroCenter}>
                 <NumberWheel
                   min={MIN_AGE_YEARS}
                   max={100}
@@ -549,7 +550,7 @@ export default function OnboardingScreen() {
             sub="Height anchors your calorie baseline."
             footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
           >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.wheelCenter}>
+              <View style={s.heroCenter}>
                 <View style={s.fieldLabelRow}>
                   <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
                   <TouchableOpacity
@@ -567,17 +568,17 @@ export default function OnboardingScreen() {
                   <NumberWheel
                     min={MIN_HEIGHT_CM}
                     max={220}
-                    width={130}
+                    width={170}
                     value={heightCm}
                     onChange={setHeightCm}
                     accessibilityLabel="Height in centimeters"
                   />
                 ) : (
-                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <View style={{ flexDirection: 'row', gap: 12 }}>
                     <NumberWheel
                       min={4}
                       max={7}
-                      width={64}
+                      width={84}
                       value={heightFt}
                       onChange={setHeightFt}
                       accessibilityLabel="Height, feet"
@@ -585,14 +586,14 @@ export default function OnboardingScreen() {
                     <NumberWheel
                       min={0}
                       max={11}
-                      width={64}
+                      width={84}
                       value={heightIn}
                       onChange={setHeightIn}
                       accessibilityLabel="Height, inches"
                     />
                   </View>
                 )}
-              </Animated.View>
+              </View>
           </QuestionStep>
         )}
 
@@ -603,7 +604,7 @@ export default function OnboardingScreen() {
             sub="Just a starting point. The trend is what we train."
             footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
           >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.xxl }}>
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
                 <View style={s.fieldLabelRow}>
                   <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
                   <TouchableOpacity
@@ -834,16 +835,15 @@ const s = StyleSheet.create({
     letterSpacing: LetterSpacing.label,
     marginBottom: Spacing.sm,
   },
-  genderRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xxl },
+  genderCol: { gap: Spacing.md, marginTop: Spacing.lg },
   genderChip: {
-    flex: 1,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.lg,
     borderRadius: Radius.xl,
     borderWidth: 1,
     alignItems: 'center',
   },
   genderChipText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  wheelCenter: { alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.xl },
+  heroCenter: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md },
   fieldLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',

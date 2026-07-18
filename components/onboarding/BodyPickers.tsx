@@ -29,7 +29,10 @@ export function NumberWheel({
   max,
   value,
   onChange,
-  width = 110,
+  width = 150,
+  itemHeight = 56,
+  visibleItemCount = 5,
+  fontSize = 28,
   accessibilityLabel,
 }: {
   min: number;
@@ -37,6 +40,9 @@ export function NumberWheel({
   value: number;
   onChange: (v: number) => void;
   width?: number;
+  itemHeight?: number;
+  visibleItemCount?: number;
+  fontSize?: number;
   accessibilityLabel: string;
 }) {
   const { C } = useTheme();
@@ -51,12 +57,12 @@ export function NumberWheel({
         value={value}
         onValueChanged={({ item }) => onChange(item.value)}
         onValueChanging={() => haptics.tick()}
-        itemHeight={44}
-        visibleItemCount={3}
+        itemHeight={itemHeight}
+        visibleItemCount={visibleItemCount}
         enableScrollByTapOnItem
         itemTextStyle={{
           fontFamily: FontFamily.displayMedium,
-          fontSize: 22,
+          fontSize,
           color: C.foreground,
         }}
         overlayItemStyle={{
