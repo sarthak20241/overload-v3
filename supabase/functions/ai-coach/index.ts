@@ -65,6 +65,9 @@ const ANTHROPIC_TIMEOUT_MS = 30000;
 // it can be killed without a redeploy if costs or quality surprise us.
 const PARSE_MEAL_MODEL = "claude-haiku-4-5";
 const PARSE_MEAL_MAX_TOKENS = 1600;
+// #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
+// was cold for this request (proxy for cold-start cost we cannot time inside).
+let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 
@@ -815,6 +818,7 @@ async function handleParseMealRequest(args: {
   respond: (body: unknown, status: number) => Promise<Response>;
 }): Promise<Response> {
   const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
+  PARSE_ISOLATE_REQUESTS++;
 
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
@@ -878,15 +882,37 @@ async function handleParseMealRequest(args: {
       ? rawHint
       : null;
 
-  const [recentFoods, targetsRes, totalsRes] = await Promise.all([
+  // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
+  // it here WITHOUT awaiting so the queries run concurrently with the extract
+  // model call; runParseMeal awaits contextPromise after extract. This hides
+  // ~1.5s of cold-DB context latency behind the extract round-trip.
+  const contextPromise = Promise.all([
     fetchRecentFoods(userClient).catch(() => [] as RecentFoodContext[]),
     userClient.from("user_profiles").select("daily_calorie_target, protein_target_g").maybeSingle(),
     localDate
       ? userClient.from("user_nutrition_stats").select("kcal, protein_g").eq("day", localDate).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-  ]);
-  const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
-  const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+  ]).then(([recentFoods, targetsRes, totalsRes]) => {
+    const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
+    const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+    return {
+      recentFoods,
+      todayTotals: totalsRow
+        ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
+        : null,
+      targets: targetsRow
+        ? {
+          daily_calorie_target: targetsRow.daily_calorie_target === null ? null : Number(targetsRow.daily_calorie_target),
+          protein_target_g: targetsRow.protein_target_g === null ? null : Number(targetsRow.protein_target_g),
+        }
+        : null,
+    };
+  });
+
+  // #1 latency instrumentation: how much of the handler is spent BEFORE the
+  // parse (auth + rate-limit write) vs inside runParseMeal (context now overlaps).
+  const preParseMs = Date.now() - startedAtMs;
+  const runParse0 = Date.now();
 
   try {
     const result = await runParseMeal(
@@ -921,20 +947,12 @@ async function handleParseMealRequest(args: {
         text,
         localHour,
         mealHint,
-        recentFoods,
-        todayTotals: totalsRow
-          ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
-          : null,
-        targets: targetsRow
-          ? {
-            daily_calorie_target: targetsRow.daily_calorie_target === null
-              ? null
-              : Number(targetsRow.daily_calorie_target),
-            protein_target_g: targetsRow.protein_target_g === null
-              ? null
-              : Number(targetsRow.protein_target_g),
-          }
-          : null,
+        // Placeholders; the real values are awaited from contextPromise inside
+        // runParseMeal (after extract), so these queries overlap extraction.
+        recentFoods: [],
+        todayTotals: null,
+        targets: null,
+        contextPromise,
       },
     );
 
@@ -973,6 +991,20 @@ async function handleParseMealRequest(args: {
 
     // Full agent-flow trace (input -> tool trail -> resolved items) for
     // observability + eval, whether or not the user ends up logging it.
+    const edgeSteps = [
+      ...result.steps,
+      {
+        iter: 9,
+        tool: "__edge_timing",
+        input: {
+          pre_parse_ms: preParseMs,       // auth + rate-limit write (context now overlaps)
+          run_parse_ms: Date.now() - runParse0, // whole runParseMeal (2 calls + resolve)
+          cold_isolate: PARSE_ISOLATE_REQUESTS <= 1, // first request this isolate served
+          region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
+            Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
+        },
+      },
+    ];
     void recordParseTrace(admin, {
       user_id: userId,
       input_text: text.slice(0, 500),
@@ -981,7 +1013,7 @@ async function handleParseMealRequest(args: {
       outcome: result.parsed ? "meal" : "declined",
       message: result.declined?.message ?? null,
       iterations: result.iterations,
-      steps: result.steps,
+      steps: edgeSteps,
       items: result.parsed?.items ?? null,
       input_tokens: result.usage.input_tokens,
       output_tokens: result.usage.output_tokens,

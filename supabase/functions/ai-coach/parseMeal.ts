@@ -108,6 +108,15 @@ export interface ParseMealInput {
   recentFoods: RecentFoodContext[];
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
+  // Optional: when set, the recents/targets/totals above are placeholders and
+  // these values are awaited AFTER the extract call — so the context DB queries
+  // run concurrently with extraction instead of blocking before it. Only the
+  // decide stage needs them. The eval harness passes resolved values + no promise.
+  contextPromise?: Promise<{
+    recentFoods: RecentFoodContext[];
+    todayTotals: { kcal: number; protein_g: number } | null;
+    targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
+  }>;
 }
 
 // Injected by index.ts (production) or the eval harness (dry run). Keeping
@@ -363,11 +372,11 @@ const LOG_MEAL_TOOL = {
                 "TOTAL amount in grams (or ml for liquids) for this line: quantity times the " +
                 "per-serving weight. This drives the macro math, so convert carefully.",
             },
-            kcal: { type: "number", description: "TOTAL kcal for this line (not per-100)." },
-            protein_g: { type: "number", description: "TOTAL protein grams for this line." },
-            carb_g: { type: "number", description: "TOTAL carb grams for this line." },
-            fat_g: { type: "number", description: "TOTAL fat grams for this line." },
-            fiber_g: { type: ["number", "null"], description: "TOTAL fiber grams, if known." },
+            kcal: { type: "number", description: "TOTAL kcal. OMIT for catalog/off items (food_id set) — the app computes them from grams. REQUIRED only for estimate/web items." },
+            protein_g: { type: "number", description: "TOTAL protein grams. Omit when food_id is set; required for estimate/web." },
+            carb_g: { type: "number", description: "TOTAL carb grams. Omit when food_id is set; required for estimate/web." },
+            fat_g: { type: "number", description: "TOTAL fat grams. Omit when food_id is set; required for estimate/web." },
+            fiber_g: { type: ["number", "null"], description: "TOTAL fiber grams. Omit when food_id is set." },
             source: {
               type: "string",
               enum: ["catalog", "off", "web", "estimate"],
@@ -385,9 +394,13 @@ const LOG_MEAL_TOOL = {
             },
             confidence: { type: "string", enum: ["high", "medium", "low"] },
           },
+          // Macros are intentionally NOT required: for catalog/off items the
+          // server recomputes them from grams (verifyItems), so emitting them
+          // just burns output tokens (latency). The prompt requires them for
+          // estimate/web items, which have no food row to recompute from.
           required: [
             "food_id", "food_name", "quantity", "serving_label", "grams",
-            "kcal", "protein_g", "carb_g", "fat_g", "source", "confidence",
+            "source", "confidence",
           ],
         },
       },
@@ -622,7 +635,8 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 </candidate_rules>
 
 <quantity_rules>
-- Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; compute line macros as per100 * grams / 100, times nothing else (quantity is already inside grams).
+- Macros output: for any item you matched to a candidate (food_id set, source catalog or off), give ONLY grams and OMIT kcal/protein_g/carb_g/fat_g/fiber_g — the app computes them from grams and the food row. For estimate or web items (food_id null) you MUST include all four macros, since there is no row to compute from.
+- Candidates list macros PER 100 of base_unit (g or ml). grams on each logged item is the TOTAL amount eaten; when you do provide macros (estimate/web only) compute them as per100 * grams / 100.
 - Use the candidate's serving options to convert household units. When the user gives an explicit amount ("50g", "500 ml"), that wins over any serving default.
 - Spoon and cup weights DEPEND ON THE FOOD; a tablespoon is 15 g only for water-like liquids. If the candidate has a cup serving, derive from it (1 cup = 16 tbsp = 48 tsp). Otherwise: 1 tbsp of nuts, seeds, or roasted snacks ~8 g; powders (protein, flour, spices) ~7-9 g; oil or ghee ~14 g; nut butter, honey ~16-20 g. A guessed spoon weight is never confidence high.
 - Indian household defaults when the user gives no amount and no serving option fits: 1 roti ~40 g, 1 katori ~150 g cooked, 1 glass ~250 ml, 1 cup ~200 ml, 1 bowl ~250 g, 1 scoop whey ~32 g, 1 egg ~50 g. Record any such guess in assumption.
@@ -1017,6 +1031,8 @@ export async function runParseMeal(
   const toolCalls: string[] = [];
   const steps: ParseStep[] = [];
   let anthropicCalls = 0;
+  // Stage timing (temporary #1 latency instrumentation, folded into steps).
+  const T: Record<string, number> = {};
 
   const accumulate = (data: any) => {
     const u = data.usage ?? {};
@@ -1036,6 +1052,7 @@ export async function runParseMeal(
   });
 
   // ── Stage 1: extract ──────────────────────────────────────────────────────
+  const tExtract0 = Date.now();
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     max_tokens: 700,
@@ -1089,10 +1106,29 @@ export async function runParseMeal(
     return declineResult(msg);
   }
 
+  T.extract_ms = tExtract0 ? Date.now() - tExtract0 : 0;
+
+  // Context (recents/targets/totals) was fired concurrently with the extract
+  // call in index.ts; only the decide stage needs it. Awaiting here means those
+  // DB queries overlapped extraction instead of blocking before the parse.
+  if (input.contextPromise) {
+    const tCtx0 = Date.now();
+    try {
+      const ctx = await input.contextPromise;
+      input.recentFoods = ctx.recentFoods;
+      input.todayTotals = ctx.todayTotals;
+      input.targets = ctx.targets;
+    } catch { /* non-fatal: decide runs with empty context */ }
+    T.context_wait_ms = Date.now() - tCtx0;
+  }
+
   // ── Stage 2: resolve, all items in parallel ───────────────────────────────
+  const tResolve0 = Date.now();
   const resolved = await Promise.all(
     extItems.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
   );
+  T.resolve_ms = Date.now() - tResolve0;
+  const tDecide0 = Date.now();
 
   // ── Stage 3: decide + hedged web lookup ───────────────────────────────────
   // The decide call is ALWAYS one forced log_meal call: unresolved items get
@@ -1191,6 +1227,8 @@ export async function runParseMeal(
   const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
     ? scrubDashes(raw.drona_line).slice(0, 200)
     : "Logged. Keep the protein coming.";
+  T.decide_ms = Date.now() - tDecide0;
+  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: webPromise !== null } });
   return {
     parsed: { meal_type: mealType, items, drona_line: dronaLine },
     declined: null,
