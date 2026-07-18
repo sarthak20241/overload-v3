@@ -65,6 +65,9 @@ import {
 import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
+import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
+import { BuildMoment } from '@/components/onboarding/BuildMoment';
+import { DronaMark } from '@/components/coach/DronaMark';
 import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
@@ -99,10 +102,11 @@ function formatMeasurement(value: number): string {
 
 type Step =
   | 'welcome' | 'goal' | 'experience' | 'frequency'
-  | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'plan'];
-// Steps counted by the progress header (welcome has no header).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'plan'];
+  | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
+  | 'interlude' | 'commit' | 'build' | 'plan';
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+// Steps counted by the progress header (welcome and the build moment hide it).
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
@@ -117,6 +121,14 @@ const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.g
   { value: 'intermediate', icon: 'trending-up', title: 'Finding my groove', sub: 'One to three years in' },
   { value: 'advanced', icon: 'award', title: 'Been at this a while', sub: 'Three plus years under the bar' },
 ];
+
+const GOAL_PHRASES: Record<CoachGoal, string> = {
+  hypertrophy: 'Building muscle',
+  strength: 'Getting stronger',
+  fat_loss: 'Cutting fat, keeping muscle',
+  endurance: 'Building endurance',
+  general: 'Training for life',
+};
 
 const PLAN_TITLES: Record<CoachGoal, string> = {
   hypertrophy: 'Built for growth.',
@@ -237,7 +249,9 @@ export default function OnboardingScreen() {
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
   const prevStep: Step =
-    step === 'plan' && !paceCtx ? 'target' : STEP_ORDER[Math.max(stepIndex - 1, 0)];
+    step === 'interlude' || step === 'plan'
+      ? (paceCtx ? 'pace' : 'target')
+      : STEP_ORDER[Math.max(stepIndex - 1, 0)];
 
   // Android hardware/gesture back mirrors the header chevron instead of
   // popping the (single-entry) root stack, which would exit the app mid-quiz.
@@ -245,6 +259,7 @@ export default function OnboardingScreen() {
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (step === 'welcome') return false; // let the OS handle it
+      if (step === 'build') return true; // no backing out mid-build
       goTo(STEP_ORDER[Math.max(STEP_ORDER.indexOf(step) - 1, 0)]);
       return true;
     });
@@ -330,7 +345,7 @@ export default function OnboardingScreen() {
     }));
     // Pace is only a question when the target sets a direction; holding steady
     // goes straight to the reveal.
-    goTo(paceCtx ? 'pace' : 'plan');
+    goTo(paceCtx ? 'pace' : 'interlude');
   }, [targetVal, toKg, goTo, paceCtx]);
 
   // Live hint under the goal-weight ruler: name the direction so the number
@@ -394,7 +409,7 @@ export default function OnboardingScreen() {
   if (!isLoaded || !guestLoaded) return null;
   if (!isSignedIn && !isGuest) return <Redirect href="/(auth)" />;
 
-  const showHeader = step !== 'welcome';
+  const showHeader = step !== 'welcome' && step !== 'build';
   const progressIndex = PROGRESS_STEPS.indexOf(step);
 
   return (
@@ -714,7 +729,7 @@ export default function OnboardingScreen() {
             stepKey="pace"
             question="How fast do we go?"
             sub="Pick a pace you can hold. The date follows the math."
-            footer={<PrimaryCta label="Continue" onPress={() => goTo('plan')} />}
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('interlude')} />}
           >
               {paceCtx && weeklyRate != null && (
                 <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
@@ -748,6 +763,65 @@ export default function OnboardingScreen() {
           </QuestionStep>
         )}
 
+        {step === 'interlude' && (
+          <QuestionStep
+            stepKey="interlude"
+            question="I set the route. You walk it."
+            sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
+            footer={<PrimaryCta label="Shake on it" onPress={() => goTo('commit')} />}
+          >
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
+                <DronaMark size={64} state="idle" />
+                <View style={s.claimList}>
+                  {[
+                    'I read every set you log',
+                    'When you stall, we change the plan',
+                    'Fuel targets move with your weight',
+                  ].map((line, idx) => (
+                    <Animated.View
+                      key={line}
+                      entering={FadeInDown.delay(260 + idx * 120).duration(400)}
+                      style={s.claimRow}
+                    >
+                      <Feather name="check" size={IconSize.xs} color={C.accentText} />
+                      <Text style={[s.claimText, { color: C.textSecondary }]}>{line}</Text>
+                    </Animated.View>
+                  ))}
+                </View>
+              </Animated.View>
+          </QuestionStep>
+        )}
+
+        {step === 'commit' && (
+          <QuestionStep
+            stepKey="commit"
+            question="Commit to it."
+            sub="A plan only works if you show up. Shake on it with me."
+          >
+              <CommitmentHold
+                pledgeTitle="I'm in."
+                pledgeBody={`${GOAL_PHRASES[answers.goal ?? 'general']}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
+                onCommitted={() => goTo('build')}
+              />
+          </QuestionStep>
+        )}
+
+        {step === 'build' && (
+          <Animated.View key="build" entering={FadeIn.duration(250)} style={s.stepFill}>
+            <BuildMoment
+              lines={[
+                'Reading your answers',
+                'Choosing your split',
+                'Balancing push and pull',
+                'Setting fuel targets',
+                'Locking your first week',
+              ]}
+              ready
+              onDone={() => goTo('plan')}
+            />
+          </Animated.View>
+        )}
+
         {step === 'plan' && (
           <QuestionStep
             stepKey="plan"
@@ -756,10 +830,10 @@ export default function OnboardingScreen() {
             footer={
               <>
                 <PrimaryCta
-                  label="Create my plan"
+                  label="Start my plan"
                   onPress={() => completeOnboarding({ createPlan: true, dest: '/(app)' })}
                   loading={finishing}
-                  accessibilityLabel="Create my plan"
+                  accessibilityLabel="Start my plan"
                 />
                 <TouchableOpacity
                   onPress={() => completeOnboarding({ createPlan: false, dest: '/(app)/routines' })}
@@ -1054,6 +1128,9 @@ const s = StyleSheet.create({
     paddingBottom: Spacing.lg,
     paddingTop: Spacing.sm,
   },
+  claimList: { gap: Spacing.lg, marginTop: Spacing.xxl, alignSelf: 'stretch' },
+  claimRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, justifyContent: 'center' },
+  claimText: { fontSize: FontSize.md },
   ghostLink: { alignItems: 'center', paddingVertical: Spacing.lg },
   ghostLinkText: { fontSize: FontSize.base },
 });
