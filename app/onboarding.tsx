@@ -67,6 +67,7 @@ import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
 import { BuildMoment } from '@/components/onboarding/BuildMoment';
+import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
 import { DronaMark } from '@/components/coach/DronaMark';
 import {
   EMPTY_ANSWERS,
@@ -236,6 +237,15 @@ export default function OnboardingScreen() {
     if (!paceCtx || weeklyRate == null) return null;
     return paceAdjustedTargets(paceCtx.draft, weeklyRate);
   }, [paceCtx, weeklyRate]);
+
+  // Reveal headline: the goal restated as a date when there is one.
+  const revealTitle = useMemo(() => {
+    if (paceCtx && paceDate) {
+      const diff = Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1).replace(/\.0$/, '');
+      return `${paceCtx.direction === 'loss' ? 'Down' : 'Up'} ${diff} kg by ${paceDate}.`;
+    }
+    return PLAN_TITLES[answers.goal ?? 'general'];
+  }, [paceCtx, paceDate, targetVal, weightVal, toKg, answers.goal]);
   const identity = onboardingIdentity(isSignedIn ? user?.id ?? null : null);
 
   const goTo = useCallback((next: Step) => {
@@ -768,7 +778,7 @@ export default function OnboardingScreen() {
             stepKey="interlude"
             question="I set the route. You walk it."
             sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
-            footer={<PrimaryCta label="Shake on it" onPress={() => goTo('commit')} />}
+            footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
           >
               <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
                 <DronaMark size={64} state="idle" />
@@ -796,7 +806,7 @@ export default function OnboardingScreen() {
           <QuestionStep
             stepKey="commit"
             question="Commit to it."
-            sub="A plan only works if you show up. Shake on it with me."
+            sub="A plan only works if you show up."
           >
               <CommitmentHold
                 pledgeTitle="I'm in."
@@ -825,7 +835,7 @@ export default function OnboardingScreen() {
         {step === 'plan' && (
           <QuestionStep
             stepKey="plan"
-            question={PLAN_TITLES[answers.goal ?? 'general']}
+            question={revealTitle}
             sub={`${splitNameFor(answers.frequency)}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
             footer={
               <>
@@ -847,6 +857,16 @@ export default function OnboardingScreen() {
               </>
             }
           >
+              {paceCtx && paceDate && (
+                <Animated.View entering={FadeInDown.delay(80).duration(400)}>
+                  <ProjectedCurve
+                    direction={paceCtx.direction}
+                    startLabel={`Now · ${weightVal} ${weightUnit}`}
+                    endLabel={`${paceDate} · ${targetVal} ${weightUnit}`}
+                  />
+                </Animated.View>
+              )}
+
               {/* Week dots: the schedule at a glance */}
               <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.weekDots}>
                 {Array.from({ length: 7 }, (_, idx) => (
@@ -915,6 +935,9 @@ export default function OnboardingScreen() {
                       </View>
                     ))}
                   </View>
+                  <Text style={[s.fuelNote, { color: C.textDim }]}>
+                    Log food by typing it. "Two rotis and dal" just works.
+                  </Text>
                   {!isSignedIn && (
                     <Text style={[s.fuelNote, { color: C.textDim }]}>
                       Guest targets live on this screen only. Sign in and they follow you to the nutrition tab.
@@ -936,7 +959,7 @@ export default function OnboardingScreen() {
                 style={[s.coachCard, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
               >
                 <View style={[s.coachIcon, { backgroundColor: C.muted }]}>
-                  <Feather name="message-circle" size={IconSize.xs} color={C.accentText} />
+                  <DronaMark size={12} state="static" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[s.coachText, { color: C.foreground }]}>
