@@ -499,6 +499,22 @@ interface AnthropicMsg {
   content: string | unknown[];
 }
 
+// Prompt caching: the decide system prompt and tool schemas are large and
+// identical across a user's meals, so mark them as a cache breakpoint. The
+// first log in a ~5 min window writes the cache; the rest read it, cutting
+// input-processing latency (and cost) on every follow-up log.
+function cacheableSystem(text: string): unknown {
+  return [{ type: "text", text, cache_control: { type: "ephemeral" } }];
+}
+function withToolCache(tools: unknown[]): unknown[] {
+  if (tools.length === 0) return tools;
+  return tools.map((t, i) =>
+    i === tools.length - 1 && t && typeof t === "object" && !("type" in (t as object))
+      ? { ...(t as object), cache_control: { type: "ephemeral" } }
+      : t
+  );
+}
+
 async function callAnthropicOnce(
   deps: ParseMealDeps,
   payload: Record<string, unknown>,
@@ -866,8 +882,8 @@ export async function runParseMeal(
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     max_tokens: 700,
-    system: EXTRACT_SYSTEM,
-    tools: [EXTRACT_TOOL],
+    system: cacheableSystem(EXTRACT_SYSTEM),
+    tools: withToolCache([EXTRACT_TOOL]),
     tool_choice: { type: "tool", name: "extract_meal" },
     messages: [{ role: "user", content: input.text.trim().slice(0, 500) }],
   });
@@ -921,10 +937,16 @@ export async function runParseMeal(
     extItems.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
   );
 
-  // ── Stage 3: decide (single call; short loop only for server web_search) ──
-  const decideSystem = buildDecideSystemPrompt(input, deps.webSearchEnabled);
+  // ── Stage 3: decide (single forced-tool call on the common path) ──────────
+  // web_search only earns its latency when an item resolved to NOTHING; with a
+  // candidate in hand the model just picks and converts. Gating it here means
+  // the common fully-resolved meal is one forced log_meal call (no auto-tool
+  // deliberation, no web tool schema) instead of an open-ended turn.
+  const anyUnresolved = resolved.some((r) => r.candidates.length === 0);
+  const useWebSearch = deps.webSearchEnabled && anyUnresolved;
+  const decideSystem = buildDecideSystemPrompt(input, useWebSearch);
   const decideTools: unknown[] = [LOG_MEAL_TOOL];
-  if (deps.webSearchEnabled) decideTools.push(WEB_SEARCH_TOOL);
+  if (useWebSearch) decideTools.push(WEB_SEARCH_TOOL);
   const decidePayload = {
     user_text: input.text.trim().slice(0, 500),
     meal_type_from_text: mealFromText,
@@ -934,7 +956,9 @@ export async function runParseMeal(
       quantity: r.quantity,
       unit: r.unit,
       ...(r.prep ? { prep: r.prep } : {}),
-      candidates: r.candidates.map(candidatePayload),
+      // Top 4 candidates: the ranked search already puts the right row first;
+      // extra candidates only inflate decide-call input tokens (latency).
+      candidates: r.candidates.slice(0, 4).map(candidatePayload),
     })),
   };
   const conversation: AnthropicMsg[] = [
@@ -945,12 +969,12 @@ export async function runParseMeal(
   for (let turn = 0; turn < MAX_DECIDE_TURNS; turn++) {
     // Web search needs tool_choice auto to be usable; without it (or on the
     // final turn) force log_meal so the flow always terminates in one shot.
-    const forceLog = !deps.webSearchEnabled || turn === MAX_DECIDE_TURNS - 1;
+    const forceLog = !useWebSearch || turn === MAX_DECIDE_TURNS - 1;
     const result = await callAnthropicOnce(deps, {
       model: deps.model,
       max_tokens: deps.maxTokens,
-      system: decideSystem,
-      tools: decideTools,
+      system: cacheableSystem(decideSystem),
+      tools: withToolCache(decideTools),
       messages: conversation,
       ...(forceLog ? { tool_choice: { type: "tool", name: PARSE_TERMINAL_TOOL } } : {}),
     });
