@@ -1,12 +1,14 @@
 /**
  * First-run onboarding: the intake that makes the app worth opening on day
- * one. Seven beats, roughly a minute end to end:
+ * one. Nine beats, roughly a minute end to end:
  *
  *   welcome    orientation: what Overload is, in Drona's voice
  *   goal       what the user trains for (rep ranges, calorie direction)
  *   experience how long they've lifted (starting volume)
- *   frequency  days per week (split choice, activity factor)
- *   body       gender, age, height, weight (coach context + BMR math)
+ *   frequency  days per week as a story slider (split choice, activity factor)
+ *   about      gender + age (BMR math)
+ *   height     height wheel (BMR math)
+ *   weight     current weight ruler (BMR + coach context)
  *   target     goal weight (diet direction)
  *   plan       the payoff: starter routines + daily calorie/macro targets
  *              generated from the answers, expectation-setting from the
@@ -52,7 +54,6 @@ import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
 import { useToast } from '@/components/ui/Toast';
 import { PressableScale } from '@/components/ui/PressableScale';
-import { haptics } from '@/lib/haptics';
 import {
   OnboardingHeader,
   OptionCard,
@@ -60,6 +61,7 @@ import {
   QuestionStep,
 } from '@/components/onboarding/OnboardingKit';
 import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
+import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
 import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
@@ -89,10 +91,12 @@ function formatMeasurement(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
 
-type Step = 'welcome' | 'goal' | 'experience' | 'frequency' | 'body' | 'target' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'body', 'target', 'plan'];
-// Segments shown in the progress header (welcome has no header).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'body', 'target', 'plan'];
+type Step =
+  | 'welcome' | 'goal' | 'experience' | 'frequency'
+  | 'about' | 'height' | 'weight' | 'target' | 'plan';
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'about', 'height', 'weight', 'target', 'plan'];
+// Steps counted by the progress header (welcome has no header).
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'about', 'height', 'weight', 'target', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
@@ -107,8 +111,6 @@ const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.g
   { value: 'intermediate', icon: 'trending-up', title: 'Finding my groove', sub: 'One to three years in' },
   { value: 'advanced', icon: 'award', title: 'Been at this a while', sub: 'Three plus years under the bar' },
 ];
-
-const FREQUENCY_OPTIONS = [2, 3, 4, 5, 6];
 
 const PLAN_TITLES: Record<CoachGoal, string> = {
   hypertrophy: 'Built for growth.',
@@ -238,20 +240,34 @@ export default function OnboardingScreen() {
     setHeightUnit('cm');
   }, [heightUnit, heightCm, heightFt, heightIn]);
 
-  const commitBodyStep = useCallback(() => {
-    const cm = heightUnit === 'cm' ? heightCm : Math.round((heightFt * 30.48 + heightIn * 2.54) * 10) / 10;
-    const kg = toKg(weightVal);
+  const commitAboutStep = useCallback(() => {
     setAnswers((a) => ({
       ...a,
       ageYears: inRange(ageYears, MIN_AGE_YEARS, MAX_AGE_YEARS) ? ageYears : null,
+    }));
+    goTo('height');
+  }, [ageYears, goTo]);
+
+  const commitHeightStep = useCallback(() => {
+    const cm = heightUnit === 'cm' ? heightCm : Math.round((heightFt * 30.48 + heightIn * 2.54) * 10) / 10;
+    setAnswers((a) => ({
+      ...a,
       heightCm: inRange(cm, MIN_HEIGHT_CM, MAX_HEIGHT_CM) ? cm : null,
+    }));
+    goTo('weight');
+  }, [heightUnit, heightCm, heightFt, heightIn, goTo]);
+
+  const commitWeightStep = useCallback(() => {
+    const kg = toKg(weightVal);
+    setAnswers((a) => ({
+      ...a,
       weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
     }));
     // Seed the goal weight from the current weight the first time through, so
     // the target step opens on "holding steady" and one flick sets direction.
     if (!targetTouched.current) setTargetVal(weightVal);
     goTo('target');
-  }, [ageYears, heightUnit, heightCm, heightFt, heightIn, weightVal, toKg, goTo]);
+  }, [weightVal, toKg, goTo]);
 
   const commitTargetStep = useCallback(() => {
     const kg = toKg(targetVal);
@@ -449,58 +465,25 @@ export default function OnboardingScreen() {
           <QuestionStep
             stepKey="frequency"
             question="How many days a week?"
-            sub="Be honest. It sets your split and your calorie budget, and a plan you keep beats a plan you admire."
+            sub="Be honest. A plan you keep beats a plan you admire."
+            caption={`${splitNameFor(answers.frequency)} split`}
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('about')} />}
           >
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.freqRow}>
-                {FREQUENCY_OPTIONS.map((n) => {
-                  const selected = answers.frequency === n;
-                  return (
-                    <PressableScale
-                      key={n}
-                      onPress={() => {
-                        haptics.selection();
-                        selectAndAdvance({ frequency: n });
-                      }}
-                      style={[
-                        s.freqChip,
-                        {
-                          backgroundColor: selected ? Colors.primary : C.card,
-                          borderColor: selected ? Colors.primary : C.borderSubtle,
-                        },
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${n} days a week`}
-                      accessibilityState={{ selected }}
-                    >
-                      <Text
-                        style={[
-                          s.freqChipText,
-                          { color: selected ? Colors.primaryFg : C.foreground },
-                        ]}
-                      >
-                        {n}
-                      </Text>
-                    </PressableScale>
-                  );
-                })}
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
+                <FrequencyStory
+                  value={answers.frequency ?? 3}
+                  onChange={(days) => setAnswers((a) => ({ ...a, frequency: days }))}
+                />
               </Animated.View>
-              <Animated.Text
-                entering={FadeInDown.delay(220).duration(400)}
-                style={[s.freqHint, { color: C.textDim }]}
-              >
-                {answers.frequency
-                  ? `${splitNameFor(answers.frequency)} split`
-                  : 'Your split adapts to the answer'}
-              </Animated.Text>
           </QuestionStep>
         )}
 
-        {step === 'body' && (
+        {step === 'about' && (
           <QuestionStep
-            stepKey="body"
-            question="The numbers behind the math"
-            sub="These size your calorie and macro targets, so the plan fits you and nobody else."
-            footer={<PrimaryCta label="Continue" onPress={commitBodyStep} />}
+            stepKey="about"
+            question="A little about you"
+            sub="Gender and age shape the calorie math underneath your plan."
+            footer={<PrimaryCta label="Continue" onPress={commitAboutStep} />}
           >
               <Animated.View entering={FadeInDown.delay(100).duration(400)}>
                 <Text style={[s.fieldLabel, { color: C.textMuted }]}>GENDER</Text>
@@ -544,63 +527,83 @@ export default function OnboardingScreen() {
                 </View>
               </Animated.View>
 
-              <Animated.View entering={FadeInDown.delay(180).duration(400)} style={s.wheelRow}>
-                <View style={s.wheelCol}>
-                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>AGE</Text>
-                  <NumberWheel
-                    min={MIN_AGE_YEARS}
-                    max={100}
-                    value={ageYears}
-                    onChange={setAgeYears}
-                    accessibilityLabel="Age in years"
-                  />
-                </View>
-                <View style={s.wheelCol}>
-                  <View style={s.fieldLabelRow}>
-                    <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
-                    <TouchableOpacity
-                      onPress={toggleHeightUnit}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Switch height unit, currently ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Text style={[s.unitToggle, { color: C.accentText }]}>
-                        {heightUnit === 'cm' ? 'cm' : 'ft, in'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                  {heightUnit === 'cm' ? (
-                    <NumberWheel
-                      min={MIN_HEIGHT_CM}
-                      max={220}
-                      value={heightCm}
-                      onChange={setHeightCm}
-                      accessibilityLabel="Height in centimeters"
-                    />
-                  ) : (
-                    <View style={{ flexDirection: 'row', gap: 4 }}>
-                      <NumberWheel
-                        min={4}
-                        max={7}
-                        width={54}
-                        value={heightFt}
-                        onChange={setHeightFt}
-                        accessibilityLabel="Height, feet"
-                      />
-                      <NumberWheel
-                        min={0}
-                        max={11}
-                        width={54}
-                        value={heightIn}
-                        onChange={setHeightIn}
-                        accessibilityLabel="Height, inches"
-                      />
-                    </View>
-                  )}
-                </View>
-              </Animated.View>
+              {/* Plain View: the wheel mis-measures its initial scroll inside an
+                  entering animation (showed 19 for value 24), so it mounts static. */}
+              <View style={s.wheelCenter}>
+                <Text style={[s.fieldLabel, { color: C.textMuted }]}>AGE</Text>
+                <NumberWheel
+                  min={MIN_AGE_YEARS}
+                  max={100}
+                  value={ageYears}
+                  onChange={setAgeYears}
+                  accessibilityLabel="Age in years"
+                />
+              </View>
+          </QuestionStep>
+        )}
 
-              <Animated.View entering={FadeInDown.delay(260).duration(400)} style={{ marginTop: Spacing.xl }}>
+        {step === 'height' && (
+          <QuestionStep
+            stepKey="height"
+            question="How tall are you?"
+            sub="Height anchors your calorie baseline."
+            footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
+          >
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.wheelCenter}>
+                <View style={s.fieldLabelRow}>
+                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
+                  <TouchableOpacity
+                    onPress={toggleHeightUnit}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Switch height unit, currently ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[s.unitToggle, { color: C.accentText }]}>
+                      {heightUnit === 'cm' ? 'cm' : 'ft, in'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                {heightUnit === 'cm' ? (
+                  <NumberWheel
+                    min={MIN_HEIGHT_CM}
+                    max={220}
+                    width={130}
+                    value={heightCm}
+                    onChange={setHeightCm}
+                    accessibilityLabel="Height in centimeters"
+                  />
+                ) : (
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <NumberWheel
+                      min={4}
+                      max={7}
+                      width={64}
+                      value={heightFt}
+                      onChange={setHeightFt}
+                      accessibilityLabel="Height, feet"
+                    />
+                    <NumberWheel
+                      min={0}
+                      max={11}
+                      width={64}
+                      value={heightIn}
+                      onChange={setHeightIn}
+                      accessibilityLabel="Height, inches"
+                    />
+                  </View>
+                )}
+              </Animated.View>
+          </QuestionStep>
+        )}
+
+        {step === 'weight' && (
+          <QuestionStep
+            stepKey="weight"
+            question="What do you weigh today?"
+            sub="Just a starting point. The trend is what we train."
+            footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
+          >
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.xxl }}>
                 <View style={s.fieldLabelRow}>
                   <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
                   <TouchableOpacity
@@ -823,22 +826,6 @@ const s = StyleSheet.create({
   // Question steps
   options: { gap: Spacing.md },
 
-  // Frequency
-  freqRow: { flexDirection: 'row', gap: Spacing.md, justifyContent: 'center' },
-  freqChip: {
-    width: 52,
-    height: 52,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  freqChipText: { fontSize: FontSize.xl, fontWeight: FontWeight.bold },
-  freqHint: {
-    fontSize: FontSize.sm,
-    textAlign: 'center',
-    marginTop: Spacing.xl,
-  },
 
   // Body basics + target
   fieldLabel: {
@@ -856,8 +843,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
   },
   genderChipText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  wheelRow: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.lg },
-  wheelCol: { flex: 1, alignItems: 'center', gap: Spacing.sm },
+  wheelCenter: { alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.xl },
   fieldLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',

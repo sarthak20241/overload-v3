@@ -139,6 +139,37 @@ Goal: the single biggest "feel" upgrade; body step stops being a form.
   round-trip, prefilled defaults sensible (median height, typical weight), saved values
   identical shape to today.
 
+## Phase 1b - Lighter steps + the frequency story (user feedback 2026-07-18)
+
+Two revisions after seeing Phase 1 live:
+
+1. SPLIT the body step (it carried gender + age + height + weight, violating
+   "one question owns the screen"). New flow:
+   - "About you": gender chips + age wheel (two light elements)
+   - "How tall are you?": height wheel centered, unit toggle
+   - "What do you weigh?": weight ruler alone
+   Progress total grows accordingly; all prefilled, Continue stays one tap.
+
+2. FREQUENCY BECOMES A STORY, not a chip row. Magnitude questions should let
+   the user FEEL the tradeoff (user direction; Cal AI's sloth/rabbit/cheetah
+   pace screen is the reference):
+   - Full-width slider, 2-6 days, haptic per detent.
+   - Journey track above it: the DronaMark arrowhead glides along a line in a
+     loop; its speed scales with the selected days (our on-brand replacement
+     for the animal metaphor).
+   - Coach-voice caption per count tells the TRUE story, including recovery
+     honesty at the top end (6 days: "fastest route, and recovery becomes
+     part of the job"). No fake "more days = linearly faster" claims.
+   - Split name + week dots preview live-update below.
+   Rhyme rule: the Phase 2 pace slider reuses the same slider + arrowhead-
+   speed language, so schedule and pace feel like one instrument.
+
+Where the story-through-interaction principle applies (and where not):
+- YES: frequency (days), pace (rate), plan reveal (curve draws in), build
+  moment (route draws itself).
+- NO: goal/experience/gender stay as cards; identity choices are not
+  magnitudes and sliders would muddy them.
+
 ## Phase 2 - Target + pace step with live plan math
 
 Goal: the first moment the user feels the app computing. Replaces the static target step.
