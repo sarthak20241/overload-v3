@@ -18,14 +18,16 @@ import { useTheme } from '@/hooks/useTheme';
 import { usePreferences } from '@/hooks/usePreferences';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
+import { MUSIC_APPS } from '@/lib/musicLinks';
 
 // Workout settings live here. This is the home for "complexity on tap" — the
 // table stays clean by default, and anything a power user wants to switch on
 // lives behind this sheet. Phase 0 ships the foundation + the keep-awake toggle;
 // Phase A adds the inline-timer row, Phase B adds the intensity (RPE/RIR) rows,
-// and the backlog toggles (plate calculator, music, PR alerts, …) each become a
-// single <ToggleRow> here. The Portal pattern matches ExercisePickerSheet so the
-// sheet renders flush to the bottom on Android edge-to-edge.
+// then the rest-ending cue + music shortcut rows; remaining backlog toggles
+// (plate calculator, PR alerts, …) each become a single <ToggleRow> here. The
+// Portal pattern matches ExercisePickerSheet so the sheet renders flush to the
+// bottom on Android edge-to-edge.
 
 interface Props {
   visible: boolean;
@@ -98,6 +100,47 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
               value={prefs.restBetweenSides}
               onValueChange={(v) => setPreference('restBetweenSides', v)}
             />
+
+            <ToggleRow
+              icon={<Feather name="bell" size={15} color={C.foreground} />}
+              tint={C.muted}
+              title="Rest ending heads-up"
+              subtitle="Your music dips and the phone buzzes just before the next set."
+              value={prefs.restEndCue}
+              onValueChange={(v) => setPreference('restEndCue', v)}
+            />
+
+            <SectionLabel color={C.textMuted}>Music</SectionLabel>
+
+            <ToggleRow
+              icon={<Feather name="music" size={15} color={C.foreground} />}
+              tint={C.muted}
+              title="Music shortcut"
+              subtitle="A quiet button up top that jumps to your music app."
+              value={prefs.musicApp !== 'off'}
+              onValueChange={(v) => setPreference('musicApp', v ? 'spotify' : 'off')}
+            />
+
+            {prefs.musicApp !== 'off' && (
+              <View style={s.chipsRow}>
+                {MUSIC_APPS.map((app) => {
+                  const active = prefs.musicApp === app.key;
+                  return (
+                    <TouchableOpacity
+                      key={app.key}
+                      onPress={() => { haptics.selection(); setPreference('musicApp', app.key); }}
+                      activeOpacity={0.85}
+                      style={[
+                        s.chip,
+                        { borderColor: active ? Colors.primary : C.border, backgroundColor: active ? Colors.primary : C.muted },
+                      ]}
+                    >
+                      <Text style={[s.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{app.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
 
             <SectionLabel color={C.textMuted}>Intensity</SectionLabel>
 
@@ -260,4 +303,7 @@ const s = StyleSheet.create({
   },
   rowTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   rowSub: { fontSize: FontSize.sm, marginTop: 1 },
+  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: Spacing.md },
+  chip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: Radius.full, borderWidth: 1 },
+  chipText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
 });
