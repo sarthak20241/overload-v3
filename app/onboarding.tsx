@@ -99,10 +99,10 @@ function formatMeasurement(value: number): string {
 
 type Step =
   | 'welcome' | 'goal' | 'experience' | 'frequency'
-  | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'plan'];
+  | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace' | 'plan';
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'plan'];
 // Steps counted by the progress header (welcome has no header).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'plan'];
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
@@ -236,7 +236,8 @@ export default function OnboardingScreen() {
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
-  const prevStep = STEP_ORDER[Math.max(stepIndex - 1, 0)];
+  const prevStep: Step =
+    step === 'plan' && !paceCtx ? 'target' : STEP_ORDER[Math.max(stepIndex - 1, 0)];
 
   // Android hardware/gesture back mirrors the header chevron instead of
   // popping the (single-entry) root stack, which would exit the app mid-quiz.
@@ -327,8 +328,10 @@ export default function OnboardingScreen() {
       ...a,
       goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
     }));
-    goTo('plan');
-  }, [targetVal, toKg, goTo]);
+    // Pace is only a question when the target sets a direction; holding steady
+    // goes straight to the reveal.
+    goTo(paceCtx ? 'pace' : 'plan');
+  }, [targetVal, toKg, goTo, paceCtx]);
 
   // Live hint under the goal-weight ruler: name the direction so the number
   // feels read, not just stored.
@@ -702,39 +705,46 @@ export default function OnboardingScreen() {
                 />
                 <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
 
-                {paceCtx && weeklyRate != null && (
-                  <Animated.View entering={FadeInDown.duration(300)} style={{ marginTop: Spacing.xxl }}>
-                    <View style={s.fieldLabelRow}>
-                      <Text style={[s.fieldLabel, { color: C.textMuted }]}>PACE</Text>
-                    </View>
-                    <PaceSlider
-                      min={paceCtx.bounds.min}
-                      max={paceCtx.bounds.max}
-                      recommended={paceCtx.bounds.recommended}
-                      value={weeklyRate}
-                      unitLabel="kg"
-                      onChange={setWeeklyRate}
-                    />
-                    <View style={[s.paceCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-                      <Text style={[s.paceCardTitle, { color: C.foreground }]}>
-                        Goal by <Text style={{ color: C.accentText }}>{paceDate ?? '...'}</Text>
-                      </Text>
-                      {pacedPreview && (
-                        <Text style={[s.paceCardSub, { color: C.textMuted }]}>
-                          Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
-                        </Text>
-                      )}
-                      <Text style={[s.paceCardLine, { color: C.textDim }]}>
-                        {weeklyRate < paceCtx.bounds.recommended - 0.05
-                          ? 'A gentler pace. Easier to hold on hard weeks.'
-                          : weeklyRate > paceCtx.bounds.recommended + 0.05
-                            ? 'Aggressive. Protein and sleep stop being optional.'
-                            : 'The balanced pace most people can keep.'}
-                      </Text>
-                    </View>
-                  </Animated.View>
-                )}
               </Animated.View>
+          </QuestionStep>
+        )}
+
+        {step === 'pace' && (
+          <QuestionStep
+            stepKey="pace"
+            question="How fast do we go?"
+            sub="Pick a pace you can hold. The date follows the math."
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('plan')} />}
+          >
+              {paceCtx && weeklyRate != null && (
+                <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
+                  <PaceSlider
+                    min={paceCtx.bounds.min}
+                    max={paceCtx.bounds.max}
+                    recommended={paceCtx.bounds.recommended}
+                    value={weeklyRate}
+                    unitLabel="kg"
+                    onChange={setWeeklyRate}
+                  />
+                  <View style={[s.paceCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                    <Text style={[s.paceCardTitle, { color: C.foreground }]}>
+                      Goal by <Text style={{ color: C.accentText }}>{paceDate ?? '...'}</Text>
+                    </Text>
+                    {pacedPreview && (
+                      <Text style={[s.paceCardSub, { color: C.textMuted }]}>
+                        Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
+                      </Text>
+                    )}
+                    <Text style={[s.paceCardLine, { color: C.textDim }]}>
+                      {weeklyRate < paceCtx.bounds.recommended - 0.05
+                        ? 'A gentler pace. Easier to hold on hard weeks.'
+                        : weeklyRate > paceCtx.bounds.recommended + 0.05
+                          ? 'Aggressive. Protein and sleep stop being optional.'
+                          : 'The balanced pace most people can keep.'}
+                    </Text>
+                  </View>
+                </Animated.View>
+              )}
           </QuestionStep>
         )}
 
