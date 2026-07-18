@@ -13,25 +13,20 @@ import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  Easing,
-  cancelAnimation,
-  interpolate,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
-  withRepeat,
   withTiming,
 } from 'react-native-reanimated';
 import { Colors, FontFamily, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
-import { DronaMark } from '@/components/coach/DronaMark';
+import { GlideTrack } from '@/components/onboarding/GlideTrack';
 
 const MIN_DAYS = 1;
 const MAX_DAYS = 7;
 const STEPS = MAX_DAYS - MIN_DAYS; // 6 intervals
 const THUMB = 30;
-const MARK_W = 20;
 
 const STORY: Record<number, string> = {
   1: 'One day a week is a real start. We will make it count.',
@@ -53,37 +48,6 @@ const GLIDE_MS: Record<number, number> = {
   6: 1400,
   7: 1000,
 };
-
-function GlideTrack({ days, width }: { days: number; width: number }) {
-  const { C } = useTheme();
-  const progress = useSharedValue(0);
-
-  useEffect(() => {
-    cancelAnimation(progress);
-    progress.value = 0;
-    progress.value = withRepeat(
-      withTiming(1, { duration: GLIDE_MS[days] ?? 3000, easing: Easing.linear }),
-      -1,
-    );
-  }, [days, progress]);
-
-  const glide = useAnimatedStyle(() => ({
-    transform: [{ translateX: progress.value * Math.max(0, width - MARK_W) }],
-    opacity: interpolate(progress.value, [0, 0.07, 0.93, 1], [0, 1, 1, 0]),
-  }));
-
-  return (
-    <View style={[t.glideWrap, { width }]}>
-      <View style={[t.glideLine, { backgroundColor: C.borderSubtle }]} />
-      <Animated.View style={[t.glideMark, glide]}>
-        {/* Arrowhead points up by default; rotate to fly along the track. */}
-        <View style={{ transform: [{ rotate: '90deg' }] }}>
-          <DronaMark size={MARK_W} state="static" />
-        </View>
-      </Animated.View>
-    </View>
-  );
-}
 
 export function FrequencyStory({
   value,
@@ -153,7 +117,7 @@ export function FrequencyStory({
 
   return (
     <View>
-      {trackW > 0 && <GlideTrack days={value} width={trackW} />}
+      {trackW > 0 && <GlideTrack durationMs={GLIDE_MS[value] ?? 3000} width={trackW} />}
 
       <View style={t.valueRow}>
         <Text style={[t.valueBig, { color: C.foreground }]}>{value}</Text>
@@ -203,14 +167,6 @@ export function FrequencyStory({
 }
 
 const t = StyleSheet.create({
-  glideWrap: {
-    height: 36,
-    justifyContent: 'center',
-    marginBottom: Spacing.md,
-  },
-  glideLine: { height: 1, borderRadius: 0.5 },
-  glideMark: { position: 'absolute', top: 0 },
-
   valueRow: {
     flexDirection: 'row',
     alignItems: 'baseline',

@@ -39,6 +39,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import {
   Colors,
+  FontFamily,
   Radius,
   FontSize,
   FontWeight,
@@ -63,11 +64,15 @@ import {
 } from '@/components/onboarding/OnboardingKit';
 import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
+import { PaceSlider } from '@/components/onboarding/PaceSlider';
 import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
   buildStarterRoutines,
   computeDailyTargets,
+  paceAdjustedTargets,
+  paceBounds,
+  projectGoalDateIso,
   createStarterRoutines,
   saveOnboardingProfile,
   markOnboardingDone,
@@ -156,14 +161,69 @@ export default function OnboardingScreen() {
   /** Goal weight in the DISPLAY unit; seeded from weight on first visit. */
   const [targetVal, setTargetVal] = useState(72.5);
   const targetTouched = useRef(false);
+  /** Chosen weekly rate (kg/week); null until a weight direction exists. */
+  const [weeklyRate, setWeeklyRate] = useState<number | null>(null);
 
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
   }, []);
 
+  const toDisplay = useCallback(
+    (kg: number) => (weightUnit === 'lbs' ? Math.round(kg * LBS_PER_KG) : Math.round(kg * 2) / 2),
+    [weightUnit],
+  );
+  const toKg = useCallback(
+    (v: number) => (weightUnit === 'lbs' ? Math.round((v / LBS_PER_KG) * 10) / 10 : v),
+    [weightUnit],
+  );
+
   const plan = useMemo(() => buildStarterRoutines(answers), [answers]);
-  const targets = useMemo(() => computeDailyTargets(answers), [answers]);
+
+  // Live pace context for the target step: uses the DRAFT target value (not
+  // yet committed to answers) so the outcome card updates as the ruler moves.
+  const paceCtx = useMemo(() => {
+    const w = toKg(weightVal);
+    const t = toKg(targetVal);
+    if (!inRange(w, MIN_WEIGHT_KG, MAX_WEIGHT_KG) || !inRange(t, MIN_WEIGHT_KG, MAX_WEIGHT_KG)) return null;
+    const diff = t - w;
+    if (Math.abs(diff) < 1) return null;
+    const direction: 'loss' | 'gain' = diff < 0 ? 'loss' : 'gain';
+    return { direction, bounds: paceBounds(direction, w), draft: { ...answers, weightKg: w, goalWeightKg: t } };
+  }, [answers, weightVal, targetVal, toKg]);
+
+  // Seed / re-seed the rate at the recommended pace whenever direction flips.
+  const lastDirection = useRef<'loss' | 'gain' | null>(null);
+  useEffect(() => {
+    const dir = paceCtx?.direction ?? null;
+    if (dir !== lastDirection.current) {
+      lastDirection.current = dir;
+      setWeeklyRate(paceCtx ? paceCtx.bounds.recommended : null);
+    }
+  }, [paceCtx]);
+
+  const targets = useMemo(() => {
+    if (weeklyRate != null) {
+      const paced = paceAdjustedTargets(answers, weeklyRate);
+      if (paced) return paced;
+    }
+    return computeDailyTargets(answers);
+  }, [answers, weeklyRate]);
+
+  const paceDate = useMemo(() => {
+    if (!paceCtx || weeklyRate == null) return null;
+    const iso = projectGoalDateIso(paceCtx.draft, weeklyRate);
+    if (!iso) return null;
+    const d = new Date(iso);
+    const now = new Date();
+    const far = d.getTime() - now.getTime() > 330 * 24 * 3600 * 1000;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(far ? { year: 'numeric' } : {}) });
+  }, [paceCtx, weeklyRate]);
+
+  const pacedPreview = useMemo(() => {
+    if (!paceCtx || weeklyRate == null) return null;
+    return paceAdjustedTargets(paceCtx.draft, weeklyRate);
+  }, [paceCtx, weeklyRate]);
   const identity = onboardingIdentity(isSignedIn ? user?.id ?? null : null);
 
   const goTo = useCallback((next: Step) => {
@@ -203,15 +263,6 @@ export default function OnboardingScreen() {
       }, 320);
     },
     [nextStep],
-  );
-
-  const toDisplay = useCallback(
-    (kg: number) => (weightUnit === 'lbs' ? Math.round(kg * LBS_PER_KG) : Math.round(kg * 2) / 2),
-    [weightUnit],
-  );
-  const toKg = useCallback(
-    (v: number) => (weightUnit === 'lbs' ? Math.round((v / LBS_PER_KG) * 10) / 10 : v),
-    [weightUnit],
   );
 
   const toggleWeightUnit = useCallback(() => {
@@ -285,8 +336,8 @@ export default function OnboardingScreen() {
     const diff = Math.round(Math.abs(targetVal - weightVal) * 10) / 10;
     if (diff < 1) return 'Holding steady at your current weight. Good.';
     return targetVal < weightVal
-      ? `A ${diff} ${weightUnit} cut. Your calorie budget will match.`
-      : `A ${diff} ${weightUnit} build. We will eat for it.`;
+      ? `${diff} ${weightUnit} down. Your calorie budget will match.`
+      : `${diff} ${weightUnit} up. We will eat for it.`;
   }, [targetVal, weightVal, weightUnit]);
 
   const completeOnboarding = useCallback(
@@ -650,6 +701,39 @@ export default function OnboardingScreen() {
                   accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
                 />
                 <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
+
+                {paceCtx && weeklyRate != null && (
+                  <Animated.View entering={FadeInDown.duration(300)} style={{ marginTop: Spacing.xxl }}>
+                    <View style={s.fieldLabelRow}>
+                      <Text style={[s.fieldLabel, { color: C.textMuted }]}>PACE</Text>
+                    </View>
+                    <PaceSlider
+                      min={paceCtx.bounds.min}
+                      max={paceCtx.bounds.max}
+                      recommended={paceCtx.bounds.recommended}
+                      value={weeklyRate}
+                      unitLabel="kg"
+                      onChange={setWeeklyRate}
+                    />
+                    <View style={[s.paceCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                      <Text style={[s.paceCardTitle, { color: C.foreground }]}>
+                        Goal by <Text style={{ color: C.accentText }}>{paceDate ?? '...'}</Text>
+                      </Text>
+                      {pacedPreview && (
+                        <Text style={[s.paceCardSub, { color: C.textMuted }]}>
+                          Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
+                        </Text>
+                      )}
+                      <Text style={[s.paceCardLine, { color: C.textDim }]}>
+                        {weeklyRate < paceCtx.bounds.recommended - 0.05
+                          ? 'A gentler pace. Easier to hold on hard weeks.'
+                          : weeklyRate > paceCtx.bounds.recommended + 0.05
+                            ? 'Aggressive. Protein and sleep stop being optional.'
+                            : 'The balanced pace most people can keep.'}
+                      </Text>
+                    </View>
+                  </Animated.View>
+                )}
               </Animated.View>
           </QuestionStep>
         )}
@@ -856,6 +940,20 @@ const s = StyleSheet.create({
     lineHeight: 19,
     marginTop: Spacing.md,
   },
+  paceCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    marginTop: Spacing.xl,
+    alignItems: 'center',
+    gap: 4,
+  },
+  paceCardTitle: {
+    fontFamily: FontFamily.display,
+    fontSize: 22,
+  },
+  paceCardSub: { fontSize: FontSize.md },
+  paceCardLine: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 2 },
 
   // Plan
   weekDots: {
