@@ -13,8 +13,8 @@
  *              coach, and the activation CTA
  *
  * Every answer visibly feeds the generated plan (that's what earns the
- * questions), single-select steps auto-advance to cut taps, every step can be
- * skipped, and the flow ends by creating real routines and fuel targets so
+ * questions), single-select steps auto-advance to cut taps, every step arrives
+ * pre-answered with a smart default (no skip affordance), and the flow ends by creating real routines and fuel targets so
  * the dashboard and nutrition screens are personalized from the first open.
  * Permissions are deliberately not requested here (see lib/onboarding.ts).
  */
@@ -22,14 +22,12 @@ import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
-  TextInput,
   StyleSheet,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
   TouchableOpacity,
-  Dimensions,
   BackHandler,
 } from 'react-native';
 import { useRouter, Redirect } from 'expo-router';
@@ -54,6 +52,14 @@ import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
 import { useToast } from '@/components/ui/Toast';
 import { PressableScale } from '@/components/ui/PressableScale';
+import { haptics } from '@/lib/haptics';
+import {
+  OnboardingHeader,
+  OptionCard,
+  PrimaryCta,
+  QuestionStep,
+} from '@/components/onboarding/OnboardingKit';
+import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
 import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
@@ -66,8 +72,6 @@ import {
   splitNameFor,
 } from '@/lib/onboarding';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const LBS_PER_KG = 2.20462;
 const MIN_AGE_YEARS = 13;
@@ -125,18 +129,30 @@ export default function OnboardingScreen() {
   const toast = useToast();
 
   const [step, setStep] = useState<Step>('welcome');
-  const [answers, setAnswers] = useState<OnboardingAnswers>(EMPTY_ANSWERS);
+  // Smart defaults (plan, psychology layer): every single-select step arrives
+  // pre-answered with the most common choice, so Continue is always one tap and
+  // the pre-selection reads as a recommendation.
+  const [answers, setAnswers] = useState<OnboardingAnswers>({
+    ...EMPTY_ANSWERS,
+    goal: 'hypertrophy',
+    experience: 'beginner',
+    frequency: 3,
+  });
   const [finishing, setFinishing] = useState(false);
 
-  // Body/target inputs live as strings until their step commits them.
-  const [ageStr, setAgeStr] = useState('');
-  const [weightStr, setWeightStr] = useState('');
+  // Body/target inputs are picker-backed numbers, prefilled with population
+  // medians (smart defaults): scan and adjust, never fill from scratch.
+  const [ageYears, setAgeYears] = useState(24);
   const [weightUnit, setWeightUnit] = useState<'kg' | 'lbs'>('kg');
   const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>('cm');
-  const [heightCmStr, setHeightCmStr] = useState('');
-  const [heightFtStr, setHeightFtStr] = useState('');
-  const [heightInStr, setHeightInStr] = useState('');
-  const [targetStr, setTargetStr] = useState('');
+  const [heightCm, setHeightCm] = useState(172);
+  const [heightFt, setHeightFt] = useState(5);
+  const [heightIn, setHeightIn] = useState(8);
+  /** Current weight in the DISPLAY unit. */
+  const [weightVal, setWeightVal] = useState(72.5);
+  /** Goal weight in the DISPLAY unit; seeded from weight on first visit. */
+  const [targetVal, setTargetVal] = useState(72.5);
+  const targetTouched = useRef(false);
 
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
@@ -186,98 +202,75 @@ export default function OnboardingScreen() {
     [nextStep],
   );
 
-  const parsedWeightKg = useMemo(() => {
-    const w = parseFloat(weightStr);
-    if (!Number.isFinite(w)) return null;
-    const kg = weightUnit === 'lbs' ? Math.round((w / LBS_PER_KG) * 10) / 10 : w;
-    return inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null;
-  }, [weightStr, weightUnit]);
+  const toDisplay = useCallback(
+    (kg: number) => (weightUnit === 'lbs' ? Math.round(kg * LBS_PER_KG) : Math.round(kg * 2) / 2),
+    [weightUnit],
+  );
+  const toKg = useCallback(
+    (v: number) => (weightUnit === 'lbs' ? Math.round((v / LBS_PER_KG) * 10) / 10 : v),
+    [weightUnit],
+  );
 
   const toggleWeightUnit = useCallback(() => {
     const nextUnit = weightUnit === 'kg' ? 'lbs' : 'kg';
-    const convert = (value: string) => {
-      const parsed = parseFloat(value);
-      if (!Number.isFinite(parsed)) return value;
-      const converted = nextUnit === 'lbs' ? parsed * LBS_PER_KG : parsed / LBS_PER_KG;
-      return formatMeasurement(converted);
-    };
-    setWeightStr(convert);
-    setTargetStr(convert);
+    const convert = (v: number) =>
+      nextUnit === 'lbs' ? Math.round(v * LBS_PER_KG) : Math.round((v / LBS_PER_KG) * 2) / 2;
+    setWeightVal(convert);
+    setTargetVal(convert);
     setWeightUnit(nextUnit);
   }, [weightUnit]);
 
   const toggleHeightUnit = useCallback(() => {
     if (heightUnit === 'cm') {
-      const cm = parseFloat(heightCmStr);
-      if (Number.isFinite(cm) && cm > 0) {
-        const totalInches = cm / 2.54;
-        let feet = Math.floor(totalInches / 12);
-        let inches = Math.round((totalInches - feet * 12) * 10) / 10;
-        if (inches >= 12) {
-          feet += 1;
-          inches = 0;
-        }
-        setHeightFtStr(String(feet));
-        setHeightInStr(formatMeasurement(inches));
+      const totalInches = heightCm / 2.54;
+      let feet = Math.floor(totalInches / 12);
+      let inches = Math.round(totalInches - feet * 12);
+      if (inches >= 12) {
+        feet += 1;
+        inches = 0;
       }
+      setHeightFt(Math.min(7, Math.max(4, feet)));
+      setHeightIn(inches);
       setHeightUnit('ft');
       return;
     }
-
-    const feet = parseFloat(heightFtStr);
-    const inches = parseFloat(heightInStr) || 0;
-    if (Number.isFinite(feet) && feet >= 0 && inRange(inches, 0, 11)) {
-      setHeightCmStr(formatMeasurement(feet * 30.48 + inches * 2.54));
-    }
+    setHeightCm(Math.min(MAX_HEIGHT_CM, Math.max(MIN_HEIGHT_CM, Math.round(heightFt * 30.48 + heightIn * 2.54))));
     setHeightUnit('cm');
-  }, [heightUnit, heightCmStr, heightFtStr, heightInStr]);
+  }, [heightUnit, heightCm, heightFt, heightIn]);
 
   const commitBodyStep = useCallback(() => {
-    const age = parseInt(ageStr, 10);
-    let heightCm: number | null = null;
-    if (heightUnit === 'cm') {
-      const h = parseFloat(heightCmStr);
-      if (inRange(h, MIN_HEIGHT_CM, MAX_HEIGHT_CM)) heightCm = h;
-    } else {
-      const ft = parseFloat(heightFtStr);
-      const inch = parseFloat(heightInStr) || 0;
-      const cm = Math.round((ft * 30.48 + inch * 2.54) * 10) / 10;
-      if (Number.isFinite(ft) && ft > 0 && inRange(inch, 0, 11) && inRange(cm, MIN_HEIGHT_CM, MAX_HEIGHT_CM)) {
-        heightCm = cm;
-      }
-    }
+    const cm = heightUnit === 'cm' ? heightCm : Math.round((heightFt * 30.48 + heightIn * 2.54) * 10) / 10;
+    const kg = toKg(weightVal);
     setAnswers((a) => ({
       ...a,
-      ageYears: inRange(age, MIN_AGE_YEARS, MAX_AGE_YEARS) ? age : null,
-      heightCm,
-      weightKg: parsedWeightKg,
+      ageYears: inRange(ageYears, MIN_AGE_YEARS, MAX_AGE_YEARS) ? ageYears : null,
+      heightCm: inRange(cm, MIN_HEIGHT_CM, MAX_HEIGHT_CM) ? cm : null,
+      weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
     }));
+    // Seed the goal weight from the current weight the first time through, so
+    // the target step opens on "holding steady" and one flick sets direction.
+    if (!targetTouched.current) setTargetVal(weightVal);
     goTo('target');
-  }, [ageStr, heightUnit, heightCmStr, heightFtStr, heightInStr, parsedWeightKg, goTo]);
+  }, [ageYears, heightUnit, heightCm, heightFt, heightIn, weightVal, toKg, goTo]);
 
   const commitTargetStep = useCallback(() => {
-    const t = parseFloat(targetStr);
-    const candidateKg = Number.isFinite(t)
-      ? (weightUnit === 'lbs' ? Math.round((t / LBS_PER_KG) * 10) / 10 : t)
-      : null;
-    const kg = candidateKg != null && inRange(candidateKg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? candidateKg : null;
-    setAnswers((a) => ({ ...a, goalWeightKg: kg }));
+    const kg = toKg(targetVal);
+    setAnswers((a) => ({
+      ...a,
+      goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
+    }));
     goTo('plan');
-  }, [targetStr, weightUnit, goTo]);
+  }, [targetVal, toKg, goTo]);
 
-  // Live hint under the goal-weight input: name the direction so the number
+  // Live hint under the goal-weight ruler: name the direction so the number
   // feels read, not just stored.
   const targetHint = useMemo(() => {
-    const t = parseFloat(targetStr);
-    const w = parseFloat(weightStr);
-    if (isNaN(t) || t <= 0) return 'A number to aim at. Skip it if you train for the craft.';
-    if (isNaN(w) || w <= 0) return 'Noted. Add your current weight and I can pace it.';
-    const diff = Math.round(Math.abs(t - w) * 10) / 10;
+    const diff = Math.round(Math.abs(targetVal - weightVal) * 10) / 10;
     if (diff < 1) return 'Holding steady at your current weight. Good.';
-    return t < w
+    return targetVal < weightVal
       ? `A ${diff} ${weightUnit} cut. Your calorie budget will match.`
       : `A ${diff} ${weightUnit} build. We will eat for it.`;
-  }, [targetStr, weightStr, weightUnit]);
+  }, [targetVal, weightVal, weightUnit]);
 
   const completeOnboarding = useCallback(
     async (opts: { createPlan: boolean; dest: '/(app)' | '/(app)/routines' }) => {
@@ -331,53 +324,17 @@ export default function OnboardingScreen() {
   if (!isSignedIn && !isGuest) return <Redirect href="/(auth)" />;
 
   const showHeader = step !== 'welcome';
-  const showSkip = step !== 'welcome' && step !== 'plan';
   const progressIndex = PROGRESS_STEPS.indexOf(step);
-
-  const skipStep = () => goTo(nextStep);
 
   return (
     <SafeAreaView style={[s.safeArea, { backgroundColor: C.background }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        {/* Background glow, same treatment as the auth screen */}
-        <View style={[s.bgGlow, { backgroundColor: C.accentText, opacity: 0.04 }]} />
-
         {showHeader && (
-          <View style={s.header}>
-            <TouchableOpacity
-              onPress={() => goTo(prevStep)}
-              style={s.backBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Back"
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Feather name="chevron-left" size={IconSize.lg} color={C.textMuted} />
-            </TouchableOpacity>
-            <View style={s.progressTrack}>
-              {PROGRESS_STEPS.map((ps, idx) => (
-                <View
-                  key={ps}
-                  style={[
-                    s.progressSegment,
-                    // accentText, not raw lime: identical in dark, readable on cream in light.
-                    { backgroundColor: idx <= progressIndex ? C.accentText : C.muted },
-                  ]}
-                />
-              ))}
-            </View>
-            {showSkip ? (
-              <TouchableOpacity
-                onPress={skipStep}
-                accessibilityRole="button"
-                accessibilityLabel="Skip this step"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={[s.skipText, { color: C.textMuted }]}>Skip</Text>
-              </TouchableOpacity>
-            ) : (
-              <View style={s.skipSpacer} />
-            )}
-          </View>
+          <OnboardingHeader
+            onBack={() => goTo(prevStep)}
+            progressIndex={progressIndex}
+            progressTotal={PROGRESS_STEPS.length}
+          />
         )}
 
         {step === 'welcome' && (
@@ -425,15 +382,11 @@ export default function OnboardingScreen() {
             </View>
 
             <Animated.View entering={FadeInDown.delay(700).duration(450)} style={s.footer}>
-              <PressableScale
+              <PrimaryCta
+                label="Let's set you up"
                 onPress={() => goTo('goal')}
-                style={[s.primaryBtn, Shadow.playBtn]}
-                accessibilityRole="button"
                 accessibilityLabel="Start setup"
-              >
-                <Text style={s.primaryBtnText}>Let's set you up</Text>
-                <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-              </PressableScale>
+              />
               <TouchableOpacity
                 onPress={skipEverything}
                 disabled={finishing}
@@ -448,70 +401,66 @@ export default function OnboardingScreen() {
         )}
 
         {step === 'goal' && (
-          <Animated.View key="goal" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>THE GOAL</Text>
-              <Text style={[s.question, { color: C.foreground }]}>What are you training for?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                This decides your rep ranges, rest times, and which way your calories lean.
-              </Text>
-              <View style={s.options}>
-                {GOAL_OPTIONS.map((opt, idx) => (
-                  <OptionCard
-                    key={opt.value}
-                    index={idx}
-                    icon={opt.icon}
-                    title={opt.title}
-                    sub={opt.sub}
-                    selected={answers.goal === opt.value}
-                    onPress={() => selectAndAdvance({ goal: opt.value })}
-                  />
-                ))}
-              </View>
-            </ScrollView>
-          </Animated.View>
+          <QuestionStep
+            stepKey="goal"
+            question="What are you training for?"
+            sub="This decides your rep ranges, rest times, and which way your calories lean."
+            caption="Most lifters start here. You can change it anytime."
+          >
+            <View style={s.options}>
+              {GOAL_OPTIONS.map((opt, idx) => (
+                <OptionCard
+                  key={opt.value}
+                  index={idx}
+                  icon={opt.icon}
+                  title={opt.title}
+                  sub={opt.sub}
+                  selected={answers.goal === opt.value}
+                  onPress={() => selectAndAdvance({ goal: opt.value })}
+                />
+              ))}
+            </View>
+          </QuestionStep>
         )}
 
         {step === 'experience' && (
-          <Animated.View key="experience" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>EXPERIENCE</Text>
-              <Text style={[s.question, { color: C.foreground }]}>How long have you been lifting?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                Sets your starting volume. It grows as you do.
-              </Text>
-              <View style={s.options}>
-                {EXPERIENCE_OPTIONS.map((opt, idx) => (
-                  <OptionCard
-                    key={opt.value}
-                    index={idx}
-                    icon={opt.icon}
-                    title={opt.title}
-                    sub={opt.sub}
-                    selected={answers.experience === opt.value}
-                    onPress={() => selectAndAdvance({ experience: opt.value })}
-                  />
-                ))}
-              </View>
-            </ScrollView>
-          </Animated.View>
+          <QuestionStep
+            stepKey="experience"
+            question="How long have you been lifting?"
+            sub="Sets your starting volume. It grows as you do."
+          >
+            <View style={s.options}>
+              {EXPERIENCE_OPTIONS.map((opt, idx) => (
+                <OptionCard
+                  key={opt.value}
+                  index={idx}
+                  icon={opt.icon}
+                  title={opt.title}
+                  sub={opt.sub}
+                  selected={answers.experience === opt.value}
+                  onPress={() => selectAndAdvance({ experience: opt.value })}
+                />
+              ))}
+            </View>
+          </QuestionStep>
         )}
 
         {step === 'frequency' && (
-          <Animated.View key="frequency" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>SCHEDULE</Text>
-              <Text style={[s.question, { color: C.foreground }]}>How many days a week?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                Be honest. It sets your split and your calorie budget, and a plan you keep beats a plan you admire.
-              </Text>
+          <QuestionStep
+            stepKey="frequency"
+            question="How many days a week?"
+            sub="Be honest. It sets your split and your calorie budget, and a plan you keep beats a plan you admire."
+          >
               <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.freqRow}>
                 {FREQUENCY_OPTIONS.map((n) => {
                   const selected = answers.frequency === n;
                   return (
                     <PressableScale
                       key={n}
-                      onPress={() => selectAndAdvance({ frequency: n })}
+                      onPress={() => {
+                        haptics.selection();
+                        selectAndAdvance({ frequency: n });
+                      }}
                       style={[
                         s.freqChip,
                         {
@@ -543,23 +492,16 @@ export default function OnboardingScreen() {
                   ? `${splitNameFor(answers.frequency)} split`
                   : 'Your split adapts to the answer'}
               </Animated.Text>
-            </ScrollView>
-          </Animated.View>
+          </QuestionStep>
         )}
 
         {step === 'body' && (
-          <Animated.View key="body" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView
-              contentContainerStyle={s.stepScroll}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Text style={[s.eyebrow, { color: C.accentText }]}>ABOUT YOU</Text>
-              <Text style={[s.question, { color: C.foreground }]}>The numbers behind the math</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                These size your calorie and macro targets. Skip anything you'd rather not share.
-              </Text>
-
+          <QuestionStep
+            stepKey="body"
+            question="The numbers behind the math"
+            sub="These size your calorie and macro targets, so the plan fits you and nobody else."
+            footer={<PrimaryCta label="Continue" onPress={commitBodyStep} />}
+          >
               <Animated.View entering={FadeInDown.delay(100).duration(400)}>
                 <Text style={[s.fieldLabel, { color: C.textMuted }]}>GENDER</Text>
                 <View style={s.genderRow}>
@@ -602,183 +544,137 @@ export default function OnboardingScreen() {
                 </View>
               </Animated.View>
 
-              <Animated.View entering={FadeInDown.delay(180).duration(400)} style={s.measureRow}>
-                <View style={{ flex: 1 }}>
+              <Animated.View entering={FadeInDown.delay(180).duration(400)} style={s.wheelRow}>
+                <View style={s.wheelCol}>
                   <Text style={[s.fieldLabel, { color: C.textMuted }]}>AGE</Text>
-                  <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                    <TextInput
-                      placeholder="24"
-                      placeholderTextColor={C.textDim}
-                      value={ageStr}
-                      onChangeText={setAgeStr}
-                      keyboardType="number-pad"
-                      maxLength={3}
-                      accessibilityLabel="Age in years"
-                      style={[s.input, { color: C.foreground }]}
-                    />
-                    <Text style={[s.inputUnit, { color: C.textMuted }]}>yrs</Text>
-                  </View>
+                  <NumberWheel
+                    min={MIN_AGE_YEARS}
+                    max={100}
+                    value={ageYears}
+                    onChange={setAgeYears}
+                    accessibilityLabel="Age in years"
+                  />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
-                  <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                    <TextInput
-                      placeholder={weightUnit === 'kg' ? '72' : '160'}
-                      placeholderTextColor={C.textDim}
-                      value={weightStr}
-                      onChangeText={setWeightStr}
-                      keyboardType="numeric"
-                      maxLength={6}
-                      accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                      style={[s.input, { color: C.foreground }]}
-                    />
+                <View style={s.wheelCol}>
+                  <View style={s.fieldLabelRow}>
+                    <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
                     <TouchableOpacity
-                      onPress={toggleWeightUnit}
+                      onPress={toggleHeightUnit}
                       accessibilityRole="button"
-                      accessibilityLabel={`Switch weight unit, currently ${weightUnit}`}
+                      accessibilityLabel={`Switch height unit, currently ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
-                      <Text style={[s.inputUnit, { color: C.accentText }]}>{weightUnit}</Text>
+                      <Text style={[s.unitToggle, { color: C.accentText }]}>
+                        {heightUnit === 'cm' ? 'cm' : 'ft, in'}
+                      </Text>
                     </TouchableOpacity>
                   </View>
+                  {heightUnit === 'cm' ? (
+                    <NumberWheel
+                      min={MIN_HEIGHT_CM}
+                      max={220}
+                      value={heightCm}
+                      onChange={setHeightCm}
+                      accessibilityLabel="Height in centimeters"
+                    />
+                  ) : (
+                    <View style={{ flexDirection: 'row', gap: 4 }}>
+                      <NumberWheel
+                        min={4}
+                        max={7}
+                        width={54}
+                        value={heightFt}
+                        onChange={setHeightFt}
+                        accessibilityLabel="Height, feet"
+                      />
+                      <NumberWheel
+                        min={0}
+                        max={11}
+                        width={54}
+                        value={heightIn}
+                        onChange={setHeightIn}
+                        accessibilityLabel="Height, inches"
+                      />
+                    </View>
+                  )}
                 </View>
               </Animated.View>
 
               <Animated.View entering={FadeInDown.delay(260).duration(400)} style={{ marginTop: Spacing.xl }}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
-                {heightUnit === 'cm' ? (
-                  <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                    <TextInput
-                      placeholder="175"
-                      placeholderTextColor={C.textDim}
-                      value={heightCmStr}
-                      onChangeText={setHeightCmStr}
-                      keyboardType="numeric"
-                      maxLength={5}
-                      accessibilityLabel="Height in centimeters"
-                      style={[s.input, { color: C.foreground }]}
-                    />
-                    <TouchableOpacity
-                      onPress={toggleHeightUnit}
-                      accessibilityRole="button"
-                      accessibilityLabel="Switch height unit, currently centimeters"
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Text style={[s.inputUnit, { color: C.accentText }]}>cm</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={s.measureRow}>
-                    <View style={[s.inputWrap, { flex: 1, backgroundColor: C.muted, borderColor: C.border }]}>
-                      <TextInput
-                        placeholder="5"
-                        placeholderTextColor={C.textDim}
-                        value={heightFtStr}
-                        onChangeText={setHeightFtStr}
-                        keyboardType="number-pad"
-                        maxLength={1}
-                        accessibilityLabel="Height, feet"
-                        style={[s.input, { color: C.foreground }]}
-                      />
-                      <TouchableOpacity
-                        onPress={toggleHeightUnit}
-                        accessibilityRole="button"
-                        accessibilityLabel="Switch height unit, currently feet and inches"
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Text style={[s.inputUnit, { color: C.accentText }]}>ft</Text>
-                      </TouchableOpacity>
-                    </View>
-                    <View style={[s.inputWrap, { flex: 1, backgroundColor: C.muted, borderColor: C.border }]}>
-                      <TextInput
-                        placeholder="10"
-                        placeholderTextColor={C.textDim}
-                        value={heightInStr}
-                        onChangeText={setHeightInStr}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        accessibilityLabel="Height, inches"
-                        style={[s.input, { color: C.foreground }]}
-                      />
-                      <Text style={[s.inputUnit, { color: C.textMuted }]}>in</Text>
-                    </View>
-                  </View>
-                )}
+                <View style={s.fieldLabelRow}>
+                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
+                  <TouchableOpacity
+                    onPress={toggleWeightUnit}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Switch weight unit, currently ${weightUnit}`}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[s.unitToggle, { color: C.accentText }]}>{weightUnit}</Text>
+                  </TouchableOpacity>
+                </View>
+                <RulerSlider
+                  min={weightUnit === 'kg' ? 30 : 66}
+                  max={weightUnit === 'kg' ? 200 : 440}
+                  step={weightUnit === 'kg' ? 0.5 : 1}
+                  value={weightVal}
+                  onChange={setWeightVal}
+                  unitLabel={weightUnit}
+                  accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                />
               </Animated.View>
-            </ScrollView>
-
-            <View style={s.footer}>
-              <PressableScale
-                onPress={commitBodyStep}
-                style={[s.primaryBtn, Shadow.playBtn]}
-                accessibilityRole="button"
-                accessibilityLabel="Continue"
-              >
-                <Text style={s.primaryBtnText}>Continue</Text>
-                <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-              </PressableScale>
-            </View>
-          </Animated.View>
+          </QuestionStep>
         )}
 
         {step === 'target' && (
-          <Animated.View key="target" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView
-              contentContainerStyle={s.stepScroll}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Text style={[s.eyebrow, { color: C.accentText }]}>TARGET</Text>
-              <Text style={[s.question, { color: C.foreground }]}>Where are we heading?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                A goal weight points your calories the right way. You can change it anytime.
-              </Text>
-
-              <Animated.View entering={FadeInDown.delay(100).duration(400)}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>GOAL WEIGHT</Text>
-                <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                  <TextInput
-                    placeholder={weightUnit === 'kg' ? '68' : '150'}
-                    placeholderTextColor={C.textDim}
-                    value={targetStr}
-                    onChangeText={setTargetStr}
-                    keyboardType="numeric"
-                    maxLength={6}
-                    accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                    style={[s.input, { color: C.foreground }]}
-                  />
-                  <Text style={[s.inputUnit, { color: C.textMuted }]}>{weightUnit}</Text>
-                </View>
-                <Text style={[s.targetHint, { color: C.textDim }]}>{targetHint}</Text>
+          <QuestionStep
+            stepKey="target"
+            question="Where are we heading?"
+            sub="A goal weight points your calories the right way. You can change it anytime."
+            footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
+          >
+              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ marginTop: Spacing.xl }}>
+                <RulerSlider
+                  min={weightUnit === 'kg' ? 30 : 66}
+                  max={weightUnit === 'kg' ? 200 : 440}
+                  step={weightUnit === 'kg' ? 0.5 : 1}
+                  value={targetVal}
+                  onChange={(v) => {
+                    targetTouched.current = true;
+                    setTargetVal(v);
+                  }}
+                  unitLabel={weightUnit}
+                  accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                />
+                <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
               </Animated.View>
-            </ScrollView>
-
-            <View style={s.footer}>
-              <PressableScale
-                onPress={commitTargetStep}
-                style={[s.primaryBtn, Shadow.playBtn]}
-                accessibilityRole="button"
-                accessibilityLabel="Continue"
-              >
-                <Text style={s.primaryBtnText}>Continue</Text>
-                <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-              </PressableScale>
-            </View>
-          </Animated.View>
+          </QuestionStep>
         )}
 
         {step === 'plan' && (
-          <Animated.View key="plan" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>YOUR STARTING PLAN</Text>
-              <Text style={[s.question, { color: C.foreground }]}>
-                {PLAN_TITLES[answers.goal ?? 'general']}
-              </Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                {splitNameFor(answers.frequency)}, {answers.frequency ?? 3} days a week
-                {targets ? ', with daily fuel targets' : ''}. Every detail is editable.
-              </Text>
-
+          <QuestionStep
+            stepKey="plan"
+            question={PLAN_TITLES[answers.goal ?? 'general']}
+            sub={`${splitNameFor(answers.frequency)}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
+            footer={
+              <>
+                <PrimaryCta
+                  label="Create my plan"
+                  onPress={() => completeOnboarding({ createPlan: true, dest: '/(app)' })}
+                  loading={finishing}
+                  accessibilityLabel="Create my plan"
+                />
+                <TouchableOpacity
+                  onPress={() => completeOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                  disabled={finishing}
+                  style={s.ghostLink}
+                  accessibilityRole="button"
+                  accessibilityLabel="Build my own routines"
+                >
+                  <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I'll build my own routines</Text>
+                </TouchableOpacity>
+              </>
+            }
+          >
               {/* Week dots: the schedule at a glance */}
               <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.weekDots}>
                 {Array.from({ length: 7 }, (_, idx) => (
@@ -879,112 +775,16 @@ export default function OnboardingScreen() {
                   <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>
                 </View>
               </Animated.View>
-            </ScrollView>
-
-            <View style={s.footer}>
-              <PressableScale
-                onPress={() => completeOnboarding({ createPlan: true, dest: '/(app)' })}
-                disabled={finishing}
-                style={[s.primaryBtn, Shadow.playBtn, finishing && { opacity: 0.7 }]}
-                accessibilityRole="button"
-                accessibilityLabel="Create my plan"
-              >
-                {finishing ? (
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
-                ) : (
-                  <>
-                    <Text style={s.primaryBtnText}>Create my plan</Text>
-                    <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-                  </>
-                )}
-              </PressableScale>
-              <TouchableOpacity
-                onPress={() => completeOnboarding({ createPlan: false, dest: '/(app)/routines' })}
-                disabled={finishing}
-                style={s.ghostLink}
-                accessibilityRole="button"
-                accessibilityLabel="Build my own routines"
-              >
-                <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I'll build my own routines</Text>
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
+          </QuestionStep>
         )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-function OptionCard({
-  icon,
-  title,
-  sub,
-  selected,
-  onPress,
-  index,
-}: {
-  icon: keyof typeof Feather.glyphMap;
-  title: string;
-  sub: string;
-  selected: boolean;
-  onPress: () => void;
-  index: number;
-}) {
-  const { C } = useTheme();
-  return (
-    <Animated.View entering={FadeInDown.delay(100 + index * 60).duration(400)}>
-      <PressableScale
-        onPress={onPress}
-        style={[
-          s.option,
-          {
-            backgroundColor: selected ? C.primaryMuted : C.card,
-            borderColor: selected ? C.primaryBorder : C.borderSubtle,
-          },
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={title}
-        accessibilityState={{ selected }}
-      >
-        <View style={[s.optionIcon, { backgroundColor: C.muted }]}>
-          <Feather name={icon} size={IconSize.sm} color={selected ? C.accentText : C.textMuted} />
-        </View>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={[s.optionTitle, { color: C.foreground }]}>{title}</Text>
-          <Text style={[s.optionSub, { color: C.textMuted }]}>{sub}</Text>
-        </View>
-        {selected && <Feather name="check" size={IconSize.md} color={C.accentText} />}
-      </PressableScale>
-    </Animated.View>
-  );
-}
-
 const s = StyleSheet.create({
   safeArea: { flex: 1 },
-  bgGlow: {
-    position: 'absolute',
-    top: -150,
-    left: SCREEN_WIDTH / 2 - 192,
-    width: 384,
-    height: 384,
-    borderRadius: 192,
-  },
   stepFill: { flex: 1 },
-
-  // Header: back + progress + skip
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.md,
-    gap: Spacing.md,
-  },
-  backBtn: { padding: 2 },
-  progressTrack: { flex: 1, flexDirection: 'row', gap: 6 },
-  progressSegment: { flex: 1, height: 3, borderRadius: Radius.full },
-  skipText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  skipSpacer: { width: 28 },
 
   // Welcome
   welcomeCenter: {
@@ -1021,49 +821,7 @@ const s = StyleSheet.create({
   valueText: { fontSize: FontSize.base, flex: 1, lineHeight: 20 },
 
   // Question steps
-  stepScroll: {
-    flexGrow: 1,
-    paddingHorizontal: Spacing.xxl,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.xxxl,
-  },
-  eyebrow: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    letterSpacing: LetterSpacing.eyebrow,
-    marginBottom: Spacing.md,
-  },
-  question: {
-    fontSize: FontSize.xxxl,
-    fontWeight: FontWeight.black,
-    letterSpacing: LetterSpacing.tight,
-    lineHeight: 34,
-  },
-  questionSub: {
-    fontSize: FontSize.base,
-    lineHeight: 20,
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.xxl,
-  },
   options: { gap: Spacing.md },
-  option: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
-  },
-  optionIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  optionTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  optionSub: { fontSize: FontSize.sm, marginTop: 2 },
 
   // Frequency
   freqRow: { flexDirection: 'row', gap: Spacing.md, justifyContent: 'center' },
@@ -1098,17 +856,15 @@ const s = StyleSheet.create({
     alignItems: 'center',
   },
   genderChipText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  measureRow: { flexDirection: 'row', gap: Spacing.md },
-  inputWrap: {
+  wheelRow: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.lg },
+  wheelCol: { flex: 1, alignItems: 'center', gap: Spacing.sm },
+  fieldLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.lg,
-    height: 52,
+    gap: Spacing.sm,
+    justifyContent: 'center',
   },
-  input: { flex: 1, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  inputUnit: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  unitToggle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   targetHint: {
     fontSize: FontSize.sm,
     lineHeight: 19,
@@ -1203,20 +959,6 @@ const s = StyleSheet.create({
     paddingHorizontal: Spacing.xxl,
     paddingBottom: Spacing.lg,
     paddingTop: Spacing.sm,
-  },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.primary,
-    paddingVertical: 16,
-    borderRadius: Radius.xl,
-  },
-  primaryBtnText: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: Colors.primaryFg,
   },
   ghostLink: { alignItems: 'center', paddingVertical: Spacing.lg },
   ghostLinkText: { fontSize: FontSize.base },
