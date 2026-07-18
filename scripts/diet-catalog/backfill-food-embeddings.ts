@@ -62,11 +62,22 @@ async function voyageEmbed(texts: string[]): Promise<number[][]> {
     const wait = lastRequestMs + REQUEST_GAP_MS - Date.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     lastRequestMs = Date.now();
-    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
-      body: JSON.stringify({ input: texts, model: "voyage-3", input_type: "document" }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("https://api.voyageai.com/v1/embeddings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
+        body: JSON.stringify({ input: texts, model: "voyage-3", input_type: "document" }),
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (e) {
+      // Network blip / laptop sleep: wait out and retry rather than dying
+      // 20k rows into a paced overnight run.
+      if (attempt >= 30) throw e;
+      console.error(`  voyage fetch retry after: ${String(e).slice(0, 120)}`);
+      await new Promise((r) => setTimeout(r, REQUEST_GAP_MS));
+      continue;
+    }
     if (res.status === 429 && attempt < 30) {
       await new Promise((r) => setTimeout(r, REQUEST_GAP_MS));
       continue;
