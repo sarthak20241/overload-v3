@@ -85,6 +85,11 @@ export interface ParseMealResult {
   } | null;
   // Set when the model declined (non-food input) instead of logging.
   declined: { message: string } | null;
+  /** A researched alternative the user should CHOOSE, not receive silently.
+   *  Set when a web lookup materially disagrees with what is on screen -
+   *  usually a different variant of the same product. The client offers it as
+   *  "use these / keep mine"; applying it costs no further round trip. */
+  proposal?: { items: ParsedItem[]; note: string } | null;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -1282,7 +1287,7 @@ async function researchPrevious(
   previous: PreviousItem[],
   onUsage: (data: any) => void,
   onCall: () => void,
-): Promise<{ items: ParsedItem[]; note: string } | null> {
+): Promise<{ items: ParsedItem[]; note: string; conflict: string | null } | null> {
   if (!deps.webSearchEnabled || previous.length === 0) return null;
   const targets: ExtractedItem[] = previous.slice(0, 3).map((p) => ({
     name: p.food_name,
@@ -1296,6 +1301,7 @@ async function researchPrevious(
 
   const items: ParsedItem[] = [];
   let changed = 0;
+  const conflicts: string[] = [];
   for (const p of previous) {
     let label: WebLabel | null = null;
     for (const [forItem, l] of labels) {
@@ -1303,6 +1309,27 @@ async function researchPrevious(
     }
     if (!label || !(p.grams > 0)) continue;
     const f = p.grams / 100;
+
+    // Does the web disagree MATERIALLY with the row we already had? Brands ship
+    // near-identical names for very different products (Super Coffee sells both
+    // a 60 kcal Vanilla Latte and a 150 kcal Protein+ Vanilla Latte), so a big
+    // gap usually means the lookup found a DIFFERENT VARIANT rather than a
+    // better number. Silently swapping there turns a right answer into a wrong
+    // one, so the user gets to choose instead.
+    if (p.food_id) {
+      const current = await deps.getFoodPer100(p.food_id).catch(() => null);
+      if (current) {
+        const curKcal = current.kcal * f;
+        const webKcal = label.per_100.kcal * f;
+        const ref = Math.max(curKcal, webKcal);
+        if (ref > 40 && Math.abs(curKcal - webKcal) / ref > 0.3) {
+          conflicts.push(
+            `${p.food_name}: you have ${Math.round(curKcal)} kcal logged, the label I found gives ` +
+            `${Math.round(webKcal)} kcal. Brands sell close variants under the same name, so check which one you had.`,
+          );
+        }
+      }
+    }
     changed++;
     items.push({
       // food_id drops: these macros are the web label's, not that catalog row's,
@@ -1323,7 +1350,11 @@ async function researchPrevious(
     });
   }
   if (changed === 0) return null;
-  return { items, note: "Checked the label online and updated these numbers." };
+  return {
+    items,
+    note: "Checked the label online and updated these numbers.",
+    conflict: conflicts.length > 0 ? scrubDashes(conflicts.join(" ")).slice(0, 400) : null,
+  };
 }
 
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
@@ -1530,6 +1561,23 @@ export async function runParseMeal(
     const researched = await researchPrevious(deps, prevItems, accumulate, () => anthropicCalls++)
       .catch(() => null);
     steps.push({ iter: 1, tool: "research_previous", input: { found: researched ? researched.items.length : 0 } });
+    if (researched?.conflict) {
+      // The web found something materially different, most likely another
+      // variant. Offer it rather than apply it: a wrong silent swap is worse
+      // than the number they already had.
+      const items = flagPrepMismatch(checkAtwater(researched.items), input.text);
+      T.decide_ms = 0;
+      steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
+      return {
+        parsed: null,
+        declined: { message: researched.conflict },
+        proposal: { items, note: "Use the label I found" },
+        usage,
+        tool_calls: [...toolCalls, "research_previous"],
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
     if (researched) {
       const items = flagPrepMismatch(checkAtwater(researched.items), input.text);
       T.decide_ms = 0;

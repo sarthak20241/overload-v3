@@ -484,8 +484,28 @@ export interface ParsedMeal {
  *  input) carrying Drona's redirect line, or a transport/parse error. */
 export type ParseMealResult =
   | { kind: 'parsed'; meal: ParsedMeal }
-  | { kind: 'declined'; message: string }
+  // `proposal` carries researched numbers that materially disagree with what is
+  // on screen (usually a different product variant). The user chooses; applying
+  // is local, so it costs nothing.
+  | { kind: 'declined'; message: string; proposal?: { items: ParsedMealItem[]; note: string } | null }
   | { kind: 'error'; message: string };
+
+/** One raw item from the edge function -> a ParsedMealItem. Shared by the
+ *  parsed path and the researched-proposal path so both stay in step. */
+function toParsedItem(i: any): ParsedMealItem {
+  return {
+    food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
+    food_name: String(i.food_name ?? 'Food'),
+    quantity: num(i.quantity) || 1,
+    serving_label: String(i.serving_label ?? 'serving'),
+    grams: num(i.grams),
+    kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
+    fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
+    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' || i.source === 'manual' ? i.source : 'estimate',
+    assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
+    confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
+  };
+}
 
 /** Call the ai-coach edge function in parse_meal mode. The Clerk JWT rides on
  *  the client's fetch wrapper automatically, so a signed-out client (base anon
@@ -553,7 +573,11 @@ export async function parseMeal(
   }
 
   if (data?.declined?.message) {
-    return { kind: 'declined', message: String(data.declined.message) };
+    const p = data?.proposal;
+    const proposal = p && Array.isArray(p.items) && p.items.length > 0
+      ? { items: (p.items as any[]).map(toParsedItem), note: String(p.note ?? 'Use these numbers') }
+      : null;
+    return { kind: 'declined', message: String(data.declined.message), proposal };
   }
   const parsed = data?.parsed;
   if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) {
@@ -563,18 +587,7 @@ export async function parseMeal(
     parsed.meal_type === 'breakfast' || parsed.meal_type === 'lunch' ||
     parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
       ? parsed.meal_type : 'snack';
-  const items: ParsedMealItem[] = (parsed.items as any[]).map((i) => ({
-    food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
-    food_name: String(i.food_name ?? 'Food'),
-    quantity: num(i.quantity) || 1,
-    serving_label: String(i.serving_label ?? 'serving'),
-    grams: num(i.grams),
-    kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
-    fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
-    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' || i.source === 'manual' ? i.source : 'estimate',
-    assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
-    confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
-  }));
+  const items: ParsedMealItem[] = (parsed.items as any[]).map(toParsedItem);
   return {
     kind: 'parsed',
     meal: {

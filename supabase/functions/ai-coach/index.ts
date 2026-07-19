@@ -1070,6 +1070,8 @@ async function handleParseMealRequest(args: {
       {
         parsed: result.parsed,
         declined: result.declined,
+        // Researched alternative for the user to accept or reject on the card.
+        proposal: result.proposal ?? null,
         usage: result.usage,
         tool_calls: result.tool_calls,
       },

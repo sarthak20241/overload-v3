@@ -50,6 +50,9 @@ interface Props {
   /** A reply that is not a meal (Drona answering a question about these lines,
    *  or a failed follow-up) shown ON the card so the meal survives. */
   notice?: string | null;
+  /** Label for a researched alternative the user can accept in one tap. */
+  proposalLabel?: string | null;
+  onAcceptProposal?: () => void;
   onDismissNotice?: () => void;
   /** Tap a line to correct its serving/quantity/macros before adding. */
   onEditItem?: (index: number) => void;
@@ -74,8 +77,8 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, rawText, meal, mealType, message, adding, saved, notice,
-  onMealTypeChange, onDismissNotice, onEditItem, onAdd, onSave, onRetry, onDismiss,
+  state, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
+  onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
   const { C } = useTheme();
   const s = makeStyles(C);
@@ -92,11 +95,25 @@ export function ParsedMealCard({
           {/* Drona answering a question about these lines. The meal stays. */}
           {!!notice && (
             <View style={s.notice}>
-              <Feather name="info" size={12} color={C.accentText} style={{ marginTop: 2 }} />
-              <Text style={s.noticeTxt}>{notice}</Text>
-              <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityLabel="Dismiss">
-                <Feather name="x" size={13} color={C.textMuted} />
-              </Pressable>
+              <View style={s.noticeHead}>
+                <Feather name="info" size={12} color={C.accentText} style={{ marginTop: 2 }} />
+                <Text style={s.noticeTxt}>{notice}</Text>
+                <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityLabel="Dismiss">
+                  <Feather name="x" size={13} color={C.textMuted} />
+                </Pressable>
+              </View>
+              {/* A researched alternative: the user decides, we never swap
+                  silently. Both choices are local, so neither costs a wait. */}
+              {!!proposalLabel && (
+                <View style={s.proposalRow}>
+                  <Pressable onPress={onDismissNotice} hitSlop={6} style={s.keepBtn}>
+                    <Text style={s.keepTxt}>Keep mine</Text>
+                  </Pressable>
+                  <Pressable onPress={onAcceptProposal} hitSlop={6} style={s.useBtn}>
+                    <Text style={s.useTxt}>{proposalLabel}</Text>
+                  </Pressable>
+                </View>
+              )}
             </View>
           )}
           {meal.items.map((it, i) => {
@@ -244,10 +261,18 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
 
     notice: {
-      flexDirection: 'row', alignItems: 'flex-start', gap: 8,
       backgroundColor: C.primarySubtle, borderRadius: Radius.md,
       padding: Spacing.sm, marginBottom: Spacing.sm,
     },
+    noticeHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+    proposalRow: { flexDirection: 'row', gap: 8, marginTop: Spacing.sm, justifyContent: 'flex-end' },
+    keepBtn: { paddingVertical: 7, paddingHorizontal: Spacing.md },
+    keepTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
+    useBtn: {
+      backgroundColor: C.accentText, borderRadius: Radius.md,
+      paddingVertical: 7, paddingHorizontal: Spacing.md,
+    },
+    useTxt: { fontSize: FontSize.sm, color: C.background, fontWeight: FontWeight.semibold },
     noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
 
     item: { paddingVertical: Spacing.xs },

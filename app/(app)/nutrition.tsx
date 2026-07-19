@@ -48,7 +48,13 @@ type ParseFlow =
   // `notice` carries a reply that is NOT a new meal (an answer to a question,
   // or a parse failure) while the reviewed meal stays on screen. Asking
   // "is that right?" must never throw away work the user hasn't added yet.
-  | { status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType; notice?: string | null }
+  | {
+      status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType;
+      notice?: string | null;
+      // Researched numbers that disagree with what is shown, offered as a
+      // choice. Applying is local, so picking costs no round trip.
+      proposal?: { items: ParsedMealItem[]; note: string } | null;
+    }
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
@@ -178,7 +184,10 @@ export default function NutritionScreen() {
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
       pushTurn('drona', res.message);
-      if (prevReview) { setFlow({ ...prevReview, notice: res.message }); return; }
+      if (prevReview) {
+        setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
+        return;
+      }
       setFlow({ status: 'declined', raw: t, message: res.message });
       return;
     }
@@ -392,7 +401,13 @@ export default function NutritionScreen() {
               }
               onMealTypeChange={onMealTypeChange}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
-              onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null } : f))}
+              proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
+              onAcceptProposal={() => setFlow((f) => (
+                f.status === 'review' && f.proposal
+                  ? { ...f, meal: { ...f.meal, items: f.proposal.items }, notice: null, proposal: null }
+                  : f
+              ))}
+              onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
               onEditItem={flow.status === 'review' ? onEditItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
