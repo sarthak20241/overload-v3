@@ -1497,7 +1497,13 @@ export default function ActiveWorkoutScreen() {
     // left up by the set logger.
     Keyboard.dismiss();
     const count = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
-    if (count === 0) {
+    // A session with nothing logged is normally not worth saving. Notes are the
+    // exception, and for the same reason keepInSavedWorkout keeps a note-only
+    // exercise: the user typed it, so they mean to read it back. "Everything
+    // hurt, logged nothing" is a real session and blocking it would throw the
+    // notes away at the last step.
+    const hasNotes = exercises.some(e => !!e.sessionNote?.trim());
+    if (count === 0 && !hasNotes) {
       setShowNoSetsAlert(true);
       return;
     }

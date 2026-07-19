@@ -404,7 +404,11 @@ export async function flushPendingWorkout(
         workout_id: serverWorkoutId,
         exercise_id,
         // The 1000-char check is per row, and joining two notes can cross it.
-        note: note.slice(0, 1000),
+        // Sliced by CODEPOINT, not by .slice(): the DB constraint is
+        // char_length (codepoints) while a JS string index is a UTF-16 code
+        // unit, so cutting at 1000 units could both overshoot the limit and
+        // land mid-surrogate-pair, sending a lone half of an emoji.
+        note: [...note].slice(0, 1000).join(''),
       }));
       // Upsert, so a retry after a partial failure is a no-op not a PK conflict.
       const { error } = await supabase

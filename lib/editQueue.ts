@@ -49,6 +49,19 @@ export interface PendingEditExercise {
   sets: PendingEditSet[];
   /** Superset grouping ordinal (migration 0060), stamped per set at flush. NULL = solo. */
   supersetGroup?: number | null;
+  /**
+   * Session note (migration 0080), carried because the edit screen builds this
+   * list with the same mapper it uses for the sync queue and casts the result.
+   * Declared so that cast isn't a lie.
+   *
+   * NOT authoritative here, and the flush must never write from it: for a
+   * synced workout the notes are separate server rows the editor never loads,
+   * so this is always null on that path and writing it would erase them. It is
+   * read for one thing only — the resolve guard below, so a note-bearing
+   * exercise that hasn't resolved can't slip through and have its note deleted
+   * by the orphan cleanup.
+   */
+  note?: string | null;
 }
 
 export interface PendingWorkoutEdit {
@@ -338,7 +351,18 @@ async function flushPendingEdit(
     }
   }
   if (changed) patchEntry(userId, entry.workoutId, { exercises: entry.exercises });
-  if (entry.exercises.some((ex) => !ex.resolvedExerciseId && ex.sets.length > 0)) {
+  // Mirrors the guard in lib/syncQueue.ts: a note counts as content, so an
+  // exercise carrying one but no sets still has to resolve before we proceed.
+  // Not currently reachable (only pre-existing, already-resolved exercises can
+  // have a note by the time they reach this queue), but the consequence if it
+  // ever becomes reachable is bad and silent: an unresolved exercise is left
+  // out of keptExerciseIds below, and the orphan cleanup then deletes the note
+  // of an exercise the edit never actually removed.
+  if (
+    entry.exercises.some(
+      (ex) => !ex.resolvedExerciseId && (ex.sets.length > 0 || !!ex.note?.trim()),
+    )
+  ) {
     // Couldn't link a set-bearing exercise yet — park (retries; resolves online).
     throw Object.assign(new Error('Some exercises could not be linked yet'), { code: 'EXRES' });
   }
