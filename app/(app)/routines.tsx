@@ -31,6 +31,7 @@ import { haptics } from '@/lib/haptics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
+import { useExerciseNotes } from '@/hooks/useExerciseNotes';
 import { supabase, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines, addGuestRoutine, updateGuestRoutine, removeGuestRoutine, findGuestRoutine } from '@/lib/guestStore';
 import { useIsGuestSession } from '@/lib/guestMode';
@@ -394,6 +395,7 @@ function ExerciseEditorCard({
   onRemove,
   onOpenPicker,
   onInputFocus,
+  stickyNote = null,
   canReorder = true,
   grouped = false,
 }: {
@@ -402,6 +404,11 @@ function ExerciseEditorCard({
   onRemove: () => void;
   onOpenPicker: () => void;
   onInputFocus?: () => void;
+  /** The user's sticky note for this exercise (user_exercise_notes), shown
+   * read-only so it's clear what the exercise already carries into every
+   * routine. Passed down rather than read per card: one hook in the parent
+   * means one server refresh instead of one per row. Edited in a session. */
+  stickyNote?: string | null;
   canReorder?: boolean;
   /** Part of a superset — show a left accent so the group reads as a block. */
   grouped?: boolean;
@@ -532,9 +539,15 @@ function ExerciseEditorCard({
             </View>
           </View>
 
-          {/* Notes */}
+          {/* Notes. Two of them can apply to this row, so the labels have to
+              carry the difference: this field is the cue for THIS routine slot
+              (routine_exercises.note, also where the coach writes), while the
+              line below it is the user's own note riding along with the
+              exercise itself. That one is read-only here — it's edited in a
+              session, and the write path (local store + debounced flush) lives
+              on the workout screen. */}
           <View>
-            <Text style={[styles.editorLabel, { color: C.textMuted }]}>Notes (optional)</Text>
+            <Text style={[styles.editorLabel, { color: C.textMuted }]}>Note for this routine (optional)</Text>
             <TextInput
               value={exercise.notes}
               onChangeText={(v) => onChange({ ...exercise, notes: v })}
@@ -544,6 +557,18 @@ function ExerciseEditorCard({
               style={[styles.editorInput, styles.editorInputText, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
             />
           </View>
+
+          {stickyNote ? (
+            <View style={styles.editorStickyNoteRow}>
+              <Feather name="bookmark" size={11} color={C.textMuted} style={styles.editorStickyNoteIcon} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.editorStickyNoteLabel, { color: C.textMuted }]}>
+                  Your note on this exercise, in every routine
+                </Text>
+                <Text style={[styles.editorStickyNoteText, { color: C.mutedFg }]}>{stickyNote}</Text>
+              </View>
+            </View>
+          ) : null}
         </View>
       )}
     </View>
@@ -568,6 +593,9 @@ function RoutineEditorSheet({
   const supabase = useSupabaseClient();
   const { flushNow } = useSync();
   const toast = useToast();
+  // One lookup for the whole list — each card gets its note as a prop. The
+  // sheet stays mounted while closed, so gate the load on `visible`.
+  const { noteFor } = useExerciseNotes(visible);
   // SafeAreaView reports zero insets inside a fullScreen RN Modal (separate
   // native view hierarchy the provider never measures), so the header collided
   // with the status bar / Dynamic Island. Read the device inset via the hook —
@@ -1045,6 +1073,7 @@ function RoutineEditorSheet({
                   )}
                   <ExerciseEditorCard
                     exercise={ex}
+                    stickyNote={noteFor(ex.name)}
                     grouped={ex.supersetGroup != null}
                     canReorder={exercises.length > 1}
                     onChange={(updated) =>
@@ -1854,6 +1883,22 @@ const styles = StyleSheet.create({
   editorLabel: {
     fontSize: FontSize.xs,
     marginBottom: 6,
+  },
+  // Read-only sticky-note line under the routine-slot note field.
+  editorStickyNoteRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  editorStickyNoteIcon: {
+    marginTop: 2,
+  },
+  editorStickyNoteLabel: {
+    fontSize: FontSize.xs,
+    marginBottom: 2,
+  },
+  editorStickyNoteText: {
+    fontSize: FontSize.xs,
+    lineHeight: 16,
   },
   editorInput: {
     paddingHorizontal: Spacing.md,

@@ -25,6 +25,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { saveLocalCustomExercise, type CachedExercise } from '@/lib/exerciseResolve';
+import { useExerciseNotes } from '@/hooks/useExerciseNotes';
 
 // Custom exercises can be tagged beyond the library's lifting groups — the
 // routine editor's old custom drawer offered these, so keep parity.
@@ -126,6 +127,10 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   // via marginBottom — same pattern as analytics.tsx's BottomDrawer.
   const [kbHeight, setKbHeight] = useState(0);
   const searchInputRef = useRef<TextInput>(null);
+  // Gated on `visible` like every other fetch in this sheet — it stays mounted
+  // behind the active-workout and routine-editor screens, so an ungated load
+  // would fetch on screens where the picker is never opened.
+  const { noteFor } = useExerciseNotes(visible);
 
   // The user's own custom exercises, fetched fresh on every open. RLS scopes
   // the query to rows this user created (plus global rows, which the
@@ -713,6 +718,21 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                           <Text style={[s.exerciseMeta, { color: C.textMuted }]}>
                             {item.muscle_group} · {item.category}
                           </Text>
+                          {/* The user's sticky note, so a setup they already
+                              worked out is in front of them at the moment they
+                              pick the exercise. One line only: the list is for
+                              scanning, the full note lives in the session. */}
+                          {(() => {
+                            const own = noteFor(item.name);
+                            return own ? (
+                              <View style={s.exerciseNoteRow}>
+                                <Feather name="bookmark" size={9} color={C.textMuted} />
+                                <Text style={[s.exerciseNote, { color: C.mutedFg }]} numberOfLines={1}>
+                                  {own}
+                                </Text>
+                              </View>
+                            ) : null;
+                          })()}
                         </View>
                         {isSelected ? (
                           <Feather name="check-circle" size={18} color={Colors.primary} />
@@ -790,6 +810,8 @@ const s = StyleSheet.create({
   customTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: Radius.full, borderWidth: 1 },
   customTagText: { fontSize: 10, fontWeight: FontWeight.semibold },
   exerciseMeta: { fontSize: FontSize.sm, marginTop: 2 },
+  exerciseNoteRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  exerciseNote: { flex: 1, fontSize: FontSize.xs },
   emptyText: { fontSize: FontSize.sm },
   customBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: Radius.xl, borderWidth: 1 },
   customBtnText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },

@@ -211,6 +211,16 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
     const e = w?.id ? byId.get(w.id) : undefined;
     if (!e) return w;
     let setId = 0;
+    // Per-exercise session notes (migration 0080) live in their own server rows
+    // and an edit never touches them, so carry them across from the row being
+    // overlaid. Without this they'd blink out of History between saving an edit
+    // and the next refetch, reading as data loss when nothing was lost. Matched
+    // by name because that's the only identity the edit entry carries.
+    const noteByName = new Map<string, string>(
+      (w?.exercises ?? [])
+        .filter((ex: any) => ex?.name && ex?.note)
+        .map((ex: any) => [String(ex.name).toLowerCase(), ex.note as string]),
+    );
     return {
       ...w,
       name: e.name,
@@ -222,6 +232,7 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
       exercises: e.exercises.map((ex) => ({
         name: ex.def.name,
         metric_type: ex.def.metric_type,
+        note: noteByName.get(ex.def.name.toLowerCase()) ?? null,
         sets: ex.sets.map((s) => ({
           weight_kg: s.weight_kg, reps: s.reps, completed: true,
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
@@ -364,6 +375,25 @@ async function flushPendingEdit(
       const { error: insErr } = await supabase.from('workout_sets').insert(rows);
       if (insErr) throw insErr;
     }
+
+    // Drop session notes (migration 0080) belonging to exercises this edit
+    // removed. Their rows don't cascade off workout_sets, so without this they
+    // outlive the exercise: invisible in History (nothing to hang them off) but
+    // resurrected if the same exercise is ever added back to this workout.
+    // Notes for exercises that survived the edit are left alone.
+    const keptExerciseIds = entry.exercises
+      .map((ex) => ex.resolvedExerciseId)
+      .filter((v): v is string => !!v);
+    let noteCleanup = supabase
+      .from('workout_exercise_notes')
+      .delete()
+      .eq('workout_id', entry.workoutId);
+    if (keptExerciseIds.length > 0) {
+      noteCleanup = noteCleanup.not('exercise_id', 'in', `(${keptExerciseIds.join(',')})`);
+    }
+    const { error: noteErr } = await noteCleanup;
+    if (noteErr) throw noteErr;
+
     phase = 'sets_replaced';
     patchEntry(userId, entry.workoutId, { phase });
   }

@@ -14,6 +14,7 @@ import { Feather } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { useExerciseNotes } from '@/hooks/useExerciseNotes';
 
 // Shared routine-detail / session-preview sheet. Used by the Routines screen
 // (tap a routine) and by the dashboard's "today" card (tap the suggestion).
@@ -64,6 +65,8 @@ interface Props {
 export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, onAskCoach }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
+  // A null routine means the sheet is closed; don't fetch until it opens.
+  const { noteFor } = useExerciseNotes(!!routine);
 
   // <Portal> has no onRequestClose (unlike RN <Modal>), so wire the Android
   // hardware back button to dismiss the sheet while it's open.
@@ -166,6 +169,23 @@ export function RoutineDetailSheet({ routine, onClose, onStartWorkout, onEdit, o
                           {re.note}
                         </Text>
                       ) : null}
+                      {/* The user's own sticky note for this exercise. Follows
+                          the exercise into every routine that uses it, so it
+                          shows here without the routine storing anything.
+                          Deliberately quieter than the coach cue above and
+                          marked with the same bookmark icon the session screen
+                          uses, so the two never read as one voice. */}
+                      {(() => {
+                        const own = noteFor(re.exercises?.name);
+                        return own ? (
+                          <View style={s.detailExOwnNoteRow}>
+                            <Feather name="bookmark" size={10} color={C.textMuted} style={s.detailExOwnNoteIcon} />
+                            <Text style={[s.detailExOwnNote, { color: C.mutedFg }]} numberOfLines={3}>
+                              {own}
+                            </Text>
+                          </View>
+                        ) : null;
+                      })()}
                     </View>
                     {re.exercises?.muscle_group ? (
                       <View style={[s.detailExBadge, { backgroundColor: C.muted }]}>
@@ -321,6 +341,20 @@ const s = StyleSheet.create({
     fontSize: FontSize.xs,
     fontStyle: 'italic',
     marginTop: 4,
+    lineHeight: 14,
+  },
+  detailExOwnNoteRow: {
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 4,
+  },
+  // Top-aligned so the icon stays on the first line of a wrapped note.
+  detailExOwnNoteIcon: {
+    marginTop: 1,
+  },
+  detailExOwnNote: {
+    flex: 1,
+    fontSize: FontSize.xs,
     lineHeight: 14,
   },
   detailExBadge: {

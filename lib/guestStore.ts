@@ -51,6 +51,9 @@ interface GuestWorkoutExercise {
   metric_type?: MetricType;
   /** Superset grouping ordinal (migration 0060), per exercise; null = solo. */
   superset_group?: number | null;
+  /** How this exercise went in this session — the guest-side mirror of
+   * workout_exercise_notes (migration 0080). Absent = no note. */
+  note?: string | null;
   sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 

@@ -47,6 +47,13 @@ interface EditExercise {
   // Superset grouping ordinal (migration 0060), per exercise; round-tripped silently
   // (no editor UI to change it). null = solo. Read from the first set's column.
   supersetGroup?: number | null;
+  // The session note the user wrote on this exercise during the workout
+  // (migration 0080). Round-tripped silently like supersetGroup: this screen
+  // edits sets, not notes, but it rebuilds the queue entry wholesale, so a field
+  // it doesn't carry is a field it deletes. Only populated for the guest and
+  // pending backends, whose notes live in the entry being rewritten; synced
+  // notes are their own server rows and the edit never touches them.
+  note?: string | null;
   sets: EditSet[];
 }
 
@@ -198,6 +205,7 @@ export default function EditWorkoutScreen() {
             category: ex.category,
             metric_type: ex.metric_type,
             supersetGroup: typeof ex.superset_group === 'number' ? ex.superset_group : null,
+            note: ex.note ?? null,
             sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: w.started_at, durationSeconds: w.duration_seconds });
@@ -227,6 +235,7 @@ export default function EditWorkoutScreen() {
             category: ex.def.category,
             metric_type: metricTypeOf(ex.def),
             supersetGroup: ex.supersetGroup ?? null,
+            note: ex.note ?? null,
             sets: ex.sets.map((s) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
           })));
           setMeta({ startedAt: pending.startedAtIso, durationSeconds: pending.durationSeconds });
@@ -418,7 +427,11 @@ export default function EditWorkoutScreen() {
           );
         return { ex, sets };
       })
-      .filter((e) => e.sets.length > 0);
+      // An exercise with no sets left is dropped, unless it carries a session
+      // note (migration 0080) — that note is the only reason it's in the
+      // workout at all, and dropping the row would delete it. Mirrors
+      // keepInSavedWorkout on the workout screen.
+      .filter((e) => e.sets.length > 0 || !!e.ex.note?.trim());
 
     const allSets = cleaned.flatMap((e) => e.sets);
     if (allSets.length === 0) {
@@ -447,6 +460,7 @@ export default function EditWorkoutScreen() {
             category: e.ex.category,
             metric_type: metricTypeOf(e.ex),
             superset_group: e.ex.supersetGroup ?? null,
+            note: e.ex.note ?? null,
             sets: e.sets.map((s) => ({
               weight_kg: s.weight_kg, reps: s.reps,
               duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,
@@ -478,6 +492,10 @@ export default function EditWorkoutScreen() {
         },
         resolvedExerciseId: e.ex.exerciseId && !String(e.ex.exerciseId).startsWith('temp-') ? e.ex.exerciseId : null,
         supersetGroup: e.ex.supersetGroup ?? null,
+        // Undefined for the synced backend (its notes are separate server rows
+        // this screen never loads), so this only ever carries the guest and
+        // pending notes back into the entry it just rebuilt.
+        note: e.ex.note ?? null,
         sets: e.sets.map((s, idx) => ({
           weight_kg: s.weight_kg, reps: s.reps, order: idx,
           duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance,

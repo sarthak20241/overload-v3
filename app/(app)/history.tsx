@@ -54,6 +54,12 @@ const MONTH_FULL = [
 interface ExerciseDetail {
   name: string;
   metric_type?: MetricType;
+  // How this exercise went in this session (workout_exercise_notes, migration
+  // 0080) — "shoulders felt sore on the last two sets". Written during the
+  // workout, read-only here. All three sources land it in the same field:
+  // signed-in rows from the nested select below, guests from the inline
+  // exercise object, pending-sync rows from lib/pendingAdapters.
+  note?: string | null;
   // Superset group. Signed-in/pending rows carry it per-set; guest workouts carry
   // it at the exercise level. groupOf() reads exercise-level first, then per-set.
   superset_group?: number | null;
@@ -535,7 +541,11 @@ function SessionCard({
           {workout.exercises && workout.exercises.length > 0 ? (
             workout.exercises.map((ex, i) => {
               const completedSets = ex.sets?.filter(s => s.completed) || [];
-              if (completedSets.length === 0) return null;
+              const sessionNote = ex.note?.trim() || '';
+              // No sets logged and nothing said about it: not part of the record.
+              // With a note, the row stays so the note has somewhere to live.
+              if (completedSets.length === 0 && !sessionNote) return null;
+              const logged = completedSets.length > 0;
               const mt = metricTypeOf(ex);
               // Superset grouping rides on the sets (per-set superset_group). Members
               // stay contiguous under the first-seen ordering, so flag the first of
@@ -556,6 +566,11 @@ function SessionCard({
                   <View style={[styles.exerciseRow, grouped ? { borderLeftWidth: 3, borderLeftColor: Colors.primary, paddingLeft: 10 } : null]}>
                   <View style={styles.exerciseInfo}>
                     <Text style={[styles.exerciseName, { color: C.foreground }]}>{ex.name}</Text>
+                    {/* Says why there are no pills, so a note-only row doesn't
+                        read as a rendering glitch. */}
+                    {logged ? null : (
+                      <Text style={[styles.exerciseNoSets, { color: C.textMuted }]}>No sets logged</Text>
+                    )}
                     <View style={styles.setPills}>
                       {completedSets.map((set, si) => (
                         <View
@@ -577,11 +592,25 @@ function SessionCard({
                         </View>
                       ))}
                     </View>
+                    {/* What the user said about this exercise during the
+                        session. Sits under the set pills, quiet enough not to
+                        compete with them but full-width and unclipped, since
+                        the whole point is reading it back later. */}
+                    {sessionNote ? (
+                      <View style={styles.exerciseNoteRow}>
+                        <Feather name="message-square" size={10} color={C.textMuted} style={styles.exerciseNoteIcon} />
+                        <Text style={[styles.exerciseNoteText, { color: C.mutedFg }]}>{sessionNote}</Text>
+                      </View>
+                    ) : null}
                   </View>
-                  <View style={styles.exerciseBest}>
-                    <Text style={[styles.bestWeight, { color: C.accentText }]}>{setBestLabel(mt, completedSets)}</Text>
-                    <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
-                  </View>
+                  {/* No sets means no best to show — and setBestLabel has no
+                      defined answer for an empty list. */}
+                  {logged ? (
+                    <View style={styles.exerciseBest}>
+                      <Text style={[styles.bestWeight, { color: C.accentText }]}>{setBestLabel(mt, completedSets)}</Text>
+                      <Text style={[styles.bestLabel, { color: C.textMuted }]}>best</Text>
+                    </View>
+                  ) : null}
                   </View>
                 </View>
               );
@@ -696,7 +725,10 @@ export default function HistoryScreen() {
     const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     let q = supabase
       .from('workouts')
-      .select('*, workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type))')
+      // The notes embed carries its own exercises(name) join: an exercise can be
+      // in a workout for its note alone (no completed sets), and then there is no
+      // workout_sets row to read the name from.
+      .select('*, workout_exercise_notes(exercise_id, note, exercises(name, metric_type)), workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -705,14 +737,32 @@ export default function HistoryScreen() {
       if (error) throw error;
       // Transform supabase data to include exercises grouping
       const transformed = (data || []).map((w: any) => {
+        // Per-exercise session notes, keyed by exercise so the grouping below
+        // can hang each one off its exercise. Most match an exercise that has
+        // sets; one written on an exercise with no completed sets has no set
+        // rows at all, and is appended as a sets-less entry after the grouping.
+        const noteByExercise: Record<string, { note: string; name?: string; metric_type?: MetricType }> = {};
+        (w.workout_exercise_notes || []).forEach((n: any) => {
+          if (n?.exercise_id && typeof n.note === 'string') {
+            noteByExercise[n.exercise_id] = { note: n.note, name: n.exercises?.name, metric_type: n.exercises?.metric_type };
+          }
+        });
         const exerciseMap: Record<string, ExerciseDetail> = {};
         (w.workout_sets || []).forEach((s: any) => {
           const exId = s.exercise_id;
           if (!exerciseMap[exId]) {
-            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, sets: [] };
+            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, note: noteByExercise[exId]?.note ?? null, sets: [] };
           }
           exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe, is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right, superset_group: s.superset_group });
         });
+        // Notes written on an exercise the user logged no sets for ("shoulders
+        // felt sore so I skipped this"). They have no set rows to group, so
+        // append them as sets-less entries; the row renders name + note only.
+        for (const [exId, n] of Object.entries(noteByExercise)) {
+          if (!exerciseMap[exId]) {
+            exerciseMap[exId] = { name: n.name || 'Exercise', metric_type: n.metric_type, note: n.note, sets: [] };
+          }
+        }
         return {
           ...w,
           exercises: Object.values(exerciseMap),
@@ -1357,6 +1407,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
+  },
+  exerciseNoSets: {
+    fontSize: FontSize.xs,
+    fontStyle: 'italic',
+    marginBottom: 2,
+  },
+  // Per-exercise session note. Icon is top-aligned rather than centered so it
+  // stays beside the first line when the note wraps to several.
+  exerciseNoteRow: {
+    flexDirection: 'row',
+    gap: 5,
+    marginTop: 6,
+    paddingRight: 4,
+  },
+  exerciseNoteIcon: {
+    marginTop: 2,
+  },
+  exerciseNoteText: {
+    flex: 1,
+    fontSize: FontSize.xs,
+    lineHeight: 16,
   },
   setPill: {
     paddingHorizontal: 8,
