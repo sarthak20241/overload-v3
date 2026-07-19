@@ -36,6 +36,7 @@ import {
   workoutCoachReviewRequest,
 } from '@/lib/workoutCoach';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
+import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 
@@ -132,9 +133,16 @@ function structuredToPlan(input: Record<string, unknown>): GeneratedPlan {
   };
 }
 
-// ─── Sparkle Icon ────────────────────────────────────────────────────────────
-function SparkleIcon({ size = 20, color = '#4d7a00' }: { size?: number; color?: string }) {
-  return <Feather name="zap" size={size} color={color} />;
+// ─── Coach mark ──────────────────────────────────────────────────────────────
+// Drona's arrowhead identity (DronaMark) behind the legacy SparkleIcon name so
+// every coach surface in this modal swaps at once. Default state is 'static'
+// (no animation loops) because several of these render inside scrolling lists.
+function SparkleIcon({
+  size = 20,
+  color = '#4d7a00',
+  state = 'static',
+}: { size?: number; color?: string; state?: DronaMarkState }) {
+  return <DronaMark size={size} color={color} state={state} />;
 }
 
 // ─── Thinking Indicator (Phase 2.6) ──────────────────────────────────────────
@@ -705,7 +713,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
       {/* Center icon */}
       <View style={s.menuCenter}>
         <View style={[s.menuIconWrap, { backgroundColor: C.primarySubtle }]}>
-          <SparkleIcon size={28} color={C.accentText} />
+          <SparkleIcon size={28} color={C.accentText} state="idle" />
         </View>
         <Text style={[s.menuTitle, { color: C.foreground }]}>What would you like to do?</Text>
         <Text style={[s.menuSub, { color: C.mutedFg }]}>Knows every rep and PR you've logged. Ask, plan, or build.</Text>
@@ -790,6 +798,15 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // Header mark: traces while waiting on the coach, releases when the reply
+  // lands, static until the first send.
+  const everLoadedRef = useRef(false);
+  // Set after commit, not during render: React may discard a render pass, and
+  // a ref written there would keep the flag from a pass the user never saw.
+  useEffect(() => {
+    if (loading) everLoadedRef.current = true;
+  }, [loading]);
+  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
@@ -976,7 +993,7 @@ function ChatScreen({
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} />
+        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {workoutContext ? 'Coach Drona · Live session' : 'Chat with Coach Drona'}
         </Text>
@@ -1140,7 +1157,7 @@ function WorkoutCard({
       {showRationale && workout.rationale && (
         <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
           <View style={s.rationaleHeader}>
-            <Feather name="zap" size={11} color={C.accentText} />
+            <SparkleIcon size={11} color={C.accentText} />
             <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
           </View>
           <Text style={[s.rationaleText, { color: C.foreground }]}>
@@ -1467,7 +1484,7 @@ function GeneratePlanScreen({
             {result.rationale && (
               <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
                 <View style={s.rationaleHeader}>
-                  <Feather name="zap" size={11} color={C.accentText} />
+                  <SparkleIcon size={11} color={C.accentText} />
                   <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
                 </View>
                 <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
@@ -2172,6 +2189,15 @@ function RefineChatScreen({
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // Header mark: traces while waiting on the coach, releases when the reply
+  // lands, static until the first send.
+  const everLoadedRef = useRef(false);
+  // Set after commit, not during render: React may discard a render pass, and
+  // a ref written there would keep the flag from a pass the user never saw.
+  useEffect(() => {
+    if (loading) everLoadedRef.current = true;
+  }, [loading]);
+  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Stable abort handle — refine turns can run long when the model
   // decides to fetch the user's volume series before proposing changes.
@@ -2377,7 +2403,7 @@ function RefineChatScreen({
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} />
+        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_plan' ? 'Plan' : 'Workout'}
         </Text>
@@ -2818,7 +2844,7 @@ export function AICoachModal({
                   activeOpacity={0.85}
                 >
                   <View style={s.upgradeBannerLeft}>
-                    <Feather name="zap" size={14} color={C.accentText} />
+                    <SparkleIcon size={14} color={C.accentText} />
                     <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
                       {typeof access.daysLeft === 'number'
                         ? `Trial · ${Math.max(0, Math.ceil(access.daysLeft))} day${Math.ceil(access.daysLeft) === 1 ? '' : 's'} left`

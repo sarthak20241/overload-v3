@@ -36,6 +36,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useTheme } from '@/hooks/useTheme';
 import type { CoachAccess } from '@/hooks/useCoachAccess';
 import { Paywall } from './Paywall';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 type GateScreen =
   | 'allow'                  // pass-through: caller renders the real content
@@ -261,7 +262,7 @@ function GateBody({
         {screen === 'start_trial' && (
           <View style={s.card}>
             <View style={[s.iconWrap, { backgroundColor: C.primarySubtle }]}>
-              <Feather name="zap" size={28} color={C.accentText} />
+              <DronaMark size={28} color={C.accentText} state="idle" />
             </View>
             <Text style={[s.cardTitle, { color: C.foreground }]}>
               Try Coach Drona free for 7 days

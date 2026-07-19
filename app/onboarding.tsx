@@ -1,20 +1,23 @@
 /**
  * First-run onboarding: the intake that makes the app worth opening on day
- * one. Seven beats, roughly a minute end to end:
+ * one. Nine beats, roughly a minute end to end:
  *
  *   welcome    orientation: what Overload is, in Drona's voice
  *   goal       what the user trains for (rep ranges, calorie direction)
  *   experience how long they've lifted (starting volume)
- *   frequency  days per week (split choice, activity factor)
- *   body       gender, age, height, weight (coach context + BMR math)
+ *   frequency  days per week as a story slider (split choice, activity factor)
+ *   gender     one tap, auto-advance (BMR math)
+ *   age        age wheel, the page hero (BMR math)
+ *   height     height wheel (BMR math)
+ *   weight     current weight ruler (BMR + coach context)
  *   target     goal weight (diet direction)
  *   plan       the payoff: starter routines + daily calorie/macro targets
  *              generated from the answers, expectation-setting from the
  *              coach, and the activation CTA
  *
  * Every answer visibly feeds the generated plan (that's what earns the
- * questions), single-select steps auto-advance to cut taps, every step can be
- * skipped, and the flow ends by creating real routines and fuel targets so
+ * questions), single-select steps auto-advance to cut taps, every step arrives
+ * pre-answered with a smart default (no skip affordance), and the flow ends by creating real routines and fuel targets so
  * the dashboard and nutrition screens are personalized from the first open.
  * Permissions are deliberately not requested here (see lib/onboarding.ts).
  */
@@ -22,14 +25,12 @@ import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
-  TextInput,
   StyleSheet,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
   TouchableOpacity,
-  Dimensions,
   BackHandler,
 } from 'react-native';
 import { useRouter, Redirect } from 'expo-router';
@@ -38,6 +39,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import {
   Colors,
+  FontFamily,
   Radius,
   FontSize,
   FontWeight,
@@ -55,19 +57,40 @@ import { useSync } from '@/components/SyncProvider';
 import { useToast } from '@/components/ui/Toast';
 import { PressableScale } from '@/components/ui/PressableScale';
 import {
+  OnboardingHeader,
+  OptionCard,
+  PrimaryCta,
+  QuestionStep,
+} from '@/components/onboarding/OnboardingKit';
+import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
+import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
+import { PaceSlider } from '@/components/onboarding/PaceSlider';
+import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
+import { BuildMoment } from '@/components/onboarding/BuildMoment';
+import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
+import { DronaMark } from '@/components/coach/DronaMark';
+import { DemoLoop } from '@/components/onboarding/DemoLoop';
+import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
   buildStarterRoutines,
   computeDailyTargets,
+  paceAdjustedTargets,
+  paceBounds,
+  projectGoalDateIso,
   createStarterRoutines,
   saveOnboardingProfile,
   markOnboardingDone,
   onboardingIdentity,
   splitNameFor,
 } from '@/lib/onboarding';
+import {
+  buildOnboardingIntakeMessage,
+  dronaPlanToStarterRoutines,
+  requestDronaOnboardingPlan,
+  type DronaOnboardingPlan,
+} from '@/lib/onboardingDrona';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const LBS_PER_KG = 2.20462;
 const MIN_AGE_YEARS = 13;
@@ -85,10 +108,13 @@ function formatMeasurement(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
 
-type Step = 'welcome' | 'goal' | 'experience' | 'frequency' | 'body' | 'target' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'body', 'target', 'plan'];
-// Segments shown in the progress header (welcome has no header).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'body', 'target', 'plan'];
+type Step =
+  | 'welcome' | 'goal' | 'experience' | 'frequency'
+  | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
+  | 'interlude' | 'commit' | 'build' | 'plan';
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+// Steps counted by the progress header (welcome and the build moment hide it).
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
@@ -104,7 +130,13 @@ const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.g
   { value: 'advanced', icon: 'award', title: 'Been at this a while', sub: 'Three plus years under the bar' },
 ];
 
-const FREQUENCY_OPTIONS = [2, 3, 4, 5, 6];
+const GOAL_PHRASES: Record<CoachGoal, string> = {
+  hypertrophy: 'Building muscle',
+  strength: 'Getting stronger',
+  fat_loss: 'Cutting fat, keeping muscle',
+  endurance: 'Building endurance',
+  general: 'Training for life',
+};
 
 const PLAN_TITLES: Record<CoachGoal, string> = {
   hypertrophy: 'Built for growth.',
@@ -117,7 +149,7 @@ const PLAN_TITLES: Record<CoachGoal, string> = {
 export default function OnboardingScreen() {
   const router = useRouter();
   const { C } = useTheme();
-  const { user, isSignedIn, isLoaded } = useClerkUser();
+  const { user, isSignedIn, isLoaded, getToken } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
   const { flushNow } = useSync();
   const supabaseClient = useSupabaseClient();
@@ -125,26 +157,167 @@ export default function OnboardingScreen() {
   const toast = useToast();
 
   const [step, setStep] = useState<Step>('welcome');
-  const [answers, setAnswers] = useState<OnboardingAnswers>(EMPTY_ANSWERS);
+  // Smart defaults (plan, psychology layer): every single-select step arrives
+  // pre-answered with the most common choice, so Continue is always one tap and
+  // the pre-selection reads as a recommendation.
+  const [answers, setAnswers] = useState<OnboardingAnswers>({
+    ...EMPTY_ANSWERS,
+    goal: 'hypertrophy',
+    experience: 'beginner',
+    frequency: 3,
+  });
   const [finishing, setFinishing] = useState(false);
 
-  // Body/target inputs live as strings until their step commits them.
-  const [ageStr, setAgeStr] = useState('');
-  const [weightStr, setWeightStr] = useState('');
+  // Body/target inputs are picker-backed numbers, prefilled with population
+  // medians (smart defaults): scan and adjust, never fill from scratch.
+  const [ageYears, setAgeYears] = useState(24);
   const [weightUnit, setWeightUnit] = useState<'kg' | 'lbs'>('kg');
   const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>('cm');
-  const [heightCmStr, setHeightCmStr] = useState('');
-  const [heightFtStr, setHeightFtStr] = useState('');
-  const [heightInStr, setHeightInStr] = useState('');
-  const [targetStr, setTargetStr] = useState('');
+  const [heightCm, setHeightCm] = useState(172);
+  const [heightFt, setHeightFt] = useState(5);
+  const [heightIn, setHeightIn] = useState(8);
+  /** Current weight in the DISPLAY unit. */
+  const [weightVal, setWeightVal] = useState(72.5);
+  /** Goal weight in the DISPLAY unit; seeded from weight on first visit. */
+  const [targetVal, setTargetVal] = useState(72.5);
+  const targetTouched = useRef(false);
+  /** Chosen weekly rate (kg/week); null until a weight direction exists. */
+  const [weeklyRate, setWeeklyRate] = useState<number | null>(null);
 
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
   }, []);
 
+  const toDisplay = useCallback(
+    (kg: number) => (weightUnit === 'lbs' ? Math.round(kg * LBS_PER_KG) : Math.round(kg * 2) / 2),
+    [weightUnit],
+  );
+  const toKg = useCallback(
+    (v: number) => (weightUnit === 'lbs' ? Math.round((v / LBS_PER_KG) * 10) / 10 : v),
+    [weightUnit],
+  );
+
+  // Deterministic engine: instant, curated, always available. It is the
+  // fallback and the floor of quality; Drona's generated plan replaces it
+  // when generation succeeds (Phase 3b).
   const plan = useMemo(() => buildStarterRoutines(answers), [answers]);
-  const targets = useMemo(() => computeDailyTargets(answers), [answers]);
+
+  // Drona generation state. `buildReady` gates BuildMoment's final tick, so
+  // the build screen elastically holds the thinking state while the LLM runs.
+  const [dronaPlan, setDronaPlan] = useState<DronaOnboardingPlan | null>(null);
+  const [buildReady, setBuildReady] = useState(false);
+  const generationStarted = useRef(false);
+  const finalPlan = dronaPlan?.routines ?? plan;
+
+  // Live pace context for the target step: uses the DRAFT target value (not
+  // yet committed to answers) so the outcome card updates as the ruler moves.
+  const paceCtx = useMemo(() => {
+    const w = toKg(weightVal);
+    const t = toKg(targetVal);
+    if (!inRange(w, MIN_WEIGHT_KG, MAX_WEIGHT_KG) || !inRange(t, MIN_WEIGHT_KG, MAX_WEIGHT_KG)) return null;
+    const diff = t - w;
+    if (Math.abs(diff) < 1) return null;
+    const direction: 'loss' | 'gain' = diff < 0 ? 'loss' : 'gain';
+    return { direction, bounds: paceBounds(direction, w), draft: { ...answers, weightKg: w, goalWeightKg: t } };
+  }, [answers, weightVal, targetVal, toKg]);
+
+  // Seed / re-seed the rate at the recommended pace whenever direction flips.
+  const lastDirection = useRef<'loss' | 'gain' | null>(null);
+  useEffect(() => {
+    const dir = paceCtx?.direction ?? null;
+    if (dir !== lastDirection.current) {
+      lastDirection.current = dir;
+      setWeeklyRate(paceCtx ? paceCtx.bounds.recommended : null);
+    }
+  }, [paceCtx]);
+
+  const targets = useMemo(() => {
+    if (weeklyRate != null) {
+      const paced = paceAdjustedTargets(answers, weeklyRate);
+      if (paced) return paced;
+    }
+    return computeDailyTargets(answers);
+  }, [answers, weeklyRate]);
+
+  const paceDate = useMemo(() => {
+    if (!paceCtx || weeklyRate == null) return null;
+    const iso = projectGoalDateIso(paceCtx.draft, weeklyRate);
+    if (!iso) return null;
+    const d = new Date(iso);
+    const now = new Date();
+    const far = d.getTime() - now.getTime() > 330 * 24 * 3600 * 1000;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(far ? { year: 'numeric' } : {}) });
+  }, [paceCtx, weeklyRate]);
+
+  const pacedPreview = useMemo(() => {
+    if (!paceCtx || weeklyRate == null) return null;
+    return paceAdjustedTargets(paceCtx.draft, weeklyRate);
+  }, [paceCtx, weeklyRate]);
+
+  // Reveal headline: the goal restated as a date when there is one.
+  const revealTitle = useMemo(() => {
+    if (paceCtx && paceDate) {
+      const diff = Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1).replace(/\.0$/, '');
+      return `${paceCtx.direction === 'loss' ? 'Down' : 'Up'} ${diff} kg by ${paceDate}.`;
+    }
+    return PLAN_TITLES[answers.goal ?? 'general'];
+  }, [paceCtx, paceDate, targetVal, weightVal, toKg, answers.goal]);
+
+  // Fire Drona generation the moment the commit step mounts: the hold ritual
+  // and confetti buy ~4 s of overlap before the build screen even appears,
+  // and BuildMoment absorbs the rest elastically. One shot per session; any
+  // failure quietly falls back to the deterministic plan (never surfaced).
+  useEffect(() => {
+    if (step !== 'commit' || generationStarted.current) return;
+    generationStarted.current = true;
+    if (!isSignedIn || !getToken) {
+      setBuildReady(true); // guests get the curated starter plan for now
+      return;
+    }
+    // No cancellation on step change: the user moves commit -> build while
+    // the request is in flight, and the result must still land. Post-unmount
+    // setState is a no-op in React 18, so this is safe.
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) throw new Error('no token');
+        const direction =
+          answers.goalWeightKg && answers.weightKg && Math.abs(answers.goalWeightKg - answers.weightKg) >= 1
+            ? answers.goalWeightKg < answers.weightKg ? 'loss' as const : 'gain' as const
+            : null;
+        const message = buildOnboardingIntakeMessage(answers, {
+          weeklyRateKg: weeklyRate,
+          direction,
+          targets: targets
+            ? { kcal: targets.kcal, protein: targets.protein, carb: targets.carb, fat: targets.fat }
+            : null,
+        });
+        const input = await requestDronaOnboardingPlan({ token, message });
+        const mapped = dronaPlanToStarterRoutines(input);
+        if (mapped) setDronaPlan(mapped);
+      } catch {
+        /* fall back to the deterministic plan; the reveal never knows */
+      } finally {
+        setBuildReady(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on commit entry
+  }, [step]);
+
+  // The weekly rhythm, said out loud. With fewer workouts than training days
+  // ("3 days but only Full Body A and B?"), spell out the rotation so the plan
+  // never reads like it shrank.
+  const rhythmNote = useMemo(() => {
+    const freq = answers.frequency ?? 3;
+    if (finalPlan.length === 0 || finalPlan.length >= freq) return null;
+    const week = Array.from({ length: freq }, (_, idx) => finalPlan[idx % finalPlan.length].name);
+    const short = (n: string) => n.replace('Full Body ', '');
+    const seq = week.map(short).join(', ');
+    return finalPlan.length === 2
+      ? `${freq} sessions from ${finalPlan.length} workouts: this week goes ${seq}. Next week flips.`
+      : `${freq} sessions from ${finalPlan.length} workouts: rotate ${seq}, and keep rolling.`;
+  }, [answers.frequency, finalPlan]);
   const identity = onboardingIdentity(isSignedIn ? user?.id ?? null : null);
 
   const goTo = useCallback((next: Step) => {
@@ -157,7 +330,10 @@ export default function OnboardingScreen() {
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
-  const prevStep = STEP_ORDER[Math.max(stepIndex - 1, 0)];
+  const prevStep: Step =
+    step === 'interlude' || step === 'plan'
+      ? (paceCtx ? 'pace' : 'target')
+      : STEP_ORDER[Math.max(stepIndex - 1, 0)];
 
   // Android hardware/gesture back mirrors the header chevron instead of
   // popping the (single-entry) root stack, which would exit the app mid-quiz.
@@ -165,6 +341,7 @@ export default function OnboardingScreen() {
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (step === 'welcome') return false; // let the OS handle it
+      if (step === 'build') return true; // no backing out mid-build
       goTo(STEP_ORDER[Math.max(STEP_ORDER.indexOf(step) - 1, 0)]);
       return true;
     });
@@ -186,98 +363,82 @@ export default function OnboardingScreen() {
     [nextStep],
   );
 
-  const parsedWeightKg = useMemo(() => {
-    const w = parseFloat(weightStr);
-    if (!Number.isFinite(w)) return null;
-    const kg = weightUnit === 'lbs' ? Math.round((w / LBS_PER_KG) * 10) / 10 : w;
-    return inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null;
-  }, [weightStr, weightUnit]);
-
   const toggleWeightUnit = useCallback(() => {
     const nextUnit = weightUnit === 'kg' ? 'lbs' : 'kg';
-    const convert = (value: string) => {
-      const parsed = parseFloat(value);
-      if (!Number.isFinite(parsed)) return value;
-      const converted = nextUnit === 'lbs' ? parsed * LBS_PER_KG : parsed / LBS_PER_KG;
-      return formatMeasurement(converted);
-    };
-    setWeightStr(convert);
-    setTargetStr(convert);
+    const convert = (v: number) =>
+      nextUnit === 'lbs' ? Math.round(v * LBS_PER_KG) : Math.round((v / LBS_PER_KG) * 2) / 2;
+    setWeightVal(convert);
+    setTargetVal(convert);
     setWeightUnit(nextUnit);
   }, [weightUnit]);
 
   const toggleHeightUnit = useCallback(() => {
     if (heightUnit === 'cm') {
-      const cm = parseFloat(heightCmStr);
-      if (Number.isFinite(cm) && cm > 0) {
-        const totalInches = cm / 2.54;
-        let feet = Math.floor(totalInches / 12);
-        let inches = Math.round((totalInches - feet * 12) * 10) / 10;
-        if (inches >= 12) {
-          feet += 1;
-          inches = 0;
-        }
-        setHeightFtStr(String(feet));
-        setHeightInStr(formatMeasurement(inches));
+      const totalInches = heightCm / 2.54;
+      let feet = Math.floor(totalInches / 12);
+      let inches = Math.round(totalInches - feet * 12);
+      if (inches >= 12) {
+        feet += 1;
+        inches = 0;
       }
+      setHeightFt(Math.min(7, Math.max(4, feet)));
+      setHeightIn(inches);
       setHeightUnit('ft');
       return;
     }
-
-    const feet = parseFloat(heightFtStr);
-    const inches = parseFloat(heightInStr) || 0;
-    if (Number.isFinite(feet) && feet >= 0 && inRange(inches, 0, 11)) {
-      setHeightCmStr(formatMeasurement(feet * 30.48 + inches * 2.54));
-    }
+    setHeightCm(Math.min(MAX_HEIGHT_CM, Math.max(MIN_HEIGHT_CM, Math.round(heightFt * 30.48 + heightIn * 2.54))));
     setHeightUnit('cm');
-  }, [heightUnit, heightCmStr, heightFtStr, heightInStr]);
+  }, [heightUnit, heightCm, heightFt, heightIn]);
 
-  const commitBodyStep = useCallback(() => {
-    const age = parseInt(ageStr, 10);
-    let heightCm: number | null = null;
-    if (heightUnit === 'cm') {
-      const h = parseFloat(heightCmStr);
-      if (inRange(h, MIN_HEIGHT_CM, MAX_HEIGHT_CM)) heightCm = h;
-    } else {
-      const ft = parseFloat(heightFtStr);
-      const inch = parseFloat(heightInStr) || 0;
-      const cm = Math.round((ft * 30.48 + inch * 2.54) * 10) / 10;
-      if (Number.isFinite(ft) && ft > 0 && inRange(inch, 0, 11) && inRange(cm, MIN_HEIGHT_CM, MAX_HEIGHT_CM)) {
-        heightCm = cm;
-      }
-    }
+  const commitAgeStep = useCallback(() => {
     setAnswers((a) => ({
       ...a,
-      ageYears: inRange(age, MIN_AGE_YEARS, MAX_AGE_YEARS) ? age : null,
-      heightCm,
-      weightKg: parsedWeightKg,
+      ageYears: inRange(ageYears, MIN_AGE_YEARS, MAX_AGE_YEARS) ? ageYears : null,
     }));
+    goTo('height');
+  }, [ageYears, goTo]);
+
+  const commitHeightStep = useCallback(() => {
+    const cm = heightUnit === 'cm' ? heightCm : Math.round((heightFt * 30.48 + heightIn * 2.54) * 10) / 10;
+    setAnswers((a) => ({
+      ...a,
+      heightCm: inRange(cm, MIN_HEIGHT_CM, MAX_HEIGHT_CM) ? cm : null,
+    }));
+    goTo('weight');
+  }, [heightUnit, heightCm, heightFt, heightIn, goTo]);
+
+  const commitWeightStep = useCallback(() => {
+    const kg = toKg(weightVal);
+    setAnswers((a) => ({
+      ...a,
+      weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
+    }));
+    // Seed the goal weight from the current weight the first time through, so
+    // the target step opens on "holding steady" and one flick sets direction.
+    if (!targetTouched.current) setTargetVal(weightVal);
     goTo('target');
-  }, [ageStr, heightUnit, heightCmStr, heightFtStr, heightInStr, parsedWeightKg, goTo]);
+  }, [weightVal, toKg, goTo]);
 
   const commitTargetStep = useCallback(() => {
-    const t = parseFloat(targetStr);
-    const candidateKg = Number.isFinite(t)
-      ? (weightUnit === 'lbs' ? Math.round((t / LBS_PER_KG) * 10) / 10 : t)
-      : null;
-    const kg = candidateKg != null && inRange(candidateKg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? candidateKg : null;
-    setAnswers((a) => ({ ...a, goalWeightKg: kg }));
-    goTo('plan');
-  }, [targetStr, weightUnit, goTo]);
+    const kg = toKg(targetVal);
+    setAnswers((a) => ({
+      ...a,
+      goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null,
+    }));
+    // Pace is only a question when the target sets a direction; holding steady
+    // goes straight to the reveal.
+    goTo(paceCtx ? 'pace' : 'interlude');
+  }, [targetVal, toKg, goTo, paceCtx]);
 
-  // Live hint under the goal-weight input: name the direction so the number
+  // Live hint under the goal-weight ruler: name the direction so the number
   // feels read, not just stored.
   const targetHint = useMemo(() => {
-    const t = parseFloat(targetStr);
-    const w = parseFloat(weightStr);
-    if (isNaN(t) || t <= 0) return 'A number to aim at. Skip it if you train for the craft.';
-    if (isNaN(w) || w <= 0) return 'Noted. Add your current weight and I can pace it.';
-    const diff = Math.round(Math.abs(t - w) * 10) / 10;
+    const diff = Math.round(Math.abs(targetVal - weightVal) * 10) / 10;
     if (diff < 1) return 'Holding steady at your current weight. Good.';
-    return t < w
-      ? `A ${diff} ${weightUnit} cut. Your calorie budget will match.`
-      : `A ${diff} ${weightUnit} build. We will eat for it.`;
-  }, [targetStr, weightStr, weightUnit]);
+    return targetVal < weightVal
+      ? `${diff} ${weightUnit} down. Your calorie budget will match.`
+      : `${diff} ${weightUnit} up. We will eat for it.`;
+  }, [targetVal, weightVal, weightUnit]);
 
   const completeOnboarding = useCallback(
     async (opts: { createPlan: boolean; dest: '/(app)' | '/(app)/routines' }) => {
@@ -294,7 +455,7 @@ export default function OnboardingScreen() {
         // so Profile reflects the intake immediately.
         basicInfo.setWeightUnit(weightUnit);
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
-        if (opts.createPlan) await createStarterRoutines(plan, target);
+        if (opts.createPlan) await createStarterRoutines(finalPlan, target);
         await markOnboardingDone(identity);
         if (opts.createPlan) {
           void flushNow();
@@ -311,7 +472,7 @@ export default function OnboardingScreen() {
         setFinishing(false);
       }
     },
-    [answers, targets, plan, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
+    [answers, targets, finalPlan, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
   );
 
   const skipEverything = useCallback(async () => {
@@ -330,54 +491,18 @@ export default function OnboardingScreen() {
   if (!isLoaded || !guestLoaded) return null;
   if (!isSignedIn && !isGuest) return <Redirect href="/(auth)" />;
 
-  const showHeader = step !== 'welcome';
-  const showSkip = step !== 'welcome' && step !== 'plan';
+  const showHeader = step !== 'welcome' && step !== 'build';
   const progressIndex = PROGRESS_STEPS.indexOf(step);
-
-  const skipStep = () => goTo(nextStep);
 
   return (
     <SafeAreaView style={[s.safeArea, { backgroundColor: C.background }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        {/* Background glow, same treatment as the auth screen */}
-        <View style={[s.bgGlow, { backgroundColor: C.accentText, opacity: 0.04 }]} />
-
         {showHeader && (
-          <View style={s.header}>
-            <TouchableOpacity
-              onPress={() => goTo(prevStep)}
-              style={s.backBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Back"
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Feather name="chevron-left" size={IconSize.lg} color={C.textMuted} />
-            </TouchableOpacity>
-            <View style={s.progressTrack}>
-              {PROGRESS_STEPS.map((ps, idx) => (
-                <View
-                  key={ps}
-                  style={[
-                    s.progressSegment,
-                    // accentText, not raw lime: identical in dark, readable on cream in light.
-                    { backgroundColor: idx <= progressIndex ? C.accentText : C.muted },
-                  ]}
-                />
-              ))}
-            </View>
-            {showSkip ? (
-              <TouchableOpacity
-                onPress={skipStep}
-                accessibilityRole="button"
-                accessibilityLabel="Skip this step"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={[s.skipText, { color: C.textMuted }]}>Skip</Text>
-              </TouchableOpacity>
-            ) : (
-              <View style={s.skipSpacer} />
-            )}
-          </View>
+          <OnboardingHeader
+            onBack={() => goTo(prevStep)}
+            progressIndex={progressIndex}
+            progressTotal={PROGRESS_STEPS.length}
+          />
         )}
 
         {step === 'welcome' && (
@@ -401,39 +526,18 @@ export default function OnboardingScreen() {
                 A few quick questions, and I will build your training plan and daily fuel targets around you.
               </Animated.Text>
 
-              <View style={s.valueRows}>
-                {(
-                  [
-                    { icon: 'edit-3', text: 'Log sets in seconds, even offline' },
-                    { icon: 'trending-up', text: 'See the strength curve on every lift' },
-                    { icon: 'pie-chart', text: 'Calories and macros sized to your stats' },
-                    { icon: 'message-circle', text: 'Coach Drona reads your training, not a script' },
-                  ] as const
-                ).map((row, idx) => (
-                  <Animated.View
-                    key={row.icon}
-                    entering={FadeInDown.delay(340 + idx * 90).duration(450)}
-                    style={s.valueRow}
-                  >
-                    <View style={[s.valueIcon, { backgroundColor: C.muted }]}>
-                      <Feather name={row.icon} size={IconSize.xs} color={C.accentText} />
-                    </View>
-                    <Text style={[s.valueText, { color: C.textSecondary }]}>{row.text}</Text>
-                  </Animated.View>
-                ))}
-              </View>
+              {/* The product demos itself: real capture, no feature bullets. */}
+              <Animated.View entering={FadeInDown.delay(360).duration(500)} style={s.demoWrap}>
+                <DemoLoop width={200} />
+              </Animated.View>
             </View>
 
             <Animated.View entering={FadeInDown.delay(700).duration(450)} style={s.footer}>
-              <PressableScale
+              <PrimaryCta
+                label="Let's set you up"
                 onPress={() => goTo('goal')}
-                style={[s.primaryBtn, Shadow.playBtn]}
-                accessibilityRole="button"
                 accessibilityLabel="Start setup"
-              >
-                <Text style={s.primaryBtnText}>Let's set you up</Text>
-                <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-              </PressableScale>
+              />
               <TouchableOpacity
                 onPress={skipEverything}
                 disabled={finishing}
@@ -448,336 +552,375 @@ export default function OnboardingScreen() {
         )}
 
         {step === 'goal' && (
-          <Animated.View key="goal" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>THE GOAL</Text>
-              <Text style={[s.question, { color: C.foreground }]}>What are you training for?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                This decides your rep ranges, rest times, and which way your calories lean.
-              </Text>
-              <View style={s.options}>
-                {GOAL_OPTIONS.map((opt, idx) => (
-                  <OptionCard
-                    key={opt.value}
-                    index={idx}
-                    icon={opt.icon}
-                    title={opt.title}
-                    sub={opt.sub}
-                    selected={answers.goal === opt.value}
-                    onPress={() => selectAndAdvance({ goal: opt.value })}
-                  />
-                ))}
-              </View>
-            </ScrollView>
-          </Animated.View>
+          <QuestionStep
+            stepKey="goal"
+            question="What are you training for?"
+            sub="This decides your rep ranges, rest times, and which way your calories lean."
+            caption="Most lifters start here. You can change it anytime."
+          >
+            <View style={s.options}>
+              {GOAL_OPTIONS.map((opt, idx) => (
+                <OptionCard
+                  key={opt.value}
+                  index={idx}
+                  icon={opt.icon}
+                  title={opt.title}
+                  sub={opt.sub}
+                  selected={answers.goal === opt.value}
+                  onPress={() => selectAndAdvance({ goal: opt.value })}
+                />
+              ))}
+            </View>
+          </QuestionStep>
         )}
 
         {step === 'experience' && (
-          <Animated.View key="experience" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>EXPERIENCE</Text>
-              <Text style={[s.question, { color: C.foreground }]}>How long have you been lifting?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                Sets your starting volume. It grows as you do.
-              </Text>
-              <View style={s.options}>
-                {EXPERIENCE_OPTIONS.map((opt, idx) => (
-                  <OptionCard
-                    key={opt.value}
-                    index={idx}
-                    icon={opt.icon}
-                    title={opt.title}
-                    sub={opt.sub}
-                    selected={answers.experience === opt.value}
-                    onPress={() => selectAndAdvance({ experience: opt.value })}
-                  />
-                ))}
-              </View>
-            </ScrollView>
-          </Animated.View>
+          <QuestionStep
+            stepKey="experience"
+            question="How long have you been lifting?"
+            sub="Sets your starting volume. It grows as you do."
+          >
+            <View style={s.options}>
+              {EXPERIENCE_OPTIONS.map((opt, idx) => (
+                <OptionCard
+                  key={opt.value}
+                  index={idx}
+                  icon={opt.icon}
+                  title={opt.title}
+                  sub={opt.sub}
+                  selected={answers.experience === opt.value}
+                  onPress={() => selectAndAdvance({ experience: opt.value })}
+                />
+              ))}
+            </View>
+          </QuestionStep>
         )}
 
         {step === 'frequency' && (
-          <Animated.View key="frequency" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>SCHEDULE</Text>
-              <Text style={[s.question, { color: C.foreground }]}>How many days a week?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                Be honest. It sets your split and your calorie budget, and a plan you keep beats a plan you admire.
-              </Text>
-              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.freqRow}>
-                {FREQUENCY_OPTIONS.map((n) => {
-                  const selected = answers.frequency === n;
+          <QuestionStep
+            stepKey="frequency"
+            question="How many days a week?"
+            sub="Be honest. A plan you keep beats a plan you admire."
+            caption={`${splitNameFor(answers.frequency)} split`}
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('gender')} />}
+          >
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
+                <FrequencyStory
+                  value={answers.frequency ?? 3}
+                  onChange={(days) => setAnswers((a) => ({ ...a, frequency: days }))}
+                />
+              </Animated.View>
+          </QuestionStep>
+        )}
+
+        {step === 'gender' && (
+          <QuestionStep
+            stepKey="gender"
+            question="How should the math read you?"
+            sub="Gender changes the calorie equation, nothing else."
+          >
+              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.genderCol}>
+                {(
+                  [
+                    { value: 'M', label: 'Male' },
+                    { value: 'F', label: 'Female' },
+                    { value: 'O', label: 'Other' },
+                  ] as const
+                ).map((g) => {
+                  const selected = answers.gender === g.value;
                   return (
                     <PressableScale
-                      key={n}
-                      onPress={() => selectAndAdvance({ frequency: n })}
+                      key={g.value}
+                      onPress={() => selectAndAdvance({ gender: g.value })}
                       style={[
-                        s.freqChip,
+                        s.genderChip,
                         {
-                          backgroundColor: selected ? Colors.primary : C.card,
-                          borderColor: selected ? Colors.primary : C.borderSubtle,
+                          backgroundColor: selected ? C.primaryMuted : C.card,
+                          borderColor: selected ? C.primaryBorder : C.borderSubtle,
                         },
                       ]}
                       accessibilityRole="button"
-                      accessibilityLabel={`${n} days a week`}
+                      accessibilityLabel={g.label}
                       accessibilityState={{ selected }}
                     >
                       <Text
                         style={[
-                          s.freqChipText,
-                          { color: selected ? Colors.primaryFg : C.foreground },
+                          s.genderChipText,
+                          { color: selected ? C.accentText : C.textSecondary },
                         ]}
                       >
-                        {n}
+                        {g.label}
                       </Text>
                     </PressableScale>
                   );
                 })}
               </Animated.View>
-              <Animated.Text
-                entering={FadeInDown.delay(220).duration(400)}
-                style={[s.freqHint, { color: C.textDim }]}
-              >
-                {answers.frequency
-                  ? `${splitNameFor(answers.frequency)} split`
-                  : 'Your split adapts to the answer'}
-              </Animated.Text>
-            </ScrollView>
-          </Animated.View>
+          </QuestionStep>
         )}
 
-        {step === 'body' && (
-          <Animated.View key="body" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView
-              contentContainerStyle={s.stepScroll}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Text style={[s.eyebrow, { color: C.accentText }]}>ABOUT YOU</Text>
-              <Text style={[s.question, { color: C.foreground }]}>The numbers behind the math</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                These size your calorie and macro targets. Skip anything you'd rather not share.
-              </Text>
+        {step === 'age' && (
+          <QuestionStep
+            stepKey="age"
+            question="How old are you?"
+            sub="Age tunes your calorie baseline."
+            footer={<PrimaryCta label="Continue" onPress={commitAgeStep} />}
+          >
+              <View style={s.heroCenter}>
+                <NumberWheel
+                  min={MIN_AGE_YEARS}
+                  max={100}
+                  value={ageYears}
+                  onChange={setAgeYears}
+                  accessibilityLabel="Age in years"
+                />
+              </View>
+          </QuestionStep>
+        )}
 
-              <Animated.View entering={FadeInDown.delay(100).duration(400)}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>GENDER</Text>
-                <View style={s.genderRow}>
-                  {(
-                    [
-                      { value: 'M', label: 'Male' },
-                      { value: 'F', label: 'Female' },
-                      { value: 'O', label: 'Other' },
-                    ] as const
-                  ).map((g) => {
-                    const selected = answers.gender === g.value;
-                    return (
-                      <PressableScale
-                        key={g.value}
-                        onPress={() =>
-                          setAnswers((a) => ({ ...a, gender: selected ? null : g.value }))
-                        }
-                        style={[
-                          s.genderChip,
-                          {
-                            backgroundColor: selected ? C.primaryMuted : C.card,
-                            borderColor: selected ? C.primaryBorder : C.borderSubtle,
-                          },
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={g.label}
-                        accessibilityState={{ selected }}
-                      >
-                        <Text
-                          style={[
-                            s.genderChipText,
-                            { color: selected ? C.accentText : C.textSecondary },
-                          ]}
-                        >
-                          {g.label}
-                        </Text>
-                      </PressableScale>
-                    );
-                  })}
+        {step === 'height' && (
+          <QuestionStep
+            stepKey="height"
+            question="How tall are you?"
+            sub="Height anchors your calorie baseline."
+            footer={<PrimaryCta label="Continue" onPress={commitHeightStep} />}
+          >
+              <View style={s.heroCenter}>
+                <View style={s.fieldLabelRow}>
+                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
+                  <TouchableOpacity
+                    onPress={toggleHeightUnit}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Switch height unit, currently ${heightUnit === 'cm' ? 'centimeters' : 'feet and inches'}`}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[s.unitToggle, { color: C.accentText }]}>
+                      {heightUnit === 'cm' ? 'cm' : 'ft, in'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
-              </Animated.View>
-
-              <Animated.View entering={FadeInDown.delay(180).duration(400)} style={s.measureRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>AGE</Text>
-                  <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                    <TextInput
-                      placeholder="24"
-                      placeholderTextColor={C.textDim}
-                      value={ageStr}
-                      onChangeText={setAgeStr}
-                      keyboardType="number-pad"
-                      maxLength={3}
-                      accessibilityLabel="Age in years"
-                      style={[s.input, { color: C.foreground }]}
-                    />
-                    <Text style={[s.inputUnit, { color: C.textMuted }]}>yrs</Text>
-                  </View>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
-                  <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                    <TextInput
-                      placeholder={weightUnit === 'kg' ? '72' : '160'}
-                      placeholderTextColor={C.textDim}
-                      value={weightStr}
-                      onChangeText={setWeightStr}
-                      keyboardType="numeric"
-                      maxLength={6}
-                      accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                      style={[s.input, { color: C.foreground }]}
-                    />
-                    <TouchableOpacity
-                      onPress={toggleWeightUnit}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Switch weight unit, currently ${weightUnit}`}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Text style={[s.inputUnit, { color: C.accentText }]}>{weightUnit}</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </Animated.View>
-
-              <Animated.View entering={FadeInDown.delay(260).duration(400)} style={{ marginTop: Spacing.xl }}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>HEIGHT</Text>
                 {heightUnit === 'cm' ? (
-                  <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                    <TextInput
-                      placeholder="175"
-                      placeholderTextColor={C.textDim}
-                      value={heightCmStr}
-                      onChangeText={setHeightCmStr}
-                      keyboardType="numeric"
-                      maxLength={5}
-                      accessibilityLabel="Height in centimeters"
-                      style={[s.input, { color: C.foreground }]}
-                    />
-                    <TouchableOpacity
-                      onPress={toggleHeightUnit}
-                      accessibilityRole="button"
-                      accessibilityLabel="Switch height unit, currently centimeters"
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Text style={[s.inputUnit, { color: C.accentText }]}>cm</Text>
-                    </TouchableOpacity>
-                  </View>
+                  <NumberWheel
+                    min={MIN_HEIGHT_CM}
+                    max={220}
+                    width={170}
+                    value={heightCm}
+                    onChange={setHeightCm}
+                    accessibilityLabel="Height in centimeters"
+                  />
                 ) : (
-                  <View style={s.measureRow}>
-                    <View style={[s.inputWrap, { flex: 1, backgroundColor: C.muted, borderColor: C.border }]}>
-                      <TextInput
-                        placeholder="5"
-                        placeholderTextColor={C.textDim}
-                        value={heightFtStr}
-                        onChangeText={setHeightFtStr}
-                        keyboardType="number-pad"
-                        maxLength={1}
-                        accessibilityLabel="Height, feet"
-                        style={[s.input, { color: C.foreground }]}
-                      />
-                      <TouchableOpacity
-                        onPress={toggleHeightUnit}
-                        accessibilityRole="button"
-                        accessibilityLabel="Switch height unit, currently feet and inches"
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Text style={[s.inputUnit, { color: C.accentText }]}>ft</Text>
-                      </TouchableOpacity>
-                    </View>
-                    <View style={[s.inputWrap, { flex: 1, backgroundColor: C.muted, borderColor: C.border }]}>
-                      <TextInput
-                        placeholder="10"
-                        placeholderTextColor={C.textDim}
-                        value={heightInStr}
-                        onChangeText={setHeightInStr}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        accessibilityLabel="Height, inches"
-                        style={[s.input, { color: C.foreground }]}
-                      />
-                      <Text style={[s.inputUnit, { color: C.textMuted }]}>in</Text>
-                    </View>
+                  <View style={{ flexDirection: 'row', gap: 12 }}>
+                    <NumberWheel
+                      min={4}
+                      max={7}
+                      width={84}
+                      value={heightFt}
+                      onChange={setHeightFt}
+                      accessibilityLabel="Height, feet"
+                    />
+                    <NumberWheel
+                      min={0}
+                      max={11}
+                      width={84}
+                      value={heightIn}
+                      onChange={setHeightIn}
+                      accessibilityLabel="Height, inches"
+                    />
                   </View>
                 )}
-              </Animated.View>
-            </ScrollView>
+              </View>
+          </QuestionStep>
+        )}
 
-            <View style={s.footer}>
-              <PressableScale
-                onPress={commitBodyStep}
-                style={[s.primaryBtn, Shadow.playBtn]}
-                accessibilityRole="button"
-                accessibilityLabel="Continue"
-              >
-                <Text style={s.primaryBtnText}>Continue</Text>
-                <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-              </PressableScale>
-            </View>
-          </Animated.View>
+        {step === 'weight' && (
+          <QuestionStep
+            stepKey="weight"
+            question="What do you weigh today?"
+            sub="Just a starting point. The trend is what we train."
+            footer={<PrimaryCta label="Continue" onPress={commitWeightStep} />}
+          >
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
+                <View style={s.fieldLabelRow}>
+                  <Text style={[s.fieldLabel, { color: C.textMuted }]}>WEIGHT</Text>
+                  <TouchableOpacity
+                    onPress={toggleWeightUnit}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Switch weight unit, currently ${weightUnit}`}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[s.unitToggle, { color: C.accentText }]}>{weightUnit}</Text>
+                  </TouchableOpacity>
+                </View>
+                <RulerSlider
+                  min={weightUnit === 'kg' ? 30 : 66}
+                  max={weightUnit === 'kg' ? 200 : 440}
+                  step={weightUnit === 'kg' ? 0.5 : 1}
+                  value={weightVal}
+                  onChange={setWeightVal}
+                  unitLabel={weightUnit}
+                  accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                />
+              </Animated.View>
+          </QuestionStep>
         )}
 
         {step === 'target' && (
-          <Animated.View key="target" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView
-              contentContainerStyle={s.stepScroll}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Text style={[s.eyebrow, { color: C.accentText }]}>TARGET</Text>
-              <Text style={[s.question, { color: C.foreground }]}>Where are we heading?</Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                A goal weight points your calories the right way. You can change it anytime.
-              </Text>
+          <QuestionStep
+            stepKey="target"
+            question="Where are we heading?"
+            sub="A goal weight points your calories the right way. You can change it anytime."
+            footer={<PrimaryCta label="Continue" onPress={commitTargetStep} />}
+          >
+              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ marginTop: Spacing.xl }}>
+                <RulerSlider
+                  min={weightUnit === 'kg' ? 30 : 66}
+                  max={weightUnit === 'kg' ? 200 : 440}
+                  step={weightUnit === 'kg' ? 0.5 : 1}
+                  value={targetVal}
+                  onChange={(v) => {
+                    targetTouched.current = true;
+                    setTargetVal(v);
+                  }}
+                  unitLabel={weightUnit}
+                  accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
+                />
+                <Text style={[s.targetHint, { color: C.textDim, textAlign: 'center' }]}>{targetHint}</Text>
 
-              <Animated.View entering={FadeInDown.delay(100).duration(400)}>
-                <Text style={[s.fieldLabel, { color: C.textMuted }]}>GOAL WEIGHT</Text>
-                <View style={[s.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                  <TextInput
-                    placeholder={weightUnit === 'kg' ? '68' : '150'}
-                    placeholderTextColor={C.textDim}
-                    value={targetStr}
-                    onChangeText={setTargetStr}
-                    keyboardType="numeric"
-                    maxLength={6}
-                    accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
-                    style={[s.input, { color: C.foreground }]}
-                  />
-                  <Text style={[s.inputUnit, { color: C.textMuted }]}>{weightUnit}</Text>
-                </View>
-                <Text style={[s.targetHint, { color: C.textDim }]}>{targetHint}</Text>
               </Animated.View>
-            </ScrollView>
+          </QuestionStep>
+        )}
 
-            <View style={s.footer}>
-              <PressableScale
-                onPress={commitTargetStep}
-                style={[s.primaryBtn, Shadow.playBtn]}
-                accessibilityRole="button"
-                accessibilityLabel="Continue"
-              >
-                <Text style={s.primaryBtnText}>Continue</Text>
-                <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-              </PressableScale>
-            </View>
+        {step === 'pace' && (
+          <QuestionStep
+            stepKey="pace"
+            question="How fast do we go?"
+            sub="Pick a pace you can hold. The date follows the math."
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('interlude')} />}
+          >
+              {paceCtx && weeklyRate != null && (
+                <Animated.View entering={FadeInDown.delay(100).duration(400)} style={{ flexGrow: 1, justifyContent: 'center' }}>
+                  <PaceSlider
+                    min={paceCtx.bounds.min}
+                    max={paceCtx.bounds.max}
+                    recommended={paceCtx.bounds.recommended}
+                    value={weeklyRate}
+                    unitLabel="kg"
+                    onChange={setWeeklyRate}
+                  />
+                  <View style={[s.paceCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+                    <Text style={[s.paceCardTitle, { color: C.foreground }]}>
+                      Goal by <Text style={{ color: C.accentText }}>{paceDate ?? '...'}</Text>
+                    </Text>
+                    {pacedPreview && (
+                      <Text style={[s.paceCardSub, { color: C.textMuted }]}>
+                        Daily fuel: {pacedPreview.kcal.toLocaleString()} kcal · {pacedPreview.protein}g protein
+                      </Text>
+                    )}
+                    <Text style={[s.paceCardLine, { color: C.textDim }]}>
+                      {weeklyRate < paceCtx.bounds.recommended - 0.05
+                        ? 'A gentler pace. Easier to hold on hard weeks.'
+                        : weeklyRate > paceCtx.bounds.recommended + 0.05
+                          ? 'Aggressive. Protein and sleep stop being optional.'
+                          : 'The balanced pace most people can keep.'}
+                    </Text>
+                  </View>
+                </Animated.View>
+              )}
+          </QuestionStep>
+        )}
+
+        {step === 'interlude' && (
+          <QuestionStep
+            stepKey="interlude"
+            question="I set the route. You walk it."
+            sub={`${answers.frequency ?? 3} days a week${paceDate ? `, on track for ${paceDate}` : ''}${targets ? `, ${targets.kcal.toLocaleString()} kcal a day` : ''}.`}
+            footer={<PrimaryCta label="Lock it in" onPress={() => goTo('commit')} />}
+          >
+              <Animated.View entering={FadeInDown.delay(120).duration(400)} style={s.heroCenter}>
+                <DronaMark size={64} state="idle" />
+                <View style={s.claimList}>
+                  {[
+                    'I read every set you log',
+                    'When you stall, we change the plan',
+                    'Fuel targets move with your weight',
+                  ].map((line, idx) => (
+                    <Animated.View
+                      key={line}
+                      entering={FadeInDown.delay(260 + idx * 120).duration(400)}
+                      style={s.claimRow}
+                    >
+                      <Feather name="check" size={IconSize.xs} color={C.accentText} />
+                      <Text style={[s.claimText, { color: C.textSecondary }]}>{line}</Text>
+                    </Animated.View>
+                  ))}
+                </View>
+              </Animated.View>
+          </QuestionStep>
+        )}
+
+        {step === 'commit' && (
+          <QuestionStep
+            stepKey="commit"
+            question="Commit to it."
+            sub="A plan only works if you show up."
+          >
+              <CommitmentHold
+                pledgeTitle="I'm in."
+                pledgeBody={`${GOAL_PHRASES[answers.goal ?? 'general']}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
+                onCommitted={() => goTo('build')}
+              />
+          </QuestionStep>
+        )}
+
+        {step === 'build' && (
+          <Animated.View key="build" entering={FadeIn.duration(250)} style={s.stepFill}>
+            <BuildMoment
+              lines={[
+                'Reading your answers',
+                'Choosing your split',
+                'Balancing push and pull',
+                'Setting fuel targets',
+                'Locking your first week',
+              ]}
+              ready={buildReady}
+              onDone={() => goTo('plan')}
+            />
           </Animated.View>
         )}
 
         {step === 'plan' && (
-          <Animated.View key="plan" entering={FadeIn.duration(250)} style={s.stepFill}>
-            <ScrollView contentContainerStyle={s.stepScroll} showsVerticalScrollIndicator={false}>
-              <Text style={[s.eyebrow, { color: C.accentText }]}>YOUR STARTING PLAN</Text>
-              <Text style={[s.question, { color: C.foreground }]}>
-                {PLAN_TITLES[answers.goal ?? 'general']}
-              </Text>
-              <Text style={[s.questionSub, { color: C.textMuted }]}>
-                {splitNameFor(answers.frequency)}, {answers.frequency ?? 3} days a week
-                {targets ? ', with daily fuel targets' : ''}. Every detail is editable.
-              </Text>
+          <QuestionStep
+            stepKey="plan"
+            question={revealTitle}
+            sub={`${splitNameFor(answers.frequency)}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
+            footer={
+              <>
+                <PrimaryCta
+                  label="Start my plan"
+                  onPress={() => completeOnboarding({ createPlan: true, dest: '/(app)' })}
+                  loading={finishing}
+                  accessibilityLabel="Start my plan"
+                />
+                <TouchableOpacity
+                  onPress={() => completeOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                  disabled={finishing}
+                  style={s.ghostLink}
+                  accessibilityRole="button"
+                  accessibilityLabel="Build my own routines"
+                >
+                  <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I'll build my own routines</Text>
+                </TouchableOpacity>
+              </>
+            }
+          >
+              {paceCtx && paceDate && (
+                <Animated.View entering={FadeInDown.delay(80).duration(400)}>
+                  <ProjectedCurve
+                    direction={paceCtx.direction}
+                    startLabel={`Now · ${weightVal} ${weightUnit}`}
+                    endLabel={`${paceDate} · ${targetVal} ${weightUnit}`}
+                  />
+                </Animated.View>
+              )}
 
               {/* Week dots: the schedule at a glance */}
               <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.weekDots}>
@@ -798,7 +941,7 @@ export default function OnboardingScreen() {
               </Animated.View>
 
               <View style={s.planCards}>
-                {plan.map((r, idx) => {
+                {finalPlan.map((r, idx) => {
                   const names = r.exercises.map((e) => e.name);
                   const preview =
                     names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '');
@@ -818,6 +961,14 @@ export default function OnboardingScreen() {
                     </Animated.View>
                   );
                 })}
+                {rhythmNote && (
+                  <Animated.Text
+                    entering={FadeInDown.delay(300).duration(400)}
+                    style={[s.rhythmNote, { color: C.textMuted }]}
+                  >
+                    {rhythmNote}
+                  </Animated.Text>
+                )}
               </View>
 
               {/* Daily fuel targets: the diet half of the intake payoff */}
@@ -847,6 +998,9 @@ export default function OnboardingScreen() {
                       </View>
                     ))}
                   </View>
+                  <Text style={[s.fuelNote, { color: C.textDim }]}>
+                    Log food by typing it. "Two rotis and dal" just works.
+                  </Text>
                   {!isSignedIn && (
                     <Text style={[s.fuelNote, { color: C.textDim }]}>
                       Guest targets live on this screen only. Sign in and they follow you to the nutrition tab.
@@ -868,123 +1022,26 @@ export default function OnboardingScreen() {
                 style={[s.coachCard, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
               >
                 <View style={[s.coachIcon, { backgroundColor: C.muted }]}>
-                  <Feather name="message-circle" size={IconSize.xs} color={C.accentText} />
+                  <DronaMark size={12} state="static" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[s.coachText, { color: C.foreground }]}>
-                    Log every session, even the rough ones. I read your sets, watch the trend, and tell
-                    you when to add weight. {targets ? 'Eat to your targets, show' : 'Show'} up{' '}
-                    {answers.frequency ?? 3} days a week and the numbers take care of themselves.
+                    {dronaPlan?.rationale ??
+                      `Log every session, even the rough ones. I read your sets, watch the trend, and tell you when to add weight. ${targets ? 'Eat to your targets, show' : 'Show'} up ${answers.frequency ?? 3} days a week and the numbers take care of themselves.`}
                   </Text>
                   <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>
                 </View>
               </Animated.View>
-            </ScrollView>
-
-            <View style={s.footer}>
-              <PressableScale
-                onPress={() => completeOnboarding({ createPlan: true, dest: '/(app)' })}
-                disabled={finishing}
-                style={[s.primaryBtn, Shadow.playBtn, finishing && { opacity: 0.7 }]}
-                accessibilityRole="button"
-                accessibilityLabel="Create my plan"
-              >
-                {finishing ? (
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
-                ) : (
-                  <>
-                    <Text style={s.primaryBtnText}>Create my plan</Text>
-                    <Feather name="arrow-right" size={IconSize.sm} color={Colors.primaryFg} />
-                  </>
-                )}
-              </PressableScale>
-              <TouchableOpacity
-                onPress={() => completeOnboarding({ createPlan: false, dest: '/(app)/routines' })}
-                disabled={finishing}
-                style={s.ghostLink}
-                accessibilityRole="button"
-                accessibilityLabel="Build my own routines"
-              >
-                <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I'll build my own routines</Text>
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
+          </QuestionStep>
         )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-function OptionCard({
-  icon,
-  title,
-  sub,
-  selected,
-  onPress,
-  index,
-}: {
-  icon: keyof typeof Feather.glyphMap;
-  title: string;
-  sub: string;
-  selected: boolean;
-  onPress: () => void;
-  index: number;
-}) {
-  const { C } = useTheme();
-  return (
-    <Animated.View entering={FadeInDown.delay(100 + index * 60).duration(400)}>
-      <PressableScale
-        onPress={onPress}
-        style={[
-          s.option,
-          {
-            backgroundColor: selected ? C.primaryMuted : C.card,
-            borderColor: selected ? C.primaryBorder : C.borderSubtle,
-          },
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={title}
-        accessibilityState={{ selected }}
-      >
-        <View style={[s.optionIcon, { backgroundColor: C.muted }]}>
-          <Feather name={icon} size={IconSize.sm} color={selected ? C.accentText : C.textMuted} />
-        </View>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={[s.optionTitle, { color: C.foreground }]}>{title}</Text>
-          <Text style={[s.optionSub, { color: C.textMuted }]}>{sub}</Text>
-        </View>
-        {selected && <Feather name="check" size={IconSize.md} color={C.accentText} />}
-      </PressableScale>
-    </Animated.View>
-  );
-}
-
 const s = StyleSheet.create({
   safeArea: { flex: 1 },
-  bgGlow: {
-    position: 'absolute',
-    top: -150,
-    left: SCREEN_WIDTH / 2 - 192,
-    width: 384,
-    height: 384,
-    borderRadius: 192,
-  },
   stepFill: { flex: 1 },
-
-  // Header: back + progress + skip
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.md,
-    gap: Spacing.md,
-  },
-  backBtn: { padding: 2 },
-  progressTrack: { flex: 1, flexDirection: 'row', gap: 6 },
-  progressSegment: { flex: 1, height: 3, borderRadius: Radius.full },
-  skipText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  skipSpacer: { width: 28 },
 
   // Welcome
   welcomeCenter: {
@@ -1009,78 +1066,11 @@ const s = StyleSheet.create({
     lineHeight: 24,
     marginTop: Spacing.lg,
   },
-  valueRows: { marginTop: Spacing.xxxl, gap: Spacing.lg },
-  valueRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  valueIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  valueText: { fontSize: FontSize.base, flex: 1, lineHeight: 20 },
+  demoWrap: { marginTop: Spacing.xxl },
 
   // Question steps
-  stepScroll: {
-    flexGrow: 1,
-    paddingHorizontal: Spacing.xxl,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.xxxl,
-  },
-  eyebrow: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    letterSpacing: LetterSpacing.eyebrow,
-    marginBottom: Spacing.md,
-  },
-  question: {
-    fontSize: FontSize.xxxl,
-    fontWeight: FontWeight.black,
-    letterSpacing: LetterSpacing.tight,
-    lineHeight: 34,
-  },
-  questionSub: {
-    fontSize: FontSize.base,
-    lineHeight: 20,
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.xxl,
-  },
   options: { gap: Spacing.md },
-  option: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
-  },
-  optionIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  optionTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  optionSub: { fontSize: FontSize.sm, marginTop: 2 },
 
-  // Frequency
-  freqRow: { flexDirection: 'row', gap: Spacing.md, justifyContent: 'center' },
-  freqChip: {
-    width: 52,
-    height: 52,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  freqChipText: { fontSize: FontSize.xl, fontWeight: FontWeight.bold },
-  freqHint: {
-    fontSize: FontSize.sm,
-    textAlign: 'center',
-    marginTop: Spacing.xl,
-  },
 
   // Body basics + target
   fieldLabel: {
@@ -1089,31 +1079,41 @@ const s = StyleSheet.create({
     letterSpacing: LetterSpacing.label,
     marginBottom: Spacing.sm,
   },
-  genderRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xxl },
+  genderCol: { gap: Spacing.md, marginTop: Spacing.lg },
   genderChip: {
-    flex: 1,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.lg,
     borderRadius: Radius.xl,
     borderWidth: 1,
     alignItems: 'center',
   },
   genderChipText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
-  measureRow: { flexDirection: 'row', gap: Spacing.md },
-  inputWrap: {
+  heroCenter: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md },
+  fieldLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.lg,
-    height: 52,
+    gap: Spacing.sm,
+    justifyContent: 'center',
   },
-  input: { flex: 1, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  inputUnit: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  unitToggle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   targetHint: {
     fontSize: FontSize.sm,
     lineHeight: 19,
     marginTop: Spacing.md,
   },
+  paceCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    marginTop: Spacing.xl,
+    alignItems: 'center',
+    gap: 4,
+  },
+  paceCardTitle: {
+    fontFamily: FontFamily.display,
+    fontSize: 22,
+  },
+  paceCardSub: { fontSize: FontSize.md },
+  paceCardLine: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 2 },
 
   // Plan
   weekDots: {
@@ -1137,6 +1137,7 @@ const s = StyleSheet.create({
   planDot: { width: 8, height: 8, borderRadius: 4 },
   planName: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   planMeta: { fontSize: FontSize.sm, marginTop: 2 },
+  rhythmNote: { fontSize: FontSize.sm, lineHeight: 19, paddingHorizontal: Spacing.xs },
   fuelCard: {
     borderRadius: Radius.xl,
     borderWidth: 1,
@@ -1204,20 +1205,9 @@ const s = StyleSheet.create({
     paddingBottom: Spacing.lg,
     paddingTop: Spacing.sm,
   },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.primary,
-    paddingVertical: 16,
-    borderRadius: Radius.xl,
-  },
-  primaryBtnText: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: Colors.primaryFg,
-  },
+  claimList: { gap: Spacing.lg, marginTop: Spacing.xxl, alignSelf: 'stretch' },
+  claimRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, justifyContent: 'center' },
+  claimText: { fontSize: FontSize.md },
   ghostLink: { alignItems: 'center', paddingVertical: Spacing.lg },
   ghostLinkText: { fontSize: FontSize.base },
 });

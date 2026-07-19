@@ -258,6 +258,15 @@ export const FontWeight = {
   black: '900' as const,
 };
 
+// Display typeface (Space Grotesk, loaded in the root layout). Reserved for
+// display-size type: onboarding questions, big stat numbers, plan headlines.
+// Body/UI text stays on the system font. When a FontFamily is applied, do NOT
+// also set fontWeight (Android resolves the weight from the family name).
+export const FontFamily = {
+  display: 'SpaceGrotesk_700Bold',
+  displayMedium: 'SpaceGrotesk_500Medium',
+};
+
 // Letter-spacing scale. The app tracks titles/big numbers tight and all-caps
 // labels wide; naming the values keeps them consistent instead of hand-tuned
 // per screen. Use with numbers that also carry tabular figures.

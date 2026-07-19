@@ -26,6 +26,7 @@ import {
 } from '@/lib/dietData';
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 type SearchTab = 'all' | 'meals';
 const TABS: { key: SearchTab; label: string }[] = [
@@ -432,7 +433,7 @@ export default function FoodSearchScreen() {
                       <ActivityIndicator size="small" color={Colors.primaryFg} />
                     ) : (
                       <>
-                        <Feather name="zap" size={15} color={Colors.primaryFg} />
+                        <DronaMark size={15} color={Colors.primaryFg} state="static" />
                         <Text style={s.askBtnTxt} numberOfLines={1}>Ask Drona to find “{query.trim()}”</Text>
                       </>
                     )}

@@ -93,6 +93,7 @@
         }
       ],
       "expo-health-connect",
+      "expo-video",
       [
         "expo-audio",
         {

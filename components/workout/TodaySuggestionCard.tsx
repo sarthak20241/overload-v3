@@ -3,6 +3,7 @@ import { Feather } from '@expo/vector-icons';
 import { Spacing, Radius, FontSize, FontWeight, IconSize } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { PressableScale } from '@/components/ui/PressableScale';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 // Element 2: the coach's suggestion for today, and the dashboard's PRIMARY action
 // (it leads above the coach card). A LEAN row highlighted by a soft lime TINT fill
@@ -53,7 +54,11 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
       style={[s.card, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
     >
       <View style={[s.iconWrap, { backgroundColor: C.muted }]}>
-        <Feather name={isNew ? 'zap' : 'play'} size={IconSize.sm} color={C.accentText} />
+        {isNew ? (
+          <DronaMark size={IconSize.sm} color={C.accentText} state="static" />
+        ) : (
+          <Feather name="play" size={IconSize.sm} color={C.accentText} />
+        )}
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={[s.eyebrow, { color: C.accentText }]}>TODAY</Text>
