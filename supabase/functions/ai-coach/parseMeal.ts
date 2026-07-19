@@ -986,6 +986,32 @@ export function checkAtwater(items: ParsedItem[]): ParsedItem[] {
   });
 }
 
+// Quantity/serving reconciliation: `grams` is the authoritative total (it
+// drives every macro via verifyItems), but the model also emits quantity +
+// serving_label for DISPLAY. Those can disagree when the serving label already
+// encodes a count: "2 pc gulab jamun" logged quantity 2 against the "2 pieces"
+// serving (130 g) while grams stayed 130 — the UI then reads "2 x 2 pieces",
+// i.e. double what was actually logged. Nutrition is never touched here; we
+// only rewrite the displayed quantity so quantity x serving == grams holds.
+export function reconcileQuantity(
+  items: ParsedItem[],
+  servingsByFood: Map<string, ServingOption[]>,
+): ParsedItem[] {
+  return items.map((item) => {
+    if (!item.food_id || !(item.grams > 0)) return item;
+    const servings = servingsByFood.get(item.food_id);
+    if (!servings || servings.length === 0) return item;
+    const match = servings.find((s) => s.label.toLowerCase() === item.serving_label.toLowerCase());
+    if (!match || !(match.grams > 0)) return item;
+    const implied = item.grams / match.grams;
+    // Tolerate rounding; only rewrite when the stated quantity is genuinely
+    // inconsistent with the logged grams.
+    if (Math.abs(implied - item.quantity) <= 0.05) return item;
+    const q = implied >= 1 ? Math.round(implied * 100) / 100 : Math.round(implied * 1000) / 1000;
+    return { ...item, quantity: q > 0 ? q : item.quantity };
+  });
+}
+
 // Preparation-state mismatch: the user typed roasted/dried/fried but the
 // matched row is a cooked/boiled food (or vice versa). Water content differs
 // 2-3x, so macros are systematically wrong; surface it and drop confidence.
@@ -1213,7 +1239,18 @@ export async function runParseMeal(
     if (labels) items = mergeWebLabels(items, labels);
   }
 
-  items = flagPrepMismatch(checkAtwater(items), input.text);
+  // Serving options for every candidate we offered, so the display quantity can
+  // be reconciled against the logged grams (see reconcileQuantity).
+  const servingsByFood = new Map<string, ServingOption[]>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.servings.length > 0 && !servingsByFood.has(c.food_id)) {
+        servingsByFood.set(c.food_id, c.servings);
+      }
+    }
+  }
+
+  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), input.text);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
