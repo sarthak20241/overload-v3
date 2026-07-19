@@ -14,7 +14,16 @@ type ExpoAudio = typeof import('expo-audio');
 
 let audio: ExpoAudio | null | undefined; // undefined = not yet attempted
 let player: import('expo-audio').AudioPlayer | null = null;
-let active = false;
+
+// Two flags, deliberately independent, because the audio session is taken on a
+// promise chain that can outlive the cue window:
+//   wantCue      — INTENT: the cue should be running (set by start, cleared by end).
+//   sessionOwned — FACT: we activated a session and still owe a deactivate.
+// Collapsing these into one flag is what made the duck stick: end would clear it,
+// then the still-in-flight activate would re-duck, and every later end call would
+// early-return — leaving the user's music quiet for the rest of the session.
+let wantCue = false;
+let sessionOwned = false;
 
 function loadAudio(): ExpoAudio | null {
   if (audio !== undefined) return audio;
@@ -23,6 +32,11 @@ function loadAudio(): ExpoAudio | null {
   // handles it, Metro's dev runtime redboxes any module-eval failure anyway
   // (verified on-sim 2026-07-17). Checking the registry first means the
   // require never runs where it can't succeed.
+  // NOTE: `expo.modules` is an INTERNAL Expo registry shape, not public API.
+  // Verified working on SDK 54 / expo-audio 1.1.x (a rebuilt dev client logs the
+  // audio path being taken). If an SDK bump ever renames or hides it, this goes
+  // false forever and the cue silently degrades to buzz-only with no build error
+  // — so re-check this line on the next Expo upgrade.
   const hasNative = !!(globalThis as { expo?: { modules?: Record<string, unknown> } }).expo?.modules?.ExpoAudio;
   if (!hasNative) {
     audio = null;
@@ -36,11 +50,23 @@ function loadAudio(): ExpoAudio | null {
   return audio;
 }
 
+// Hand the session back so the user's music returns to full volume. Cheap and
+// idempotent: a no-op unless we currently hold a session.
+function releaseSession(a: ExpoAudio | null) {
+  if (!sessionOwned) return;
+  sessionOwned = false;
+  try {
+    void a?.setIsAudioActiveAsync(false).catch(() => {});
+  } catch {
+    // Nothing to restore if audio never started.
+  }
+}
+
 export function startRestEndCue() {
   haptics.warning();
   const a = loadAudio();
   if (!a) return;
-  active = true;
+  wantCue = true;
   try {
     if (!player) {
       player = a.createAudioPlayer(require('@/assets/sounds/rest-cue.wav'));
@@ -57,15 +83,29 @@ export function startRestEndCue() {
       interruptionModeAndroid: 'duckOthers',
       shouldPlayInBackground: false,
     })
-      .then(() => a.setIsAudioActiveAsync(true))
       .then(() => {
-        if (!active) return; // rest ended/skipped while the session was settling
+        sessionOwned = true;
+        return a.setIsAudioActiveAsync(true);
+      })
+      .then(() => {
+        // The window can close while the session is still settling — a fast
+        // "Skip", the next set logged, or the app backgrounding. Whoever lands
+        // last has to leave the music un-ducked. Deactivate unconditionally
+        // rather than via releaseSession(): our activate may have resolved
+        // AFTER an endRestEndCue already released, so the flag can't be
+        // trusted here (a redundant deactivate is harmless).
+        if (!wantCue) {
+          sessionOwned = false;
+          void a.setIsAudioActiveAsync(false).catch(() => {});
+          return;
+        }
         p.seekTo(0);
         p.play();
       })
       .catch(() => {
         // Session setup failed — still fire the chime so the cue isn't silent.
-        if (active) { p.seekTo(0); p.play(); }
+        if (wantCue) { p.seekTo(0); p.play(); }
+        else releaseSession(a);
       });
   } catch {
     // Haptic already fired; the duck is a bonus, not a requirement.
@@ -73,13 +113,14 @@ export function startRestEndCue() {
 }
 
 export function endRestEndCue() {
-  if (!active) return;
-  active = false;
-  const a = loadAudio();
+  // Checks BOTH flags: a session taken by a chain that outlived the intent must
+  // still be released, which is exactly the case the old `!active` guard missed.
+  if (!wantCue && !sessionOwned) return;
+  wantCue = false;
   try {
     player?.pause();
-    void a?.setIsAudioActiveAsync(false).catch(() => {});
   } catch {
-    // Nothing to restore if audio never started.
+    // Player may not exist yet; the session release below is what matters.
   }
+  releaseSession(loadAudio());
 }
