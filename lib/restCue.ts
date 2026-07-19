@@ -28,11 +28,6 @@ let sessionOwned = false;
 
 function loadAudio(): ExpoAudio | null {
   if (audio !== undefined) return audio;
-  // Probe the native registry BEFORE requiring. On a dev client built without
-  // expo-audio, evaluating the package throws — and although the try/catch
-  // handles it, Metro's dev runtime redboxes any module-eval failure anyway
-  // (verified on-sim 2026-07-17). Checking the registry first means the
-  // require never runs where it can't succeed.
   // Ask the native side through the supported API (it returns null rather than
   // throwing) BEFORE requiring the JS package. On a dev client built without
   // expo-audio, evaluating the package throws — and although the try/catch below
