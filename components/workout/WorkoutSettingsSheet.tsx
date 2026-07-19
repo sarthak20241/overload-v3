@@ -118,7 +118,7 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
               title="Music shortcut"
               subtitle="A quiet button up top that jumps to your music app."
               value={prefs.musicApp !== 'off'}
-              onValueChange={(v) => setPreference('musicApp', v ? 'spotify' : 'off')}
+              onValueChange={(v) => setPreference('musicApp', v ? prefs.musicAppLast : 'off')}
             />
 
             {prefs.musicApp !== 'off' && (
@@ -128,7 +128,7 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
                   return (
                     <TouchableOpacity
                       key={app.key}
-                      onPress={() => { haptics.selection(); setPreference('musicApp', app.key); }}
+                      onPress={() => { haptics.selection(); setPreference('musicApp', app.key); setPreference('musicAppLast', app.key); }}
                       activeOpacity={0.85}
                       style={[
                         s.chip,

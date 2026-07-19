@@ -40,22 +40,33 @@ export function startRestEndCue() {
   haptics.warning();
   const a = loadAudio();
   if (!a) return;
+  active = true;
   try {
     if (!player) {
-      // playsInSilentMode: an interval-timer-style cue the user opted into —
-      // it should sound even with the ring switch off, like music does.
-      void a.setAudioModeAsync({
-        playsInSilentMode: true,
-        interruptionMode: 'duckOthers',
-        interruptionModeAndroid: 'duckOthers',
-        shouldPlayInBackground: false,
-      }).catch(() => {});
       player = a.createAudioPlayer(require('@/assets/sounds/rest-cue.wav'));
     }
-    active = true;
-    void a.setIsAudioActiveAsync(true).catch(() => {});
-    player.seekTo(0);
-    player.play();
+    const p = player;
+    // Sequence session-setup BEFORE playback: set the duck mode, activate the
+    // session, THEN play. Firing these as parallel fire-and-forget promises let
+    // the chime start before the duckOthers session was live, so the first duck
+    // often didn't apply. playsInSilentMode: an opted-in cue, like an interval
+    // timer — it should sound even with the ring switch off.
+    a.setAudioModeAsync({
+      playsInSilentMode: true,
+      interruptionMode: 'duckOthers',
+      interruptionModeAndroid: 'duckOthers',
+      shouldPlayInBackground: false,
+    })
+      .then(() => a.setIsAudioActiveAsync(true))
+      .then(() => {
+        if (!active) return; // rest ended/skipped while the session was settling
+        p.seekTo(0);
+        p.play();
+      })
+      .catch(() => {
+        // Session setup failed — still fire the chime so the cue isn't silent.
+        if (active) { p.seekTo(0); p.play(); }
+      });
   } catch {
     // Haptic already fired; the duck is a bonus, not a requirement.
   }

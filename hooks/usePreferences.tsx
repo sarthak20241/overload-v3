@@ -35,6 +35,9 @@ export interface WorkoutPreferences {
   // 'off' hides the top-bar music shortcut; anything else picks which app the
   // one-tap jump opens (see lib/musicLinks). We never play or read music.
   musicApp: MusicApp;
+  // The last real app the user picked, so toggling the shortcut off then back on
+  // restores their choice instead of snapping back to the default. Never 'off'.
+  musicAppLast: Exclude<MusicApp, 'off'>;
 }
 
 export const DEFAULT_PREFERENCES: WorkoutPreferences = {
@@ -45,6 +48,7 @@ export const DEFAULT_PREFERENCES: WorkoutPreferences = {
   restBetweenSides: false,
   restEndCue: true,
   musicApp: 'off',
+  musicAppLast: 'spotify',
 };
 
 // Fixed inter-side rest target (seconds) when restBetweenSides is on. Kept a

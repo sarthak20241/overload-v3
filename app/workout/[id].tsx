@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
   StyleSheet, ActivityIndicator, Pressable, BackHandler,
-  Keyboard, Platform, useWindowDimensions,
+  Keyboard, Platform, useWindowDimensions, AppState,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -833,6 +833,22 @@ export default function ActiveWorkoutScreen() {
   }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget, prefs.restEndCue]);
   // Never leave the music ducked if the screen unmounts mid-window.
   useEffect(() => () => { endRestEndCue(); }, []);
+  // …or if the app backgrounds mid-cue. The music-shortcut button (openMusicApp)
+  // sends the user to Spotify/Apple Music from the same top bar, so a tap during
+  // the final-3s window would background us. JS timers suspend on background, so
+  // the rest effect above can't run to release the duck — on Android the user's
+  // music could stay dipped until they return. AppState 'change' still fires on
+  // the transition, so force-end the cue there (and clear the fired flag so it
+  // can re-arm if they come back with rest still running).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        restCueFiredRef.current = false;
+        endRestEndCue();
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   // A gentle pulse on the rest timer as it nears zero (final 3s), building
   // anticipation before the done color-flip + success buzz.
