@@ -23,6 +23,7 @@ import {
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
+import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
@@ -154,6 +155,20 @@ export default function NutritionScreen() {
     // Parsed, not logged. Seed the section selector with Drona's best guess.
     setFlow({ status: 'review', raw: t, meal: res.meal, mealType: res.meal.meal_type });
   }, [supabase]);
+
+  /** Index of the pending line being corrected (null = editor closed). Edits
+   *  are pure client state: nothing is written until Add, so a correction just
+   *  patches the reviewed meal in place. */
+  const [editIndex, setEditIndex] = useState<number | null>(null);
+  const onEditItem = useCallback((i: number) => setEditIndex(i), []);
+  const onEditSave = useCallback((patch: ParsedMealItem) => {
+    setFlow((f) => {
+      if (f.status !== 'review' || editIndex === null) return f;
+      const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
+      return { ...f, meal: { ...f.meal, items } };
+    });
+    setEditIndex(null);
+  }, [editIndex]);
 
   const onSend = useCallback(() => {
     const t = text.trim();
@@ -328,6 +343,7 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' ? flow.message : null
               }
               onMealTypeChange={onMealTypeChange}
+              onEditItem={flow.status === 'review' ? onEditItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
@@ -385,6 +401,13 @@ export default function NutritionScreen() {
         initial={targets}
         onClose={() => setGoalOpen(false)}
         onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
+      />
+
+      {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
+      <ParsedItemEditor
+        item={flow.status === 'review' && editIndex !== null ? flow.meal.items[editIndex] ?? null : null}
+        onCancel={() => setEditIndex(null)}
+        onSave={onEditSave}
       />
 
       {/* Save the current parse as a reusable meal. */}

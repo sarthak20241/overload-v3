@@ -47,6 +47,8 @@ interface Props {
   adding?: boolean;                          // Add in flight (review)
   saved?: boolean;                           // this parse was saved as a meal/recipe
   onMealTypeChange?: (m: MealType) => void;
+  /** Tap a line to correct its serving/quantity/macros before adding. */
+  onEditItem?: (index: number) => void;
   onAdd?: () => void;
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
@@ -62,13 +64,14 @@ function provenance(source: ParsedMealItem['source']): string | null {
     case 'off':
     case 'web': return 'from label';
     case 'estimate': return "Drona's estimate";
+    case 'manual': return 'edited';
     default: return null; // catalog
   }
 }
 
 export function ParsedMealCard({
   state, rawText, meal, mealType, message, adding, saved,
-  onMealTypeChange, onAdd, onSave, onRetry, onDismiss,
+  onMealTypeChange, onEditItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
   const { C } = useTheme();
   const s = makeStyles(C);
@@ -85,13 +88,21 @@ export function ParsedMealCard({
           {meal.items.map((it, i) => {
             const prov = provenance(it.source);
             return (
-              <View key={i} style={[s.item, i > 0 && s.itemDivider]}>
+              <Pressable
+                key={i}
+                onPress={onEditItem ? () => onEditItem(i) : undefined}
+                disabled={!onEditItem}
+                style={({ pressed }) => [s.item, i > 0 && s.itemDivider, pressed && s.itemPressed]}
+                accessibilityLabel={`Edit ${it.food_name}, ${r0(it.kcal)} calories`}
+                accessibilityHint="Opens serving, quantity and macro editing"
+              >
                 <View style={s.itemHead}>
                   <Text style={s.itemName} numberOfLines={1}>
                     {it.food_name}
                     <Text style={s.serving}>{'  '}{it.quantity !== 1 ? `${it.quantity} × ` : ''}{it.serving_label}</Text>
                   </Text>
                   {prov && <Text style={s.provChip}>{prov}</Text>}
+                  {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
                 </View>
                 <View style={s.macros}>
                   <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)}</Text>
@@ -100,7 +111,7 @@ export function ParsedMealCard({
                   <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
                 </View>
                 {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
-              </View>
+              </Pressable>
             );
           })}
 
@@ -219,6 +230,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
 
     item: { paddingVertical: Spacing.xs },
+    itemPressed: { opacity: 0.6 },
     itemDivider: { borderTopWidth: 1, borderTopColor: C.borderSubtle, marginTop: Spacing.xs, paddingTop: Spacing.sm },
     itemHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     itemName: { flex: 1, fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },

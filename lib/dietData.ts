@@ -405,6 +405,48 @@ export async function loadServings(supabase: Supa | null, food: PickerFood): Pro
   return servings.length > 0 ? servings : [fallback];
 }
 
+/** Per-100-base-unit macros, the basis every catalog line is scaled from. */
+export interface Per100Macros {
+  kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number;
+}
+
+/** Everything the parsed-item editor needs for one food: its real serving
+ *  options and per-100 macros, so switching "1 regular/large" to "1 small"
+ *  recomputes the line locally with the SAME basis the parser used. Fetched on
+ *  demand (only when a user actually taps a line to edit), so the parse
+ *  response stays lean. Returns null for estimate/web lines (food_id null),
+ *  where the editor falls back to free-form grams + macros. */
+export async function loadFoodForEdit(
+  supabase: Supa | null,
+  foodId: string | null,
+): Promise<{ servings: FoodServing[]; per100: Per100Macros; baseUnit: string } | null> {
+  if (!foodId || !supabase) return null;
+  const [foodRes, servRes] = await Promise.all([
+    supabase.from('foods')
+      .select('base_unit, kcal, protein_g, carb_g, fat_g, fiber_g')
+      .eq('id', foodId).maybeSingle(),
+    supabase.from('food_servings')
+      .select('label, grams, is_default, seq').eq('food_id', foodId).order('seq'),
+  ]);
+  const f: any = foodRes.data;
+  if (!f) return null;
+  const baseUnit = String(f.base_unit ?? 'g');
+  const servings: FoodServing[] = (servRes.data ?? []).map((s: any) => ({
+    label: s.label, grams: num(s.grams), is_default: !!s.is_default,
+  }));
+  if (!servings.some((s) => s.grams === 100)) {
+    servings.push({ label: `100 ${baseUnit}`, grams: 100, is_default: servings.length === 0 });
+  }
+  return {
+    servings,
+    per100: {
+      kcal: num(f.kcal), protein_g: num(f.protein_g),
+      carb_g: num(f.carb_g), fat_g: num(f.fat_g), fiber_g: num(f.fiber_g),
+    },
+    baseUnit,
+  };
+}
+
 // ── AI food logging (Drona parse) ───────────────────────────────────────────
 // The nutrition bar's free text ("2 roti and dal") is parsed by the ai-coach
 // edge function's parse_meal mode, which resolves each item against the catalog
@@ -421,7 +463,9 @@ export interface ParsedMealItem {
   grams: number;
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
-  source: 'catalog' | 'off' | 'web' | 'estimate';
+  // 'manual' = the user corrected this line in the review card before adding
+  // it, so the numbers are theirs and nothing should recompute over them.
+  source: 'catalog' | 'off' | 'web' | 'estimate' | 'manual';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
 }
