@@ -98,6 +98,11 @@
     "experiments": {
       "typedRoutes": true
     },
+    "install": {
+      "exclude": [
+        "react-native-gesture-handler"
+      ]
+    },
     "extra": {
       "router": {},
       "eas": {
