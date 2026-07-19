@@ -902,12 +902,25 @@ async function handleParseMealRequest(args: {
     ? (body.previous_items as Array<Record<string, unknown>>).slice(0, 12).flatMap((r) => {
       const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
       if (!name) return [];
+      const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+      const src = r.source;
       return [{
         food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
         food_name: name,
         quantity: Number(r.quantity) > 0 ? Number(r.quantity) : 1,
         serving_label: typeof r.serving_label === "string" ? r.serving_label.slice(0, 40) : "serving",
         grams: Number(r.grams) > 0 ? Number(r.grams) : 0,
+        // Enough to hand an untouched line back exactly as the client had it.
+        kcal: n(r.kcal),
+        protein_g: n(r.protein_g),
+        carb_g: n(r.carb_g),
+        fat_g: n(r.fat_g),
+        fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
+        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate"
+          ? src
+          : "estimate",
+        assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
+        confidence: r.confidence === "high" || r.confidence === "low" ? r.confidence : "medium",
       }];
     })
     : [];
@@ -937,6 +950,14 @@ async function handleParseMealRequest(args: {
         }
         : null,
     };
+  }).catch((e) => {
+    // MUST NOT reject. This runs unawaited while the extract call is in flight,
+    // and several parse paths (question, research, fast correction) return
+    // before ever awaiting it, leaving it orphaned. An unhandled rejection in a
+    // Deno isolate can take the whole function down; context is optional, so
+    // degrade to empty instead.
+    console.log("[parse_meal] context fetch failed:", String(e).slice(0, 160));
+    return { recentFoods: [] as RecentFoodContext[], todayTotals: null, targets: null };
   });
 
   // #1 latency instrumentation: how much of the handler is spent BEFORE the

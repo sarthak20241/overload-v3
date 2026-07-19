@@ -6,7 +6,7 @@
 // (which curated row it picks, exact grams for "1 plate") and tight where
 // the math must be right (explicit amounts like "50g" or "500 ml").
 
-export type Tier = "catalog" | "off" | "web" | "estimate";
+export type Tier = "catalog" | "off" | "web" | "estimate" | "manual";
 
 export interface ItemExpectation {
   // Case-insensitive substring that must appear in some logged item's name.

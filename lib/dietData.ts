@@ -554,13 +554,23 @@ export async function parseMeal(
             previous_text: args.previous.text,
             // Only what the server needs to re-target a line: identity, the
             // amount, and where the numbers came from. Macros stay server-side.
+            // Macros ride along so the server can hand an UNTOUCHED line back
+            // verbatim: a correction replaces the whole meal, so anything it
+            // cannot reconstruct would be silently dropped.
             previous_items: args.previous.items.slice(0, 12).map((it) => ({
               food_id: it.food_id,
               food_name: it.food_name,
               quantity: it.quantity,
               serving_label: it.serving_label,
               grams: it.grams,
+              kcal: it.kcal,
+              protein_g: it.protein_g,
+              carb_g: it.carb_g,
+              fat_g: it.fat_g,
+              fiber_g: it.fiber_g,
               source: it.source,
+              assumption: it.assumption,
+              confidence: it.confidence,
             })),
           }
           : {}),

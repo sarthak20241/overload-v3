@@ -59,7 +59,9 @@ export interface ParsedItem {
   carb_g: number;
   fat_g: number;
   fiber_g: number | null;
-  source: "catalog" | "off" | "web" | "estimate";
+  // 'manual' never originates here: it comes back from the client when the user
+  // corrected a line in the review card, and must round-trip intact.
+  source: "catalog" | "off" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
 }
@@ -118,6 +120,55 @@ export interface PreviousItem {
   quantity: number;
   serving_label: string;
   grams: number;
+  // The line's current macros. Carried so an untouched line can be handed back
+  // EXACTLY as it was: correction paths replace the whole meal, so anything we
+  // cannot reconstruct would be silently deleted.
+  kcal?: number;
+  protein_g?: number;
+  carb_g?: number;
+  fat_g?: number;
+  fiber_g?: number | null;
+  source?: ParsedItem["source"];
+  assumption?: string | null;
+  confidence?: ParsedItem["confidence"];
+}
+
+/** An untouched previous line, rebuilt verbatim. */
+function previousAsParsedItem(p: PreviousItem): ParsedItem {
+  return {
+    food_id: p.food_id,
+    food_name: p.food_name,
+    quantity: p.quantity,
+    serving_label: p.serving_label,
+    grams: p.grams,
+    kcal: p.kcal ?? 0,
+    protein_g: p.protein_g ?? 0,
+    carb_g: p.carb_g ?? 0,
+    fat_g: p.fat_g ?? 0,
+    fiber_g: p.fiber_g ?? null,
+    source: p.source ?? "estimate",
+    assumption: p.assumption ?? null,
+    confidence: p.confidence ?? "medium",
+  };
+}
+
+/**
+ * Guarantee a "corrected meal" still contains everything it replaces.
+ *
+ * Correction paths hand back a full item list that REPLACES the meal on screen,
+ * and both the model and the fast path are merely *asked* to relist untouched
+ * lines. That is a prompt instruction, not an invariant, so anything they omit
+ * would silently delete food the user already reviewed. Any previous line not
+ * represented in the result is appended back, unchanged.
+ */
+function keepUncoveredPrevious(items: ParsedItem[], previous: PreviousItem[]): ParsedItem[] {
+  if (previous.length === 0) return items;
+  const covered = (p: PreviousItem) =>
+    items.some((it) =>
+      (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
+    );
+  const missing = previous.filter((p) => !covered(p)).map(previousAsParsedItem);
+  return missing.length > 0 ? [...items, ...missing] : items;
 }
 
 export interface ParseMealInput {
@@ -1129,9 +1180,22 @@ export function clampVolumetricGrams(items: ParsedItem[]): ParsedItem[] {
   return items.map((item) => {
     const perLabelMl = labelVolumeMl(item.serving_label);
     if (perLabelMl === null || !(item.grams > 0) || !(item.quantity > 0)) return item;
-    const totalMl = perLabelMl * item.quantity;
+    // A label may or may not already include its own count ("2 tbsp" vs "tbsp"),
+    // and the model is not consistent about it, so multiplying by quantity can
+    // double-count. This guard exists to catch the IMPOSSIBLE, so read it both
+    // ways and only act when neither reading is physically possible - a false
+    // clamp would corrupt a perfectly good line.
+    const candidates = [perLabelMl * item.quantity, perLabelMl];
+    const plausible = candidates.some((ml) => {
+      const d = item.grams / ml;
+      return d >= DENSITY_MIN && d <= DENSITY_MAX;
+    });
+    if (plausible) return item;
+    // Clamp against the reading that needs the least correction.
+    const totalMl = candidates.reduce((best, ml) =>
+      Math.abs(item.grams / ml - 1) < Math.abs(item.grams / best - 1) ? ml : best
+    );
     const density = item.grams / totalMl;
-    if (density >= DENSITY_MIN && density <= DENSITY_MAX) return item;
     const bound = density > DENSITY_MAX ? DENSITY_MAX : DENSITY_MIN;
     const grams = round1(totalMl * bound);
     const scale = grams / item.grams;
@@ -1307,7 +1371,12 @@ async function researchPrevious(
     for (const [forItem, l] of labels) {
       if (wordsOverlap(p.food_name, forItem)) { label = l; break; }
     }
-    if (!label || !(p.grams > 0)) continue;
+    if (!label || !(p.grams > 0)) {
+      // No label for this line (not looked up, or no name match). Keep it as it
+      // was: the caller replaces the whole meal with what we return.
+      items.push(previousAsParsedItem(p));
+      continue;
+    }
     const f = p.grams / 100;
 
     // Does the web disagree MATERIALLY with the row we already had? Brands ship
@@ -1480,6 +1549,10 @@ export async function runParseMeal(
   // ── Stage 1: extract ──────────────────────────────────────────────────────
   const prevItems = input.previousItems ?? [];
   const hasPrevious = prevItems.length > 0;
+  // The prep-state guard looks for words like "roasted" in what the user wrote.
+  // On a follow-up the current text is "yes" or "make it 3", so the describing
+  // words live in the ORIGINAL message: match against both.
+  const prepText = [input.previousText ?? "", input.text].filter(Boolean).join(" ");
   const tExtract0 = Date.now();
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
@@ -1531,8 +1604,11 @@ export async function runParseMeal(
       return [{
         name,
         brand: typeof o.brand === "string" && o.brand.trim() ? o.brand.trim().slice(0, 60) : null,
+        // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
+        // so "500 ml milk" or "250 g chicken" would be silently truncated. The
+        // bound only exists to stop absurd input reaching the model.
         quantity: typeof o.quantity === "number" && Number.isFinite(o.quantity) && o.quantity > 0
-          ? Math.min(o.quantity, 100)
+          ? Math.min(o.quantity, 10000)
           : 1,
         unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
@@ -1565,7 +1641,7 @@ export async function runParseMeal(
       // The web found something materially different, most likely another
       // variant. Offer it rather than apply it: a wrong silent swap is worse
       // than the number they already had.
-      const items = flagPrepMismatch(checkAtwater(researched.items), input.text);
+      const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -1579,7 +1655,7 @@ export async function runParseMeal(
       };
     }
     if (researched) {
-      const items = flagPrepMismatch(checkAtwater(researched.items), input.text);
+      const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -1645,12 +1721,13 @@ export async function runParseMeal(
   // per-100 macros. ~2s instead of ~6s. Falls through on anything ambiguous.
   if (correctsPrevious) {
     const tFast0 = Date.now();
-    const corrected = await tryFastCorrection(deps, extItems, prevItems).catch(() => null);
+    const correctedRaw = await tryFastCorrection(deps, extItems, prevItems).catch(() => null);
+    const corrected = correctedRaw ? keepUncoveredPrevious(correctedRaw, prevItems) : null;
     T.fast_correction_ms = Date.now() - tFast0;
     if (corrected) {
       T.fast_correction = 1;
       steps.push({ iter: 1, tool: "fast_correction", input: { items: corrected.length } });
-      const items = flagPrepMismatch(checkAtwater(corrected), input.text);
+      const items = flagPrepMismatch(checkAtwater(corrected), prepText);
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
       return {
@@ -1761,6 +1838,9 @@ export async function runParseMeal(
   });
 
   let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)));
+  // A correction REPLACES the reviewed meal, so never let the model quietly
+  // drop a line it was told to relist.
+  if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems);
 
   // Hedge settlement: give the parallel lookup a short grace beyond the
   // decide call, then take whatever it brought (or move on without it).

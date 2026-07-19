@@ -94,8 +94,12 @@ async function main() {
   const supabase = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
   let done = 0, failed = 0;
+  // Cursor, not "always page 0": a row whose update fails keeps its null
+  // embedding and would otherwise be re-selected at the head of the queue
+  // forever. Walking id forward guarantees the sweep terminates; failures are
+  // counted and can be picked up by a second run.
+  let lastId = "00000000-0000-0000-0000-000000000000";
   for (;;) {
-    // Re-query page 0 each loop: updated rows drop out of the null filter.
     // (idx_foods_embedding_pending keeps this fast; retry transient timeouts.)
     let rows: FoodRow[] = [];
     for (let attempt = 0; ; attempt++) {
@@ -104,6 +108,7 @@ async function main() {
         .select("id, name, brand, food_category")
         .is("embedding", null)
         .is("created_by", null)
+        .gt("id", lastId)
         .order("id")
         .limit(VOYAGE_BATCH * 4);
       if (!error) { rows = (data ?? []) as FoodRow[]; break; }
@@ -133,6 +138,7 @@ async function main() {
       }
       process.stdout.write(`\r[embed] ${done} done, ${failed} failed`);
     }
+    lastId = rows[rows.length - 1].id;
   }
   console.log(`\n[embed] complete: ${done} embedded, ${failed} failed`);
 }
