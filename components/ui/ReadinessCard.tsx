@@ -35,6 +35,12 @@ interface CardState {
   result: ReadinessResult | null;
   /** Today's sleep duration in minutes (any source), for the sleep row's value. */
   sleepMinutes: number | null;
+  /**
+   * The readiness read FAILED, as distinct from succeeding with no score yet.
+   * Without this the two collapse into one null `result` and a network blip
+   * renders "Log last night" (and deep-links log=1) at a user who already logged.
+   */
+  error: boolean;
 }
 
 /** Row order mirrors how much each signal moves the score; the card shows 3 max. */
@@ -50,6 +56,11 @@ const ROW_LABEL: Record<ReadinessContributor['key'], string> = {
 
 /** Neutral band: within this |z| the signal reads "usual" and the bar shows a dot. */
 const NEUTRAL_Z = 0.3;
+
+/** True when a contributor actually pushed the score off its baseline today. */
+function contributorMoved(c: ReadinessContributor): boolean {
+  return c.z != null ? Math.abs(c.z) >= NEUTRAL_Z : (c.dir ?? 0) !== 0;
+}
 
 /**
  * One-word status per signal, in plain coach words. RHR's z is already inverted
@@ -74,7 +85,7 @@ export function ReadinessCard() {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const userId = user?.id ?? null;
-  const [state, setState] = useState<CardState>({ loading: true, result: null, sleepMinutes: null });
+  const [state, setState] = useState<CardState>({ loading: true, result: null, sleepMinutes: null, error: false });
 
   // Reload every time the dashboard REGAINS FOCUS, not just on mount: after the
   // user logs sleep on the /health hub and comes back, the tab screen stays
@@ -85,23 +96,29 @@ export function ReadinessCard() {
     useCallback(() => {
       let cancelled = false;
       if (!userId) {
-        setState({ loading: false, result: null, sleepMinutes: null });
+        setState({ loading: false, result: null, sleepMinutes: null, error: false });
         return;
       }
       // Only show the spinner on the FIRST load (no result yet). On a refocus
       // reload keep the current card visible so returning doesn't flash a spinner.
       setState((prev) => ({ ...prev, loading: prev.result == null }));
-      Promise.all([
-        loadReadiness(supabase, userId),
-        // Best-effort: the sleep row falls back to a status word without it.
-        loadRecentSleep(supabase, userId).catch(() => ({ today: null, yesterday: null })),
-      ])
-        .then(([result, sleep]) => {
-          if (!cancelled) setState({ loading: false, result, sleepMinutes: sleep.today?.minutes ?? null });
+      // Readiness is the hero: apply it the moment it resolves, never blocked on
+      // the optional sleep query. The sleep row's duration streams in behind it
+      // (best-effort; the row falls back to a status word without it).
+      loadReadiness(supabase, userId)
+        .then((result) => {
+          if (!cancelled) setState((prev) => ({ ...prev, loading: false, result, error: false }));
         })
         .catch(() => {
-          if (!cancelled) setState((prev) => ({ ...prev, loading: false }));
+          // Keep any last-known result (a transient blip must not blank the card);
+          // the error flag only drives UI when there is nothing to show.
+          if (!cancelled) setState((prev) => ({ ...prev, loading: false, error: true }));
         });
+      loadRecentSleep(supabase, userId)
+        .then((sleep) => {
+          if (!cancelled) setState((prev) => ({ ...prev, sleepMinutes: sleep.today?.minutes ?? null }));
+        })
+        .catch(() => {});
       return () => {
         cancelled = true;
       };
@@ -110,11 +127,15 @@ export function ReadinessCard() {
 
   const result = state.result;
   const hasScore = result != null && result.score != null && result.band != null;
+  // Failed read with nothing cached: say so instead of miscasting it as "no sleep
+  // logged yet". Only then does the tap skip the log=1 deep link (the hub carries
+  // its own retry banner), so we never shove a sheet at a user over a network blip.
+  const failed = state.error && !hasScore;
   const accent = Colors.stat.readiness;
 
   return (
     <Pressable
-      onPress={() => router.push(hasScore ? '/health' : { pathname: '/health', params: { log: '1' } })}
+      onPress={() => router.push(hasScore || failed ? '/health' : { pathname: '/health', params: { log: '1' } })}
       style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
     >
       <View style={[styles.glow, { backgroundColor: accent, opacity: 0.04 }]} />
@@ -143,10 +164,20 @@ export function ReadinessCard() {
           </View>
           <SignalRows result={result!} sleepMinutes={state.sleepMinutes} C={C} />
         </View>
+      ) : failed ? (
+        <View style={styles.center}>
+          <View style={[styles.emptyChip, { backgroundColor: colorWithAlpha(C.textMuted, 0.12) }]}>
+            <Feather name="cloud-off" size={24} color={C.textMuted} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: C.foreground }]}>Can&apos;t load this</Text>
+          <Text style={[styles.emptySub, { color: C.textDim }]}>
+            Tap to try again.
+          </Text>
+        </View>
       ) : (
         <View style={styles.center}>
           <View style={[styles.emptyChip, { backgroundColor: colorWithAlpha(accent, 0.12) }]}>
-            <Feather name="moon" size={18} color={accent} />
+            <Feather name="moon" size={24} color={accent} />
           </View>
           <Text style={[styles.emptyTitle, { color: C.foreground }]}>Log last night</Text>
           <Text style={[styles.emptySub, { color: C.textDim }]}>
@@ -169,17 +200,26 @@ function SignalRows({ result, sleepMinutes, C }: {
   sleepMinutes: number | null;
   C: ReturnType<typeof useTheme>['C'];
 }) {
-  const rows = ROW_ORDER
+  const present = ROW_ORDER
     .map((key) => result.contributors.find((c) => c.key === key))
-    .filter((c): c is ReadinessContributor => c != null)
-    .slice(0, MAX_ROWS);
+    .filter((c): c is ReadinessContributor => c != null);
+  // Sleep is the anchor and pins first. Among the rest, surface signals that
+  // actually moved the score before neutral ones, so an applied load or fuel
+  // adjustment is never hidden by the row cap on a full A1 read (sleep+RHR+HRV
+  // would otherwise fill all three slots). Sort is stable, so ROW_ORDER breaks
+  // ties within each group.
+  const sleep = present.filter((c) => c.key === 'sleep');
+  const rest = present
+    .filter((c) => c.key !== 'sleep')
+    .sort((a, b) => Number(contributorMoved(b)) - Number(contributorMoved(a)));
+  const rows = [...sleep, ...rest].slice(0, MAX_ROWS);
   if (rows.length === 0) return null;
 
   return (
     <View style={styles.rows}>
       {rows.map((c) => {
         const v = c.z ?? c.dir ?? 0;
-        const neutral = c.z != null ? Math.abs(c.z) < NEUTRAL_Z : (c.dir ?? 0) === 0;
+        const neutral = !contributorMoved(c);
         const good = v > 0;
         const barColor = neutral ? C.textMuted
           : c.key === 'load' ? C.warningText

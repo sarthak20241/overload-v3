@@ -393,6 +393,19 @@ export default function HealthScreen() {
                     <Feather name="chevron-right" size={IconSize.sm} color={C.textMuted} />
                   </Pressable>
                 </View>
+              ) : loadError ? (
+                // The read FAILED with nothing cached. That is NOT the same as "no
+                // sleep logged yet", so don't nag for a log the user may already
+                // have made; the retry banner above owns the recovery path.
+                <View style={styles.heroBody}>
+                  <ReadinessRing score={0} color={C.textMuted} track={C.muted} size={140} stroke={12}>
+                    {working ? <ActivityIndicator color={accent} /> : <Feather name="cloud-off" size={26} color={C.textMuted} />}
+                  </ReadinessRing>
+                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>Can&apos;t load your readiness</Text>
+                  <Text style={[styles.emptySub, { color: C.textMuted }]}>
+                    Pull down to refresh, or tap the banner above to try again.
+                  </Text>
+                </View>
               ) : (
                 // No score yet: sleep-first, whether or not anything is connected.
                 // A manual log is all readiness needs to start; the wearable pitch
