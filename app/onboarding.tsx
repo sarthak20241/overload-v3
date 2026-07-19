@@ -69,6 +69,7 @@ import { CommitmentHold } from '@/components/onboarding/CommitmentHold';
 import { BuildMoment } from '@/components/onboarding/BuildMoment';
 import { ProjectedCurve } from '@/components/onboarding/ProjectedCurve';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { DemoLoop } from '@/components/onboarding/DemoLoop';
 import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
@@ -525,27 +526,10 @@ export default function OnboardingScreen() {
                 A few quick questions, and I will build your training plan and daily fuel targets around you.
               </Animated.Text>
 
-              <View style={s.valueRows}>
-                {(
-                  [
-                    { icon: 'edit-3', text: 'Log sets in seconds, even offline' },
-                    { icon: 'trending-up', text: 'See the strength curve on every lift' },
-                    { icon: 'pie-chart', text: 'Calories and macros sized to your stats' },
-                    { icon: 'message-circle', text: 'Coach Drona reads your training, not a script' },
-                  ] as const
-                ).map((row, idx) => (
-                  <Animated.View
-                    key={row.icon}
-                    entering={FadeInDown.delay(340 + idx * 90).duration(450)}
-                    style={s.valueRow}
-                  >
-                    <View style={[s.valueIcon, { backgroundColor: C.muted }]}>
-                      <Feather name={row.icon} size={IconSize.xs} color={C.accentText} />
-                    </View>
-                    <Text style={[s.valueText, { color: C.textSecondary }]}>{row.text}</Text>
-                  </Animated.View>
-                ))}
-              </View>
+              {/* The product demos itself: real capture, no feature bullets. */}
+              <Animated.View entering={FadeInDown.delay(360).duration(500)} style={s.demoWrap}>
+                <DemoLoop width={200} />
+              </Animated.View>
             </View>
 
             <Animated.View entering={FadeInDown.delay(700).duration(450)} style={s.footer}>
@@ -1082,16 +1066,7 @@ const s = StyleSheet.create({
     lineHeight: 24,
     marginTop: Spacing.lg,
   },
-  valueRows: { marginTop: Spacing.xxxl, gap: Spacing.lg },
-  valueRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  valueIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  valueText: { fontSize: FontSize.base, flex: 1, lineHeight: 20 },
+  demoWrap: { marginTop: Spacing.xxl },
 
   // Question steps
   options: { gap: Spacing.md },

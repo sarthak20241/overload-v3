@@ -92,7 +92,8 @@
           }
         }
       ],
-      "expo-health-connect"
+      "expo-health-connect",
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true
