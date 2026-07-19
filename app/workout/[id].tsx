@@ -2361,8 +2361,8 @@ export default function ActiveWorkoutScreen() {
                   const nextName = nextIdx != null ? exercises[nextIdx]?.exercise.name : null;
                   return (
                     <View style={styles.supersetBanner}>
-                      <Feather name="repeat" size={11} color={Colors.primary} />
-                      <Text style={[styles.supersetBannerText, { color: Colors.primary }]} numberOfLines={1}>
+                      <Feather name="repeat" size={11} color={C.accentText} />
+                      <Text style={[styles.supersetBannerText, { color: C.accentText }]} numberOfLines={1}>
                         Superset · {members.map(m => m.exercise.name).join(' + ')}
                         {nextName ? <Text style={styles.supersetNext}>{`   ·   up next: ${nextName}`}</Text> : null}
                       </Text>
@@ -2382,13 +2382,13 @@ export default function ActiveWorkoutScreen() {
                     <View style={styles.supersetActions}>
                       <TouchableOpacity
                         onPress={() => { haptics.selection(); setShowSupersetSheet(true); }}
-                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(Colors.primary, 0.4) }]}
+                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(C.accentText, 0.4) }]}
                         hitSlop={6}
                         accessibilityRole="button"
                         accessibilityLabel={grouped ? 'Edit superset' : 'Make a superset'}
                       >
-                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : Colors.primary} />
-                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : Colors.primary }]}>
+                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : C.accentText} />
+                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : C.accentText }]}>
                           {grouped ? 'Edit superset' : 'Superset'}
                         </Text>
                       </TouchableOpacity>
