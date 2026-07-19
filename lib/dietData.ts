@@ -500,6 +500,9 @@ export async function parseMeal(
      *  read as a brand new one. The server resolves a pure serving/quantity
      *  change without a second model call, so refining is cheaper than parsing. */
     previous?: { text: string; items: ParsedMealItem[] } | null;
+    /** Recent turns of this logging conversation, oldest first. Lets a bare
+     *  "yes" answer whatever Drona just offered. */
+    turns?: { role: 'user' | 'drona'; text: string }[];
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -523,6 +526,9 @@ export async function parseMeal(
         local_hour: now.getHours(),
         local_date: localDate,
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
+        ...(args.turns && args.turns.length > 0
+          ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
+          : {}),
         ...(args.previous && args.previous.items.length > 0
           ? {
             previous_text: args.previous.text,

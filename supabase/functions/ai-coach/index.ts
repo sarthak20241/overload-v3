@@ -891,6 +891,13 @@ async function handleParseMealRequest(args: {
   const previousText = typeof body.previous_text === "string"
     ? body.previous_text.trim().slice(0, 500)
     : null;
+  const recentTurns: { role: "user" | "drona"; text: string }[] = Array.isArray(body.recent_turns)
+    ? (body.recent_turns as Array<Record<string, unknown>>).slice(-4).flatMap((t) => {
+      const text = typeof t?.text === "string" ? t.text.trim().slice(0, 240) : "";
+      if (!text) return [];
+      return [{ role: t.role === "drona" ? "drona" as const : "user" as const, text }];
+    })
+    : [];
   const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
     ? (body.previous_items as Array<Record<string, unknown>>).slice(0, 12).flatMap((r) => {
       const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
@@ -990,6 +997,7 @@ async function handleParseMealRequest(args: {
         contextPromise,
         previousText,
         previousItems,
+        recentTurns,
       },
     );
 

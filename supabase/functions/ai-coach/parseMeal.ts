@@ -122,6 +122,10 @@ export interface ParseMealInput {
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
+  /** The last few turns of this logging conversation, oldest first. Without it
+   *  Drona can see the meal but not what either side just SAID, so a reply like
+   *  "yes do that" or "no the other one" has nothing to attach to. */
+  recentTurns?: { role: "user" | "drona"; text: string }[];
   recentFoods: RecentFoodContext[];
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
@@ -320,6 +324,15 @@ const EXTRACT_TOOL = {
         description:
           'The meal the TEXT names ("for lunch", "dinner was"). null when the text does not ' +
           "name one; never infer it from the food or the time.",
+      },
+      requests_research: {
+        type: "boolean",
+        description:
+          "TRUE when the user is ACCEPTING an offer to go look the numbers up: \"yes\", " +
+          '"yes please", "search for it", "look it up", "check again", "can you verify". ' +
+          "Read it against the last thing Drona said in the conversation: if Drona just " +
+          "offered to search and the user agreed, this is true. Only ever true when a " +
+          "previous meal was given.",
       },
       asks_about_previous: {
         type: "boolean",
@@ -662,6 +675,7 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
 - CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
+- ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance.
 When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
 const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
@@ -947,17 +961,16 @@ async function verifyItems(deps: ParseMealDeps, items: ParsedItem[]): Promise<Pa
       fat_g: round1(per100.fat_g * f),
       fiber_g: per100.fiber_g === null ? item.fiber_g : round1(per100.fiber_g * f),
     };
-    // Last line of defence: a row that slipped past the candidate filter (or
-    // was written before that filter existed) still gets scaled, but says so.
-    // Better a flagged number the user can tap and fix than a silent lie.
+    // Last line of defence. Deliberately understated: we mark the line low
+    // confidence (so the UI can show it as unverified) but do NOT editorialise
+    // on the card. Volunteering doubt about our own numbers on every borderline
+    // meal teaches the user to trust none of them, which is worse than being
+    // occasionally wrong. The rigour belongs in the challenge path — when the
+    // user says "that looks off", we go and check properly.
     const bad = implausiblePer100(per100) ?? implausibleLine(scaled);
     if (!bad) return scaled;
     deps.log?.(`[parse_meal] implausible row used for "${item.food_name}": ${bad}`);
-    return {
-      ...scaled,
-      confidence: "low" as const,
-      assumption: appendAssumption(scaled, `That label reads ${bad}, so check this one`),
-    };
+    return { ...scaled, confidence: "low" as const };
   }));
 }
 
@@ -1219,9 +1232,9 @@ export function flagPrepMismatch(items: ParsedItem[], inputText: string): Parsed
 async function answerAboutPrevious(
   deps: ParseMealDeps,
   previous: PreviousItem[],
+  canResearch: boolean,
 ): Promise<string> {
   const parts: string[] = [];
-  let anyBad = false;
   for (const p of previous.slice(0, 3)) {
     if (!p.food_id) {
       parts.push(`${p.food_name}: my own estimate for ${round1(p.grams)} g, no label behind it.`);
@@ -1240,18 +1253,77 @@ async function answerAboutPrevious(
     // item (the case the user actually catches, like 163 g of protein).
     const bad = implausiblePer100(per100)
       ?? implausibleLine({ ...EMPTY_LINE, protein_g: total, kcal: totalKcal });
-    if (bad) {
-      anyBad = true;
-      parts.push(`Worth flagging: ${bad}, so that number is probably wrong.`);
-    }
+    if (bad) parts.push(`Worth flagging: ${bad}.`);
   }
   if (parts.length === 0) return "I could not trace those numbers. Tap a line to set it yourself.";
+  // The user has told us the cheap answer looks wrong, so this is exactly when
+  // to offer the expensive one. Offered only here, never unprompted: volunteering
+  // doubt on every meal would just teach them to distrust every number.
   parts.push(
-    anyBad
-      ? "Tap the line to put the right numbers in, and I will use yours."
-      : "Tap the line if that does not match what you ate.",
+    canResearch
+      ? "Want me to look up the label online, or would you rather set it yourself?"
+      : "Tap the line to set it yourself and I will use your numbers.",
   );
   return scrubDashes(parts.join(" ")).slice(0, 400);
+}
+
+/**
+ * The user accepted an offer to go and check: look the label up on the web and
+ * rebuild their lines from it.
+ *
+ * This is the one place we spend real time on purpose. Normally a web search is
+ * a last resort because it costs seconds, but here the user has explicitly told
+ * us the cheap answer was wrong — so the expensive answer is the right one.
+ * Keeps their grams (they know what they ate) and replaces only the per-100
+ * basis, which is the part that was in doubt.
+ */
+async function researchPrevious(
+  deps: ParseMealDeps,
+  previous: PreviousItem[],
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<{ items: ParsedItem[]; note: string } | null> {
+  if (!deps.webSearchEnabled || previous.length === 0) return null;
+  const targets: ExtractedItem[] = previous.slice(0, 3).map((p) => ({
+    name: p.food_name,
+    brand: null,
+    quantity: p.quantity,
+    unit: p.serving_label,
+    prep: null,
+  }));
+  const labels = await runWebLookup(deps, targets, onUsage, onCall).catch(() => null);
+  if (!labels || labels.size === 0) return null;
+
+  const items: ParsedItem[] = [];
+  let changed = 0;
+  for (const p of previous) {
+    let label: WebLabel | null = null;
+    for (const [forItem, l] of labels) {
+      if (wordsOverlap(p.food_name, forItem)) { label = l; break; }
+    }
+    if (!label || !(p.grams > 0)) continue;
+    const f = p.grams / 100;
+    changed++;
+    items.push({
+      // food_id drops: these macros are the web label's, not that catalog row's,
+      // so verifyItems must not overwrite them with the numbers we distrusted.
+      food_id: null,
+      food_name: p.food_name,
+      quantity: p.quantity,
+      serving_label: p.serving_label,
+      grams: p.grams,
+      kcal: round1(label.per_100.kcal * f),
+      protein_g: round1(label.per_100.protein_g * f),
+      carb_g: round1(label.per_100.carb_g * f),
+      fat_g: round1(label.per_100.fat_g * f),
+      fiber_g: label.per_100.fiber_g === null ? null : round1(label.per_100.fiber_g * f),
+      source: "web",
+      assumption: label.source_note ?? "Checked against the label online",
+      confidence: "medium",
+    });
+  }
+  if (changed === 0) return null;
+  return { items, note: "Checked the label online and updated these numbers." };
 }
 
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
@@ -1391,6 +1463,10 @@ export async function runParseMeal(
       content: hasPrevious
         ? JSON.stringify({
           text: input.text.trim().slice(0, 500),
+          // What was actually SAID, so "yes" / "no, the other one" resolve.
+          recent_turns: (input.recentTurns ?? []).slice(-4).map((t) => ({
+            [t.role === "user" ? "user" : "drona"]: t.text.slice(0, 240),
+          })),
           previous_meal: {
             text: input.previousText ?? "",
             items: prevItems.map((p) => ({
@@ -1447,11 +1523,51 @@ export async function runParseMeal(
     input: { item_count: extItems.length, declined: ext.declined === true },
   });
 
+  // The user accepted the offer to go and check. This is the one path that
+  // spends web-search time on purpose: they have told us the fast answer was
+  // wrong, so the slow one is worth it.
+  if (hasPrevious && ext.requests_research === true) {
+    const researched = await researchPrevious(deps, prevItems, accumulate, () => anthropicCalls++)
+      .catch(() => null);
+    steps.push({ iter: 1, tool: "research_previous", input: { found: researched ? researched.items.length : 0 } });
+    if (researched) {
+      const items = flagPrepMismatch(checkAtwater(researched.items), input.text);
+      T.decide_ms = 0;
+      steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
+      return {
+        parsed: {
+          meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+          items,
+          drona_line: researched.note,
+          corrects_previous: true,
+        },
+        declined: null,
+        usage,
+        tool_calls: [...toolCalls, "research_previous"],
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
+    // Nothing trustworthy online: say so plainly instead of inventing a number.
+    T.decide_ms = 0;
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
+    return {
+      parsed: null,
+      declined: {
+        message: "I could not find a label I trust for that one. Tap the line and set the numbers yourself, and I will use them.",
+      },
+      usage,
+      tool_calls: [...toolCalls, "research_previous"],
+      steps,
+      iterations: anthropicCalls,
+    };
+  }
+
   // A question about the meal on screen is answered with its real provenance,
   // never brushed off as chatter. The client keeps the card and shows this as
   // a notice, so challenging a number costs the user nothing.
   if (hasPrevious && ext.asks_about_previous === true) {
-    const answer = await answerAboutPrevious(deps, prevItems).catch(() => "");
+    const answer = await answerAboutPrevious(deps, prevItems, deps.webSearchEnabled).catch(() => "");
     if (answer) {
       steps.push({ iter: 1, tool: "answer_about_previous", input: { items: prevItems.length } });
       T.decide_ms = 0;

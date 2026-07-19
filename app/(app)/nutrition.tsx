@@ -121,6 +121,13 @@ export default function NutritionScreen() {
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
   useEffect(() => { flowRef.current = flow; }, [flow]);
+  // What was said, so a bare "yes" can answer whatever Drona just offered.
+  // Kept in a ref (never rendered) and trimmed to the last few turns.
+  const turnsRef = useRef<{ role: 'user' | 'drona'; text: string }[]>([]);
+  const pushTurn = useCallback((role: 'user' | 'drona', text: string) => {
+    if (!text.trim()) return;
+    turnsRef.current = [...turnsRef.current, { role, text }].slice(-6);
+  }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
   const { targets, isCustom, apply: applyTargets } = useNutritionTargets();
@@ -161,11 +168,16 @@ export default function NutritionScreen() {
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
     const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
     setFlow({ status: 'analysing', raw: t });
-    const res = await parseMeal(supabase, { text: t, mealHint: mealForNow(), previous: pending });
+    const turns = turnsRef.current.slice();
+    pushTurn('user', t);
+    const res = await parseMeal(supabase, {
+      text: t, mealHint: mealForNow(), previous: pending, turns,
+    });
     // A reply that is not a meal (an answer, or a failure) must NOT discard a
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
+      pushTurn('drona', res.message);
       if (prevReview) { setFlow({ ...prevReview, notice: res.message }); return; }
       setFlow({ status: 'declined', raw: t, message: res.message });
       return;
@@ -175,6 +187,7 @@ export default function NutritionScreen() {
       setFlow({ status: 'error', raw: t, message: res.message });
       return;
     }
+    pushTurn('drona', res.meal.drona_line);
     // Parsed, not logged. Seed the section selector with Drona's best guess.
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
