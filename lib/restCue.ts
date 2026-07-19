@@ -1,3 +1,4 @@
+import { requireOptionalNativeModule } from 'expo-modules-core';
 import { haptics } from './haptics';
 
 // Rest-ending heads-up: ~3s before the rest timer hits zero, a soft chime is
@@ -32,13 +33,12 @@ function loadAudio(): ExpoAudio | null {
   // handles it, Metro's dev runtime redboxes any module-eval failure anyway
   // (verified on-sim 2026-07-17). Checking the registry first means the
   // require never runs where it can't succeed.
-  // NOTE: `expo.modules` is an INTERNAL Expo registry shape, not public API.
-  // Verified working on SDK 54 / expo-audio 1.1.x (a rebuilt dev client logs the
-  // audio path being taken). If an SDK bump ever renames or hides it, this goes
-  // false forever and the cue silently degrades to buzz-only with no build error
-  // — so re-check this line on the next Expo upgrade.
-  const hasNative = !!(globalThis as { expo?: { modules?: Record<string, unknown> } }).expo?.modules?.ExpoAudio;
-  if (!hasNative) {
+  // Ask the native side through the supported API (it returns null rather than
+  // throwing) BEFORE requiring the JS package. On a dev client built without
+  // expo-audio, evaluating the package throws — and although the try/catch below
+  // handles that, Metro's dev runtime redboxes any module-eval failure anyway
+  // (verified on-sim), so the require must not run where it can't succeed.
+  if (!requireOptionalNativeModule('ExpoAudio')) {
     audio = null;
     return audio;
   }

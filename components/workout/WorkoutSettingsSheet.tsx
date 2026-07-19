@@ -130,6 +130,9 @@ export function WorkoutSettingsSheet({ visible, onClose }: Props) {
                       key={app.key}
                       onPress={() => { haptics.selection(); setPreference('musicApp', app.key); setPreference('musicAppLast', app.key); }}
                       activeOpacity={0.85}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={app.label}
                       style={[
                         s.chip,
                         { borderColor: active ? Colors.primary : C.border, backgroundColor: active ? Colors.primary : C.muted },
