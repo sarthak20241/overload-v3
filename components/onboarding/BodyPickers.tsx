@@ -8,7 +8,7 @@
  * The ruler is a snap-interval FlatList: standard list physics, not hand-rolled
  * gestures (feedback rule), with a Space Grotesk readout above.
  */
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   type NativeScrollEvent,
@@ -106,6 +106,20 @@ export function RulerSlider({
   const sidePad = Math.max(0, viewportW / 2 - TICK_GAP / 2);
 
   const data = useMemo(() => Array.from({ length: count }, (_, i) => i), [count]);
+
+  // A unit toggle rewrites the scale under a list that keeps its pixel offset
+  // (kg 30-200 by 0.5 becomes lbs 66-440 by 1), so the marker ends up on a
+  // different weight than the readout and the next nudge snaps to it. Re-anchor
+  // on scale change only, so this never fights an in-progress drag.
+  const scaleKey = `${min}:${max}:${step}`;
+  const prevScale = useRef(scaleKey);
+  useEffect(() => {
+    if (prevScale.current === scaleKey) return;
+    prevScale.current = scaleKey;
+    const idx = Math.min(count - 1, Math.max(0, Math.round((value - min) / step)));
+    lastIdx.current = idx;
+    listRef.current?.scrollToOffset({ offset: TICK_GAP * idx, animated: false });
+  }, [scaleKey, value, min, step, count]);
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
