@@ -249,6 +249,14 @@ export async function searchOpenFoodFacts(
       // Only products with a complete core macro panel are trustworthy
       // enough to log against (and to backfill into the catalog).
       if (!name || kcal === null || protein === null || carb === null || fat === null) continue;
+      // Open Food Facts is crowd-sourced and carries mis-entered panels. Screen
+      // them HERE so a bad row is never backfilled into our catalog, where it
+      // would poison every future search for that product.
+      const bad = implausiblePer100({ kcal, protein_g: protein, carb_g: carb, fat_g: fat });
+      if (bad) {
+        log?.(`[parse_meal] OFF row rejected ("${name}"): ${bad}`);
+        continue;
+      }
       const sodiumG = asNum(nutr["sodium_100g"]);
       const servingAmount = parseServingSize(prod.serving_size);
       out.push({
@@ -312,6 +320,14 @@ const EXTRACT_TOOL = {
         description:
           'The meal the TEXT names ("for lunch", "dinner was"). null when the text does not ' +
           "name one; never infer it from the food or the time.",
+      },
+      asks_about_previous: {
+        type: "boolean",
+        description:
+          "TRUE when the text QUESTIONS or CHALLENGES the meal already on screen instead of " +
+          'logging or correcting it: "is that right?", "that seems high", "why is it 900 calories?", ' +
+          '"are you sure it had 122 g protein?". The user is checking your numbers, not eating. ' +
+          "Only ever true when a previous meal was given. Set declined FALSE in this case.",
       },
       corrects_previous: {
         type: "boolean",
@@ -645,7 +661,8 @@ const EXTRACT_CORRECTION_RULES = `
 A meal the user just logged may be shown to you as previous_meal (it is on screen, not yet saved). If so, decide what the new text is doing:
 - CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
-When in doubt, prefer false: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
+- QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
+When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
 const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
 
@@ -884,7 +901,21 @@ async function resolveOneItem(
     });
   }
 
-  return { ...item, candidates: candidates.map(synthesizeVolumeAnchors) };
+  // Never offer the model a physically impossible row: it cannot tell a bad
+  // label from a good one, and picking it produces confident nonsense. Dropping
+  // it here means a saner candidate wins, or the item honestly falls to an
+  // estimate. (Keep them if EVERY candidate is junk, so we still show something
+  // and the verify-stage flag warns the user.)
+  const sane = candidates.filter((c) =>
+    implausiblePer100({ kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g }) === null
+  );
+  if (sane.length !== candidates.length) {
+    const dropped = candidates.length - sane.length;
+    deps.log?.(`[parse_meal] dropped ${dropped} implausible candidate(s) for "${item.name}"`);
+    steps.push({ iter: 1, tool: "implausible_filtered", input: { item: item.name, dropped } });
+  }
+  const usable = sane.length > 0 ? sane : candidates;
+  return { ...item, candidates: usable.map(synthesizeVolumeAnchors) };
 }
 
 function round1(n: number): number {
@@ -908,13 +939,24 @@ async function verifyItems(deps: ParseMealDeps, items: ParsedItem[]): Promise<Pa
     const per100 = await deps.getFoodPer100(item.food_id);
     if (!per100) return item;
     const f = item.grams / 100;
-    return {
+    const scaled = {
       ...item,
       kcal: round1(per100.kcal * f),
       protein_g: round1(per100.protein_g * f),
       carb_g: round1(per100.carb_g * f),
       fat_g: round1(per100.fat_g * f),
       fiber_g: per100.fiber_g === null ? item.fiber_g : round1(per100.fiber_g * f),
+    };
+    // Last line of defence: a row that slipped past the candidate filter (or
+    // was written before that filter existed) still gets scaled, but says so.
+    // Better a flagged number the user can tap and fix than a silent lie.
+    const bad = implausiblePer100(per100) ?? implausibleLine(scaled);
+    if (!bad) return scaled;
+    deps.log?.(`[parse_meal] implausible row used for "${item.food_name}": ${bad}`);
+    return {
+      ...scaled,
+      confidence: "low" as const,
+      assumption: appendAssumption(scaled, `That label reads ${bad}, so check this one`),
     };
   }));
 }
@@ -960,6 +1002,82 @@ function sanitizeItems(raw: unknown): ParsedItem[] {
     });
   }
   return items;
+}
+
+// ── Nutrient plausibility ───────────────────────────────────────────────────
+// Every other guardrail checks CONSISTENCY (do the numbers agree with each
+// other?). This one checks PLAUSIBILITY (can this food exist?), which is the
+// gap crowd-sourced data walks through: a row claiming 25 g protein per 100 ml
+// for a coffee latte is internally consistent and completely wrong. It logged
+// 163 g protein for two lattes (prod, 2026-07-19) and every existing check
+// passed it.
+//
+// The rules are split by CONSEQUENCE, because the cost of being wrong differs:
+//
+//   REJECT  — only the physically impossible. Rejecting drops a food from the
+//             candidates entirely, so a false positive silently deletes a real
+//             food. These thresholds are therefore unarguable physics.
+//   FLAG    — merely implausible. Flagging just lowers confidence and adds a
+//             note, so a false positive costs the user a glance, not a wrong
+//             log. This is where judgement calls live.
+//
+// Why not a "drinks can't have 25 g protein per 100 ml" rule, which is what the
+// Super Coffee latte actually violated? Because neither base_unit nor
+// food_category reliably marks a drink in this catalog: tuna in olive oil and
+// soya chunks are stored as 'ml', and protein POWDERS are categorised
+// 'beverage' with a legitimate 80 g protein per 100 g. Any such rule rejects
+// real foods. The per-LINE flag below catches the same case without that risk:
+// whatever the food, 163 g of protein on one line deserves a second look.
+const PLAUSIBLE = {
+  maxKcalPer100: 920,      // USDA lists pure fats (lard, tallow, fish oil) at
+                           // 902, so 900 would have deleted real foods. 9 kcal
+                           // per gram is the physical ceiling; this allows the
+                           // rounding above it and nothing more.
+  maxMacroSumPer100: 105,  // macros cannot outweigh the food (+5 for rounding)
+  maxProteinPer100: 100,   // the hard ceiling: 100 g of food cannot hold more
+                           // than 100 g of protein. Real ultra-filtered isolates
+                           // label as high as 98.9, so anything below this bound
+                           // would delete a genuine product.
+  flagLineProtein: 100,    // one line: a 300 g chicken breast is only ~90 g
+  flagLineKcal: 2000,      // one line above a day's worth of food
+};
+
+/** Why this per-100 basis cannot describe ANY real food, or null if it could.
+ *  Used to reject: keep it to physics, never taste. */
+export function implausiblePer100(
+  per100: { kcal: number; protein_g: number; carb_g: number; fat_g: number },
+): string | null {
+  const { kcal, protein_g, carb_g, fat_g } = per100;
+  if ([kcal, protein_g, carb_g, fat_g].some((v) => !Number.isFinite(v) || v < 0)) {
+    return "negative or missing values";
+  }
+  if (protein_g + carb_g + fat_g > PLAUSIBLE.maxMacroSumPer100) {
+    return `its macros total ${Math.round(protein_g + carb_g + fat_g)} g per 100, more than the food weighs`;
+  }
+  if (kcal > PLAUSIBLE.maxKcalPer100) return `${Math.round(kcal)} kcal per 100 is more than pure fat`;
+  if (protein_g > PLAUSIBLE.maxProteinPer100) {
+    return `${Math.round(protein_g)} g protein per 100 is more than pure isolate`;
+  }
+  return null;
+}
+
+/** A zero line, for checking totals without a full ParsedItem to hand. */
+const EMPTY_LINE: ParsedItem = {
+  food_id: null, food_name: "", quantity: 1, serving_label: "", grams: 0,
+  kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0, fiber_g: null,
+  source: "estimate", assumption: null, confidence: "medium",
+};
+
+/** Why a LOGGED line looks wrong for a single food, or null. Used to flag, not
+ *  reject — this is the net that caught 163 g of protein from two lattes. */
+export function implausibleLine(item: ParsedItem): string | null {
+  if (item.protein_g > PLAUSIBLE.flagLineProtein) {
+    return `${Math.round(item.protein_g)} g of protein in one item is a lot`;
+  }
+  if (item.kcal > PLAUSIBLE.flagLineKcal) {
+    return `${Math.round(item.kcal)} calories in one item is a lot`;
+  }
+  return null;
 }
 
 // ── Deterministic guardrails ────────────────────────────────────────────────
@@ -1085,6 +1203,55 @@ export function flagPrepMismatch(items: ParsedItem[], inputText: string): Parsed
       assumption: appendAssumption(item, "You said roasted or dried but I matched a cooked entry, calories may read low"),
     };
   });
+}
+
+/**
+ * Answer "is that right?" about the meal on screen, with receipts.
+ *
+ * Built in CODE from the food rows, not by the model: the whole point is to
+ * show where a number actually came from, and a model asked to justify its own
+ * output will happily invent a justification. One catalog read per line, no
+ * extra model call, so a challenge is answered in about a second.
+ *
+ * When the underlying row is implausible we say so outright — the user
+ * challenging the number is usually right, and admitting it beats defending it.
+ */
+async function answerAboutPrevious(
+  deps: ParseMealDeps,
+  previous: PreviousItem[],
+): Promise<string> {
+  const parts: string[] = [];
+  let anyBad = false;
+  for (const p of previous.slice(0, 3)) {
+    if (!p.food_id) {
+      parts.push(`${p.food_name}: my own estimate for ${round1(p.grams)} g, no label behind it.`);
+      continue;
+    }
+    const per100 = await deps.getFoodPer100(p.food_id).catch(() => null);
+    if (!per100) continue;
+    const unit = per100.base_unit === "ml" ? "ml" : "g";
+    const total = round1(per100.protein_g * (p.grams / 100));
+    const totalKcal = round1(per100.kcal * (p.grams / 100));
+    parts.push(
+      `${p.food_name}: the label says ${round1(per100.protein_g)} g protein and ` +
+      `${Math.round(per100.kcal)} kcal per 100 ${unit}, times ${round1(p.grams)} ${unit} = ${total} g protein.`,
+    );
+    // Both nets: an impossible per-100 basis, or a total that is a lot for one
+    // item (the case the user actually catches, like 163 g of protein).
+    const bad = implausiblePer100(per100)
+      ?? implausibleLine({ ...EMPTY_LINE, protein_g: total, kcal: totalKcal });
+    if (bad) {
+      anyBad = true;
+      parts.push(`Worth flagging: ${bad}, so that number is probably wrong.`);
+    }
+  }
+  if (parts.length === 0) return "I could not trace those numbers. Tap a line to set it yourself.";
+  parts.push(
+    anyBad
+      ? "Tap the line to put the right numbers in, and I will use yours."
+      : "Tap the line if that does not match what you ate.",
+  );
+  return scrubDashes(parts.join(" ")).slice(0, 400);
 }
 
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
@@ -1279,6 +1446,26 @@ export async function runParseMeal(
     tool: "extract_meal",
     input: { item_count: extItems.length, declined: ext.declined === true },
   });
+
+  // A question about the meal on screen is answered with its real provenance,
+  // never brushed off as chatter. The client keeps the card and shows this as
+  // a notice, so challenging a number costs the user nothing.
+  if (hasPrevious && ext.asks_about_previous === true) {
+    const answer = await answerAboutPrevious(deps, prevItems).catch(() => "");
+    if (answer) {
+      steps.push({ iter: 1, tool: "answer_about_previous", input: { items: prevItems.length } });
+      T.decide_ms = 0;
+      steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+      return {
+        parsed: null,
+        declined: { message: answer },
+        usage,
+        tool_calls: [...toolCalls, "answer_about_previous"],
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
+  }
 
   if (ext.declined === true || extItems.length === 0) {
     const msg = typeof ext.decline_message === "string" && ext.decline_message.trim()

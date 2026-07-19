@@ -45,7 +45,10 @@ import type { MealType } from '@/lib/foods';
 type ParseFlow =
   | { status: 'idle' }
   | { status: 'analysing'; raw: string }
-  | { status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType }
+  // `notice` carries a reply that is NOT a new meal (an answer to a question,
+  // or a parse failure) while the reviewed meal stays on screen. Asking
+  // "is that right?" must never throw away work the user hasn't added yet.
+  | { status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType; notice?: string | null }
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
@@ -155,13 +158,23 @@ export default function NutritionScreen() {
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
-    const pending = flowRef.current.status === 'review'
-      ? { text: flowRef.current.raw, items: flowRef.current.meal.items }
-      : null;
+    const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
+    const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
     setFlow({ status: 'analysing', raw: t });
     const res = await parseMeal(supabase, { text: t, mealHint: mealForNow(), previous: pending });
-    if (res.kind === 'declined') { setFlow({ status: 'declined', raw: t, message: res.message }); return; }
-    if (res.kind === 'error') { setFlow({ status: 'error', raw: t, message: res.message }); return; }
+    // A reply that is not a meal (an answer, or a failure) must NOT discard a
+    // meal still under review — that is unlogged work the user would have to
+    // retype. Keep the card and show the reply as a notice on it.
+    if (res.kind === 'declined') {
+      if (prevReview) { setFlow({ ...prevReview, notice: res.message }); return; }
+      setFlow({ status: 'declined', raw: t, message: res.message });
+      return;
+    }
+    if (res.kind === 'error') {
+      if (prevReview) { setFlow({ ...prevReview, notice: res.message }); return; }
+      setFlow({ status: 'error', raw: t, message: res.message });
+      return;
+    }
     // Parsed, not logged. Seed the section selector with Drona's best guess.
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
@@ -365,6 +378,8 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' ? flow.message : null
               }
               onMealTypeChange={onMealTypeChange}
+              notice={flow.status === 'review' ? flow.notice ?? null : null}
+              onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null } : f))}
               onEditItem={flow.status === 'review' ? onEditItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}

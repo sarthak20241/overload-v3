@@ -47,6 +47,10 @@ interface Props {
   adding?: boolean;                          // Add in flight (review)
   saved?: boolean;                           // this parse was saved as a meal/recipe
   onMealTypeChange?: (m: MealType) => void;
+  /** A reply that is not a meal (Drona answering a question about these lines,
+   *  or a failed follow-up) shown ON the card so the meal survives. */
+  notice?: string | null;
+  onDismissNotice?: () => void;
   /** Tap a line to correct its serving/quantity/macros before adding. */
   onEditItem?: (index: number) => void;
   onAdd?: () => void;
@@ -70,8 +74,8 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, rawText, meal, mealType, message, adding, saved,
-  onMealTypeChange, onEditItem, onAdd, onSave, onRetry, onDismiss,
+  state, rawText, meal, mealType, message, adding, saved, notice,
+  onMealTypeChange, onDismissNotice, onEditItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
   const { C } = useTheme();
   const s = makeStyles(C);
@@ -85,6 +89,16 @@ export function ParsedMealCard({
 
       {state === 'review' && meal && (
         <View>
+          {/* Drona answering a question about these lines. The meal stays. */}
+          {!!notice && (
+            <View style={s.notice}>
+              <Feather name="info" size={12} color={C.accentText} style={{ marginTop: 2 }} />
+              <Text style={s.noticeTxt}>{notice}</Text>
+              <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityLabel="Dismiss">
+                <Feather name="x" size={13} color={C.textMuted} />
+              </Pressable>
+            </View>
+          )}
           {meal.items.map((it, i) => {
             const prov = provenance(it.source);
             return (
@@ -228,6 +242,13 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card,
     },
     raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
+
+    notice: {
+      flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+      backgroundColor: C.primarySubtle, borderRadius: Radius.md,
+      padding: Spacing.sm, marginBottom: Spacing.sm,
+    },
+    noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
 
     item: { paddingVertical: Spacing.xs },
     itemPressed: { opacity: 0.6 },
