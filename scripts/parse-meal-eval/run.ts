@@ -85,13 +85,14 @@ async function embedQueryForEval(text: string): Promise<number[] | null> {
 }
 
 async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
-  const { data, error } = await supabase.rpc("search_foods_ranked", { q: query, lim: 8 });
-  if (error) console.error(`  search_foods_ranked error: ${error.message}`);
+  // Mirrors prod (0083): one round trip, servings joined server-side.
+  const { data, error } = await supabase.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 });
+  if (error) console.error(`  search_foods_ranked_with_servings error: ${error.message}`);
   let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
   if (rows.length === 0) {
     const vec = await embedQueryForEval(query);
     if (vec) {
-      const { data: sem } = await supabase.rpc("search_foods_semantic", {
+      const { data: sem } = await supabase.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
         lim: 6,
       });
@@ -99,19 +100,16 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     }
   }
   if (rows.length === 0) return [];
-  const ids = rows.map((r) => String(r.id));
-  const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
-  const { data: servings } = await supabase
-    .from("food_servings")
-    .select("food_id, label, grams, is_default")
-    .in("food_id", ids)
-    .order("seq", { ascending: true });
-  for (const s of (servings ?? []) as Array<Record<string, unknown>>) {
-    const key = String(s.food_id);
-    const list = servingsByFood.get(key) ?? [];
-    list.push({ label: String(s.label), grams: Number(s.grams), is_default: !!s.is_default });
-    servingsByFood.set(key, list);
-  }
+  const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((s) => {
+      const o = s as Record<string, unknown>;
+      const label = typeof o?.label === "string" ? o.label : "";
+      const grams = Number(o?.grams);
+      if (!label || !Number.isFinite(grams)) return [];
+      return [{ label, grams, is_default: !!o.is_default }];
+    });
+  };
   return rows.map((r) => ({
     food_id: String(r.id),
     name: String(r.name),
@@ -122,7 +120,7 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     carb_g: Number(r.carb_g ?? 0),
     fat_g: Number(r.fat_g ?? 0),
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
-    servings: servingsByFood.get(String(r.id)) ?? [],
+    servings: parseServings(r.servings),
     source: "catalog" as const,
   }));
 }
