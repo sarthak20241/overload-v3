@@ -92,7 +92,14 @@
           }
         }
       ],
-      "expo-health-connect"
+      "expo-health-connect",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

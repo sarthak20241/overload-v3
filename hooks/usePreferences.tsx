@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { MusicApp } from '@/lib/musicLinks';
 
 // Workout preferences live here. This mirrors useTheme's shape (Provider +
 // context + AsyncStorage) but holds the whole preferences object under a single
@@ -26,6 +27,17 @@ export interface WorkoutPreferences {
   // Short rest between the LEFT and RIGHT side of a unilateral (L+R) set. Off =
   // log both sides back to back. Migration 0056 / unilateral feature.
   restBetweenSides: boolean;
+  // Soft chime + buzz ~3s before rest ends; the chime plays through a
+  // duckOthers audio session, so the user's music dips and comes back.
+  restEndCue: boolean;
+
+  // ── Music ────────────────────────────────────────────────────────────────
+  // 'off' hides the top-bar music shortcut; anything else picks which app the
+  // one-tap jump opens (see lib/musicLinks). We never play or read music.
+  musicApp: MusicApp;
+  // The last real app the user picked, so toggling the shortcut off then back on
+  // restores their choice instead of snapping back to the default. Never 'off'.
+  musicAppLast: Exclude<MusicApp, 'off'>;
 }
 
 export const DEFAULT_PREFERENCES: WorkoutPreferences = {
@@ -34,6 +46,9 @@ export const DEFAULT_PREFERENCES: WorkoutPreferences = {
   inlineTimerForDuration: true,
   keepAwake: false,
   restBetweenSides: false,
+  restEndCue: true,
+  musicApp: 'off',
+  musicAppLast: 'spotify',
 };
 
 // Fixed inter-side rest target (seconds) when restBetweenSides is on. Kept a
