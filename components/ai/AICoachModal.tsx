@@ -801,7 +801,11 @@ function ChatScreen({
   // Header mark: traces while waiting on the coach, releases when the reply
   // lands, static until the first send.
   const everLoadedRef = useRef(false);
-  if (loading) everLoadedRef.current = true;
+  // Set after commit, not during render: React may discard a render pass, and
+  // a ref written there would keep the flag from a pass the user never saw.
+  useEffect(() => {
+    if (loading) everLoadedRef.current = true;
+  }, [loading]);
   const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Tracks the in-flight stream so we can abort it on screen dismiss /
@@ -2188,7 +2192,11 @@ function RefineChatScreen({
   // Header mark: traces while waiting on the coach, releases when the reply
   // lands, static until the first send.
   const everLoadedRef = useRef(false);
-  if (loading) everLoadedRef.current = true;
+  // Set after commit, not during render: React may discard a render pass, and
+  // a ref written there would keep the flag from a pass the user never saw.
+  useEffect(() => {
+    if (loading) everLoadedRef.current = true;
+  }, [loading]);
   const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Stable abort handle — refine turns can run long when the model
