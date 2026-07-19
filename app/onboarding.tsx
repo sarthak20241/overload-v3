@@ -274,7 +274,9 @@ export default function OnboardingScreen() {
       setBuildReady(true); // guests get the curated starter plan for now
       return;
     }
-    let cancelled = false;
+    // No cancellation on step change: the user moves commit -> build while
+    // the request is in flight, and the result must still land. Post-unmount
+    // setState is a no-op in React 18, so this is safe.
     (async () => {
       try {
         const token = await getToken();
@@ -283,19 +285,22 @@ export default function OnboardingScreen() {
           answers.goalWeightKg && answers.weightKg && Math.abs(answers.goalWeightKg - answers.weightKg) >= 1
             ? answers.goalWeightKg < answers.weightKg ? 'loss' as const : 'gain' as const
             : null;
-        const message = buildOnboardingIntakeMessage(answers, { weeklyRateKg: weeklyRate, direction });
+        const message = buildOnboardingIntakeMessage(answers, {
+          weeklyRateKg: weeklyRate,
+          direction,
+          targets: targets
+            ? { kcal: targets.kcal, protein: targets.protein, carb: targets.carb, fat: targets.fat }
+            : null,
+        });
         const input = await requestDronaOnboardingPlan({ token, message });
         const mapped = dronaPlanToStarterRoutines(input);
-        if (!cancelled && mapped) setDronaPlan(mapped);
+        if (mapped) setDronaPlan(mapped);
       } catch {
         /* fall back to the deterministic plan; the reveal never knows */
       } finally {
-        if (!cancelled) setBuildReady(true);
+        setBuildReady(true);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on commit entry
   }, [step]);
 

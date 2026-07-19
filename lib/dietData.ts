@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
+import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
@@ -454,6 +455,7 @@ export async function parseMeal(
   let data: any;
   try {
     const res = await supabase.functions.invoke('ai-coach', {
+      region: FunctionRegion.UsEast1, // pin to DB+Anthropic region (test build)
       body: {
         mode: 'parse_meal',
         text,

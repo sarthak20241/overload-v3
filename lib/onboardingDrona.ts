@@ -38,7 +38,13 @@ const GOAL_LABEL: Record<CoachGoal, string> = {
  */
 export function buildOnboardingIntakeMessage(
   answers: OnboardingAnswers,
-  extras: { weeklyRateKg: number | null; direction: 'loss' | 'gain' | null },
+  extras: {
+    weeklyRateKg: number | null;
+    direction: 'loss' | 'gain' | null;
+    /** The computed daily fuel targets the reveal will show. Passing them in
+     * keeps Drona's rationale from quoting different numbers than the card. */
+    targets: { kcal: number; protein: number; carb: number; fat: number } | null;
+  },
 ): string {
   const goal: CoachGoal = answers.goal ?? 'general';
   const experience: ExperienceLevel = answers.experience ?? 'beginner';
@@ -63,6 +69,9 @@ export function buildOnboardingIntakeMessage(
     `I just finished onboarding. Build my starter training plan from these answers.`,
     `Goal: ${GOAL_LABEL[goal]}. Experience: ${experience}. Training ${frequency} days a week.`,
     bodyFacts.length ? `Body: ${bodyFacts.join(', ')}.` : '',
+    extras.targets
+      ? `My daily fuel targets are already set: ${extras.targets.kcal} kcal, ${extras.targets.protein}g protein, ${extras.targets.carb}g carbs, ${extras.targets.fat}g fat. If you mention nutrition, use exactly these numbers.`
+      : '',
     `Rules:`,
     `- days_per_week is ${frequency}. Create the number of DISTINCT workouts that a ${experience} lifter should rotate through ${frequency} sessions a week (fewer distinct workouts than sessions is fine, they repeat). Typical: 1-3 days full body A/B, 4 days upper/lower, 5+ push/pull/legs. Deviate only if it genuinely fits better.`,
     `- Exercise names MUST be copied character-for-character from this catalog, nothing else: ${catalog}.`,
