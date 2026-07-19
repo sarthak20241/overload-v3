@@ -20,7 +20,16 @@ import { useTheme } from '@/hooks/useTheme';
 import { haptics } from '@/lib/haptics';
 import { DronaMark } from '@/components/coach/DronaMark';
 
-const STEP_MS = 850;
+// Once the plan is ready, remaining lines tick through briskly.
+const READY_STEP_MS = 700;
+// While generation is still running, ticks stretch so the latency is spread
+// across the WHOLE checklist instead of sprinting to the last line and
+// stalling: ~0.9s, 1.6s, 2.6s, 3.8s between ticks (per tick index).
+const waitingStepMs = (tickIndex: number) => 900 + tickIndex * tickIndex * 320;
+// Displayed percent per completed tick: uneven, organic milestones. Between
+// ticks the number creeps a few points toward the next one so the screen
+// always looks alive during a long generation.
+const PCT_TARGETS = [0, 26, 44, 63, 82, 100];
 
 export function BuildMoment({
   lines,
@@ -34,10 +43,11 @@ export function BuildMoment({
 }) {
   const { C } = useTheme();
   const [ticked, setTicked] = useState(0);
+  const [creep, setCreep] = useState(0);
   const doneFired = useRef(false);
 
-  // Advance one line per beat; the FINAL line refuses to tick until `ready`,
-  // which is what makes the screen elastic under real generation latency.
+  // Advance one line per beat. The FINAL line refuses to tick until `ready`
+  // (elastic hold); earlier ticks slow progressively while generation runs.
   useEffect(() => {
     if (ticked >= lines.length) return;
     const isLast = ticked === lines.length - 1;
@@ -45,11 +55,20 @@ export function BuildMoment({
     const t = setTimeout(() => {
       haptics.tick();
       setTicked((n) => n + 1);
-    }, STEP_MS);
+    }, ready ? READY_STEP_MS : waitingStepMs(ticked));
     return () => clearTimeout(t);
   }, [ticked, lines.length, ready]);
 
   const finished = ticked >= lines.length;
+
+  // Percent creep between ticks: drift up to 6 points toward the next
+  // milestone (never reaching it) so a long hold still shows motion.
+  useEffect(() => {
+    setCreep(0);
+    if (finished) return;
+    const iv = setInterval(() => setCreep((c) => Math.min(c + 1, 6)), 900);
+    return () => clearInterval(iv);
+  }, [ticked, finished]);
 
   useEffect(() => {
     if (!finished || doneFired.current) return;
@@ -58,7 +77,9 @@ export function BuildMoment({
     return () => clearTimeout(t);
   }, [finished, onDone]);
 
-  const pct = Math.round((ticked / lines.length) * 100);
+  const base = PCT_TARGETS[Math.min(ticked, PCT_TARGETS.length - 1)];
+  const next = PCT_TARGETS[Math.min(ticked + 1, PCT_TARGETS.length - 1)];
+  const pct = Math.min(base + creep, Math.max(base, next - 3));
 
   return (
     <View style={b.wrap}>
