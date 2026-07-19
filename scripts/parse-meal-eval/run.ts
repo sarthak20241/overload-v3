@@ -156,6 +156,18 @@ const deps: ParseMealDeps = {
       fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
     };
   },
+  getFoodServings: async (foodId) => {
+    const { data } = await supabase
+      .from("food_servings")
+      .select("label, grams, is_default")
+      .eq("food_id", foodId)
+      .order("seq", { ascending: true });
+    return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
+      label: String(s.label),
+      grams: Number(s.grams),
+      is_default: !!s.is_default,
+    }));
+  },
   log: () => {},
 };
 
@@ -182,6 +194,12 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
   if (result.declined) {
     failures.push(`expected a log, got decline: "${result.declined.message}"`);
     return failures;
+  }
+  if (c.expectCorrection !== undefined) {
+    const got = result.parsed?.corrects_previous === true;
+    if (got !== c.expectCorrection) {
+      failures.push(`corrects_previous ${got} != ${c.expectCorrection}`);
+    }
   }
   const items = result.parsed!.items;
   if (exp.minItems !== undefined && items.length < exp.minItems) {
@@ -243,14 +261,31 @@ async function main() {
   for (const c of cases) {
     const started = Date.now();
     try {
-      const result = await runParseMeal(deps, {
-        text: c.text,
+      const baseInput = {
         localHour: c.hour ?? null,
         mealHint: null,
         recentFoods: [],
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
-      });
+      };
+      let result = await runParseMeal(deps, { ...baseInput, text: c.text });
+      // Follow-up cases: replay the first parse as the meal on screen, then
+      // score the follow-up — exactly what the client sends.
+      if (c.followUp) {
+        const prev = (result.parsed?.items ?? []).map((i) => ({
+          food_id: i.food_id,
+          food_name: i.food_name,
+          quantity: i.quantity,
+          serving_label: i.serving_label,
+          grams: i.grams,
+        }));
+        result = await runParseMeal(deps, {
+          ...baseInput,
+          text: c.followUp,
+          previousText: c.text,
+          previousItems: prev,
+        });
+      }
       const failures = scoreCase(c, result);
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
       totalTokens += tokens;

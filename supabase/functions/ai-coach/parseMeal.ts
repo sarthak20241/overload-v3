@@ -78,6 +78,10 @@ export interface ParseMealResult {
     meal_type: MealType;
     items: ParsedItem[];
     drona_line: string;
+    /** True when these items are a corrected version of the meal the client
+     *  sent as `previousItems` and should REPLACE it. False (the default) means
+     *  they are new food, so a client showing a pending meal appends them. */
+    corrects_previous?: boolean;
   } | null;
   // Set when the model declined (non-food input) instead of logging.
   declined: { message: string } | null;
@@ -101,10 +105,23 @@ export interface RecentFoodContext {
   serving_unit: string;
 }
 
+/** A line from the meal still under review on the client, sent back with a
+ *  follow-up so "make it a small one" can re-target it. */
+export interface PreviousItem {
+  food_id: string | null;
+  food_name: string;
+  quantity: number;
+  serving_label: string;
+  grams: number;
+}
+
 export interface ParseMealInput {
   text: string;
   localHour: number | null;
   mealHint: MealType | null;
+  /** Set only when a parsed-but-unlogged meal is on screen. */
+  previousText?: string | null;
+  previousItems?: PreviousItem[];
   recentFoods: RecentFoodContext[];
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
@@ -142,6 +159,10 @@ export interface ParseMealDeps {
     fat_g: number;
     fiber_g: number | null;
   } | null>;
+  /** A food's serving options, for resolving a correction ("a small one")
+   *  against the row we already matched. Optional: without it the fast
+   *  correction path simply falls back to the full pipeline. */
+  getFoodServings?(foodId: string): Promise<ServingOption[]>;
   fetchFn?: typeof fetch;
   log?: (msg: string) => void;
 }
@@ -292,12 +313,29 @@ const EXTRACT_TOOL = {
           'The meal the TEXT names ("for lunch", "dinner was"). null when the text does not ' +
           "name one; never infer it from the food or the time.",
       },
+      corrects_previous: {
+        type: "boolean",
+        description:
+          "TRUE when the text CORRECTS the meal already on screen rather than adding food: " +
+          '"make it a small one", "that was 2 not 1", "actually paneer not tofu", "no sugar". ' +
+          "FALSE when the user is naming NEW food to add (\"and a dosa\", \"also 2 roti\") or " +
+          "logging an unrelated meal. Only ever true when a previous meal was given.",
+      },
       items: {
         type: "array",
-        description: "One entry per distinct food/drink. Empty when declined.",
+        description:
+          "One entry per distinct food/drink. When corrects_previous is true, list the " +
+          "corrected version of EVERY line of the previous meal (unchanged ones included), " +
+          "so the result replaces it wholesale.",
         items: {
           type: "object",
           properties: {
+            corrects_food_name: {
+              type: ["string", "null"],
+              description:
+                "When correcting, the food_name of the previous line this entry replaces, " +
+                "copied EXACTLY. null for a brand new item.",
+            },
             name: {
               type: "string",
               description:
@@ -602,6 +640,13 @@ export function mealForHour(hour: number | null): MealType {
   return "snack";
 }
 
+const EXTRACT_CORRECTION_RULES = `
+
+A meal the user just logged may be shown to you as previous_meal (it is on screen, not yet saved). If so, decide what the new text is doing:
+- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
+- ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
+When in doubt, prefer false: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
+
 const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
@@ -746,6 +791,9 @@ export interface ExtractedItem {
   quantity: number;
   unit: string;
   prep: string | null;
+  /** When this entry corrects a line of the meal under review, that line's
+   *  food_name verbatim — the handle we re-target it by. */
+  correctsFoodName?: string | null;
 }
 
 interface ResolvedItem extends ExtractedItem {
@@ -1039,6 +1087,88 @@ export function flagPrepMismatch(items: ParsedItem[], inputText: string): Parsed
   });
 }
 
+/** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
+ *  against a food's real serving labels. Exact first, then substring both
+ *  ways so "small" finds "1 small/individual". */
+function matchServing(servings: ServingOption[], unit: string): ServingOption | null {
+  const u = unit.trim().toLowerCase();
+  if (!u) return null;
+  const norm = (s: string) => s.toLowerCase().replace(/^\d+(\.\d+)?\s*/, "").trim();
+  return servings.find((s) => s.label.toLowerCase() === u)
+    ?? servings.find((s) => norm(s.label) === u)
+    ?? servings.find((s) => norm(s.label).includes(u) || u.includes(norm(s.label)))
+    ?? null;
+}
+
+/**
+ * Resolve a correction WITHOUT a decide call.
+ *
+ * A correction like "make it a small one" changes only how much of an
+ * already-identified food was eaten. The food row is known (food_id from the
+ * line on screen), so its servings and per-100 macros are all we need: pick the
+ * serving the user named, scale, done. That turns a ~6s reparse into ~2s (one
+ * extract call plus one catalog read), which matters because corrections come
+ * in bursts while the user is looking at the card.
+ *
+ * Returns null when anything is ambiguous — an unknown food, a serving we
+ * cannot match, a changed food identity — so the caller falls back to the full
+ * pipeline rather than guessing.
+ */
+async function tryFastCorrection(
+  deps: ParseMealDeps,
+  extItems: ExtractedItem[],
+  previous: PreviousItem[],
+): Promise<ParsedItem[] | null> {
+  const byName = new Map(previous.map((p) => [p.food_name.toLowerCase(), p]));
+  const out: ParsedItem[] = [];
+
+  for (const item of extItems) {
+    const prev = item.correctsFoodName ? byName.get(item.correctsFoodName.toLowerCase()) : undefined;
+    // Every line must map to a known, catalog-backed previous line.
+    if (!prev || !prev.food_id) return null;
+    // A changed identity ("paneer not tofu") needs a real re-resolve.
+    if (!wordsOverlap(item.name, prev.food_name)) return null;
+
+    const per100 = await deps.getFoodPer100(prev.food_id);
+    if (!per100) return null;
+
+    let grams: number | null = null;
+    let servingLabel = prev.serving_label;
+    const massUnit = item.unit.trim().toLowerCase();
+    if (massUnit === "g" || massUnit === "ml" || massUnit === "gram" || massUnit === "grams") {
+      grams = item.quantity;
+      servingLabel = massUnit === "ml" ? "ml" : "g";
+    } else {
+      const servings = await deps.getFoodServings?.(prev.food_id) ?? [];
+      const sv = matchServing(servings, item.unit)
+        // "make it 2" keeps the serving and only changes the count.
+        ?? (item.unit === "serving" ? matchServing(servings, prev.serving_label) : null);
+      if (!sv || !(sv.grams > 0)) return null;
+      grams = sv.grams * item.quantity;
+      servingLabel = sv.label;
+    }
+    if (!(grams > 0)) return null;
+
+    const f = grams / 100;
+    out.push({
+      food_id: prev.food_id,
+      food_name: prev.food_name,
+      quantity: item.quantity,
+      serving_label: servingLabel,
+      grams: round1(grams),
+      kcal: round1(per100.kcal * f),
+      protein_g: round1(per100.protein_g * f),
+      carb_g: round1(per100.carb_g * f),
+      fat_g: round1(per100.fat_g * f),
+      fiber_g: per100.fiber_g === null ? null : round1(per100.fiber_g * f),
+      source: "catalog",
+      assumption: null,
+      confidence: "high",
+    });
+  }
+  return out.length > 0 ? out : null;
+}
+
 // Extract -> resolve -> decide. Two model calls on the common path (three
 // or four only when server web_search fires), with every catalog lookup a
 // deterministic parallel fetch between them — versus 3-6 sequential model
@@ -1078,14 +1208,34 @@ export async function runParseMeal(
   });
 
   // ── Stage 1: extract ──────────────────────────────────────────────────────
+  const prevItems = input.previousItems ?? [];
+  const hasPrevious = prevItems.length > 0;
   const tExtract0 = Date.now();
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     max_tokens: 700,
-    system: cacheableSystem(EXTRACT_SYSTEM),
+    // The correction rules only matter when a meal is on screen, so they stay
+    // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
+    system: cacheableSystem(hasPrevious ? EXTRACT_SYSTEM + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM),
     tools: withToolCache([EXTRACT_TOOL]),
     tool_choice: { type: "tool", name: "extract_meal" },
-    messages: [{ role: "user", content: input.text.trim().slice(0, 500) }],
+    messages: [{
+      role: "user",
+      content: hasPrevious
+        ? JSON.stringify({
+          text: input.text.trim().slice(0, 500),
+          previous_meal: {
+            text: input.previousText ?? "",
+            items: prevItems.map((p) => ({
+              food_name: p.food_name,
+              quantity: p.quantity,
+              serving_label: p.serving_label,
+              grams: p.grams,
+            })),
+          },
+        })
+        : input.text.trim().slice(0, 500),
+    }],
   });
   if (!extractRes.ok) {
     throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
@@ -1112,8 +1262,13 @@ export async function runParseMeal(
           : 1,
         unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
+        correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()
+          ? o.corrects_food_name.trim().slice(0, 120)
+          : null,
       }];
     });
+  // Only trust the correction flag when a previous meal was actually supplied.
+  const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   const mealFromText: MealType | null =
     ext.meal_type_from_text === "breakfast" || ext.meal_type_from_text === "lunch" ||
     ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
@@ -1133,6 +1288,36 @@ export async function runParseMeal(
   }
 
   T.extract_ms = tExtract0 ? Date.now() - tExtract0 : 0;
+
+  // Correction fast path: a pure serving/quantity change on already-identified
+  // foods needs no search and no decide call — just that food's servings and
+  // per-100 macros. ~2s instead of ~6s. Falls through on anything ambiguous.
+  if (correctsPrevious) {
+    const tFast0 = Date.now();
+    const corrected = await tryFastCorrection(deps, extItems, prevItems).catch(() => null);
+    T.fast_correction_ms = Date.now() - tFast0;
+    if (corrected) {
+      T.fast_correction = 1;
+      steps.push({ iter: 1, tool: "fast_correction", input: { items: corrected.length } });
+      const items = flagPrepMismatch(checkAtwater(corrected), input.text);
+      T.decide_ms = 0;
+      steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
+      return {
+        parsed: {
+          meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+          items,
+          drona_line: "Updated. Numbers adjusted.",
+          corrects_previous: true,
+        },
+        declined: null,
+        usage,
+        tool_calls: [...toolCalls, "fast_correction"],
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
+    T.fast_correction = 0;
+  }
 
   // Context (recents/targets/totals) was fired concurrently with the extract
   // call in index.ts; only the decide stage needs it. Awaiting here means those
@@ -1267,7 +1452,7 @@ export async function runParseMeal(
   T.decide_ms = Date.now() - tDecide0;
   steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: webPromise !== null } });
   return {
-    parsed: { meal_type: mealType, items, drona_line: dronaLine },
+    parsed: { meal_type: mealType, items, drona_line: dronaLine, corrects_previous: correctsPrevious },
     declined: null,
     usage,
     tool_calls: toolCalls,

@@ -28,6 +28,13 @@ export interface EvalCase {
   id: string;
   text: string;
   hour?: number; // device-local hour passed to the parser
+  /** A follow-up typed while `text`'s result is still on screen. The harness
+   *  parses `text` first (unscored), feeds its items back as previousItems,
+   *  then scores the follow-up — the same shape the app sends. */
+  followUp?: string;
+  /** Assert how the follow-up was classified: true = corrects the pending
+   *  meal (replaces it), false = new food (client appends). */
+  expectCorrection?: boolean;
   expect: {
     declined?: boolean;
     minItems?: number;
@@ -484,6 +491,45 @@ export const CASES: EvalCase[] = [
         { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130], kcalBetween: [20, 80] },
         { nameIncludes: "good day", nameIncludesAny: ["goodday", "biscuit", "cookie"], kcalBetween: [50, 250] },
       ],
+    },
+  },
+  // ── Follow-up corrections (a meal is still on screen) ───────────────────
+  // The user's own scenario: "samosa" resolves to a bigger serving than they
+  // ate, and they say so instead of discarding and retyping.
+  {
+    id: "refine-samosa-small",
+    text: "a samosa",
+    followUp: "actually it was a small one",
+    hour: 17,
+    expectCorrection: true,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "samosa", gramsBetween: [15, 45], kcalBetween: [45, 140] }],
+    },
+  },
+  {
+    id: "refine-quantity",
+    text: "2 roti and dal",
+    followUp: "make it 3 rotis",
+    hour: 13,
+    expectCorrection: true,
+    expect: {
+      // Both lines come back: the corrected roti and the untouched dal.
+      minItems: 2, maxItems: 2,
+      items: [{ nameIncludes: "roti", gramsBetween: [90, 220] }, { nameIncludes: "dal" }],
+    },
+  },
+  {
+    // The dangerous one: an ADDITION must not be read as a correction, or the
+    // food already reviewed gets silently rewritten.
+    id: "followup-adds-not-corrects",
+    text: "a samosa",
+    followUp: "and a dosa",
+    hour: 17,
+    expectCorrection: false,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "dosa" }],
     },
   },
   {

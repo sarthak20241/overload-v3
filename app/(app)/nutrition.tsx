@@ -11,7 +11,7 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -114,6 +114,10 @@ export default function NutritionScreen() {
   // taps Add -> we write it. No auto-log, no auto-dismiss: the user is in control.
   const [text, setText] = useState('');
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
+  // Mirror of `flow` for callbacks that must read it without re-subscribing
+  // (runParse would otherwise capture a stale flow or churn its identity).
+  const flowRef = useRef<ParseFlow>(flow);
+  useEffect(() => { flowRef.current = flow; }, [flow]);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
   const { targets, isCustom, apply: applyTargets } = useNutritionTargets();
@@ -148,11 +152,29 @@ export default function NutritionScreen() {
     const t = raw.trim();
     if (!t || !supabase) return;
     setSavedReview(false);
+    // A meal still under review is context for the next line: "make it a small
+    // one" should correct THAT samosa, not log a second one. Captured before we
+    // switch to 'analysing' (which drops the reviewed meal from flow).
+    const pending = flowRef.current.status === 'review'
+      ? { text: flowRef.current.raw, items: flowRef.current.meal.items }
+      : null;
     setFlow({ status: 'analysing', raw: t });
-    const res = await parseMeal(supabase, { text: t, mealHint: mealForNow() });
+    const res = await parseMeal(supabase, { text: t, mealHint: mealForNow(), previous: pending });
     if (res.kind === 'declined') { setFlow({ status: 'declined', raw: t, message: res.message }); return; }
     if (res.kind === 'error') { setFlow({ status: 'error', raw: t, message: res.message }); return; }
     // Parsed, not logged. Seed the section selector with Drona's best guess.
+    // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
+    // to it (append) — appending is what keeps "and a dosa" from silently
+    // dropping the samosa the user already reviewed.
+    if (pending && !res.meal.corrects_previous) {
+      setFlow({
+        status: 'review',
+        raw: `${pending.text}; ${t}`,
+        meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
+        mealType: res.meal.meal_type,
+      });
+      return;
+    }
     setFlow({ status: 'review', raw: t, meal: res.meal, mealType: res.meal.meal_type });
   }, [supabase]);
 

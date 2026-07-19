@@ -6,6 +6,7 @@ import {
   type CandidateFood,
   type MealType,
   type OffProduct,
+  type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
 } from "./parseMeal.ts";
@@ -884,6 +885,26 @@ async function handleParseMealRequest(args: {
       ? rawHint
       : null;
 
+  // A meal still under review on the client. Present only for a follow-up
+  // ("make it a small one"), which the extract stage classifies as a
+  // correction of these lines rather than a new meal.
+  const previousText = typeof body.previous_text === "string"
+    ? body.previous_text.trim().slice(0, 500)
+    : null;
+  const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
+    ? (body.previous_items as Array<Record<string, unknown>>).slice(0, 12).flatMap((r) => {
+      const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
+      if (!name) return [];
+      return [{
+        food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
+        food_name: name,
+        quantity: Number(r.quantity) > 0 ? Number(r.quantity) : 1,
+        serving_label: typeof r.serving_label === "string" ? r.serving_label.slice(0, 40) : "serving",
+        grams: Number(r.grams) > 0 ? Number(r.grams) : 0,
+      }];
+    })
+    : [];
+
   // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
   // it here WITHOUT awaiting so the queries run concurrently with the extract
   // model call; runParseMeal awaits contextPromise after extract. This hides
@@ -943,6 +964,18 @@ async function handleParseMealRequest(args: {
             fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
           };
         },
+        getFoodServings: async (foodId) => {
+          const { data } = await userClient
+            .from("food_servings")
+            .select("label, grams, is_default")
+            .eq("food_id", foodId)
+            .order("seq", { ascending: true });
+          return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
+            label: String(s.label),
+            grams: Number(s.grams),
+            is_default: !!s.is_default,
+          }));
+        },
         log: (msg) => console.log(msg),
       },
       {
@@ -955,6 +988,8 @@ async function handleParseMealRequest(args: {
         todayTotals: null,
         targets: null,
         contextPromise,
+        previousText,
+        previousItems,
       },
     );
 

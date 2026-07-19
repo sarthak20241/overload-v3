@@ -474,6 +474,10 @@ export interface ParsedMeal {
   meal_type: MealType;
   items: ParsedMealItem[];
   drona_line: string;
+  /** These items are a corrected version of the meal that was on screen and
+   *  REPLACE it. When false/absent they are new food, so a caller showing a
+   *  pending meal appends them instead of throwing the old lines away. */
+  corrects_previous?: boolean;
 }
 
 /** parse_meal outcome: either a parsed meal to log, or a decline (non-food
@@ -488,7 +492,15 @@ export type ParseMealResult =
  *  client) would 401 — callers gate on isSignedIn before invoking. */
 export async function parseMeal(
   supabase: Supa,
-  args: { text: string; mealHint?: MealType | null },
+  args: {
+    text: string;
+    mealHint?: MealType | null;
+    /** The still-unlogged parse on screen, if any. Sending it lets a follow-up
+     *  ("make it a small one", "actually 2") correct that meal instead of being
+     *  read as a brand new one. The server resolves a pure serving/quantity
+     *  change without a second model call, so refining is cheaper than parsing. */
+    previous?: { text: string; items: ParsedMealItem[] } | null;
+  },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
   if (!text) return { kind: 'error', message: 'Type what you ate first.' };
@@ -511,6 +523,21 @@ export async function parseMeal(
         local_hour: now.getHours(),
         local_date: localDate,
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
+        ...(args.previous && args.previous.items.length > 0
+          ? {
+            previous_text: args.previous.text,
+            // Only what the server needs to re-target a line: identity, the
+            // amount, and where the numbers came from. Macros stay server-side.
+            previous_items: args.previous.items.slice(0, 12).map((it) => ({
+              food_id: it.food_id,
+              food_name: it.food_name,
+              quantity: it.quantity,
+              serving_label: it.serving_label,
+              grams: it.grams,
+              source: it.source,
+            })),
+          }
+          : {}),
       },
     });
     if (res.error) return { kind: 'error', message: res.error.message ?? 'Drona could not reach the kitchen. Try again.' };
@@ -538,13 +565,18 @@ export async function parseMeal(
     grams: num(i.grams),
     kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
     fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
-    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' ? i.source : 'estimate',
+    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' || i.source === 'manual' ? i.source : 'estimate',
     assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
     confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
   }));
   return {
     kind: 'parsed',
-    meal: { meal_type: mealType, items, drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.') },
+    meal: {
+      meal_type: mealType,
+      items,
+      drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
+      corrects_previous: parsed.corrects_previous === true,
+    },
   };
 }
 
