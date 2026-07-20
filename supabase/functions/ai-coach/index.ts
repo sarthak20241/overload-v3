@@ -240,13 +240,33 @@ async function recordTrace(
   trace: CoachTrace,
   startedAtMs: number,
 ): Promise<void> {
+  const row = { ...trace, latency_ms: Date.now() - startedAtMs };
   try {
-    await admin.from("coach_traces").insert({
-      ...trace,
-      latency_ms: Date.now() - startedAtMs,
-    });
+    // supabase-js v2 returns { error } and does NOT throw on backend errors,
+    // so the bare try/catch this replaced caught nothing: every failed trace
+    // insert was silently discarded. Same trap logTokenUsage already documents.
+    const { error } = await admin.from("coach_traces").insert(row);
+    if (!error) return;
+
+    // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
+    // the function ships before the migration is applied, PostgREST rejects
+    // the whole row for unknown columns and we lose EVERY trace, including the
+    // observability this change exists to add. Retry once without them rather
+    // than couple a code deploy to a migration.
+    const missingColumn = /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "");
+    if (missingColumn) {
+      const { mode: _mode, spans: _spans, ...legacy } = row;
+      const { error: retryErr } = await admin.from("coach_traces").insert(legacy);
+      console.log(
+        retryErr
+          ? `[ai-coach] trace insert failed after legacy retry: ${(retryErr.message ?? "").slice(0, 200)}`
+          : "[ai-coach] trace inserted without mode/spans (migration 0080 not applied yet)",
+      );
+      return;
+    }
+    console.log("[ai-coach] trace insert error:", (error.message ?? String(error)).slice(0, 200));
   } catch (e) {
-    console.log("[ai-coach] trace insert failed:", String(e));
+    console.log("[ai-coach] trace insert threw:", String(e).slice(0, 200));
   }
 }
 
