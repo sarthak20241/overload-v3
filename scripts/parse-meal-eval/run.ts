@@ -23,6 +23,7 @@ import {
   runParseMeal,
 } from "../../supabase/functions/ai-coach/parseMeal";
 import { CASES, type EvalCase } from "./cases";
+import { makeClaudeCliFetch } from "./claude-cli-fetch";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
 
@@ -47,15 +48,21 @@ const SUPABASE_ANON_KEY = env("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
 const MODEL = env("MODEL") || "claude-haiku-4-5";
 const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
+// Route model calls through the `claude -p` CLI (subscription) instead of the
+// API. Correctness only - see claude-cli-fetch.ts for what it does not model.
+const VIA_CLI = env("EVAL_VIA_CLI") === "1";
 const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.trim())) : null;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local in cwd).");
   process.exit(1);
 }
-if (!ANTHROPIC_API_KEY) {
-  console.error("Missing ANTHROPIC_API_KEY.");
+if (!ANTHROPIC_API_KEY && !VIA_CLI) {
+  console.error("Missing ANTHROPIC_API_KEY. (Or set EVAL_VIA_CLI=1 to run the model through `claude -p`.)");
   process.exit(1);
+}
+if (VIA_CLI) {
+  console.log("[eval] model calls routed through `claude -p` - latency and token counts are NOT comparable to an API run.");
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -129,6 +136,7 @@ let offLookups = 0;
 const deps: ParseMealDeps = {
   anthropicApiKey: ANTHROPIC_API_KEY,
   model: MODEL,
+  ...(VIA_CLI ? { fetchFn: makeClaudeCliFetch(MODEL) } : {}),
   maxTokens: 1600,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
