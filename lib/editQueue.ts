@@ -50,16 +50,18 @@ export interface PendingEditExercise {
   /** Superset grouping ordinal (migration 0060), stamped per set at flush. NULL = solo. */
   supersetGroup?: number | null;
   /**
-   * Session note (migration 0080), carried because the edit screen builds this
-   * list with the same mapper it uses for the sync queue and casts the result.
-   * Declared so that cast isn't a lie.
+   * Session note (migration 0080), loaded with the workout and carried back
+   * unchanged. The edit screen has no UI to change a note, so this always
+   * equals what is already on the server and the flush deliberately does not
+   * write it.
    *
-   * NOT authoritative here, and the flush must never write from it: for a
-   * synced workout the notes are separate server rows the editor never loads,
-   * so this is always null on that path and writing it would erase them. It is
-   * read for one thing only — the resolve guard below, so a note-bearing
-   * exercise that hasn't resolved can't slip through and have its note deleted
-   * by the orphan cleanup.
+   * It is carried for two things that both matter:
+   *   - the resolve guard below, so a note-bearing exercise that hasn't
+   *     resolved can't slip through unnoticed;
+   *   - keptExerciseIds in the orphan cleanup. An exercise missing from this
+   *     list reads as "removed by the edit" and has its note deleted, so every
+   *     exercise in the workout has to round-trip through here — including the
+   *     ones that exist for their note alone and have no sets to be found by.
    */
   note?: string | null;
 }

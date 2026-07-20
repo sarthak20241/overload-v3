@@ -158,7 +158,21 @@ export default function EditWorkoutScreen() {
   // picker sheet is up so the two don't fight over the scroll.
   const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } = useKeyboardAwareScroll(!showAddExercise);
 
-  const mapServerSetsToExercises = (rows: any[]): EditExercise[] => {
+  /**
+   * @param noteRows workout_exercise_notes for this workout. Required, not
+   *   optional: an exercise can be in a workout for its note alone (no sets),
+   *   so building this list from workout_sets by itself silently omits it. The
+   *   save path rebuilds the workout from what's loaded here and deletes note
+   *   rows for anything absent, so omitting one deletes a note the user never
+   *   touched.
+   */
+  const mapServerSetsToExercises = (rows: any[], noteRows: any[] = []): EditExercise[] => {
+    const noteByExercise = new Map<string, { note: string; ex?: any }>();
+    for (const n of noteRows) {
+      if (n?.exercise_id && typeof n.note === 'string') {
+        noteByExercise.set(n.exercise_id, { note: n.note, ex: n.exercises });
+      }
+    }
     const ordered = [...rows].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const map = new Map<string, EditExercise>();
     for (const s of ordered) {
@@ -173,11 +187,30 @@ export default function EditWorkoutScreen() {
           category: s.exercises?.category,
           metric_type: metricTypeOf(s.exercises),
           supersetGroup: typeof s.superset_group === 'number' ? s.superset_group : null,
+          note: noteByExercise.get(exId)?.note ?? null,
           sets: [],
         };
         map.set(exId, ex);
       }
       ex.sets.push(mkSet(s.weight_kg ?? 0, s.reps ?? 0, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right));
+    }
+    // Exercises that are in this workout for their note alone. No workout_sets
+    // rows to have enumerated them above, so they're appended here; they show
+    // as an exercise with no sets and round-trip through the save like any
+    // other, which is what keeps their note from being cleaned up as an orphan.
+    for (const [exId, n] of noteByExercise) {
+      if (map.has(exId)) continue;
+      map.set(exId, {
+        uid: mkExUid(),
+        exerciseId: exId,
+        name: n.ex?.name ?? 'Exercise',
+        muscle_group: n.ex?.muscle_group,
+        category: n.ex?.category,
+        metric_type: metricTypeOf(n.ex),
+        supersetGroup: null,
+        note: n.note,
+        sets: [],
+      });
     }
     return [...map.values()];
   };
@@ -276,7 +309,9 @@ export default function EditWorkoutScreen() {
       try {
         const { data, error } = await supabase
           .from('workouts')
-          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(id, name, muscle_group, category, metric_type))')
+          // The notes embed carries its own exercises() join because a note-only
+          // exercise has no workout_sets row to read the name/type from.
+          .select('id, name, notes, total_volume_kg, started_at, duration_seconds, workout_exercise_notes(exercise_id, note, exercises(id, name, muscle_group, category, metric_type)), workout_sets(id, exercise_id, weight_kg, reps, "order", duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(id, name, muscle_group, category, metric_type))')
           .eq('id', id)
           .single();
         if (error || !data) throw error ?? new Error('not found');
@@ -285,7 +320,7 @@ export default function EditWorkoutScreen() {
           setBackend('synced');
           setName((data as any).name ?? '');
           setNotes((data as any).notes ?? '');
-          setExercises(mapServerSetsToExercises(rows));
+          setExercises(mapServerSetsToExercises(rows, (data as any).workout_exercise_notes ?? []));
           setBase({ setCount: rows.length, volume: Number((data as any).total_volume_kg ?? 0) });
           setMeta({ startedAt: (data as any).started_at, durationSeconds: (data as any).duration_seconds });
           setLoading(false);
@@ -306,6 +341,9 @@ export default function EditWorkoutScreen() {
               category: ex.category,
               metric_type: ex.metric_type,
               supersetGroup: typeof ex.sets?.[0]?.superset_group === 'number' ? ex.sets[0].superset_group : null,
+              // The history cache already folds note-only exercises into
+              // exercises[], so this path gets them for free.
+              note: ex.note ?? null,
               sets: (ex.sets ?? []).map((s: any) => mkSet(s.weight_kg, s.reps, s.duration_seconds, s.distance_m, s.resistance, s.set_type, s.rpe, s.is_unilateral, s.reps_right, s.rpe_right, s.weight_kg_right)),
             })));
             setBase({ setCount: cacheRow.workout_sets?.length ?? 0, volume: Number(cacheRow.total_volume_kg ?? 0) });
@@ -434,7 +472,10 @@ export default function EditWorkoutScreen() {
       .filter((e) => e.sets.length > 0 || !!e.ex.note?.trim());
 
     const allSets = cleaned.flatMap((e) => e.sets);
-    if (allSets.length === 0) {
+    // Same rule as the finish gate: a workout with no sets is only empty if it
+    // also has no notes. Blocking a notes-only workout here would strand it,
+    // uneditable, with no way to fix a typo short of deleting the whole thing.
+    if (allSets.length === 0 && !cleaned.some((e) => e.ex.note?.trim())) {
       toast.error('Add at least one set, or delete the workout from History.');
       return;
     }
