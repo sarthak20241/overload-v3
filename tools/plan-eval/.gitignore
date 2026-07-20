@@ -1,0 +1,5 @@
+# Timestamped eval output: one .md per run, plus a .json carrying every
+# generated plan when --json is passed. Regenerable, grows without bound
+# (1.3 MB after a day's work), and the numbers that matter get quoted into
+# PR descriptions and comments instead.
+reports/

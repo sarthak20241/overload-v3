@@ -396,6 +396,18 @@ interface StreamingCallbacks {
     structured?: { name: string; input: Record<string, unknown> } | null;
   }) => void;
   onError: (err: string) => void;
+  // Fan-out plan generation (2026-07-19). The backend now builds a plan as a
+  // skeleton call followed by parallel per-day fills, so the structure lands
+  // at ~5s and each day's prescriptions follow. Both are optional: a client
+  // that ignores them still gets the identical `structured` payload at the
+  // end, which is why this shipped without touching the save path.
+  onPlanSkeleton?: (s: {
+    name: string;
+    split_type?: string;
+    days_per_week?: number;
+    days: { name: string; note?: string; exercises: string[] }[];
+  }) => void;
+  onPlanDay?: (index: number, workout: Record<string, unknown>) => void;
 }
 
 interface StreamingOptions {
@@ -459,6 +471,14 @@ function callAICoachStreaming(
           // delivery — UI renders the workout card as soon as this arrives.
           if (parsed.name && parsed.input) {
             callbacks.onStructured?.({ name: parsed.name, input: parsed.input });
+          }
+        } else if (event === 'plan_skeleton') {
+          // Fan-out: full plan structure, every exercise named, no
+          // prescriptions yet. Arrives at roughly a third of total latency.
+          if (Array.isArray(parsed.days)) callbacks.onPlanSkeleton?.(parsed);
+        } else if (event === 'plan_day') {
+          if (typeof parsed.index === 'number' && parsed.workout) {
+            callbacks.onPlanDay?.(parsed.index, parsed.workout);
           }
         } else if (event === 'done') {
           callbacks.onDone({
