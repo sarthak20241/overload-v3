@@ -97,9 +97,23 @@ function extractJson(text: string): unknown {
 
 function runClaude(args: string[], stdin: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    // The child must not inherit this process's Claude Code auth context:
+    //  - ANTHROPIC_API_KEY / _AUTH_TOKEN take priority over subscription OAuth,
+    //    which defeats the point of routing through the CLI at all;
+    //  - ANTHROPIC_BASE_URL points at the host session's endpoint, which
+    //    rejects a subscription token with a 401 that reads like bad creds;
+    //  - the CLAUDE_CODE_* session vars belong to the parent's session.
+    const childEnv = { ...process.env };
+    for (const k of Object.keys(childEnv)) {
+      if (k.startsWith("CLAUDE_CODE_") || k === "ANTHROPIC_API_KEY" || k === "ANTHROPIC_AUTH_TOKEN" || k === "ANTHROPIC_BASE_URL") {
+        delete childEnv[k];
+      }
+    }
+    // Except the CI token, which is how a headless run authenticates.
+    if (process.env.CLAUDE_CODE_OAUTH_TOKEN) childEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     // Run outside the repo so the CLI does not pick up CLAUDE.md, skills, or
     // project settings - those would contaminate the prompt under test.
-    const child = spawn("claude", args, { cwd: tmpdir(), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("claude", args, { cwd: tmpdir(), env: childEnv, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -160,18 +174,22 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
     ];
 
     const { code, stdout, stderr } = await runClaude(args, messagesToText(payload.messages ?? []));
-    if (code !== 0) {
-      return new Response(`claude -p exited ${code}: ${stderr.slice(0, 400)}`, { status: 502 });
-    }
 
-    let envelope: { result?: string; usage?: { input_tokens?: number; output_tokens?: number }; is_error?: boolean };
+    // Parse stdout FIRST, even on a nonzero exit: the CLI reports auth and API
+    // failures in the JSON envelope's `result` and leaves stderr empty, so
+    // going by exit code alone turns every such failure into a bare
+    // "exited 1:" with nothing to debug.
+    let envelope: { result?: string; usage?: { input_tokens?: number; output_tokens?: number }; is_error?: boolean } | null = null;
     try {
       envelope = JSON.parse(stdout);
-    } catch {
-      return new Response(`claude -p gave non-JSON envelope: ${stdout.slice(0, 400)}`, { status: 502 });
+    } catch { /* fall through to the raw-output error below */ }
+
+    if (!envelope) {
+      const detail = (stdout || stderr).slice(0, 400) || "(no output)";
+      return new Response(`claude -p exited ${code} with no JSON envelope: ${detail}`, { status: 502 });
     }
-    if (envelope.is_error) {
-      return new Response(`claude -p reported an error: ${String(envelope.result).slice(0, 400)}`, { status: 502 });
+    if (envelope.is_error || code !== 0) {
+      return new Response(`claude -p failed (exit ${code}): ${String(envelope.result).slice(0, 400)}`, { status: 502 });
     }
 
     let input: unknown;
