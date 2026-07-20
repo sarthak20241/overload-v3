@@ -346,6 +346,11 @@ export default function AppLayout() {
         */}
         <Tabs.Screen name="exercises" options={{ href: null }} />
         {/*
+          Import Data screen (Hevy CSV). Hidden from the bottom nav —
+          reached via Profile > Import Data.
+        */}
+        <Tabs.Screen name="import" options={{ href: null }} />
+        {/*
           Nutrition day view (diet tracking). Hidden from the bottom nav for now —
           reached via a dashboard card / deep-link (`/nutrition`) until the nav
           placement lands post-design-polish.

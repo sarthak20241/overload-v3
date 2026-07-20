@@ -13,6 +13,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import type { Insight, InsightType } from '@/lib/insights';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 // Drona's brand color — the CTA is always this, so "Ask Drona" reads the same
 // on every card no matter the accent.
@@ -90,7 +91,7 @@ export function InsightCard({
 
         {/* Deep-dive CTA — always Drona purple. */}
         <View style={styles.ctaRow}>
-          <Feather name="zap" size={12} color={DRONA} />
+          <DronaMark size={12} color={DRONA} state="static" />
           <Text style={[styles.cta, { color: DRONA }]}>Ask Drona</Text>
           <Feather name="chevron-right" size={13} color={DRONA} />
         </View>

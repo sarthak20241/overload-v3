@@ -26,6 +26,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import type { ParsedMeal, ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 export type ParseCardState = 'analysing' | 'review' | 'declined' | 'error';
 
@@ -165,7 +166,7 @@ export function ParsedMealCard({
 
           {meal.drona_line ? (
             <View style={s.dronaRow}>
-              <View style={s.avatar}><Feather name="zap" size={10} color={C.accentText} /></View>
+              <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
               <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
             </View>
           ) : null}
@@ -198,7 +199,7 @@ export function ParsedMealCard({
 
       {state === 'declined' && (
         <View style={s.dronaRow}>
-          <View style={s.avatar}><Feather name="zap" size={10} color={C.accentText} /></View>
+          <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
           <Text style={[s.dronaTxt, { flex: 1 }]}>{message ?? "That did not look like food. Tell me what you ate."}</Text>
           {onDismiss && (
             <Pressable onPress={onDismiss} hitSlop={10} style={s.dismiss}>
@@ -246,7 +247,7 @@ function Analysing({ C }: { C: ReturnType<typeof useTheme>['C'] }) {
 
   return (
     <Animated.View style={[s.dronaRow, style]}>
-      <View style={s.avatar}><Feather name="zap" size={10} color={C.accentText} /></View>
+      <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
       <Text style={s.dronaTxt}>Drona is reading that...</Text>
     </Animated.View>
   );

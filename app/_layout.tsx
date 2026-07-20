@@ -4,6 +4,11 @@ import { ClerkProvider } from '@clerk/clerk-expo';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import { StatusBar } from 'expo-status-bar';
+import {
+  useFonts,
+  SpaceGrotesk_500Medium,
+  SpaceGrotesk_700Bold,
+} from '@expo-google-fonts/space-grotesk';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WorkoutProvider } from '@/hooks/useWorkout';
@@ -97,6 +102,11 @@ function AppContent() {
 }
 
 export default function RootLayout() {
+  // Display face (Space Grotesk) for questions/headlines/big numbers; body/UI
+  // stays on the system font. Non-blocking: screens render with the system
+  // font for the instant before the load resolves, then re-render.
+  useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold });
+
   if (!publishableKey) {
     return <AppContent />;
   }

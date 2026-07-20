@@ -36,7 +36,9 @@ import {
   workoutCoachReviewRequest,
 } from '@/lib/workoutCoach';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
+import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
+import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -132,9 +134,16 @@ function structuredToPlan(input: Record<string, unknown>): GeneratedPlan {
   };
 }
 
-// ─── Sparkle Icon ────────────────────────────────────────────────────────────
-function SparkleIcon({ size = 20, color = '#4d7a00' }: { size?: number; color?: string }) {
-  return <Feather name="zap" size={size} color={color} />;
+// ─── Coach mark ──────────────────────────────────────────────────────────────
+// Drona's arrowhead identity (DronaMark) behind the legacy SparkleIcon name so
+// every coach surface in this modal swaps at once. Default state is 'static'
+// (no animation loops) because several of these render inside scrolling lists.
+function SparkleIcon({
+  size = 20,
+  color = '#4d7a00',
+  state = 'static',
+}: { size?: number; color?: string; state?: DronaMarkState }) {
+  return <DronaMark size={size} color={color} state={state} />;
 }
 
 // ─── Thinking Indicator (Phase 2.6) ──────────────────────────────────────────
@@ -344,20 +353,10 @@ async function callAICoach(
         body: { messages },
       });
       if (error) {
-        // supabase-js wraps non-2xx as FunctionsHttpError with the body buried
-        // in error.context. Surface it so server-side reasons are visible in
-        // the chat instead of the generic "non-2xx status code".
-        let detail = error?.message || 'Edge Function failed';
-        try {
-          const ctx = (error as any)?.context;
-          if (ctx && typeof ctx.json === 'function') {
-            const body = await ctx.json();
-            detail = body?.error
-              ? `${body.error}${body.debug ? ` (${body.debug})` : ''}`
-              : JSON.stringify(body);
-          }
-        } catch { /* fall through */ }
-        throw new AICoachUnavailableError(`Coach Drona error: ${detail}`);
+        // supabase-js wraps non-2xx as FunctionsHttpError whose message is
+        // always generic; the status + body live on error.context. The helper
+        // digs both out for the log and hands back user-safe copy.
+        throw new AICoachUnavailableError(await coachInvokeErrorMessage(error));
       }
       if (data?.response) {
         return {
@@ -369,7 +368,7 @@ async function callAICoach(
     } catch (err: any) {
       if (err instanceof AICoachUnavailableError) throw err;
       throw new AICoachUnavailableError(
-        err?.message ? `Coach Drona error: ${err.message}` : undefined
+        err?.message ? coachErrorMessage(err) : undefined
       );
     }
   }
@@ -395,7 +394,9 @@ interface StreamingCallbacks {
     tool_calls?: string[];
     structured?: { name: string; input: Record<string, unknown> } | null;
   }) => void;
-  onError: (err: string) => void;
+  // Always receives user-safe copy. Raw failure detail is logged inside
+  // callAICoachStreaming and never handed to the UI.
+  onError: (message: string) => void;
 }
 
 interface StreamingOptions {
@@ -426,10 +427,15 @@ function callAICoachStreaming(
   callbacks: StreamingCallbacks,
   options: StreamingOptions = {},
 ): { abort: () => void } {
+  // Single choke point for failures: everything below reports raw detail here,
+  // and the user only ever sees the mapped copy. Keeps HTTP statuses, JSON
+  // error bodies and provider billing notices out of the chat bubble.
+  const fail = (raw: string) => callbacks.onError(coachErrorMessage(raw));
+
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) {
-    callbacks.onError('Supabase not configured');
+    fail('Supabase not configured');
     return { abort: () => {} };
   }
 
@@ -468,7 +474,7 @@ function callAICoachStreaming(
             structured: parsed.structured ?? null,
           });
         } else if (event === 'error') {
-          callbacks.onError(parsed.error ?? 'Unknown error');
+          fail(parsed.error ?? 'Unknown error');
         }
       } catch { /* malformed event — skip */ }
     }
@@ -497,7 +503,7 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
-        callbacks.onError(`HTTP ${response.status}: ${body.slice(0, 200)}`);
+        fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
       }
 
@@ -521,7 +527,7 @@ function callAICoachStreaming(
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
-      callbacks.onError(`Network error: ${String(e?.message ?? e)}`);
+      fail(`Network error: ${String(e?.message ?? e)}`);
     }
   })();
 
@@ -705,7 +711,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
       {/* Center icon */}
       <View style={s.menuCenter}>
         <View style={[s.menuIconWrap, { backgroundColor: C.primarySubtle }]}>
-          <SparkleIcon size={28} color={C.accentText} />
+          <SparkleIcon size={28} color={C.accentText} state="idle" />
         </View>
         <Text style={[s.menuTitle, { color: C.foreground }]}>What would you like to do?</Text>
         <Text style={[s.menuSub, { color: C.mutedFg }]}>Knows every rep and PR you've logged. Ask, plan, or build.</Text>
@@ -790,6 +796,15 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // Header mark: traces while waiting on the coach, releases when the reply
+  // lands, static until the first send.
+  const everLoadedRef = useRef(false);
+  // Set after commit, not during render: React may discard a render pass, and
+  // a ref written there would keep the flag from a pass the user never saw.
+  useEffect(() => {
+    if (loading) everLoadedRef.current = true;
+  }, [loading]);
+  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Tracks the in-flight stream so we can abort it on screen dismiss /
   // unmount and avoid late callbacks firing into an unmounted component
@@ -925,7 +940,7 @@ function ChatScreen({
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`Coach Drona error: ${errStr}`);
+        typewriter.fail(errStr);
         setLoading(false);
         streamRef.current = null;
       },
@@ -976,7 +991,7 @@ function ChatScreen({
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} />
+        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {workoutContext ? 'Coach Drona · Live session' : 'Chat with Coach Drona'}
         </Text>
@@ -1140,7 +1155,7 @@ function WorkoutCard({
       {showRationale && workout.rationale && (
         <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
           <View style={s.rationaleHeader}>
-            <Feather name="zap" size={11} color={C.accentText} />
+            <SparkleIcon size={11} color={C.accentText} />
             <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS WORKS FOR YOU</Text>
           </View>
           <Text style={[s.rationaleText, { color: C.foreground }]}>
@@ -1467,7 +1482,7 @@ function GeneratePlanScreen({
             {result.rationale && (
               <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
                 <View style={s.rationaleHeader}>
-                  <Feather name="zap" size={11} color={C.accentText} />
+                  <SparkleIcon size={11} color={C.accentText} />
                   <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PLAN FITS YOU</Text>
                 </View>
                 <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
@@ -2172,6 +2187,15 @@ function RefineChatScreen({
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // Header mark: traces while waiting on the coach, releases when the reply
+  // lands, static until the first send.
+  const everLoadedRef = useRef(false);
+  // Set after commit, not during render: React may discard a render pass, and
+  // a ref written there would keep the flag from a pass the user never saw.
+  useEffect(() => {
+    if (loading) everLoadedRef.current = true;
+  }, [loading]);
+  const headerMarkState: DronaMarkState = loading ? 'thinking' : everLoadedRef.current ? 'answer' : 'static';
   const scrollRef = useRef<ScrollView>(null);
   // Stable abort handle — refine turns can run long when the model
   // decides to fetch the user's volume series before proposing changes.
@@ -2350,7 +2374,7 @@ function RefineChatScreen({
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`Coach Drona error: ${errStr}`);
+        typewriter.fail(errStr);
         setLoading(false);
         streamRef.current = null;
       },
@@ -2377,7 +2401,7 @@ function RefineChatScreen({
         <TouchableOpacity onPress={onBack} style={[s.backBtn, { backgroundColor: C.muted }]} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
           <Feather name="arrow-left" size={16} color={C.foreground} />
         </TouchableOpacity>
-        <SparkleIcon size={16} color={C.accentText} />
+        <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
           {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_plan' ? 'Plan' : 'Workout'}
         </Text>
@@ -2818,7 +2842,7 @@ export function AICoachModal({
                   activeOpacity={0.85}
                 >
                   <View style={s.upgradeBannerLeft}>
-                    <Feather name="zap" size={14} color={C.accentText} />
+                    <SparkleIcon size={14} color={C.accentText} />
                     <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
                       {typeof access.daysLeft === 'number'
                         ? `Trial · ${Math.max(0, Math.ceil(access.daysLeft))} day${Math.ceil(access.daysLeft) === 1 ? '' : 's'} left`

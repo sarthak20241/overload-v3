@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
   StyleSheet, ActivityIndicator, Pressable, BackHandler,
-  Keyboard, Platform, useWindowDimensions,
+  Keyboard, Platform, useWindowDimensions, AppState,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -46,7 +46,8 @@ import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
-import { BottomNav } from '@/components/ui/BottomNav';
+import { openMusicApp } from '@/lib/musicLinks';
+import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
@@ -58,6 +59,7 @@ import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/ro
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
@@ -811,6 +813,44 @@ export default function ActiveWorkoutScreen() {
     }
   }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget]);
 
+  // Rest-ending heads-up (final 3s, same window as the pulse below): a soft
+  // chime through a duckOthers session, so the user's music dips + a buzz. The
+  // duck is released the moment the window ends (rest done, rest skipped, or a
+  // set logged), which is what brings the music back to full volume.
+  const restCueFiredRef = useRef(false);
+  useEffect(() => {
+    const target = restOverrideTarget ?? restGroupTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
+    const remaining = target - restTimer;
+    const inWindow = isResting && target > 0 && remaining > 0 && remaining <= 3;
+    if (inWindow) {
+      if (!restCueFiredRef.current && prefs.restEndCue) {
+        restCueFiredRef.current = true;
+        startRestEndCue();
+      }
+    } else {
+      restCueFiredRef.current = false;
+      endRestEndCue();
+    }
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget, prefs.restEndCue]);
+  // Never leave the music ducked if the screen unmounts mid-window.
+  useEffect(() => () => { endRestEndCue(); }, []);
+  // …or if the app backgrounds mid-cue. The music-shortcut button (openMusicApp)
+  // sends the user to Spotify/Apple Music from the same top bar, so a tap during
+  // the final-3s window would background us. JS timers suspend on background, so
+  // the rest effect above can't run to release the duck — on Android the user's
+  // music could stay dipped until they return. AppState 'change' still fires on
+  // the transition, so force-end the cue there (and clear the fired flag so it
+  // can re-arm if they come back with rest still running).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        restCueFiredRef.current = false;
+        endRestEndCue();
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   // A gentle pulse on the rest timer as it nears zero (final 3s), building
   // anticipation before the done color-flip + success buzz.
   const restPulse = useSharedValue(1);
@@ -1409,6 +1449,13 @@ export default function ActiveWorkoutScreen() {
     // so drop it rather than let the drawer open underneath it.
     Keyboard.dismiss();
     setShowCancelAlert(true);
+  };
+
+  // Minimize — leave the screen with the session still live. The tab layout's
+  // mini workout bar is the way back in.
+  const handleMinimize = () => {
+    Keyboard.dismiss();
+    leaveWorkout();
   };
 
   const confirmCancel = () => {
@@ -2314,8 +2361,8 @@ export default function ActiveWorkoutScreen() {
                   const nextName = nextIdx != null ? exercises[nextIdx]?.exercise.name : null;
                   return (
                     <View style={styles.supersetBanner}>
-                      <Feather name="repeat" size={11} color={Colors.primary} />
-                      <Text style={[styles.supersetBannerText, { color: Colors.primary }]} numberOfLines={1}>
+                      <Feather name="repeat" size={11} color={C.accentText} />
+                      <Text style={[styles.supersetBannerText, { color: C.accentText }]} numberOfLines={1}>
                         Superset · {members.map(m => m.exercise.name).join(' + ')}
                         {nextName ? <Text style={styles.supersetNext}>{`   ·   up next: ${nextName}`}</Text> : null}
                       </Text>
@@ -2335,13 +2382,13 @@ export default function ActiveWorkoutScreen() {
                     <View style={styles.supersetActions}>
                       <TouchableOpacity
                         onPress={() => { haptics.selection(); setShowSupersetSheet(true); }}
-                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(Colors.primary, 0.4) }]}
+                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(C.accentText, 0.4) }]}
                         hitSlop={6}
                         accessibilityRole="button"
                         accessibilityLabel={grouped ? 'Edit superset' : 'Make a superset'}
                       >
-                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : Colors.primary} />
-                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : Colors.primary }]}>
+                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : C.accentText} />
+                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : C.accentText }]}>
                           {grouped ? 'Edit superset' : 'Superset'}
                         </Text>
                       </TouchableOpacity>
@@ -2670,7 +2717,6 @@ export default function ActiveWorkoutScreen() {
     return (
       <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
         <ActivityIndicator color={Colors.primary} size="large" />
-        <BottomNav />
       </View>
     );
   }
@@ -2679,15 +2725,29 @@ export default function ActiveWorkoutScreen() {
     <View style={[styles.container, { backgroundColor: C.background }]}>
       {/* TOP BAR */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity
-          onPress={handleCancel}
-          style={styles.cancelBtn}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Cancel workout"
-        >
-          <Feather name="x" size={14} color={Colors.danger} />
-        </TouchableOpacity>
+        <View style={styles.topCluster}>
+          {/* Minimize — the workout keeps running (context + mini bar); this
+              replaced the always-visible BottomNav, which cost 64px of every
+              workout for a tab switch that happens maybe once a session. */}
+          <TouchableOpacity
+            onPress={handleMinimize}
+            style={[styles.topRoundBtn, { backgroundColor: C.muted }]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Minimize workout"
+          >
+            <Feather name="chevron-down" size={16} color={C.mutedFg} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleCancel}
+            style={styles.cancelBtn}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel workout"
+          >
+            <Feather name="x" size={14} color={Colors.danger} />
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.topCenter}>
           <Text style={[styles.routineName, { color: C.foreground }]} numberOfLines={1}>
@@ -2704,21 +2764,37 @@ export default function ActiveWorkoutScreen() {
           </View>
         </View>
 
-        <TouchableOpacity
-          onPress={handleFinishWorkout}
-          disabled={saving}
-          hitSlop={6}
-          style={[styles.finishBtn, saving && { opacity: 0.6 }]}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color={Colors.primaryFg} />
-          ) : (
-            <>
-              <Feather name="check" size={12} color={Colors.primaryFg} />
-              <Text style={styles.finishBtnText}>Finish</Text>
-            </>
+        <View style={styles.topCluster}>
+          {/* Music shortcut (off by default, picked in settings) — a one-tap
+              jump to the user's music app, Lyfta-style. No playback UI here;
+              the lock screen already does that better. */}
+          {prefs.musicApp !== 'off' && (
+            <TouchableOpacity
+              onPress={() => { haptics.selection(); void openMusicApp(prefs.musicApp); }}
+              style={[styles.topRoundBtn, { backgroundColor: C.muted }]}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Open your music app"
+            >
+              <Feather name="music" size={13} color={C.mutedFg} />
+            </TouchableOpacity>
           )}
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleFinishWorkout}
+            disabled={saving}
+            hitSlop={6}
+            style={[styles.finishBtn, saving && { opacity: 0.6 }]}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color={Colors.primaryFg} />
+            ) : (
+              <>
+                <Feather name="check" size={12} color={Colors.primaryFg} />
+                <Text style={styles.finishBtnText}>Finish</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* EXERCISE NAV PILLS */}
@@ -2865,7 +2941,7 @@ export default function ActiveWorkoutScreen() {
       {exercises.length > 0 && (
         <View
           onLayout={(e) => setBottomBarH(e.nativeEvent.layout.height)}
-          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
+          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
         >
           <TouchableOpacity
             onPress={() => goTo(currentIdx - 1)}
@@ -3290,12 +3366,12 @@ export default function ActiveWorkoutScreen() {
         style={[
           styles.coachFab,
           {
-            bottom: 64 + insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 16),
+            bottom: insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 24),
             backgroundColor: Colors.primary,
           },
         ]}
       >
-        <Feather name="zap" size={15} color={Colors.primaryFg} />
+        <DronaMark size={15} color={Colors.primaryFg} state="static" />
         <Text style={styles.coachFabText}>Coach</Text>
       </TouchableOpacity>
 
@@ -3308,9 +3384,6 @@ export default function ActiveWorkoutScreen() {
         initialScreen="chat"
         workoutContext={coachContext}
       />
-
-      {/* Bottom navigation — always visible */}
-      <BottomNav />
     </View>
   );
 }
@@ -3331,6 +3404,14 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 16,
     backgroundColor: Colors.dangerBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topCluster: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  topRoundBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },

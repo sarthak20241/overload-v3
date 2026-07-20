@@ -38,6 +38,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -338,7 +339,7 @@ export default function NutritionScreen() {
 
         {/* Drona line */}
         <View style={s.drona}>
-          <View style={s.avatar}><Feather name="zap" size={11} color={C.accentText} /></View>
+          <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
           <Text style={s.dronaTxt}>{dronaLine}</Text>
         </View>
 
