@@ -17,7 +17,7 @@ import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { coachErrorMessage } from '@/lib/coachErrors';
+import { coachInvokeErrorMessage } from '@/lib/coachErrors';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -466,8 +466,9 @@ export async function parseMeal(
       },
     });
     // Never hand the raw edge-function error to the card — it carries HTTP
-    // statuses and provider error bodies. coachErrorMessage logs it instead.
-    if (res.error) return { kind: 'error', message: coachErrorMessage(res.error) };
+    // statuses and provider error bodies. The helper pulls the real reason off
+    // error.context for the log and returns user-safe copy.
+    if (res.error) return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
     data = res.data;
   } catch (e) {
     return { kind: 'error', message: 'No connection. Type it again when you are back online.' };

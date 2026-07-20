@@ -38,7 +38,7 @@ import {
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
-import { coachErrorMessage } from '@/lib/coachErrors';
+import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -353,20 +353,10 @@ async function callAICoach(
         body: { messages },
       });
       if (error) {
-        // supabase-js wraps non-2xx as FunctionsHttpError with the body buried
-        // in error.context. Dig it out so the console gets the real server-side
-        // reason — coachErrorMessage logs it and hands back user-safe copy.
-        let detail = error?.message || 'Edge Function failed';
-        try {
-          const ctx = (error as any)?.context;
-          if (ctx && typeof ctx.json === 'function') {
-            const body = await ctx.json();
-            detail = body?.error
-              ? `${body.error}${body.debug ? ` (${body.debug})` : ''}`
-              : JSON.stringify(body);
-          }
-        } catch { /* fall through */ }
-        throw new AICoachUnavailableError(coachErrorMessage(detail));
+        // supabase-js wraps non-2xx as FunctionsHttpError whose message is
+        // always generic; the status + body live on error.context. The helper
+        // digs both out for the log and hands back user-safe copy.
+        throw new AICoachUnavailableError(await coachInvokeErrorMessage(error));
       }
       if (data?.response) {
         return {
