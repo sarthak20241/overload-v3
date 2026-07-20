@@ -38,6 +38,7 @@ import {
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
+import { coachErrorMessage } from '@/lib/coachErrors';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -353,8 +354,8 @@ async function callAICoach(
       });
       if (error) {
         // supabase-js wraps non-2xx as FunctionsHttpError with the body buried
-        // in error.context. Surface it so server-side reasons are visible in
-        // the chat instead of the generic "non-2xx status code".
+        // in error.context. Dig it out so the console gets the real server-side
+        // reason — coachErrorMessage logs it and hands back user-safe copy.
         let detail = error?.message || 'Edge Function failed';
         try {
           const ctx = (error as any)?.context;
@@ -365,7 +366,7 @@ async function callAICoach(
               : JSON.stringify(body);
           }
         } catch { /* fall through */ }
-        throw new AICoachUnavailableError(`Coach Drona error: ${detail}`);
+        throw new AICoachUnavailableError(coachErrorMessage(detail));
       }
       if (data?.response) {
         return {
@@ -377,7 +378,7 @@ async function callAICoach(
     } catch (err: any) {
       if (err instanceof AICoachUnavailableError) throw err;
       throw new AICoachUnavailableError(
-        err?.message ? `Coach Drona error: ${err.message}` : undefined
+        err?.message ? coachErrorMessage(err) : undefined
       );
     }
   }
@@ -403,7 +404,9 @@ interface StreamingCallbacks {
     tool_calls?: string[];
     structured?: { name: string; input: Record<string, unknown> } | null;
   }) => void;
-  onError: (err: string) => void;
+  // Always receives user-safe copy. Raw failure detail is logged inside
+  // callAICoachStreaming and never handed to the UI.
+  onError: (message: string) => void;
 }
 
 interface StreamingOptions {
@@ -434,10 +437,15 @@ function callAICoachStreaming(
   callbacks: StreamingCallbacks,
   options: StreamingOptions = {},
 ): { abort: () => void } {
+  // Single choke point for failures: everything below reports raw detail here,
+  // and the user only ever sees the mapped copy. Keeps HTTP statuses, JSON
+  // error bodies and provider billing notices out of the chat bubble.
+  const fail = (raw: string) => callbacks.onError(coachErrorMessage(raw));
+
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) {
-    callbacks.onError('Supabase not configured');
+    fail('Supabase not configured');
     return { abort: () => {} };
   }
 
@@ -476,7 +484,7 @@ function callAICoachStreaming(
             structured: parsed.structured ?? null,
           });
         } else if (event === 'error') {
-          callbacks.onError(parsed.error ?? 'Unknown error');
+          fail(parsed.error ?? 'Unknown error');
         }
       } catch { /* malformed event — skip */ }
     }
@@ -505,7 +513,7 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
-        callbacks.onError(`HTTP ${response.status}: ${body.slice(0, 200)}`);
+        fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
       }
 
@@ -529,7 +537,7 @@ function callAICoachStreaming(
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
-      callbacks.onError(`Network error: ${String(e?.message ?? e)}`);
+      fail(`Network error: ${String(e?.message ?? e)}`);
     }
   })();
 
@@ -942,7 +950,7 @@ function ChatScreen({
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`Coach Drona error: ${errStr}`);
+        typewriter.fail(errStr);
         setLoading(false);
         streamRef.current = null;
       },
@@ -2376,7 +2384,7 @@ function RefineChatScreen({
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`Coach Drona error: ${errStr}`);
+        typewriter.fail(errStr);
         setLoading(false);
         streamRef.current = null;
       },
