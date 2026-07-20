@@ -229,6 +229,11 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
       failures.push(`no item matching "${needles.join('|')}" (got: ${items.map((i) => i.food_name).join(" | ")})`);
       continue;
     }
+    for (const bad of ie.nameExcludes ?? []) {
+      if (match.food_name.toLowerCase().includes(bad.toLowerCase())) {
+        failures.push(`"${ie.nameIncludes}" resolved to "${match.food_name}" which must not contain "${bad}"`);
+      }
+    }
     if (ie.tiers && !ie.tiers.includes(match.source)) {
       failures.push(`"${ie.nameIncludes}" tier ${match.source} not in [${ie.tiers.join(",")}]`);
     }

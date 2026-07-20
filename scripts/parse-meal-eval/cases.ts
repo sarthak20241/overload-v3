@@ -14,6 +14,10 @@ export interface ItemExpectation {
   // Alternate acceptable substrings (same food under another name, e.g.
   // "edamame" vs "soybeans"). Any one match satisfies the expectation.
   nameIncludesAny?: string[];
+  // Substrings that must NOT appear in the matched item's name. Numeric
+  // bounds alone cannot catch a wrong preparation state: a cooked-soybean row
+  // can land inside a roasted-edamame gram range while being the wrong food.
+  nameExcludes?: string[];
   // Acceptable resolution tiers for that item. Omit = any.
   tiers?: Tier[];
   // Inclusive bounds on the item's total grams. Omit = not checked.
@@ -410,6 +414,9 @@ export const CASES: EvalCase[] = [
       items: [{
         nameIncludes: "edamame",
         nameIncludesAny: ["soybean", "soya bean"],
+        // The original bug resolved a roasted food against a cooked row, and
+        // the gram range alone cannot tell the two apart.
+        nameExcludes: ["cooked", "boiled"],
         gramsBetween: [10, 22],
         proteinBetween: [3, 10],
       }],
@@ -463,7 +470,12 @@ export const CASES: EvalCase[] = [
     hour: 17,
     expect: {
       minItems: 1, maxItems: 1,
-      items: [{ nameIncludes: "chana", nameIncludesAny: ["chickpea"], gramsBetween: [10, 30] }],
+      items: [{
+        nameIncludes: "chana",
+        nameIncludesAny: ["chickpea"],
+        nameExcludes: ["cooked", "boiled"],
+        gramsBetween: [10, 30],
+      }],
     },
   },
   {

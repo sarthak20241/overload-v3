@@ -598,10 +598,25 @@ interface WebLabel {
 // Typo-tolerant word overlap ("edameme" vs "Edamame, cooked"): any pair of
 // content words sharing a 4-char prefix. Shared by the prep-state guard and
 // the web-label merge.
-function wordsOverlap(a: string, b: string): boolean {
-  const words = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4);
+/**
+ * Do two food names refer to the same food?
+ *
+ * A single shared word is not enough: "milk tea" and "milk coffee" share
+ * "milk", and treating that as identity lets one drink take the other's label
+ * or mask it as already-covered. Require the names to agree on the whole of
+ * the shorter one, so a modifier ("roasted edamame" vs "edamame") still
+ * matches while two different foods that merely share an ingredient do not.
+ */
+export function wordsOverlap(a: string, b: string): boolean {
+  // Three characters, not four: "tea", "dal" and "egg" are whole foods, and
+  // dropping them collapses "milk tea" to "milk", which then matches every
+  // milk drink there is.
+  const words = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
   const aw = words(a), bw = words(b);
-  return aw.some((x) => bw.some((y) => x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4))));
+  if (aw.length === 0 || bw.length === 0) return false;
+  const [short, long] = aw.length <= bw.length ? [aw, bw] : [bw, aw];
+  const near = (x: string, y: string) => x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4));
+  return short.every((x) => long.some((y) => near(x, y)));
 }
 
 const WEB_LOOKUP_MAX_TURNS = 4;
@@ -669,7 +684,9 @@ async function runWebLookup(
       out.set(o.for_item, {
         per_100: {
           kcal: p.kcal, protein_g: p.protein_g, carb_g: p.carb_g, fat_g: p.fat_g,
-          fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) ? p.fiber_g : null,
+          // Merging happens after sanitizeItems, so a negative fiber value
+          // here would reach the result unclamped.
+          fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) && p.fiber_g >= 0 ? p.fiber_g : null,
         },
         source_note: typeof o.source_note === "string" && o.source_note.trim()
           ? scrubDashes(o.source_note).slice(0, 80)
@@ -890,10 +907,30 @@ interface ResolvedItem extends ExtractedItem {
 // A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
 // spoon weights in code hands the decide model real numbers instead of a
 // water-density guess (the 2x roasted-edamame bug).
+/**
+ * True only for a serving that is exactly ONE cup.
+ *
+ * The anchors below divide the cup weight by 16 and 48, so any other multiple
+ * silently poisons every spoon it derives: "1/2 cup" yields a half-weight
+ * tablespoon, "2 cup" a doubled one. That is the same failure mode this whole
+ * function exists to prevent, so the match has to be exact rather than a
+ * substring test for "cup".
+ */
+export function isOneCupLabel(label: string): boolean {
+  const l = label.toLowerCase().trim();
+  if (/\bcups\b/.test(l)) return false;                 // "2 cups"
+  const m = l.match(/^(.*?)\bcup\b/);
+  if (!m) return false;
+  const prefix = m[1].trim();
+  // Bare "cup", or a quantity that is precisely 1. Anything else - "1/2",
+  // "0.5", "2", "3/4" - is rejected rather than guessed at.
+  return prefix === "" || /(^|\s)1$/.test(prefix);
+}
+
 function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
   if (c.base_unit !== "g") return c;
   const has = (re: RegExp) => c.servings.some((s) => re.test(s.label.toLowerCase()));
-  const cup = c.servings.find((s) => /(^|\b)1?\s*cup\b/.test(s.label.toLowerCase()) && s.grams > 30 && s.grams < 400);
+  const cup = c.servings.find((s) => isOneCupLabel(s.label) && s.grams > 30 && s.grams < 400);
   if (!cup) return c;
   const derived: ServingOption[] = [];
   if (!has(/\b(tbsp|tablespoon)\b/)) derived.push({ label: "1 tbsp", grams: round1(cup.grams / 16) });
@@ -911,13 +948,20 @@ async function resolveOneItem(
   // (the 0079 search requires EVERY word to match, so an over-specified name
   // like "almonds raw whole" returns nothing while "almonds" hits). A
   // generalized retry only fires when the specific query found zero rows.
-  const queries = [item.name];
-  if (item.brand) queries.push(`${item.brand} ${item.name}`);
+  const queries: string[] = [];
+  const push = (q: string) => { if (q && !queries.includes(q)) queries.push(q); };
+  // Brand-qualified FIRST. The loop below stops at the first query that
+  // returns anything, so leading with the generic name lets a generic row
+  // win for a branded item whose own row exists and is never searched for.
+  if (item.brand) push(`${item.brand} ${item.name}`);
+  push(item.name);
   const words = item.name.split(/\s+/).filter(Boolean);
-  for (let n = words.length - 1; n >= 1; n--) {
-    const q = words.slice(0, n).join(" ");
-    if (!queries.includes(q)) queries.push(q);
-  }
+  // Drop LEADING words before trailing ones. Prep state is written as a
+  // prefix ("roasted edamame", "boiled egg"), so trimming from the front
+  // keeps the food and sheds the modifier; trimming from the back does the
+  // reverse and searches for "roasted", losing the identity entirely.
+  for (let i = 1; i < words.length; i++) push(words.slice(i).join(" "));
+  for (let n = words.length - 1; n >= 1; n--) push(words.slice(0, n).join(" "));
   let candidates: CandidateFood[] = [];
   for (const q of queries.slice(0, 4)) {
     if (candidates.length > 0) break;
@@ -1004,10 +1048,17 @@ function scrubDashes(s: string): string {
 // the model's numbers (their grams still came from the same candidates).
 async function verifyItems(deps: ParseMealDeps, items: ParsedItem[]): Promise<ParsedItem[]> {
   return await Promise.all(items.map(async (item) => {
-    if (!item.food_id || (item.source !== "catalog" && item.source !== "off")) return item;
-    if (!Number.isFinite(item.grams) || item.grams <= 0) return item;
-    const per100 = await deps.getFoodPer100(item.food_id);
-    if (!per100) return item;
+    if (item.source !== "catalog" && item.source !== "off") return item;
+    // A catalog/OFF claim we cannot check is not a catalog/OFF number. Without
+    // a resolvable food_id the macros are whatever the model wrote, so let the
+    // line through on its numbers but call it what it is - an estimate - or
+    // the UI presents an invention with the authority of a looked-up row.
+    const per100 = item.food_id && Number.isFinite(item.grams) && item.grams > 0
+      ? await deps.getFoodPer100(item.food_id)
+      : null;
+    if (!per100) {
+      return { ...item, source: "estimate" as const, food_id: null, confidence: "low" as const };
+    }
     const f = item.grams / 100;
     const scaled = {
       ...item,

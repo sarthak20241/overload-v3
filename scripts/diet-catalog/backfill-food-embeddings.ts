@@ -44,8 +44,14 @@ const VOYAGE_BATCH = 128;          // voyage-3 max inputs per request
 const UPDATE_CONCURRENCY = 16;
 // Free-tier voyage keys are limited to 3 RPM / 10K TPM; a paid key takes
 // VOYAGE_RPM=60 or higher. Batches of 128 short names stay well under TPM.
+// A bad value here silently disables pacing (NaN gap) and turns the 429 retry
+// into a hot loop, so refuse it rather than fall back to something plausible.
 const VOYAGE_RPM = Number(process.env.VOYAGE_RPM || "3");
-const REQUEST_GAP_MS = Math.ceil(60_000 / Math.max(VOYAGE_RPM, 1));
+if (!Number.isFinite(VOYAGE_RPM) || VOYAGE_RPM <= 0) {
+  console.error(`VOYAGE_RPM must be a positive number, got ${JSON.stringify(process.env.VOYAGE_RPM)}.`);
+  process.exit(1);
+}
+const REQUEST_GAP_MS = Math.ceil(60_000 / VOYAGE_RPM);
 
 interface FoodRow { id: string; name: string; brand: string | null; food_category: string | null }
 
