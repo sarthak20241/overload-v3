@@ -2646,7 +2646,7 @@ export default function ActiveWorkoutScreen() {
                 icon: 'message-square' as const,
                 label: 'HOW TODAY WENT',
                 empty: 'How did this one feel today?',
-                editorPlaceholder: 'Just this session. Soreness, energy, anything worth remembering.',
+                editorPlaceholder: 'Shoulders felt sore on the last two sets',
                 a11y: 'session note',
                 value: currentEx.sessionNote ?? '',
                 onChange: handleSessionNoteChange,
@@ -2654,9 +2654,12 @@ export default function ActiveWorkoutScreen() {
               {
                 kind: 'sticky' as const,
                 icon: 'bookmark' as const,
-                label: 'NOTE TO SELF',
+                label: 'EXERCISE NOTE',
                 empty: 'Add a note that stays with this exercise',
-                editorPlaceholder: 'Stays with this exercise, everywhere. Form cues, setup, reminders.',
+                // A worked example, not an explanation. The label and the
+                // collapsed row already say what this note is for, so the
+                // placeholder's job is to show the shape of a good one.
+                editorPlaceholder: 'Incline at 45 degrees',
                 a11y: 'exercise note',
                 value: stickyNotes[exerciseNoteKey(currentEx.exercise.name)] ?? '',
                 onChange: handleStickyNoteChange,
