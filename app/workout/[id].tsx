@@ -1895,6 +1895,9 @@ export default function ActiveWorkoutScreen() {
               superset_group: e.supersetGroup ?? null,
               note: e.sessionNote?.trim() || null,
               sets: e.sets.filter(s => s.completed).map(s => ({
+                // Only completed sets get here, but the flag has to be written
+                // out: history reads these objects as-is and filters on it.
+                completed: true,
                 weight_kg: s.weight_kg, reps: s.reps,
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
                 resistance: s.resistance ?? null,

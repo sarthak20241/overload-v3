@@ -226,16 +226,13 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
     const e = w?.id ? byId.get(w.id) : undefined;
     if (!e) return w;
     let setId = 0;
-    // Per-exercise session notes (migration 0080) live in their own server rows
-    // and an edit never touches them, so carry them across from the row being
-    // overlaid. Without this they'd blink out of History between saving an edit
-    // and the next refetch, reading as data loss when nothing was lost. Matched
-    // by name because that's the only identity the edit entry carries.
-    const noteByName = new Map<string, string>(
-      (w?.exercises ?? [])
-        .filter((ex: any) => ex?.name && ex?.note)
-        .map((ex: any) => [String(ex.name).toLowerCase(), ex.note as string]),
-    );
+    // Per-exercise session notes (migration 0080) come straight off the edit
+    // entry, which loads them with the workout and carries them back unchanged.
+    // They used to be re-derived from the row being overlaid, matched by
+    // exercise NAME, because the entry didn't carry them yet; that collapsed
+    // the two instances of an exercise a workout can legitimately list twice
+    // (a superset, or a routine repeating it) into one map key and could show
+    // a note against the wrong one until the next refetch.
     return {
       ...w,
       name: e.name,
@@ -247,7 +244,7 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
       exercises: e.exercises.map((ex) => ({
         name: ex.def.name,
         metric_type: ex.def.metric_type,
-        note: noteByName.get(ex.def.name.toLowerCase()) ?? null,
+        note: ex.note ?? null,
         sets: ex.sets.map((s) => ({
           weight_kg: s.weight_kg, reps: s.reps, completed: true,
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,

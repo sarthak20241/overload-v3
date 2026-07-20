@@ -540,7 +540,12 @@ function SessionCard({
         <Animated.View entering={FadeInDown.duration(160)} style={[styles.wExpandedSection, { borderTopColor: C.borderSubtle }]}>
           {workout.exercises && workout.exercises.length > 0 ? (
             workout.exercises.map((ex, i) => {
-              const completedSets = ex.sets?.filter(s => s.completed) || [];
+              // `completed !== false` rather than `completed`: guest workouts
+              // store only completed sets and did not write the flag until the
+              // note work, so already-saved ones have it absent. Reading that
+              // as false hid every guest exercise row. Server and pending rows
+              // always set it true, so this is the same test for them.
+              const completedSets = ex.sets?.filter(s => s.completed !== false) || [];
               const sessionNote = ex.note?.trim() || '';
               // No sets logged and nothing said about it: not part of the record.
               // With a note, the row stays so the note has somewhere to live.
