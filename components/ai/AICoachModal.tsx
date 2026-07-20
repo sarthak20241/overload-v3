@@ -38,6 +38,7 @@ import {
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
+import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -352,20 +353,10 @@ async function callAICoach(
         body: { messages },
       });
       if (error) {
-        // supabase-js wraps non-2xx as FunctionsHttpError with the body buried
-        // in error.context. Surface it so server-side reasons are visible in
-        // the chat instead of the generic "non-2xx status code".
-        let detail = error?.message || 'Edge Function failed';
-        try {
-          const ctx = (error as any)?.context;
-          if (ctx && typeof ctx.json === 'function') {
-            const body = await ctx.json();
-            detail = body?.error
-              ? `${body.error}${body.debug ? ` (${body.debug})` : ''}`
-              : JSON.stringify(body);
-          }
-        } catch { /* fall through */ }
-        throw new AICoachUnavailableError(`Coach Drona error: ${detail}`);
+        // supabase-js wraps non-2xx as FunctionsHttpError whose message is
+        // always generic; the status + body live on error.context. The helper
+        // digs both out for the log and hands back user-safe copy.
+        throw new AICoachUnavailableError(await coachInvokeErrorMessage(error));
       }
       if (data?.response) {
         return {
@@ -377,7 +368,7 @@ async function callAICoach(
     } catch (err: any) {
       if (err instanceof AICoachUnavailableError) throw err;
       throw new AICoachUnavailableError(
-        err?.message ? `Coach Drona error: ${err.message}` : undefined
+        err?.message ? coachErrorMessage(err) : undefined
       );
     }
   }
@@ -403,7 +394,9 @@ interface StreamingCallbacks {
     tool_calls?: string[];
     structured?: { name: string; input: Record<string, unknown> } | null;
   }) => void;
-  onError: (err: string) => void;
+  // Always receives user-safe copy. Raw failure detail is logged inside
+  // callAICoachStreaming and never handed to the UI.
+  onError: (message: string) => void;
 }
 
 interface StreamingOptions {
@@ -434,10 +427,15 @@ function callAICoachStreaming(
   callbacks: StreamingCallbacks,
   options: StreamingOptions = {},
 ): { abort: () => void } {
+  // Single choke point for failures: everything below reports raw detail here,
+  // and the user only ever sees the mapped copy. Keeps HTTP statuses, JSON
+  // error bodies and provider billing notices out of the chat bubble.
+  const fail = (raw: string) => callbacks.onError(coachErrorMessage(raw));
+
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) {
-    callbacks.onError('Supabase not configured');
+    fail('Supabase not configured');
     return { abort: () => {} };
   }
 
@@ -476,7 +474,7 @@ function callAICoachStreaming(
             structured: parsed.structured ?? null,
           });
         } else if (event === 'error') {
-          callbacks.onError(parsed.error ?? 'Unknown error');
+          fail(parsed.error ?? 'Unknown error');
         }
       } catch { /* malformed event — skip */ }
     }
@@ -505,7 +503,7 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
-        callbacks.onError(`HTTP ${response.status}: ${body.slice(0, 200)}`);
+        fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
       }
 
@@ -529,7 +527,7 @@ function callAICoachStreaming(
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
-      callbacks.onError(`Network error: ${String(e?.message ?? e)}`);
+      fail(`Network error: ${String(e?.message ?? e)}`);
     }
   })();
 
@@ -942,7 +940,7 @@ function ChatScreen({
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`Coach Drona error: ${errStr}`);
+        typewriter.fail(errStr);
         setLoading(false);
         streamRef.current = null;
       },
@@ -2376,7 +2374,7 @@ function RefineChatScreen({
         });
       },
       onError: (errStr) => {
-        typewriter.fail(`Coach Drona error: ${errStr}`);
+        typewriter.fail(errStr);
         setLoading(false);
         streamRef.current = null;
       },
