@@ -1539,6 +1539,34 @@ async function tryFastCorrection(
     }
     if (!(grams > 0)) return null;
 
+    // A line the user edited by hand is authoritative. Recomputing it from the
+    // catalog would silently discard the numbers they typed - the exact thing
+    // ParsedItemEditor promises never happens - and relabel their line
+    // "catalog". Rescale THEIR macros to the new weight and keep the
+    // provenance. Without a usable previous basis there is nothing to scale,
+    // so fall back to the full pipeline rather than quietly substituting the
+    // catalog's numbers.
+    if (prev.source === "manual") {
+      if (!(prev.grams > 0) || typeof prev.kcal !== "number") return null;
+      const s = grams / prev.grams;
+      out.push({
+        food_id: prev.food_id,
+        food_name: prev.food_name,
+        quantity: item.quantity,
+        serving_label: servingLabel,
+        grams: round1(grams),
+        kcal: round1(prev.kcal * s),
+        protein_g: round1((prev.protein_g ?? 0) * s),
+        carb_g: round1((prev.carb_g ?? 0) * s),
+        fat_g: round1((prev.fat_g ?? 0) * s),
+        fiber_g: typeof prev.fiber_g === "number" ? round1(prev.fiber_g * s) : null,
+        source: "manual",
+        assumption: prev.assumption ?? null,
+        confidence: prev.confidence ?? "high",
+      });
+      continue;
+    }
+
     const f = grams / 100;
     out.push({
       food_id: prev.food_id,
