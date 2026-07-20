@@ -135,6 +135,14 @@ export async function callClaudeCli(args: {
       });
     });
 
+    // A dead child (bad CLAUDE_BIN => ENOENT, or an early exit) leaves stdin
+    // destroyed, and writing to it emits 'error' on the stream. With no
+    // listener Node treats that as unhandled and takes the process down, so a
+    // simple typo in CLAUDE_BIN would crash the whole eval run instead of
+    // failing one case. Swallow it here; the real cause still surfaces through
+    // the 'error'/'close' handlers above, which reject with the exit code and
+    // stderr.
+    child.stdin.on('error', () => { /* reported via 'error' / 'close' */ });
     child.stdin.write(flattenMessages(args.messages));
     child.stdin.end();
   });
