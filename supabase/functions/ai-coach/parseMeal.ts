@@ -1504,7 +1504,7 @@ function matchServing(servings: ServingOption[], unit: string): ServingOption | 
  * cannot match, a changed food identity — so the caller falls back to the full
  * pipeline rather than guessing.
  */
-async function tryFastCorrection(
+export async function tryFastCorrection(
   deps: ParseMealDeps,
   extItems: ExtractedItem[],
   previous: PreviousItem[],
