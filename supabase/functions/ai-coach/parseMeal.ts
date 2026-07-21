@@ -653,6 +653,10 @@ async function runWebLookup(
   items: ExtractedItem[],
   onUsage: (data: any) => void,
   onCall: () => void,
+  /** Abort the whole multi-turn lookup, not just the request in flight. Each
+   *  turn is a separate billed call, so without a check between turns a
+   *  cancelled lookup would keep going for up to WEB_LOOKUP_MAX_TURNS. */
+  signal?: AbortSignal,
 ): Promise<Map<string, WebLabel> | null> {
   const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
   const system =
@@ -666,6 +670,7 @@ async function runWebLookup(
   }];
 
   for (let turn = 0; turn < WEB_LOOKUP_MAX_TURNS; turn++) {
+    if (signal?.aborted) return null;
     const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
     const result = await callAnthropicOnce(webDeps, {
       model: deps.model,
@@ -674,9 +679,10 @@ async function runWebLookup(
       tools: [WEB_SEARCH_TOOL, WEB_LOOKUP_TOOL],
       messages: conversation,
       ...(lastTurn ? { tool_choice: { type: "tool", name: "report_labels" } } : {}),
-    });
+    }, signal);
     if (!result.ok) {
-      deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
+      // 499 is our own cancellation, not a failure worth reporting.
+      if (result.status !== 499) deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
       return null;
     }
     onCall();
@@ -858,9 +864,19 @@ function withToolCache(tools: unknown[]): unknown[] {
 async function callAnthropicOnce(
   deps: ParseMealDeps,
   payload: Record<string, unknown>,
+  /** Cancels the call from outside, independently of the per-call timeout.
+   *  The hedged web lookup uses this to stop the moment it loses its race,
+   *  instead of running on in the background billing for a discarded answer. */
+  externalSignal?: AbortSignal,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
   const fetchFn = deps.fetchFn ?? fetch;
   const controller = new AbortController();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      return { ok: false, status: 499, body: "cancelled before dispatch" };
+    }
+    externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
   const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
   try {
     const response = await fetchFn("https://api.anthropic.com/v1/messages", {
@@ -879,6 +895,11 @@ async function callAnthropicOnce(
     return { ok: true, data: await response.json() };
   } catch (e) {
     const isAbort = (e as Error)?.name === "AbortError";
+    // Distinguish "we gave up on it" from "it was too slow": a cancelled hedge
+    // is normal operation, and logging it as a timeout would misreport health.
+    if (isAbort && externalSignal?.aborted) {
+      return { ok: false, status: 499, body: "cancelled" };
+    }
     return {
       ok: false,
       status: isAbort ? 504 : 502,
@@ -1932,9 +1953,21 @@ export async function runParseMeal(
   // label data upgrades the estimate lines server-side. Web results never
   // delay a fully-resolved meal and add at most the grace window otherwise.
   const unresolvedItems = resolved.filter((r) => r.candidates.length === 0);
+  // The hedge is abandoned the instant it loses its race, so it needs both a
+  // kill switch and a usage gate. Its own callbacks fire from a promise nobody
+  // awaits any more: without the gate they would keep adding to `usage` after
+  // that object was returned to the caller and logged.
+  const hedge = new AbortController();
+  let hedgeSettled = false;
+  const hedgeUsage = (data: any) => { if (!hedgeSettled) accumulate(data); };
+  const hedgeCall = () => { if (!hedgeSettled) anthropicCalls++; };
+  /** Close the hedge down. Safe to call twice, and MUST be called on every path
+   *  that leaves this function after the lookup was fired - a decide failure
+   *  returns before the settlement block below and would otherwise leak it. */
+  const stopHedge = () => { hedgeSettled = true; hedge.abort(); };
   const webPromise: Promise<Map<string, WebLabel> | null> | null =
     deps.webSearchEnabled && unresolvedItems.length > 0
-      ? runWebLookup(deps, unresolvedItems, accumulate, () => anthropicCalls++)
+      ? runWebLookup(deps, unresolvedItems, hedgeUsage, hedgeCall, hedge.signal)
         .catch((e) => {
           deps.log?.(`[parse_meal] web lookup threw: ${String(e).slice(0, 120)}`);
           return null;
@@ -1970,6 +2003,7 @@ export async function runParseMeal(
     messages: [{ role: "user", content: JSON.stringify(decidePayload) }],
   });
   if (!result.ok) {
+    stopHedge();
     throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
   }
   anthropicCalls++;
@@ -1979,6 +2013,7 @@ export async function runParseMeal(
   const terminal = blocks.find((b) => b.type === "tool_use" && b.name === PARSE_TERMINAL_TOOL);
   if (!terminal) {
     // Forced tool_choice makes this near-impossible; fail soft as a decline.
+    stopHedge();
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
     );
@@ -2018,7 +2053,17 @@ export async function runParseMeal(
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), WEB_MERGE_GRACE_MS); }),
     ]);
     if (timer) clearTimeout(timer);
-    steps.push({ iter: 2, tool: "web_lookup_merge", result: { found: labels ? labels.size : 0 } });
+    // Settled either way: whatever the lookup has not finished by now can never
+    // reach the user, so stop it. Losing the race used to leave it running for
+    // up to WEB_LOOKUP_TIMEOUT_MS across WEB_LOOKUP_MAX_TURNS turns, billing
+    // web searches for an answer that was already discarded.
+    const timedOut = labels === null;
+    stopHedge();
+    steps.push({
+      iter: 2,
+      tool: "web_lookup_merge",
+      result: { found: labels ? labels.size : 0, ...(timedOut ? { cancelled: true } : {}) },
+    });
     if (labels) items = mergeWebLabels(items, labels);
   }
 
