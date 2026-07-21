@@ -98,12 +98,29 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   }
 
   function onQtyChange(next: string) {
+    const prevQty = qtyNum;
     setQty(next);
+    const nextQty = numOr(next, 1);
     const sv = servings.find((x) => x.label === label);
-    if (!sv) return;
-    const g = sv.grams * numOr(next, 1);
-    setGrams(String(r1(g)));
-    if (!macrosTouched) deriveMacros(g, per100);
+    if (sv) {
+      const g = sv.grams * nextQty;
+      setGrams(String(r1(g)));
+      if (!macrosTouched) deriveMacros(g, per100);
+      return;
+    }
+    // No serving rows behind this line (estimate and web items have no catalog
+    // food to load them from), so scale what is already on screen instead of
+    // doing nothing. Without this the field accepted input and moved only the
+    // displayed count: "1 samosa" edited to 3 saved as "3 x samosa" carrying
+    // one samosa's grams and macros.
+    if (!(prevQty > 0) || !(nextQty > 0)) return;
+    const ratio = nextQty / prevQty;
+    setGrams(String(r1(gramsNum * ratio)));
+    if (macrosTouched) return;
+    setKcal(String(r0(numOr(kcal, 0) * ratio)));
+    setProtein(String(r1(numOr(protein, 0) * ratio)));
+    setCarb(String(r1(numOr(carb, 0) * ratio)));
+    setFat(String(r1(numOr(fat, 0) * ratio)));
   }
 
   function onGramsChange(next: string) {

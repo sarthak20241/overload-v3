@@ -161,9 +161,19 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
  * would silently delete food the user already reviewed. Any previous line not
  * represented in the result is appended back, unchanged.
  */
-function keepUncoveredPrevious(items: ParsedItem[], previous: PreviousItem[]): ParsedItem[] {
+export function keepUncoveredPrevious(
+  items: ParsedItem[],
+  previous: PreviousItem[],
+  replaced?: Set<string>,
+): ParsedItem[] {
   if (previous.length === 0) return items;
   const covered = (p: PreviousItem) =>
+    // A line the user explicitly re-targeted is REPLACED, not missing. Without
+    // this, "actually paneer not tofu" logs both: the new paneer line never
+    // word-overlaps "tofu", so the guard below reads the tofu line as dropped
+    // and helpfully restores it. The guard exists to stop data loss; on an
+    // identity swap it would otherwise cause data duplication.
+    replaced?.has(p.food_name.toLowerCase()) ||
     items.some((it) =>
       (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
     );
@@ -1757,6 +1767,13 @@ export async function runParseMeal(
     });
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
+  // Previous lines the user explicitly re-targeted. These are deliberately
+  // replaced, so the no-drop guard must not resurrect them.
+  const replacedNames = new Set(
+    extItems
+      .map((i) => i.correctsFoodName?.trim().toLowerCase())
+      .filter((n): n is string => !!n),
+  );
   const mealFromText: MealType | null =
     ext.meal_type_from_text === "breakfast" || ext.meal_type_from_text === "lunch" ||
     ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
@@ -1860,7 +1877,7 @@ export async function runParseMeal(
   if (correctsPrevious) {
     const tFast0 = Date.now();
     const correctedRaw = await tryFastCorrection(deps, extItems, prevItems).catch(() => null);
-    const corrected = correctedRaw ? keepUncoveredPrevious(correctedRaw, prevItems) : null;
+    const corrected = correctedRaw ? keepUncoveredPrevious(correctedRaw, prevItems, replacedNames) : null;
     T.fast_correction_ms = Date.now() - tFast0;
     if (corrected) {
       T.fast_correction = 1;
@@ -1990,7 +2007,7 @@ export async function runParseMeal(
   let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
   // A correction REPLACES the reviewed meal, so never let the model quietly
   // drop a line it was told to relist.
-  if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems);
+  if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems, replacedNames);
 
   // Hedge settlement: give the parallel lookup a short grace beyond the
   // decide call, then take whatever it brought (or move on without it).
