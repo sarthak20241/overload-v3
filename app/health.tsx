@@ -6,8 +6,10 @@
  * once data is flowing it shows the readiness score, WHY it moved (contributors
  * vs the user's own baseline), the trend, and WHAT is feeding it. Sleep is the
  * anchor of the score, so a phone-only user can log last night by hand (the sleep
- * sheet) and get a read without any wearable. The "Sharpen the read" section then
- * shows, honestly, which extra signals would tighten it. Fully theme-aware.
+ * sheet) and get a read without any wearable. Manual sleep is the front door
+ * everywhere; connecting HealthKit / Health Connect is pitched only on this
+ * screen, as the way to sharpen an already-running score. The "Sharpen the read"
+ * section shows, honestly, which extra signals would tighten it. Fully theme-aware.
  * Plan: .planning/holistic-tracking-plan.md.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -318,7 +320,6 @@ export default function HealthScreen() {
   const connected = connStatus === 'granted' || deviceMetrics.size > 0;
   const hasData = metrics.size > 0;
   const anyPresence = connected || hasData;
-  const notConnected = !anyPresence;
   const working = status.kind === 'working';
 
   const contributors = result?.contributors ?? [];
@@ -392,14 +393,30 @@ export default function HealthScreen() {
                     <Feather name="chevron-right" size={IconSize.sm} color={C.textMuted} />
                   </Pressable>
                 </View>
-              ) : anyPresence ? (
+              ) : loadError ? (
+                // The read FAILED with nothing cached. That is NOT the same as "no
+                // sleep logged yet", so don't nag for a log the user may already
+                // have made; the retry banner above owns the recovery path.
+                <View style={styles.heroBody}>
+                  <ReadinessRing score={0} color={C.textMuted} track={C.muted} size={140} stroke={12}>
+                    {working ? <ActivityIndicator color={accent} /> : <Feather name="cloud-off" size={26} color={C.textMuted} />}
+                  </ReadinessRing>
+                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>Can&apos;t load your readiness</Text>
+                  <Text style={[styles.emptySub, { color: C.textMuted }]}>
+                    Pull down to refresh, or tap the banner above to try again.
+                  </Text>
+                </View>
+              ) : (
+                // No score yet: sleep-first, whether or not anything is connected.
+                // A manual log is all readiness needs to start; the wearable pitch
+                // lives below in the connect block, never as the hero.
                 <View style={styles.heroBody}>
                   <ReadinessRing score={0} color={accent} track={C.muted} size={140} stroke={12}>
                     {working ? <ActivityIndicator color={accent} /> : <Feather name="moon" size={26} color={C.textMuted} />}
                   </ReadinessRing>
                   <Text style={[styles.emptyTitle, { color: C.foreground }]}>Log last night</Text>
                   <Text style={[styles.emptySub, { color: C.textMuted }]}>
-                    Sleep is the one signal readiness needs. Takes ten seconds.
+                    Sleep is the one signal readiness needs. Takes ten seconds, no wearable required.
                   </Text>
                   <Pressable
                     onPress={openSleepSheet}
@@ -413,16 +430,6 @@ export default function HealthScreen() {
                       Have a tracker? Wear it to bed and sleep syncs on its own.
                     </Text>
                   )}
-                </View>
-              ) : (
-                <View style={styles.heroBody}>
-                  <ReadinessRing score={0} color={accent} track={C.muted} size={140} stroke={12}>
-                    {working ? <ActivityIndicator color={accent} /> : <Feather name="plus-circle" size={26} color={C.textMuted} />}
-                  </ReadinessRing>
-                  <Text style={[styles.emptyTitle, { color: C.foreground }]}>Connect health</Text>
-                  <Text style={[styles.emptySub, { color: C.textMuted }]}>
-                    Sync your sleep and recovery and Drona reads how recovered you are each morning. No wearable? Log sleep by hand.
-                  </Text>
                 </View>
               )}
             </View>
@@ -500,30 +507,27 @@ export default function HealthScreen() {
               </View>
             )}
 
-            {/* MANAGE / CONNECT */}
-            {notConnected ? (
+            {/* MANAGE / CONNECT. Connecting a hub is the enhancement, not the ask:
+                readiness already runs on hand-logged sleep, so the connect block
+                only appears here (never on the dashboard) and sells what it adds. */}
+            {!connected ? (
               <>
+                <Text style={[styles.worksWith, { color: C.textMuted }]}>
+                  Want a sharper read? Connect {HUB_LABEL} and sleep, heart rate and steps sync on their own.
+                </Text>
                 <Pressable
                   onPress={() => runSync(true)}
                   disabled={working}
-                  style={({ pressed }) => [styles.cta, { backgroundColor: Colors.primary }, (pressed || working) && { opacity: 0.85 }]}
-                >
-                  {working ? (
-                    <ActivityIndicator color={Colors.primaryFg} />
-                  ) : (
-                    <>
-                      <Feather name="link" size={IconSize.md} color={Colors.primaryFg} />
-                      <Text style={[styles.ctaText, { color: Colors.primaryFg }]}>Connect {HUB_LABEL}</Text>
-                    </>
-                  )}
-                </Pressable>
-                <Pressable
-                  onPress={openSleepSheet}
-                  disabled={working}
                   style={({ pressed }) => [styles.ghost, { borderColor: C.border }, (pressed || working) && { opacity: 0.7 }]}
                 >
-                  <Feather name="moon" size={IconSize.md} color={C.foreground} />
-                  <Text style={[styles.ghostText, { color: C.foreground }]}>Log sleep by hand</Text>
+                  {working ? (
+                    <ActivityIndicator color={C.foreground} />
+                  ) : (
+                    <>
+                      <Feather name="link" size={IconSize.md} color={C.foreground} />
+                      <Text style={[styles.ghostText, { color: C.foreground }]}>Connect {HUB_LABEL}</Text>
+                    </>
+                  )}
                 </Pressable>
                 <Text style={[styles.worksWith, { color: C.textMuted }]}>
                   Works with {sourcesForHub(HUB).map((s) => s.name).join(', ')}.

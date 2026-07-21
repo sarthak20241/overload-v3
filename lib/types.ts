@@ -120,6 +120,11 @@ export interface ActiveWorkoutExercise {
   // The user's sticky per-exercise note is deliberately NOT session state —
   // it lives in lib/exerciseNotes.ts (user_exercise_notes), keyed by exercise
   // name, so it persists across sessions and survives a discarded workout.
+  // How this exercise went TODAY ("shoulders felt sore on the last two sets").
+  // Session state on purpose, the mirror image of the sticky note: it belongs
+  // to this workout, saves with it (workout_exercise_notes, migration 0080),
+  // shows up in history, and dies with a discarded session.
+  sessionNote?: string;
   // Phase 2.5: read-only coach cue carried over from the routine
   // (the `routine_exercises.note` column). Displayed as a subtle hint
   // above the exercise; not mutated by the user.

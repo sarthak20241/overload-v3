@@ -62,6 +62,12 @@ export type ReadinessBand = 'low' | 'moderate' | 'high';
 export interface ReadinessContributor {
   key: 'hrv' | 'rhr' | 'sleep' | 'load' | 'diet';
   z?: number;
+  /**
+   * Signed direction for the z-less contributors (load, diet): 1 lifted the
+   * score, -1 dragged it, 0 present-but-neutral. The z-bearing signals encode
+   * direction in z itself, so they leave this unset.
+   */
+  dir?: -1 | 0 | 1;
   note: string;
 }
 
@@ -245,7 +251,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
       const penalty = Math.round(clamp((ratio - 1.3) * 20, 0, 10));
       if (penalty > 0) {
         score = clamp(score - penalty, 0, 100);
-        contributors.push({ key: 'load', note: `recent training load ${Math.round(ratio * 100)}% of typical` });
+        contributors.push({ key: 'load', dir: -1, note: `recent training load ${Math.round(ratio * 100)}% of typical` });
       }
     }
   }
@@ -257,7 +263,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
   if (input.nutrition) {
     const delta = dietAdjustment(input.nutrition);
     if (delta !== 0) score = clamp(score + delta, 0, 100);
-    contributors.push({ key: 'diet', note: dietNote(delta) });
+    contributors.push({ key: 'diet', dir: Math.sign(delta) as -1 | 0 | 1, note: dietNote(delta) });
   }
 
   const tier: ReadinessTier = haveHrv ? 'A1' : haveRhr ? 'A2' : 'A3';

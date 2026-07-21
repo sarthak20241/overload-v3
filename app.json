@@ -92,10 +92,23 @@
           }
         }
       ],
-      "expo-health-connect"
+      "expo-health-connect",
+      "expo-video",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "install": {
+      "exclude": [
+        "react-native-gesture-handler"
+      ]
     },
     "extra": {
       "router": {},

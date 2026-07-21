@@ -26,6 +26,7 @@ import {
 } from '@/lib/dietData';
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 type SearchTab = 'all' | 'meals';
 const TABS: { key: SearchTab; label: string }[] = [
@@ -171,7 +172,9 @@ export default function FoodSearchScreen() {
       servings: [{ label: single ? items[0].serving_label : '1 serving', grams: grams / servingQty, is_default: true }],
     };
     // Provenance = the least-confident source across items (estimate > web > off).
-    const rank: Record<ParsedMealItem['source'], number> = { estimate: 3, web: 2, off: 1, catalog: 0 };
+    // 'manual' ranks with catalog: the user set those numbers themselves, so a
+    // corrected line is not less trustworthy than a matched one.
+    const rank: Record<ParsedMealItem['source'], number> = { estimate: 3, web: 2, off: 1, manual: 0, catalog: 0 };
     const src = items.reduce<ParsedMealItem['source']>((worst, it) => (rank[it.source] > rank[worst] ? it.source : worst), 'catalog');
     setLogMeal(meal);
     router.push({
@@ -432,7 +435,7 @@ export default function FoodSearchScreen() {
                       <ActivityIndicator size="small" color={Colors.primaryFg} />
                     ) : (
                       <>
-                        <Feather name="zap" size={15} color={Colors.primaryFg} />
+                        <DronaMark size={15} color={Colors.primaryFg} state="static" />
                         <Text style={s.askBtnTxt} numberOfLines={1}>Ask Drona to find “{query.trim()}”</Text>
                       </>
                     )}

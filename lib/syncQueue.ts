@@ -49,9 +49,21 @@ export interface PendingExercise {
   /** Superset grouping ordinal (migration 0060), stamped onto each set's
    * workout_sets.superset_group at flush. NULL = solo. */
   supersetGroup?: number | null;
+  /** How this exercise went in this session (migration 0080), written to
+   * workout_exercise_notes at flush. Already trimmed; null/absent = no note. */
+  note?: string | null;
 }
 
-export type PendingPhase = 'queued' | 'workout_inserted' | 'sets_inserted' | 'done';
+// Flush progress. Each phase is a checkpoint: a retry resumes at the last one
+// reached instead of redoing work that already landed. 'workout_finalized'
+// (added with migration 0080) separates the non-idempotent finalize + XP step
+// from the per-exercise note write that follows it.
+export type PendingPhase =
+  | 'queued'
+  | 'workout_inserted'
+  | 'sets_inserted'
+  | 'workout_finalized'
+  | 'done';
 
 export interface PendingWorkout {
   schema: typeof SCHEMA;
@@ -273,12 +285,20 @@ export async function flushPendingWorkout(
   }
   if (resolvedChanged) patchEntry(userId, entry.clientId, { exercises: entry.exercises });
 
-  // If an exercise still couldn't resolve but has completed sets, do NOT
-  // silently drop them and mark the workout synced. Throw a parkable
+  // If an exercise still couldn't resolve but carries user content, do NOT
+  // silently drop it and mark the workout synced. Throw a parkable
   // (data-coded) error so flushQueue keeps the entry queued with a surfaced
   // lastError and retries it — online a custom resolves on the next attempt;
   // only a genuine, persistent server error leaves it visibly parked.
-  if (entry.exercises.some((ex) => !ex.resolvedExerciseId && ex.sets.length > 0)) {
+  //
+  // A note counts as content even with zero sets: an exercise can be in the
+  // entry for its note alone (see keepInSavedWorkout), and both the set insert
+  // and the note upsert below skip anything unresolved.
+  if (
+    entry.exercises.some(
+      (ex) => !ex.resolvedExerciseId && (ex.sets.length > 0 || !!ex.note?.trim()),
+    )
+  ) {
     throw Object.assign(new Error('Some exercises could not be linked yet'), { code: 'EXRES' });
   }
 
@@ -346,6 +366,55 @@ export async function flushPendingWorkout(
       await upsertXp(supabase, getXpForWorkout(setCount, entry.totalVolumeKg));
     } catch {
       // non-fatal
+    }
+    phase = 'workout_finalized';
+    patchEntry(userId, entry.clientId, { phase });
+  }
+
+  if (phase === 'workout_finalized') {
+    // Per-exercise session notes (migration 0080). Deliberately its own phase,
+    // AFTER the workout is finalized: a note is the least important thing in
+    // the entry, and running it earlier meant a note failure could strand a
+    // workout with a null finished_at and no volume. Its own phase (rather than
+    // a best-effort try/catch) so a transient failure still retries — retrying
+    // inside the finalize block would re-run the non-idempotent XP award.
+    //
+    // Notes ride with their exercise: an exercise whose sets were all left
+    // uncompleted never reaches `entry.exercises`, so its note goes with it —
+    // history has no row to hang it off.
+    //
+    // Collapsed per exercise before sending. The same exercise can legitimately
+    // appear twice in one session (a routine can list it twice, and mid-session
+    // adds don't dedupe), and two rows sharing the PK make Postgres reject the
+    // whole ON CONFLICT statement with 21000 — a data-coded error, which parks
+    // the entry permanently since every retry reproduces it. Two notes on the
+    // same movement are both the user's, so keep both rather than pick one.
+    const noteByExercise = new Map<string, string>();
+    for (const ex of entry.exercises) {
+      const trimmed = ex.note?.trim();
+      if (!ex.resolvedExerciseId || !trimmed) continue;
+      const prev = noteByExercise.get(ex.resolvedExerciseId);
+      noteByExercise.set(
+        ex.resolvedExerciseId,
+        prev && prev !== trimmed ? `${prev}\n${trimmed}` : trimmed,
+      );
+    }
+    if (noteByExercise.size > 0) {
+      const rows = [...noteByExercise].map(([exercise_id, note]) => ({
+        workout_id: serverWorkoutId,
+        exercise_id,
+        // The 1000-char check is per row, and joining two notes can cross it.
+        // Sliced by CODEPOINT, not by .slice(): the DB constraint is
+        // char_length (codepoints) while a JS string index is a UTF-16 code
+        // unit, so cutting at 1000 units could both overshoot the limit and
+        // land mid-surrogate-pair, sending a lone half of an emoji.
+        note: [...note].slice(0, 1000).join(''),
+      }));
+      // Upsert, so a retry after a partial failure is a no-op not a PK conflict.
+      const { error } = await supabase
+        .from('workout_exercise_notes')
+        .upsert(rows, { onConflict: 'workout_id,exercise_id' });
+      if (error) throw error;
     }
     phase = 'done';
     patchEntry(userId, entry.clientId, { phase });

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView, FlatList,
   StyleSheet, ActivityIndicator, Pressable, BackHandler,
-  Keyboard, Platform, useWindowDimensions,
+  Keyboard, Platform, useWindowDimensions, AppState,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -22,9 +22,9 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
 import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture } from '@/lib/activeWorkoutPersistence';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
-import { enqueueWorkout, getPendingWorkouts, newClientId, type PendingWorkout } from '@/lib/syncQueue';
+import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
-import { hydrateCache, readCache } from '@/lib/localCache';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import {
   exerciseNoteKey,
@@ -46,7 +46,8 @@ import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useToast } from '@/components/ui/Toast';
-import { BottomNav } from '@/components/ui/BottomNav';
+import { openMusicApp } from '@/lib/musicLinks';
+import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { haptics } from '@/lib/haptics';
@@ -58,10 +59,25 @@ import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/ro
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Does this exercise belong in the saved workout?
+ *
+ * Normally that means it has at least one completed set — an exercise you
+ * opened and walked away from isn't part of the record. A session note is the
+ * exception: "shoulders felt sore so I skipped this" is exactly the kind of
+ * thing worth reading back later, and it only exists because the user typed it.
+ * So a note keeps the exercise (with zero sets) in the workout, contributing
+ * nothing to volume, set count, or XP, purely so history has something to hang
+ * the note off. History renders these note-only rows without pills or a best.
+ */
+const keepInSavedWorkout = (e: ActiveWorkoutExercise): boolean =>
+  e.sets.some((s) => s.completed) || !!e.sessionNote?.trim();
 
 // ─── Supersets (migration 0060) ──────────────────────────────────────────────
 // After a set is logged for exercise `fromIdx`, decide the next step within its
@@ -130,16 +146,39 @@ function fmt(seconds: number) {
 // actually contained (exercises added or removed mid-workout). Built by
 // buildDbRoutineSyncOffer / buildGuestRoutineSyncOffer after the workout
 // saves; applied by applyRoutineSync if the user accepts.
+/**
+ * One exercise the session added that the routine doesn't have yet.
+ *
+ * `exerciseId` is null while the session's copy is still on a temp id (a
+ * mid-session add whose background reconcile hasn't landed). Resolving is
+ * deferred to applyRoutineSync rather than excluding it here: mid-session adds
+ * are the main thing this feature exists to catch, so dropping the unresolved
+ * ones silently disabled the offer in exactly the common case.
+ */
+interface RoutineSyncAdd {
+  def: ExerciseDef;
+  exerciseId: string | null;
+  sets: number;
+  reps_min: number;
+  reps_max: number;
+  rest_seconds: number;
+  order: number;
+}
+
 interface RoutineSyncOffer {
   mode: 'db' | 'guest';
   routineId: string;
   routineName: string;
   addedNames: string[];
+  /**
+   * Names to drop from the routine. Names rather than row PKs: the offer can be
+   * built from the local cache, whose rows carry synthetic ids that match
+   * nothing on the server. applyRoutineSync re-reads the real rows at write time
+   * and maps these back to PKs.
+   */
   removedNames: string[];
-  /** mode 'db': routine_exercises PKs to delete. */
-  removedRowIds: string[];
-  /** mode 'db': rows to insert into routine_exercises. */
-  insertRows: Record<string, unknown>[];
+  /** mode 'db': exercises to append (ids resolved at write time). */
+  added: RoutineSyncAdd[];
   /** mode 'guest': full replacement routine_exercises for the guest store. */
   guestExercises: any[] | null;
 }
@@ -336,8 +375,14 @@ export default function ActiveWorkoutScreen() {
   // owner flips. Null owner makes every note effect and edit a no-op instead.
   const notesOwner = !clerkLoaded ? null : isGuestSession ? 'guest' : user?.id;
   const [stickyNotes, setStickyNotes] = useState<Record<string, string>>({});
-  const [editingStickyNote, setEditingStickyNote] = useState(false);
   const stickyFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Which of the two note editors at the foot of the page is open, if either.
+  // One piece of state rather than two booleans so opening one closes the other
+  // — two autoFocus inputs mounted at once would fight over the keyboard.
+  //   'today'  — how this exercise went in THIS session (workout_exercise_notes).
+  //   'sticky' — the reminder that follows the exercise everywhere.
+  const [editingNote, setEditingNote] = useState<'today' | 'sticky' | null>(null);
 
   // Local-first load, then reconcile with the server: push edits a previous
   // session couldn't deliver, pull edits from other devices (dirty wins).
@@ -372,7 +417,7 @@ export default function ActiveWorkoutScreen() {
   // Collapse the note editor when the pager moves to another exercise or a new
   // session starts (the screen instance is reused across workouts, so stale
   // edit state would otherwise leak into the next session's first exercise).
-  useEffect(() => { setEditingStickyNote(false); }, [currentIdx, workout.routineId]);
+  useEffect(() => { setEditingNote(null); }, [currentIdx, workout.routineId]);
 
   // Flush any pending note edit when leaving the screen.
   useEffect(() => () => {
@@ -390,6 +435,16 @@ export default function ActiveWorkoutScreen() {
     if (notesOwner === 'guest' || !isSupabaseConfigured) return;
     if (stickyFlushTimer.current) clearTimeout(stickyFlushTimer.current);
     stickyFlushTimer.current = setTimeout(() => { void flushExerciseNotes(supabase, notesOwner); }, 1200);
+  };
+
+  // The session note is plain session state, so it needs none of the sticky
+  // note's local-store machinery: it rides the workout's own snapshot (so an
+  // OS-kill mid-session keeps it) and is written to workout_exercise_notes at
+  // finish. Discarding the workout discards the note, which is the point.
+  const handleSessionNoteChange = (text: string) => {
+    workout.updateExercises(prev =>
+      prev.map((e, i) => (i === currentIdx ? { ...e, sessionNote: text } : e)),
+    );
   };
 
   // Snapshot the live session and open the coach. Taking the snapshot here
@@ -810,6 +865,44 @@ export default function ActiveWorkoutScreen() {
       restDoneFiredRef.current = false;
     }
   }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget]);
+
+  // Rest-ending heads-up (final 3s, same window as the pulse below): a soft
+  // chime through a duckOthers session, so the user's music dips + a buzz. The
+  // duck is released the moment the window ends (rest done, rest skipped, or a
+  // set logged), which is what brings the music back to full volume.
+  const restCueFiredRef = useRef(false);
+  useEffect(() => {
+    const target = restOverrideTarget ?? restGroupTarget ?? (exercises[currentIdx]?.restSeconds ?? 0);
+    const remaining = target - restTimer;
+    const inWindow = isResting && target > 0 && remaining > 0 && remaining <= 3;
+    if (inWindow) {
+      if (!restCueFiredRef.current && prefs.restEndCue) {
+        restCueFiredRef.current = true;
+        startRestEndCue();
+      }
+    } else {
+      restCueFiredRef.current = false;
+      endRestEndCue();
+    }
+  }, [restTimer, isResting, currentIdx, exercises, restOverrideTarget, restGroupTarget, prefs.restEndCue]);
+  // Never leave the music ducked if the screen unmounts mid-window.
+  useEffect(() => () => { endRestEndCue(); }, []);
+  // …or if the app backgrounds mid-cue. The music-shortcut button (openMusicApp)
+  // sends the user to Spotify/Apple Music from the same top bar, so a tap during
+  // the final-3s window would background us. JS timers suspend on background, so
+  // the rest effect above can't run to release the duck — on Android the user's
+  // music could stay dipped until they return. AppState 'change' still fires on
+  // the transition, so force-end the cue there (and clear the fired flag so it
+  // can re-arm if they come back with rest still running).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        restCueFiredRef.current = false;
+        endRestEndCue();
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   // A gentle pulse on the rest timer as it nears zero (final 3s), building
   // anticipation before the done color-flip + success buzz.
@@ -1411,6 +1504,13 @@ export default function ActiveWorkoutScreen() {
     setShowCancelAlert(true);
   };
 
+  // Minimize — leave the screen with the session still live. The tab layout's
+  // mini workout bar is the way back in.
+  const handleMinimize = () => {
+    Keyboard.dismiss();
+    leaveWorkout();
+  };
+
   const confirmCancel = () => {
     haptics.warning();
     setShowCancelAlert(false);
@@ -1467,7 +1567,13 @@ export default function ActiveWorkoutScreen() {
     // left up by the set logger.
     Keyboard.dismiss();
     const count = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
-    if (count === 0) {
+    // A session with nothing logged is normally not worth saving. Notes are the
+    // exception, and for the same reason keepInSavedWorkout keeps a note-only
+    // exercise: the user typed it, so they mean to read it back. "Everything
+    // hurt, logged nothing" is a real session and blocking it would throw the
+    // notes away at the last step.
+    const hasNotes = exercises.some(e => !!e.sessionNote?.trim());
+    if (count === 0 && !hasNotes) {
       setShowNoSetsAlert(true);
       return;
     }
@@ -1650,8 +1756,7 @@ export default function ActiveWorkoutScreen() {
       routineName: routine.name,
       addedNames: added.map(e => e.exercise.name),
       removedNames: removed.map(re => re.exercises?.name || 'Unknown'),
-      removedRowIds: [],
-      insertRows: [],
+      added: [],
       guestExercises,
     };
   };
@@ -1662,7 +1767,7 @@ export default function ActiveWorkoutScreen() {
     // Re-fetch the routine as it exists right now — it may have been edited
     // (or deleted) since the workout started. Bounded so a degraded connection
     // can't stall the finish navigation; on timeout we just skip the offer.
-    const routineRow = await Promise.race([
+    const fetched = await Promise.race([
       (async () => {
         try {
           const { data } = await supabase
@@ -1677,15 +1782,21 @@ export default function ActiveWorkoutScreen() {
       })(),
       sleep(3000).then(() => null),
     ]);
+    // Fall back to the cached routine (the same copy the start path loaded this
+    // session from) rather than bailing. A slow or offline re-fetch used to drop
+    // the offer entirely and it was never rebuilt, so the routine update was
+    // silently lost on exactly the connections this app is built to tolerate.
+    const routineRow =
+      fetched ?? readCache<any[]>('routines', user?.id)?.find(r => r.id === rid) ?? null;
     if (!routineRow) return null;
 
     const routineExs: any[] = (routineRow as any).routine_exercises || [];
-    // Exercises still on a temp id never resolved to a real DB row and can't
-    // be linked into routine_exercises, so they sit out of the diff (their
-    // sets were skipped by the save for the same reason).
-    const sessionExs = dedupeSessionExercises(
-      exercises.filter(e => !String(e.exercise.id).startsWith('temp-'))
-    );
+    // Temp-id exercises stay IN the diff. They're mid-session adds whose
+    // background reconcile hasn't landed (or routine rows from a still-pending
+    // routine edit, which carry `temp-routine-` ids). Excluding them both hid
+    // the offer for the feature's main use case and, worse, made the session's
+    // own exercises look "removed" from the routine.
+    const sessionExs = dedupeSessionExercises(exercises);
     const sessionNames = new Set(sessionExs.map(e => normExName(e.exercise.name)));
     const routineNames = new Set(routineExs.map(re => normExName(re.exercises?.name || '')));
 
@@ -1701,10 +1812,14 @@ export default function ActiveWorkoutScreen() {
       routineName: (routineRow as any).name || workout.routineName,
       addedNames: added.map(e => e.exercise.name),
       removedNames: removed.map(re => re.exercises?.name || 'Unknown'),
-      removedRowIds: removed.map(re => re.id),
-      insertRows: added.map((ex, i) => ({
-        routine_id: rid,
-        exercise_id: ex.exercise.id,
+      added: added.map((ex, i) => ({
+        def: {
+          name: ex.exercise.name,
+          muscle_group: ex.exercise.muscle_group || 'Other',
+          category: ex.exercise.category || 'Custom',
+          metric_type: ex.exercise.metric_type,
+        },
+        exerciseId: String(ex.exercise.id).startsWith('temp-') ? null : ex.exercise.id,
         sets: sessionSetCount(ex),
         reps_min: ex.repsMin,
         reps_max: ex.repsMax,
@@ -1724,17 +1839,106 @@ export default function ActiveWorkoutScreen() {
       return;
     }
     // Targeted row ops (rather than the editor's delete-all + reinsert) so
-    // untouched entries keep their coach notes and ordering.
-    if (offer.removedRowIds.length > 0) {
-      const { error } = await supabase
-        .from('routine_exercises')
-        .delete()
-        .in('id', offer.removedRowIds);
+    // untouched entries keep their coach notes, targets and ordering — and so a
+    // column this screen doesn't know about can't be clobbered. That's also why
+    // this doesn't go through routineQueue, which replaces a routine wholesale.
+    //
+    // Both ops are derived from a fresh read rather than from ids baked into the
+    // offer. That makes apply idempotent (a Retry after a lost response re-runs
+    // safely instead of duplicating rows) and lets a cache-built offer apply
+    // correctly, since cached rows carry synthetic ids the server won't match.
+    const { data: currentRows, error: readErr } = await supabase
+      .from('routine_exercises')
+      .select('id, exercise_id, exercises(id, name)')
+      .eq('routine_id', offer.routineId);
+    if (readErr) throw readErr;
+    const current: any[] = currentRows ?? [];
+
+    const removeNames = new Set(offer.removedNames.map(normExName));
+    const removeIds = current
+      .filter((re) => removeNames.has(normExName(re.exercises?.name || '')))
+      .map((re) => re.id);
+    if (removeIds.length > 0) {
+      const { error } = await supabase.from('routine_exercises').delete().in('id', removeIds);
       if (error) throw error;
     }
-    if (offer.insertRows.length > 0) {
-      const { error } = await supabase.from('routine_exercises').insert(offer.insertRows);
+
+    // Resolve any add still on a temp id (find-or-insert by name), the same way
+    // the sync flusher does. Done here, at write time, so a slow mid-session
+    // reconcile delays the id lookup instead of cancelling the whole offer.
+    const resolved = await Promise.all(
+      offer.added.map(async (a) => {
+        if (a.exerciseId) return a;
+        const row = await resolveExerciseRow(supabase, a.def);
+        return { ...a, exerciseId: row?.id ?? null };
+      }),
+    );
+    if (resolved.some((a) => !a.exerciseId)) {
+      // Don't half-apply: a name we couldn't link is a transient failure, so
+      // surface it and let the Retry action rerun the whole offer.
+      throw new Error("Couldn't link every exercise");
+    }
+    const alreadyPresent = new Set(current.map((re) => re.exercise_id));
+    const toInsert = resolved.filter((a) => !alreadyPresent.has(a.exerciseId));
+    if (toInsert.length > 0) {
+      const { error } = await supabase.from('routine_exercises').insert(
+        toInsert.map((a) => ({
+          routine_id: offer.routineId,
+          exercise_id: a.exerciseId,
+          sets: a.sets,
+          reps_min: a.reps_min,
+          reps_max: a.reps_max,
+          rest_seconds: a.rest_seconds,
+          order: a.order,
+        })),
+      );
       if (error) throw error;
+    }
+
+    // Mirror the change into the local 'routines' cache. The Routines tab and
+    // the workout start path both read that cache first, so skipping this made
+    // an accepted update look like it hadn't applied until the next revalidate.
+    const cached = readCache<any[]>('routines', user?.id);
+    if (cached) {
+      const addedExerciseIds = new Set(resolved.map((a) => a.exerciseId));
+      writeCache(
+        'routines',
+        user?.id,
+        cached.map((r) =>
+          r.id !== offer.routineId
+            ? r
+            : {
+                ...r,
+                routine_exercises: [
+                  // Drop what was removed, and anything we're about to re-add, so
+                  // a stale cached row can't leave a duplicate behind.
+                  ...(r.routine_exercises ?? []).filter(
+                    (re: any) =>
+                      !removeNames.has(normExName(re.exercises?.name || '')) &&
+                      !addedExerciseIds.has(re.exercise_id),
+                  ),
+                  ...resolved.map((a) => ({
+                    id: `local-re-${offer.routineId}-${a.order}`,
+                    routine_id: offer.routineId,
+                    exercise_id: a.exerciseId,
+                    order: a.order,
+                    sets: a.sets,
+                    reps_min: a.reps_min,
+                    reps_max: a.reps_max,
+                    rest_seconds: a.rest_seconds,
+                    note: null,
+                    superset_group: null,
+                    exercises: {
+                      id: a.exerciseId,
+                      name: a.def.name,
+                      muscle_group: a.def.muscle_group,
+                      category: a.def.category,
+                    },
+                  })),
+                ],
+              },
+        ),
+      );
     }
   };
 
@@ -1850,14 +2054,18 @@ export default function ActiveWorkoutScreen() {
           notes: workoutNotes ?? undefined,
           workout_sets: allCompleted.map((_, i) => ({ id: `gs-${Date.now()}-${i}` })),
           exercises: exercises
-            .filter(e => e.sets.some(s => s.completed))
+            .filter(keepInSavedWorkout)
             .map(e => ({
               name: e.exercise.name,
               muscle_group: e.exercise.muscle_group,
               category: e.exercise.category,
               metric_type: metricTypeOf(e.exercise),
               superset_group: e.supersetGroup ?? null,
+              note: e.sessionNote?.trim() || null,
               sets: e.sets.filter(s => s.completed).map(s => ({
+                // Only completed sets get here, but the flag has to be written
+                // out: history reads these objects as-is and filters on it.
+                completed: true,
                 weight_kg: s.weight_kg, reps: s.reps,
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
                 resistance: s.resistance ?? null,
@@ -1896,7 +2104,7 @@ export default function ActiveWorkoutScreen() {
       // of dropped: the flusher resolves them to real rows at sync time, so
       // their sets survive even when the in-workout resolve failed offline.
       const pendingExercises = exercises
-        .filter(e => e.sets.some(s => s.completed))
+        .filter(keepInSavedWorkout)
         .map(e => ({
           def: {
             name: e.exercise.name,
@@ -1906,6 +2114,7 @@ export default function ActiveWorkoutScreen() {
           },
           resolvedExerciseId: String(e.exercise.id).startsWith('temp-') ? null : e.exercise.id,
           supersetGroup: e.supersetGroup ?? null,
+          note: e.sessionNote?.trim() || null,
           sets: e.sets
             .filter(s => s.completed)
             .map((s, idx) => ({
@@ -1945,18 +2154,22 @@ export default function ActiveWorkoutScreen() {
 
       // Best-effort immediate push, bounded so an offline finish never hangs.
       await Promise.race([flushNow(), sleep(2500)]);
-      const synced = !getPendingWorkouts(clerkId).some(e => e.clientId === entry.clientId);
 
-      // Offer the routine-sync prompt only when the workout actually reached the
-      // server (online); offline it's deferred and the source routine is left
-      // untouched. Built before finishWorkout() clears routineId.
+      // Built before finishWorkout() clears routineId.
+      //
+      // This deliberately does NOT gate on the workout having reached the server
+      // first. That check ("is my entry still in the pending queue?") was unsound
+      // in two ways: flushNow() no-ops when a flush is already in flight, and
+      // flushQueue snapshots the queue before this entry joined it — so the entry
+      // was still queued and the offer was dropped even though nothing was wrong.
+      // A slow-but-fine flush hit the same path. The offer was never rebuilt, so
+      // the routine update was lost for good. Updating the routine doesn't depend
+      // on the workout row anyway; the two writes are independent.
       let syncOffer: RoutineSyncOffer | null = null;
-      if (synced) {
-        try {
-          syncOffer = await buildDbRoutineSyncOffer();
-        } catch {
-          syncOffer = null;
-        }
+      try {
+        syncOffer = await buildDbRoutineSyncOffer();
+      } catch {
+        syncOffer = null;
       }
 
       workout.finishWorkout();
@@ -2314,8 +2527,8 @@ export default function ActiveWorkoutScreen() {
                   const nextName = nextIdx != null ? exercises[nextIdx]?.exercise.name : null;
                   return (
                     <View style={styles.supersetBanner}>
-                      <Feather name="repeat" size={11} color={Colors.primary} />
-                      <Text style={[styles.supersetBannerText, { color: Colors.primary }]} numberOfLines={1}>
+                      <Feather name="repeat" size={11} color={C.accentText} />
+                      <Text style={[styles.supersetBannerText, { color: C.accentText }]} numberOfLines={1}>
                         Superset · {members.map(m => m.exercise.name).join(' + ')}
                         {nextName ? <Text style={styles.supersetNext}>{`   ·   up next: ${nextName}`}</Text> : null}
                       </Text>
@@ -2335,13 +2548,13 @@ export default function ActiveWorkoutScreen() {
                     <View style={styles.supersetActions}>
                       <TouchableOpacity
                         onPress={() => { haptics.selection(); setShowSupersetSheet(true); }}
-                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(Colors.primary, 0.4) }]}
+                        style={[styles.supersetActionChip, { borderColor: grouped ? C.border : colorWithAlpha(C.accentText, 0.4) }]}
                         hitSlop={6}
                         accessibilityRole="button"
                         accessibilityLabel={grouped ? 'Edit superset' : 'Make a superset'}
                       >
-                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : Colors.primary} />
-                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : Colors.primary }]}>
+                        <Feather name="link-2" size={10} color={grouped ? C.textMuted : C.accentText} />
+                        <Text style={[styles.supersetActionText, { color: grouped ? C.textMuted : C.accentText }]}>
                           {grouped ? 'Edit superset' : 'Superset'}
                         </Text>
                       </TouchableOpacity>
@@ -2587,36 +2800,70 @@ export default function ActiveWorkoutScreen() {
               </View>
             )}
 
-            {/* Exercise note — the user's own reminder for this exercise, kept
-                across every session (user_exercise_notes). The only in-workout
-                note: sits here at the foot of the page, collapsed to a quiet
-                one-line row that expands to an editor with an explicit Done.
-                Saves on every keystroke, so it survives a discarded workout.
-                Editor only on the interactive pager page — all pages mounting
-                autoFocus inputs at once would steal focus from each other. */}
-            {(() => {
-              const noteText = stickyNotes[exerciseNoteKey(currentEx.exercise.name)] ?? '';
-              if (editingStickyNote && interactive) {
+            {/* The two exercise notes, at the foot of the page. Both are quiet
+                one-line rows that expand into an editor with an explicit Done;
+                only one can be open at a time (editingNote). Order is
+                today-then-always, so the row you write during the set sits
+                closest to the sets.
+
+                  today  — how it went THIS session ("shoulders felt sore").
+                           Session state; saves with the workout, shows in
+                           history, dies with a discarded session.
+                  sticky — the reminder that follows the exercise into every
+                           routine and session (user_exercise_notes). Saves on
+                           every keystroke, independent of the workout.
+
+                Editors render only on the interactive pager page: all pages
+                mounting autoFocus inputs at once would steal focus. */}
+            {([
+              {
+                kind: 'today' as const,
+                icon: 'message-square' as const,
+                label: 'HOW TODAY WENT',
+                empty: 'How did this one feel today?',
+                editorPlaceholder: 'Shoulders felt sore on the last two sets',
+                a11y: 'session note',
+                value: currentEx.sessionNote ?? '',
+                onChange: handleSessionNoteChange,
+              },
+              {
+                kind: 'sticky' as const,
+                icon: 'bookmark' as const,
+                label: 'EXERCISE NOTE',
+                empty: 'Add a note that stays with this exercise',
+                // A worked example, not an explanation. The label and the
+                // collapsed row already say what this note is for, so the
+                // placeholder's job is to show the shape of a good one.
+                editorPlaceholder: 'Incline at 45 degrees',
+                a11y: 'exercise note',
+                value: stickyNotes[exerciseNoteKey(currentEx.exercise.name)] ?? '',
+                onChange: handleStickyNoteChange,
+              },
+            ]).map((n, i) => {
+              // Only the first row carries the gap off the sets above it; the
+              // second tucks up under the first as a pair.
+              const marginTop = i === 0 ? Spacing.xl : Spacing.xs;
+              if (editingNote === n.kind && interactive) {
                 return (
-                  <View style={[styles.stickyNoteEditor, { marginTop: Spacing.xl }]}>
+                  <View key={n.kind} style={[styles.stickyNoteEditor, { marginTop }]}>
                     <View style={styles.stickyNoteEditorHead}>
-                      <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>NOTE TO SELF</Text>
+                      <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>{n.label}</Text>
                       <TouchableOpacity
-                        onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingStickyNote(false); }}
+                        onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingNote(null); }}
                         style={styles.stickyNoteDone}
                         hitSlop={10}
                         accessibilityRole="button"
-                        accessibilityLabel="Save exercise note"
+                        accessibilityLabel={`Save ${n.a11y}`}
                       >
                         <Feather name="check" size={13} color={Colors.primary} />
                         <Text style={[styles.stickyNoteDoneText, { color: Colors.primary }]}>Done</Text>
                       </TouchableOpacity>
                     </View>
                     <TextInput
-                      value={noteText}
-                      onChangeText={handleStickyNoteChange}
-                      onSubmitEditing={() => { Keyboard.dismiss(); setEditingStickyNote(false); }}
-                      placeholder="Stays with this exercise. Form cues, setup, reminders."
+                      value={n.value}
+                      onChangeText={n.onChange}
+                      onSubmitEditing={() => { Keyboard.dismiss(); setEditingNote(null); }}
+                      placeholder={n.editorPlaceholder}
                       placeholderTextColor={C.textMuted}
                       multiline
                       autoFocus
@@ -2628,25 +2875,26 @@ export default function ActiveWorkoutScreen() {
                   </View>
                 );
               }
-              const hasNote = noteText.trim().length > 0;
+              const hasNote = n.value.trim().length > 0;
               return (
                 <TouchableOpacity
-                  onPress={() => { haptics.selection(); setEditingStickyNote(true); }}
-                  style={[styles.stickyNoteRow, { marginTop: Spacing.xl }]}
+                  key={n.kind}
+                  onPress={() => { haptics.selection(); setEditingNote(n.kind); }}
+                  style={[styles.stickyNoteRow, { marginTop }]}
                   hitSlop={6}
                   accessibilityRole="button"
-                  accessibilityLabel={hasNote ? 'Edit exercise note' : 'Add exercise note'}
+                  accessibilityLabel={hasNote ? `Edit ${n.a11y}` : `Add ${n.a11y}`}
                 >
-                  <Feather name={hasNote ? 'edit-3' : 'plus'} size={10} color={C.textMuted} />
+                  <Feather name={hasNote ? n.icon : 'plus'} size={10} color={C.textMuted} />
                   <Text
                     numberOfLines={1}
                     style={[styles.stickyNoteText, { color: hasNote ? C.mutedFg : C.textMuted }]}
                   >
-                    {hasNote ? noteText.trim() : 'Add a note for this exercise'}
+                    {hasNote ? n.value.trim() : n.empty}
                   </Text>
                 </TouchableOpacity>
               );
-            })()}
+            })}
             {renderSettingsLink()}
           </>
     );
@@ -2670,7 +2918,6 @@ export default function ActiveWorkoutScreen() {
     return (
       <View style={[styles.loadingContainer, { paddingTop: insets.top, backgroundColor: C.background }]}>
         <ActivityIndicator color={Colors.primary} size="large" />
-        <BottomNav />
       </View>
     );
   }
@@ -2679,15 +2926,29 @@ export default function ActiveWorkoutScreen() {
     <View style={[styles.container, { backgroundColor: C.background }]}>
       {/* TOP BAR */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity
-          onPress={handleCancel}
-          style={styles.cancelBtn}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Cancel workout"
-        >
-          <Feather name="x" size={14} color={Colors.danger} />
-        </TouchableOpacity>
+        <View style={styles.topCluster}>
+          {/* Minimize — the workout keeps running (context + mini bar); this
+              replaced the always-visible BottomNav, which cost 64px of every
+              workout for a tab switch that happens maybe once a session. */}
+          <TouchableOpacity
+            onPress={handleMinimize}
+            style={[styles.topRoundBtn, { backgroundColor: C.muted }]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Minimize workout"
+          >
+            <Feather name="chevron-down" size={16} color={C.mutedFg} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleCancel}
+            style={styles.cancelBtn}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel workout"
+          >
+            <Feather name="x" size={14} color={Colors.danger} />
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.topCenter}>
           <Text style={[styles.routineName, { color: C.foreground }]} numberOfLines={1}>
@@ -2704,21 +2965,37 @@ export default function ActiveWorkoutScreen() {
           </View>
         </View>
 
-        <TouchableOpacity
-          onPress={handleFinishWorkout}
-          disabled={saving}
-          hitSlop={6}
-          style={[styles.finishBtn, saving && { opacity: 0.6 }]}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color={Colors.primaryFg} />
-          ) : (
-            <>
-              <Feather name="check" size={12} color={Colors.primaryFg} />
-              <Text style={styles.finishBtnText}>Finish</Text>
-            </>
+        <View style={styles.topCluster}>
+          {/* Music shortcut (off by default, picked in settings) — a one-tap
+              jump to the user's music app, Lyfta-style. No playback UI here;
+              the lock screen already does that better. */}
+          {prefs.musicApp !== 'off' && (
+            <TouchableOpacity
+              onPress={() => { haptics.selection(); void openMusicApp(prefs.musicApp); }}
+              style={[styles.topRoundBtn, { backgroundColor: C.muted }]}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Open your music app"
+            >
+              <Feather name="music" size={13} color={C.mutedFg} />
+            </TouchableOpacity>
           )}
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleFinishWorkout}
+            disabled={saving}
+            hitSlop={6}
+            style={[styles.finishBtn, saving && { opacity: 0.6 }]}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color={Colors.primaryFg} />
+            ) : (
+              <>
+                <Feather name="check" size={12} color={Colors.primaryFg} />
+                <Text style={styles.finishBtnText}>Finish</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* EXERCISE NAV PILLS */}
@@ -2865,7 +3142,7 @@ export default function ActiveWorkoutScreen() {
       {exercises.length > 0 && (
         <View
           onLayout={(e) => setBottomBarH(e.nativeEvent.layout.height)}
-          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: 64 + insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
+          style={[styles.bottomBar, { paddingBottom: 8, marginBottom: insets.bottom, backgroundColor: C.background, borderTopColor: C.borderSubtle }]}
         >
           <TouchableOpacity
             onPress={() => goTo(currentIdx - 1)}
@@ -3290,12 +3567,12 @@ export default function ActiveWorkoutScreen() {
         style={[
           styles.coachFab,
           {
-            bottom: 64 + insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 16),
+            bottom: insets.bottom + (exercises.length > 0 ? bottomBarH + 12 : 24),
             backgroundColor: Colors.primary,
           },
         ]}
       >
-        <Feather name="zap" size={15} color={Colors.primaryFg} />
+        <DronaMark size={15} color={Colors.primaryFg} state="static" />
         <Text style={styles.coachFabText}>Coach</Text>
       </TouchableOpacity>
 
@@ -3308,9 +3585,6 @@ export default function ActiveWorkoutScreen() {
         initialScreen="chat"
         workoutContext={coachContext}
       />
-
-      {/* Bottom navigation — always visible */}
-      <BottomNav />
     </View>
   );
 }
@@ -3331,6 +3605,14 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 16,
     backgroundColor: Colors.dangerBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topCluster: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  topRoundBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },

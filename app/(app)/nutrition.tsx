@@ -11,7 +11,7 @@
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -23,6 +23,7 @@ import {
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
+import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
@@ -37,6 +38,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
+import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
  *  'review' holds a parsed-but-UNLOGGED meal: nothing is written until the user
@@ -44,7 +46,21 @@ import type { MealType } from '@/lib/foods';
 type ParseFlow =
   | { status: 'idle' }
   | { status: 'analysing'; raw: string }
-  | { status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType }
+  // `notice` carries a reply that is NOT a new meal (an answer to a question,
+  // or a parse failure) while the reviewed meal stays on screen. Asking
+  // "is that right?" must never throw away work the user hasn't added yet.
+  | {
+      status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType;
+      // Set once the user picks a section themselves. A follow-up re-parses
+      // only the new text ("make it a small one"), so the server's fresh guess
+      // is weaker evidence than a choice the user already made - without this
+      // flag their pick silently reverts on the next message.
+      mealTypePicked?: boolean;
+      notice?: string | null;
+      // Researched numbers that disagree with what is shown, offered as a
+      // choice. Applying is local, so picking costs no round trip.
+      proposal?: { items: ParsedMealItem[]; note: string } | null;
+    }
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
@@ -113,6 +129,17 @@ export default function NutritionScreen() {
   // taps Add -> we write it. No auto-log, no auto-dismiss: the user is in control.
   const [text, setText] = useState('');
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
+  // Mirror of `flow` for callbacks that must read it without re-subscribing
+  // (runParse would otherwise capture a stale flow or churn its identity).
+  const flowRef = useRef<ParseFlow>(flow);
+  useEffect(() => { flowRef.current = flow; }, [flow]);
+  // What was said, so a bare "yes" can answer whatever Drona just offered.
+  // Kept in a ref (never rendered) and trimmed to the last few turns.
+  const turnsRef = useRef<{ role: 'user' | 'drona'; text: string }[]>([]);
+  const pushTurn = useCallback((role: 'user' | 'drona', text: string) => {
+    if (!text.trim()) return;
+    turnsRef.current = [...turnsRef.current, { role, text }].slice(-6);
+  }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
   const { targets, isCustom, apply: applyTargets } = useNutritionTargets();
@@ -147,13 +174,77 @@ export default function NutritionScreen() {
     const t = raw.trim();
     if (!t || !supabase) return;
     setSavedReview(false);
+    // A meal still under review is context for the next line: "make it a small
+    // one" should correct THAT samosa, not log a second one. Captured before we
+    // switch to 'analysing' (which drops the reviewed meal from flow).
+    const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
+    const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
     setFlow({ status: 'analysing', raw: t });
-    const res = await parseMeal(supabase, { text: t, mealHint: mealForNow() });
-    if (res.kind === 'declined') { setFlow({ status: 'declined', raw: t, message: res.message }); return; }
-    if (res.kind === 'error') { setFlow({ status: 'error', raw: t, message: res.message }); return; }
+    const turns = turnsRef.current.slice();
+    pushTurn('user', t);
+    const res = await parseMeal(supabase, {
+      text: t, mealHint: mealForNow(), previous: pending, turns,
+    });
+    // A reply that is not a meal (an answer, or a failure) must NOT discard a
+    // meal still under review — that is unlogged work the user would have to
+    // retype. Keep the card and show the reply as a notice on it.
+    if (res.kind === 'declined') {
+      pushTurn('drona', res.message);
+      if (prevReview) {
+        setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
+        return;
+      }
+      setFlow({ status: 'declined', raw: t, message: res.message });
+      return;
+    }
+    if (res.kind === 'error') {
+      // Clear any standing proposal: it answered the previous message, and
+      // leaving it up would attach "use these numbers" to an error the user
+      // just got for something else entirely.
+      if (prevReview) { setFlow({ ...prevReview, notice: res.message, proposal: null }); return; }
+      setFlow({ status: 'error', raw: t, message: res.message });
+      return;
+    }
+    pushTurn('drona', res.meal.drona_line);
+    // The user's own section pick outranks a guess made from the follow-up
+    // text alone; without a pick we take the server's.
+    const keptMealType = prevReview?.mealTypePicked ? prevReview.mealType : null;
     // Parsed, not logged. Seed the section selector with Drona's best guess.
-    setFlow({ status: 'review', raw: t, meal: res.meal, mealType: res.meal.meal_type });
+    // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
+    // to it (append) — appending is what keeps "and a dosa" from silently
+    // dropping the samosa the user already reviewed.
+    if (pending && !res.meal.corrects_previous) {
+      setFlow({
+        status: 'review',
+        raw: `${pending.text}; ${t}`,
+        meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
+        mealType: keptMealType ?? res.meal.meal_type,
+        mealTypePicked: prevReview?.mealTypePicked,
+      });
+      return;
+    }
+    setFlow({
+      status: 'review',
+      raw: t,
+      meal: res.meal,
+      mealType: keptMealType ?? res.meal.meal_type,
+      mealTypePicked: prevReview?.mealTypePicked,
+    });
   }, [supabase]);
+
+  /** Index of the pending line being corrected (null = editor closed). Edits
+   *  are pure client state: nothing is written until Add, so a correction just
+   *  patches the reviewed meal in place. */
+  const [editIndex, setEditIndex] = useState<number | null>(null);
+  const onEditItem = useCallback((i: number) => setEditIndex(i), []);
+  const onEditSave = useCallback((patch: ParsedMealItem) => {
+    setFlow((f) => {
+      if (f.status !== 'review' || editIndex === null) return f;
+      const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
+      return { ...f, meal: { ...f.meal, items } };
+    });
+    setEditIndex(null);
+  }, [editIndex]);
 
   const onSend = useCallback(() => {
     const t = text.trim();
@@ -167,7 +258,7 @@ export default function NutritionScreen() {
   }, [text, isSignedIn, flow.status, runParse]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
-    setFlow((f) => (f.status === 'review' ? { ...f, mealType: m } : f));
+    setFlow((f) => (f.status === 'review' ? { ...f, mealType: m, mealTypePicked: true } : f));
   }, []);
 
   const onAdd = useCallback(async () => {
@@ -266,7 +357,7 @@ export default function NutritionScreen() {
 
         {/* Drona line */}
         <View style={s.drona}>
-          <View style={s.avatar}><Feather name="zap" size={11} color={C.accentText} /></View>
+          <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
           <Text style={s.dronaTxt}>{dronaLine}</Text>
         </View>
 
@@ -328,6 +419,15 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' ? flow.message : null
               }
               onMealTypeChange={onMealTypeChange}
+              notice={flow.status === 'review' ? flow.notice ?? null : null}
+              proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
+              onAcceptProposal={() => setFlow((f) => (
+                f.status === 'review' && f.proposal
+                  ? { ...f, meal: { ...f.meal, items: f.proposal.items }, notice: null, proposal: null }
+                  : f
+              ))}
+              onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
+              onEditItem={flow.status === 'review' ? onEditItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
@@ -385,6 +485,13 @@ export default function NutritionScreen() {
         initial={targets}
         onClose={() => setGoalOpen(false)}
         onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
+      />
+
+      {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
+      <ParsedItemEditor
+        item={flow.status === 'review' && editIndex !== null ? flow.meal.items[editIndex] ?? null : null}
+        onCancel={() => setEditIndex(null)}
+        onSave={onEditSave}
       />
 
       {/* Save the current parse as a reusable meal. */}

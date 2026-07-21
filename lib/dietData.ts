@@ -14,8 +14,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
+import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { coachInvokeErrorMessage } from '@/lib/coachErrors';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -404,6 +406,48 @@ export async function loadServings(supabase: Supa | null, food: PickerFood): Pro
   return servings.length > 0 ? servings : [fallback];
 }
 
+/** Per-100-base-unit macros, the basis every catalog line is scaled from. */
+export interface Per100Macros {
+  kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number;
+}
+
+/** Everything the parsed-item editor needs for one food: its real serving
+ *  options and per-100 macros, so switching "1 regular/large" to "1 small"
+ *  recomputes the line locally with the SAME basis the parser used. Fetched on
+ *  demand (only when a user actually taps a line to edit), so the parse
+ *  response stays lean. Returns null for estimate/web lines (food_id null),
+ *  where the editor falls back to free-form grams + macros. */
+export async function loadFoodForEdit(
+  supabase: Supa | null,
+  foodId: string | null,
+): Promise<{ servings: FoodServing[]; per100: Per100Macros; baseUnit: string } | null> {
+  if (!foodId || !supabase) return null;
+  const [foodRes, servRes] = await Promise.all([
+    supabase.from('foods')
+      .select('base_unit, kcal, protein_g, carb_g, fat_g, fiber_g')
+      .eq('id', foodId).maybeSingle(),
+    supabase.from('food_servings')
+      .select('label, grams, is_default, seq').eq('food_id', foodId).order('seq'),
+  ]);
+  const f: any = foodRes.data;
+  if (!f) return null;
+  const baseUnit = String(f.base_unit ?? 'g');
+  const servings: FoodServing[] = (servRes.data ?? []).map((s: any) => ({
+    label: s.label, grams: num(s.grams), is_default: !!s.is_default,
+  }));
+  if (!servings.some((s) => s.grams === 100)) {
+    servings.push({ label: `100 ${baseUnit}`, grams: 100, is_default: servings.length === 0 });
+  }
+  return {
+    servings,
+    per100: {
+      kcal: num(f.kcal), protein_g: num(f.protein_g),
+      carb_g: num(f.carb_g), fat_g: num(f.fat_g), fiber_g: num(f.fiber_g),
+    },
+    baseUnit,
+  };
+}
+
 // ── AI food logging (Drona parse) ───────────────────────────────────────────
 // The nutrition bar's free text ("2 roti and dal") is parsed by the ai-coach
 // edge function's parse_meal mode, which resolves each item against the catalog
@@ -420,7 +464,9 @@ export interface ParsedMealItem {
   grams: number;
   kcal: number; protein_g: number; carb_g: number; fat_g: number;
   fiber_g: number | null;
-  source: 'catalog' | 'off' | 'web' | 'estimate';
+  // 'manual' = the user corrected this line in the review card before adding
+  // it, so the numbers are theirs and nothing should recompute over them.
+  source: 'catalog' | 'off' | 'web' | 'estimate' | 'manual';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
 }
@@ -429,21 +475,56 @@ export interface ParsedMeal {
   meal_type: MealType;
   items: ParsedMealItem[];
   drona_line: string;
+  /** These items are a corrected version of the meal that was on screen and
+   *  REPLACE it. When false/absent they are new food, so a caller showing a
+   *  pending meal appends them instead of throwing the old lines away. */
+  corrects_previous?: boolean;
 }
 
 /** parse_meal outcome: either a parsed meal to log, or a decline (non-food
  *  input) carrying Drona's redirect line, or a transport/parse error. */
 export type ParseMealResult =
   | { kind: 'parsed'; meal: ParsedMeal }
-  | { kind: 'declined'; message: string }
+  // `proposal` carries researched numbers that materially disagree with what is
+  // on screen (usually a different product variant). The user chooses; applying
+  // is local, so it costs nothing.
+  | { kind: 'declined'; message: string; proposal?: { items: ParsedMealItem[]; note: string } | null }
   | { kind: 'error'; message: string };
+
+/** One raw item from the edge function -> a ParsedMealItem. Shared by the
+ *  parsed path and the researched-proposal path so both stay in step. */
+function toParsedItem(i: any): ParsedMealItem {
+  return {
+    food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
+    food_name: String(i.food_name ?? 'Food'),
+    quantity: num(i.quantity) || 1,
+    serving_label: String(i.serving_label ?? 'serving'),
+    grams: num(i.grams),
+    kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
+    fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
+    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' || i.source === 'manual' ? i.source : 'estimate',
+    assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
+    confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
+  };
+}
 
 /** Call the ai-coach edge function in parse_meal mode. The Clerk JWT rides on
  *  the client's fetch wrapper automatically, so a signed-out client (base anon
  *  client) would 401 — callers gate on isSignedIn before invoking. */
 export async function parseMeal(
   supabase: Supa,
-  args: { text: string; mealHint?: MealType | null },
+  args: {
+    text: string;
+    mealHint?: MealType | null;
+    /** The still-unlogged parse on screen, if any. Sending it lets a follow-up
+     *  ("make it a small one", "actually 2") correct that meal instead of being
+     *  read as a brand new one. The server resolves a pure serving/quantity
+     *  change without a second model call, so refining is cheaper than parsing. */
+    previous?: { text: string; items: ParsedMealItem[] } | null;
+    /** Recent turns of this logging conversation, oldest first. Lets a bare
+     *  "yes" answer whatever Drona just offered. */
+    turns?: { role: 'user' | 'drona'; text: string }[];
+  },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
   if (!text) return { kind: 'error', message: 'Type what you ate first.' };
@@ -454,22 +535,63 @@ export async function parseMeal(
   let data: any;
   try {
     const res = await supabase.functions.invoke('ai-coach', {
+      // Pin execution to us-east-1 (the DB + Anthropic region). By default the
+      // function runs nearest the USER (ap-south-1 for India), so every DB query
+      // and both model calls cross India->US; co-locating removes that on the
+      // many internal round trips, at the cost of one cross-ocean user hop.
+      // Measured: pre_parse 1.3s -> 0.34s, total ~8s -> ~5s for a 2-item meal.
+      region: FunctionRegion.UsEast1,
       body: {
         mode: 'parse_meal',
         text,
         local_hour: now.getHours(),
         local_date: localDate,
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
+        ...(args.turns && args.turns.length > 0
+          ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
+          : {}),
+        ...(args.previous && args.previous.items.length > 0
+          ? {
+            previous_text: args.previous.text,
+            // Only what the server needs to re-target a line: identity, the
+            // amount, and where the numbers came from. Macros stay server-side.
+            // Macros ride along so the server can hand an UNTOUCHED line back
+            // verbatim: a correction replaces the whole meal, so anything it
+            // cannot reconstruct would be silently dropped.
+            previous_items: args.previous.items.slice(0, 12).map((it) => ({
+              food_id: it.food_id,
+              food_name: it.food_name,
+              quantity: it.quantity,
+              serving_label: it.serving_label,
+              grams: it.grams,
+              kcal: it.kcal,
+              protein_g: it.protein_g,
+              carb_g: it.carb_g,
+              fat_g: it.fat_g,
+              fiber_g: it.fiber_g,
+              source: it.source,
+              assumption: it.assumption,
+              confidence: it.confidence,
+            })),
+          }
+          : {}),
       },
     });
-    if (res.error) return { kind: 'error', message: res.error.message ?? 'Drona could not reach the kitchen. Try again.' };
+    // Never hand the raw edge-function error to the card — it carries HTTP
+    // statuses and provider error bodies. The helper pulls the real reason off
+    // error.context for the log and returns user-safe copy.
+    if (res.error) return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
     data = res.data;
   } catch (e) {
     return { kind: 'error', message: 'No connection. Type it again when you are back online.' };
   }
 
   if (data?.declined?.message) {
-    return { kind: 'declined', message: String(data.declined.message) };
+    const p = data?.proposal;
+    const proposal = p && Array.isArray(p.items) && p.items.length > 0
+      ? { items: (p.items as any[]).map(toParsedItem), note: String(p.note ?? 'Use these numbers') }
+      : null;
+    return { kind: 'declined', message: String(data.declined.message), proposal };
   }
   const parsed = data?.parsed;
   if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) {
@@ -479,21 +601,15 @@ export async function parseMeal(
     parsed.meal_type === 'breakfast' || parsed.meal_type === 'lunch' ||
     parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
       ? parsed.meal_type : 'snack';
-  const items: ParsedMealItem[] = (parsed.items as any[]).map((i) => ({
-    food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
-    food_name: String(i.food_name ?? 'Food'),
-    quantity: num(i.quantity) || 1,
-    serving_label: String(i.serving_label ?? 'serving'),
-    grams: num(i.grams),
-    kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
-    fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
-    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' ? i.source : 'estimate',
-    assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
-    confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
-  }));
+  const items: ParsedMealItem[] = (parsed.items as any[]).map(toParsedItem);
   return {
     kind: 'parsed',
-    meal: { meal_type: mealType, items, drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.') },
+    meal: {
+      meal_type: mealType,
+      items,
+      drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
+      corrects_previous: parsed.corrects_previous === true,
+    },
   };
 }
 

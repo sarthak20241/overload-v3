@@ -23,6 +23,7 @@ import {
   runParseMeal,
 } from "../../supabase/functions/ai-coach/parseMeal";
 import { CASES, type EvalCase } from "./cases";
+import { makeClaudeCliFetch } from "./claude-cli-fetch";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
 
@@ -47,15 +48,21 @@ const SUPABASE_ANON_KEY = env("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
 const MODEL = env("MODEL") || "claude-haiku-4-5";
 const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
+// Route model calls through the `claude -p` CLI (subscription) instead of the
+// API. Correctness only - see claude-cli-fetch.ts for what it does not model.
+const VIA_CLI = env("EVAL_VIA_CLI") === "1";
 const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.trim())) : null;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local in cwd).");
   process.exit(1);
 }
-if (!ANTHROPIC_API_KEY) {
-  console.error("Missing ANTHROPIC_API_KEY.");
+if (!ANTHROPIC_API_KEY && !VIA_CLI) {
+  console.error("Missing ANTHROPIC_API_KEY. (Or set EVAL_VIA_CLI=1 to run the model through `claude -p`.)");
   process.exit(1);
+}
+if (VIA_CLI) {
+  console.log("[eval] model calls routed through `claude -p` - latency and token counts are NOT comparable to an API run.");
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -64,23 +71,52 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 // ── Deps: mirrors handleParseMealRequest's wiring, minus writes ─────────────
 
-async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
-  const { data, error } = await supabase.rpc("search_foods_ranked", { q: query, lim: 8 });
-  if (error || !Array.isArray(data) || data.length === 0) return [];
-  const rows = data.slice(0, 6) as Array<Record<string, unknown>>;
-  const ids = rows.map((r) => String(r.id));
-  const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
-  const { data: servings } = await supabase
-    .from("food_servings")
-    .select("food_id, label, grams, is_default")
-    .in("food_id", ids)
-    .order("seq", { ascending: true });
-  for (const s of (servings ?? []) as Array<Record<string, unknown>>) {
-    const key = String(s.food_id);
-    const list = servingsByFood.get(key) ?? [];
-    list.push({ label: String(s.label), grams: Number(s.grams), is_default: !!s.is_default });
-    servingsByFood.set(key, list);
+// Semantic fallback mirror (0080): same behavior as index.ts — embed the
+// query and hit search_foods_semantic only when trigram returns nothing.
+// Needs VOYAGE_API_KEY in env/.env.local; silently skipped without it.
+const VOYAGE_API_KEY = env("VOYAGE_API_KEY");
+async function embedQueryForEval(text: string): Promise<number[] | null> {
+  if (!VOYAGE_API_KEY) return null;
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
+      body: JSON.stringify({ input: [text], model: "voyage-3", input_type: "query" }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
   }
+}
+
+async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
+  // Mirrors prod (0083): one round trip, servings joined server-side.
+  const { data, error } = await supabase.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 });
+  if (error) console.error(`  search_foods_ranked_with_servings error: ${error.message}`);
+  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
+  if (rows.length === 0) {
+    const vec = await embedQueryForEval(query);
+    if (vec) {
+      const { data: sem } = await supabase.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
+    }
+  }
+  if (rows.length === 0) return [];
+  const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((s) => {
+      const o = s as Record<string, unknown>;
+      const label = typeof o?.label === "string" ? o.label : "";
+      const grams = Number(o?.grams);
+      if (!label || !Number.isFinite(grams)) return [];
+      return [{ label, grams, is_default: !!o.is_default }];
+    });
+  };
   return rows.map((r) => ({
     food_id: String(r.id),
     name: String(r.name),
@@ -91,7 +127,7 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     carb_g: Number(r.carb_g ?? 0),
     fat_g: Number(r.fat_g ?? 0),
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
-    servings: servingsByFood.get(String(r.id)) ?? [],
+    servings: parseServings(r.servings),
     source: "catalog" as const,
   }));
 }
@@ -100,6 +136,7 @@ let offLookups = 0;
 const deps: ParseMealDeps = {
   anthropicApiKey: ANTHROPIC_API_KEY,
   model: MODEL,
+  ...(VIA_CLI ? { fetchFn: makeClaudeCliFetch(MODEL) } : {}),
   maxTokens: 1600,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
@@ -126,6 +163,18 @@ const deps: ParseMealDeps = {
       fat_g: Number(row.fat_g ?? 0),
       fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
     };
+  },
+  getFoodServings: async (foodId) => {
+    const { data } = await supabase
+      .from("food_servings")
+      .select("label, grams, is_default")
+      .eq("food_id", foodId)
+      .order("seq", { ascending: true });
+    return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
+      label: String(s.label),
+      grams: Number(s.grams),
+      is_default: !!s.is_default,
+    }));
   },
   log: () => {},
 };
@@ -154,6 +203,12 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
     failures.push(`expected a log, got decline: "${result.declined.message}"`);
     return failures;
   }
+  if (c.expectCorrection !== undefined) {
+    const got = result.parsed?.corrects_previous === true;
+    if (got !== c.expectCorrection) {
+      failures.push(`corrects_previous ${got} != ${c.expectCorrection}`);
+    }
+  }
   const items = result.parsed!.items;
   if (exp.minItems !== undefined && items.length < exp.minItems) {
     failures.push(`items ${items.length} < min ${exp.minItems}`);
@@ -165,10 +220,19 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
     failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
   }
   for (const ie of exp.items ?? []) {
-    const match = items.find((i) => i.food_name.toLowerCase().includes(ie.nameIncludes.toLowerCase()));
+    // nameIncludes plus optional nameIncludesAny alternates: a "roasted
+    // edamame" line is equally correct as "Edamame..." or "Soybeans, mature
+    // seeds, roasted..." — same food under two names.
+    const needles = [ie.nameIncludes, ...(ie.nameIncludesAny ?? [])].map((n) => n.toLowerCase());
+    const match = items.find((i) => needles.some((n) => i.food_name.toLowerCase().includes(n)));
     if (!match) {
-      failures.push(`no item matching "${ie.nameIncludes}" (got: ${items.map((i) => i.food_name).join(" | ")})`);
+      failures.push(`no item matching "${needles.join('|')}" (got: ${items.map((i) => i.food_name).join(" | ")})`);
       continue;
+    }
+    for (const bad of ie.nameExcludes ?? []) {
+      if (match.food_name.toLowerCase().includes(bad.toLowerCase())) {
+        failures.push(`"${ie.nameIncludes}" resolved to "${match.food_name}" which must not contain "${bad}"`);
+      }
     }
     if (ie.tiers && !ie.tiers.includes(match.source)) {
       failures.push(`"${ie.nameIncludes}" tier ${match.source} not in [${ie.tiers.join(",")}]`);
@@ -183,6 +247,12 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
       const [lo, hi] = ie.proteinBetween;
       if (match.protein_g < lo || match.protein_g > hi) {
         failures.push(`"${ie.nameIncludes}" protein ${match.protein_g} outside [${lo}, ${hi}]`);
+      }
+    }
+    if (ie.kcalBetween) {
+      const [lo, hi] = ie.kcalBetween;
+      if (match.kcal < lo || match.kcal > hi) {
+        failures.push(`"${ie.nameIncludes}" kcal ${match.kcal} outside [${lo}, ${hi}]`);
       }
     }
   }
@@ -204,14 +274,31 @@ async function main() {
   for (const c of cases) {
     const started = Date.now();
     try {
-      const result = await runParseMeal(deps, {
-        text: c.text,
+      const baseInput = {
         localHour: c.hour ?? null,
         mealHint: null,
         recentFoods: [],
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
-      });
+      };
+      let result = await runParseMeal(deps, { ...baseInput, text: c.text });
+      // Follow-up cases: replay the first parse as the meal on screen, then
+      // score the follow-up — exactly what the client sends.
+      if (c.followUp) {
+        const prev = (result.parsed?.items ?? []).map((i) => ({
+          food_id: i.food_id,
+          food_name: i.food_name,
+          quantity: i.quantity,
+          serving_label: i.serving_label,
+          grams: i.grams,
+        }));
+        result = await runParseMeal(deps, {
+          ...baseInput,
+          text: c.followUp,
+          previousText: c.text,
+          previousItems: prev,
+        });
+      }
       const failures = scoreCase(c, result);
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
       totalTokens += tokens;

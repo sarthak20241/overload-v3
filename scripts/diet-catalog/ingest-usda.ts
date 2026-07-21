@@ -241,9 +241,23 @@ function main() {
       const fdc = r[pFdc];
       if (!kept.has(fdc)) continue;
       const grams = round2(Number(r[pGram]));
-      const unit = (r[pMod] || r[pDesc] || '').trim();
-      if (!(grams > 0) || !unit) continue;
-      const label = `${fmtAmount(Number(r[pAmt]) || 1)} ${unit}`.trim();
+      const mod = (r[pMod] || '').trim();
+      const desc = (r[pDesc] || '').trim();
+      if (!(grams > 0)) continue;
+      // FNDDS survey rows put a numeric portion CODE in `modifier` and the human
+      // text (which already includes its own quantity, e.g. "1 cup") in
+      // `portion_description`. SR Legacy is the reverse: text in `modifier`,
+      // empty description. Preferring modifier unconditionally is what shipped
+      // 21k unusable labels like "1 64556" to prod.
+      let label: string;
+      if (/^\d{4,6}$/.test(mod)) {
+        if (!desc || /quantity not specified/i.test(desc)) continue;
+        label = desc;
+      } else {
+        const unit = mod || desc;
+        if (!unit) continue;
+        label = `${fmtAmount(Number(r[pAmt]) || 1)} ${unit}`.trim();
+      }
       const list = portions.get(fdc) ?? [];
       if (!list.some((s) => s.label.toLowerCase() === label.toLowerCase())) {
         list.push({ label, grams, is_default: false, seq: Number(r[pSeq]) || list.length });

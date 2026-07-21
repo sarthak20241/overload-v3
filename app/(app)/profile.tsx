@@ -1106,6 +1106,24 @@ export default function ProfileScreen() {
               </View>
               <Feather name="chevron-right" size={14} color={C.textMuted} />
             </TouchableOpacity>
+            <TouchableOpacity
+              // typed-routes hasn't regenerated for /import yet — cast is fine,
+              // route exists at runtime (same as /exercises, /admin/research).
+              onPress={() => router.push('/import' as any)}
+              activeOpacity={0.85}
+              style={[styles.accountBtn, { backgroundColor: C.card, borderColor: C.borderSubtle, marginTop: Spacing.sm }]}
+            >
+              <View style={[styles.rowIcon, { backgroundColor: `${Colors.primary}22` }]}>
+                <Feather name="download-cloud" size={11} color={C.accentText} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.infoLabel, { color: C.foreground }]}>Import Data</Text>
+                <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>
+                  Bring your history over from Hevy
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={14} color={C.textMuted} />
+            </TouchableOpacity>
           </View>
 
           {/* ─── Admin Tools (admin users only) ─── */}
