@@ -6,6 +6,7 @@ import {
   type CandidateFood,
   type MealType,
   type OffProduct,
+  type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
 } from "./parseMeal.ts";
@@ -65,6 +66,9 @@ const ANTHROPIC_TIMEOUT_MS = 30000;
 // it can be killed without a redeploy if costs or quality surprise us.
 const PARSE_MEAL_MODEL = "claude-haiku-4-5";
 const PARSE_MEAL_MAX_TOKENS = 1600;
+// #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
+// was cold for this request (proxy for cold-start cost we cannot time inside).
+let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 
@@ -705,27 +709,46 @@ async function backfillOffFoodRow(admin: SupabaseClient, p: OffProduct): Promise
 
 async function searchCatalogWithServings(
   userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
   query: string,
 ): Promise<CandidateFood[]> {
-  const { data, error } = await userClient.rpc("search_foods_ranked", { q: query, lim: 8 });
-  if (error || !Array.isArray(data) || data.length === 0) {
-    if (error) console.log("[parse_meal] search_foods_ranked error:", error.message);
-    return [];
+  // 0083: the *_with_servings RPCs join food_servings server-side, so a
+  // candidate set costs ONE round trip instead of two (search, then servings).
+  const { data, error } = await userClient.rpc("search_foods_ranked_with_servings", {
+    q: query,
+    lim: 8,
+  });
+  if (error) console.log("[parse_meal] search_foods_ranked_with_servings error:", error.message);
+  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
+
+  // Semantic fallback (0080): trigram search cannot bridge synonyms
+  // ("roasted edamame" vs "Soybeans, mature seeds, roasted, salted"), and a
+  // zero-candidate result is what pushes the model to OFF lookups or blind
+  // estimates. Only the miss path pays the embedding latency.
+  if (rows.length === 0) {
+    const vec = await embedQuery(query, admin, userId);
+    if (vec) {
+      const { data: sem, error: semErr } = await userClient.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      if (semErr) console.log("[parse_meal] search_foods_semantic_with_servings error:", semErr.message);
+      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
+    }
   }
-  const rows = data.slice(0, 6) as Array<Record<string, unknown>>;
-  const ids = rows.map((r) => String(r.id));
-  const servingsByFood = new Map<string, { label: string; grams: number; is_default: boolean }[]>();
-  const { data: servings } = await userClient
-    .from("food_servings")
-    .select("food_id, label, grams, is_default")
-    .in("food_id", ids)
-    .order("seq", { ascending: true });
-  for (const s of (servings ?? []) as Array<Record<string, unknown>>) {
-    const key = String(s.food_id);
-    const list = servingsByFood.get(key) ?? [];
-    list.push({ label: String(s.label), grams: Number(s.grams), is_default: !!s.is_default });
-    servingsByFood.set(key, list);
-  }
+
+  if (rows.length === 0) return [];
+  const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((s) => {
+      const o = s as Record<string, unknown>;
+      const label = typeof o?.label === "string" ? o.label : "";
+      const grams = Number(o?.grams);
+      if (!label || !Number.isFinite(grams)) return [];
+      return [{ label, grams, is_default: !!o.is_default }];
+    });
+  };
   return rows.map((r) => ({
     food_id: String(r.id),
     name: String(r.name),
@@ -736,7 +759,7 @@ async function searchCatalogWithServings(
     carb_g: Number(r.carb_g ?? 0),
     fat_g: Number(r.fat_g ?? 0),
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
-    servings: servingsByFood.get(String(r.id)) ?? [],
+    servings: parseServings(r.servings),
     source: "catalog" as const,
   }));
 }
@@ -798,6 +821,7 @@ async function handleParseMealRequest(args: {
   respond: (body: unknown, status: number) => Promise<Response>;
 }): Promise<Response> {
   const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
+  PARSE_ISOLATE_REQUESTS++;
 
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
@@ -861,15 +885,85 @@ async function handleParseMealRequest(args: {
       ? rawHint
       : null;
 
-  const [recentFoods, targetsRes, totalsRes] = await Promise.all([
+  // A meal still under review on the client. Present only for a follow-up
+  // ("make it a small one"), which the extract stage classifies as a
+  // correction of these lines rather than a new meal.
+  const previousText = typeof body.previous_text === "string"
+    ? body.previous_text.trim().slice(0, 500)
+    : null;
+  const recentTurns: { role: "user" | "drona"; text: string }[] = Array.isArray(body.recent_turns)
+    ? (body.recent_turns as Array<Record<string, unknown>>).slice(-4).flatMap((t) => {
+      const text = typeof t?.text === "string" ? t.text.trim().slice(0, 240) : "";
+      if (!text) return [];
+      return [{ role: t.role === "drona" ? "drona" as const : "user" as const, text }];
+    })
+    : [];
+  const previousItems: PreviousItem[] = Array.isArray(body.previous_items)
+    ? (body.previous_items as Array<Record<string, unknown>>).slice(0, 12).flatMap((r) => {
+      const name = typeof r?.food_name === "string" ? r.food_name.trim().slice(0, 120) : "";
+      if (!name) return [];
+      const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+      const src = r.source;
+      return [{
+        food_id: typeof r.food_id === "string" && r.food_id ? r.food_id : null,
+        food_name: name,
+        quantity: Number(r.quantity) > 0 ? Number(r.quantity) : 1,
+        serving_label: typeof r.serving_label === "string" ? r.serving_label.slice(0, 40) : "serving",
+        grams: Number(r.grams) > 0 ? Number(r.grams) : 0,
+        // Enough to hand an untouched line back exactly as the client had it.
+        kcal: n(r.kcal),
+        protein_g: n(r.protein_g),
+        carb_g: n(r.carb_g),
+        fat_g: n(r.fat_g),
+        fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : n(r.fiber_g),
+        source: src === "catalog" || src === "off" || src === "web" || src === "manual" || src === "estimate"
+          ? src
+          : "estimate",
+        assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
+        confidence: r.confidence === "high" || r.confidence === "low" ? r.confidence : "medium",
+      }];
+    })
+    : [];
+
+  // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
+  // it here WITHOUT awaiting so the queries run concurrently with the extract
+  // model call; runParseMeal awaits contextPromise after extract. This hides
+  // ~1.5s of cold-DB context latency behind the extract round-trip.
+  const contextPromise = Promise.all([
     fetchRecentFoods(userClient).catch(() => [] as RecentFoodContext[]),
     userClient.from("user_profiles").select("daily_calorie_target, protein_target_g").maybeSingle(),
     localDate
       ? userClient.from("user_nutrition_stats").select("kcal, protein_g").eq("day", localDate).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-  ]);
-  const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
-  const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+  ]).then(([recentFoods, targetsRes, totalsRes]) => {
+    const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
+    const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+    return {
+      recentFoods,
+      todayTotals: totalsRow
+        ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
+        : null,
+      targets: targetsRow
+        ? {
+          daily_calorie_target: targetsRow.daily_calorie_target === null ? null : Number(targetsRow.daily_calorie_target),
+          protein_target_g: targetsRow.protein_target_g === null ? null : Number(targetsRow.protein_target_g),
+        }
+        : null,
+    };
+  }).catch((e) => {
+    // MUST NOT reject. This runs unawaited while the extract call is in flight,
+    // and several parse paths (question, research, fast correction) return
+    // before ever awaiting it, leaving it orphaned. An unhandled rejection in a
+    // Deno isolate can take the whole function down; context is optional, so
+    // degrade to empty instead.
+    console.log("[parse_meal] context fetch failed:", String(e).slice(0, 160));
+    return { recentFoods: [] as RecentFoodContext[], todayTotals: null, targets: null };
+  });
+
+  // #1 latency instrumentation: how much of the handler is spent BEFORE the
+  // parse (auth + rate-limit write) vs inside runParseMeal (context now overlaps).
+  const preParseMs = Date.now() - startedAtMs;
+  const runParse0 = Date.now();
 
   try {
     const result = await runParseMeal(
@@ -879,7 +973,7 @@ async function handleParseMealRequest(args: {
         maxTokens: PARSE_MEAL_MAX_TOKENS,
         timeoutMs: ANTHROPIC_TIMEOUT_MS,
         webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
-        searchFoods: (q) => searchCatalogWithServings(userClient, q),
+        searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
         backfillOffFood: (p) => backfillOffFoodRow(admin, p),
         getFoodPer100: async (foodId) => {
           const { data } = await userClient
@@ -898,26 +992,33 @@ async function handleParseMealRequest(args: {
             fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
           };
         },
+        getFoodServings: async (foodId) => {
+          const { data } = await userClient
+            .from("food_servings")
+            .select("label, grams, is_default")
+            .eq("food_id", foodId)
+            .order("seq", { ascending: true });
+          return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
+            label: String(s.label),
+            grams: Number(s.grams),
+            is_default: !!s.is_default,
+          }));
+        },
         log: (msg) => console.log(msg),
       },
       {
         text,
         localHour,
         mealHint,
-        recentFoods,
-        todayTotals: totalsRow
-          ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
-          : null,
-        targets: targetsRow
-          ? {
-            daily_calorie_target: targetsRow.daily_calorie_target === null
-              ? null
-              : Number(targetsRow.daily_calorie_target),
-            protein_target_g: targetsRow.protein_target_g === null
-              ? null
-              : Number(targetsRow.protein_target_g),
-          }
-          : null,
+        // Placeholders; the real values are awaited from contextPromise inside
+        // runParseMeal (after extract), so these queries overlap extraction.
+        recentFoods: [],
+        todayTotals: null,
+        targets: null,
+        contextPromise,
+        previousText,
+        previousItems,
+        recentTurns,
       },
     );
 
@@ -956,6 +1057,20 @@ async function handleParseMealRequest(args: {
 
     // Full agent-flow trace (input -> tool trail -> resolved items) for
     // observability + eval, whether or not the user ends up logging it.
+    const edgeSteps = [
+      ...result.steps,
+      {
+        iter: 9,
+        tool: "__edge_timing",
+        input: {
+          pre_parse_ms: preParseMs,       // auth + rate-limit write (context now overlaps)
+          run_parse_ms: Date.now() - runParse0, // whole runParseMeal (2 calls + resolve)
+          cold_isolate: PARSE_ISOLATE_REQUESTS <= 1, // first request this isolate served
+          region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
+            Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
+        },
+      },
+    ];
     void recordParseTrace(admin, {
       user_id: userId,
       input_text: text.slice(0, 500),
@@ -964,7 +1079,7 @@ async function handleParseMealRequest(args: {
       outcome: result.parsed ? "meal" : "declined",
       message: result.declined?.message ?? null,
       iterations: result.iterations,
-      steps: result.steps,
+      steps: edgeSteps,
       items: result.parsed?.items ?? null,
       input_tokens: result.usage.input_tokens,
       output_tokens: result.usage.output_tokens,
@@ -976,6 +1091,8 @@ async function handleParseMealRequest(args: {
       {
         parsed: result.parsed,
         declined: result.declined,
+        // Researched alternative for the user to accept or reject on the card.
+        proposal: result.proposal ?? null,
         usage: result.usage,
         tool_calls: result.tool_calls,
       },

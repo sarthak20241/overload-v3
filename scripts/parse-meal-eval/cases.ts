@@ -6,23 +6,39 @@
 // (which curated row it picks, exact grams for "1 plate") and tight where
 // the math must be right (explicit amounts like "50g" or "500 ml").
 
-export type Tier = "catalog" | "off" | "web" | "estimate";
+export type Tier = "catalog" | "off" | "web" | "estimate" | "manual";
 
 export interface ItemExpectation {
   // Case-insensitive substring that must appear in some logged item's name.
   nameIncludes: string;
+  // Alternate acceptable substrings (same food under another name, e.g.
+  // "edamame" vs "soybeans"). Any one match satisfies the expectation.
+  nameIncludesAny?: string[];
+  // Substrings that must NOT appear in the matched item's name. Numeric
+  // bounds alone cannot catch a wrong preparation state: a cooked-soybean row
+  // can land inside a roasted-edamame gram range while being the wrong food.
+  nameExcludes?: string[];
   // Acceptable resolution tiers for that item. Omit = any.
   tiers?: Tier[];
   // Inclusive bounds on the item's total grams. Omit = not checked.
   gramsBetween?: [number, number];
   // Inclusive bounds on the item's total protein. Omit = not checked.
   proteinBetween?: [number, number];
+  // Inclusive bounds on the item's total kcal. Omit = not checked.
+  kcalBetween?: [number, number];
 }
 
 export interface EvalCase {
   id: string;
   text: string;
   hour?: number; // device-local hour passed to the parser
+  /** A follow-up typed while `text`'s result is still on screen. The harness
+   *  parses `text` first (unscored), feeds its items back as previousItems,
+   *  then scores the follow-up — the same shape the app sends. */
+  followUp?: string;
+  /** Assert how the follow-up was classified: true = corrects the pending
+   *  meal (replaces it), false = new food (client appends). */
+  expectCorrection?: boolean;
   expect: {
     declined?: boolean;
     minItems?: number;
@@ -249,7 +265,9 @@ export const CASES: EvalCase[] = [
     text: "fish curry with rice",
     hour: 13,
     expect: {
-      minItems: 2, maxItems: 2,
+      // One composite catalog row ("Fish curry with rice") or two separate
+      // items are both correct resolutions; both name checks must land.
+      minItems: 1, maxItems: 2,
       items: [{ nameIncludes: "fish" }, { nameIncludes: "rice" }],
     },
   },
@@ -351,7 +369,9 @@ export const CASES: EvalCase[] = [
     hour: 20,
     expect: {
       minItems: 1, maxItems: 1,
-      items: [{ nameIncludes: "tikki", tiers: ["off", "web", "estimate"] }],
+      // catalog is now a legitimate (best) tier: a prior parse's OFF/estimate
+      // backfill seeded the row, which is exactly how the catalog compounds.
+      items: [{ nameIncludes: "tikki", tiers: ["catalog", "off", "web", "estimate"] }],
       needsWebSearch: false,
     },
   },
@@ -374,5 +394,163 @@ export const CASES: EvalCase[] = [
     text: "feeling tired today man",
     hour: 22,
     expect: { declined: true },
+  },
+
+  // ── Household-unit conversion (spoons/cups are food-dependent) ──────────
+  // Regression suite for the 2026-07-16 prod miscount: "2 tblspn roasted
+  // edameme" logged as 30 g / 130 kcal (one full label serving) when 2 tbsp
+  // of dry-roasted edamame is ~12-16 g / ~60-70 kcal. Spoon weights must
+  // reflect the food's density, not water's, and roasted must never resolve
+  // to a cooked/boiled row.
+  {
+    id: "edamame-tbsp-regression",
+    text: "2 tblspn roasted edameme", // typo preserved from the real log
+    hour: 9,
+    expect: {
+      // meal_type deliberately unasserted: a lone spoonful at 9am reads as
+      // breakfast or snack depending on the model's mood; this case is about
+      // grams and macros, not meal buckets.
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "edamame",
+        nameIncludesAny: ["soybean", "soya bean"],
+        // The original bug resolved a roasted food against a cooked row, and
+        // the gram range alone cannot tell the two apart.
+        nameExcludes: ["cooked", "boiled"],
+        gramsBetween: [10, 22],
+        proteinBetween: [3, 10],
+      }],
+    },
+  },
+  {
+    id: "peanut-butter-tbsp",
+    text: "2 tbsp peanut butter",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "peanut butter", gramsBetween: [24, 44], proteinBetween: [5, 12] }],
+    },
+  },
+  {
+    id: "ghee-tsp",
+    text: "1 tsp ghee on my roti",
+    hour: 13,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "ghee", gramsBetween: [3, 7] },
+        { nameIncludes: "roti", gramsBetween: [30, 75] },
+      ],
+    },
+  },
+  {
+    id: "chia-tbsp",
+    text: "1 tbsp chia seeds in curd",
+    hour: 9,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "chia", gramsBetween: [8, 16] },
+        { nameIncludes: "curd", nameIncludesAny: ["dahi", "yogurt"] },
+      ],
+    },
+  },
+  {
+    id: "cup-cooked-rice",
+    text: "1 cup cooked rice",
+    hour: 14,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "rice", gramsBetween: [140, 210] }],
+    },
+  },
+  {
+    id: "roasted-chana-spoons",
+    text: "2 spoons roasted chana",
+    hour: 17,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "chana",
+        nameIncludesAny: ["chickpea"],
+        nameExcludes: ["cooked", "boiled"],
+        gramsBetween: [10, 30],
+      }],
+    },
+  },
+  {
+    id: "honey-tbsp",
+    text: "1 tbsp honey in warm water",
+    hour: 7,
+    expect: {
+      minItems: 1,
+      items: [{ nameIncludes: "honey", gramsBetween: [14, 25] }],
+    },
+  },
+
+  // ── Indian beverage defaults ────────────────────────────────────────────
+  // Regression for the 2026-07-18 prod log: "Half cup tea" matched
+  // "Tea, hot, herbal" at 1.2 kcal (confidence high). Unqualified tea for
+  // this audience is MILK chai: ~45 kcal/100 ml, so half a cup is ~25-60
+  // kcal, never ~1.
+  {
+    id: "tea-milk-default",
+    text: "Half cup tea and 2 good day biscuit", // exact prod input
+    hour: 17,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130], kcalBetween: [20, 80] },
+        { nameIncludes: "good day", nameIncludesAny: ["goodday", "biscuit", "cookie"], kcalBetween: [50, 250] },
+      ],
+    },
+  },
+  // ── Follow-up corrections (a meal is still on screen) ───────────────────
+  // The user's own scenario: "samosa" resolves to a bigger serving than they
+  // ate, and they say so instead of discarding and retyping.
+  {
+    id: "refine-samosa-small",
+    text: "a samosa",
+    followUp: "actually it was a small one",
+    hour: 17,
+    expectCorrection: true,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "samosa", gramsBetween: [15, 45], kcalBetween: [45, 140] }],
+    },
+  },
+  {
+    id: "refine-quantity",
+    text: "2 roti and dal",
+    followUp: "make it 3 rotis",
+    hour: 13,
+    expectCorrection: true,
+    expect: {
+      // Both lines come back: the corrected roti and the untouched dal.
+      minItems: 2, maxItems: 2,
+      items: [{ nameIncludes: "roti", gramsBetween: [90, 220] }, { nameIncludes: "dal" }],
+    },
+  },
+  {
+    // The dangerous one: an ADDITION must not be read as a correction, or the
+    // food already reviewed gets silently rewritten.
+    id: "followup-adds-not-corrects",
+    text: "a samosa",
+    followUp: "and a dosa",
+    hour: 17,
+    expectCorrection: false,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "dosa" }],
+    },
+  },
+  {
+    id: "black-tea-stays-plain",
+    text: "1 cup black tea no sugar",
+    hour: 8,
+    expect: {
+      minItems: 1,
+      items: [{ nameIncludes: "tea", kcalBetween: [0, 15] }],
+    },
   },
 ];

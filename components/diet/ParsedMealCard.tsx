@@ -48,6 +48,15 @@ interface Props {
   adding?: boolean;                          // Add in flight (review)
   saved?: boolean;                           // this parse was saved as a meal/recipe
   onMealTypeChange?: (m: MealType) => void;
+  /** A reply that is not a meal (Drona answering a question about these lines,
+   *  or a failed follow-up) shown ON the card so the meal survives. */
+  notice?: string | null;
+  /** Label for a researched alternative the user can accept in one tap. */
+  proposalLabel?: string | null;
+  onAcceptProposal?: () => void;
+  onDismissNotice?: () => void;
+  /** Tap a line to correct its serving/quantity/macros before adding. */
+  onEditItem?: (index: number) => void;
   onAdd?: () => void;
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
@@ -63,13 +72,14 @@ function provenance(source: ParsedMealItem['source']): string | null {
     case 'off':
     case 'web': return 'from label';
     case 'estimate': return "Drona's estimate";
+    case 'manual': return 'edited';
     default: return null; // catalog
   }
 }
 
 export function ParsedMealCard({
-  state, rawText, meal, mealType, message, adding, saved,
-  onMealTypeChange, onAdd, onSave, onRetry, onDismiss,
+  state, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
+  onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
   const { C } = useTheme();
   const s = makeStyles(C);
@@ -83,16 +93,48 @@ export function ParsedMealCard({
 
       {state === 'review' && meal && (
         <View>
+          {/* Drona answering a question about these lines. The meal stays. */}
+          {!!notice && (
+            <View style={s.notice}>
+              <View style={s.noticeHead}>
+                <Feather name="info" size={12} color={C.accentText} style={{ marginTop: 2 }} />
+                <Text style={s.noticeTxt}>{notice}</Text>
+                <Pressable onPress={onDismissNotice} hitSlop={8} accessibilityLabel="Dismiss">
+                  <Feather name="x" size={13} color={C.textMuted} />
+                </Pressable>
+              </View>
+              {/* A researched alternative: the user decides, we never swap
+                  silently. Both choices are local, so neither costs a wait. */}
+              {!!proposalLabel && (
+                <View style={s.proposalRow}>
+                  <Pressable onPress={onDismissNotice} hitSlop={6} style={s.keepBtn}>
+                    <Text style={s.keepTxt}>Keep mine</Text>
+                  </Pressable>
+                  <Pressable onPress={onAcceptProposal} hitSlop={6} style={s.useBtn}>
+                    <Text style={s.useTxt}>{proposalLabel}</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          )}
           {meal.items.map((it, i) => {
             const prov = provenance(it.source);
             return (
-              <View key={i} style={[s.item, i > 0 && s.itemDivider]}>
+              <Pressable
+                key={i}
+                onPress={onEditItem ? () => onEditItem(i) : undefined}
+                disabled={!onEditItem}
+                style={({ pressed }) => [s.item, i > 0 && s.itemDivider, pressed && s.itemPressed]}
+                accessibilityLabel={`Edit ${it.food_name}, ${r0(it.kcal)} calories`}
+                accessibilityHint="Opens serving, quantity and macro editing"
+              >
                 <View style={s.itemHead}>
                   <Text style={s.itemName} numberOfLines={1}>
                     {it.food_name}
                     <Text style={s.serving}>{'  '}{it.quantity !== 1 ? `${it.quantity} × ` : ''}{it.serving_label}</Text>
                   </Text>
                   {prov && <Text style={s.provChip}>{prov}</Text>}
+                  {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
                 </View>
                 <View style={s.macros}>
                   <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)}</Text>
@@ -101,7 +143,7 @@ export function ParsedMealCard({
                   <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
                 </View>
                 {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
-              </View>
+              </Pressable>
             );
           })}
 
@@ -219,7 +261,23 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     },
     raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
 
+    notice: {
+      backgroundColor: C.primarySubtle, borderRadius: Radius.md,
+      padding: Spacing.sm, marginBottom: Spacing.sm,
+    },
+    noticeHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+    proposalRow: { flexDirection: 'row', gap: 8, marginTop: Spacing.sm, justifyContent: 'flex-end' },
+    keepBtn: { paddingVertical: 7, paddingHorizontal: Spacing.md },
+    keepTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontWeight: FontWeight.medium },
+    useBtn: {
+      backgroundColor: C.accentText, borderRadius: Radius.md,
+      paddingVertical: 7, paddingHorizontal: Spacing.md,
+    },
+    useTxt: { fontSize: FontSize.sm, color: C.background, fontWeight: FontWeight.semibold },
+    noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
+
     item: { paddingVertical: Spacing.xs },
+    itemPressed: { opacity: 0.6 },
     itemDivider: { borderTopWidth: 1, borderTopColor: C.borderSubtle, marginTop: Spacing.xs, paddingTop: Spacing.sm },
     itemHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     itemName: { flex: 1, fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
