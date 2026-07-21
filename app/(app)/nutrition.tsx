@@ -51,6 +51,11 @@ type ParseFlow =
   // "is that right?" must never throw away work the user hasn't added yet.
   | {
       status: 'review'; raw: string; meal: ParsedMeal; mealType: MealType;
+      // Set once the user picks a section themselves. A follow-up re-parses
+      // only the new text ("make it a small one"), so the server's fresh guess
+      // is weaker evidence than a choice the user already made - without this
+      // flag their pick silently reverts on the next message.
+      mealTypePicked?: boolean;
       notice?: string | null;
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
@@ -198,6 +203,9 @@ export default function NutritionScreen() {
       return;
     }
     pushTurn('drona', res.meal.drona_line);
+    // The user's own section pick outranks a guess made from the follow-up
+    // text alone; without a pick we take the server's.
+    const keptMealType = prevReview?.mealTypePicked ? prevReview.mealType : null;
     // Parsed, not logged. Seed the section selector with Drona's best guess.
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
@@ -207,11 +215,18 @@ export default function NutritionScreen() {
         status: 'review',
         raw: `${pending.text}; ${t}`,
         meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
-        mealType: res.meal.meal_type,
+        mealType: keptMealType ?? res.meal.meal_type,
+        mealTypePicked: prevReview?.mealTypePicked,
       });
       return;
     }
-    setFlow({ status: 'review', raw: t, meal: res.meal, mealType: res.meal.meal_type });
+    setFlow({
+      status: 'review',
+      raw: t,
+      meal: res.meal,
+      mealType: keptMealType ?? res.meal.meal_type,
+      mealTypePicked: prevReview?.mealTypePicked,
+    });
   }, [supabase]);
 
   /** Index of the pending line being corrected (null = editor closed). Edits
@@ -240,7 +255,7 @@ export default function NutritionScreen() {
   }, [text, isSignedIn, flow.status, runParse]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
-    setFlow((f) => (f.status === 'review' ? { ...f, mealType: m } : f));
+    setFlow((f) => (f.status === 'review' ? { ...f, mealType: m, mealTypePicked: true } : f));
   }, []);
 
   const onAdd = useCallback(async () => {

@@ -1042,22 +1042,56 @@ function scrubDashes(s: string): string {
   return s.replace(/\s*[—–]\s*/g, ", ").replace(/\s{2,}/g, " ").trim();
 }
 
+type Per100 = { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+
 // The receipts step: for items the model matched to a real food row, recompute
 // line macros from the row's per-100 values so catalog-backed numbers are
-// deterministic, never model arithmetic. Items whose row can't be read keep
-// the model's numbers (their grams still came from the same candidates).
-async function verifyItems(deps: ParseMealDeps, items: ParsedItem[]): Promise<ParsedItem[]> {
+// deterministic, never model arithmetic.
+//
+// `fallback` carries the per-100 values the resolve stage already fetched for
+// each candidate. It matters because the decide schema tells the model to OMIT
+// macros whenever food_id is set, and sanitizeItems defaults anything missing
+// to 0: if the row read then fails, there are no model numbers to fall back on
+// and the line would ship as a silent 0 kcal food. The candidate we offered in
+// the first place is the right answer there, and costs no extra query.
+export async function verifyItems(
+  deps: ParseMealDeps,
+  items: ParsedItem[],
+  fallback?: Map<string, Per100>,
+): Promise<ParsedItem[]> {
   return await Promise.all(items.map(async (item) => {
     if (item.source !== "catalog" && item.source !== "off") return item;
-    // A catalog/OFF claim we cannot check is not a catalog/OFF number. Without
-    // a resolvable food_id the macros are whatever the model wrote, so let the
-    // line through on its numbers but call it what it is - an estimate - or
-    // the UI presents an invention with the authority of a looked-up row.
-    const per100 = item.food_id && Number.isFinite(item.grams) && item.grams > 0
-      ? await deps.getFoodPer100(item.food_id)
-      : null;
+    const usable = item.food_id && Number.isFinite(item.grams) && item.grams > 0;
+    const per100 = usable ? await deps.getFoodPer100(item.food_id!) : null;
+    // A catalog/OFF claim we cannot check is not a catalog/OFF number. Fall
+    // back to the candidate's own per-100 basis; failing that, call the line
+    // what it is - an estimate - rather than let the UI present an unverified
+    // number with the authority of a looked-up row.
     if (!per100) {
-      return { ...item, source: "estimate" as const, food_id: null, confidence: "low" as const };
+      const alt = usable ? fallback?.get(item.food_id!) : undefined;
+      if (!alt) {
+        const zeroed = item.kcal === 0 && item.protein_g === 0 && item.carb_g === 0 && item.fat_g === 0;
+        return {
+          ...item,
+          source: "estimate" as const,
+          food_id: null,
+          confidence: "low" as const,
+          // Never ship a silent zero: the model was told to omit these.
+          assumption: zeroed
+            ? appendAssumption(item, "I could not read this food's nutrition, the numbers here are not reliable")
+            : item.assumption,
+        };
+      }
+      const g = item.grams / 100;
+      return {
+        ...item,
+        kcal: round1(alt.kcal * g),
+        protein_g: round1(alt.protein_g * g),
+        carb_g: round1(alt.carb_g * g),
+        fat_g: round1(alt.fat_g * g),
+        fiber_g: alt.fiber_g === null ? item.fiber_g : round1(alt.fiber_g * g),
+        confidence: "medium" as const,
+      };
     }
     const f = item.grams / 100;
     const scaled = {
@@ -1266,15 +1300,20 @@ export function clampVolumetricGrams(items: ParsedItem[]): ParsedItem[] {
 
 // Atwater consistency: kcal must roughly match 4P + 4C + 9F. Runs AFTER
 // verifyItems. Generous 30% tolerance absorbs fiber/rounding conventions.
-// Model-estimated lines get kcal recomputed from their macros; catalog/off
-// lines that fail have a bad source row, so flag rather than trust.
+// Only a model-INVENTED line gets its kcal recomputed from its own macros.
+// Anything that came from a real label - catalog, OFF, or a web lookup - is
+// flagged instead: a printed panel legitimately breaks strict Atwater (fiber
+// netting, sugar alcohols, alcohol, rounding), and overwriting it would
+// replace a real number with a computed guess. That matters most on the
+// research path, where the user challenged a number and explicitly asked us
+// to go read the label.
 export function checkAtwater(items: ParsedItem[]): ParsedItem[] {
   return items.map((item) => {
     const atwater = 4 * item.protein_g + 4 * item.carb_g + 9 * item.fat_g;
     if (atwater < 20 && item.kcal < 20) return item;
     const ref = Math.max(item.kcal, atwater);
     if (ref <= 0 || Math.abs(item.kcal - atwater) / ref <= 0.3) return item;
-    if (item.source === "estimate" || item.source === "web") {
+    if (item.source === "estimate") {
       return { ...item, kcal: round1(atwater) };
     }
     return {
@@ -1916,7 +1955,19 @@ export async function runParseMeal(
     input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
   });
 
-  let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)));
+  // Per-100 basis for every candidate we showed the model, so a failed row
+  // read falls back to the numbers we already had rather than to zero.
+  const candidatePer100 = new Map<string, Per100>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && !candidatePer100.has(c.food_id)) {
+        candidatePer100.set(c.food_id, {
+          kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
+        });
+      }
+    }
+  }
+  let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
   // A correction REPLACES the reviewed meal, so never let the model quietly
   // drop a line it was told to relist.
   if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems);
