@@ -22,9 +22,9 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
 import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture } from '@/lib/activeWorkoutPersistence';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
-import { enqueueWorkout, getPendingWorkouts, newClientId, type PendingWorkout } from '@/lib/syncQueue';
+import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
-import { hydrateCache, readCache } from '@/lib/localCache';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
 import {
   exerciseNoteKey,
@@ -132,16 +132,39 @@ function fmt(seconds: number) {
 // actually contained (exercises added or removed mid-workout). Built by
 // buildDbRoutineSyncOffer / buildGuestRoutineSyncOffer after the workout
 // saves; applied by applyRoutineSync if the user accepts.
+/**
+ * One exercise the session added that the routine doesn't have yet.
+ *
+ * `exerciseId` is null while the session's copy is still on a temp id (a
+ * mid-session add whose background reconcile hasn't landed). Resolving is
+ * deferred to applyRoutineSync rather than excluding it here: mid-session adds
+ * are the main thing this feature exists to catch, so dropping the unresolved
+ * ones silently disabled the offer in exactly the common case.
+ */
+interface RoutineSyncAdd {
+  def: ExerciseDef;
+  exerciseId: string | null;
+  sets: number;
+  reps_min: number;
+  reps_max: number;
+  rest_seconds: number;
+  order: number;
+}
+
 interface RoutineSyncOffer {
   mode: 'db' | 'guest';
   routineId: string;
   routineName: string;
   addedNames: string[];
+  /**
+   * Names to drop from the routine. Names rather than row PKs: the offer can be
+   * built from the local cache, whose rows carry synthetic ids that match
+   * nothing on the server. applyRoutineSync re-reads the real rows at write time
+   * and maps these back to PKs.
+   */
   removedNames: string[];
-  /** mode 'db': routine_exercises PKs to delete. */
-  removedRowIds: string[];
-  /** mode 'db': rows to insert into routine_exercises. */
-  insertRows: Record<string, unknown>[];
+  /** mode 'db': exercises to append (ids resolved at write time). */
+  added: RoutineSyncAdd[];
   /** mode 'guest': full replacement routine_exercises for the guest store. */
   guestExercises: any[] | null;
 }
@@ -1697,8 +1720,7 @@ export default function ActiveWorkoutScreen() {
       routineName: routine.name,
       addedNames: added.map(e => e.exercise.name),
       removedNames: removed.map(re => re.exercises?.name || 'Unknown'),
-      removedRowIds: [],
-      insertRows: [],
+      added: [],
       guestExercises,
     };
   };
@@ -1709,7 +1731,7 @@ export default function ActiveWorkoutScreen() {
     // Re-fetch the routine as it exists right now — it may have been edited
     // (or deleted) since the workout started. Bounded so a degraded connection
     // can't stall the finish navigation; on timeout we just skip the offer.
-    const routineRow = await Promise.race([
+    const fetched = await Promise.race([
       (async () => {
         try {
           const { data } = await supabase
@@ -1724,15 +1746,21 @@ export default function ActiveWorkoutScreen() {
       })(),
       sleep(3000).then(() => null),
     ]);
+    // Fall back to the cached routine (the same copy the start path loaded this
+    // session from) rather than bailing. A slow or offline re-fetch used to drop
+    // the offer entirely and it was never rebuilt, so the routine update was
+    // silently lost on exactly the connections this app is built to tolerate.
+    const routineRow =
+      fetched ?? readCache<any[]>('routines', user?.id)?.find(r => r.id === rid) ?? null;
     if (!routineRow) return null;
 
     const routineExs: any[] = (routineRow as any).routine_exercises || [];
-    // Exercises still on a temp id never resolved to a real DB row and can't
-    // be linked into routine_exercises, so they sit out of the diff (their
-    // sets were skipped by the save for the same reason).
-    const sessionExs = dedupeSessionExercises(
-      exercises.filter(e => !String(e.exercise.id).startsWith('temp-'))
-    );
+    // Temp-id exercises stay IN the diff. They're mid-session adds whose
+    // background reconcile hasn't landed (or routine rows from a still-pending
+    // routine edit, which carry `temp-routine-` ids). Excluding them both hid
+    // the offer for the feature's main use case and, worse, made the session's
+    // own exercises look "removed" from the routine.
+    const sessionExs = dedupeSessionExercises(exercises);
     const sessionNames = new Set(sessionExs.map(e => normExName(e.exercise.name)));
     const routineNames = new Set(routineExs.map(re => normExName(re.exercises?.name || '')));
 
@@ -1748,10 +1776,14 @@ export default function ActiveWorkoutScreen() {
       routineName: (routineRow as any).name || workout.routineName,
       addedNames: added.map(e => e.exercise.name),
       removedNames: removed.map(re => re.exercises?.name || 'Unknown'),
-      removedRowIds: removed.map(re => re.id),
-      insertRows: added.map((ex, i) => ({
-        routine_id: rid,
-        exercise_id: ex.exercise.id,
+      added: added.map((ex, i) => ({
+        def: {
+          name: ex.exercise.name,
+          muscle_group: ex.exercise.muscle_group || 'Other',
+          category: ex.exercise.category || 'Custom',
+          metric_type: ex.exercise.metric_type,
+        },
+        exerciseId: String(ex.exercise.id).startsWith('temp-') ? null : ex.exercise.id,
         sets: sessionSetCount(ex),
         reps_min: ex.repsMin,
         reps_max: ex.repsMax,
@@ -1771,17 +1803,106 @@ export default function ActiveWorkoutScreen() {
       return;
     }
     // Targeted row ops (rather than the editor's delete-all + reinsert) so
-    // untouched entries keep their coach notes and ordering.
-    if (offer.removedRowIds.length > 0) {
-      const { error } = await supabase
-        .from('routine_exercises')
-        .delete()
-        .in('id', offer.removedRowIds);
+    // untouched entries keep their coach notes, targets and ordering — and so a
+    // column this screen doesn't know about can't be clobbered. That's also why
+    // this doesn't go through routineQueue, which replaces a routine wholesale.
+    //
+    // Both ops are derived from a fresh read rather than from ids baked into the
+    // offer. That makes apply idempotent (a Retry after a lost response re-runs
+    // safely instead of duplicating rows) and lets a cache-built offer apply
+    // correctly, since cached rows carry synthetic ids the server won't match.
+    const { data: currentRows, error: readErr } = await supabase
+      .from('routine_exercises')
+      .select('id, exercise_id, exercises(id, name)')
+      .eq('routine_id', offer.routineId);
+    if (readErr) throw readErr;
+    const current: any[] = currentRows ?? [];
+
+    const removeNames = new Set(offer.removedNames.map(normExName));
+    const removeIds = current
+      .filter((re) => removeNames.has(normExName(re.exercises?.name || '')))
+      .map((re) => re.id);
+    if (removeIds.length > 0) {
+      const { error } = await supabase.from('routine_exercises').delete().in('id', removeIds);
       if (error) throw error;
     }
-    if (offer.insertRows.length > 0) {
-      const { error } = await supabase.from('routine_exercises').insert(offer.insertRows);
+
+    // Resolve any add still on a temp id (find-or-insert by name), the same way
+    // the sync flusher does. Done here, at write time, so a slow mid-session
+    // reconcile delays the id lookup instead of cancelling the whole offer.
+    const resolved = await Promise.all(
+      offer.added.map(async (a) => {
+        if (a.exerciseId) return a;
+        const row = await resolveExerciseRow(supabase, a.def);
+        return { ...a, exerciseId: row?.id ?? null };
+      }),
+    );
+    if (resolved.some((a) => !a.exerciseId)) {
+      // Don't half-apply: a name we couldn't link is a transient failure, so
+      // surface it and let the Retry action rerun the whole offer.
+      throw new Error("Couldn't link every exercise");
+    }
+    const alreadyPresent = new Set(current.map((re) => re.exercise_id));
+    const toInsert = resolved.filter((a) => !alreadyPresent.has(a.exerciseId));
+    if (toInsert.length > 0) {
+      const { error } = await supabase.from('routine_exercises').insert(
+        toInsert.map((a) => ({
+          routine_id: offer.routineId,
+          exercise_id: a.exerciseId,
+          sets: a.sets,
+          reps_min: a.reps_min,
+          reps_max: a.reps_max,
+          rest_seconds: a.rest_seconds,
+          order: a.order,
+        })),
+      );
       if (error) throw error;
+    }
+
+    // Mirror the change into the local 'routines' cache. The Routines tab and
+    // the workout start path both read that cache first, so skipping this made
+    // an accepted update look like it hadn't applied until the next revalidate.
+    const cached = readCache<any[]>('routines', user?.id);
+    if (cached) {
+      const addedExerciseIds = new Set(resolved.map((a) => a.exerciseId));
+      writeCache(
+        'routines',
+        user?.id,
+        cached.map((r) =>
+          r.id !== offer.routineId
+            ? r
+            : {
+                ...r,
+                routine_exercises: [
+                  // Drop what was removed, and anything we're about to re-add, so
+                  // a stale cached row can't leave a duplicate behind.
+                  ...(r.routine_exercises ?? []).filter(
+                    (re: any) =>
+                      !removeNames.has(normExName(re.exercises?.name || '')) &&
+                      !addedExerciseIds.has(re.exercise_id),
+                  ),
+                  ...resolved.map((a) => ({
+                    id: `local-re-${offer.routineId}-${a.order}`,
+                    routine_id: offer.routineId,
+                    exercise_id: a.exerciseId,
+                    order: a.order,
+                    sets: a.sets,
+                    reps_min: a.reps_min,
+                    reps_max: a.reps_max,
+                    rest_seconds: a.rest_seconds,
+                    note: null,
+                    superset_group: null,
+                    exercises: {
+                      id: a.exerciseId,
+                      name: a.def.name,
+                      muscle_group: a.def.muscle_group,
+                      category: a.def.category,
+                    },
+                  })),
+                ],
+              },
+        ),
+      );
     }
   };
 
@@ -1992,18 +2113,22 @@ export default function ActiveWorkoutScreen() {
 
       // Best-effort immediate push, bounded so an offline finish never hangs.
       await Promise.race([flushNow(), sleep(2500)]);
-      const synced = !getPendingWorkouts(clerkId).some(e => e.clientId === entry.clientId);
 
-      // Offer the routine-sync prompt only when the workout actually reached the
-      // server (online); offline it's deferred and the source routine is left
-      // untouched. Built before finishWorkout() clears routineId.
+      // Built before finishWorkout() clears routineId.
+      //
+      // This deliberately does NOT gate on the workout having reached the server
+      // first. That check ("is my entry still in the pending queue?") was unsound
+      // in two ways: flushNow() no-ops when a flush is already in flight, and
+      // flushQueue snapshots the queue before this entry joined it — so the entry
+      // was still queued and the offer was dropped even though nothing was wrong.
+      // A slow-but-fine flush hit the same path. The offer was never rebuilt, so
+      // the routine update was lost for good. Updating the routine doesn't depend
+      // on the workout row anyway; the two writes are independent.
       let syncOffer: RoutineSyncOffer | null = null;
-      if (synced) {
-        try {
-          syncOffer = await buildDbRoutineSyncOffer();
-        } catch {
-          syncOffer = null;
-        }
+      try {
+        syncOffer = await buildDbRoutineSyncOffer();
+      } catch {
+        syncOffer = null;
       }
 
       workout.finishWorkout();
