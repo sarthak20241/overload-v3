@@ -198,7 +198,10 @@ export default function NutritionScreen() {
       return;
     }
     if (res.kind === 'error') {
-      if (prevReview) { setFlow({ ...prevReview, notice: res.message }); return; }
+      // Clear any standing proposal: it answered the previous message, and
+      // leaving it up would attach "use these numbers" to an error the user
+      // just got for something else entirely.
+      if (prevReview) { setFlow({ ...prevReview, notice: res.message, proposal: null }); return; }
       setFlow({ status: 'error', raw: t, message: res.message });
       return;
     }

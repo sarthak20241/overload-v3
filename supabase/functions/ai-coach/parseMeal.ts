@@ -615,7 +615,17 @@ export function wordsOverlap(a: string, b: string): boolean {
   const aw = words(a), bw = words(b);
   if (aw.length === 0 || bw.length === 0) return false;
   const [short, long] = aw.length <= bw.length ? [aw, bw] : [bw, aw];
-  const near = (x: string, y: string) => x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4));
+  // "eggs" and "egg" are one food; "egg" and "eggplant" are not.
+  const singular = (w: string) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w);
+  const near = (p: string, q: string) => {
+    const x = singular(p), y = singular(q);
+    if (x === y) return true;
+    // The prefix rule exists to absorb typos in longer words ("edameme" vs
+    // "edamame"). On a short word a prefix is a DIFFERENT food - dal/dalia,
+    // egg/eggplant - so those must match outright.
+    if (x.length < 5 || y.length < 5) return false;
+    return x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4));
+  };
   return short.every((x) => long.some((y) => near(x, y)));
 }
 
