@@ -1319,6 +1319,11 @@ export function clampVolumetricGrams(items: ParsedItem[]): ParsedItem[] {
 // to go read the label.
 export function checkAtwater(items: ParsedItem[]): ParsedItem[] {
   return items.map((item) => {
+    // A line the user typed themselves is not ours to second-guess. They may
+    // deliberately be accounting for fiber or alcohol, and telling them their
+    // own numbers "disagree" after they merely changed the quantity reads as
+    // the app arguing with them.
+    if (item.source === "manual") return item;
     const atwater = 4 * item.protein_g + 4 * item.carb_g + 9 * item.fat_g;
     if (atwater < 20 && item.kcal < 20) return item;
     const ref = Math.max(item.kcal, atwater);
@@ -1628,8 +1633,13 @@ export async function tryFastCorrection(
       carb_g: round1(per100.carb_g * f),
       fat_g: round1(per100.fat_g * f),
       fiber_g: per100.fiber_g === null ? null : round1(per100.fiber_g * f),
-      source: "catalog",
-      assumption: null,
+      // Keep the line's provenance. Hardcoding "catalog" promoted an OFF-backed
+      // row to a fully vetted one: the card's "from label" chip vanished and a
+      // packaged-food panel started reading as a curated match, purely because
+      // the user changed the quantity. Same for the assumption note, which
+      // explains an earlier judgement that a rescale does not invalidate.
+      source: prev.source ?? "catalog",
+      assumption: prev.assumption ?? null,
       confidence: "high",
     });
   }
