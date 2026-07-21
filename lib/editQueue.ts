@@ -49,6 +49,21 @@ export interface PendingEditExercise {
   sets: PendingEditSet[];
   /** Superset grouping ordinal (migration 0060), stamped per set at flush. NULL = solo. */
   supersetGroup?: number | null;
+  /**
+   * Session note (migration 0080), loaded with the workout and carried back
+   * unchanged. The edit screen has no UI to change a note, so this always
+   * equals what is already on the server and the flush deliberately does not
+   * write it.
+   *
+   * It is carried for two things that both matter:
+   *   - the resolve guard below, so a note-bearing exercise that hasn't
+   *     resolved can't slip through unnoticed;
+   *   - keptExerciseIds in the orphan cleanup. An exercise missing from this
+   *     list reads as "removed by the edit" and has its note deleted, so every
+   *     exercise in the workout has to round-trip through here — including the
+   *     ones that exist for their note alone and have no sets to be found by.
+   */
+  note?: string | null;
 }
 
 export interface PendingWorkoutEdit {
@@ -211,6 +226,13 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
     const e = w?.id ? byId.get(w.id) : undefined;
     if (!e) return w;
     let setId = 0;
+    // Per-exercise session notes (migration 0080) come straight off the edit
+    // entry, which loads them with the workout and carries them back unchanged.
+    // They used to be re-derived from the row being overlaid, matched by
+    // exercise NAME, because the entry didn't carry them yet; that collapsed
+    // the two instances of an exercise a workout can legitimately list twice
+    // (a superset, or a routine repeating it) into one map key and could show
+    // a note against the wrong one until the next refetch.
     return {
       ...w,
       name: e.name,
@@ -222,6 +244,7 @@ export function applyEditsToHistoryRows(userId: string | null | undefined, rows:
       exercises: e.exercises.map((ex) => ({
         name: ex.def.name,
         metric_type: ex.def.metric_type,
+        note: ex.note ?? null,
         sets: ex.sets.map((s) => ({
           weight_kg: s.weight_kg, reps: s.reps, completed: true,
           duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
@@ -327,7 +350,18 @@ async function flushPendingEdit(
     }
   }
   if (changed) patchEntry(userId, entry.workoutId, { exercises: entry.exercises });
-  if (entry.exercises.some((ex) => !ex.resolvedExerciseId && ex.sets.length > 0)) {
+  // Mirrors the guard in lib/syncQueue.ts: a note counts as content, so an
+  // exercise carrying one but no sets still has to resolve before we proceed.
+  // Not currently reachable (only pre-existing, already-resolved exercises can
+  // have a note by the time they reach this queue), but the consequence if it
+  // ever becomes reachable is bad and silent: an unresolved exercise is left
+  // out of keptExerciseIds below, and the orphan cleanup then deletes the note
+  // of an exercise the edit never actually removed.
+  if (
+    entry.exercises.some(
+      (ex) => !ex.resolvedExerciseId && (ex.sets.length > 0 || !!ex.note?.trim()),
+    )
+  ) {
     // Couldn't link a set-bearing exercise yet — park (retries; resolves online).
     throw Object.assign(new Error('Some exercises could not be linked yet'), { code: 'EXRES' });
   }
@@ -364,6 +398,25 @@ async function flushPendingEdit(
       const { error: insErr } = await supabase.from('workout_sets').insert(rows);
       if (insErr) throw insErr;
     }
+
+    // Drop session notes (migration 0080) belonging to exercises this edit
+    // removed. Their rows don't cascade off workout_sets, so without this they
+    // outlive the exercise: invisible in History (nothing to hang them off) but
+    // resurrected if the same exercise is ever added back to this workout.
+    // Notes for exercises that survived the edit are left alone.
+    const keptExerciseIds = entry.exercises
+      .map((ex) => ex.resolvedExerciseId)
+      .filter((v): v is string => !!v);
+    let noteCleanup = supabase
+      .from('workout_exercise_notes')
+      .delete()
+      .eq('workout_id', entry.workoutId);
+    if (keptExerciseIds.length > 0) {
+      noteCleanup = noteCleanup.not('exercise_id', 'in', `(${keptExerciseIds.join(',')})`);
+    }
+    const { error: noteErr } = await noteCleanup;
+    if (noteErr) throw noteErr;
+
     phase = 'sets_replaced';
     patchEntry(userId, entry.workoutId, { phase });
   }

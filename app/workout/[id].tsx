@@ -65,6 +65,20 @@ import { DronaMark } from '@/components/coach/DronaMark';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * Does this exercise belong in the saved workout?
+ *
+ * Normally that means it has at least one completed set — an exercise you
+ * opened and walked away from isn't part of the record. A session note is the
+ * exception: "shoulders felt sore so I skipped this" is exactly the kind of
+ * thing worth reading back later, and it only exists because the user typed it.
+ * So a note keeps the exercise (with zero sets) in the workout, contributing
+ * nothing to volume, set count, or XP, purely so history has something to hang
+ * the note off. History renders these note-only rows without pills or a best.
+ */
+const keepInSavedWorkout = (e: ActiveWorkoutExercise): boolean =>
+  e.sets.some((s) => s.completed) || !!e.sessionNote?.trim();
+
 // ─── Supersets (migration 0060) ──────────────────────────────────────────────
 // After a set is logged for exercise `fromIdx`, decide the next step within its
 // superset group (members share supersetGroup, kept contiguous in the array):
@@ -361,8 +375,14 @@ export default function ActiveWorkoutScreen() {
   // owner flips. Null owner makes every note effect and edit a no-op instead.
   const notesOwner = !clerkLoaded ? null : isGuestSession ? 'guest' : user?.id;
   const [stickyNotes, setStickyNotes] = useState<Record<string, string>>({});
-  const [editingStickyNote, setEditingStickyNote] = useState(false);
   const stickyFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Which of the two note editors at the foot of the page is open, if either.
+  // One piece of state rather than two booleans so opening one closes the other
+  // — two autoFocus inputs mounted at once would fight over the keyboard.
+  //   'today'  — how this exercise went in THIS session (workout_exercise_notes).
+  //   'sticky' — the reminder that follows the exercise everywhere.
+  const [editingNote, setEditingNote] = useState<'today' | 'sticky' | null>(null);
 
   // Local-first load, then reconcile with the server: push edits a previous
   // session couldn't deliver, pull edits from other devices (dirty wins).
@@ -397,7 +417,7 @@ export default function ActiveWorkoutScreen() {
   // Collapse the note editor when the pager moves to another exercise or a new
   // session starts (the screen instance is reused across workouts, so stale
   // edit state would otherwise leak into the next session's first exercise).
-  useEffect(() => { setEditingStickyNote(false); }, [currentIdx, workout.routineId]);
+  useEffect(() => { setEditingNote(null); }, [currentIdx, workout.routineId]);
 
   // Flush any pending note edit when leaving the screen.
   useEffect(() => () => {
@@ -415,6 +435,16 @@ export default function ActiveWorkoutScreen() {
     if (notesOwner === 'guest' || !isSupabaseConfigured) return;
     if (stickyFlushTimer.current) clearTimeout(stickyFlushTimer.current);
     stickyFlushTimer.current = setTimeout(() => { void flushExerciseNotes(supabase, notesOwner); }, 1200);
+  };
+
+  // The session note is plain session state, so it needs none of the sticky
+  // note's local-store machinery: it rides the workout's own snapshot (so an
+  // OS-kill mid-session keeps it) and is written to workout_exercise_notes at
+  // finish. Discarding the workout discards the note, which is the point.
+  const handleSessionNoteChange = (text: string) => {
+    workout.updateExercises(prev =>
+      prev.map((e, i) => (i === currentIdx ? { ...e, sessionNote: text } : e)),
+    );
   };
 
   // Snapshot the live session and open the coach. Taking the snapshot here
@@ -1537,7 +1567,13 @@ export default function ActiveWorkoutScreen() {
     // left up by the set logger.
     Keyboard.dismiss();
     const count = exercises.flatMap(e => e.sets.filter(s => s.completed)).length;
-    if (count === 0) {
+    // A session with nothing logged is normally not worth saving. Notes are the
+    // exception, and for the same reason keepInSavedWorkout keeps a note-only
+    // exercise: the user typed it, so they mean to read it back. "Everything
+    // hurt, logged nothing" is a real session and blocking it would throw the
+    // notes away at the last step.
+    const hasNotes = exercises.some(e => !!e.sessionNote?.trim());
+    if (count === 0 && !hasNotes) {
       setShowNoSetsAlert(true);
       return;
     }
@@ -2018,14 +2054,18 @@ export default function ActiveWorkoutScreen() {
           notes: workoutNotes ?? undefined,
           workout_sets: allCompleted.map((_, i) => ({ id: `gs-${Date.now()}-${i}` })),
           exercises: exercises
-            .filter(e => e.sets.some(s => s.completed))
+            .filter(keepInSavedWorkout)
             .map(e => ({
               name: e.exercise.name,
               muscle_group: e.exercise.muscle_group,
               category: e.exercise.category,
               metric_type: metricTypeOf(e.exercise),
               superset_group: e.supersetGroup ?? null,
+              note: e.sessionNote?.trim() || null,
               sets: e.sets.filter(s => s.completed).map(s => ({
+                // Only completed sets get here, but the flag has to be written
+                // out: history reads these objects as-is and filters on it.
+                completed: true,
                 weight_kg: s.weight_kg, reps: s.reps,
                 duration_seconds: s.duration_seconds ?? null, distance_m: s.distance_m ?? null,
                 resistance: s.resistance ?? null,
@@ -2064,7 +2104,7 @@ export default function ActiveWorkoutScreen() {
       // of dropped: the flusher resolves them to real rows at sync time, so
       // their sets survive even when the in-workout resolve failed offline.
       const pendingExercises = exercises
-        .filter(e => e.sets.some(s => s.completed))
+        .filter(keepInSavedWorkout)
         .map(e => ({
           def: {
             name: e.exercise.name,
@@ -2074,6 +2114,7 @@ export default function ActiveWorkoutScreen() {
           },
           resolvedExerciseId: String(e.exercise.id).startsWith('temp-') ? null : e.exercise.id,
           supersetGroup: e.supersetGroup ?? null,
+          note: e.sessionNote?.trim() || null,
           sets: e.sets
             .filter(s => s.completed)
             .map((s, idx) => ({
@@ -2759,36 +2800,70 @@ export default function ActiveWorkoutScreen() {
               </View>
             )}
 
-            {/* Exercise note — the user's own reminder for this exercise, kept
-                across every session (user_exercise_notes). The only in-workout
-                note: sits here at the foot of the page, collapsed to a quiet
-                one-line row that expands to an editor with an explicit Done.
-                Saves on every keystroke, so it survives a discarded workout.
-                Editor only on the interactive pager page — all pages mounting
-                autoFocus inputs at once would steal focus from each other. */}
-            {(() => {
-              const noteText = stickyNotes[exerciseNoteKey(currentEx.exercise.name)] ?? '';
-              if (editingStickyNote && interactive) {
+            {/* The two exercise notes, at the foot of the page. Both are quiet
+                one-line rows that expand into an editor with an explicit Done;
+                only one can be open at a time (editingNote). Order is
+                today-then-always, so the row you write during the set sits
+                closest to the sets.
+
+                  today  — how it went THIS session ("shoulders felt sore").
+                           Session state; saves with the workout, shows in
+                           history, dies with a discarded session.
+                  sticky — the reminder that follows the exercise into every
+                           routine and session (user_exercise_notes). Saves on
+                           every keystroke, independent of the workout.
+
+                Editors render only on the interactive pager page: all pages
+                mounting autoFocus inputs at once would steal focus. */}
+            {([
+              {
+                kind: 'today' as const,
+                icon: 'message-square' as const,
+                label: 'HOW TODAY WENT',
+                empty: 'How did this one feel today?',
+                editorPlaceholder: 'Shoulders felt sore on the last two sets',
+                a11y: 'session note',
+                value: currentEx.sessionNote ?? '',
+                onChange: handleSessionNoteChange,
+              },
+              {
+                kind: 'sticky' as const,
+                icon: 'bookmark' as const,
+                label: 'EXERCISE NOTE',
+                empty: 'Add a note that stays with this exercise',
+                // A worked example, not an explanation. The label and the
+                // collapsed row already say what this note is for, so the
+                // placeholder's job is to show the shape of a good one.
+                editorPlaceholder: 'Incline at 45 degrees',
+                a11y: 'exercise note',
+                value: stickyNotes[exerciseNoteKey(currentEx.exercise.name)] ?? '',
+                onChange: handleStickyNoteChange,
+              },
+            ]).map((n, i) => {
+              // Only the first row carries the gap off the sets above it; the
+              // second tucks up under the first as a pair.
+              const marginTop = i === 0 ? Spacing.xl : Spacing.xs;
+              if (editingNote === n.kind && interactive) {
                 return (
-                  <View style={[styles.stickyNoteEditor, { marginTop: Spacing.xl }]}>
+                  <View key={n.kind} style={[styles.stickyNoteEditor, { marginTop }]}>
                     <View style={styles.stickyNoteEditorHead}>
-                      <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>NOTE TO SELF</Text>
+                      <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>{n.label}</Text>
                       <TouchableOpacity
-                        onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingStickyNote(false); }}
+                        onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingNote(null); }}
                         style={styles.stickyNoteDone}
                         hitSlop={10}
                         accessibilityRole="button"
-                        accessibilityLabel="Save exercise note"
+                        accessibilityLabel={`Save ${n.a11y}`}
                       >
                         <Feather name="check" size={13} color={Colors.primary} />
                         <Text style={[styles.stickyNoteDoneText, { color: Colors.primary }]}>Done</Text>
                       </TouchableOpacity>
                     </View>
                     <TextInput
-                      value={noteText}
-                      onChangeText={handleStickyNoteChange}
-                      onSubmitEditing={() => { Keyboard.dismiss(); setEditingStickyNote(false); }}
-                      placeholder="Stays with this exercise. Form cues, setup, reminders."
+                      value={n.value}
+                      onChangeText={n.onChange}
+                      onSubmitEditing={() => { Keyboard.dismiss(); setEditingNote(null); }}
+                      placeholder={n.editorPlaceholder}
                       placeholderTextColor={C.textMuted}
                       multiline
                       autoFocus
@@ -2800,25 +2875,26 @@ export default function ActiveWorkoutScreen() {
                   </View>
                 );
               }
-              const hasNote = noteText.trim().length > 0;
+              const hasNote = n.value.trim().length > 0;
               return (
                 <TouchableOpacity
-                  onPress={() => { haptics.selection(); setEditingStickyNote(true); }}
-                  style={[styles.stickyNoteRow, { marginTop: Spacing.xl }]}
+                  key={n.kind}
+                  onPress={() => { haptics.selection(); setEditingNote(n.kind); }}
+                  style={[styles.stickyNoteRow, { marginTop }]}
                   hitSlop={6}
                   accessibilityRole="button"
-                  accessibilityLabel={hasNote ? 'Edit exercise note' : 'Add exercise note'}
+                  accessibilityLabel={hasNote ? `Edit ${n.a11y}` : `Add ${n.a11y}`}
                 >
-                  <Feather name={hasNote ? 'edit-3' : 'plus'} size={10} color={C.textMuted} />
+                  <Feather name={hasNote ? n.icon : 'plus'} size={10} color={C.textMuted} />
                   <Text
                     numberOfLines={1}
                     style={[styles.stickyNoteText, { color: hasNote ? C.mutedFg : C.textMuted }]}
                   >
-                    {hasNote ? noteText.trim() : 'Add a note for this exercise'}
+                    {hasNote ? n.value.trim() : n.empty}
                   </Text>
                 </TouchableOpacity>
               );
-            })()}
+            })}
             {renderSettingsLink()}
           </>
     );

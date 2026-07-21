@@ -1317,6 +1317,42 @@ Deno.serve(async (req) => {
     return typeof g === "string" && g.length > 0 ? g : null;
   })();
 
+  // 4b. The user's sticky per-exercise notes (user_exercise_notes, migration
+  // 0076): "incline bench at 45 degrees", "left shoulder needs a longer
+  // warmup". Standing instructions about how they train a movement, so a
+  // generated workout that contradicts them reads as not listening.
+  //
+  // Fetched separately rather than folded into get_user_coach_context(): that
+  // RPC is a heavier shared surface and this is a plain RLS-scoped select. The
+  // result is merged into the userContext blob so the prompt builder needs no
+  // new parameter. Best-effort — a failure just means the model plans without
+  // them, exactly as it did before.
+  try {
+    const { data: noteRows, error: notesError } = await userClient
+      .from("user_exercise_notes")
+      .select("note, exercises(name)")
+      .order("updated_at", { ascending: false })
+      .limit(60);
+    if (notesError) {
+      console.log("[ai-coach] exercise-notes error:", notesError.message);
+    } else if (noteRows?.length) {
+      const exerciseNotes = (noteRows as Array<Record<string, any>>)
+        .map((r) => ({ exercise: r?.exercises?.name, note: r?.note }))
+        .filter((n) => typeof n.exercise === "string" && typeof n.note === "string");
+      if (exerciseNotes.length > 0) {
+        // Null userContext means guest/no-data; a notes-only context is still
+        // worth passing, so seed an object rather than dropping them.
+        if (!userContext || typeof userContext !== "object") userContext = {};
+        (userContext as Record<string, unknown>).exercise_notes = exerciseNotes;
+        // The flag is set above off the RPC alone; keep it honest now that a
+        // notes-only context also counts as personalized data.
+        trace.has_user_context = true;
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] exercise-notes fetch threw:", String(e));
+  }
+
   // 5. Validate messages (body was parsed once above, before the rate gate)
   const incomingMessages = body.messages;
   if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
