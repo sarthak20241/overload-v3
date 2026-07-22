@@ -2072,10 +2072,11 @@ export async function runParseMeal(
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 
-  // Weak lines the client can offer to improve with a visible web search
-  // (phase 2). A line is weak when we never matched it to a real food (an
-  // estimate) or a guardrail flagged it (confidence dropped to low). We never
-  // touch what the user typed (manual) or a label we already fetched (web).
+  // Lines we could not ground in any source - the honest "couldn't find a
+  // match" case - that the client offers to look up online (phase 2). A line
+  // a guardrail merely FLAGGED (matched but low confidence) is not here: we
+  // did find something, so "couldn't find it" would be a lie. Those are left
+  // to the user-challenge path, which re-searches on what the user describes.
   const webRefine = deps.webSearchEnabled
     ? items.filter((it) => isRefinable(it)).map((it) => it.food_name)
     : [];
@@ -2092,10 +2093,11 @@ export async function runParseMeal(
   };
 }
 
-/** A line phase 2's visible web search may try to improve. Estimates (no real
- *  match) and guardrail-flagged lines qualify; the user's own numbers and an
- *  already-fetched web label do not. */
+/** A line the automatic web search should try to ground: one we could not
+ *  match to any catalog/OFF source, so it shipped as a bare estimate. A line
+ *  we DID match (even one a guardrail flagged low-confidence) is not here -
+ *  claiming "couldn't find it" would be false; the user challenges those. The
+ *  user's own numbers and an already-fetched web label are never touched. */
 export function isRefinable(it: ParsedItem): boolean {
-  if (it.source === "manual" || it.source === "web") return false;
-  return it.source === "estimate" || it.confidence === "low";
+  return it.source === "estimate";
 }
