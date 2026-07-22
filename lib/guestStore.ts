@@ -51,7 +51,13 @@ interface GuestWorkoutExercise {
   metric_type?: MetricType;
   /** Superset grouping ordinal (migration 0060), per exercise; null = solo. */
   superset_group?: number | null;
-  sets: { weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
+  /** How this exercise went in this session — the guest-side mirror of
+   * workout_exercise_notes (migration 0080). Absent = no note. */
+  note?: string | null;
+  /** Only completed sets are ever stored. `completed` is written since the
+   * migration-0080 note work; entries saved before it omit the field, so
+   * readers must treat absent as completed rather than as false. */
+  sets: { completed?: boolean; weight_kg: number; reps: number; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string; rpe?: number | null; is_unilateral?: boolean; reps_right?: number | null; rpe_right?: number | null; weight_kg_right?: number | null }[];
 }
 
 export interface GuestWorkout {

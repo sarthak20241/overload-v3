@@ -992,6 +992,53 @@ drop policy if exists "own exercise notes delete" on user_exercise_notes;
 create policy "own exercise notes delete" on user_exercise_notes
   for delete to authenticated using (user_id = auth.jwt()->>'sub');
 
+-- ─── Workout Exercise Notes (matches migration 0080) ────────────────────────
+-- How ONE exercise went in ONE session ("shoulders felt sore on the last two
+-- sets"). Written during the workout, read back in history, not carried into
+-- the next session. Scoped through the parent workout like workout_sets.
+create table if not exists workout_exercise_notes (
+  workout_id  uuid not null references workouts(id) on delete cascade,
+  exercise_id uuid not null references exercises(id) on delete cascade,
+  note        text not null constraint workout_exercise_notes_note_length_check
+                check (char_length(note) <= 1000),
+  created_at  timestamptz not null default now(),
+  primary key (workout_id, exercise_id)
+);
+
+-- The PK covers workout_id; this one is for the cascade off exercises.
+create index if not exists idx_workout_exercise_notes_exercise
+  on workout_exercise_notes(exercise_id);
+
+alter table workout_exercise_notes enable row level security;
+
+drop policy if exists "own workout exercise notes select" on workout_exercise_notes;
+create policy "own workout exercise notes select" on workout_exercise_notes
+  for select to authenticated using (exists (
+    select 1 from workouts w where w.id = workout_exercise_notes.workout_id
+                              and w.user_id = auth.jwt()->>'sub'));
+
+drop policy if exists "own workout exercise notes insert" on workout_exercise_notes;
+create policy "own workout exercise notes insert" on workout_exercise_notes
+  for insert to authenticated with check (exists (
+    select 1 from workouts w where w.id = workout_exercise_notes.workout_id
+                              and w.user_id = auth.jwt()->>'sub'));
+
+drop policy if exists "own workout exercise notes update" on workout_exercise_notes;
+create policy "own workout exercise notes update" on workout_exercise_notes
+  for update to authenticated
+  using (exists (
+    select 1 from workouts w where w.id = workout_exercise_notes.workout_id
+                              and w.user_id = auth.jwt()->>'sub'))
+  with check (exists (
+    select 1 from workouts w where w.id = workout_exercise_notes.workout_id
+                              and w.user_id = auth.jwt()->>'sub'));
+
+drop policy if exists "own workout exercise notes delete" on workout_exercise_notes;
+create policy "own workout exercise notes delete" on workout_exercise_notes
+  for delete to authenticated using (exists (
+    select 1 from workouts w where w.id = workout_exercise_notes.workout_id
+                              and w.user_id = auth.jwt()->>'sub'));
+
 -- ─── Seed: Common Exercises ─────────────────────────────────────────────────
 insert into exercises (name, muscle_group, category) values
   ('Bench Press', 'Chest', 'Barbell'),

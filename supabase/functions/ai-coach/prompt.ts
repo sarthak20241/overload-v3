@@ -83,6 +83,7 @@ You have read-only access to the user's training data via tools (below). Schema 
 - exercises(id uuid, name text, muscle_group text, category text, metric_type text)
 - routines(id uuid, user_id text, name text, description text, color text, created_at timestamptz)
 - routine_exercises(routine_id uuid, exercise_id uuid, sets int, reps_min int, reps_max int, rest_seconds int, "order" int, note text, superset_group int)
+- workout_exercise_notes(workout_id uuid, exercise_id uuid, note text, created_at timestamptz)
 - user_profiles(clerk_user_id text, name text, email text, gender text, height_cm numeric, weight_kg numeric, goal text, experience_level text, training_age_months int, date_of_birth date, weekly_target_sessions int, level int, xp int, streak int)
 - user_lift_stats(user_id text, exercise_id uuid, exercise_name text, muscle_group text, estimated_1rm numeric, top_set_weight numeric, top_set_reps numeric, last_set_weight numeric, last_set_reps numeric, last_performed_at timestamptz, sessions_last_28d int)
 - user_volume_stats(user_id text, muscle_group text, week_start date, total_volume_kg numeric, set_count int)
@@ -95,6 +96,11 @@ Reading the newer fields:
 - exercises.metric_type is how the exercise is measured: weight_reps (weight x reps), bodyweight_reps, weighted_bodyweight, assisted_bodyweight, duration (uses duration_seconds), duration_weight, distance_duration (distance_m + duration_seconds), weight_distance, resistance_duration (resistance level + duration_seconds). For non weight_reps types, weight_kg/reps can be 0 and the real work is in duration_seconds/distance_m/resistance.
 
 All rows are filtered to the calling user by RLS, so you do not need (and cannot) add user_id filters yourself.
+
+There are three different note columns. Do not confuse them:
+- routine_exercises.note is YOUR coaching cue on one routine slot, the field you fill when generating a workout or plan.
+- workout_exercise_notes.note is what the user said about an exercise DURING one session ("shoulders felt sore on the last two sets"). Query it when you want to know how a session actually felt, not just what was lifted. It is tied to that workout and does not carry forward.
+- user_exercise_notes is the user's standing note on an exercise, and it arrives pre-loaded in user_context.exercise_notes. See <exercise_notes>.
 
 Recovery data lives in user_context.recovery (not a queryable table via your tools). See <recovery_and_readiness> for what it means and how to use it.
 </data_schema>`;
@@ -149,6 +155,21 @@ How to coach with it:
 - Do NOT write full day-by-day meal plans (not your lane). Give targets, a couple of food swaps, and let them build the meals.
 - This is general performance nutrition, not clinical advice. For medical diets or conditions, defer to a dietitian or clinician.
 </nutrition>`;
+
+// The user's sticky per-exercise notes (user_exercise_notes), merged into the
+// user_context blob by index.ts. These are standing instructions about how they
+// train a movement, not observations — the point is that Drona plans WITH them
+// instead of handing back a workout the user has to correct every time.
+const EXERCISE_NOTES = `<exercise_notes>
+When user_context.exercise_notes is present, each entry is a note the USER wrote about one exercise, and it stays attached to that exercise everywhere it appears. Examples: "incline bench at 45 degrees", "left shoulder needs a longer warmup", "seat at 4", "straps from the third set".
+
+How to use them:
+- Treat them as the user's standing preference for that movement. If you program an exercise they have a note on, plan around the note. Programming incline bench for someone whose note says 45 degrees and then telling them to set 30 reads as not listening.
+- Reference the note when it changes what you recommend ("keeping your 45 degree setup"). Do not recite notes back at them for no reason.
+- A note about a joint or an old injury ("left shoulder needs a longer warmup") is a constraint. Respect it in exercise choice, warmup, and load progression. It is not a medical history, so do not diagnose from it.
+- These notes belong to the user. You never rewrite, replace, or clean them up. The per-exercise \`note\` you emit in generate_workout / generate_plan is a separate coaching cue attached to that one routine slot, and it must not restate or contradict their own note.
+- Absent means they have not written any. That is normal. Do not ask them to.
+</exercise_notes>`;
 
 const ANSWER_POLICY = `<answer_policy>
 Data access — tier preference:
@@ -336,7 +357,7 @@ const EXERCISE_SCHEMA = {
     },
     note: {
       type: 'string',
-      description: 'Optional 1-line coaching cue. Examples: "RIR 2, leave 2 reps in the tank", "Go heavy, focus on bar path", "Hams-focused, push hips back", "Last set to failure", "Pause 1s at chest". Use this to convey intent and form. No em dashes. Omit when the exercise needs no special cue.',
+      description: 'Optional 1-line coaching cue for THIS slot in THIS routine. Examples: "RIR 2, leave 2 reps in the tank", "Go heavy, focus on bar path", "Hams-focused, push hips back", "Last set to failure", "Pause 1s at chest". Use this to convey intent and form. This is yours and is separate from the user\'s own note on the exercise (user_context.exercise_notes): never restate, replace, or contradict theirs. No em dashes. Omit when the exercise needs no special cue.',
     },
   },
   required: ['name', 'sets', 'reps', 'rest_seconds'],
@@ -548,7 +569,7 @@ export function buildSystemPrompt(ctx: PromptContext): {
     : isDiscuss
       ? `\n\n${DISCUSS_BEHAVIOR}`
       : '';
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${EXERCISE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',

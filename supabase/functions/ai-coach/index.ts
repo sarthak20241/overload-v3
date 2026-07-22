@@ -12,6 +12,7 @@ import {
   runParseMeal,
   runWebRefine,
 } from "./parseMeal.ts";
+import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
 // NOT Edge Functions. We deploy verify_jwt:false and verify the Clerk JWT
@@ -54,11 +55,15 @@ const CHAT_MAX_TOKENS = 1024;
 const GENERATE_WORKOUT_MAX_TOKENS = 2048;
 const GENERATE_PLAN_MAX_TOKENS = 4096;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
-// Hard cap on a single Anthropic call. A hung upstream would otherwise pin
-// function execution for the gateway's whole 60s budget. 30s comfortably
-// covers Sonnet's worst-case latency at our max_tokens for plans (≤4k) plus
-// streaming overhead; tighten if we see false positives in coach_traces.
-const ANTHROPIC_TIMEOUT_MS = 30000;
+// Hard cap on a single Anthropic call — a guard against a HUNG upstream, not
+// a latency budget. The original 30s was set from n=4 production samples and
+// sat exactly on the p50 of real generate_plan runs: the 2026-07-19 eval
+// (tools/plan-eval, 27 runs) measured p50 29.4s / p95 47.5s / max 48.6s, so
+// 12/27 plans died at the abort and silently fell back to the deterministic
+// starter plan. 80s clears the observed max with ~30s headroom while still
+// killing a truly wedged connection. Note the onboarding client
+// (lib/onboardingDrona.ts) aborts at 75s, so it gives up before we do.
+const ANTHROPIC_TIMEOUT_MS = 80000;
 
 // parse_meal mode (AI food logging). Haiku for speed + cost: this fires on
 // every meal, and the catalog does the nutrition work — the model only
@@ -73,6 +78,12 @@ const PARSE_MEAL_MAX_TOKENS = 1600;
 let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
+
+// Fan-out plan generation. On by default; set PLAN_FANOUT=false in the Edge
+// Function secrets to fall back to the single forced-tool call without a
+// redeploy. Worth having a switch: this changes the shape of every
+// generate_plan request, and the onboarding funnel (PR #66) depends on it.
+const PLAN_FANOUT_ENABLED = Deno.env.get("PLAN_FANOUT") !== "false";
 
 // Retrieval (Phase 2.2). VOYAGE_API_KEY is optional — if missing, we skip
 // retrieval and the coach falls back to user_context + core_principles. That
@@ -131,6 +142,26 @@ interface CoachTrace {
   tool_calls: string[];
   last_user_message_preview: string | null;
   response_preview: string | null;
+  // Migration 0080. `latency_ms` alone cannot say WHERE a slow turn went;
+  // these can. `spans` carries ms per phase (auth/access/rate_limit/
+  // user_context/embed/retrieval/ttft/decode) plus, for multi-call pipelines,
+  // a `stages` array with one entry per model call.
+  mode: string | null;
+  spans: Record<string, unknown> | null;
+}
+
+/** Accumulates phase timings without littering the handler with Date.now(). */
+function makeSpanRecorder() {
+  const spans: Record<string, unknown> = {};
+  return {
+    spans,
+    /** Time an awaited step and record its duration under `label`. */
+    async track<T>(label: string, fn: () => Promise<T>): Promise<T> {
+      const t = Date.now();
+      try { return await fn(); } finally { spans[label] = Date.now() - t; }
+    },
+    set(label: string, value: unknown) { spans[label] = value; },
+  };
 }
 
 function newTrace(): CoachTrace {
@@ -152,6 +183,8 @@ function newTrace(): CoachTrace {
     tool_calls: [],
     last_user_message_preview: null,
     response_preview: null,
+    mode: null,
+    spans: null,
   };
 }
 
@@ -213,13 +246,33 @@ async function recordTrace(
   trace: CoachTrace,
   startedAtMs: number,
 ): Promise<void> {
+  const row = { ...trace, latency_ms: Date.now() - startedAtMs };
   try {
-    await admin.from("coach_traces").insert({
-      ...trace,
-      latency_ms: Date.now() - startedAtMs,
-    });
+    // supabase-js v2 returns { error } and does NOT throw on backend errors,
+    // so the bare try/catch this replaced caught nothing: every failed trace
+    // insert was silently discarded. Same trap logTokenUsage already documents.
+    const { error } = await admin.from("coach_traces").insert(row);
+    if (!error) return;
+
+    // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
+    // the function ships before the migration is applied, PostgREST rejects
+    // the whole row for unknown columns and we lose EVERY trace, including the
+    // observability this change exists to add. Retry once without them rather
+    // than couple a code deploy to a migration.
+    const missingColumn = /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "");
+    if (missingColumn) {
+      const { mode: _mode, spans: _spans, ...legacy } = row;
+      const { error: retryErr } = await admin.from("coach_traces").insert(legacy);
+      console.log(
+        retryErr
+          ? `[ai-coach] trace insert failed after legacy retry: ${(retryErr.message ?? "").slice(0, 200)}`
+          : "[ai-coach] trace inserted without mode/spans (migration 0080 not applied yet)",
+      );
+      return;
+    }
+    console.log("[ai-coach] trace insert error:", (error.message ?? String(error)).slice(0, 200));
   } catch (e) {
-    console.log("[ai-coach] trace insert failed:", String(e));
+    console.log("[ai-coach] trace insert threw:", String(e).slice(0, 200));
   }
 }
 
@@ -495,65 +548,91 @@ async function runStreamingToolLoop(
       ? { type: "tool" as const, name: forceTool }
       : undefined;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY!,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: maxTokens,
-        system,
-        tools,
-        messages: conversation,
-        stream: true,
-        ...(toolChoice ? { tool_choice: toolChoice } : {}),
-      }),
-    });
+    // Same hung-upstream guard as the non-streaming callAnthropic. The abort
+    // signal covers the body reads too, so a stream that stalls mid-flight
+    // (observed: forced tool_use delivers its payload in one burst after a
+    // 20s+ gap) still gets killed at the cap instead of pinning the function.
+    const streamAbort = new AbortController();
+    const streamTimeoutId = setTimeout(() => streamAbort.abort(), ANTHROPIC_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: maxTokens,
+          system,
+          tools,
+          messages: conversation,
+          stream: true,
+          ...(toolChoice ? { tool_choice: toolChoice } : {}),
+        }),
+        signal: streamAbort.signal,
+      });
+    } catch (e) {
+      clearTimeout(streamTimeoutId);
+      if ((e as Error)?.name === "AbortError") {
+        throw new Error(`Anthropic streaming call exceeded ${ANTHROPIC_TIMEOUT_MS}ms timeout`);
+      }
+      throw e;
+    }
     if (!response.ok || !response.body) {
+      clearTimeout(streamTimeoutId);
       throw new Error(`Anthropic ${response.status}: ${await response.text()}`);
     }
 
     const blocks: any[] = []; // accumulated content blocks for this iteration
     let stopReason: string | null = null;
 
-    for await (const event of parseAnthropicStream(response.body)) {
-      const t = event.type;
-      if (t === "message_start") {
-        const u = event.message?.usage ?? {};
-        totalInput += u.input_tokens ?? 0;
-        totalCacheCreation += u.cache_creation_input_tokens ?? 0;
-        totalCacheRead += u.cache_read_input_tokens ?? 0;
-      } else if (t === "content_block_start") {
-        blocks[event.index] = { ...event.content_block, _text: "", _input: "" };
-      } else if (t === "content_block_delta") {
-        const d = event.delta;
-        const blk = blocks[event.index];
-        if (!blk) continue;
-        if (d.type === "text_delta") {
-          blk._text += d.text;
-          accumulatedText += d.text;
-          sse.write("delta", { text: d.text });
-        } else if (d.type === "input_json_delta") {
-          blk._input += d.partial_json;
+    try {
+      for await (const event of parseAnthropicStream(response.body)) {
+        const t = event.type;
+        if (t === "message_start") {
+          const u = event.message?.usage ?? {};
+          totalInput += u.input_tokens ?? 0;
+          totalCacheCreation += u.cache_creation_input_tokens ?? 0;
+          totalCacheRead += u.cache_read_input_tokens ?? 0;
+        } else if (t === "content_block_start") {
+          blocks[event.index] = { ...event.content_block, _text: "", _input: "" };
+        } else if (t === "content_block_delta") {
+          const d = event.delta;
+          const blk = blocks[event.index];
+          if (!blk) continue;
+          if (d.type === "text_delta") {
+            blk._text += d.text;
+            accumulatedText += d.text;
+            sse.write("delta", { text: d.text });
+          } else if (d.type === "input_json_delta") {
+            blk._input += d.partial_json;
+          }
+        } else if (t === "content_block_stop") {
+          const blk = blocks[event.index];
+          if (!blk) continue;
+          if (blk.type === "text") blk.text = blk._text;
+          if (blk.type === "tool_use") {
+            try { blk.input = blk._input ? JSON.parse(blk._input) : {}; }
+            catch { blk.input = {}; }
+          }
+        } else if (t === "message_delta") {
+          stopReason = event.delta?.stop_reason ?? null;
+          const u = event.usage ?? {};
+          totalOutput += u.output_tokens ?? 0;
+        } else if (t === "error") {
+          throw new Error(`Anthropic stream error: ${JSON.stringify(event.error ?? {})}`);
         }
-      } else if (t === "content_block_stop") {
-        const blk = blocks[event.index];
-        if (!blk) continue;
-        if (blk.type === "text") blk.text = blk._text;
-        if (blk.type === "tool_use") {
-          try { blk.input = blk._input ? JSON.parse(blk._input) : {}; }
-          catch { blk.input = {}; }
-        }
-      } else if (t === "message_delta") {
-        stopReason = event.delta?.stop_reason ?? null;
-        const u = event.usage ?? {};
-        totalOutput += u.output_tokens ?? 0;
-      } else if (t === "error") {
-        throw new Error(`Anthropic stream error: ${JSON.stringify(event.error ?? {})}`);
       }
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") {
+        throw new Error(`Anthropic streaming call exceeded ${ANTHROPIC_TIMEOUT_MS}ms timeout mid-stream`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(streamTimeoutId);
     }
 
     // Strip our private accumulators before persisting in conversation history
@@ -624,6 +703,205 @@ async function runStreamingToolLoop(
   }
 
   return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
+}
+
+// ── Fan-out plan generation ─────────────────────────────────────────────────
+
+/**
+ * Global exercise catalog, memoized for the lifetime of the isolate.
+ *
+ * 787 rows, ~5.1k tokens. Carried in a cached system block rather than the
+ * user turn: measured at ~+220ms of TTFT that way versus ~+740ms inline, and
+ * zero detectable change to total latency. Worth it because the previous
+ * grounding set was EXERCISE_LIBRARY's 46 names, 5.8% of the real catalog,
+ * which capped variety and left the skeleton too few complementary variants
+ * to pick from.
+ */
+let catalogCache: { at: number; names: string[] } | null = null;
+const CATALOG_TTL_MS = 10 * 60 * 1000;
+
+async function loadExerciseCatalog(admin: SupabaseClient): Promise<string[]> {
+  if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) return catalogCache.names;
+  try {
+    const { data, error } = await admin
+      .from("exercises")
+      .select("name")
+      .is("created_by", null)
+      .limit(2000);
+    if (error || !data) throw new Error(error?.message ?? "no data");
+    const names = (data as { name: string }[]).map((r) => r.name).filter(Boolean);
+    if (names.length === 0) throw new Error("empty catalog");
+    catalogCache = { at: Date.now(), names };
+    return names;
+  } catch (e) {
+    console.log("[ai-coach] catalog load failed, falling back to stale/empty:", String(e).slice(0, 160));
+    return catalogCache?.names ?? [];
+  }
+}
+
+/** One non-streaming text completion. Fan-out calls are short, and we need
+ *  the whole body before parsing anyway, so streaming buys nothing here. */
+function makeTextCaller(): TextCaller {
+  return async ({ system, messages, maxTokens, model, label }) => {
+    const res = await callAnthropic({
+      model: model ?? MODEL,
+      max_tokens: maxTokens,
+      system,
+      messages,
+    });
+    if (!res.ok) throw new Error(`${label}: anthropic ${res.status}: ${res.body.slice(0, 160)}`);
+    const blocks: Array<{ type: string; text?: string }> = res.data.content ?? [];
+    const u = res.data.usage ?? {};
+    return {
+      text: blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"),
+      usage: {
+        input_tokens: u.input_tokens ?? 0,
+        output_tokens: u.output_tokens ?? 0,
+        cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+      },
+    };
+  };
+}
+
+async function handleFanoutPlan(args: {
+  admin: SupabaseClient;
+  userClient: SupabaseClient;
+  trace: CoachTrace;
+  userId: string;
+  startedAtMs: number;
+  respond: (body: unknown, status: number) => Response;
+  system: unknown[];
+  userMessage: string;
+  stream: boolean;
+}): Promise<Response> {
+  const { admin, trace, userId, startedAtMs, respond, system, userMessage, stream } = args;
+  const catalog = await loadExerciseCatalog(admin);
+
+  const finish = (result: Awaited<ReturnType<typeof runGeneratePlan>>) => {
+    trace.tool_calls.push("generate_plan");
+    trace.status = result.plan ? "success" : "internal_error";
+    trace.input_tokens = result.usage.input_tokens || null;
+    trace.output_tokens = result.usage.output_tokens || null;
+    trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
+    trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
+    if (result.error) trace.error_message = result.error.slice(0, 200);
+    trace.response_preview = preview(result.plan?.rationale ?? null);
+    trace.mode = "generate_plan";
+    // Task-level timing: which call was slow, the skeleton or a straggling
+    // fill. A multi-call pipeline is otherwise a black box in the trace table.
+    trace.spans = {
+      ...(trace.spans ?? {}),
+      pipeline_shape: "fanout",
+      calls: result.calls,
+      stages: result.stages,
+    };
+
+    void logTokenUsage(admin, {
+      pipeline: "coach",
+      provider: "anthropic",
+      model: MODEL,
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens,
+      cache_read_tokens: result.usage.cache_read_input_tokens,
+      cache_creation_tokens: result.usage.cache_creation_input_tokens,
+      latency_ms: Date.now() - startedAtMs,
+      status: result.plan ? "success" : "error",
+      error_message: result.error?.slice(0, 200),
+      metadata: {
+        user_id: userId,
+        mode: "generate_plan",
+        pipeline_shape: "fanout",
+        stream,
+        calls: result.calls,
+        // Per-stage timing. This is the task-level observability that the
+        // single latency_ms number could never give: it shows whether a slow
+        // plan was a slow skeleton or one straggling fill.
+        stages: result.stages,
+      },
+    });
+  };
+
+  if (stream) {
+    const { response: sseResponse, sse } = createSSEResponse();
+    (async () => {
+      try {
+        sse.write("status", { phase: "generating_plan" });
+        const result = await runGeneratePlan(userMessage, {
+          call: makeTextCaller(),
+          catalog,
+          system,
+          model: MODEL,
+          // Progressive reveal: the skeleton already carries every exercise
+          // name, so the client can render the full plan structure at ~5s and
+          // fill in prescriptions as each day lands, instead of showing
+          // nothing until the end. Clients that ignore these events still get
+          // the identical `structured` payload below.
+          onSkeleton: (s) => sse.write("plan_skeleton", {
+            name: s.name, split_type: s.split_type, days_per_week: s.days_per_week,
+            days: s.days.map((d) => ({ name: d.name, note: d.note, exercises: d.slots })),
+          }),
+          onDay: (index, workout) => sse.write("plan_day", { index, workout }),
+        });
+        finish(result);
+
+        if (!result.plan) {
+          sse.write("error", { error: result.error ?? "plan generation failed", code: "plan_failed" });
+          return;
+        }
+        const structured = { name: "generate_plan", input: result.plan as unknown as Record<string, unknown> };
+        sse.write("structured", structured);
+        sse.write("done", {
+          citations: [],
+          usage: {
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            cache_creation_input_tokens: result.usage.cache_creation_input_tokens,
+            cache_read_input_tokens: result.usage.cache_read_input_tokens,
+          },
+          tool_calls: ["generate_plan"],
+          hit_iteration_cap: false,
+          structured,
+        });
+      } catch (e) {
+        trace.status = "internal_error";
+        trace.error_message = `fanout_threw: ${String(e)}`.slice(0, 200);
+        sse.write("error", { error: String(e) });
+      } finally {
+        trace.http_status = 200;
+        try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
+        sse.close();
+      }
+    })();
+    return sseResponse;
+  }
+
+  // Non-streaming: what PR #66's onboarding build moment uses.
+  try {
+    const result = await runGeneratePlan(userMessage, {
+      call: makeTextCaller(), catalog, system, model: MODEL,
+    });
+    finish(result);
+    if (!result.plan) {
+      return respond({ error: "plan_generation_failed", details: result.error ?? null }, 502);
+    }
+    return respond({
+      response: null,
+      citations: [],
+      usage: {
+        input_tokens: result.usage.input_tokens,
+        output_tokens: result.usage.output_tokens,
+        cache_creation_input_tokens: result.usage.cache_creation_input_tokens,
+        cache_read_input_tokens: result.usage.cache_read_input_tokens,
+      },
+      tool_calls: ["generate_plan"],
+      structured: { name: "generate_plan", input: result.plan },
+    }, 200);
+  } catch (e) {
+    trace.status = "internal_error";
+    trace.error_message = `fanout_threw: ${String(e)}`.slice(0, 200);
+    return respond({ error: "Internal error", details: String(e) }, 500);
+  }
 }
 
 // ── parse_meal mode (AI food logging) ───────────────────────────────────────
@@ -1391,6 +1669,42 @@ Deno.serve(async (req) => {
     return typeof g === "string" && g.length > 0 ? g : null;
   })();
 
+  // 4b. The user's sticky per-exercise notes (user_exercise_notes, migration
+  // 0076): "incline bench at 45 degrees", "left shoulder needs a longer
+  // warmup". Standing instructions about how they train a movement, so a
+  // generated workout that contradicts them reads as not listening.
+  //
+  // Fetched separately rather than folded into get_user_coach_context(): that
+  // RPC is a heavier shared surface and this is a plain RLS-scoped select. The
+  // result is merged into the userContext blob so the prompt builder needs no
+  // new parameter. Best-effort — a failure just means the model plans without
+  // them, exactly as it did before.
+  try {
+    const { data: noteRows, error: notesError } = await userClient
+      .from("user_exercise_notes")
+      .select("note, exercises(name)")
+      .order("updated_at", { ascending: false })
+      .limit(60);
+    if (notesError) {
+      console.log("[ai-coach] exercise-notes error:", notesError.message);
+    } else if (noteRows?.length) {
+      const exerciseNotes = (noteRows as Array<Record<string, any>>)
+        .map((r) => ({ exercise: r?.exercises?.name, note: r?.note }))
+        .filter((n) => typeof n.exercise === "string" && typeof n.note === "string");
+      if (exerciseNotes.length > 0) {
+        // Null userContext means guest/no-data; a notes-only context is still
+        // worth passing, so seed an object rather than dropping them.
+        if (!userContext || typeof userContext !== "object") userContext = {};
+        (userContext as Record<string, unknown>).exercise_notes = exerciseNotes;
+        // The flag is set above off the RPC alone; keep it honest now that a
+        // notes-only context also counts as personalized data.
+        trace.has_user_context = true;
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] exercise-notes fetch threw:", String(e));
+  }
+
   // 5. Validate messages (body was parsed once above, before the rate gate)
   const incomingMessages = body.messages;
   if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
@@ -1510,6 +1824,28 @@ Deno.serve(async (req) => {
 
   const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
   trace.model = MODEL;
+
+  // ── Fan-out plan generation ─────────────────────────────────────────────
+  // A fresh generate_plan (NOT refine/discuss, which are conversational and
+  // must keep the tool loop) is served by the fan-out pipeline instead of one
+  // forced tool call. Measured on tools/plan-eval, 18 runs each:
+  //   baseline p50 29.3s / p95 39.9s   fanout p50 11.8s / p95 15.9s
+  // both 18/18 on the deterministic gate, with fan-out showing FEWER
+  // cross-day exercise repeats (6/18 runs vs 9/18).
+  //
+  // The client contract is unchanged: the same `structured` payload lands on
+  // the same SSE event, and the same `structured` field on the JSON response.
+  // Streaming clients additionally get `plan_skeleton` and `plan_day` events
+  // they may ignore.
+  if (PLAN_FANOUT_ENABLED && mode === 'generate_plan' && effectiveForceTool === 'generate_plan') {
+    return await handleFanoutPlan({
+      admin, trace, userId, startedAtMs, respond,
+      system: system as unknown[],
+      userMessage: lastUser?.content ?? "",
+      stream: (body as { stream?: unknown }).stream === true,
+      userClient,
+    });
+  }
 
   // ── Streaming branch (Phase 2.6) ────────────────────────────────────────
   // Client opts in via `stream: true` in the request body. We return an SSE
