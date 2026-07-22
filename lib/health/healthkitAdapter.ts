@@ -122,7 +122,15 @@ export const healthkitAdapter: HealthAdapter = {
       }
     }
 
-    // Sleep: sum asleep-stage durations, attributed to the wake-up (end) day.
+    // Sleep: union asleep intervals per day, attributed to the wake-up (end) day.
+    //
+    // Steps/energy above lean on the cumulativeSum statistics query, which merges
+    // iPhone + Watch for us. Sleep has no such query — queryCategorySamples returns
+    // raw samples from EVERY source, so if two apps (a Watch sleep tracker and a
+    // phone app) log the same night, summing their durations doubles it. Merge
+    // overlapping asleep intervals (union) instead of summing: overlapping samples
+    // from two sources collapse into one span, while genuinely separate naps stay
+    // additive.
     try {
       const asleep = new Set<number>([
         CategoryValueSleepAnalysis.asleepUnspecified,
@@ -135,15 +143,33 @@ export const healthkitAdapter: HealthAdapter = {
         { limit: 0, ascending: true, filter: { date: { startDate, endDate } } } as never,
       )) as ReadonlyArray<{ value: number; startDate: string | Date; endDate: string | Date }>;
 
-      const minutesByDay = new Map<string, number>();
+      const intervalsByDay = new Map<string, Array<[number, number]>>();
       for (const s of samples) {
         if (!asleep.has(s.value)) continue;
-        const ms = new Date(s.endDate).getTime() - new Date(s.startDate).getTime();
-        if (ms <= 0) continue;
+        const start = new Date(s.startDate).getTime();
+        const end = new Date(s.endDate).getTime();
+        if (!(end > start)) continue;
         const day = localISO(new Date(s.endDate));
-        minutesByDay.set(day, (minutesByDay.get(day) ?? 0) + ms);
+        (intervalsByDay.get(day) ?? intervalsByDay.set(day, []).get(day)!).push([start, end]);
       }
-      for (const [day, ms] of minutesByDay) {
+      for (const [day, intervals] of intervalsByDay) {
+        // Merge overlapping intervals, then sum the merged spans (union length).
+        intervals.sort((a, b) => a[0] - b[0]);
+        let ms = 0;
+        let curStart = intervals[0][0];
+        let curEnd = intervals[0][1];
+        for (let i = 1; i < intervals.length; i++) {
+          const [s0, e0] = intervals[i];
+          if (s0 <= curEnd) {
+            if (e0 > curEnd) curEnd = e0; // overlap: extend the current span
+          } else {
+            ms += curEnd - curStart; // gap: close the span, start a new one
+            curStart = s0;
+            curEnd = e0;
+          }
+        }
+        ms += curEnd - curStart;
+        if (ms <= 0) continue;
         out.push({ type: 'sleep_minutes', date: day, value: Math.round(ms / 60000), source: 'healthkit' });
       }
     } catch {

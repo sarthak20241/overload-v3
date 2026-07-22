@@ -16,6 +16,7 @@ import {
   getGrantedPermissions,
   requestPermission,
   readRecords,
+  aggregateRecord,
   aggregateGroupByPeriod,
   SdkAvailabilityStatus,
   SleepStageType,
@@ -115,19 +116,55 @@ export const healthConnectAdapter: HealthAdapter = {
       recordType: 'Steps' | 'ActiveCaloriesBurned' | 'RestingHeartRate',
       metric: DailyReading['type'],
       extract: (result: Record<string, unknown>) => number | null,
+      // Cumulative metrics (steps, active energy) SUM across data origins, so a
+      // day with both a phone step source and a watch double-counts. Averages
+      // (resting HR -> BPM_AVG) don't inflate that way, so they skip the guard.
+      dedupeSources: boolean,
     ) => {
       try {
         const groups = (await aggregateGroupByPeriod({
           recordType: recordType as never,
           timeRangeFilter,
           timeRangeSlicer: slicer,
-        })) as ReadonlyArray<{ startTime: string; result: Record<string, unknown> }>;
+        })) as ReadonlyArray<{
+          startTime: string;
+          endTime: string;
+          result: Record<string, unknown> & { dataOrigins?: string[] };
+        }>;
         for (const g of groups) {
-          const v = extract(g.result);
+          let v = extract(g.result);
           // Skip only missing/invalid readings, not a legitimate 0 — a real
           // 0-step or 0-active-energy day should record as 0, otherwise it reads
           // as a sync gap in "Your signals" instead of a real sedentary day.
           if (v == null || !Number.isFinite(v)) continue;
+
+          // Cross-source double-count guard. Health Connect's aggregate SUMS
+          // overlapping records from different apps (it only de-dupes updates
+          // within one app), so a bucket fed by 2+ origins over-reports. Unlike
+          // HealthKit's cumulativeSum query, it won't merge a phone + watch for
+          // us. Re-aggregate the day per origin and keep the single most complete
+          // source instead of the inflated sum. Only runs on the rare multi-origin
+          // day; single-origin days pass through untouched.
+          const origins = g.result.dataOrigins ?? [];
+          if (dedupeSources && origins.length > 1) {
+            let best = 0;
+            for (const origin of origins) {
+              try {
+                const perOrigin = (await aggregateRecord({
+                  recordType: recordType as never,
+                  timeRangeFilter: { operator: 'between', startTime: g.startTime, endTime: g.endTime },
+                  dataOriginFilter: [origin],
+                } as never)) as Record<string, unknown>;
+                const pv = extract(perOrigin);
+                if (pv != null && Number.isFinite(pv) && pv > best) best = pv;
+              } catch {
+                // A per-origin re-query failing just leaves `best` as-is; if none
+                // succeed we fall back to the summed value below.
+              }
+            }
+            if (best > 0) v = best;
+          }
+
           out.push({ type: metric, date: localISO(new Date(g.startTime)), value: Math.round(v), source: 'health_connect' });
         }
       } catch {
@@ -135,9 +172,9 @@ export const healthConnectAdapter: HealthAdapter = {
       }
     };
 
-    await pushAgg('Steps', 'steps', (r) => (r.COUNT_TOTAL as number) ?? null);
-    await pushAgg('ActiveCaloriesBurned', 'active_energy_kcal', (r) => (r.ACTIVE_CALORIES_TOTAL as { inKilocalories?: number })?.inKilocalories ?? null);
-    await pushAgg('RestingHeartRate', 'resting_hr_bpm', (r) => (r.BPM_AVG as number) ?? null);
+    await pushAgg('Steps', 'steps', (r) => (r.COUNT_TOTAL as number) ?? null, true);
+    await pushAgg('ActiveCaloriesBurned', 'active_energy_kcal', (r) => (r.ACTIVE_CALORIES_TOTAL as { inKilocalories?: number })?.inKilocalories ?? null, true);
+    await pushAgg('RestingHeartRate', 'resting_hr_bpm', (r) => (r.BPM_AVG as number) ?? null, false);
 
     // HRV (RMSSD): no aggregate type, read raw and take the latest reading per day.
     try {
@@ -177,7 +214,14 @@ export const healthConnectAdapter: HealthAdapter = {
       // ignore
     }
 
-    // Sleep: sum asleep-stage durations per session, attributed to the wake (end) day.
+    // Sleep: union asleep intervals per day, attributed to the wake (end) day.
+    //
+    // Same cross-source hazard as steps: a watch and a phone app can each log the
+    // SAME night, and a naive sum-of-durations would double the night's sleep.
+    // readRecords has no aggregate to lean on, so we de-dupe by merging overlapping
+    // asleep intervals (union) instead of summing them — this also collapses
+    // fragmented/overlapping stages within a single app. Overlapping duplicates
+    // from two apps merge into one interval; genuinely separate naps stay additive.
     try {
       const asleep = new Set<number>([
         SleepStageType.SLEEPING,
@@ -192,21 +236,40 @@ export const healthConnectAdapter: HealthAdapter = {
           stages?: Array<{ startTime: string; endTime: string; stage: number }>;
         }>;
       };
-      const minutesByDay = new Map<string, number>();
+      // Collect [start, end] asleep intervals, bucketed by the session's wake day.
+      const intervalsByDay = new Map<string, Array<[number, number]>>();
+      const addInterval = (day: string, start: number, end: number) => {
+        if (!(end > start)) return;
+        (intervalsByDay.get(day) ?? intervalsByDay.set(day, []).get(day)!).push([start, end]);
+      };
       for (const s of records) {
-        let ms = 0;
+        const day = localISO(new Date(Date.parse(s.endTime)));
         if (s.stages?.length) {
           for (const st of s.stages) {
-            if (asleep.has(st.stage)) ms += Date.parse(st.endTime) - Date.parse(st.startTime);
+            if (asleep.has(st.stage)) addInterval(day, Date.parse(st.startTime), Date.parse(st.endTime));
           }
         } else {
-          ms += Date.parse(s.endTime) - Date.parse(s.startTime);
+          addInterval(day, Date.parse(s.startTime), Date.parse(s.endTime));
         }
-        if (ms <= 0) continue;
-        const day = localISO(new Date(Date.parse(s.endTime)));
-        minutesByDay.set(day, (minutesByDay.get(day) ?? 0) + ms);
       }
-      for (const [day, ms] of minutesByDay) {
+      for (const [day, intervals] of intervalsByDay) {
+        // Merge overlapping intervals, then sum the merged spans (union length).
+        intervals.sort((a, b) => a[0] - b[0]);
+        let ms = 0;
+        let curStart = intervals[0][0];
+        let curEnd = intervals[0][1];
+        for (let i = 1; i < intervals.length; i++) {
+          const [s0, e0] = intervals[i];
+          if (s0 <= curEnd) {
+            if (e0 > curEnd) curEnd = e0; // overlap: extend the current span
+          } else {
+            ms += curEnd - curStart; // gap: close the span, start a new one
+            curStart = s0;
+            curEnd = e0;
+          }
+        }
+        ms += curEnd - curStart;
+        if (ms <= 0) continue;
         out.push({ type: 'sleep_minutes', date: day, value: Math.round(ms / 60000), source: 'health_connect' });
       }
     } catch {
