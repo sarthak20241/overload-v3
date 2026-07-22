@@ -186,6 +186,67 @@ export function keepUncoveredPrevious(
   return missing.length > 0 ? [...items, ...missing] : items;
 }
 
+/**
+ * Guarantee every food the user named reaches the log.
+ *
+ * Decide writes a fresh item list and the server only checks it is non-empty,
+ * so decide can drop one of several foods ("2 roti, dal, and a glass of milk"
+ * comes back without the milk) and still succeed - the user sees a short meal
+ * with no error. For any extracted item not represented in decide's output, we
+ * append a best-effort line built from the candidate we had already resolved
+ * for it, marked as a low-confidence estimate. That makes the food VISIBLE and
+ * flagged rather than silently missing, and because it is an estimate the web
+ * refine (phase 2) will then try to ground it.
+ */
+export function reconcileExtracted(
+  items: ParsedItem[],
+  resolved: ResolvedItem[],
+  candidatePer100: Map<string, Per100>,
+): ParsedItem[] {
+  if (resolved.length === 0) return items;
+  const represented = (r: ResolvedItem): boolean => {
+    const candIds = new Set(r.candidates.map((c) => c.food_id).filter(Boolean) as string[]);
+    return items.some((it) =>
+      (it.food_id && candIds.has(it.food_id)) || wordsOverlap(it.food_name, r.name)
+    );
+  };
+  const missing = resolved.filter((r) => !represented(r)).map((r) => fallbackFromResolved(r, candidatePer100));
+  return missing.length > 0 ? [...items, ...missing] : items;
+}
+
+/** A rough, clearly-flagged line for a food decide dropped. Uses the top
+ *  resolved candidate's per-100 where we have it, and keeps food_id null so it
+ *  reads (and refines) as the estimate it is. */
+function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per100>): ParsedItem {
+  const top = r.candidates[0];
+  const p = top?.food_id ? candidatePer100.get(top.food_id) : undefined;
+  const unit = r.unit.trim().toLowerCase();
+  const qty = r.quantity > 0 ? r.quantity : 1;
+  let grams: number;
+  if (unit === "g" || unit === "ml" || unit === "gram" || unit === "grams") {
+    grams = qty;
+  } else {
+    const sv = top?.servings.find((s) => s.is_default) ?? top?.servings[0];
+    grams = (sv && sv.grams > 0 ? sv.grams : 100) * qty;
+  }
+  const f = grams / 100;
+  return {
+    food_id: null,
+    food_name: top?.name ?? r.name,
+    quantity: qty,
+    serving_label: unit || "serving",
+    grams: round1(grams),
+    kcal: p ? round1(p.kcal * f) : 0,
+    protein_g: p ? round1(p.protein_g * f) : 0,
+    carb_g: p ? round1(p.carb_g * f) : 0,
+    fat_g: p ? round1(p.fat_g * f) : 0,
+    fiber_g: p && p.fiber_g !== null ? round1(p.fiber_g * f) : null,
+    source: "estimate",
+    assumption: "I may have missed this item, tap to check it",
+    confidence: "low",
+  };
+}
+
 export interface ParseMealInput {
   text: string;
   localHour: number | null;
@@ -2061,9 +2122,15 @@ export async function runParseMeal(
     }
   }
   let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
-  // A correction REPLACES the reviewed meal, so never let the model quietly
-  // drop a line it was told to relist.
-  if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems, replacedNames);
+  if (correctsPrevious) {
+    // A correction REPLACES the reviewed meal, so never let the model quietly
+    // drop a line it was told to relist.
+    items = keepUncoveredPrevious(items, prevItems, replacedNames);
+  } else {
+    // A fresh parse: every food the user named must reach the log, even if
+    // decide forgot to emit one.
+    items = reconcileExtracted(items, resolved, candidatePer100);
+  }
 
   // Serving options for every candidate we offered, so the display quantity can
   // be reconciled against the logged grams (see reconcileQuantity).
