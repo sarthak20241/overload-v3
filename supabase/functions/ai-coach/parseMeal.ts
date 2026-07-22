@@ -255,7 +255,11 @@ export interface OffProduct {
   serving: ServingOption | null;
 }
 
-const OFF_TIMEOUT_MS = 4000;
+// OFF now runs on every item in parallel with catalog, not just on a miss, so
+// this bounds how long a slow Open Food Facts response can hold up ANY meal.
+// Kept short: its median is well under a second, and a catalog match already in
+// hand should not wait long for a label that may not even win.
+const OFF_TIMEOUT_MS = 2500;
 // ODbL guardrail: identify the app on every live call.
 const OFF_USER_AGENT = "Overload/1.0 (https://tryoverload.app; support@tryoverload.app)";
 
@@ -1003,35 +1007,44 @@ async function resolveOneItem(
   // reverse and searches for "roasted", losing the identity entirely.
   for (let i = 1; i < words.length; i++) push(words.slice(i).join(" "));
   for (let n = words.length - 1; n >= 1; n--) push(words.slice(0, n).join(" "));
-  let candidates: CandidateFood[] = [];
-  for (const q of queries.slice(0, 4)) {
-    if (candidates.length > 0) break;
-    toolCalls.push("search_foods");
-    try {
-      candidates = (await deps.searchFoods(q)).slice(0, 6);
-    } catch (e) {
-      deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
+  // Catalog and OFF run CONCURRENTLY and both feed decide - OFF is no longer a
+  // miss-only fallback. Our own catalog is largely OFF-derived, so OFF is not a
+  // lower-trust tier; decide picks between them and the guardrails recompute
+  // and sanity-check whatever it picks. Catalog still leads the merged list
+  // (a curated row with real servings should outrank a raw label), and items
+  // resolve in parallel, so the meal pays roughly one OFF latency, not N.
+  const runCatalog = async (): Promise<CandidateFood[]> => {
+    let found: CandidateFood[] = [];
+    for (const q of queries.slice(0, 4)) {
+      if (found.length > 0) break;
+      toolCalls.push("search_foods");
+      try {
+        found = (await deps.searchFoods(q)).slice(0, 6);
+      } catch (e) {
+        deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
+      }
+      steps.push({
+        iter: 1,
+        tool: "search_foods",
+        input: { query: q },
+        result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
+      });
     }
-    steps.push({
-      iter: 1,
-      tool: "search_foods",
-      input: { query: q },
-      result: { count: candidates.length, top: candidates.slice(0, 5).map((c) => c.name) },
-    });
-  }
-
-  // OFF fallback on a total catalog miss (branded or not; OFF carries both).
-  // Backfill first so the candidate carries a real food_id and the NEXT
-  // user's catalog search finds it at tier 1.
-  if (candidates.length === 0) {
+    return found;
+  };
+  const runOff = async (): Promise<CandidateFood[]> => {
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_packaged_food");
+    const found: CandidateFood[] = [];
     try {
       const fetchFn = deps.fetchFn ?? fetch;
       const products = await searchOpenFoodFacts(q, fetchFn, deps.log);
+      // Backfill so the candidate carries a real food_id (verify needs it) and
+      // the NEXT user's catalog search finds it at tier 1 - the catalog is
+      // meant to compound with use.
       for (const p of products) {
         const foodId = await deps.backfillOffFood(p);
-        candidates.push({
+        found.push({
           food_id: foodId,
           name: p.name,
           brand: p.brand,
@@ -1052,8 +1065,21 @@ async function resolveOneItem(
       iter: 1,
       tool: "lookup_packaged_food",
       input: { query: q },
-      result: { count: candidates.length, top: candidates.slice(0, 5).map((c) => c.name) },
+      result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
     });
+    return found;
+  };
+
+  const [catalogCands, offCands] = await Promise.all([runCatalog(), runOff()]);
+  // Catalog first, then OFF rows the catalog set did not already carry. Dedupe
+  // by food_id, falling back to a normalised name for OFF rows not yet backfilled.
+  const seenKey = new Set<string>();
+  const candidates: CandidateFood[] = [];
+  for (const c of [...catalogCands, ...offCands]) {
+    const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
+    if (seenKey.has(key)) continue;
+    seenKey.add(key);
+    candidates.push(c);
   }
 
   // Never offer the model a physically impossible row: it cannot tell a bad
