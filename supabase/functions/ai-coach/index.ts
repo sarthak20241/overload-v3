@@ -1164,9 +1164,12 @@ async function handleParseMealRequest(args: {
   PARSE_ISOLATE_REQUESTS++;
 
   // Phase 2 (the web refine) is fired automatically by the client after a
-  // phase-1 miss - it carries previous_items, not text, and must not be
-  // rejected for empty text nor charged a second rate-limit slot: the user
-  // already spent one on the phase-1 parse this refines.
+  // phase-1 miss - it carries previous_items, not text, so it skips the
+  // non-empty-text check. It still goes through the rate limiter: nothing
+  // proves a phase-1 call preceded it, so an unlimited refine endpoint would be
+  // a direct-call abuse vector (each runs up to 4 real web-search turns). It
+  // shares the parse bucket - a small extra draw on the ~15% of logs that miss,
+  // in exchange for a hard cap on cost.
   const isRefine = body.refine_web === true;
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text && !isRefine) {
@@ -1180,46 +1183,45 @@ async function handleParseMealRequest(args: {
 
   // Own bucket, same sliding-window mechanics as the coach limiter. Parse
   // failures still count a slot here (the Anthropic call was made); client
-  // retries after hard errors are rare enough that this is acceptable v1.
-  // Skipped for the refine (see isRefine above): it is not a new user parse.
-  if (!isRefine) {
-    const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-    const { count, error: countErr } = await admin
+  // retries after hard errors are rare enough that this is acceptable v1. The
+  // refine shares this bucket too (see isRefine above) so it cannot be spammed
+  // directly.
+  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
+  const { count, error: countErr } = await admin
+    .from("parse_meal_rate_limit")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .gte("request_at", sinceIso);
+  if (countErr) {
+    trace.status = "internal_error";
+    trace.error_message = `parse_rate_limit_check_failed: ${countErr.message}`;
+    return respond({ error: "Rate limit check failed" }, 500);
+  }
+  if ((count ?? 0) >= PARSE_RATE_LIMIT_MAX) {
+    trace.status = "rate_limited";
+    trace.error_message = `parse count=${count} cap=${PARSE_RATE_LIMIT_MAX}`;
+    let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+    const { data: oldest } = await admin
       .from("parse_meal_rate_limit")
-      .select("*", { count: "exact", head: true })
+      .select("request_at")
       .eq("user_id", userId)
-      .gte("request_at", sinceIso);
-    if (countErr) {
-      trace.status = "internal_error";
-      trace.error_message = `parse_rate_limit_check_failed: ${countErr.message}`;
-      return respond({ error: "Rate limit check failed" }, 500);
+      .gte("request_at", sinceIso)
+      .order("request_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (oldest?.request_at) {
+      const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
+      retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
     }
-    if ((count ?? 0) >= PARSE_RATE_LIMIT_MAX) {
-      trace.status = "rate_limited";
-      trace.error_message = `parse count=${count} cap=${PARSE_RATE_LIMIT_MAX}`;
-      let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-      const { data: oldest } = await admin
-        .from("parse_meal_rate_limit")
-        .select("request_at")
-        .eq("user_id", userId)
-        .gte("request_at", sinceIso)
-        .order("request_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (oldest?.request_at) {
-        const freesAtMs = new Date(oldest.request_at).getTime() + RATE_LIMIT_WINDOW_MS;
-        retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
-      }
-      return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
-    }
-    const { error: logErr } = await admin
-      .from("parse_meal_rate_limit")
-      .insert({ user_id: userId });
-    if (logErr) {
-      trace.status = "internal_error";
-      trace.error_message = `parse_rate_limit_log_failed: ${logErr.message}`;
-      return respond({ error: "Rate limit log failed" }, 500);
-    }
+    return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
+  }
+  const { error: logErr } = await admin
+    .from("parse_meal_rate_limit")
+    .insert({ user_id: userId });
+  if (logErr) {
+    trace.status = "internal_error";
+    trace.error_message = `parse_rate_limit_log_failed: ${logErr.message}`;
+    return respond({ error: "Rate limit log failed" }, 500);
   }
 
   // Context: recents + targets + today's totals, all non-fatal on failure.

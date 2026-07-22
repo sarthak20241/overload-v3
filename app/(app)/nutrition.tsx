@@ -254,15 +254,19 @@ export default function NutritionScreen() {
     setFlow((f) => {
       if (f.status !== 'review' || f.raw !== raw) return f; // user moved on
       if (!refined) return { ...f, refining: null }; // nothing better found
-      const byName = new Map(refined.items.map((r) => [r.food_name.toLowerCase(), r]));
+      // Key on name AND grams, not name alone: two same-named estimates of
+      // different sizes ("chai" 75g and 150g) must not collapse to one entry
+      // and cross-apply. refineMeal preserves grams, so an untouched line still
+      // matches; an edited one (grams or source changed) no longer does.
+      const key = (it: { food_name: string; grams: number }) => `${it.food_name.toLowerCase()}|${it.grams}`;
+      const byKey = new Map(refined.items.map((r) => [key(r), r]));
       const merged = f.meal.items.map((it) => {
-        const r = byName.get(it.food_name.toLowerCase());
         // Only swap a line that is STILL the estimate we sent to refine. The
         // card invites the user to edit it while the lookup runs; if they did,
         // it is now 'manual' (or otherwise changed) and their numbers must win.
         // Same guarantee preserveManual gives corrections, applied client-side.
-        if (!r || it.source !== 'estimate') return it;
-        return r;
+        if (it.source !== 'estimate') return it;
+        return byKey.get(key(it)) ?? it;
       });
       return { ...f, meal: { ...f.meal, items: merged }, refining: null };
     });
