@@ -88,6 +88,9 @@ export default function AuthScreen() {
   // plus a masked identifier (e.g. "+1 ••• ••• 1234") to show for phone_code.
   const [secondFactorStrategy, setSecondFactorStrategy] = useState<SecondFactorStrategy>('totp');
   const [mfaPhoneHint, setMfaPhoneHint] = useState('');
+  // Which phone factor to text — required by Clerk when an account has more
+  // than one verified phone number registered as a second factor.
+  const [mfaPhoneId, setMfaPhoneId] = useState<string | undefined>(undefined);
   const [showPass, setShowPass] = useState(false);
   // Non-error "use this method instead" nudge, set when we detect (on email
   // blur) that the typed email is registered with an OAuth provider / email
@@ -172,6 +175,7 @@ export default function AuthScreen() {
     if (!signInLoaded || !signUpLoaded) return;
     if (authBusy) return;
     setError('');
+    setMethodHint('');
     setLoading(true);
 
     try {
@@ -197,26 +201,31 @@ export default function AuthScreen() {
               );
             }
             if (chosen.strategy === 'phone_code') {
-              await signIn!.prepareSecondFactor({ strategy: 'phone_code' });
+              await signIn!.prepareSecondFactor({ strategy: 'phone_code', phoneNumberId: chosen.phoneNumberId });
             }
             setSecondFactorStrategy(chosen.strategy);
             setMfaPhoneHint(chosen.safeIdentifier ?? '');
+            setMfaPhoneId(chosen.phoneNumberId);
             setCode('');
             setMode('mfa');
             return;
           }
           if (result.status === 'needs_first_factor') {
             // Password wasn't a valid first factor — almost always because the
-            // account was created with "Continue with Google" and has no
-            // password set. Point them at the strategy that will actually work.
-            const canGoogle = result.supportedFirstFactors?.some(
-              (f: any) => f.strategy === 'oauth_google'
-            );
-            throw new Error(
-              canGoogle
-                ? 'This email is registered through Google. Tap "Continue with Google" above, or use "Forgot password?" to set a password.'
-                : 'This account needs another verification step. Use "Forgot password?" to sign in with an email code.'
-            );
+            // account was created with "Continue with Google"/Apple and has no
+            // password set. We only learn the real methods here (after a genuine
+            // sign-in attempt), so surface the nudge now rather than probing the
+            // account's existence up front. Shown as an info hint, not a hard
+            // error, since there's a clear next step.
+            const factors: any[] = result.supportedFirstFactors ?? [];
+            if (factors.some((f) => f.strategy === 'oauth_google')) {
+              setMethodHint('This email is registered with Google. Tap "Continue with Google" above.');
+            } else if (factors.some((f) => f.strategy === 'oauth_apple')) {
+              setMethodHint('This email is registered with Apple. Tap "Continue with Apple" above.');
+            } else {
+              setMethodHint('This account signs in with an email code. Use "Forgot password?" below.');
+            }
+            return;
           }
           throw new Error(`Sign-in couldn't complete (status: ${result.status}). Please try again.`);
         }
@@ -327,42 +336,13 @@ export default function AuthScreen() {
     }
   };
 
-  // Identifier-first probe: when the user finishes typing their email on the
-  // Sign In tab, ask Clerk which first factors this account actually supports.
-  // If password isn't one of them (the classic "I signed up with Google and
-  // now I'm typing a password that was never set" trap), nudge them to the
-  // method that will work — before they submit and hit a dead end. create()
-  // with just an identifier returns the supported factors without sending any
-  // code, so this has no side effects. Failures (unknown email, typos) stay
-  // silent; the normal submit path handles those.
-  const handleEmailBlur = async () => {
-    if (!hasClerkKey || !signIn || mode !== 'login') return;
-    const e = email.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return;
-    try {
-      const res = await signIn.create({ identifier: e });
-      const factors: any[] = res.supportedFirstFactors ?? [];
-      // Password works for this account — nothing to nudge.
-      if (factors.some((f) => f.strategy === 'password')) return;
-      if (factors.some((f) => f.strategy === 'oauth_google')) {
-        setMethodHint('This email is registered with Google. Tap "Continue with Google" above.');
-      } else if (factors.some((f) => f.strategy === 'oauth_apple')) {
-        setMethodHint('This email is registered with Apple. Tap "Continue with Apple" above.');
-      } else if (factors.some((f) => f.strategy === 'email_code' || f.strategy === 'reset_password_email_code')) {
-        setMethodHint('This account signs in with an email code. Use "Forgot password?" below.');
-      }
-    } catch {
-      // Unknown email / invalid identifier — don't badger the user mid-typing.
-    }
-  };
-
   // Re-send the SMS second-factor code (only meaningful for phone_code; TOTP
   // and backup codes have nothing to dispatch).
   const handleResendMfaCode = async () => {
     if (!hasClerkKey || !signIn || secondFactorStrategy !== 'phone_code') return;
     setError('');
     try {
-      await signIn.prepareSecondFactor({ strategy: 'phone_code' });
+      await signIn.prepareSecondFactor({ strategy: 'phone_code', phoneNumberId: mfaPhoneId });
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
     }
@@ -678,7 +658,6 @@ export default function AuthScreen() {
                   placeholderTextColor={C.textMuted}
                   value={email}
                   onChangeText={(t) => { setEmail(t); if (methodHint) setMethodHint(''); }}
-                  onEndEditing={handleEmailBlur}
                   keyboardType="email-address"
                   autoCapitalize="none"
                   textContentType="emailAddress"
@@ -773,8 +752,10 @@ export default function AuthScreen() {
             )}
 
             {/* Method nudge (e.g. "this email uses Google") — informational,
-                shown only when there's no hard error competing for attention. */}
-            {!!methodHint && !error && (
+                only on the Sign In screen and only when no hard error is
+                competing for attention. Gated to login so it can't bleed onto
+                the reset / 2FA screens. */}
+            {mode === 'login' && !!methodHint && !error && (
               <View style={styles.infoBox}>
                 <Feather name="info" size={14} color="#60a5fa" />
                 <Text style={styles.infoText}>{methodHint}</Text>
