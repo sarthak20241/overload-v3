@@ -1,28 +1,48 @@
+import { useEffect, useState } from 'react';
 import { Redirect } from 'expo-router';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
+import { hasCompletedGuestOnboarding } from '@/lib/onboarding';
+import { hasPendingOnboarding } from '@/lib/pendingOnboarding';
 
 function AuthRedirect() {
   const { isSignedIn, isLoaded } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
+
+  // For a visitor who is neither signed-in nor an explicit guest, decide
+  // between the two first-run destinations:
+  //  - truly fresh install            → /onboarding (the front door now)
+  //  - mid-conversion (pending plan)  → /(auth) to finish signing in and save
+  //  - returning, already onboarded   → /(auth)
+  // 'decide' stays null until that async read settles, so we render nothing
+  // rather than flashing the wrong screen.
+  const [decide, setDecide] = useState<null | 'onboarding' | 'auth'>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [pending, doneAsGuest] = await Promise.all([
+        hasPendingOnboarding(),
+        hasCompletedGuestOnboarding(),
+      ]);
+      if (!cancelled) setDecide(pending || doneAsGuest ? 'auth' : 'onboarding');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!isLoaded || !guestLoaded) return null;
-  // Guests stay in /(app) on cold start so they aren't forced through the
-  // auth screen every time. The (app) layout still rejects everyone who is
-  // neither signed-in nor an explicit guest. When hasClerkKey is false (no
-  // Clerk publishable key in this build), useClerkUser returns
-  // isSignedIn:false / isLoaded:true, so this resolves to /(app) for
-  // explicit guests and /(auth) for everyone else — the auth screen then
-  // renders its misconfigured-build error state.
+  // Signed-in users and explicit guests go straight to the app; the (app)
+  // layout handles first-run onboarding and draining any pending plan.
   if (isSignedIn || isGuest) return <Redirect href="/(app)" />;
-  return <Redirect href="/(auth)" />;
+  if (decide === null) return null; // resolving fresh-vs-return
+  return <Redirect href={decide === 'onboarding' ? '/onboarding' : '/(auth)'} />;
 }
 
 export default function Index() {
-  // Previously short-circuited to /(app) when hasClerkKey was false. That
-  // was the same silent-bypass class as the auth-screen bug we hit on
-  // TestFlight: a misconfigured build (no EAS env vars) auto-routed every
-  // visitor straight into the app with no real session. Now we always go
-  // through AuthRedirect so explicit guests still pass and everyone else
-  // sees the auth screen's misconfigured-build error state.
+  // Always route through AuthRedirect. A misconfigured build (no Clerk key)
+  // used to short-circuit to /(app) with no real session; now everyone
+  // resolves a real destination, and onboarding is the front door for fresh
+  // installs.
   return <AuthRedirect />;
 }

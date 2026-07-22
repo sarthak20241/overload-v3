@@ -95,6 +95,17 @@ async function isOnboardingDone(identity: string): Promise<boolean> {
 }
 
 /**
+ * Has onboarding ever been completed on THIS device as a guest? Used by the
+ * entry router to tell a truly-fresh install (→ onboarding first) apart from a
+ * returning, signed-out visitor (→ auth). Signed-in completions are keyed to a
+ * clerkId we can't read while signed out, so those fall through to the fresh
+ * path and rely on the welcome screen's "I already have an account" link.
+ */
+export function hasCompletedGuestOnboarding(): Promise<boolean> {
+  return isOnboardingDone(onboardingIdentity(null));
+}
+
+/**
  * Should this user be routed through onboarding? Called by the (app) layout
  * gate after the auth guard passes.
  *

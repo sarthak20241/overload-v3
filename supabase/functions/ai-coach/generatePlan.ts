@@ -368,7 +368,11 @@ export async function runGeneratePlan(
       model: deps.fillModel ?? deps.model,
       label: `fill:d${i + 1}`,
     });
-    return { kind: "fill" as const, index: i, text: r.text, usage: r.usage, started };
+    // Measure THIS call's own duration, here, before the other parallel jobs
+    // settle. Computing `now() - started` in the post-allSettled loop instead
+    // would read the same clock for every stage and report the whole parallel
+    // phase as each stage's duration — which is exactly the bug this replaces.
+    return { kind: "fill" as const, index: i, text: r.text, usage: r.usage, started, ms: now() - started };
   });
 
   const rationaleJob = async () => {
@@ -391,7 +395,7 @@ export async function runGeneratePlan(
       model: deps.model,
       label: "rationale",
     });
-    return { kind: "rationale" as const, index: -1, text: r.text, usage: r.usage, started };
+    return { kind: "rationale" as const, index: -1, text: r.text, usage: r.usage, started, ms: now() - started };
   };
 
   const settled = await Promise.allSettled([...fillJobs.map((f) => f()), rationaleJob()]);
@@ -409,12 +413,15 @@ export async function runGeneratePlan(
       failureReasons.push(String(s.reason).slice(0, 160));
       continue;
     }
-    const { kind, index, text, usage: u, started } = s.value;
+    const { kind, index, text, usage: u, started, ms } = s.value;
     add(u);
     calls++;
     stages.push({
+      // `ms` was measured inside the job the instant its own call returned;
+      // `startedAt` is its offset from run start. Together they place each
+      // parallel call on a real timeline, so a straggling fill is visible.
       label: kind === "fill" ? `fill:d${index + 1}` : "rationale",
-      ms: now() - started, output_tokens: u.output_tokens, startedAt: started - t0,
+      ms, output_tokens: u.output_tokens, startedAt: started - t0,
     });
     if (kind === "fill") {
       fills[index] = parseFill(text);
