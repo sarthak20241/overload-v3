@@ -6,9 +6,11 @@ import {
   type CandidateFood,
   type MealType,
   type OffProduct,
+  type ParseMealDeps,
   type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
+  runWebRefine,
 } from "./parseMeal.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
@@ -768,7 +770,7 @@ async function handleFanoutPlan(args: {
   trace: CoachTrace;
   userId: string;
   startedAtMs: number;
-  respond: (body: unknown, status: number) => Response;
+  respond: (body: unknown, status: number) => Promise<Response>;
   system: unknown[];
   userMessage: string;
   stream: boolean;
@@ -1003,32 +1005,6 @@ async function searchCatalogWithServings(
   userId: string,
   query: string,
 ): Promise<CandidateFood[]> {
-  // 0083: the *_with_servings RPCs join food_servings server-side, so a
-  // candidate set costs ONE round trip instead of two (search, then servings).
-  const { data, error } = await userClient.rpc("search_foods_ranked_with_servings", {
-    q: query,
-    lim: 8,
-  });
-  if (error) console.log("[parse_meal] search_foods_ranked_with_servings error:", error.message);
-  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
-
-  // Semantic fallback (0080): trigram search cannot bridge synonyms
-  // ("roasted edamame" vs "Soybeans, mature seeds, roasted, salted"), and a
-  // zero-candidate result is what pushes the model to OFF lookups or blind
-  // estimates. Only the miss path pays the embedding latency.
-  if (rows.length === 0) {
-    const vec = await embedQuery(query, admin, userId);
-    if (vec) {
-      const { data: sem, error: semErr } = await userClient.rpc("search_foods_semantic_with_servings", {
-        p_query_embedding: JSON.stringify(vec),
-        lim: 6,
-      });
-      if (semErr) console.log("[parse_meal] search_foods_semantic_with_servings error:", semErr.message);
-      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
-    }
-  }
-
-  if (rows.length === 0) return [];
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((s) => {
@@ -1039,7 +1015,7 @@ async function searchCatalogWithServings(
       return [{ label, grams, is_default: !!o.is_default }];
     });
   };
-  return rows.map((r) => ({
+  const toCandidate = (r: Record<string, unknown>): CandidateFood => ({
     food_id: String(r.id),
     name: String(r.name),
     brand: r.brand ? String(r.brand) : null,
@@ -1051,7 +1027,45 @@ async function searchCatalogWithServings(
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
     servings: parseServings(r.servings),
     source: "catalog" as const,
-  }));
+  });
+
+  // Trigram and semantic search run CONCURRENTLY, not trigram-then-fallback.
+  // Trigram is precise on exact words; semantic bridges synonyms ("roasted
+  // edamame" -> "Soybeans, mature seeds, roasted"). Running only one meant a
+  // weak trigram hit hid the better semantic row from decide entirely. Wall
+  // time is max(trigram, embed+semantic), not the sum, and the p_floor=0.50 on
+  // the RPC keeps semantic from returning junk near-neighbours - so a genuine
+  // catalog miss still returns nothing here and falls through to OFF.
+  const [trigram, semantic] = await Promise.all([
+    userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 })
+      .then((res: { data: unknown; error: { message: string } | null }) => {
+        if (res.error) console.log("[parse_meal] trigram search error:", res.error.message);
+        return (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>;
+      }),
+    embedQuery(query, admin, userId).then(async (vec) => {
+      if (!vec) return [] as Array<Record<string, unknown>>;
+      const { data, error } = await userClient.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      if (error) console.log("[parse_meal] semantic search error:", error.message);
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+  ]);
+
+  // Trigram rows first (a precise match should outrank a mere neighbour), then
+  // semantic rows the trigram set did not already contain. Capped so decide
+  // gets a focused list, not a wall of near-duplicates.
+  const seen = new Set<string>();
+  const merged: CandidateFood[] = [];
+  for (const r of [...trigram, ...semantic]) {
+    const id = String(r.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(toCandidate(r));
+    if (merged.length >= 8) break;
+  }
+  return merged;
 }
 
 // Recents give the prompt this user's staples ("milk" => their toned milk).
@@ -1101,6 +1115,54 @@ function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): 
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
+/** The dependency bundle parseMeal.ts runs against. Shared by the full parse
+ *  and the phase-2 web refine so both hit the same catalog/OFF/model wiring. */
+function makeParseDeps(
+  userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+): ParseMealDeps {
+  return {
+    anthropicApiKey: ANTHROPIC_API_KEY!,
+    model: PARSE_MEAL_MODEL,
+    maxTokens: PARSE_MEAL_MAX_TOKENS,
+    timeoutMs: ANTHROPIC_TIMEOUT_MS,
+    webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
+    searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
+    backfillOffFood: (p) => backfillOffFoodRow(admin, p),
+    getFoodPer100: async (foodId) => {
+      const { data } = await userClient
+        .from("foods")
+        .select("base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
+        .eq("id", foodId)
+        .maybeSingle();
+      if (!data) return null;
+      const row = data as Record<string, unknown>;
+      return {
+        base_unit: String(row.base_unit ?? "g"),
+        kcal: Number(row.kcal ?? 0),
+        protein_g: Number(row.protein_g ?? 0),
+        carb_g: Number(row.carb_g ?? 0),
+        fat_g: Number(row.fat_g ?? 0),
+        fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
+      };
+    },
+    getFoodServings: async (foodId) => {
+      const { data } = await userClient
+        .from("food_servings")
+        .select("label, grams, is_default")
+        .eq("food_id", foodId)
+        .order("seq", { ascending: true });
+      return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
+        label: String(s.label),
+        grams: Number(s.grams),
+        is_default: !!s.is_default,
+      }));
+    },
+    log: (msg) => console.log(msg),
+  };
+}
+
 async function handleParseMealRequest(args: {
   admin: SupabaseClient;
   userClient: SupabaseClient;
@@ -1113,8 +1175,16 @@ async function handleParseMealRequest(args: {
   const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
   PARSE_ISOLATE_REQUESTS++;
 
+  // Phase 2 (the web refine) is fired automatically by the client after a
+  // phase-1 miss - it carries previous_items, not text, so it skips the
+  // non-empty-text check. It still goes through the rate limiter: nothing
+  // proves a phase-1 call preceded it, so an unlimited refine endpoint would be
+  // a direct-call abuse vector (each runs up to 4 real web-search turns). It
+  // shares the parse bucket - a small extra draw on the ~15% of logs that miss,
+  // in exchange for a hard cap on cost.
+  const isRefine = body.refine_web === true;
   const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!text) {
+  if (!text && !isRefine) {
     trace.status = "bad_request";
     trace.error_message = "parse_meal requires non-empty text";
     return respond({ error: trace.error_message }, 400);
@@ -1125,7 +1195,9 @@ async function handleParseMealRequest(args: {
 
   // Own bucket, same sliding-window mechanics as the coach limiter. Parse
   // failures still count a slot here (the Anthropic call was made); client
-  // retries after hard errors are rare enough that this is acceptable v1.
+  // retries after hard errors are rare enough that this is acceptable v1. The
+  // refine shares this bucket too (see isRefine above) so it cannot be spammed
+  // directly.
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
   const { count, error: countErr } = await admin
     .from("parse_meal_rate_limit")
@@ -1215,6 +1287,46 @@ async function handleParseMealRequest(args: {
     })
     : [];
 
+  // ── Phase 2: the deliberate web refine ────────────────────────────────────
+  // The client fires this after phase 1 returned web_refine, passing the weak
+  // lines back as previous_items. No extract, no decide, no context - just the
+  // web lookup over those lines. Returns the improved lines to swap in, or null
+  // when the web found nothing better (client keeps the estimate it showed).
+  if (body.refine_web === true) {
+    const usage = {
+      input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0, web_search_requests: 0,
+    };
+    const accumulate = (data: { usage?: Record<string, number> }) => {
+      const u = data.usage ?? {};
+      usage.input_tokens += u.input_tokens ?? 0;
+      usage.output_tokens += u.output_tokens ?? 0;
+      usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
+      usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
+      usage.web_search_requests += (u as { server_tool_use?: { web_search_requests?: number } })
+        .server_tool_use?.web_search_requests ?? 0;
+    };
+    let refined: { items: unknown[]; note: string } | null = null;
+    try {
+      refined = await runWebRefine(makeParseDeps(userClient, admin, userId), previousItems, accumulate, () => {});
+    } catch (e) {
+      console.log("[parse_meal] web refine threw:", String(e).slice(0, 160));
+    }
+    trace.status = "success";
+    trace.tool_calls = ["web_refine"];
+    void logTokenUsage(admin, {
+      pipeline: "parse_meal",
+      provider: "anthropic",
+      model: PARSE_MEAL_MODEL,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      latency_ms: Date.now() - startedAtMs,
+      status: "success",
+      metadata: { user_id: userId, mode: "parse_meal_refine", web_search_requests: usage.web_search_requests },
+    });
+    return respond({ refined: refined ?? null, usage }, 200);
+  }
+
   // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
   // it here WITHOUT awaiting so the queries run concurrently with the extract
   // model call; runParseMeal awaits contextPromise after extract. This hides
@@ -1257,45 +1369,7 @@ async function handleParseMealRequest(args: {
 
   try {
     const result = await runParseMeal(
-      {
-        anthropicApiKey: ANTHROPIC_API_KEY!,
-        model: PARSE_MEAL_MODEL,
-        maxTokens: PARSE_MEAL_MAX_TOKENS,
-        timeoutMs: ANTHROPIC_TIMEOUT_MS,
-        webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
-        searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
-        backfillOffFood: (p) => backfillOffFoodRow(admin, p),
-        getFoodPer100: async (foodId) => {
-          const { data } = await userClient
-            .from("foods")
-            .select("base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
-            .eq("id", foodId)
-            .maybeSingle();
-          if (!data) return null;
-          const row = data as Record<string, unknown>;
-          return {
-            base_unit: String(row.base_unit ?? "g"),
-            kcal: Number(row.kcal ?? 0),
-            protein_g: Number(row.protein_g ?? 0),
-            carb_g: Number(row.carb_g ?? 0),
-            fat_g: Number(row.fat_g ?? 0),
-            fiber_g: row.fiber_g === null || row.fiber_g === undefined ? null : Number(row.fiber_g),
-          };
-        },
-        getFoodServings: async (foodId) => {
-          const { data } = await userClient
-            .from("food_servings")
-            .select("label, grams, is_default")
-            .eq("food_id", foodId)
-            .order("seq", { ascending: true });
-          return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
-            label: String(s.label),
-            grams: Number(s.grams),
-            is_default: !!s.is_default,
-          }));
-        },
-        log: (msg) => console.log(msg),
-      },
+      makeParseDeps(userClient, admin, userId),
       {
         text,
         localHour,
@@ -1383,6 +1457,8 @@ async function handleParseMealRequest(args: {
         declined: result.declined,
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
+        // Weak lines the client can offer to improve with a visible web search.
+        web_refine: result.web_refine ?? null,
         usage: result.usage,
         tool_calls: result.tool_calls,
       },

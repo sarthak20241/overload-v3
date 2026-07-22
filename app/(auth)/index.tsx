@@ -24,7 +24,8 @@ function useWarmUpBrowser() {
 const hasClerkKey = !!process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-type Mode = 'login' | 'register' | 'forgot' | 'verify' | 'reset';
+type Mode = 'login' | 'register' | 'forgot' | 'verify' | 'reset' | 'mfa';
+type SecondFactorStrategy = 'totp' | 'phone_code' | 'backup_code';
 
 function GoogleIcon() {
   return (
@@ -83,7 +84,19 @@ export default function AuthScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
+  // Which second factor we're prompting for once a login hits needs_second_factor,
+  // plus a masked identifier (e.g. "+1 ••• ••• 1234") to show for phone_code.
+  const [secondFactorStrategy, setSecondFactorStrategy] = useState<SecondFactorStrategy>('totp');
+  const [mfaPhoneHint, setMfaPhoneHint] = useState('');
+  // Which phone factor to text — required by Clerk when an account has more
+  // than one verified phone number registered as a second factor.
+  const [mfaPhoneId, setMfaPhoneId] = useState<string | undefined>(undefined);
   const [showPass, setShowPass] = useState(false);
+  // Non-error "use this method instead" nudge, set when we detect (on email
+  // blur) that the typed email is registered with an OAuth provider / email
+  // code rather than a password. Kept separate from `error` so it reads as a
+  // helpful hint, not a failure.
+  const [methodHint, setMethodHint] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [appleLoading, setAppleLoading] = useState(false);
@@ -162,13 +175,59 @@ export default function AuthScreen() {
     if (!signInLoaded || !signUpLoaded) return;
     if (authBusy) return;
     setError('');
+    setMethodHint('');
     setLoading(true);
 
     try {
       if (mode === 'login') {
         const result = await signIn!.create({ identifier: email, password });
         if (result.status !== 'complete' || !result.createdSessionId) {
-          throw new Error('Sign-in needs another step. Please try again.');
+          // create() didn't throw but the attempt isn't finished. The status
+          // tells us why, so surface something the user can act on instead of
+          // a dead-end "try again".
+          if (result.status === 'needs_second_factor') {
+            // Password checked out; the account has 2FA. Pick a second factor
+            // we can prompt for — TOTP (authenticator app) needs no prep,
+            // phone_code needs an SMS dispatched first, backup_code is the
+            // fallback. Then hand off to the 'mfa' step.
+            const factors: any[] = result.supportedSecondFactors ?? [];
+            const chosen =
+              factors.find((f) => f.strategy === 'totp') ??
+              factors.find((f) => f.strategy === 'phone_code') ??
+              factors.find((f) => f.strategy === 'backup_code');
+            if (!chosen) {
+              throw new Error(
+                'This account requires two-factor authentication, but no supported method is available. Please sign in with Google.'
+              );
+            }
+            if (chosen.strategy === 'phone_code') {
+              await signIn!.prepareSecondFactor({ strategy: 'phone_code', phoneNumberId: chosen.phoneNumberId });
+            }
+            setSecondFactorStrategy(chosen.strategy);
+            setMfaPhoneHint(chosen.safeIdentifier ?? '');
+            setMfaPhoneId(chosen.phoneNumberId);
+            setCode('');
+            setMode('mfa');
+            return;
+          }
+          if (result.status === 'needs_first_factor') {
+            // Password wasn't a valid first factor — almost always because the
+            // account was created with "Continue with Google"/Apple and has no
+            // password set. We only learn the real methods here (after a genuine
+            // sign-in attempt), so surface the nudge now rather than probing the
+            // account's existence up front. Shown as an info hint, not a hard
+            // error, since there's a clear next step.
+            const factors: any[] = result.supportedFirstFactors ?? [];
+            if (factors.some((f) => f.strategy === 'oauth_google')) {
+              setMethodHint('This email is registered with Google. Tap "Continue with Google" above.');
+            } else if (factors.some((f) => f.strategy === 'oauth_apple')) {
+              setMethodHint('This email is registered with Apple. Tap "Continue with Apple" above.');
+            } else {
+              setMethodHint('This account signs in with an email code. Use "Forgot password?" below.');
+            }
+            return;
+          }
+          throw new Error(`Sign-in couldn't complete (status: ${result.status}). Please try again.`);
         }
         await setSignInActive!({ session: result.createdSessionId });
         router.replace('/(app)');
@@ -226,6 +285,26 @@ export default function AuthScreen() {
         }
         await setSignInActive!({ session: result.createdSessionId });
         router.replace('/(app)');
+      } else if (mode === 'mfa') {
+        // Second step of a 2FA login. attemptSecondFactor verifies the code
+        // for whichever strategy we entered with (TOTP / SMS / backup code)
+        // and returns a complete session on success.
+        if (!code.trim()) {
+          throw new Error(
+            secondFactorStrategy === 'backup_code'
+              ? 'Enter one of your backup codes'
+              : 'Enter your 6-digit authentication code'
+          );
+        }
+        const result = await signIn!.attemptSecondFactor({
+          strategy: secondFactorStrategy,
+          code: code.trim(),
+        });
+        if (result.status !== 'complete' || !result.createdSessionId) {
+          throw new Error('Verification failed. Please check the code and try again.');
+        }
+        await setSignInActive!({ session: result.createdSessionId });
+        router.replace('/(app)');
       }
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Something went wrong');
@@ -252,6 +331,18 @@ export default function AuthScreen() {
     setError('');
     try {
       await signIn.create({ strategy: 'reset_password_email_code', identifier: email });
+    } catch (err: any) {
+      setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
+    }
+  };
+
+  // Re-send the SMS second-factor code (only meaningful for phone_code; TOTP
+  // and backup codes have nothing to dispatch).
+  const handleResendMfaCode = async () => {
+    if (!hasClerkKey || !signIn || secondFactorStrategy !== 'phone_code') return;
+    setError('');
+    try {
+      await signIn.prepareSecondFactor({ strategy: 'phone_code', phoneNumberId: mfaPhoneId });
     } catch (err: any) {
       setError(err.errors?.[0]?.longMessage || err.message || 'Could not resend code');
     }
@@ -395,7 +486,7 @@ export default function AuthScreen() {
                 {(['login', 'register'] as Mode[]).map((m) => (
                   <TouchableOpacity
                     key={m}
-                    onPress={() => { setMode(m); setError(''); }}
+                    onPress={() => { setMode(m); setError(''); setMethodHint(''); }}
                     style={[
                       styles.tab,
                       mode === m && { backgroundColor: Colors.primary },
@@ -439,6 +530,20 @@ export default function AuthScreen() {
                 <Text style={[styles.sectionTitle, { color: C.foreground }]}>Verify Your Email</Text>
                 <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
                   Enter the 6-digit code we sent to {email || 'your email'}
+                </Text>
+              </View>
+            )}
+
+            {/* MFA header (second factor after a password login) */}
+            {mode === 'mfa' && (
+              <View style={{ marginBottom: Spacing.xxl }}>
+                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Two-Step Verification</Text>
+                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                  {secondFactorStrategy === 'totp'
+                    ? 'Enter the 6-digit code from your authenticator app'
+                    : secondFactorStrategy === 'phone_code'
+                    ? `Enter the code we texted to ${mfaPhoneHint || 'your phone'}`
+                    : 'Enter one of your backup codes'}
                 </Text>
               </View>
             )}
@@ -545,14 +650,14 @@ export default function AuthScreen() {
             )}
 
             {/* Email */}
-            {mode !== 'verify' && mode !== 'reset' && (
+            {mode !== 'verify' && mode !== 'reset' && mode !== 'mfa' && (
               <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
                 <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
                 <TextInput
                   placeholder="Email address"
                   placeholderTextColor={C.textMuted}
                   value={email}
-                  onChangeText={setEmail}
+                  onChangeText={(t) => { setEmail(t); if (methodHint) setMethodHint(''); }}
                   keyboardType="email-address"
                   autoCapitalize="none"
                   textContentType="emailAddress"
@@ -625,6 +730,38 @@ export default function AuthScreen() {
               </View>
             )}
 
+            {/* MFA code (second factor). Backup codes are alphanumeric, so only
+                the TOTP / SMS strategies get the numeric 6-digit treatment. */}
+            {mode === 'mfa' && (
+              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                <Feather name="shield" size={15} color={C.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  placeholder={secondFactorStrategy === 'backup_code' ? 'Backup code' : '123456'}
+                  placeholderTextColor={C.textMuted}
+                  value={code}
+                  onChangeText={setCode}
+                  keyboardType={secondFactorStrategy === 'backup_code' ? 'default' : 'number-pad'}
+                  autoCapitalize="none"
+                  maxLength={secondFactorStrategy === 'backup_code' ? undefined : 6}
+                  textContentType="oneTimeCode"
+                  autoComplete="one-time-code"
+                  accessibilityLabel="Authentication code"
+                  style={[styles.input, { color: C.foreground, letterSpacing: secondFactorStrategy === 'backup_code' ? 0 : 4 }]}
+                />
+              </View>
+            )}
+
+            {/* Method nudge (e.g. "this email uses Google") — informational,
+                only on the Sign In screen and only when no hard error is
+                competing for attention. Gated to login so it can't bleed onto
+                the reset / 2FA screens. */}
+            {mode === 'login' && !!methodHint && !error && (
+              <View style={styles.infoBox}>
+                <Feather name="info" size={14} color="#60a5fa" />
+                <Text style={styles.infoText}>{methodHint}</Text>
+              </View>
+            )}
+
             {/* Error */}
             {!!error && (
               <View style={styles.errorBox}>
@@ -659,6 +796,7 @@ export default function AuthScreen() {
                       : mode === 'register' ? 'Create Account'
                       : mode === 'verify' ? 'Verify Email'
                       : mode === 'reset' ? 'Reset Password'
+                      : mode === 'mfa' ? 'Verify'
                       : 'Send Reset Code'}
                   </Text>
                   <Feather name="arrow-right" size={15} color={Colors.primaryFg} />
@@ -685,6 +823,20 @@ export default function AuthScreen() {
                   <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); }}>
+                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* MFA: resend (SMS only) + back to login */}
+            {mode === 'mfa' && (
+              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                {secondFactorStrategy === 'phone_code' && (
+                  <TouchableOpacity onPress={handleResendMfaCode}>
+                    <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); setPassword(''); }}>
                   <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
                 </TouchableOpacity>
               </View>
@@ -825,6 +977,18 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   errorText: { color: '#f87171', fontSize: FontSize.sm, flex: 1 },
+  infoBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: 'rgba(96,165,250,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(96,165,250,0.22)',
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  infoText: { color: '#93c5fd', fontSize: FontSize.sm, flex: 1 },
   forgotText: { fontSize: FontSize.sm },
   submitBtn: {
     flexDirection: 'row',
