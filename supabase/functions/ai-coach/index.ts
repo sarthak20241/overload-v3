@@ -770,7 +770,7 @@ async function handleFanoutPlan(args: {
   trace: CoachTrace;
   userId: string;
   startedAtMs: number;
-  respond: (body: unknown, status: number) => Response;
+  respond: (body: unknown, status: number) => Promise<Response>;
   system: unknown[];
   userMessage: string;
   stream: boolean;
