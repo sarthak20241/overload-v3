@@ -1407,24 +1407,46 @@ export function reconcileQuantity(
 const DRY_PREP_RE = /\b(roasted|dry.?roasted|toasted|dried|dehydrated|fried|crispy|crunchy)\b/i;
 const WET_PREP_RE = /\b(cooked|boiled|steamed|stewed)\b/i;
 
-export function flagPrepMismatch(items: ParsedItem[], inputText: string): ParsedItem[] {
-  const textDry = DRY_PREP_RE.test(inputText);
+export type PrepState = "dry" | "wet";
+
+/** The prep state a piece of text implies, or null if it says nothing. */
+export function prepStateOf(text: string): PrepState | null {
+  if (DRY_PREP_RE.test(text)) return "dry";
+  if (WET_PREP_RE.test(text)) return "wet";
+  return null;
+}
+
+/**
+ * Per-item preparation-state check.
+ *
+ * `prepByFoodId` carries, for each matched row, what the USER asked for and the
+ * ROW's own name - both resolved per item, not scraped from the whole message.
+ * The old meal-wide version read the prep word from anywhere in the text, so
+ * "boiled eggs and roasted chana" flagged the correctly-cooked eggs because
+ * "roasted" appeared somewhere; and it needed the row name to share a word with
+ * the text, so "roasted chana" -> "Chickpeas, boiled" slipped through since
+ * "chana" and "chickpeas" share nothing. Keying on food_id fixes both, and it
+ * catches wet->dry as well as dry->wet.
+ */
+export function flagPrepMismatch(
+  items: ParsedItem[],
+  // Omitted by the research and correction paths: their items are web labels
+  // (no food_id, skipped anyway) or serving/quantity edits that never change
+  // prep, so there is no row to check against.
+  prepByFoodId: Map<string, { userIntent: PrepState; rowName: string }> = new Map(),
+): ParsedItem[] {
   return items.map((item) => {
-    if (!textDry || !WET_PREP_RE.test(item.food_name)) return item;
-    // Only flag when the mismatch is about THIS item: some content word of the
-    // matched food name must appear in the user's text. Prefix match (>=4
-    // chars) rather than exact: logs are typo-heavy ("edameme", "panner").
-    const foodWords = item.food_name.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4 && !WET_PREP_RE.test(w));
-    const textWords = inputText.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4);
-    const overlaps = foodWords.some((fw) =>
-      textWords.some((tw) => tw.startsWith(fw.slice(0, 4)) || fw.startsWith(tw.slice(0, 4)))
-    );
-    if (!overlaps) return item;
-    return {
-      ...item,
-      confidence: "low",
-      assumption: appendAssumption(item, "You said roasted or dried but I matched a cooked entry, calories may read low"),
-    };
+    if (!item.food_id) return item;
+    const entry = prepByFoodId.get(item.food_id);
+    if (!entry) return item;
+    const rowState = prepStateOf(entry.rowName);
+    if (!rowState || rowState === entry.userIntent) return item;
+    // dry food matched to a wet row reads LOW (wet food is mostly water); the
+    // reverse reads high. Name the direction so the note is actually useful.
+    const note = entry.userIntent === "dry"
+      ? "You said roasted or dried but I matched a cooked entry, calories may read low"
+      : "You said cooked or boiled but I matched a dried entry, calories may read high";
+    return { ...item, confidence: "low", assumption: appendAssumption(item, note) };
   });
 }
 
@@ -1588,8 +1610,7 @@ export async function runWebRefine(
   if (!researched) return null;
   // Same guardrails phase 1 applies. A web label is flag-only under Atwater
   // (checkAtwater skips rewriting "web"), so a real panel is never overwritten.
-  const prepText = weakItems.map((w) => w.food_name).join(" ");
-  const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
+  const items = flagPrepMismatch(checkAtwater(researched.items));
   return { items, note: researched.note };
 }
 
@@ -1752,7 +1773,6 @@ export async function runParseMeal(
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
-  const prepText = [input.previousText ?? "", input.text].filter(Boolean).join(" ");
   const tExtract0 = Date.now();
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
@@ -1848,7 +1868,7 @@ export async function runParseMeal(
       // The web found something materially different, most likely another
       // variant. Offer it rather than apply it: a wrong silent swap is worse
       // than the number they already had.
-      const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
+      const items = flagPrepMismatch(checkAtwater(researched.items));
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -1862,7 +1882,7 @@ export async function runParseMeal(
       };
     }
     if (researched) {
-      const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
+      const items = flagPrepMismatch(checkAtwater(researched.items));
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -1934,7 +1954,7 @@ export async function runParseMeal(
     if (corrected) {
       T.fast_correction = 1;
       steps.push({ iter: 1, tool: "fast_correction", input: { items: corrected.length } });
-      const items = flagPrepMismatch(checkAtwater(corrected), prepText);
+      const items = flagPrepMismatch(checkAtwater(corrected));
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
       return {
@@ -2056,7 +2076,21 @@ export async function runParseMeal(
     }
   }
 
-  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), input.text);
+  // What the user asked for, per matched row. Each resolved item's prep intent
+  // (from its prep field and its own name) maps to every candidate food_id it
+  // could resolve to, paired with that candidate's real row name.
+  const prepByFoodId = new Map<string, { userIntent: PrepState; rowName: string }>();
+  for (const r of resolved) {
+    const userIntent = prepStateOf(`${r.prep ?? ""} ${r.name}`);
+    if (!userIntent) continue;
+    for (const c of r.candidates) {
+      if (c.food_id && !prepByFoodId.has(c.food_id)) {
+        prepByFoodId.set(c.food_id, { userIntent, rowName: c.name });
+      }
+    }
+  }
+
+  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), prepByFoodId);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
