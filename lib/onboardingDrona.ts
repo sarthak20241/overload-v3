@@ -134,6 +134,88 @@ export async function requestDronaOnboardingPlan(args: {
   }
 }
 
+/** The structured intake the anonymous route accepts. No free prompt text:
+ * the edge builds the message server-side from exactly these fields. */
+export interface AnonIntake {
+  goal: string | null;
+  experience: string | null;
+  frequency: number | null;
+  gender: string | null;
+  ageYears: number | null;
+  heightCm: number | null;
+  weightKg: number | null;
+  goalWeightKg: number | null;
+  weeklyRateKg: number | null;
+  direction: 'loss' | 'gain' | null;
+  targets: { kcal: number; protein: number; carb: number; fat: number } | null;
+}
+
+export function buildAnonIntake(
+  answers: OnboardingAnswers,
+  extras: {
+    weeklyRateKg: number | null;
+    direction: 'loss' | 'gain' | null;
+    targets: { kcal: number; protein: number; carb: number; fat: number } | null;
+  },
+): AnonIntake {
+  return {
+    goal: answers.goal,
+    experience: answers.experience,
+    frequency: answers.frequency,
+    gender: answers.gender,
+    ageYears: answers.ageYears,
+    heightCm: answers.heightCm,
+    weightKg: answers.weightKg,
+    goalWeightKg: answers.goalWeightKg,
+    weeklyRateKg: extras.weeklyRateKg,
+    direction: extras.direction,
+    targets: extras.targets,
+  };
+}
+
+/**
+ * Anonymous variant: a fresh visitor generates their plan with no account.
+ * Sends only structured intake (never free prompt text) plus a device id; the
+ * edge builds the message server-side, rate-limits, and forces generate_plan.
+ * Throws like the authenticated variant so callers fall back to the
+ * deterministic plan on any error (including a 429 rate-limit).
+ */
+export async function requestAnonOnboardingPlan(args: {
+  deviceId: string;
+  intake: AnonIntake;
+}): Promise<GeneratePlanInput> {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) throw new Error('Supabase not configured');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/ai-coach`, {
+      method: 'POST',
+      headers: {
+        apikey: anonKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        mode: 'onboarding_plan',
+        device_id: args.deviceId,
+        intake: args.intake,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const json = (await response.json()) as {
+      structured?: { name?: string; input?: GeneratePlanInput } | null;
+    };
+    const input = json.structured?.name === 'generate_plan' ? json.structured.input : null;
+    if (!input) throw new Error('No structured plan in response');
+    return input;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 // ─── Validation + mapping ────────────────────────────────────────────────────
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

@@ -1408,6 +1408,168 @@ async function handleParseMealRequest(args: {
 }
 
 // ── Main handler ────────────────────────────────────────────────────────────
+// ── Anonymous onboarding plan (guest-first funnel) ───────────────────────────
+// A fresh visitor generates their starter plan BEFORE creating an account, so
+// this one path is reachable without a JWT. Abuse is contained three ways:
+//  1. STRICT SCHEMA: the client sends only structured intake, never free
+//     prompt text. The message is built server-side and generate_plan is
+//     forced, so the output is always a catalog-grounded workout plan - it is
+//     useless as a general-purpose LLM proxy.
+//  2. RATE LIMIT: device + IP + a global daily circuit breaker (0086).
+//  3. NO WRITES: nothing is persisted except the usage counter.
+// `integrity_token` is accepted but not yet verified (Play Integrity / App
+// Attest is a deferred phase 2); its presence is logged so we can turn on
+// verification later without a client change.
+
+interface AnonIntake {
+  goal?: string;
+  experience?: string;
+  frequency?: number;
+  gender?: string;
+  ageYears?: number;
+  heightCm?: number;
+  weightKg?: number;
+  goalWeightKg?: number;
+  weeklyRateKg?: number | null;
+  direction?: "loss" | "gain" | null;
+  targets?: { kcal?: number; protein?: number; carb?: number; fat?: number } | null;
+}
+
+const ANON_GOAL_LABEL: Record<string, string> = {
+  hypertrophy: "build muscle",
+  strength: "get stronger",
+  fat_loss: "lose fat",
+  endurance: "build endurance",
+  general: "general fitness",
+};
+
+// Server-side twin of lib/onboardingDrona.buildOnboardingIntakeMessage: keep
+// the two in sync. Catalog names come from the exercises table so the model
+// grounds on real rows.
+function buildAnonIntakeMessage(intake: AnonIntake, catalog: string[]): string {
+  const goal = intake.goal && ANON_GOAL_LABEL[intake.goal] ? ANON_GOAL_LABEL[intake.goal] : "general fitness";
+  const experience = intake.experience ?? "beginner";
+  const frequency = intake.frequency ?? 3;
+
+  const body: string[] = [];
+  if (intake.gender) body.push(`sex ${intake.gender}`);
+  if (intake.ageYears) body.push(`${intake.ageYears} years old`);
+  if (intake.heightCm) body.push(`${intake.heightCm} cm`);
+  if (intake.weightKg) body.push(`${intake.weightKg} kg`);
+  if (intake.goalWeightKg && intake.direction) {
+    body.push(
+      `target weight ${intake.goalWeightKg} kg (${intake.direction === "loss" ? "cutting" : "gaining"}${
+        intake.weeklyRateKg ? ` at ${intake.weeklyRateKg} kg/week` : ""
+      })`,
+    );
+  }
+  const t = intake.targets;
+
+  return [
+    `I just finished onboarding. Build my starter training plan from these answers.`,
+    `Goal: ${goal}. Experience: ${experience}. Training ${frequency} days a week.`,
+    body.length ? `Body: ${body.join(", ")}.` : "",
+    t && t.kcal
+      ? `My daily fuel targets are already set: ${t.kcal} kcal, ${t.protein}g protein, ${t.carb}g carbs, ${t.fat}g fat. If you mention nutrition, use exactly these numbers.`
+      : "",
+    `Rules:`,
+    `- days_per_week is ${frequency}. Create the number of DISTINCT workouts a ${experience} lifter should rotate through ${frequency} sessions a week (fewer distinct workouts than sessions is fine, they repeat). Typical: 1-3 days full body A/B, 4 days upper/lower, 5+ push/pull/legs.`,
+    `- Exercise names MUST be copied character-for-character from this catalog, nothing else: ${catalog.join("; ")}.`,
+    `- 4-6 exercises per workout, compounds first. Sets 2-4, plain rep ranges like "6-10", rest 45-180 seconds.`,
+    `- Short workout names ("Full Body A", "Push Day"). One-line note per workout with its focus.`,
+    `- The rationale should read like you talking to me: why this split at ${frequency} days for my goal, and how to progress. 3-4 sentences, no lists.`,
+    `This is a fresh account, so skip data-lookup tools and emit generate_plan directly.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function handleAnonOnboardingPlan(args: {
+  admin: any;
+  body: Record<string, unknown>;
+  req: Request;
+  trace: CoachTrace;
+  startedAtMs: number;
+  respond: (body: unknown, status: number) => Promise<Response>;
+}): Promise<Response> {
+  const { admin, body, req, trace, respond } = args;
+
+  const deviceId = typeof body.device_id === "string" ? body.device_id.trim().slice(0, 128) : "";
+  if (!deviceId) return respond({ error: "device_id required" }, 400);
+  const intake = body.intake;
+  if (!intake || typeof intake !== "object") return respond({ error: "intake required" }, 400);
+
+  const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+  trace.user_id = `anon:${deviceId.slice(0, 12)}`;
+  trace.mode = "onboarding_plan";
+  // integrity_token is accepted but not yet verified (Play Integrity / App
+  // Attest deferred to phase 2); recorded in spans for later observability.
+  trace.spans = {
+    anon: true,
+    has_integrity_token: typeof body.integrity_token === "string" && !!body.integrity_token,
+  };
+
+  // Rate limit: device + IP + global. Fail CLOSED on a check error so a broken
+  // limiter can't become an open spigot; the client silently falls back to the
+  // deterministic plan either way.
+  const { data: gate, error: gateErr } = await admin.rpc("check_anon_plan_quota", {
+    p_device_id: deviceId,
+    p_ip: ip,
+  });
+  if (gateErr) {
+    trace.status = "rate_limited";
+    trace.error_message = `anon_quota_err: ${gateErr.message}`.slice(0, 200);
+    return respond({ error: "rate_check_failed" }, 429);
+  }
+  const row = Array.isArray(gate) ? gate[0] : gate;
+  if (!row?.allowed) {
+    trace.status = "rate_limited";
+    trace.error_message = `anon_limit: ${row?.reason ?? "unknown"}`;
+    return respond({ error: "rate_limited", reason: row?.reason ?? "unknown" }, 429);
+  }
+
+  // Catalog grounding from the seeded exercises table.
+  const { data: exRows } = await admin.from("exercises").select("name").order("name");
+  const catalog = (exRows ?? []).map((r: { name: string }) => r.name).filter(Boolean);
+
+  const message = buildAnonIntakeMessage(intake as AnonIntake, catalog);
+  const { system, tools } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
+
+  const apiResult = await callAnthropic({
+    model: MODEL,
+    max_tokens: GENERATE_PLAN_MAX_TOKENS,
+    system,
+    tools,
+    messages: [{ role: "user", content: message }],
+    tool_choice: { type: "tool", name: "generate_plan" },
+  });
+  if (!apiResult.ok) {
+    trace.status = "anthropic_error";
+    trace.error_message = `anon_anthropic_${apiResult.status}: ${preview(apiResult.body) ?? ""}`;
+    return respond({ error: "generation_failed" }, 502);
+  }
+
+  const usage = apiResult.data.usage ?? {};
+  trace.input_tokens = usage.input_tokens ?? null;
+  trace.output_tokens = usage.output_tokens ?? null;
+
+  const blocks: Array<{ type: string; name?: string; input?: Record<string, unknown> }> =
+    apiResult.data.content ?? [];
+  const toolUse = blocks.find((b) => b.type === "tool_use" && b.name === "generate_plan");
+  if (!toolUse?.input) {
+    trace.status = "internal_error";
+    trace.error_message = "anon: no generate_plan tool_use in response";
+    return respond({ error: "no_plan" }, 502);
+  }
+
+  // Consume a slot only now, on success.
+  await admin.from("anon_plan_usage").insert({ device_id: deviceId, ip });
+
+  trace.status = "success";
+  trace.tool_calls.push("generate_plan");
+  return respond({ structured: { name: "generate_plan", input: toolUse.input } }, 200);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS_HEADERS });
@@ -1440,6 +1602,19 @@ Deno.serve(async (req) => {
   console.log("[ai-coach] auth", JSON.stringify({ has_header: !!authHeader, reason: auth.reason }));
 
   if (!auth.sub) {
+    // Anonymous onboarding plan (guest-first funnel) is the ONE path allowed
+    // without a JWT. Peek the body: consuming it here is safe because this
+    // branch returns, so the signed-in path's later req.json() is never
+    // reached for anonymous requests.
+    let anonBody: Record<string, unknown> = {};
+    try {
+      anonBody = (await req.json()) as Record<string, unknown>;
+    } catch {
+      /* fall through to 401 */
+    }
+    if (anonBody && anonBody.mode === "onboarding_plan") {
+      return handleAnonOnboardingPlan({ admin, body: anonBody, req, trace, startedAtMs, respond });
+    }
     trace.status = "unauthorized";
     trace.error_message = auth.reason;
     return respond({ error: "Unauthorized", debug: auth.reason }, 401);

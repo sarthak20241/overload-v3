@@ -85,11 +85,14 @@ import {
   splitNameFor,
 } from '@/lib/onboarding';
 import {
+  buildAnonIntake,
   buildOnboardingIntakeMessage,
   dronaPlanToStarterRoutines,
+  requestAnonOnboardingPlan,
   requestDronaOnboardingPlan,
   type DronaOnboardingPlan,
 } from '@/lib/onboardingDrona';
+import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding } from '@/lib/pendingOnboarding';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 
@@ -275,29 +278,42 @@ export default function OnboardingScreen() {
   useEffect(() => {
     if (step !== 'commit' || generationStarted.current) return;
     generationStarted.current = true;
-    if (!isSignedIn || !getToken) {
-      setBuildReady(true); // guests get the curated starter plan for now
-      return;
-    }
     // No cancellation on step change: the user moves commit -> build while
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
     (async () => {
       try {
-        const token = await getToken();
-        if (!token) throw new Error('no token');
         const direction =
           answers.goalWeightKg && answers.weightKg && Math.abs(answers.goalWeightKg - answers.weightKg) >= 1
             ? answers.goalWeightKg < answers.weightKg ? 'loss' as const : 'gain' as const
             : null;
-        const message = buildOnboardingIntakeMessage(answers, {
-          weeklyRateKg: weeklyRate,
-          direction,
-          targets: targets
-            ? { kcal: targets.kcal, protein: targets.protein, carb: targets.carb, fat: targets.fat }
-            : null,
-        });
-        const input = await requestDronaOnboardingPlan({ token, message });
+        const targetsPayload = targets
+          ? { kcal: targets.kcal, protein: targets.protein, carb: targets.carb, fat: targets.fat }
+          : null;
+
+        let input;
+        if (isSignedIn && getToken) {
+          // Signed-in (re-onboarding / demo): authenticated coach path.
+          const token = await getToken();
+          if (!token) throw new Error('no token');
+          const message = buildOnboardingIntakeMessage(answers, {
+            weeklyRateKg: weeklyRate,
+            direction,
+            targets: targetsPayload,
+          });
+          input = await requestDronaOnboardingPlan({ token, message });
+        } else {
+          // Guest-first funnel: no account yet. Anonymous, device-rate-limited
+          // route. A 429 or any error just falls through to the deterministic
+          // plan below - the reveal never knows.
+          const deviceId = await getDeviceId();
+          const intake = buildAnonIntake(answers, {
+            weeklyRateKg: weeklyRate,
+            direction,
+            targets: targetsPayload,
+          });
+          input = await requestAnonOnboardingPlan({ deviceId, intake });
+        }
         const mapped = dronaPlanToStarterRoutines(input);
         if (mapped) setDronaPlan(mapped);
       } catch {
