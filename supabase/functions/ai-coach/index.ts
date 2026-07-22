@@ -1458,30 +1458,54 @@ const ANON_GOAL_LABEL: Record<string, string> = {
 // Server-side twin of lib/onboardingDrona.buildOnboardingIntakeMessage: keep
 // the two in sync. Catalog names come from the exercises table so the model
 // grounds on real rows.
+const ANON_EXPERIENCE = new Set(["beginner", "intermediate", "advanced"]);
+const ANON_GENDER = new Set(["M", "F", "O"]);
+// Clamp a client-supplied number into a sane range, or drop it. Guards the one
+// unauthenticated route: every intake field is either enum-checked or bounded
+// before it reaches the prompt, so nothing arbitrary is ever interpolated.
+function anonNum(v: unknown, lo: number, hi: number): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+}
+
 function buildAnonIntakeMessage(intake: AnonIntake, catalog: string[]): string {
   const goal = intake.goal && ANON_GOAL_LABEL[intake.goal] ? ANON_GOAL_LABEL[intake.goal] : "general fitness";
-  const experience = intake.experience ?? "beginner";
-  const frequency = intake.frequency ?? 3;
+  const experience = intake.experience && ANON_EXPERIENCE.has(intake.experience) ? intake.experience : "beginner";
+  const frequency = anonNum(intake.frequency, 1, 7) ?? 3;
+  const gender = intake.gender && ANON_GENDER.has(intake.gender) ? intake.gender : null;
+  const ageYears = anonNum(intake.ageYears, 13, 120);
+  const heightCm = anonNum(intake.heightCm, 100, 250);
+  const weightKg = anonNum(intake.weightKg, 25, 500);
+  const goalWeightKg = anonNum(intake.goalWeightKg, 25, 500);
+  const weeklyRateKg = anonNum(intake.weeklyRateKg, 0.05, 2);
+  const direction = intake.direction === "loss" || intake.direction === "gain" ? intake.direction : null;
 
   const body: string[] = [];
-  if (intake.gender) body.push(`sex ${intake.gender}`);
-  if (intake.ageYears) body.push(`${intake.ageYears} years old`);
-  if (intake.heightCm) body.push(`${intake.heightCm} cm`);
-  if (intake.weightKg) body.push(`${intake.weightKg} kg`);
-  if (intake.goalWeightKg && intake.direction) {
+  if (gender) body.push(`sex ${gender}`);
+  if (ageYears) body.push(`${ageYears} years old`);
+  if (heightCm) body.push(`${heightCm} cm`);
+  if (weightKg) body.push(`${weightKg} kg`);
+  if (goalWeightKg && direction) {
     body.push(
-      `target weight ${intake.goalWeightKg} kg (${intake.direction === "loss" ? "cutting" : "gaining"}${
-        intake.weeklyRateKg ? ` at ${intake.weeklyRateKg} kg/week` : ""
+      `target weight ${goalWeightKg} kg (${direction === "loss" ? "cutting" : "gaining"}${
+        weeklyRateKg ? ` at ${weeklyRateKg} kg/week` : ""
       })`,
     );
   }
-  const t = intake.targets;
+  const rawT = intake.targets;
+  const t = rawT
+    ? {
+        kcal: anonNum(rawT.kcal, 800, 8000),
+        protein: anonNum(rawT.protein, 0, 500),
+        carb: anonNum(rawT.carb, 0, 1200),
+        fat: anonNum(rawT.fat, 0, 400),
+      }
+    : null;
 
   return [
     `I just finished onboarding. Build my starter training plan from these answers.`,
     `Goal: ${goal}. Experience: ${experience}. Training ${frequency} days a week.`,
     body.length ? `Body: ${body.join(", ")}.` : "",
-    t && t.kcal
+    t && t.kcal && t.protein != null && t.carb != null && t.fat != null
       ? `My daily fuel targets are already set: ${t.kcal} kcal, ${t.protein}g protein, ${t.carb}g carbs, ${t.fat}g fat. If you mention nutrition, use exactly these numbers.`
       : "",
     `Rules:`,

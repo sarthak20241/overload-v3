@@ -510,6 +510,7 @@ export default function OnboardingScreen() {
             targets,
             plan: finalPlan,
             createPlan: opts.createPlan,
+            dest: opts.dest,
             weightUnit,
             goalWeightKg: answers.goalWeightKg ?? null,
           });

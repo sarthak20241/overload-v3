@@ -33,6 +33,8 @@ export interface PendingOnboarding {
   plan: StarterRoutine[];
   /** Whether to actually create the routines, or just save the profile. */
   createPlan: boolean;
+  /** Where to land after the plan is drained under the resolved identity. */
+  dest: '/(app)' | '/(app)/routines';
   weightUnit: 'kg' | 'lbs';
   goalWeightKg: number | null;
 }
@@ -74,16 +76,17 @@ export async function clearPendingOnboarding(): Promise<void> {
  * Consume any pending intake and save it under the now-resolved identity.
  * Idempotent and safe to call on every (app) mount: no-ops when nothing is
  * pending. Clears the blob only after a successful save so a mid-save crash
- * leaves it to retry next launch. Returns true when a plan was drained (the
- * caller can then skip the first-run onboarding check).
+ * leaves it to retry next launch. Returns the intended landing route when a
+ * plan was drained (the caller skips the first-run check and routes there), or
+ * null when nothing was pending.
  */
 export async function drainPendingOnboarding(target: {
   isGuest: boolean;
   clerkId: string | null;
   client: SupabaseClient;
-}): Promise<boolean> {
+}): Promise<PendingOnboarding['dest'] | null> {
   const pending = await getPendingOnboarding();
-  if (!pending) return false;
+  if (!pending) return null;
 
   const identity = onboardingIdentity(target.isGuest ? null : target.clerkId);
   await saveOnboardingProfile(pending.answers, pending.targets, target);
@@ -96,5 +99,5 @@ export async function drainPendingOnboarding(target: {
   }
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
-  return true;
+  return pending.dest ?? '/(app)';
 }

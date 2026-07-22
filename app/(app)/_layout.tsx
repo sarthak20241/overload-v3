@@ -246,6 +246,7 @@ export default function AppLayout() {
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
   const { C } = useTheme();
   const pathname = usePathname();
+  const router = useRouter();
   const { flushNow } = useSync();
 
   // First-run gate: route brand-new users through /onboarding once. null =
@@ -283,10 +284,13 @@ export default function AppLayout() {
     // check - draining marks onboarding done, so the check then returns false
     // and they land straight on the dashboard with their plan.
     drainPendingOnboarding(target)
-      .then((drained) => {
-        if (drained) {
+      .then((dest) => {
+        if (dest) {
           void flushNow();
           settle(false);
+          // Honor the reveal choice: "build my own routines" lands on the
+          // routines screen instead of the dashboard.
+          if (dest === '/(app)/routines') router.replace('/(app)/routines');
           return;
         }
         return resolveNeedsOnboarding(target).then(settle);
@@ -296,7 +300,7 @@ export default function AppLayout() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [isLoaded, guestLoaded, isSignedIn, isGuest, user?.id, onboardingCheckClient, flushNow]);
+  }, [isLoaded, guestLoaded, isSignedIn, isGuest, user?.id, onboardingCheckClient, flushNow, router]);
   // The nutrition day view is a focused full screen with its own bottom input
   // (Journable model). Hide the workout tab bar + workout overlays there so the
   // input is reachable and the screen reads as its own destination.
