@@ -15,6 +15,9 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA"
+      },
       "ios": {
         "simulator": false,
         "resourceClass": "m-medium"
@@ -26,6 +29,9 @@
     "production": {
       "channel": "production",
       "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA"
+      },
       "ios": {
         "resourceClass": "m-medium"
       }
