@@ -92,6 +92,11 @@ export interface ParseMealResult {
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
+  /** Names of lines phase 1 left weak (an estimate, or guardrail-flagged) that
+   *  a deliberate web search could improve. When set, the client shows the meal
+   *  immediately, displays a "searching the web for better numbers" indicator,
+   *  and fires a second refine request. null when nothing needs it. */
+  web_refine?: { items: string[] } | null;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -645,13 +650,9 @@ export function wordsOverlap(a: string, b: string): boolean {
 
 const WEB_LOOKUP_MAX_TURNS = 4;
 const WEB_LOOKUP_TIMEOUT_MS = 20000;
-// How long past the decide call the hedge may hold the response. Web label
-// lookups typically take 4-10s; the decide call ~4s. A short grace converts
-// most of that overlap into "free" — anything slower ships as an estimate.
-const WEB_MERGE_GRACE_MS = 4000;
 
-// Runs concurrently with the decide call (the hedge). Own bounded mini-loop:
-// server web_search pauses resume, and the final turn forces report_labels.
+// A bounded mini-loop over server web_search: pause turns resume, and the
+// final turn forces report_labels. Used by researchPrevious / runWebRefine.
 async function runWebLookup(
   deps: ParseMealDeps,
   items: ExtractedItem[],
@@ -731,28 +732,6 @@ async function runWebLookup(
 // Upgrade estimate lines with label data the hedge brought back in time.
 // Grams stay the model's (portioning already went through the guardrails);
 // only the per-gram nutrition is replaced.
-function mergeWebLabels(items: ParsedItem[], labels: Map<string, WebLabel>): ParsedItem[] {
-  return items.map((item) => {
-    if (item.source !== "estimate" || !(item.grams > 0)) return item;
-    for (const [forItem, label] of labels) {
-      if (!wordsOverlap(item.food_name, forItem)) continue;
-      const f = item.grams / 100;
-      return {
-        ...item,
-        kcal: round1(label.per_100.kcal * f),
-        protein_g: round1(label.per_100.protein_g * f),
-        carb_g: round1(label.per_100.carb_g * f),
-        fat_g: round1(label.per_100.fat_g * f),
-        fiber_g: label.per_100.fiber_g === null ? item.fiber_g : round1(label.per_100.fiber_g * f),
-        source: "web" as const,
-        confidence: "medium" as const,
-        assumption: appendAssumption(item, label.source_note ?? "Macros from a web label lookup"),
-      };
-    }
-    return item;
-  });
-}
-
 // ── Prompt ──────────────────────────────────────────────────────────────────
 
 const HOUR_TO_MEAL: Array<[number, number, MealType]> = [
@@ -1588,6 +1567,32 @@ async function researchPrevious(
   };
 }
 
+/**
+ * Phase 2 of the deliberate web search. The client fires this AFTER phase 1
+ * returned a usable meal, for the specific lines phase 1 marked weak. It web-
+ * looks-them-up, runs the same guardrails over the result, and hands back the
+ * improved lines for the client to swap in - reusing researchPrevious, the
+ * exact machinery the user-challenge path uses, so the two stay in step.
+ *
+ * Returns null when the web found nothing better; the client then just keeps
+ * the estimate it already showed.
+ */
+export async function runWebRefine(
+  deps: ParseMealDeps,
+  weakItems: PreviousItem[],
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<{ items: ParsedItem[]; note: string } | null> {
+  if (!deps.webSearchEnabled || weakItems.length === 0) return null;
+  const researched = await researchPrevious(deps, weakItems, onUsage, onCall).catch(() => null);
+  if (!researched) return null;
+  // Same guardrails phase 1 applies. A web label is flag-only under Atwater
+  // (checkAtwater skips rewriting "web"), so a real panel is never overwritten.
+  const prepText = weakItems.map((w) => w.food_name).join(" ");
+  const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
+  return { items, note: researched.note };
+}
+
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
  *  against a food's real serving labels. Exact first, then substring both
  *  ways so "small" finds "1 small/individual". */
@@ -1971,39 +1976,11 @@ export async function runParseMeal(
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
 
-  // ── Stage 3: decide + hedged web lookup ───────────────────────────────────
-  // The decide call is ALWAYS one forced log_meal call: unresolved items get
-  // an immediate model estimate, never a blocking web turn. When web search
-  // is enabled and something resolved to zero candidates, a compact label
-  // lookup RACES the decide call; if it lands within the grace window its
-  // label data upgrades the estimate lines server-side. Web results never
-  // delay a fully-resolved meal and add at most the grace window otherwise.
-  const unresolvedItems = resolved.filter((r) => r.candidates.length === 0);
-  // The hedge is abandoned the instant it loses its race, so it needs both a
-  // kill switch and a usage gate. Its own callbacks fire from a promise nobody
-  // awaits any more: without the gate they would keep adding to `usage` after
-  // that object was returned to the caller and logged.
-  const hedge = new AbortController();
-  let hedgeSettled = false;
-  const hedgeUsage = (data: any) => { if (!hedgeSettled) accumulate(data); };
-  const hedgeCall = () => { if (!hedgeSettled) anthropicCalls++; };
-  /** Close the hedge down. Safe to call twice, and MUST be called on every path
-   *  that leaves this function after the lookup was fired - a decide failure
-   *  returns before the settlement block below and would otherwise leak it. */
-  const stopHedge = () => { hedgeSettled = true; hedge.abort(); };
-  const webPromise: Promise<Map<string, WebLabel> | null> | null =
-    deps.webSearchEnabled && unresolvedItems.length > 0
-      ? runWebLookup(deps, unresolvedItems, hedgeUsage, hedgeCall, hedge.signal)
-        .catch((e) => {
-          deps.log?.(`[parse_meal] web lookup threw: ${String(e).slice(0, 120)}`);
-          return null;
-        })
-      : null;
-  if (webPromise) {
-    toolCalls.push("web_lookup");
-    steps.push({ iter: 2, tool: "web_lookup", input: { items: unresolvedItems.map((i) => i.name) } });
-  }
-
+  // ── Stage 3: decide ───────────────────────────────────────────────────────
+  // One forced log_meal call. NO web lookup here any more: web search is a
+  // deliberate, user-visible SECOND phase (runWebRefine) that the client fires
+  // for items this phase left weak. Phase 1 stays fast and always returns a
+  // usable meal immediately; the web only ever improves it afterwards.
   const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
     user_text: input.text.trim().slice(0, 500),
@@ -2029,7 +2006,6 @@ export async function runParseMeal(
     messages: [{ role: "user", content: JSON.stringify(decidePayload) }],
   });
   if (!result.ok) {
-    stopHedge();
     throw new Error(`anthropic_${result.status}: ${result.body.slice(0, 300)}`);
   }
   anthropicCalls++;
@@ -2039,7 +2015,6 @@ export async function runParseMeal(
   const terminal = blocks.find((b) => b.type === "tool_use" && b.name === PARSE_TERMINAL_TOOL);
   if (!terminal) {
     // Forced tool_choice makes this near-impossible; fail soft as a decline.
-    stopHedge();
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
     );
@@ -2070,29 +2045,6 @@ export async function runParseMeal(
   // drop a line it was told to relist.
   if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems, replacedNames);
 
-  // Hedge settlement: give the parallel lookup a short grace beyond the
-  // decide call, then take whatever it brought (or move on without it).
-  if (webPromise) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const labels = await Promise.race([
-      webPromise,
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), WEB_MERGE_GRACE_MS); }),
-    ]);
-    if (timer) clearTimeout(timer);
-    // Settled either way: whatever the lookup has not finished by now can never
-    // reach the user, so stop it. Losing the race used to leave it running for
-    // up to WEB_LOOKUP_TIMEOUT_MS across WEB_LOOKUP_MAX_TURNS turns, billing
-    // web searches for an answer that was already discarded.
-    const timedOut = labels === null;
-    stopHedge();
-    steps.push({
-      iter: 2,
-      tool: "web_lookup_merge",
-      result: { found: labels ? labels.size : 0, ...(timedOut ? { cancelled: true } : {}) },
-    });
-    if (labels) items = mergeWebLabels(items, labels);
-  }
-
   // Serving options for every candidate we offered, so the display quantity can
   // be reconciled against the logged grams (see reconcileQuantity).
   const servingsByFood = new Map<string, ServingOption[]>();
@@ -2119,13 +2071,31 @@ export async function runParseMeal(
     ? scrubDashes(raw.drona_line).slice(0, 200)
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
-  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: webPromise !== null } });
+
+  // Weak lines the client can offer to improve with a visible web search
+  // (phase 2). A line is weak when we never matched it to a real food (an
+  // estimate) or a guardrail flagged it (confidence dropped to low). We never
+  // touch what the user typed (manual) or a label we already fetched (web).
+  const webRefine = deps.webSearchEnabled
+    ? items.filter((it) => isRefinable(it)).map((it) => it.food_name)
+    : [];
+
+  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_refine: webRefine.length } });
   return {
     parsed: { meal_type: mealType, items, drona_line: dronaLine, corrects_previous: correctsPrevious },
     declined: null,
+    web_refine: webRefine.length > 0 ? { items: webRefine } : null,
     usage,
     tool_calls: toolCalls,
     steps,
     iterations: anthropicCalls,
   };
+}
+
+/** A line phase 2's visible web search may try to improve. Estimates (no real
+ *  match) and guardrail-flagged lines qualify; the user's own numbers and an
+ *  already-fetched web label do not. */
+export function isRefinable(it: ParsedItem): boolean {
+  if (it.source === "manual" || it.source === "web") return false;
+  return it.source === "estimate" || it.confidence === "low";
 }
