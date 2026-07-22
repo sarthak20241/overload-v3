@@ -158,13 +158,24 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
 }
 
 /**
- * Guarantee a "corrected meal" still contains everything it replaces.
+ * The correction contract. A correction REPLACES the meal on screen with the
+ * list it returns, so a set of invariants must hold for every previous line the
+ * user did not explicitly re-target (its name is not in `replacedNames`):
  *
- * Correction paths hand back a full item list that REPLACES the meal on screen,
- * and both the model and the fast path are merely *asked* to relist untouched
- * lines. That is a prompt instruction, not an invariant, so anything they omit
- * would silently delete food the user already reviewed. Any previous line not
- * represented in the result is appended back, unchanged.
+ *   1. It must still be present.            -> keepUncoveredPrevious
+ *   2. Its provenance must survive.         -> preserveManual (source, note)
+ *   3. Its hand-entered numbers must survive, rescaled to any new amount.
+ *                                           -> preserveManual (macros)
+ *
+ * A line the user DID re-target may change freely (identity, amount, numbers):
+ * that is the correction they asked for. These helpers enforce the invariants
+ * for everything else, because the model and the fast path are only *asked* to
+ * preserve them - a prompt instruction, not something we can trust per turn.
+ */
+
+/**
+ * Invariant 1: a corrected meal still contains everything it replaces. Any
+ * previous line not represented in the result is appended back, unchanged.
  */
 export function keepUncoveredPrevious(
   items: ParsedItem[],
@@ -184,6 +195,44 @@ export function keepUncoveredPrevious(
     );
   const missing = previous.filter((p) => !covered(p)).map(previousAsParsedItem);
   return missing.length > 0 ? [...items, ...missing] : items;
+}
+
+/**
+ * Invariants 2 & 3: a hand-edited (manual) line keeps its numbers and its
+ * provenance across a correction. When a correction falls through to the full
+ * pipeline, decide relists the manual line from the catalog - recomputed macros,
+ * source "catalog" - discarding what the user typed. For every previous manual
+ * line the user did NOT re-target, restore its source/note and rescale ITS
+ * macros to the line's new grams (so "make it two" doubles the user's numbers,
+ * not the catalog's). A re-targeted manual line is left as decide returned it.
+ */
+export function preserveManual(
+  items: ParsedItem[],
+  previous: PreviousItem[],
+  replaced?: Set<string>,
+): ParsedItem[] {
+  const manuals = previous.filter((p) =>
+    p.source === "manual" && !replaced?.has(p.food_name.toLowerCase()) && p.grams > 0 && typeof p.kcal === "number"
+  );
+  if (manuals.length === 0) return items;
+  return items.map((it) => {
+    const m = manuals.find((p) =>
+      (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
+    );
+    if (!m) return it;
+    const s = it.grams > 0 ? it.grams / m.grams : 1;
+    return {
+      ...it,
+      kcal: round1((m.kcal ?? 0) * s),
+      protein_g: round1((m.protein_g ?? 0) * s),
+      carb_g: round1((m.carb_g ?? 0) * s),
+      fat_g: round1((m.fat_g ?? 0) * s),
+      fiber_g: typeof m.fiber_g === "number" ? round1(m.fiber_g * s) : it.fiber_g,
+      source: "manual",
+      assumption: m.assumption ?? it.assumption,
+      confidence: m.confidence ?? "high",
+    };
+  });
 }
 
 /**
@@ -1497,7 +1546,8 @@ export function flagPrepMismatch(
   prepByFoodId: Map<string, { userIntent: PrepState; rowName: string }> = new Map(),
 ): ParsedItem[] {
   return items.map((item) => {
-    if (!item.food_id) return item;
+    // Never second-guess a line the user typed (contract invariant 2/3).
+    if (!item.food_id || item.source === "manual") return item;
     const entry = prepByFoodId.get(item.food_id);
     if (!entry) return item;
     const rowState = prepStateOf(entry.rowName);
@@ -2123,9 +2173,11 @@ export async function runParseMeal(
   }
   let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
   if (correctsPrevious) {
-    // A correction REPLACES the reviewed meal, so never let the model quietly
-    // drop a line it was told to relist.
+    // Enforce the correction contract on every line the user did not re-target:
+    // still present (1), and if it was hand-edited, its provenance and numbers
+    // survive (2, 3).
     items = keepUncoveredPrevious(items, prevItems, replacedNames);
+    items = preserveManual(items, prevItems, replacedNames);
   } else {
     // A fresh parse: every food the user named must reach the log, even if
     // decide forgot to emit one.
