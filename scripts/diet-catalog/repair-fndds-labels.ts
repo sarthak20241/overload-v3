@@ -82,9 +82,11 @@ function main() {
 -- ${map.size} code->description pairs. Idempotent: rerunning matches nothing.
 begin;
 
+-- Back up the WHOLE row (select *), not a hand-picked subset: steps 1-2 DELETE
+-- rows, and a partial backup (missing source and any other columns) could not
+-- re-insert them faithfully on a revert.
 create table if not exists public._fndds_label_backup_20260717 as
-select id, food_id, label, grams, is_default, seq
-from public.food_servings
+select * from public.food_servings
 where label ~ '^1\\s+\\d{4,6}$';
 
 -- 1. drop "Quantity not specified" rows (code 90000): no portion information.
@@ -114,17 +116,20 @@ from map m
 where s.label = '1 ' || m.code;
 
 -- 4. foods left with no default (their default was deleted above): promote the
---    lowest-seq remaining serving.
+--    lowest-seq remaining serving. Scoped to foods THIS repair touched (in the
+--    backup) - otherwise it would stamp a default onto every catalog food that
+--    deliberately has none, e.g. a user-created or OFF-imported food.
 update public.food_servings s
 set is_default = true
 from (
   select distinct on (food_id) id
   from public.food_servings
-  where food_id in (
-    select food_id from public.food_servings
-    group by food_id
-    having not bool_or(is_default)
-  )
+  where food_id in (select distinct food_id from public._fndds_label_backup_20260717)
+    and food_id in (
+      select food_id from public.food_servings
+      group by food_id
+      having not bool_or(is_default)
+    )
   order by food_id, seq, id
 ) pick
 where s.id = pick.id;
