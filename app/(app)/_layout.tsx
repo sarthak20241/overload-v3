@@ -25,6 +25,8 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import { useForegroundHealthSync } from '@/lib/useHealthSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
+import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
+import { useSync } from '@/components/SyncProvider';
 import type { Routine } from '@/lib/types';
 
 const ROUTINE_COLORS = Colors.routineColors;
@@ -244,6 +246,7 @@ export default function AppLayout() {
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
   const { C } = useTheme();
   const pathname = usePathname();
+  const { flushNow } = useSync();
 
   // First-run gate: route brand-new users through /onboarding once. null =
   // still resolving (flag read, plus a server look for legacy accounts with
@@ -269,18 +272,31 @@ export default function AppLayout() {
     // itself can still stall indefinitely. Never leave the app behind this
     // first-run spinner when that happens.
     const timeout = setTimeout(() => settle(false), 6000);
-    resolveNeedsOnboarding({
+    const target = {
       isGuest: !isSignedIn,
       clerkId: isSignedIn ? user?.id ?? null : null,
       client: onboardingCheckClient,
-    })
-      .then(settle)
+    };
+    // Guest-first funnel: a fresh visitor ran the intake with no account and
+    // stashed the plan. Now that they've resolved an identity (signed in or
+    // continued as guest), save it under that identity before the onboarding
+    // check - draining marks onboarding done, so the check then returns false
+    // and they land straight on the dashboard with their plan.
+    drainPendingOnboarding(target)
+      .then((drained) => {
+        if (drained) {
+          void flushNow();
+          settle(false);
+          return;
+        }
+        return resolveNeedsOnboarding(target).then(settle);
+      })
       .catch(() => settle(false));
     return () => {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [isLoaded, guestLoaded, isSignedIn, isGuest, user?.id, onboardingCheckClient]);
+  }, [isLoaded, guestLoaded, isSignedIn, isGuest, user?.id, onboardingCheckClient, flushNow]);
   // The nutrition day view is a focused full screen with its own bottom input
   // (Journable model). Hide the workout tab bar + workout overlays there so the
   // input is reachable and the screen reads as its own destination.

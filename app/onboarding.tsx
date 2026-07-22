@@ -33,7 +33,7 @@ import {
   TouchableOpacity,
   BackHandler,
 } from 'react-native';
-import { useRouter, Redirect } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
@@ -90,6 +90,7 @@ import {
   requestDronaOnboardingPlan,
   type DronaOnboardingPlan,
 } from '@/lib/onboardingDrona';
+import { setPendingOnboarding } from '@/lib/pendingOnboarding';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 
 const LBS_PER_KG = 2.20462;
@@ -151,6 +152,9 @@ export default function OnboardingScreen() {
   const { C } = useTheme();
   const { user, isSignedIn, isLoaded, getToken } = useClerkUser();
   const { isGuest, isLoaded: guestLoaded } = useGuestMode();
+  // A fresh visitor (no account, not an explicit guest) is the guest-first
+  // funnel's main subject: they run the intake, then convert at the reveal.
+  const isFreshVisitor = !isSignedIn && !isGuest;
   const { flushNow } = useSync();
   const supabaseClient = useSupabaseClient();
   const basicInfo = useBasicInfo();
@@ -475,8 +479,45 @@ export default function OnboardingScreen() {
     [answers, targets, finalPlan, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
   );
 
+  // Reveal CTA. A fresh visitor has no identity yet, so we stash the finished
+  // intake and hand off to the auth screen; the (app) layout saves it under
+  // whoever they become (signed-in or guest). Guests / signed-in users
+  // re-onboarding save directly through the existing path.
+  const finishOnboarding = useCallback(
+    async (opts: { createPlan: boolean; dest: '/(app)' | '/(app)/routines' }) => {
+      if (finishing) return;
+      if (isFreshVisitor) {
+        setFinishing(true);
+        try {
+          await setPendingOnboarding({
+            answers,
+            targets,
+            plan: finalPlan,
+            createPlan: opts.createPlan,
+            weightUnit,
+            goalWeightKg: answers.goalWeightKg ?? null,
+          });
+          router.replace('/(auth)');
+        } finally {
+          setFinishing(false);
+        }
+        return;
+      }
+      await completeOnboarding(opts);
+    },
+    [finishing, isFreshVisitor, answers, targets, finalPlan, weightUnit, router, completeOnboarding],
+  );
+
+  // Onboarding is the front door now, so a fresh visitor (no identity yet)
+  // has no plan to save on skip - they just want the sign-in screen for an
+  // existing account. A guest or signed-in user re-visiting marks done and
+  // returns to the app.
   const skipEverything = useCallback(async () => {
     if (finishing) return;
+    if (isFreshVisitor) {
+      router.replace('/(auth)');
+      return;
+    }
     setFinishing(true);
     try {
       await markOnboardingDone(identity);
@@ -484,12 +525,12 @@ export default function OnboardingScreen() {
     } finally {
       setFinishing(false);
     }
-  }, [finishing, identity, router]);
+  }, [finishing, isFreshVisitor, identity, router]);
 
-  // Same guard class as the (app) layout: only signed-in users and explicit
-  // guests belong here. Placed after every hook (rules of hooks).
+  // Placed after every hook (rules of hooks). No auth bounce: onboarding is
+  // the front door, so fresh visitors (neither signed-in nor guest) view it
+  // and convert at the reveal.
   if (!isLoaded || !guestLoaded) return null;
-  if (!isSignedIn && !isGuest) return <Redirect href="/(auth)" />;
 
   const showHeader = step !== 'welcome' && step !== 'build';
   const progressIndex = PROGRESS_STEPS.indexOf(step);
@@ -543,9 +584,11 @@ export default function OnboardingScreen() {
                 disabled={finishing}
                 style={s.ghostLink}
                 accessibilityRole="button"
-                accessibilityLabel="Skip setup"
+                accessibilityLabel={isFreshVisitor ? 'I already have an account' : 'Skip setup'}
               >
-                <Text style={[s.ghostLinkText, { color: C.textMuted }]}>I know my way around</Text>
+                <Text style={[s.ghostLinkText, { color: C.textMuted }]}>
+                  {isFreshVisitor ? 'I already have an account' : 'I know my way around'}
+                </Text>
               </TouchableOpacity>
             </Animated.View>
           </View>
@@ -895,13 +938,13 @@ export default function OnboardingScreen() {
             footer={
               <>
                 <PrimaryCta
-                  label="Start my plan"
-                  onPress={() => completeOnboarding({ createPlan: true, dest: '/(app)' })}
+                  label={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
+                  onPress={() => finishOnboarding({ createPlan: true, dest: '/(app)' })}
                   loading={finishing}
-                  accessibilityLabel="Start my plan"
+                  accessibilityLabel={isFreshVisitor ? 'Save my plan' : 'Start my plan'}
                 />
                 <TouchableOpacity
-                  onPress={() => completeOnboarding({ createPlan: false, dest: '/(app)/routines' })}
+                  onPress={() => finishOnboarding({ createPlan: false, dest: '/(app)/routines' })}
                   disabled={finishing}
                   style={s.ghostLink}
                   accessibilityRole="button"
