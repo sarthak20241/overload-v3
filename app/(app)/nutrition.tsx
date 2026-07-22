@@ -254,9 +254,16 @@ export default function NutritionScreen() {
     setFlow((f) => {
       if (f.status !== 'review' || f.raw !== raw) return f; // user moved on
       if (!refined) return { ...f, refining: null }; // nothing better found
-      // Swap each refined line back in by name; leave everything else untouched.
       const byName = new Map(refined.items.map((r) => [r.food_name.toLowerCase(), r]));
-      const merged = f.meal.items.map((it) => byName.get(it.food_name.toLowerCase()) ?? it);
+      const merged = f.meal.items.map((it) => {
+        const r = byName.get(it.food_name.toLowerCase());
+        // Only swap a line that is STILL the estimate we sent to refine. The
+        // card invites the user to edit it while the lookup runs; if they did,
+        // it is now 'manual' (or otherwise changed) and their numbers must win.
+        // Same guarantee preserveManual gives corrections, applied client-side.
+        if (!r || it.source !== 'estimate') return it;
+        return r;
+      });
       return { ...f, meal: { ...f.meal, items: merged }, refining: null };
     });
   }, [supabase]);

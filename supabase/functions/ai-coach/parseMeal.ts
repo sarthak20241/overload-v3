@@ -92,10 +92,11 @@ export interface ParseMealResult {
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
-  /** Names of lines phase 1 left weak (an estimate, or guardrail-flagged) that
+  /** Names of lines we could not ground in any source (source "estimate") that
    *  a deliberate web search could improve. When set, the client shows the meal
    *  immediately, displays a "searching the web for better numbers" indicator,
-   *  and fires a second refine request. null when nothing needs it. */
+   *  and fires a second refine request. null when nothing needs it. A merely
+   *  guardrail-flagged line is NOT here - see isRefinable. */
   web_refine?: { items: string[] } | null;
   usage: {
     input_tokens: number;
@@ -768,10 +769,6 @@ async function runWebLookup(
   items: ExtractedItem[],
   onUsage: (data: any) => void,
   onCall: () => void,
-  /** Abort the whole multi-turn lookup, not just the request in flight. Each
-   *  turn is a separate billed call, so without a check between turns a
-   *  cancelled lookup would keep going for up to WEB_LOOKUP_MAX_TURNS. */
-  signal?: AbortSignal,
 ): Promise<Map<string, WebLabel> | null> {
   const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
   const system =
@@ -785,7 +782,6 @@ async function runWebLookup(
   }];
 
   for (let turn = 0; turn < WEB_LOOKUP_MAX_TURNS; turn++) {
-    if (signal?.aborted) return null;
     const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
     const result = await callAnthropicOnce(webDeps, {
       model: deps.model,
@@ -794,10 +790,9 @@ async function runWebLookup(
       tools: [WEB_SEARCH_TOOL, WEB_LOOKUP_TOOL],
       messages: conversation,
       ...(lastTurn ? { tool_choice: { type: "tool", name: "report_labels" } } : {}),
-    }, signal);
+    });
     if (!result.ok) {
-      // 499 is our own cancellation, not a failure worth reporting.
-      if (result.status !== 499) deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
+      deps.log?.(`[parse_meal] web lookup failed: ${result.status}`);
       return null;
     }
     onCall();
@@ -957,19 +952,9 @@ function withToolCache(tools: unknown[]): unknown[] {
 async function callAnthropicOnce(
   deps: ParseMealDeps,
   payload: Record<string, unknown>,
-  /** Cancels the call from outside, independently of the per-call timeout.
-   *  The hedged web lookup uses this to stop the moment it loses its race,
-   *  instead of running on in the background billing for a discarded answer. */
-  externalSignal?: AbortSignal,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
   const fetchFn = deps.fetchFn ?? fetch;
   const controller = new AbortController();
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      return { ok: false, status: 499, body: "cancelled before dispatch" };
-    }
-    externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
-  }
   const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
   try {
     const response = await fetchFn("https://api.anthropic.com/v1/messages", {
@@ -988,11 +973,6 @@ async function callAnthropicOnce(
     return { ok: true, data: await response.json() };
   } catch (e) {
     const isAbort = (e as Error)?.name === "AbortError";
-    // Distinguish "we gave up on it" from "it was too slow": a cancelled hedge
-    // is normal operation, and logging it as a timeout would misreport health.
-    if (isAbort && externalSignal?.aborted) {
-      return { ok: false, status: 499, body: "cancelled" };
-    }
     return {
       ok: false,
       status: isAbort ? 504 : 502,

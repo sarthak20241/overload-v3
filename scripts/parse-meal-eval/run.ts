@@ -125,10 +125,11 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     }),
     embedQueryForEval(query).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
-      const { data } = await supabase.rpc("search_foods_semantic_with_servings", {
+      const { data, error } = await supabase.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
         lim: 6,
       });
+      if (error) console.error(`  semantic search error: ${error.message}`);
       return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
     }),
   ]);

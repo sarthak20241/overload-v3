@@ -85,6 +85,18 @@ begin;
 -- Back up the WHOLE row (select *), not a hand-picked subset: steps 1-2 DELETE
 -- rows, and a partial backup (missing source and any other columns) could not
 -- re-insert them faithfully on a revert.
+-- Refuse to proceed if a backup from a prior run is already here AND there is
+-- still work to do: reusing it (create table IF NOT EXISTS is a no-op) would
+-- leave the current run's rows unbacked and the revert wrong. A clean re-run
+-- with nothing left to repair passes through untouched.
+do $$
+begin
+  if to_regclass('public._fndds_label_backup_20260717') is not null
+     and exists (select 1 from public.food_servings where label ~ '^1\\s+\\d{4,6}$') then
+    raise exception 'backup table already exists and code-labels remain; resolve the prior run first';
+  end if;
+end $$;
+
 create table if not exists public._fndds_label_backup_20260717 as
 select * from public.food_servings
 where label ~ '^1\\s+\\d{4,6}$';
@@ -115,16 +127,19 @@ set label = m.descr
 from map m
 where s.label = '1 ' || m.code;
 
--- 4. foods left with no default (their default was deleted above): promote the
---    lowest-seq remaining serving. Scoped to foods THIS repair touched (in the
---    backup) - otherwise it would stamp a default onto every catalog food that
---    deliberately has none, e.g. a user-created or OFF-imported food.
+-- 4. foods whose DEFAULT serving was one of the rows deleted above: promote the
+--    lowest-seq remaining serving. Scoped to foods that actually LOST a default
+--    (their backed-up rows include the default), not every food now lacking one
+--    - otherwise it would stamp a default onto a user-created or OFF-imported
+--    food that deliberately has none.
 update public.food_servings s
 set is_default = true
 from (
   select distinct on (food_id) id
   from public.food_servings
-  where food_id in (select distinct food_id from public._fndds_label_backup_20260717)
+  where food_id in (
+      select distinct food_id from public._fndds_label_backup_20260717 where is_default
+    )
     and food_id in (
       select food_id from public.food_servings
       group by food_id

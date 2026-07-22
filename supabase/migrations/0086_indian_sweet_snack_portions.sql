@@ -21,6 +21,7 @@ update public.food_servings s
 set grams = 90
 from public.foods f
 where s.food_id = f.id
+  and f.created_by is null            -- global rows only; never a user's own food
   and lower(f.name) = 'gulab jamun'
   and lower(s.label) = '2 pieces'
   and s.grams = 130;
