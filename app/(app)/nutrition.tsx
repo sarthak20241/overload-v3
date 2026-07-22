@@ -31,7 +31,7 @@ import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal,
+  parseMeal, refineMeal, logParsedMeal,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -60,6 +60,10 @@ type ParseFlow =
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
+      // Names of lines we could not match to any source and are looking up
+      // online right now (phase 2). Drives the "searching the web" indicator;
+      // cleared when the refine returns and its numbers are swapped in.
+      refining?: string[] | null;
     }
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
@@ -213,22 +217,47 @@ export default function NutritionScreen() {
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
-    if (pending && !res.meal.corrects_previous) {
-      setFlow({
-        status: 'review',
-        raw: `${pending.text}; ${t}`,
-        meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
-        mealType: keptMealType ?? res.meal.meal_type,
-        mealTypePicked: prevReview?.mealTypePicked,
-      });
-      return;
+    const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
+      ? {
+          status: 'review',
+          raw: `${pending.text}; ${t}`,
+          meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
+          mealType: keptMealType ?? res.meal.meal_type,
+          mealTypePicked: prevReview?.mealTypePicked,
+          refining: res.webRefine ?? null,
+        }
+      : {
+          status: 'review',
+          raw: t,
+          meal: res.meal,
+          mealType: keptMealType ?? res.meal.meal_type,
+          mealTypePicked: prevReview?.mealTypePicked,
+          refining: res.webRefine ?? null,
+        };
+    setFlow(reviewFlow);
+    // Phase 2: the meal is on screen already; now go look the unmatched lines
+    // up online and swap in anything better. Fire-and-forget - a failed or
+    // empty refine just leaves the estimate in place.
+    if (res.webRefine && res.webRefine.length > 0) {
+      void kickWebRefine(reviewFlow.raw, res.meal.items, res.webRefine);
     }
-    setFlow({
-      status: 'review',
-      raw: t,
-      meal: res.meal,
-      mealType: keptMealType ?? res.meal.meal_type,
-      mealTypePicked: prevReview?.mealTypePicked,
+  }, [supabase]);
+
+  /** Look the unmatched (estimate) lines up online and swap in what comes back.
+   *  Guards on the raw text so a result that lands after the user has moved on
+   *  to a different parse is dropped instead of clobbering the new one. */
+  const kickWebRefine = useCallback(async (raw: string, items: ParsedMealItem[], weakNames: string[]) => {
+    const weakSet = new Set(weakNames.map((n) => n.toLowerCase()));
+    const weakItems = items.filter((it) => weakSet.has(it.food_name.toLowerCase()));
+    if (weakItems.length === 0) return;
+    const refined = await refineMeal(supabase, weakItems);
+    setFlow((f) => {
+      if (f.status !== 'review' || f.raw !== raw) return f; // user moved on
+      if (!refined) return { ...f, refining: null }; // nothing better found
+      // Swap each refined line back in by name; leave everything else untouched.
+      const byName = new Map(refined.items.map((r) => [r.food_name.toLowerCase(), r]));
+      const merged = f.meal.items.map((it) => byName.get(it.food_name.toLowerCase()) ?? it);
+      return { ...f, meal: { ...f.meal, items: merged }, refining: null };
     });
   }, [supabase]);
 
@@ -420,6 +449,7 @@ export default function NutritionScreen() {
               }
               onMealTypeChange={onMealTypeChange}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
+              refiningItems={flow.status === 'review' ? flow.refining ?? null : null}
               proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
               onAcceptProposal={() => setFlow((f) => (
                 f.status === 'review' && f.proposal

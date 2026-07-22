@@ -484,7 +484,10 @@ export interface ParsedMeal {
 /** parse_meal outcome: either a parsed meal to log, or a decline (non-food
  *  input) carrying Drona's redirect line, or a transport/parse error. */
 export type ParseMealResult =
-  | { kind: 'parsed'; meal: ParsedMeal }
+  // `webRefine` names the lines we could not match to any source, shipped as
+  // estimates. The caller shows the meal at once, then fires refineMeal() to
+  // look those lines up online and swap in what it finds.
+  | { kind: 'parsed'; meal: ParsedMeal; webRefine?: string[] | null }
   // `proposal` carries researched numbers that materially disagree with what is
   // on screen (usually a different product variant). The user chooses; applying
   // is local, so it costs nothing.
@@ -602,8 +605,11 @@ export async function parseMeal(
     parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
       ? parsed.meal_type : 'snack';
   const items: ParsedMealItem[] = (parsed.items as any[]).map(toParsedItem);
+  const wr = data?.web_refine?.items;
+  const webRefine = Array.isArray(wr) && wr.length > 0 ? wr.map((s: any) => String(s)) : null;
   return {
     kind: 'parsed',
+    webRefine,
     meal: {
       meal_type: mealType,
       items,
@@ -611,6 +617,39 @@ export async function parseMeal(
       corrects_previous: parsed.corrects_previous === true,
     },
   };
+}
+
+/** Phase 2 of the deliberate web search. Given the weak lines parseMeal flagged
+ *  in `webRefine`, look them up online and return improved versions to swap in.
+ *  Returns null when the web found nothing better (keep the estimate shown).
+ *  The whole meal's items are sent so the server can re-target by name. */
+export async function refineMeal(
+  supabase: Supa,
+  weakItems: ParsedMealItem[],
+): Promise<{ items: ParsedMealItem[]; note: string } | null> {
+  if (weakItems.length === 0) return null;
+  try {
+    const res = await supabase.functions.invoke('ai-coach', {
+      region: FunctionRegion.UsEast1,
+      body: {
+        mode: 'parse_meal',
+        refine_web: true,
+        // Reuse the previous-items shape so the server rebuilds each line exactly.
+        previous_items: weakItems.map((i) => ({
+          food_id: i.food_id, food_name: i.food_name, quantity: i.quantity,
+          serving_label: i.serving_label, grams: i.grams,
+          kcal: i.kcal, protein_g: i.protein_g, carb_g: i.carb_g, fat_g: i.fat_g, fiber_g: i.fiber_g,
+          source: i.source, assumption: i.assumption, confidence: i.confidence,
+        })),
+      },
+    });
+    if (res.error) return null;
+    const r = res.data?.refined;
+    if (!r || !Array.isArray(r.items) || r.items.length === 0) return null;
+    return { items: (r.items as any[]).map(toParsedItem), note: String(r.note ?? 'Updated from the web') };
+  } catch {
+    return null;
+  }
 }
 
 /** The result of writing a parsed meal — carries the ids needed to Undo. */

@@ -16,7 +16,7 @@
  * sourced/estimated lines say where they came from.
  */
 import React, { useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -51,6 +51,9 @@ interface Props {
   /** A reply that is not a meal (Drona answering a question about these lines,
    *  or a failed follow-up) shown ON the card so the meal survives. */
   notice?: string | null;
+  /** Names of lines we could not match and are looking up online right now.
+   *  When non-empty, a "searching the web" indicator shows above the items. */
+  refiningItems?: string[] | null;
   /** Label for a researched alternative the user can accept in one tap. */
   proposalLabel?: string | null;
   onAcceptProposal?: () => void;
@@ -78,7 +81,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
+  state, rawText, meal, mealType, message, adding, saved, notice, refiningItems, proposalLabel,
   onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
   const { C } = useTheme();
@@ -115,6 +118,14 @@ export function ParsedMealCard({
                   </Pressable>
                 </View>
               )}
+            </View>
+          )}
+          {!!refiningItems && refiningItems.length > 0 && (
+            <View style={s.refining}>
+              <ActivityIndicator size="small" color={C.textSecondary} />
+              <Text style={s.refiningTxt} numberOfLines={2}>
+                Couldn't find {refiningItems.join(', ')} in our catalog — checking trusted sources online…
+              </Text>
             </View>
           )}
           {meal.items.map((it, i) => {
@@ -275,6 +286,12 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     },
     useTxt: { fontSize: FontSize.sm, color: C.background, fontWeight: FontWeight.semibold },
     noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
+
+    refining: {
+      flexDirection: 'row', alignItems: 'center', gap: 8,
+      paddingVertical: Spacing.xs, marginBottom: Spacing.xs,
+    },
+    refiningTxt: { flex: 1, fontSize: FontSize.xs, lineHeight: 16, color: C.textSecondary },
 
     item: { paddingVertical: Spacing.xs },
     itemPressed: { opacity: 0.6 },
