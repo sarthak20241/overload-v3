@@ -774,7 +774,17 @@ async function handleFanoutPlan(args: {
   stream: boolean;
 }): Promise<Response> {
   const { admin, trace, userId, startedAtMs, respond, system, userMessage, stream } = args;
+
+  // Split the pre-LLM overhead so we stop inferring it. `catalog_ms` isolates
+  // the exercise-catalog fetch (a DB round trip, cold on a fresh isolate);
+  // `pre_llm_ms` is everything from the moment the request arrived until the
+  // first model call starts (auth + access gate + rate limit + user context +
+  // this catalog load). The LLM stages are already in `stages`, so together
+  // these attribute every millisecond of latency_ms to a phase.
+  const catalogStart = Date.now();
   const catalog = await loadExerciseCatalog(admin);
+  const catalogMs = Date.now() - catalogStart;
+  const preLlmMs = Date.now() - startedAtMs;
 
   const finish = (result: Awaited<ReturnType<typeof runGeneratePlan>>) => {
     trace.tool_calls.push("generate_plan");
@@ -792,6 +802,8 @@ async function handleFanoutPlan(args: {
       ...(trace.spans ?? {}),
       pipeline_shape: "fanout",
       calls: result.calls,
+      catalog_ms: catalogMs,
+      pre_llm_ms: preLlmMs,
       stages: result.stages,
     };
 
@@ -1650,7 +1662,15 @@ Deno.serve(async (req) => {
     id: string; title: string; authors: string[]; year?: number; url?: string;
     practical_takeaway: string; trust_score?: number;
   }> = [];
-  if (!VOYAGE_API_KEY) {
+  // Fan-out generate_plan never consumes retrieved research: the skeleton /
+  // fill / rationale prompts build from the catalog and the user's own data,
+  // and the plan output has no citation field. Running the Voyage embed +
+  // similarity search anyway put a cold ~340ms+ Voyage call on the critical
+  // path of every plan for nothing. Skip it here; chat/refine/discuss still
+  // retrieve as before.
+  if (mode === "generate_plan") {
+    trace.retrieval_status = "skipped_generate_plan";
+  } else if (!VOYAGE_API_KEY) {
     trace.retrieval_status = "skipped_no_voyage_key";
   } else if (!lastUser?.content) {
     trace.retrieval_status = "skipped_empty_message";
