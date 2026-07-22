@@ -147,21 +147,27 @@ export const healthConnectAdapter: HealthAdapter = {
           // day; single-origin days pass through untouched.
           const origins = g.result.dataOrigins ?? [];
           if (dedupeSources && origins.length > 1) {
-            let best = 0;
-            for (const origin of origins) {
-              try {
-                const perOrigin = (await aggregateRecord({
-                  recordType: recordType as never,
-                  timeRangeFilter: { operator: 'between', startTime: g.startTime, endTime: g.endTime },
-                  dataOriginFilter: [origin],
-                } as never)) as Record<string, unknown>;
-                const pv = extract(perOrigin);
-                if (pv != null && Number.isFinite(pv) && pv > best) best = pv;
-              } catch {
-                // A per-origin re-query failing just leaves `best` as-is; if none
-                // succeed we fall back to the summed value below.
-              }
-            }
+            // Re-query each origin concurrently — a multi-origin day is rare, but
+            // on an initial backfill for a watch+phone user this is one call per
+            // origin per day, so running them in parallel keeps that off the
+            // critical path. A failed per-origin query contributes 0; if all fail
+            // we fall back to the summed value below.
+            const perOriginTotals = await Promise.all(
+              origins.map(async (origin) => {
+                try {
+                  const perOrigin = (await aggregateRecord({
+                    recordType: recordType as never,
+                    timeRangeFilter: { operator: 'between', startTime: g.startTime, endTime: g.endTime },
+                    dataOriginFilter: [origin],
+                  } as never)) as Record<string, unknown>;
+                  const pv = extract(perOrigin);
+                  return pv != null && Number.isFinite(pv) ? pv : 0;
+                } catch {
+                  return 0;
+                }
+              }),
+            );
+            const best = Math.max(0, ...perOriginTotals);
             if (best > 0) v = best;
           }
 
