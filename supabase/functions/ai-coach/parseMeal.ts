@@ -92,6 +92,12 @@ export interface ParseMealResult {
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
+  /** Names of lines we could not ground in any source (source "estimate") that
+   *  a deliberate web search could improve. When set, the client shows the meal
+   *  immediately, displays a "searching the web for better numbers" indicator,
+   *  and fires a second refine request. null when nothing needs it. A merely
+   *  guardrail-flagged line is NOT here - see isRefinable. */
+  web_refine?: { items: string[] } | null;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -153,13 +159,24 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
 }
 
 /**
- * Guarantee a "corrected meal" still contains everything it replaces.
+ * The correction contract. A correction REPLACES the meal on screen with the
+ * list it returns, so a set of invariants must hold for every previous line the
+ * user did not explicitly re-target (its name is not in `replacedNames`):
  *
- * Correction paths hand back a full item list that REPLACES the meal on screen,
- * and both the model and the fast path are merely *asked* to relist untouched
- * lines. That is a prompt instruction, not an invariant, so anything they omit
- * would silently delete food the user already reviewed. Any previous line not
- * represented in the result is appended back, unchanged.
+ *   1. It must still be present.            -> keepUncoveredPrevious
+ *   2. Its provenance must survive.         -> preserveManual (source, note)
+ *   3. Its hand-entered numbers must survive, rescaled to any new amount.
+ *                                           -> preserveManual (macros)
+ *
+ * A line the user DID re-target may change freely (identity, amount, numbers):
+ * that is the correction they asked for. These helpers enforce the invariants
+ * for everything else, because the model and the fast path are only *asked* to
+ * preserve them - a prompt instruction, not something we can trust per turn.
+ */
+
+/**
+ * Invariant 1: a corrected meal still contains everything it replaces. Any
+ * previous line not represented in the result is appended back, unchanged.
  */
 export function keepUncoveredPrevious(
   items: ParsedItem[],
@@ -179,6 +196,105 @@ export function keepUncoveredPrevious(
     );
   const missing = previous.filter((p) => !covered(p)).map(previousAsParsedItem);
   return missing.length > 0 ? [...items, ...missing] : items;
+}
+
+/**
+ * Invariants 2 & 3: a hand-edited (manual) line keeps its numbers and its
+ * provenance across a correction. When a correction falls through to the full
+ * pipeline, decide relists the manual line from the catalog - recomputed macros,
+ * source "catalog" - discarding what the user typed. For every previous manual
+ * line the user did NOT re-target, restore its source/note and rescale ITS
+ * macros to the line's new grams (so "make it two" doubles the user's numbers,
+ * not the catalog's). A re-targeted manual line is left as decide returned it.
+ */
+export function preserveManual(
+  items: ParsedItem[],
+  previous: PreviousItem[],
+  replaced?: Set<string>,
+): ParsedItem[] {
+  const manuals = previous.filter((p) =>
+    p.source === "manual" && !replaced?.has(p.food_name.toLowerCase()) && p.grams > 0 && typeof p.kcal === "number"
+  );
+  if (manuals.length === 0) return items;
+  return items.map((it) => {
+    const m = manuals.find((p) =>
+      (p.food_id && it.food_id === p.food_id) || wordsOverlap(it.food_name, p.food_name)
+    );
+    if (!m) return it;
+    const s = it.grams > 0 ? it.grams / m.grams : 1;
+    return {
+      ...it,
+      kcal: round1((m.kcal ?? 0) * s),
+      protein_g: round1((m.protein_g ?? 0) * s),
+      carb_g: round1((m.carb_g ?? 0) * s),
+      fat_g: round1((m.fat_g ?? 0) * s),
+      fiber_g: typeof m.fiber_g === "number" ? round1(m.fiber_g * s) : it.fiber_g,
+      source: "manual",
+      assumption: m.assumption ?? it.assumption,
+      confidence: m.confidence ?? "high",
+    };
+  });
+}
+
+/**
+ * Guarantee every food the user named reaches the log.
+ *
+ * Decide writes a fresh item list and the server only checks it is non-empty,
+ * so decide can drop one of several foods ("2 roti, dal, and a glass of milk"
+ * comes back without the milk) and still succeed - the user sees a short meal
+ * with no error. For any extracted item not represented in decide's output, we
+ * append a best-effort line built from the candidate we had already resolved
+ * for it, marked as a low-confidence estimate. That makes the food VISIBLE and
+ * flagged rather than silently missing, and because it is an estimate the web
+ * refine (phase 2) will then try to ground it.
+ */
+export function reconcileExtracted(
+  items: ParsedItem[],
+  resolved: ResolvedItem[],
+  candidatePer100: Map<string, Per100>,
+): ParsedItem[] {
+  if (resolved.length === 0) return items;
+  const represented = (r: ResolvedItem): boolean => {
+    const candIds = new Set(r.candidates.map((c) => c.food_id).filter(Boolean) as string[]);
+    return items.some((it) =>
+      (it.food_id && candIds.has(it.food_id)) || wordsOverlap(it.food_name, r.name)
+    );
+  };
+  const missing = resolved.filter((r) => !represented(r)).map((r) => fallbackFromResolved(r, candidatePer100));
+  return missing.length > 0 ? [...items, ...missing] : items;
+}
+
+/** A rough, clearly-flagged line for a food decide dropped. Uses the top
+ *  resolved candidate's per-100 where we have it, and keeps food_id null so it
+ *  reads (and refines) as the estimate it is. */
+function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per100>): ParsedItem {
+  const top = r.candidates[0];
+  const p = top?.food_id ? candidatePer100.get(top.food_id) : undefined;
+  const unit = r.unit.trim().toLowerCase();
+  const qty = r.quantity > 0 ? r.quantity : 1;
+  let grams: number;
+  if (unit === "g" || unit === "ml" || unit === "gram" || unit === "grams") {
+    grams = qty;
+  } else {
+    const sv = top?.servings.find((s) => s.is_default) ?? top?.servings[0];
+    grams = (sv && sv.grams > 0 ? sv.grams : 100) * qty;
+  }
+  const f = grams / 100;
+  return {
+    food_id: null,
+    food_name: top?.name ?? r.name,
+    quantity: qty,
+    serving_label: unit || "serving",
+    grams: round1(grams),
+    kcal: p ? round1(p.kcal * f) : 0,
+    protein_g: p ? round1(p.protein_g * f) : 0,
+    carb_g: p ? round1(p.carb_g * f) : 0,
+    fat_g: p ? round1(p.fat_g * f) : 0,
+    fiber_g: p && p.fiber_g !== null ? round1(p.fiber_g * f) : null,
+    source: "estimate",
+    assumption: "I may have missed this item, tap to check it",
+    confidence: "low",
+  };
 }
 
 export interface ParseMealInput {
@@ -255,7 +371,11 @@ export interface OffProduct {
   serving: ServingOption | null;
 }
 
-const OFF_TIMEOUT_MS = 4000;
+// OFF now runs on every item in parallel with catalog, not just on a miss, so
+// this bounds how long a slow Open Food Facts response can hold up ANY meal.
+// Kept short: its median is well under a second, and a catalog match already in
+// hand should not wait long for a label that may not even win.
+const OFF_TIMEOUT_MS = 2500;
 // ODbL guardrail: identify the app on every live call.
 const OFF_USER_AGENT = "Overload/1.0 (https://tryoverload.app; support@tryoverload.app)";
 
@@ -641,13 +761,9 @@ export function wordsOverlap(a: string, b: string): boolean {
 
 const WEB_LOOKUP_MAX_TURNS = 4;
 const WEB_LOOKUP_TIMEOUT_MS = 20000;
-// How long past the decide call the hedge may hold the response. Web label
-// lookups typically take 4-10s; the decide call ~4s. A short grace converts
-// most of that overlap into "free" — anything slower ships as an estimate.
-const WEB_MERGE_GRACE_MS = 4000;
 
-// Runs concurrently with the decide call (the hedge). Own bounded mini-loop:
-// server web_search pauses resume, and the final turn forces report_labels.
+// A bounded mini-loop over server web_search: pause turns resume, and the
+// final turn forces report_labels. Used by researchPrevious / runWebRefine.
 async function runWebLookup(
   deps: ParseMealDeps,
   items: ExtractedItem[],
@@ -721,28 +837,6 @@ async function runWebLookup(
 // Upgrade estimate lines with label data the hedge brought back in time.
 // Grams stay the model's (portioning already went through the guardrails);
 // only the per-gram nutrition is replaced.
-function mergeWebLabels(items: ParsedItem[], labels: Map<string, WebLabel>): ParsedItem[] {
-  return items.map((item) => {
-    if (item.source !== "estimate" || !(item.grams > 0)) return item;
-    for (const [forItem, label] of labels) {
-      if (!wordsOverlap(item.food_name, forItem)) continue;
-      const f = item.grams / 100;
-      return {
-        ...item,
-        kcal: round1(label.per_100.kcal * f),
-        protein_g: round1(label.per_100.protein_g * f),
-        carb_g: round1(label.per_100.carb_g * f),
-        fat_g: round1(label.per_100.fat_g * f),
-        fiber_g: label.per_100.fiber_g === null ? item.fiber_g : round1(label.per_100.fiber_g * f),
-        source: "web" as const,
-        confidence: "medium" as const,
-        assumption: appendAssumption(item, label.source_note ?? "Macros from a web label lookup"),
-      };
-    }
-    return item;
-  });
-}
-
 // ── Prompt ──────────────────────────────────────────────────────────────────
 
 const HOUR_TO_MEAL: Array<[number, number, MealType]> = [
@@ -982,35 +1076,44 @@ async function resolveOneItem(
   // reverse and searches for "roasted", losing the identity entirely.
   for (let i = 1; i < words.length; i++) push(words.slice(i).join(" "));
   for (let n = words.length - 1; n >= 1; n--) push(words.slice(0, n).join(" "));
-  let candidates: CandidateFood[] = [];
-  for (const q of queries.slice(0, 4)) {
-    if (candidates.length > 0) break;
-    toolCalls.push("search_foods");
-    try {
-      candidates = (await deps.searchFoods(q)).slice(0, 6);
-    } catch (e) {
-      deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
+  // Catalog and OFF run CONCURRENTLY and both feed decide - OFF is no longer a
+  // miss-only fallback. Our own catalog is largely OFF-derived, so OFF is not a
+  // lower-trust tier; decide picks between them and the guardrails recompute
+  // and sanity-check whatever it picks. Catalog still leads the merged list
+  // (a curated row with real servings should outrank a raw label), and items
+  // resolve in parallel, so the meal pays roughly one OFF latency, not N.
+  const runCatalog = async (): Promise<CandidateFood[]> => {
+    let found: CandidateFood[] = [];
+    for (const q of queries.slice(0, 4)) {
+      if (found.length > 0) break;
+      toolCalls.push("search_foods");
+      try {
+        found = (await deps.searchFoods(q)).slice(0, 6);
+      } catch (e) {
+        deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
+      }
+      steps.push({
+        iter: 1,
+        tool: "search_foods",
+        input: { query: q },
+        result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
+      });
     }
-    steps.push({
-      iter: 1,
-      tool: "search_foods",
-      input: { query: q },
-      result: { count: candidates.length, top: candidates.slice(0, 5).map((c) => c.name) },
-    });
-  }
-
-  // OFF fallback on a total catalog miss (branded or not; OFF carries both).
-  // Backfill first so the candidate carries a real food_id and the NEXT
-  // user's catalog search finds it at tier 1.
-  if (candidates.length === 0) {
+    return found;
+  };
+  const runOff = async (): Promise<CandidateFood[]> => {
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_packaged_food");
+    const found: CandidateFood[] = [];
     try {
       const fetchFn = deps.fetchFn ?? fetch;
       const products = await searchOpenFoodFacts(q, fetchFn, deps.log);
+      // Backfill so the candidate carries a real food_id (verify needs it) and
+      // the NEXT user's catalog search finds it at tier 1 - the catalog is
+      // meant to compound with use.
       for (const p of products) {
         const foodId = await deps.backfillOffFood(p);
-        candidates.push({
+        found.push({
           food_id: foodId,
           name: p.name,
           brand: p.brand,
@@ -1031,8 +1134,21 @@ async function resolveOneItem(
       iter: 1,
       tool: "lookup_packaged_food",
       input: { query: q },
-      result: { count: candidates.length, top: candidates.slice(0, 5).map((c) => c.name) },
+      result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
     });
+    return found;
+  };
+
+  const [catalogCands, offCands] = await Promise.all([runCatalog(), runOff()]);
+  // Catalog first, then OFF rows the catalog set did not already carry. Dedupe
+  // by food_id, falling back to a normalised name for OFF rows not yet backfilled.
+  const seenKey = new Set<string>();
+  const candidates: CandidateFood[] = [];
+  for (const c of [...catalogCands, ...offCands]) {
+    const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
+    if (seenKey.has(key)) continue;
+    seenKey.add(key);
+    candidates.push(c);
   }
 
   // Never offer the model a physically impossible row: it cannot tell a bad
@@ -1381,24 +1497,47 @@ export function reconcileQuantity(
 const DRY_PREP_RE = /\b(roasted|dry.?roasted|toasted|dried|dehydrated|fried|crispy|crunchy)\b/i;
 const WET_PREP_RE = /\b(cooked|boiled|steamed|stewed)\b/i;
 
-export function flagPrepMismatch(items: ParsedItem[], inputText: string): ParsedItem[] {
-  const textDry = DRY_PREP_RE.test(inputText);
+export type PrepState = "dry" | "wet";
+
+/** The prep state a piece of text implies, or null if it says nothing. */
+export function prepStateOf(text: string): PrepState | null {
+  if (DRY_PREP_RE.test(text)) return "dry";
+  if (WET_PREP_RE.test(text)) return "wet";
+  return null;
+}
+
+/**
+ * Per-item preparation-state check.
+ *
+ * `prepByFoodId` carries, for each matched row, what the USER asked for and the
+ * ROW's own name - both resolved per item, not scraped from the whole message.
+ * The old meal-wide version read the prep word from anywhere in the text, so
+ * "boiled eggs and roasted chana" flagged the correctly-cooked eggs because
+ * "roasted" appeared somewhere; and it needed the row name to share a word with
+ * the text, so "roasted chana" -> "Chickpeas, boiled" slipped through since
+ * "chana" and "chickpeas" share nothing. Keying on food_id fixes both, and it
+ * catches wet->dry as well as dry->wet.
+ */
+export function flagPrepMismatch(
+  items: ParsedItem[],
+  // Omitted by the research and correction paths: their items are web labels
+  // (no food_id, skipped anyway) or serving/quantity edits that never change
+  // prep, so there is no row to check against.
+  prepByFoodId: Map<string, { userIntent: PrepState; rowName: string }> = new Map(),
+): ParsedItem[] {
   return items.map((item) => {
-    if (!textDry || !WET_PREP_RE.test(item.food_name)) return item;
-    // Only flag when the mismatch is about THIS item: some content word of the
-    // matched food name must appear in the user's text. Prefix match (>=4
-    // chars) rather than exact: logs are typo-heavy ("edameme", "panner").
-    const foodWords = item.food_name.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4 && !WET_PREP_RE.test(w));
-    const textWords = inputText.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4);
-    const overlaps = foodWords.some((fw) =>
-      textWords.some((tw) => tw.startsWith(fw.slice(0, 4)) || fw.startsWith(tw.slice(0, 4)))
-    );
-    if (!overlaps) return item;
-    return {
-      ...item,
-      confidence: "low",
-      assumption: appendAssumption(item, "You said roasted or dried but I matched a cooked entry, calories may read low"),
-    };
+    // Never second-guess a line the user typed (contract invariant 2/3).
+    if (!item.food_id || item.source === "manual") return item;
+    const entry = prepByFoodId.get(item.food_id);
+    if (!entry) return item;
+    const rowState = prepStateOf(entry.rowName);
+    if (!rowState || rowState === entry.userIntent) return item;
+    // dry food matched to a wet row reads LOW (wet food is mostly water); the
+    // reverse reads high. Name the direction so the note is actually useful.
+    const note = entry.userIntent === "dry"
+      ? "You said roasted or dried but I matched a cooked entry, calories may read low"
+      : "You said cooked or boiled but I matched a dried entry, calories may read high";
+    return { ...item, confidence: "low", assumption: appendAssumption(item, note) };
   });
 }
 
@@ -1539,6 +1678,31 @@ async function researchPrevious(
     note: "Checked the label online and updated these numbers.",
     conflict: conflicts.length > 0 ? scrubDashes(conflicts.join(" ")).slice(0, 400) : null,
   };
+}
+
+/**
+ * Phase 2 of the deliberate web search. The client fires this AFTER phase 1
+ * returned a usable meal, for the specific lines phase 1 marked weak. It web-
+ * looks-them-up, runs the same guardrails over the result, and hands back the
+ * improved lines for the client to swap in - reusing researchPrevious, the
+ * exact machinery the user-challenge path uses, so the two stay in step.
+ *
+ * Returns null when the web found nothing better; the client then just keeps
+ * the estimate it already showed.
+ */
+export async function runWebRefine(
+  deps: ParseMealDeps,
+  weakItems: PreviousItem[],
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<{ items: ParsedItem[]; note: string } | null> {
+  if (!deps.webSearchEnabled || weakItems.length === 0) return null;
+  const researched = await researchPrevious(deps, weakItems, onUsage, onCall).catch(() => null);
+  if (!researched) return null;
+  // Same guardrails phase 1 applies. A web label is flag-only under Atwater
+  // (checkAtwater skips rewriting "web"), so a real panel is never overwritten.
+  const items = flagPrepMismatch(checkAtwater(researched.items));
+  return { items, note: researched.note };
 }
 
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
@@ -1700,7 +1864,6 @@ export async function runParseMeal(
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
-  const prepText = [input.previousText ?? "", input.text].filter(Boolean).join(" ");
   const tExtract0 = Date.now();
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
@@ -1796,7 +1959,7 @@ export async function runParseMeal(
       // The web found something materially different, most likely another
       // variant. Offer it rather than apply it: a wrong silent swap is worse
       // than the number they already had.
-      const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
+      const items = flagPrepMismatch(checkAtwater(researched.items));
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -1810,7 +1973,7 @@ export async function runParseMeal(
       };
     }
     if (researched) {
-      const items = flagPrepMismatch(checkAtwater(researched.items), prepText);
+      const items = flagPrepMismatch(checkAtwater(researched.items));
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -1882,7 +2045,7 @@ export async function runParseMeal(
     if (corrected) {
       T.fast_correction = 1;
       steps.push({ iter: 1, tool: "fast_correction", input: { items: corrected.length } });
-      const items = flagPrepMismatch(checkAtwater(corrected), prepText);
+      const items = flagPrepMismatch(checkAtwater(corrected));
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
       return {
@@ -1924,27 +2087,11 @@ export async function runParseMeal(
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
 
-  // ── Stage 3: decide + hedged web lookup ───────────────────────────────────
-  // The decide call is ALWAYS one forced log_meal call: unresolved items get
-  // an immediate model estimate, never a blocking web turn. When web search
-  // is enabled and something resolved to zero candidates, a compact label
-  // lookup RACES the decide call; if it lands within the grace window its
-  // label data upgrades the estimate lines server-side. Web results never
-  // delay a fully-resolved meal and add at most the grace window otherwise.
-  const unresolvedItems = resolved.filter((r) => r.candidates.length === 0);
-  const webPromise: Promise<Map<string, WebLabel> | null> | null =
-    deps.webSearchEnabled && unresolvedItems.length > 0
-      ? runWebLookup(deps, unresolvedItems, accumulate, () => anthropicCalls++)
-        .catch((e) => {
-          deps.log?.(`[parse_meal] web lookup threw: ${String(e).slice(0, 120)}`);
-          return null;
-        })
-      : null;
-  if (webPromise) {
-    toolCalls.push("web_lookup");
-    steps.push({ iter: 2, tool: "web_lookup", input: { items: unresolvedItems.map((i) => i.name) } });
-  }
-
+  // ── Stage 3: decide ───────────────────────────────────────────────────────
+  // One forced log_meal call. NO web lookup here any more: web search is a
+  // deliberate, user-visible SECOND phase (runWebRefine) that the client fires
+  // for items this phase left weak. Phase 1 stays fast and always returns a
+  // usable meal immediately; the web only ever improves it afterwards.
   const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
     user_text: input.text.trim().slice(0, 500),
@@ -2005,21 +2152,16 @@ export async function runParseMeal(
     }
   }
   let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
-  // A correction REPLACES the reviewed meal, so never let the model quietly
-  // drop a line it was told to relist.
-  if (correctsPrevious) items = keepUncoveredPrevious(items, prevItems, replacedNames);
-
-  // Hedge settlement: give the parallel lookup a short grace beyond the
-  // decide call, then take whatever it brought (or move on without it).
-  if (webPromise) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const labels = await Promise.race([
-      webPromise,
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), WEB_MERGE_GRACE_MS); }),
-    ]);
-    if (timer) clearTimeout(timer);
-    steps.push({ iter: 2, tool: "web_lookup_merge", result: { found: labels ? labels.size : 0 } });
-    if (labels) items = mergeWebLabels(items, labels);
+  if (correctsPrevious) {
+    // Enforce the correction contract on every line the user did not re-target:
+    // still present (1), and if it was hand-edited, its provenance and numbers
+    // survive (2, 3).
+    items = keepUncoveredPrevious(items, prevItems, replacedNames);
+    items = preserveManual(items, prevItems, replacedNames);
+  } else {
+    // A fresh parse: every food the user named must reach the log, even if
+    // decide forgot to emit one.
+    items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
   // Serving options for every candidate we offered, so the display quantity can
@@ -2033,7 +2175,21 @@ export async function runParseMeal(
     }
   }
 
-  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), input.text);
+  // What the user asked for, per matched row. Each resolved item's prep intent
+  // (from its prep field and its own name) maps to every candidate food_id it
+  // could resolve to, paired with that candidate's real row name.
+  const prepByFoodId = new Map<string, { userIntent: PrepState; rowName: string }>();
+  for (const r of resolved) {
+    const userIntent = prepStateOf(`${r.prep ?? ""} ${r.name}`);
+    if (!userIntent) continue;
+    for (const c of r.candidates) {
+      if (c.food_id && !prepByFoodId.has(c.food_id)) {
+        prepByFoodId.set(c.food_id, { userIntent, rowName: c.name });
+      }
+    }
+  }
+
+  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), prepByFoodId);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
@@ -2048,13 +2204,33 @@ export async function runParseMeal(
     ? scrubDashes(raw.drona_line).slice(0, 200)
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
-  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: webPromise !== null } });
+
+  // Lines we could not ground in any source - the honest "couldn't find a
+  // match" case - that the client offers to look up online (phase 2). A line
+  // a guardrail merely FLAGGED (matched but low confidence) is not here: we
+  // did find something, so "couldn't find it" would be a lie. Those are left
+  // to the user-challenge path, which re-searches on what the user describes.
+  const webRefine = deps.webSearchEnabled
+    ? items.filter((it) => isRefinable(it)).map((it) => it.food_name)
+    : [];
+
+  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_refine: webRefine.length } });
   return {
     parsed: { meal_type: mealType, items, drona_line: dronaLine, corrects_previous: correctsPrevious },
     declined: null,
+    web_refine: webRefine.length > 0 ? { items: webRefine } : null,
     usage,
     tool_calls: toolCalls,
     steps,
     iterations: anthropicCalls,
   };
+}
+
+/** A line the automatic web search should try to ground: one we could not
+ *  match to any catalog/OFF source, so it shipped as a bare estimate. A line
+ *  we DID match (even one a guardrail flagged low-confidence) is not here -
+ *  claiming "couldn't find it" would be false; the user challenges those. The
+ *  user's own numbers and an already-fetched web label are never touched. */
+export function isRefinable(it: ParsedItem): boolean {
+  return it.source === "estimate";
 }
