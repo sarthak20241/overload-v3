@@ -92,21 +92,9 @@ async function embedQueryForEval(text: string): Promise<number[] | null> {
 }
 
 async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
-  // Mirrors prod (0083): one round trip, servings joined server-side.
-  const { data, error } = await supabase.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 });
-  if (error) console.error(`  search_foods_ranked_with_servings error: ${error.message}`);
-  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
-  if (rows.length === 0) {
-    const vec = await embedQueryForEval(query);
-    if (vec) {
-      const { data: sem } = await supabase.rpc("search_foods_semantic_with_servings", {
-        p_query_embedding: JSON.stringify(vec),
-        lim: 6,
-      });
-      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
-    }
-  }
-  if (rows.length === 0) return [];
+  // Mirrors prod (index.ts): trigram and semantic run concurrently and merge,
+  // servings joined server-side (0083). Keep this in lockstep with prod or the
+  // eval measures a different pipeline than ships.
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((s) => {
@@ -117,7 +105,7 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
       return [{ label, grams, is_default: !!o.is_default }];
     });
   };
-  return rows.map((r) => ({
+  const toCandidate = (r: Record<string, unknown>): CandidateFood => ({
     food_id: String(r.id),
     name: String(r.name),
     brand: r.brand ? String(r.brand) : null,
@@ -129,7 +117,31 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
     servings: parseServings(r.servings),
     source: "catalog" as const,
-  }));
+  });
+  const [trigram, semantic] = await Promise.all([
+    supabase.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 }).then(({ data, error }) => {
+      if (error) console.error(`  trigram search error: ${error.message}`);
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+    embedQueryForEval(query).then(async (vec) => {
+      if (!vec) return [] as Array<Record<string, unknown>>;
+      const { data } = await supabase.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+  ]);
+  const seen = new Set<string>();
+  const merged: CandidateFood[] = [];
+  for (const r of [...trigram, ...semantic]) {
+    const id = String(r.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(toCandidate(r));
+    if (merged.length >= 8) break;
+  }
+  return merged;
 }
 
 let offLookups = 0;

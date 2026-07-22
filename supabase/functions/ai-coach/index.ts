@@ -713,32 +713,6 @@ async function searchCatalogWithServings(
   userId: string,
   query: string,
 ): Promise<CandidateFood[]> {
-  // 0083: the *_with_servings RPCs join food_servings server-side, so a
-  // candidate set costs ONE round trip instead of two (search, then servings).
-  const { data, error } = await userClient.rpc("search_foods_ranked_with_servings", {
-    q: query,
-    lim: 8,
-  });
-  if (error) console.log("[parse_meal] search_foods_ranked_with_servings error:", error.message);
-  let rows = (Array.isArray(data) ? data.slice(0, 6) : []) as Array<Record<string, unknown>>;
-
-  // Semantic fallback (0080): trigram search cannot bridge synonyms
-  // ("roasted edamame" vs "Soybeans, mature seeds, roasted, salted"), and a
-  // zero-candidate result is what pushes the model to OFF lookups or blind
-  // estimates. Only the miss path pays the embedding latency.
-  if (rows.length === 0) {
-    const vec = await embedQuery(query, admin, userId);
-    if (vec) {
-      const { data: sem, error: semErr } = await userClient.rpc("search_foods_semantic_with_servings", {
-        p_query_embedding: JSON.stringify(vec),
-        lim: 6,
-      });
-      if (semErr) console.log("[parse_meal] search_foods_semantic_with_servings error:", semErr.message);
-      rows = (Array.isArray(sem) ? sem : []) as Array<Record<string, unknown>>;
-    }
-  }
-
-  if (rows.length === 0) return [];
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((s) => {
@@ -749,7 +723,7 @@ async function searchCatalogWithServings(
       return [{ label, grams, is_default: !!o.is_default }];
     });
   };
-  return rows.map((r) => ({
+  const toCandidate = (r: Record<string, unknown>): CandidateFood => ({
     food_id: String(r.id),
     name: String(r.name),
     brand: r.brand ? String(r.brand) : null,
@@ -761,7 +735,45 @@ async function searchCatalogWithServings(
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
     servings: parseServings(r.servings),
     source: "catalog" as const,
-  }));
+  });
+
+  // Trigram and semantic search run CONCURRENTLY, not trigram-then-fallback.
+  // Trigram is precise on exact words; semantic bridges synonyms ("roasted
+  // edamame" -> "Soybeans, mature seeds, roasted"). Running only one meant a
+  // weak trigram hit hid the better semantic row from decide entirely. Wall
+  // time is max(trigram, embed+semantic), not the sum, and the p_floor=0.50 on
+  // the RPC keeps semantic from returning junk near-neighbours - so a genuine
+  // catalog miss still returns nothing here and falls through to OFF.
+  const [trigram, semantic] = await Promise.all([
+    userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 })
+      .then((res: { data: unknown; error: { message: string } | null }) => {
+        if (res.error) console.log("[parse_meal] trigram search error:", res.error.message);
+        return (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>;
+      }),
+    embedQuery(query, admin, userId).then(async (vec) => {
+      if (!vec) return [] as Array<Record<string, unknown>>;
+      const { data, error } = await userClient.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      if (error) console.log("[parse_meal] semantic search error:", error.message);
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+  ]);
+
+  // Trigram rows first (a precise match should outrank a mere neighbour), then
+  // semantic rows the trigram set did not already contain. Capped so decide
+  // gets a focused list, not a wall of near-duplicates.
+  const seen = new Set<string>();
+  const merged: CandidateFood[] = [];
+  for (const r of [...trigram, ...semantic]) {
+    const id = String(r.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(toCandidate(r));
+    if (merged.length >= 8) break;
+  }
+  return merged;
 }
 
 // Recents give the prompt this user's staples ("milk" => their toned milk).
