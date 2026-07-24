@@ -1930,6 +1930,64 @@ Deno.serve(async (req) => {
   const lastUser = [...incomingMessages].reverse().find((m) => m.role === "user");
   trace.last_user_message_preview = preview(lastUser?.content ?? null);
 
+  // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
+  // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
+  // single terminal tool and force tool_choice on it.
+  //
+  // Refine-flow routing: client sets `mode` to 'refine_workout' |
+  // 'refine_plan'. We expose the read toolkit AND the matching terminal
+  // tool. tool_choice is auto by default — the model decides whether to
+  // chat (probing priorities) or emit the refined structured output. The
+  // confirmation gate is enforced by REFINE_BEHAVIOR in the system prompt.
+  //
+  // Escape hatch: in refine mode the client MAY ALSO send `force_tool` to
+  // force the terminal tool on the next turn. This is used when the
+  // client detects an affirmative user reply (e.g. "yes, go ahead") and
+  // wants to guarantee the model emits structured output instead of
+  // writing the workout as text. The terminal tool is part of the refine
+  // toolkit, so tool_choice can name it.
+  //
+  // Resolved BEFORE retrieval because the retrieval block below reads `mode`
+  // (it skips the Voyage embed for generate_plan). Declaring `mode` after
+  // that use put it in the temporal dead zone and threw a ReferenceError on
+  // every signed-in coach turn — an uncaught 500 the client surfaced as the
+  // generic "Something broke on my end."
+  const rawForceTool = (body as { force_tool?: unknown }).force_tool;
+  const forceTool: 'generate_workout' | 'generate_plan' | null =
+    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
+      ? rawForceTool
+      : null;
+  const rawMode = (body as { mode?: unknown }).mode;
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
+    rawMode === 'chat'
+    || rawMode === 'refine_workout' || rawMode === 'refine_plan'
+    || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
+      ? rawMode
+      : null;
+  // Resolution order: explicit `mode` wins, otherwise derive from
+  // `force_tool` (back-compat with existing generate flows that only send
+  // force_tool), otherwise default to 'chat'.
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+    explicitMode ?? forceTool ?? 'chat';
+  // Cross-mode compatibility check: only honor force_tool when the tool
+  // is actually exposed in the resolved mode's toolkit. Refine and discuss
+  // modes both include the matching generate tool, so they can force it;
+  // mismatched combos (refine_workout + generate_plan, etc.) get dropped
+  // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
+  // exposes no generate_* tool, so a force_tool there must be dropped too —
+  // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
+  // tool_choice for a tool that isn't in `tools` (400).
+  const forceToolAllowed =
+    !forceTool
+    || (mode === 'generate_workout' && forceTool === 'generate_workout')
+    || (mode === 'generate_plan' && forceTool === 'generate_plan')
+    || (mode === 'refine_workout' && forceTool === 'generate_workout')
+    || (mode === 'refine_plan' && forceTool === 'generate_plan')
+    || (mode === 'discuss_workout' && forceTool === 'generate_workout')
+    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
+  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
+    forceToolAllowed ? forceTool : null;
+
   // 6. Retrieval (Phase 2.2): embed last user message, look up top-k research
   //    via the weighted-similarity RPC. Non-fatal — if Voyage or the RPC
   //    fails, the coach falls back to user_context + core_principles.
@@ -1990,58 +2048,6 @@ Deno.serve(async (req) => {
       }
     }
   }
-
-  // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
-  // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
-  // single terminal tool and force tool_choice on it.
-  //
-  // Refine-flow routing: client sets `mode` to 'refine_workout' |
-  // 'refine_plan'. We expose the read toolkit AND the matching terminal
-  // tool. tool_choice is auto by default — the model decides whether to
-  // chat (probing priorities) or emit the refined structured output. The
-  // confirmation gate is enforced by REFINE_BEHAVIOR in the system prompt.
-  //
-  // Escape hatch: in refine mode the client MAY ALSO send `force_tool` to
-  // force the terminal tool on the next turn. This is used when the
-  // client detects an affirmative user reply (e.g. "yes, go ahead") and
-  // wants to guarantee the model emits structured output instead of
-  // writing the workout as text. The terminal tool is part of the refine
-  // toolkit, so tool_choice can name it.
-  const rawForceTool = (body as { force_tool?: unknown }).force_tool;
-  const forceTool: 'generate_workout' | 'generate_plan' | null =
-    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
-      ? rawForceTool
-      : null;
-  const rawMode = (body as { mode?: unknown }).mode;
-  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
-    rawMode === 'chat'
-    || rawMode === 'refine_workout' || rawMode === 'refine_plan'
-    || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
-      ? rawMode
-      : null;
-  // Resolution order: explicit `mode` wins, otherwise derive from
-  // `force_tool` (back-compat with existing generate flows that only send
-  // force_tool), otherwise default to 'chat'.
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
-    explicitMode ?? forceTool ?? 'chat';
-  // Cross-mode compatibility check: only honor force_tool when the tool
-  // is actually exposed in the resolved mode's toolkit. Refine and discuss
-  // modes both include the matching generate tool, so they can force it;
-  // mismatched combos (refine_workout + generate_plan, etc.) get dropped
-  // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
-  // exposes no generate_* tool, so a force_tool there must be dropped too —
-  // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
-  // tool_choice for a tool that isn't in `tools` (400).
-  const forceToolAllowed =
-    !forceTool
-    || (mode === 'generate_workout' && forceTool === 'generate_workout')
-    || (mode === 'generate_plan' && forceTool === 'generate_plan')
-    || (mode === 'refine_workout' && forceTool === 'generate_workout')
-    || (mode === 'refine_plan' && forceTool === 'generate_plan')
-    || (mode === 'discuss_workout' && forceTool === 'generate_workout')
-    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
-  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
-    forceToolAllowed ? forceTool : null;
 
   const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
   trace.model = MODEL;
