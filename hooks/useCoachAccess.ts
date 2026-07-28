@@ -47,6 +47,11 @@ export type CoachAccessState =
   | 'unauthenticated'
   | 'paid'
   | 'trialing'
+  // Metered free tier (migration 0088). Replaces the retired
+  // 'trial_ended' / 'eligible_for_trial' states; those remain in the union
+  // only so a stale persisted access blob from an old app version still
+  // type-checks while it renders one last time before the refresh RPC lands.
+  | 'free'
   | 'trial_ended'
   | 'eligible_for_trial'
   | 'unknown';
@@ -59,6 +64,10 @@ export interface CoachAccess {
   messagesToday?: number;
   dailyLimit?: number;
   messagesLeft?: number;
+  parsesToday?: number;
+  parseDailyLimit?: number;
+  parsesLeft?: number;
+  hadTrial?: boolean;
   endReason?: string;
   endedAt?: string;
 }
@@ -93,6 +102,10 @@ function normalize(row: any): CoachAccess {
     messagesToday: typeof row.messages_today === 'number' ? row.messages_today : undefined,
     dailyLimit: typeof row.daily_limit === 'number' ? row.daily_limit : undefined,
     messagesLeft: typeof row.messages_left === 'number' ? row.messages_left : undefined,
+    parsesToday: typeof row.parses_today === 'number' ? row.parses_today : undefined,
+    parseDailyLimit: typeof row.parse_daily_limit === 'number' ? row.parse_daily_limit : undefined,
+    parsesLeft: typeof row.parses_left === 'number' ? row.parses_left : undefined,
+    hadTrial: typeof row.had_trial === 'boolean' ? row.had_trial : undefined,
     endReason: row.end_reason ?? undefined,
     endedAt: row.ended_at ?? undefined,
   };

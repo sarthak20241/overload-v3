@@ -79,6 +79,15 @@ let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 
+// Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
+// users get metered AI instead of none: 3 chat messages and 3 meal parses
+// per rolling 24h, against the same tables as the paid caps. Cap hits return
+// 402 with `error: "free_cap_hit"` (not 429) so the client opens the
+// upgrade sheet rather than a retry-later toast. Mirror these numbers in
+// get_coach_access_status() — change both together.
+const FREE_CHAT_LIMIT = 3;
+const FREE_PARSE_LIMIT = 3;
+
 // Fan-out plan generation. On by default; set PLAN_FANOUT=false in the Edge
 // Function secrets to fall back to the single forced-tool call without a
 // redeploy. Worth having a switch: this changes the shape of every
@@ -1193,6 +1202,34 @@ async function handleParseMealRequest(args: {
   trace.last_user_message_preview = preview(text);
   trace.message_count = 1;
 
+  // Tier check (paywall v3): parse runs for every signed-in user, but free
+  // users get FREE_PARSE_LIMIT/day instead of the paid 40. Free cap hits are
+  // a 402 upgrade prompt, not a 429 retry. Fail-closed on RPC error, same as
+  // the chat gate.
+  let parseFreeTier = false;
+  try {
+    const { data: accessData, error: accessErr } = await userClient.rpc(
+      "get_coach_access_status",
+    );
+    if (accessErr) {
+      trace.status = "internal_error";
+      trace.error_message = `parse_access_status_failed: ${accessErr.message}`;
+      return respond({ error: "Access check failed" }, 500);
+    }
+    const state = (accessData as { state?: string } | null)?.state ?? "unauthenticated";
+    if (state !== "paid" && state !== "trialing" && state !== "free") {
+      trace.status = "unauthorized";
+      trace.error_message = `parse_no_access:${state}`;
+      return respond({ error: "drona_access_required", state }, 402);
+    }
+    parseFreeTier = state === "free";
+  } catch (e) {
+    trace.status = "internal_error";
+    trace.error_message = `parse_access_status_threw: ${String(e).slice(0, 200)}`;
+    return respond({ error: "Access check failed" }, 500);
+  }
+  const parseCap = parseFreeTier ? FREE_PARSE_LIMIT : PARSE_RATE_LIMIT_MAX;
+
   // Own bucket, same sliding-window mechanics as the coach limiter. Parse
   // failures still count a slot here (the Anthropic call was made); client
   // retries after hard errors are rare enough that this is acceptable v1. The
@@ -1208,6 +1245,20 @@ async function handleParseMealRequest(args: {
     trace.status = "internal_error";
     trace.error_message = `parse_rate_limit_check_failed: ${countErr.message}`;
     return respond({ error: "Rate limit check failed" }, 500);
+  }
+  if (parseFreeTier && (count ?? 0) >= parseCap) {
+    trace.status = "unauthorized";
+    trace.error_message = `parse_free_cap_hit: count=${count} cap=${parseCap}`;
+    return respond(
+      {
+        error: "free_cap_hit",
+        state: "free",
+        feature: "parse",
+        parses_today: count ?? 0,
+        parse_daily_limit: parseCap,
+      },
+      402,
+    );
   }
   if ((count ?? 0) >= PARSE_RATE_LIMIT_MAX) {
     trace.status = "rate_limited";
@@ -1741,9 +1792,10 @@ Deno.serve(async (req) => {
   });
 
   // 2.5 Parse the body ONCE, up front. parse_meal branches here so it runs
-  // for ANY signed-in user (product decision 2026-07-07): AI food logging is
-  // NOT behind the paid Drona gate, only behind a valid JWT + its own 40/day
-  // rate bucket. It must therefore branch BEFORE the paid access gate below.
+  // for ANY signed-in user: AI food logging is not behind the paid Drona
+  // gate, only behind a valid JWT + its own rate bucket (40/day paid,
+  // FREE_PARSE_LIMIT/day free — the handler does its own tier check). It
+  // must therefore branch BEFORE the chat access gate below.
   // Coach chat parses the same body here and reuses it (body.messages).
   let body: { messages?: { role: string; content: string }[] };
   try {
@@ -1767,22 +1819,14 @@ Deno.serve(async (req) => {
   }
 
   // 3. Drona access gate. Reads the user's current state via
-  // get_coach_access_status() — paid / trialing / trial_ended / eligible_for_trial.
+  // get_coach_access_status() — paid / trialing / free (migration 0088).
   //
-  // We REQUIRE either paid or trialing here. Free users (eligible_for_trial /
-  // trial_ended) get a 402 with the state in the body, and the client renders
-  // a paywall or "Start Free Trial" CTA based on the returned state instead
-  // of ever hitting this function.
-  //
-  // Why we don't auto-start the trial here: it's a UX decision the client
-  // should make explicitly (user taps "Start Free Trial"), not a side effect
-  // of opening the chat. The client calls start_coach_trial() separately
-  // when the user opts in, then re-attempts the chat.
-  //
-  // This gate runs BEFORE the rate-limit count+insert below so a locked-out
-  // (eligible_for_trial / trial_ended) user can't burn today's quota just by
-  // hitting this endpoint — otherwise those denied requests would count
-  // against them if they started a trial later the same day.
+  // paid and trialing pass with the full toolkit and the 30/24h cap. free
+  // passes too, but metered (FREE_CHAT_LIMIT) and chat-only: any generate /
+  // refine / discuss mode is a Pro feature and 402s here, BEFORE the
+  // rate-limit insert below, so a denied Pro request never burns one of the
+  // user's 3 free slots. Only unknown/unauthenticated states are locked out.
+  let freeTier = false;
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -1795,16 +1839,32 @@ Deno.serve(async (req) => {
       return respond({ error: "Access check failed" }, 500);
     }
     const state = (accessData as { state?: string } | null)?.state ?? "unauthenticated";
-    if (state !== "paid" && state !== "trialing") {
-      // 402 Payment Required. The client switches on `state` to render the
-      // right surface: 'eligible_for_trial' → trial-start CTA; 'trial_ended'
-      // → paywall; 'unauthenticated' → re-auth.
+    if (state !== "paid" && state !== "trialing" && state !== "free") {
       trace.status = "unauthorized";
       trace.error_message = `no_drona_access:${state}`;
       return respond(
         { error: "drona_access_required", state, details: accessData },
         402,
       );
+    }
+    freeTier = state === "free";
+    if (freeTier) {
+      // Peek at the requested mode (fully resolved later, same rules): an
+      // explicit non-chat mode or any force_tool means a generate / refine /
+      // discuss flow, which is Pro-only.
+      const peekMode = (body as { mode?: unknown }).mode;
+      const peekForce = (body as { force_tool?: unknown }).force_tool;
+      const wantsProFlow =
+        (typeof peekMode === "string" && peekMode !== "chat")
+        || typeof peekForce === "string";
+      if (wantsProFlow) {
+        trace.status = "unauthorized";
+        trace.error_message = `pro_required:${String(peekMode ?? peekForce)}`;
+        return respond(
+          { error: "pro_required", state: "free", feature: String(peekMode ?? peekForce) },
+          402,
+        );
+      }
     }
   } catch (e) {
     console.log("[ai-coach] access status check threw:", String(e));
@@ -1813,8 +1873,11 @@ Deno.serve(async (req) => {
     return respond({ error: "Access check failed" }, 500);
   }
 
-  // 3.5 Rate limit (paid AND trial alike): rolling 24h window, counted only
-  // now that access is confirmed so denied requests never consume quota.
+  // 3.5 Rate limit: rolling 24h window, counted only now that access is
+  // confirmed so denied requests never consume quota. Paid and trialing get
+  // RATE_LIMIT_MAX; free gets FREE_CHAT_LIMIT and a 402 (upgrade sheet)
+  // instead of a 429 (retry-later toast) when it's spent.
+  const chatCap = freeTier ? FREE_CHAT_LIMIT : RATE_LIMIT_MAX;
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
   const { count, error: countErr } = await admin
     .from("ai_coach_rate_limit")
@@ -1826,6 +1889,20 @@ Deno.serve(async (req) => {
     trace.status = "internal_error";
     trace.error_message = `rate_limit_check_failed: ${countErr.message}`;
     return respond({ error: "Rate limit check failed" }, 500);
+  }
+  if (freeTier && (count ?? 0) >= chatCap) {
+    trace.status = "unauthorized";
+    trace.error_message = `free_cap_hit: count=${count} cap=${chatCap}`;
+    return respond(
+      {
+        error: "free_cap_hit",
+        state: "free",
+        feature: "chat",
+        messages_today: count ?? 0,
+        daily_limit: chatCap,
+      },
+      402,
+    );
   }
   if ((count ?? 0) >= RATE_LIMIT_MAX) {
     trace.status = "rate_limited";
@@ -1930,6 +2007,63 @@ Deno.serve(async (req) => {
   const lastUser = [...incomingMessages].reverse().find((m) => m.role === "user");
   trace.last_user_message_preview = preview(lastUser?.content ?? null);
 
+  // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
+  // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
+  // single terminal tool and force tool_choice on it.
+  //
+  // Refine-flow routing: client sets `mode` to 'refine_workout' |
+  // 'refine_plan'. We expose the read toolkit AND the matching terminal
+  // tool. tool_choice is auto by default — the model decides whether to
+  // chat (probing priorities) or emit the refined structured output. The
+  // confirmation gate is enforced by REFINE_BEHAVIOR in the system prompt.
+  //
+  // Escape hatch: in refine mode the client MAY ALSO send `force_tool` to
+  // force the terminal tool on the next turn. This is used when the
+  // client detects an affirmative user reply (e.g. "yes, go ahead") and
+  // wants to guarantee the model emits structured output instead of
+  // writing the workout as text. The terminal tool is part of the refine
+  // toolkit, so tool_choice can name it.
+  //
+  // Resolved HERE, before the retrieval step: retrieval branches on `mode`
+  // (fan-out plans skip it), and the old placement below retrieval read
+  // `mode` inside its temporal dead zone — a ReferenceError on every
+  // request the moment this file was next deployed.
+  const rawForceTool = (body as { force_tool?: unknown }).force_tool;
+  const forceTool: 'generate_workout' | 'generate_plan' | null =
+    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
+      ? rawForceTool
+      : null;
+  const rawMode = (body as { mode?: unknown }).mode;
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
+    rawMode === 'chat'
+    || rawMode === 'refine_workout' || rawMode === 'refine_plan'
+    || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
+      ? rawMode
+      : null;
+  // Resolution order: explicit `mode` wins, otherwise derive from
+  // `force_tool` (back-compat with existing generate flows that only send
+  // force_tool), otherwise default to 'chat'.
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+    explicitMode ?? forceTool ?? 'chat';
+  // Cross-mode compatibility check: only honor force_tool when the tool
+  // is actually exposed in the resolved mode's toolkit. Refine and discuss
+  // modes both include the matching generate tool, so they can force it;
+  // mismatched combos (refine_workout + generate_plan, etc.) get dropped
+  // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
+  // exposes no generate_* tool, so a force_tool there must be dropped too —
+  // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
+  // tool_choice for a tool that isn't in `tools` (400).
+  const forceToolAllowed =
+    !forceTool
+    || (mode === 'generate_workout' && forceTool === 'generate_workout')
+    || (mode === 'generate_plan' && forceTool === 'generate_plan')
+    || (mode === 'refine_workout' && forceTool === 'generate_workout')
+    || (mode === 'refine_plan' && forceTool === 'generate_plan')
+    || (mode === 'discuss_workout' && forceTool === 'generate_workout')
+    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
+  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
+    forceToolAllowed ? forceTool : null;
+
   // 6. Retrieval (Phase 2.2): embed last user message, look up top-k research
   //    via the weighted-similarity RPC. Non-fatal — if Voyage or the RPC
   //    fails, the coach falls back to user_context + core_principles.
@@ -1991,59 +2125,32 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Generate-flow routing (Phase 2.5): client sets `force_tool` to one of
-  // 'generate_workout' | 'generate_plan'. We narrow the toolkit to that
-  // single terminal tool and force tool_choice on it.
-  //
-  // Refine-flow routing: client sets `mode` to 'refine_workout' |
-  // 'refine_plan'. We expose the read toolkit AND the matching terminal
-  // tool. tool_choice is auto by default — the model decides whether to
-  // chat (probing priorities) or emit the refined structured output. The
-  // confirmation gate is enforced by REFINE_BEHAVIOR in the system prompt.
-  //
-  // Escape hatch: in refine mode the client MAY ALSO send `force_tool` to
-  // force the terminal tool on the next turn. This is used when the
-  // client detects an affirmative user reply (e.g. "yes, go ahead") and
-  // wants to guarantee the model emits structured output instead of
-  // writing the workout as text. The terminal tool is part of the refine
-  // toolkit, so tool_choice can name it.
-  const rawForceTool = (body as { force_tool?: unknown }).force_tool;
-  const forceTool: 'generate_workout' | 'generate_plan' | null =
-    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
-      ? rawForceTool
-      : null;
-  const rawMode = (body as { mode?: unknown }).mode;
-  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
-    rawMode === 'chat'
-    || rawMode === 'refine_workout' || rawMode === 'refine_plan'
-    || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
-      ? rawMode
-      : null;
-  // Resolution order: explicit `mode` wins, otherwise derive from
-  // `force_tool` (back-compat with existing generate flows that only send
-  // force_tool), otherwise default to 'chat'.
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
-    explicitMode ?? forceTool ?? 'chat';
-  // Cross-mode compatibility check: only honor force_tool when the tool
-  // is actually exposed in the resolved mode's toolkit. Refine and discuss
-  // modes both include the matching generate tool, so they can force it;
-  // mismatched combos (refine_workout + generate_plan, etc.) get dropped
-  // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
-  // exposes no generate_* tool, so a force_tool there must be dropped too —
-  // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
-  // tool_choice for a tool that isn't in `tools` (400).
-  const forceToolAllowed =
-    !forceTool
-    || (mode === 'generate_workout' && forceTool === 'generate_workout')
-    || (mode === 'generate_plan' && forceTool === 'generate_plan')
-    || (mode === 'refine_workout' && forceTool === 'generate_workout')
-    || (mode === 'refine_plan' && forceTool === 'generate_plan')
-    || (mode === 'discuss_workout' && forceTool === 'generate_workout')
-    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
-  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
-    forceToolAllowed ? forceTool : null;
-
-  const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
+  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
+  // Free tier is chat-only: strip the terminal generation tools (plan /
+  // workout emission is Pro) and tell Drona so it answers in coach voice
+  // instead of attempting a tool that isn't there. Appended AFTER the
+  // existing system blocks so the prompt-cache prefix is unchanged. The gate
+  // above already 402s explicit generate/refine/discuss modes; this covers
+  // the model spontaneously reaching for the tools inside plain chat.
+  if (freeTier) {
+    tools = (tools as { name?: string }[]).filter(
+      (t) => !TERMINAL_TOOLS.has(t.name ?? ""),
+    ) as typeof tools;
+    system = [
+      ...(system as unknown[]),
+      {
+        type: "text",
+        text:
+          "This user is on the free tier: 3 coach messages per day, and the "
+          + "generate/refine tools are unavailable in this conversation. If they "
+          + "ask for a new plan, a new workout, or plan changes, tell them "
+          + "directly that weekly reprogramming and full plan generation are "
+          + "part of Overload Pro, in one sentence, then still give them the "
+          + "best coaching answer you can in prose. Never emit a full "
+          + "multi-day plan as text.",
+      },
+    ] as typeof system;
+  }
   trace.model = MODEL;
 
   // ── Fan-out plan generation ─────────────────────────────────────────────
