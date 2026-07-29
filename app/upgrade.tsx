@@ -260,15 +260,24 @@ export default function UpgradeScreen() {
     setPurchasing(true);
     try {
       if (user?.id) await ensureIdentity(user.id);
-      await purchaseCoachPackage(pkg);
+      const customerInfo = await purchaseCoachPackage(pkg);
       setPurchasing(false);
       setVerifying(true);
       const flipped = await waitForTierFlip();
       resetCoachAccessCache();
       if (flipped) {
-        // The annual SKU carries the 7-day intro trial: honor the reminder
-        // screen's promise the moment the trial exists.
-        if (selectedPlan === 'annual') void scheduleTrialReminder();
+        // Honor the reminder screen's promise ONLY when the purchase
+        // actually carries a trial. Selecting Annual is not enough — an
+        // existing subscriber who upgrades has no intro trial, and
+        // scheduling would fire a false "your trial converts in 2 days"
+        // notification 5 days later. Check the active entitlement's
+        // periodType (INTRO | TRIAL) rather than trusting selectedPlan.
+        const active = Object.values(customerInfo?.entitlements?.active ?? {});
+        const onTrial = active.some((e) => {
+          const t = e?.periodType;
+          return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
+        });
+        if (onTrial) void scheduleTrialReminder();
         toast.success("You're in. Welcome to Overload Pro.");
         finish();
       } else {
@@ -372,9 +381,11 @@ export default function UpgradeScreen() {
   const paywallTitle =
     context === 'milestone'
       ? 'Your next four weeks, programmed.'
-      : context === 'cap_chat' || context === 'cap_parse'
-        ? 'A coach who never runs out.'
-        : 'Never write a training plan again.';
+      : context === 'pro_feature'
+        ? 'That one is Overload Pro.'
+        : context === 'cap_chat' || context === 'cap_parse'
+          ? 'A coach who never runs out.'
+          : 'Never write a training plan again.';
   // One sentence: the ecosystem story (Sarthak's framing). Everything else
   // (what's included, trial mechanics, price) lives in exactly one dedicated
   // element below: the Free → Pro comparison table with its expandable full
@@ -689,7 +700,13 @@ export default function UpgradeScreen() {
                 disabled={purchasing || verifying || loading}
                 style={[u.cta, Shadow.playBtn, (purchasing || verifying || loading) && { opacity: 0.7 }]}
                 accessibilityRole="button"
-                accessibilityLabel="Start my 7 days free"
+                accessibilityLabel={
+                  selectedPlan === 'annual'
+                    ? 'Start my 7 days free'
+                    : selectedPlan === 'monthly'
+                      ? 'Subscribe monthly'
+                      : 'Claim founding lifetime'
+                }
               >
                 {purchasing ? (
                   <ActivityIndicator size="small" color={Colors.primaryFg} />

@@ -16,7 +16,14 @@
   - Product statuses show "Could not check" — expected while ASC products are in Prepare-for-Submission, RC can't verify against Apple yet.
 - Play Store product `overload_monthly:monthly` present but "Not found" (Play billing still blocked on BillDesk, matches project memory).
 
-**Gap: Founding Lifetime.** RC has the product ID `overload_founding_lifetime` mapped through the `founding` offering, but the corresponding non-consumable In-App Purchase does NOT exist in App Store Connect (only Monthly + Annual subs exist). If the paywall's Founding Lifetime card is tapped, Apple's payment sheet will fail. Options: create the non-consumable IAP in ASC (product id `overload_founding_lifetime`, price ₹2,999/$79.99, cap-tracked via `get_founding_status`), OR leave it — the paywall's `PlanCard` only renders when the RC package resolves, and RC.getOfferings will still surface it, so failure occurs at purchase-time not render-time. Safer to create the IAP before the next TestFlight cut.
+**Founding Lifetime status (updated 2026-07-29):** the non-consumable IAP EXISTS in ASC (found via In-App Purchases → Founding Lifetime, apple id 6773349598, product id `overload_founding_lifetime`, "Prepare for Submission"). Currently priced $199 US (auto-mapped India ~₹17,900+). **Repricing to $99 US + India override ₹10,000 is pending Sarthak's hand action** — ASC session kept dropping mid-drive today, so handed off with exact clicks. Steps:
+  1. Open `https://appstoreconnect.apple.com/apps/6773063775/distribution/iaps/6773349598`
+  2. Expand "In-App Purchase Pricing" → click "Current Price" link → click "Edit Price" (bottom-left of modal)
+  3. Choose "Recalculate prices for all countries or regions", Country = US, Price = $99.00, Next
+  4. Region filter → "Africa, Middle East, and India" → scroll to India (INR) → set to ₹10,000.00 (or nearest tier)
+  5. Next → Confirm.
+
+Once done, TestFlight-ready. Product is complete (name + availability + price) and can be added for review with the app.
 
 ## BUILD STATE (2026-07-28, branch claude/paywall-design-pricing-379c47)
 

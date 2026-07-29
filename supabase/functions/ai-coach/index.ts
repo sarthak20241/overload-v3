@@ -1230,39 +1230,39 @@ async function handleParseMealRequest(args: {
   }
   const parseCap = parseFreeTier ? FREE_PARSE_LIMIT : PARSE_RATE_LIMIT_MAX;
 
-  // Own bucket, same sliding-window mechanics as the coach limiter. Parse
-  // failures still count a slot here (the Anthropic call was made); client
-  // retries after hard errors are rare enough that this is acceptable v1. The
-  // refine shares this bucket too (see isRefine above) so it cannot be spammed
-  // directly.
+  // Own bucket, same sliding-window mechanics as the coach limiter. Now
+  // routed through the atomic try_reserve_parse_meal_slot RPC (migration
+  // 0089) so a concurrent burst can't bypass the free-tier cap of 3 parses
+  // per rolling 24h. Refine calls share this bucket (see isRefine above),
+  // so a direct-called refine still costs one slot.
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { count, error: countErr } = await admin
-    .from("parse_meal_rate_limit")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("request_at", sinceIso);
-  if (countErr) {
+  const { data: parseSlotData, error: parseSlotErr } = await userClient
+    .rpc("try_reserve_parse_meal_slot", { p_cap: parseCap });
+  if (parseSlotErr) {
     trace.status = "internal_error";
-    trace.error_message = `parse_rate_limit_check_failed: ${countErr.message}`;
+    trace.error_message = `parse_rate_limit_check_failed: ${parseSlotErr.message}`;
     return respond({ error: "Rate limit check failed" }, 500);
   }
-  if (parseFreeTier && (count ?? 0) >= parseCap) {
-    trace.status = "unauthorized";
-    trace.error_message = `parse_free_cap_hit: count=${count} cap=${parseCap}`;
-    return respond(
-      {
-        error: "free_cap_hit",
-        state: "free",
-        feature: "parse",
-        parses_today: count ?? 0,
-        parse_daily_limit: parseCap,
-      },
-      402,
-    );
-  }
-  if ((count ?? 0) >= PARSE_RATE_LIMIT_MAX) {
+  const parseSlotRow = Array.isArray(parseSlotData) ? parseSlotData[0] : parseSlotData;
+  const parseInserted = Boolean(parseSlotRow?.inserted);
+  const count = Number(parseSlotRow?.current_count ?? 0);
+  if (!parseInserted) {
+    if (parseFreeTier) {
+      trace.status = "unauthorized";
+      trace.error_message = `parse_free_cap_hit: count=${count} cap=${parseCap}`;
+      return respond(
+        {
+          error: "free_cap_hit",
+          state: "free",
+          feature: "parse",
+          parses_today: count,
+          parse_daily_limit: parseCap,
+        },
+        402,
+      );
+    }
     trace.status = "rate_limited";
-    trace.error_message = `parse count=${count} cap=${PARSE_RATE_LIMIT_MAX}`;
+    trace.error_message = `parse count=${count} cap=${parseCap}`;
     let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
     const { data: oldest } = await admin
       .from("parse_meal_rate_limit")
@@ -1277,14 +1277,6 @@ async function handleParseMealRequest(args: {
       retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
     }
     return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
-  }
-  const { error: logErr } = await admin
-    .from("parse_meal_rate_limit")
-    .insert({ user_id: userId });
-  if (logErr) {
-    trace.status = "internal_error";
-    trace.error_message = `parse_rate_limit_log_failed: ${logErr.message}`;
-    return respond({ error: "Rate limit log failed" }, 500);
   }
 
   // Context: recents + targets + today's totals, all non-fatal on failure.
@@ -1873,43 +1865,48 @@ Deno.serve(async (req) => {
     return respond({ error: "Access check failed" }, 500);
   }
 
-  // 3.5 Rate limit: rolling 24h window, counted only now that access is
-  // confirmed so denied requests never consume quota. Paid and trialing get
-  // RATE_LIMIT_MAX; free gets FREE_CHAT_LIMIT and a 402 (upgrade sheet)
-  // instead of a 429 (retry-later toast) when it's spent.
+  // 3.5 Rate limit: rolling 24h window. Paid/trialing get RATE_LIMIT_MAX;
+  // free gets FREE_CHAT_LIMIT and 402 (upgrade sheet) instead of 429
+  // (retry-later toast) when spent. Enforcement goes through the atomic
+  // try_reserve_ai_coach_slot RPC (migration 0089): the old
+  // count-then-insert pattern was race-able at cap=3, which turned the
+  // free tier's daily cap into a couple-of-concurrent-requests bypass.
+  // The RPC serializes concurrent slots per user via advisory lock, so a
+  // burst reads a consistent count and only ever inserts once past the cap.
+  // Called via userClient (Clerk JWT) since the RPC reads
+  // current_clerk_user_id(); the resulting row is written under the
+  // service role indirectly through security-definer.
   const chatCap = freeTier ? FREE_CHAT_LIMIT : RATE_LIMIT_MAX;
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { count, error: countErr } = await admin
-    .from("ai_coach_rate_limit")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("request_at", sinceIso);
-
-  if (countErr) {
+  const { data: slotData, error: slotErr } = await userClient
+    .rpc("try_reserve_ai_coach_slot", { p_cap: chatCap });
+  if (slotErr) {
     trace.status = "internal_error";
-    trace.error_message = `rate_limit_check_failed: ${countErr.message}`;
+    trace.error_message = `rate_limit_check_failed: ${slotErr.message}`;
     return respond({ error: "Rate limit check failed" }, 500);
   }
-  if (freeTier && (count ?? 0) >= chatCap) {
-    trace.status = "unauthorized";
-    trace.error_message = `free_cap_hit: count=${count} cap=${chatCap}`;
-    return respond(
-      {
-        error: "free_cap_hit",
-        state: "free",
-        feature: "chat",
-        messages_today: count ?? 0,
-        daily_limit: chatCap,
-      },
-      402,
-    );
-  }
-  if ((count ?? 0) >= RATE_LIMIT_MAX) {
+  const slotRow = Array.isArray(slotData) ? slotData[0] : slotData;
+  const inserted = Boolean(slotRow?.inserted);
+  const count = Number(slotRow?.current_count ?? 0);
+  if (!inserted) {
+    if (freeTier) {
+      trace.status = "unauthorized";
+      trace.error_message = `free_cap_hit: count=${count} cap=${chatCap}`;
+      return respond(
+        {
+          error: "free_cap_hit",
+          state: "free",
+          feature: "chat",
+          messages_today: count,
+          daily_limit: chatCap,
+        },
+        402,
+      );
+    }
     trace.status = "rate_limited";
-    trace.error_message = `count=${count} cap=${RATE_LIMIT_MAX}`;
-    // Rolling window: the user can retry once the OLDEST counted request ages
-    // out of it. Derive the hint from that row rather than a fixed 1h value
-    // (the window is 24h, so 3600s would tell clients to retry ~23h early).
+    trace.error_message = `count=${count} cap=${chatCap}`;
+    // Rolling window: derive retry-after from the oldest counted row so
+    // the client isn't told to retry ~23h early.
     let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
     const { data: oldest } = await admin
       .from("ai_coach_rate_limit")
@@ -1924,15 +1921,6 @@ Deno.serve(async (req) => {
       retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
     }
     return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
-  }
-
-  const { error: logErr } = await admin
-    .from("ai_coach_rate_limit")
-    .insert({ user_id: userId });
-  if (logErr) {
-    trace.status = "internal_error";
-    trace.error_message = `rate_limit_log_failed: ${logErr.message}`;
-    return respond({ error: "Rate limit log failed" }, 500);
   }
 
   // 4. Fetch pre-computed user_context (tier 1).

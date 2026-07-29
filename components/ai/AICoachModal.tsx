@@ -797,8 +797,9 @@ function ChatScreen({
   // intentionally ephemeral, so persistence is disabled in that mode.
   workoutContext,
   // Paywall v3: closes the coach sheet and opens the /upgrade paywall. Set
-  // for free-tier users; when the daily cap hits mid-chat, the banner above
-  // the input routes through this.
+  // for free-tier users; the kind determines which paywall headline the
+  // /upgrade screen shows ('cap' = ran out of daily messages; 'pro' = asked
+  // for a Pro-only generate/refine flow the free tier doesn't include).
   onRequestUpgrade,
 }: {
   onBack: () => void;
@@ -806,7 +807,7 @@ function ChatScreen({
   initialPrompt?: string;
   userId: string | null;
   workoutContext?: WorkoutCoachContext | null;
-  onRequestUpgrade?: () => void;
+  onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
 }) {
   const { C } = useTheme();
   const supabase = useSupabaseClient();
@@ -842,10 +843,13 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  // Free tier: flips when the server 402s with free_cap_hit, and shows the
-  // upgrade banner above the input. Not persisted — the rolling window means
-  // a fresh open may have slots again, and the server re-answers regardless.
-  const [capHit, setCapHit] = useState(false);
+  // Free tier: null while OK; set to which kind of 402 hit when the server
+  // rejects. 'cap' = daily allowance spent; 'pro' = asked for a Pro-only
+  // flow (plan/refine) — the banner and the /upgrade route need to know
+  // which so the paywall pitches the right headline. Not persisted: the
+  // rolling window means a fresh open may have slots again, and the server
+  // re-answers regardless.
+  const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   // Header mark: traces while waiting on the coach, releases when the reply
   // lands, static until the first send.
   const everLoadedRef = useRef(false);
@@ -996,14 +1000,16 @@ function ChatScreen({
       },
       // Paywall v3: the free tier's daily allowance ran out (or a Pro-only
       // flow was requested). Drona delivers the cap in his own voice inside
-      // the bubble, and the upgrade banner appears above the input.
+      // the bubble, and the upgrade banner appears above the input. Kind
+      // is stored so the banner's CTA opens the paywall with the right
+      // context (cap → "coach who never runs out" copy; pro → Pro-feature copy).
       onCapHit: (kind) => {
         typewriter.fail(
           kind === 'cap'
             ? "That's my three for today. Free coaching resets tomorrow. Or go unlimited and I'll answer everything, and reprogram your week as you train."
             : 'Full plan generation is an Overload Pro feature. Your current plan is yours to keep; fresh programming is my paid work.',
         );
-        setCapHit(true);
+        setCapHit(kind);
         setLoading(false);
         streamRef.current = null;
       },
@@ -1145,14 +1151,16 @@ function ChatScreen({
           CTA opens the reusable /upgrade paywall with chat context. */}
       {capHit && onRequestUpgrade && (
         <View style={[s.capBanner, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
-          <View style={s.capMeterRow}>
-            <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
-            <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
-            <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
-            <Text style={[s.capMeterText, { color: C.textMuted }]}>3 of 3 free messages used</Text>
-          </View>
+          {capHit === 'cap' && (
+            <View style={s.capMeterRow}>
+              <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
+              <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
+              <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
+              <Text style={[s.capMeterText, { color: C.textMuted }]}>3 of 3 free messages used</Text>
+            </View>
+          )}
           <TouchableOpacity
-            onPress={onRequestUpgrade}
+            onPress={() => onRequestUpgrade(capHit)}
             style={s.capCta}
             accessibilityRole="button"
             accessibilityLabel="Start my 7 days free"
@@ -2668,8 +2676,13 @@ export function AICoachModal({
   // Paywall v3: free-tier upgrade path. Close the sheet, open the reusable
   // /upgrade paywall with the given context headline. (The sheet must close
   // first — it's a root-Portal overlay, so it would otherwise float above
-  // the pushed route.)
-  const handleRequestUpgrade = (context: 'cap_chat' | 'cap_parse' | 'milestone') => {
+  // the pushed route.) `pro_feature` was added after review flagged that
+  // "cap_chat" was misused for Pro-feature blocks: a user tapping Plan /
+  // Workout on the coach menu (or hitting pro_required in chat) hasn't run
+  // out of messages, they've asked for something Pro-only.
+  const handleRequestUpgrade = (
+    context: 'cap_chat' | 'cap_parse' | 'milestone' | 'pro_feature',
+  ) => {
     handleClose();
     router.push({ pathname: '/upgrade', params: { context } });
   };
@@ -2989,10 +3002,11 @@ export function AICoachModal({
                 <MenuScreen
                   onNavigate={(next) => {
                     // Free tier is chat-only: the plan / workout generators
-                    // are Pro, so those menu items open the paywall instead
-                    // of a screen that would just 402.
+                    // are Pro, so those menu items open the paywall with the
+                    // Pro-feature headline (not the "ran out of messages"
+                    // headline — the user hasn't hit any cap here).
                     if (access.state === 'free' && next !== 'chat') {
-                      handleRequestUpgrade('cap_chat');
+                      handleRequestUpgrade('pro_feature');
                       return;
                     }
                     setScreen(next);
@@ -3009,7 +3023,10 @@ export function AICoachModal({
                   userId={user?.id ?? null}
                   workoutContext={workoutContext}
                   onRequestUpgrade={
-                    access.state === 'free' ? () => handleRequestUpgrade('cap_chat') : undefined
+                    access.state === 'free'
+                      ? (kind) =>
+                          handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
+                      : undefined
                   }
                 />
               )}

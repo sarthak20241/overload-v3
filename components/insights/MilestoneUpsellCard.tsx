@@ -21,11 +21,20 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, FontSize, FontWeight, LetterSpacing, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { useClerkUser } from '@/hooks/useClerkUser';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import type { Insight } from '@/lib/insights';
 
-const LAST_SHOWN_KEY = 'milestone_upsell_last_shown_v1';
-const SNOOZE_KEY = 'milestone_upsell_snooze_until_v1';
+// Keys are per-user (mirrors `coach_access_v1::${userId}` in useCoachAccess).
+// Un-namespaced keys leaked one Apple ID's "Not now" snooze onto whoever
+// signed in next on the same device — shared households, sign-out/sign-in
+// on the same phone, or a resold device all silently suppressed the card
+// for a completely different account. `::guest` covers the never-signed-in
+// path so the guard is still deterministic during onboarding.
+const lastShownKey = (userId: string | null) =>
+  `milestone_upsell_last_shown_v1::${userId ?? 'guest'}`;
+const snoozeKey = (userId: string | null) =>
+  `milestone_upsell_snooze_until_v1::${userId ?? 'guest'}`;
 const SHOW_COOLDOWN_MS = 7 * 24 * 3600 * 1000;
 const SNOOZE_MS = 14 * 24 * 3600 * 1000;
 
@@ -33,6 +42,8 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
   const { C } = useTheme();
   const router = useRouter();
   const { access } = useCoachAccess();
+  const { user } = useClerkUser();
+  const userId = user?.id ?? null;
   const victory = insights.find((i) => i.type === 'victory') ?? null;
 
   // null = still reading the timestamps; false = gated off; true = show.
@@ -48,8 +59,8 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
     (async () => {
       try {
         const [lastShownRaw, snoozeRaw] = await Promise.all([
-          AsyncStorage.getItem(LAST_SHOWN_KEY),
-          AsyncStorage.getItem(SNOOZE_KEY),
+          AsyncStorage.getItem(lastShownKey(userId)),
+          AsyncStorage.getItem(snoozeKey(userId)),
         ]);
         const now = Date.now();
         const lastShown = lastShownRaw ? Number(lastShownRaw) : 0;
@@ -59,7 +70,7 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
         setEligible(ok);
         // Count this appearance against the cooldown the moment it renders,
         // so backgrounding and reopening all week doesn't re-show it.
-        if (ok) AsyncStorage.setItem(LAST_SHOWN_KEY, String(now)).catch(() => {});
+        if (ok) AsyncStorage.setItem(lastShownKey(userId), String(now)).catch(() => {});
       } catch {
         if (!cancelled) setEligible(false);
       }
@@ -67,7 +78,7 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
     return () => {
       cancelled = true;
     };
-  }, [access.state, victory]);
+  }, [access.state, victory, userId]);
 
   const handleShowMe = useCallback(() => {
     router.push({ pathname: '/upgrade', params: { context: 'milestone' } });
@@ -75,8 +86,8 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
 
   const handleNotNow = useCallback(() => {
     setDismissed(true);
-    AsyncStorage.setItem(SNOOZE_KEY, String(Date.now() + SNOOZE_MS)).catch(() => {});
-  }, []);
+    AsyncStorage.setItem(snoozeKey(userId), String(Date.now() + SNOOZE_MS)).catch(() => {});
+  }, [userId]);
 
   if (!victory || !eligible || dismissed) return null;
 
