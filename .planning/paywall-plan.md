@@ -56,7 +56,24 @@ Implemented, typechecked, NOT committed / NOT applied live:
   expo-notifications` before the next native build (worktree node_modules is
   symlinked from the main checkout — install from the main checkout).
 
-## PAYWALL v5 (2026-07-28 late, final of this session)
+## PAYWALL v5.2 (2026-07-29 pivot: readiness out, Weekly Reports + Coach Nudges in as "Soon")
+
+Sarthak pivoted the Pro tier mid-turn: readiness dropped entirely (was
+never gated client-side, so advertising it was false-advertising bait);
+Weekly Reports and Proactive Coach Nudges added to the CORE comparison
+table with "SOON" chips per the RC "Coming soon" pattern. Two build tasks
+spawned (task_1dfd7f89 weekly reports, task_d6e8cb33 coach nudges) as
+deadline commitments — the chip becomes stale if either feature doesn't
+ship within a few weeks. Readiness gating task (task_bd77464b) dismissed.
+
+CORE now 6 rows (still fits one viewport on iPhone 17): Coach chat,
+Fast/accurate AI food logs, Personalized plans + workouts, Weekly plan
+rewrites, Weekly progress reports (SOON), Proactive coach nudges (SOON).
+MORE unchanged. CompareCell type extended to include `'soon'`; renders
+as an outlined chip (accent border, small caps text) so the eye reads
+"yes, and it's in flight" without competing visually with real checks.
+
+## PAYWALL v5 (2026-07-28 late, superseded by v5.2)
 
 Sarthak flagged v4 as overloaded (three overlapping explainers) but also that
 buyers couldn't see what Pro includes. v5 resolves both with ONE explainer:

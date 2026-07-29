@@ -95,18 +95,26 @@ import {
 type FunnelStep = 'warmup' | 'reminder' | 'paywall';
 
 // Free → Pro comparison rows. `free`/`pro` render as: string → text,
-// 'yes' → check icon, null → dash. CORE is what shows by default (the
-// highest-signal deltas); MORE expands behind "See the full comparison"
-// (Linktree's expandable-detail pattern) and deliberately includes the
-// both-included rows: showing what free KEEPS builds trust with the
-// soft-wall skipper instead of hiding it.
-type CompareCell = string | 'yes' | null;
+// 'yes' → check icon, 'soon' → outlined "SOON" chip, null → dash. CORE
+// shows by default (highest-signal deltas); MORE expands behind "See the
+// full comparison" (Linktree's expandable-detail pattern) and deliberately
+// includes the both-included rows so what free KEEPS is visible — the
+// soft-wall skipper reads that as transparency, not concealment.
+//
+// Readiness dropped from Pro (2026-07-29 pivot): the app never gated it
+// client-side, so advertising it as Pro was a false-advertising bug.
+// Weekly reports + Coach nudges added with "Soon" markers — both are real
+// product commitments spawned as build tasks; the chip becomes stale if
+// the features don't ship within a few weeks, so treat those as deadline
+// obligations, not backlog wishes.
+type CompareCell = string | 'yes' | 'soon' | null;
 const COMPARE_CORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
   { label: 'Coach chat', free: '3/day', pro: 'Unlimited' },
   { label: 'Fast, accurate AI food logs', free: '3/day', pro: 'Unlimited' },
   { label: 'Personalized plans + workouts', free: null, pro: 'yes' },
   { label: 'Weekly plan rewrites', free: null, pro: 'yes' },
-  { label: 'Readiness + deep trends', free: null, pro: 'yes' },
+  { label: 'Weekly progress reports', free: null, pro: 'soon' },
+  { label: 'Proactive coach nudges', free: null, pro: 'soon' },
 ];
 const COMPARE_MORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
   { label: 'Refine any plan in chat', free: null, pro: 'yes' },
@@ -561,6 +569,10 @@ export default function UpgradeScreen() {
                   <View style={u.cmpCol}>
                     {row.free === 'yes' ? (
                       <Feather name="check" size={IconSize.sm} color={C.textMuted} />
+                    ) : row.free === 'soon' ? (
+                      <View style={[u.soonChip, { borderColor: C.textMuted }]}>
+                        <Text style={[u.soonText, { color: C.textMuted }]}>SOON</Text>
+                      </View>
                     ) : row.free ? (
                       <Text style={[u.cmpFree, { color: C.textMuted }]}>{row.free}</Text>
                     ) : (
@@ -570,6 +582,10 @@ export default function UpgradeScreen() {
                   <View style={u.cmpCol}>
                     {row.pro === 'yes' ? (
                       <Feather name="check" size={IconSize.sm} color={C.accentText} />
+                    ) : row.pro === 'soon' ? (
+                      <View style={[u.soonChip, { borderColor: C.accentText }]}>
+                        <Text style={[u.soonText, { color: C.accentText }]}>SOON</Text>
+                      </View>
                     ) : (
                       <Text style={[u.cmpPro, { color: C.accentText }]}>{row.pro}</Text>
                     )}
@@ -1041,6 +1057,23 @@ const u = StyleSheet.create({
   cmpCol: { width: 82, alignItems: 'center' },
   cmpFree: { fontSize: FontSize.sm },
   cmpPro: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  // "SOON" chip: outlined pill that carries a Pro feature we've committed
+  // to shipping but haven't shipped yet. Deliberately smaller and less
+  // visually loud than a checkmark so the eye reads it as "yes, and it's
+  // in flight" rather than "yes, definitely today". Color set inline from
+  // the column's theme (accent for Pro, muted for Free — the latter is
+  // never used today but keeps the render branch symmetric).
+  soonChip: {
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  soonText: {
+    fontSize: 9.5,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.5,
+  },
   cmpMoreBtn: {
     flexDirection: 'row',
     alignItems: 'center',
