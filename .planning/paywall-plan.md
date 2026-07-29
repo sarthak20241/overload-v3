@@ -49,6 +49,60 @@ Implemented, typechecked, NOT committed / NOT applied live:
   expo-notifications` before the next native build (worktree node_modules is
   symlinked from the main checkout — install from the main checkout).
 
+## PAYWALL v5 (2026-07-28 late, final of this session)
+
+Sarthak flagged v4 as overloaded (three overlapping explainers) but also that
+buyers couldn't see what Pro includes. v5 resolves both with ONE explainer:
+a Free → Pro comparison table (Vivid pattern) replacing BOTH the timeline
+strip and the value lines:
+  Coach chat            3/day    Unlimited
+  AI food logging       3/day    Unlimited
+  Weekly plan rewrites    -        check
+  Readiness + deep trends -        check
+Sub is one sentence (mechanism only). Annual note trimmed to "$2.50/mo,
+billed yearly" (protein-shake anchor cut). Screen rhythm: promise → delta
+table → choose → go.
+
+v5.1 amendments (Sarthak feedback): sub upgraded to the ecosystem line
+("Drona watches your training, food and recovery, and steers you to your
+goal week by week."); row labels "Personalized plans + workouts" and "Fast,
+accurate AI food logs"; table is core-5 + expandable ("See the full
+comparison" ↔ "Show less") adding Refine-in-chat and two both-included
+trust rows (tracking, routines+history). "Weekly reports" deliberately NOT
+listed: feature doesn't exist yet; add the row when it ships. Readiness
+gating enforcement spun off as a separate task (paywall claims it as Pro
+but nothing locks it client-side yet). Trial mechanics now carried by badge + trust chips +
+CTA copy; the day-5 reminder promise lives on the funnel's reminder screen
+and the scheduled local notification (re-add a one-line timeline if cap-hit
+entries ever need it). Verified on sim.
+
+## PAYWALL v4 (2026-07-28 evening, sim-iterated with Sarthak; superseded by
+## v5 above; supersedes the step-4 layout described below)
+
+Single-viewport compact paywall (scroll only as SE safety net), audited against
+RevenueCat's "7 unexpected uses" + "5 conversion boosters":
+- Outcome headline "Never write a training plan again." (educate/frame value);
+  sub = mechanism + Opal-style results-inside-trial line ("The first rewrite
+  lands inside your free week.")
+- Horizontal 3-dot trial timeline (Today "Coach is yours" / Day 5 "I remind
+  you first" / Day 7 "{price}/yr, your call")
+- 3 outcome value lines; NO em dashes in any shipped copy
+- Plan rows (radio, compact): Annual highlighted + "7 DAYS FREE" badge +
+  "SAVE {pct}%" tag + "less than a protein shake a week" anchor; Monthly decoy
+  "no trial"; Founding Lifetime collapsed behind "See Founding Lifetime" link
+  (also hides the ASC-gap product; NOTE store shows $199, not the planned $79.99)
+- Trust chips above CTA TRACK THE SELECTED PLAN (annual "No payment today",
+  monthly "First charge today", lifetime "One payment, no renewals") - fixed a
+  misleading-trial bug caught in sim review
+- Gentle CTA pulse (1.5%, 2.2s, paused while purchasing, gated on
+  useReducedMotion) + staggered plan-row entrances (RC: animation lifts 12-18%)
+- Delayed soft-wall skip "Not now, I'll train on the free plan"
+Deferred deliberately: social proof (no real reviews yet), post-skip survey,
+14-day-trial A/B (needs only ASC change), hard-wall A/B (RC data: hard walls
+convert ~5x but we grow organic).
+Verified on iPhone 17 sim via overload://upgrade deep link; plan selection,
+founding expand, restore path, and pulse all exercised.
+
 ## STORE CONFIG CHECKLIST (dashboards, Sarthak does these)
 
 App Store Connect (Overload iOS app):

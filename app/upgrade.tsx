@@ -46,7 +46,18 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  Easing,
+  FadeIn,
+  FadeInDown,
+  cancelAnimation,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import {
   Colors,
   FontFamily,
@@ -82,6 +93,26 @@ import {
 } from '@/lib/revenuecat';
 
 type FunnelStep = 'warmup' | 'reminder' | 'paywall';
+
+// Free → Pro comparison rows. `free`/`pro` render as: string → text,
+// 'yes' → check icon, null → dash. CORE is what shows by default (the
+// highest-signal deltas); MORE expands behind "See the full comparison"
+// (Linktree's expandable-detail pattern) and deliberately includes the
+// both-included rows: showing what free KEEPS builds trust with the
+// soft-wall skipper instead of hiding it.
+type CompareCell = string | 'yes' | null;
+const COMPARE_CORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
+  { label: 'Coach chat', free: '3/day', pro: 'Unlimited' },
+  { label: 'Fast, accurate AI food logs', free: '3/day', pro: 'Unlimited' },
+  { label: 'Personalized plans + workouts', free: null, pro: 'yes' },
+  { label: 'Weekly plan rewrites', free: null, pro: 'yes' },
+  { label: 'Readiness + deep trends', free: null, pro: 'yes' },
+];
+const COMPARE_MORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
+  { label: 'Refine any plan in chat', free: null, pro: 'yes' },
+  { label: 'Workout + diet tracking', free: 'yes', pro: 'yes' },
+  { label: 'Unlimited routines + history', free: 'yes', pro: 'yes' },
+];
 
 interface FoundingStatus {
   tier: string;
@@ -131,9 +162,38 @@ export default function UpgradeScreen() {
   // provisioned yet), so it's collapsed behind a link by default. Once
   // expanded, the row inflates in place and the link disappears.
   const [showAllPlans, setShowAllPlans] = useState(false);
+  // Full comparison list, collapsed by default (core deltas only).
+  const [showFullCompare, setShowFullCompare] = useState(false);
   // Soft-wall skip: fades in after a beat so the value case gets first read.
   const [skipVisible, setSkipVisible] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
+
+  // Gentle CTA pulse (RC conversion boosters: animated elements typically
+  // lift conversion 12-18%). Calm brand = a slow 1.00 → 1.015 breath, not a
+  // throb. Runs only while the paywall is idle: paused during purchase /
+  // verify (a pulsing disabled button reads as broken) and disabled entirely
+  // when the OS reduce-motion setting is on.
+  const reduceMotion = useReducedMotion();
+  const ctaPulse = useSharedValue(1);
+  const pulseActive = step === 'paywall' && !purchasing && !verifying && !loading;
+  useEffect(() => {
+    if (!pulseActive || reduceMotion) {
+      cancelAnimation(ctaPulse);
+      ctaPulse.value = withTiming(1, { duration: 150 });
+      return;
+    }
+    ctaPulse.value = withRepeat(
+      withSequence(
+        withTiming(1.015, { duration: 1100, easing: Easing.inOut(Easing.quad) }),
+        withTiming(1, { duration: 1100, easing: Easing.inOut(Easing.quad) }),
+      ),
+      -1,
+    );
+    return () => cancelAnimation(ctaPulse);
+  }, [pulseActive, reduceMotion, ctaPulse]);
+  const ctaPulseStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: ctaPulse.value }],
+  }));
 
   useEffect(() => {
     let cancelled = false;
@@ -296,7 +356,6 @@ export default function UpgradeScreen() {
   const annual = packages.annual ?? null;
   const monthly = packages.monthly ?? null;
   const lifetime = packages.founding_lifetime ?? null;
-  const annualPrice = annual?.product?.priceString ?? null;
   const perMonth = annual ? perMonthLabel(annual) : null;
   const savePct =
     annual?.product?.price && monthly?.product?.price
@@ -316,11 +375,13 @@ export default function UpgradeScreen() {
       : context === 'cap_chat' || context === 'cap_parse'
         ? 'A coach who never runs out.'
         : 'Never write a training plan again.';
-  // Sub carries value + trial only. The price deliberately does NOT appear
-  // here: it already lives on the Annual card and the Day-7 timeline label,
-  // and a third repetition read as clutter in the sim review.
+  // One sentence: the ecosystem story (Sarthak's framing). Everything else
+  // (what's included, trial mechanics, price) lives in exactly one dedicated
+  // element below: the Free → Pro comparison table with its expandable full
+  // list. History: v4 had three overlapping explainers and read overloaded;
+  // v5 collapsed them into the table.
   const paywallSub =
-    'Drona reads every set you log and rewrites your program each week. Your first 7 days are free.';
+    'Drona watches your training, food and recovery, and steers you to your goal week by week.';
 
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
@@ -467,59 +528,58 @@ export default function UpgradeScreen() {
             <Text style={[u.hero, { color: C.foreground }]}>{paywallTitle}</Text>
             <Text style={[u.heroSub, { color: C.textSecondary }]}>{paywallSub}</Text>
 
-            {/* Timeline strip: three dots on a lime rail with day labels
-                and one-line captions. Trust anchor at a fraction of the
-                vertical cost of the old card. */}
-            <View style={u.timelineStrip}>
-              <View style={u.tsRail}>
-                <View style={[u.tsDot, { backgroundColor: Colors.primary, borderColor: C.background }]} />
-                <View style={[u.tsLine, { backgroundColor: C.primaryBorder }]} />
-                <View style={[u.tsDot, { backgroundColor: Colors.primary, borderColor: C.background }]} />
-                <View style={[u.tsLine, { backgroundColor: C.primaryBorder }]} />
-                <View style={[u.tsDot, { backgroundColor: Colors.primary, borderColor: C.background }]} />
-              </View>
-              <View style={u.tsLabels}>
-                <View style={u.tsCol}>
-                  <Text style={[u.tsHead, { color: C.foreground }]}>Today</Text>
-                  <Text style={[u.tsSub, { color: C.textMuted }]}>Coach is yours</Text>
+            {/* Free → Pro comparison (RC "Educate & Frame Value", Vivid's
+                compare-plans pattern). THE single explainer on this screen:
+                our freemium model means free users already have a metered
+                coach, so "what am I signing up for?" is genuinely the delta,
+                not a feature list. Also quietly reassures the soft-wall
+                skipper that free keeps working. */}
+            <View style={[u.compare, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              <View style={u.cmpHeader}>
+                <View style={{ flex: 1 }} />
+                <View style={u.cmpCol}>
+                  <Text style={[u.cmpHeadText, { color: C.textDim }]}>FREE</Text>
                 </View>
-                <View style={u.tsCol}>
-                  <Text style={[u.tsHead, { color: C.foreground }]}>Day 5</Text>
-                  <Text style={[u.tsSub, { color: C.textMuted }]}>I remind you first</Text>
-                </View>
-                <View style={u.tsCol}>
-                  <Text style={[u.tsHead, { color: C.foreground }]}>Day 7</Text>
-                  <Text style={[u.tsSub, { color: C.textMuted }]}>
-                    {annualPrice ? `${annualPrice}/yr, your call` : 'Your call'}
-                  </Text>
+                <View style={u.cmpCol}>
+                  <Text style={[u.cmpHeadText, { color: C.accentText }]}>PRO</Text>
                 </View>
               </View>
-            </View>
-
-            {/* Outcome-framed value lines (RC 7-uses "Educate & Frame Value").
-                Old copy named the features; users buy the OUTCOME. Ladder's
-                paywall study: "Get results without planning workouts" beat
-                every feature-led variant. Three tight one-liners, each a
-                verb + benefit the user recognises from their own life. */}
-            <View style={u.valueLines}>
-              <View style={u.valueRow}>
-                <Feather name="check" size={IconSize.xs} color={C.accentText} />
-                <Text style={[u.valueText, { color: C.foreground }]}>
-                  Ask anything, anytime. Form, sleep, sore shoulders.
+              {(showFullCompare ? [...COMPARE_CORE, ...COMPARE_MORE] : COMPARE_CORE).map((row) => (
+                <View key={row.label} style={[u.cmpRow, { borderTopColor: C.borderSubtle }]}>
+                  <Text style={[u.cmpLabel, { color: C.foreground }]}>{row.label}</Text>
+                  <View style={u.cmpCol}>
+                    {row.free === 'yes' ? (
+                      <Feather name="check" size={IconSize.sm} color={C.textMuted} />
+                    ) : row.free ? (
+                      <Text style={[u.cmpFree, { color: C.textMuted }]}>{row.free}</Text>
+                    ) : (
+                      <Feather name="minus" size={IconSize.sm} color={C.textDim} />
+                    )}
+                  </View>
+                  <View style={u.cmpCol}>
+                    {row.pro === 'yes' ? (
+                      <Feather name="check" size={IconSize.sm} color={C.accentText} />
+                    ) : (
+                      <Text style={[u.cmpPro, { color: C.accentText }]}>{row.pro}</Text>
+                    )}
+                  </View>
+                </View>
+              ))}
+              <TouchableOpacity
+                onPress={() => setShowFullCompare((v) => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={showFullCompare ? 'Show less' : 'See the full comparison'}
+                style={[u.cmpMoreBtn, { borderTopColor: C.borderSubtle }]}
+              >
+                <Text style={[u.cmpMoreText, { color: C.textMuted }]}>
+                  {showFullCompare ? 'Show less' : 'See the full comparison'}
                 </Text>
-              </View>
-              <View style={u.valueRow}>
-                <Feather name="check" size={IconSize.xs} color={C.accentText} />
-                <Text style={[u.valueText, { color: C.foreground }]}>
-                  Type "two rotis and dal". Macros counted in seconds.
-                </Text>
-              </View>
-              <View style={u.valueRow}>
-                <Feather name="check" size={IconSize.xs} color={C.accentText} />
-                <Text style={[u.valueText, { color: C.foreground }]}>
-                  Readiness score reads your sleep and strain daily
-                </Text>
-              </View>
+                <Feather
+                  name={showFullCompare ? 'chevron-up' : 'chevron-down'}
+                  size={IconSize.sm}
+                  color={C.textMuted}
+                />
+              </TouchableOpacity>
             </View>
 
             {loading ? (
@@ -529,30 +589,30 @@ export default function UpgradeScreen() {
             ) : (
               <View style={u.plans}>
                 {annual && (
-                  <PlanRow
-                    selected={selectedPlan === 'annual'}
-                    highlight
-                    badge="7 DAYS FREE"
-                    name="Annual"
-                    saveTag={savePct && savePct > 0 ? `SAVE ${savePct}%` : undefined}
-                    price={annual.product.priceString}
-                    priceUnit="/yr"
-                    note={
-                      perMonth
-                        ? `${perMonth}/mo · less than a protein shake a week`
-                        : 'Billed yearly'
-                    }
-                    onPress={() => setSelectedPlan('annual')}
-                  />
+                  <Animated.View entering={FadeInDown.delay(80).duration(350)}>
+                    <PlanRow
+                      selected={selectedPlan === 'annual'}
+                      highlight
+                      badge="7 DAYS FREE"
+                      name="Annual"
+                      saveTag={savePct && savePct > 0 ? `SAVE ${savePct}%` : undefined}
+                      price={annual.product.priceString}
+                      priceUnit="/yr"
+                      note={perMonth ? `${perMonth}/mo, billed yearly` : 'Billed yearly'}
+                      onPress={() => setSelectedPlan('annual')}
+                    />
+                  </Animated.View>
                 )}
                 {monthly && (
-                  <PlanRow
-                    selected={selectedPlan === 'monthly'}
-                    name="Monthly"
-                    price={monthly.product.priceString}
-                    priceUnit="/mo · no trial"
-                    onPress={() => setSelectedPlan('monthly')}
-                  />
+                  <Animated.View entering={FadeInDown.delay(180).duration(350)}>
+                    <PlanRow
+                      selected={selectedPlan === 'monthly'}
+                      name="Monthly"
+                      price={monthly.product.priceString}
+                      priceUnit="/mo · no trial"
+                      onPress={() => setSelectedPlan('monthly')}
+                    />
+                  </Animated.View>
                 )}
                 {showAllPlans && lifetime && lifetime.product?.priceString && !foundingSoldOut && (
                   <PlanRow
@@ -623,25 +683,27 @@ export default function UpgradeScreen() {
                 </Text>
               </View>
             </View>
-            <PressableScale
-              onPress={handlePurchase}
-              disabled={purchasing || verifying || loading}
-              style={[u.cta, Shadow.playBtn, (purchasing || verifying || loading) && { opacity: 0.7 }]}
-              accessibilityRole="button"
-              accessibilityLabel="Start my 7 days free"
-            >
-              {purchasing ? (
-                <ActivityIndicator size="small" color={Colors.primaryFg} />
-              ) : (
-                <Text style={u.ctaText}>
-                  {selectedPlan === 'annual'
-                    ? 'Start my 7 days free'
-                    : selectedPlan === 'monthly'
-                      ? 'Subscribe monthly'
-                      : 'Claim founding lifetime'}
-                </Text>
-              )}
-            </PressableScale>
+            <Animated.View style={ctaPulseStyle}>
+              <PressableScale
+                onPress={handlePurchase}
+                disabled={purchasing || verifying || loading}
+                style={[u.cta, Shadow.playBtn, (purchasing || verifying || loading) && { opacity: 0.7 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Start my 7 days free"
+              >
+                {purchasing ? (
+                  <ActivityIndicator size="small" color={Colors.primaryFg} />
+                ) : (
+                  <Text style={u.ctaText}>
+                    {selectedPlan === 'annual'
+                      ? 'Start my 7 days free'
+                      : selectedPlan === 'monthly'
+                        ? 'Subscribe monthly'
+                        : 'Claim founding lifetime'}
+                  </Text>
+                )}
+              </PressableScale>
+            </Animated.View>
             {skipVisible && (
               <Animated.View entering={FadeIn.duration(400)}>
                 <TouchableOpacity
@@ -934,41 +996,44 @@ const u = StyleSheet.create({
     lineHeight: 19,
     marginTop: 6,
   },
-  timelineStrip: {
+  // Free → Pro comparison table
+  compare: {
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     marginTop: Spacing.lg,
   },
-  tsRail: {
+  cmpHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 14,
-    marginHorizontal: 20,
+    paddingVertical: Spacing.xs,
   },
-  tsDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
+  cmpHeadText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    letterSpacing: LetterSpacing.label,
   },
-  tsLine: {
-    flex: 1,
-    height: 2,
-    marginHorizontal: 2,
-  },
-  tsLabels: {
+  cmpRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 6,
+    alignItems: 'center',
+    paddingVertical: Spacing.sm + 1,
+    borderTopWidth: 1,
   },
-  tsCol: { flex: 1, alignItems: 'center' },
-  tsHead: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  tsSub: { fontSize: 11, marginTop: 1, textAlign: 'center' },
-
-  valueLines: {
-    marginTop: Spacing.lg,
-    gap: Spacing.sm,
+  cmpLabel: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.medium },
+  cmpCol: { width: 82, alignItems: 'center' },
+  cmpFree: { fontSize: FontSize.sm },
+  cmpPro: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  cmpMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingTop: Spacing.sm + 1,
+    paddingBottom: 2,
+    borderTopWidth: 1,
   },
-  valueRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  valueText: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.medium, lineHeight: 19 },
+  cmpMoreText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
 
   verifyingRow: {
     flexDirection: 'row',
