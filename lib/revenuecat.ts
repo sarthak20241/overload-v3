@@ -47,7 +47,15 @@ export type RevenueCatOffering = {
 
 export type RevenueCatCustomerInfo = {
   entitlements: {
-    active: Record<string, { isActive: boolean; productIdentifier: string }>;
+    // periodType is 'NORMAL' | 'INTRO' | 'TRIAL' per the real RC SDK; we
+    // read it to distinguish a fresh trial purchase from an upgrade by an
+    // existing subscriber (who has no trial and shouldn't get the day-5
+    // "your trial converts" notification).
+    active: Record<string, {
+      isActive: boolean;
+      productIdentifier: string;
+      periodType?: string;
+    }>;
   };
 };
 
@@ -165,6 +173,21 @@ export async function ensureIdentity(userId: string): Promise<void> {
 export async function logOutRevenueCat(): Promise<void> {
   const P = loadPurchases();
   if (!P || !configured) return;
+  // Cancel any pending day-5 trial reminder BEFORE flipping RC identity —
+  // the local notification is scoped to the device, not the user, so if
+  // another account signs in they'd inherit the previous user's "trial
+  // converts in 2 days" ping. Fire-and-forget: notification unavailability
+  // must not block sign-out. Imported lazily to avoid a require-cycle
+  // (lib/notifications may want to peek at RC state in the future).
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { cancelTrialReminder } = require('./notifications');
+    if (typeof cancelTrialReminder === 'function') {
+      cancelTrialReminder().catch(() => {});
+    }
+  } catch {
+    /* notifications module missing (Expo Go); no reminder to cancel */
+  }
   try {
     await P.logOut();
   } catch (e) {

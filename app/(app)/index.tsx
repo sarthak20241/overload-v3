@@ -18,6 +18,7 @@ import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
+import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
@@ -624,6 +625,10 @@ export default function DashboardScreen() {
             setAiCoachOpen(true);
           }}
         />
+
+        {/* Milestone upsell (paywall v3): free users only, rides a victory
+            insight, self-gates to once a week. See MilestoneUpsellCard. */}
+        <MilestoneUpsellCard insights={insights} />
 
         {/* Recent Workouts */}
         <View style={styles.section}>

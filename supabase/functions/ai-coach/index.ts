@@ -79,6 +79,15 @@ let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 
+// Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
+// users get metered AI instead of none: 3 chat messages and 3 meal parses
+// per rolling 24h, against the same tables as the paid caps. Cap hits return
+// 402 with `error: "free_cap_hit"` (not 429) so the client opens the
+// upgrade sheet rather than a retry-later toast. Mirror these numbers in
+// get_coach_access_status() — change both together.
+const FREE_CHAT_LIMIT = 3;
+const FREE_PARSE_LIMIT = 3;
+
 // Fan-out plan generation. On by default; set PLAN_FANOUT=false in the Edge
 // Function secrets to fall back to the single forced-tool call without a
 // redeploy. Worth having a switch: this changes the shape of every
@@ -1193,25 +1202,67 @@ async function handleParseMealRequest(args: {
   trace.last_user_message_preview = preview(text);
   trace.message_count = 1;
 
-  // Own bucket, same sliding-window mechanics as the coach limiter. Parse
-  // failures still count a slot here (the Anthropic call was made); client
-  // retries after hard errors are rare enough that this is acceptable v1. The
-  // refine shares this bucket too (see isRefine above) so it cannot be spammed
-  // directly.
-  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { count, error: countErr } = await admin
-    .from("parse_meal_rate_limit")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("request_at", sinceIso);
-  if (countErr) {
+  // Tier check (paywall v3): parse runs for every signed-in user, but free
+  // users get FREE_PARSE_LIMIT/day instead of the paid 40. Free cap hits are
+  // a 402 upgrade prompt, not a 429 retry. Fail-closed on RPC error, same as
+  // the chat gate.
+  let parseFreeTier = false;
+  try {
+    const { data: accessData, error: accessErr } = await userClient.rpc(
+      "get_coach_access_status",
+    );
+    if (accessErr) {
+      trace.status = "internal_error";
+      trace.error_message = `parse_access_status_failed: ${accessErr.message}`;
+      return respond({ error: "Access check failed" }, 500);
+    }
+    const state = (accessData as { state?: string } | null)?.state ?? "unauthenticated";
+    if (state !== "paid" && state !== "trialing" && state !== "free") {
+      trace.status = "unauthorized";
+      trace.error_message = `parse_no_access:${state}`;
+      return respond({ error: "drona_access_required", state }, 402);
+    }
+    parseFreeTier = state === "free";
+  } catch (e) {
     trace.status = "internal_error";
-    trace.error_message = `parse_rate_limit_check_failed: ${countErr.message}`;
+    trace.error_message = `parse_access_status_threw: ${String(e).slice(0, 200)}`;
+    return respond({ error: "Access check failed" }, 500);
+  }
+  const parseCap = parseFreeTier ? FREE_PARSE_LIMIT : PARSE_RATE_LIMIT_MAX;
+
+  // Own bucket, same sliding-window mechanics as the coach limiter. Now
+  // routed through the atomic try_reserve_parse_meal_slot RPC (migration
+  // 0089) so a concurrent burst can't bypass the free-tier cap of 3 parses
+  // per rolling 24h. Refine calls share this bucket (see isRefine above),
+  // so a direct-called refine still costs one slot.
+  const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
+  const { data: parseSlotData, error: parseSlotErr } = await userClient
+    .rpc("try_reserve_parse_meal_slot", { p_cap: parseCap });
+  if (parseSlotErr) {
+    trace.status = "internal_error";
+    trace.error_message = `parse_rate_limit_check_failed: ${parseSlotErr.message}`;
     return respond({ error: "Rate limit check failed" }, 500);
   }
-  if ((count ?? 0) >= PARSE_RATE_LIMIT_MAX) {
+  const parseSlotRow = Array.isArray(parseSlotData) ? parseSlotData[0] : parseSlotData;
+  const parseInserted = Boolean(parseSlotRow?.inserted);
+  const count = Number(parseSlotRow?.current_count ?? 0);
+  if (!parseInserted) {
+    if (parseFreeTier) {
+      trace.status = "unauthorized";
+      trace.error_message = `parse_free_cap_hit: count=${count} cap=${parseCap}`;
+      return respond(
+        {
+          error: "free_cap_hit",
+          state: "free",
+          feature: "parse",
+          parses_today: count,
+          parse_daily_limit: parseCap,
+        },
+        402,
+      );
+    }
     trace.status = "rate_limited";
-    trace.error_message = `parse count=${count} cap=${PARSE_RATE_LIMIT_MAX}`;
+    trace.error_message = `parse count=${count} cap=${parseCap}`;
     let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
     const { data: oldest } = await admin
       .from("parse_meal_rate_limit")
@@ -1226,14 +1277,6 @@ async function handleParseMealRequest(args: {
       retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
     }
     return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
-  }
-  const { error: logErr } = await admin
-    .from("parse_meal_rate_limit")
-    .insert({ user_id: userId });
-  if (logErr) {
-    trace.status = "internal_error";
-    trace.error_message = `parse_rate_limit_log_failed: ${logErr.message}`;
-    return respond({ error: "Rate limit log failed" }, 500);
   }
 
   // Context: recents + targets + today's totals, all non-fatal on failure.
@@ -1741,9 +1784,10 @@ Deno.serve(async (req) => {
   });
 
   // 2.5 Parse the body ONCE, up front. parse_meal branches here so it runs
-  // for ANY signed-in user (product decision 2026-07-07): AI food logging is
-  // NOT behind the paid Drona gate, only behind a valid JWT + its own 40/day
-  // rate bucket. It must therefore branch BEFORE the paid access gate below.
+  // for ANY signed-in user: AI food logging is not behind the paid Drona
+  // gate, only behind a valid JWT + its own rate bucket (40/day paid,
+  // FREE_PARSE_LIMIT/day free — the handler does its own tier check). It
+  // must therefore branch BEFORE the chat access gate below.
   // Coach chat parses the same body here and reuses it (body.messages).
   let body: { messages?: { role: string; content: string }[] };
   try {
@@ -1767,22 +1811,14 @@ Deno.serve(async (req) => {
   }
 
   // 3. Drona access gate. Reads the user's current state via
-  // get_coach_access_status() — paid / trialing / trial_ended / eligible_for_trial.
+  // get_coach_access_status() — paid / trialing / free (migration 0088).
   //
-  // We REQUIRE either paid or trialing here. Free users (eligible_for_trial /
-  // trial_ended) get a 402 with the state in the body, and the client renders
-  // a paywall or "Start Free Trial" CTA based on the returned state instead
-  // of ever hitting this function.
-  //
-  // Why we don't auto-start the trial here: it's a UX decision the client
-  // should make explicitly (user taps "Start Free Trial"), not a side effect
-  // of opening the chat. The client calls start_coach_trial() separately
-  // when the user opts in, then re-attempts the chat.
-  //
-  // This gate runs BEFORE the rate-limit count+insert below so a locked-out
-  // (eligible_for_trial / trial_ended) user can't burn today's quota just by
-  // hitting this endpoint — otherwise those denied requests would count
-  // against them if they started a trial later the same day.
+  // paid and trialing pass with the full toolkit and the 30/24h cap. free
+  // passes too, but metered (FREE_CHAT_LIMIT) and chat-only: any generate /
+  // refine / discuss mode is a Pro feature and 402s here, BEFORE the
+  // rate-limit insert below, so a denied Pro request never burns one of the
+  // user's 3 free slots. Only unknown/unauthenticated states are locked out.
+  let freeTier = false;
   try {
     const { data: accessData, error: accessErr } = await userClient.rpc(
       "get_coach_access_status",
@@ -1795,16 +1831,32 @@ Deno.serve(async (req) => {
       return respond({ error: "Access check failed" }, 500);
     }
     const state = (accessData as { state?: string } | null)?.state ?? "unauthenticated";
-    if (state !== "paid" && state !== "trialing") {
-      // 402 Payment Required. The client switches on `state` to render the
-      // right surface: 'eligible_for_trial' → trial-start CTA; 'trial_ended'
-      // → paywall; 'unauthenticated' → re-auth.
+    if (state !== "paid" && state !== "trialing" && state !== "free") {
       trace.status = "unauthorized";
       trace.error_message = `no_drona_access:${state}`;
       return respond(
         { error: "drona_access_required", state, details: accessData },
         402,
       );
+    }
+    freeTier = state === "free";
+    if (freeTier) {
+      // Peek at the requested mode (fully resolved later, same rules): an
+      // explicit non-chat mode or any force_tool means a generate / refine /
+      // discuss flow, which is Pro-only.
+      const peekMode = (body as { mode?: unknown }).mode;
+      const peekForce = (body as { force_tool?: unknown }).force_tool;
+      const wantsProFlow =
+        (typeof peekMode === "string" && peekMode !== "chat")
+        || typeof peekForce === "string";
+      if (wantsProFlow) {
+        trace.status = "unauthorized";
+        trace.error_message = `pro_required:${String(peekMode ?? peekForce)}`;
+        return respond(
+          { error: "pro_required", state: "free", feature: String(peekMode ?? peekForce) },
+          402,
+        );
+      }
     }
   } catch (e) {
     console.log("[ai-coach] access status check threw:", String(e));
@@ -1813,26 +1865,48 @@ Deno.serve(async (req) => {
     return respond({ error: "Access check failed" }, 500);
   }
 
-  // 3.5 Rate limit (paid AND trial alike): rolling 24h window, counted only
-  // now that access is confirmed so denied requests never consume quota.
+  // 3.5 Rate limit: rolling 24h window. Paid/trialing get RATE_LIMIT_MAX;
+  // free gets FREE_CHAT_LIMIT and 402 (upgrade sheet) instead of 429
+  // (retry-later toast) when spent. Enforcement goes through the atomic
+  // try_reserve_ai_coach_slot RPC (migration 0089): the old
+  // count-then-insert pattern was race-able at cap=3, which turned the
+  // free tier's daily cap into a couple-of-concurrent-requests bypass.
+  // The RPC serializes concurrent slots per user via advisory lock, so a
+  // burst reads a consistent count and only ever inserts once past the cap.
+  // Called via userClient (Clerk JWT) since the RPC reads
+  // current_clerk_user_id(); the resulting row is written under the
+  // service role indirectly through security-definer.
+  const chatCap = freeTier ? FREE_CHAT_LIMIT : RATE_LIMIT_MAX;
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
-  const { count, error: countErr } = await admin
-    .from("ai_coach_rate_limit")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("request_at", sinceIso);
-
-  if (countErr) {
+  const { data: slotData, error: slotErr } = await userClient
+    .rpc("try_reserve_ai_coach_slot", { p_cap: chatCap });
+  if (slotErr) {
     trace.status = "internal_error";
-    trace.error_message = `rate_limit_check_failed: ${countErr.message}`;
+    trace.error_message = `rate_limit_check_failed: ${slotErr.message}`;
     return respond({ error: "Rate limit check failed" }, 500);
   }
-  if ((count ?? 0) >= RATE_LIMIT_MAX) {
+  const slotRow = Array.isArray(slotData) ? slotData[0] : slotData;
+  const inserted = Boolean(slotRow?.inserted);
+  const count = Number(slotRow?.current_count ?? 0);
+  if (!inserted) {
+    if (freeTier) {
+      trace.status = "unauthorized";
+      trace.error_message = `free_cap_hit: count=${count} cap=${chatCap}`;
+      return respond(
+        {
+          error: "free_cap_hit",
+          state: "free",
+          feature: "chat",
+          messages_today: count,
+          daily_limit: chatCap,
+        },
+        402,
+      );
+    }
     trace.status = "rate_limited";
-    trace.error_message = `count=${count} cap=${RATE_LIMIT_MAX}`;
-    // Rolling window: the user can retry once the OLDEST counted request ages
-    // out of it. Derive the hint from that row rather than a fixed 1h value
-    // (the window is 24h, so 3600s would tell clients to retry ~23h early).
+    trace.error_message = `count=${count} cap=${chatCap}`;
+    // Rolling window: derive retry-after from the oldest counted row so
+    // the client isn't told to retry ~23h early.
     let retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
     const { data: oldest } = await admin
       .from("ai_coach_rate_limit")
@@ -1847,15 +1921,6 @@ Deno.serve(async (req) => {
       retryAfter = Math.max(0, Math.ceil((freesAtMs - Date.now()) / 1000));
     }
     return respond({ error: "Rate limit exceeded", retry_after_seconds: retryAfter }, 429);
-  }
-
-  const { error: logErr } = await admin
-    .from("ai_coach_rate_limit")
-    .insert({ user_id: userId });
-  if (logErr) {
-    trace.status = "internal_error";
-    trace.error_message = `rate_limit_log_failed: ${logErr.message}`;
-    return respond({ error: "Rate limit log failed" }, 500);
   }
 
   // 4. Fetch pre-computed user_context (tier 1).
@@ -2049,7 +2114,32 @@ Deno.serve(async (req) => {
     }
   }
 
-  const { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
+  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
+  // Free tier is chat-only: strip the terminal generation tools (plan /
+  // workout emission is Pro) and tell Drona so it answers in coach voice
+  // instead of attempting a tool that isn't there. Appended AFTER the
+  // existing system blocks so the prompt-cache prefix is unchanged. The gate
+  // above already 402s explicit generate/refine/discuss modes; this covers
+  // the model spontaneously reaching for the tools inside plain chat.
+  if (freeTier) {
+    tools = (tools as { name?: string }[]).filter(
+      (t) => !TERMINAL_TOOLS.has(t.name ?? ""),
+    ) as typeof tools;
+    system = [
+      ...(system as unknown[]),
+      {
+        type: "text",
+        text:
+          "This user is on the free tier: 3 coach messages per day, and the "
+          + "generate/refine tools are unavailable in this conversation. If they "
+          + "ask for a new plan, a new workout, or plan changes, tell them "
+          + "directly that weekly reprogramming and full plan generation are "
+          + "part of Overload Pro, in one sentence, then still give them the "
+          + "best coaching answer you can in prose. Never emit a full "
+          + "multi-day plan as text.",
+      },
+    ] as typeof system;
+  }
   trace.model = MODEL;
 
   // ── Fan-out plan generation ─────────────────────────────────────────────

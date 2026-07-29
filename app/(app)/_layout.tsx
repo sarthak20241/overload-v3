@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, BackHandler, Platform, Pressable, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { Tabs, useRouter, Redirect, usePathname } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -288,6 +288,22 @@ export default function AppLayout() {
         if (dest) {
           void flushNow();
           settle(false);
+          // Paywall funnel (paywall-plan.md): a signed-in convert on iOS gets
+          // the warm-up → reminder → paywall sequence right after their plan
+          // is saved; /upgrade routes to the reveal choice's destination when
+          // they finish or skip. Guests aren't sold to (no Clerk id for the
+          // RC webhook to attribute a purchase to), and Android has no
+          // billing until the Play blocker clears.
+          if (isSignedIn && Platform.OS === 'ios') {
+            router.replace({
+              pathname: '/upgrade',
+              params: {
+                flow: 'onboarding',
+                ...(dest === '/(app)/routines' ? { dest: 'routines' } : {}),
+              },
+            });
+            return;
+          }
           // Honor the reveal choice: "build my own routines" lands on the
           // routines screen instead of the dashboard.
           if (dest === '/(app)/routines') router.replace('/(app)/routines');

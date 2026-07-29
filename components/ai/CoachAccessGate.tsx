@@ -51,9 +51,16 @@ function pickScreen(access: CoachAccess, loading: boolean): GateScreen {
   switch (access.state) {
     case 'paid':
     case 'trialing':
+    // Metered free tier (paywall v3): free users pass straight through to
+    // the coach surfaces. Enforcement is server-side: the 4th message of the
+    // day comes back 402 free_cap_hit and the chat opens the cap-hit sheet.
+    case 'free':
       return 'allow';
     case 'unauthenticated':
       return 'sign_in';
+    // Legacy states from a stale persisted blob (pre-0088 server). One
+    // refresh RPC replaces them with 'free'; until then the old screens
+    // still render rather than dead-ending.
     case 'eligible_for_trial':
       return 'start_trial';
     case 'trial_ended':

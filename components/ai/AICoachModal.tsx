@@ -397,6 +397,11 @@ interface StreamingCallbacks {
   // Always receives user-safe copy. Raw failure detail is logged inside
   // callAICoachStreaming and never handed to the UI.
   onError: (message: string) => void;
+  // Paywall v3: the server answered 402 with error 'free_cap_hit' (free
+  // tier's daily allowance spent) or 'pro_required' (free user requested a
+  // generate/refine flow). When provided, this fires INSTEAD of onError so
+  // the chat can render the upgrade affordance rather than an error bubble.
+  onCapHit?: (kind: 'cap' | 'pro') => void;
   // Fan-out plan generation (2026-07-19). The backend now builds a plan as a
   // skeleton call followed by parallel per-day fills, so the structure lands
   // at ~5s and each day's prescriptions follow. Both are optional: a client
@@ -523,6 +528,22 @@ function callAICoachStreaming(
 
       if (!response.ok) {
         const body = await response.text();
+        // 402s carry a structured reason. Cap hits are a product moment
+        // (upgrade sheet), not an error state — route them to onCapHit when
+        // the caller can render one.
+        if (response.status === 402 && callbacks.onCapHit) {
+          try {
+            const parsed = JSON.parse(body) as { error?: string };
+            if (parsed.error === 'free_cap_hit') {
+              callbacks.onCapHit('cap');
+              return;
+            }
+            if (parsed.error === 'pro_required') {
+              callbacks.onCapHit('pro');
+              return;
+            }
+          } catch { /* fall through to the generic failure */ }
+        }
         fail(`HTTP ${response.status}: ${body.slice(0, 200)}`);
         return;
       }
@@ -775,12 +796,18 @@ function ChatScreen({
   // chips are shown. Null/undefined \u2192 ordinary coach chat. Workout chats are
   // intentionally ephemeral, so persistence is disabled in that mode.
   workoutContext,
+  // Paywall v3: closes the coach sheet and opens the /upgrade paywall. Set
+  // for free-tier users; the kind determines which paywall headline the
+  // /upgrade screen shows ('cap' = ran out of daily messages; 'pro' = asked
+  // for a Pro-only generate/refine flow the free tier doesn't include).
+  onRequestUpgrade,
 }: {
   onBack: () => void;
   onSaveRoutine: (name: string) => void;
   initialPrompt?: string;
   userId: string | null;
   workoutContext?: WorkoutCoachContext | null;
+  onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
 }) {
   const { C } = useTheme();
   const supabase = useSupabaseClient();
@@ -816,6 +843,13 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // Free tier: null while OK; set to which kind of 402 hit when the server
+  // rejects. 'cap' = daily allowance spent; 'pro' = asked for a Pro-only
+  // flow (plan/refine) — the banner and the /upgrade route need to know
+  // which so the paywall pitches the right headline. Not persisted: the
+  // rolling window means a fresh open may have slots again, and the server
+  // re-answers regardless.
+  const [capHit, setCapHit] = useState<null | 'cap' | 'pro'>(null);
   // Header mark: traces while waiting on the coach, releases when the reply
   // lands, static until the first send.
   const everLoadedRef = useRef(false);
@@ -964,6 +998,21 @@ function ChatScreen({
         setLoading(false);
         streamRef.current = null;
       },
+      // Paywall v3: the free tier's daily allowance ran out (or a Pro-only
+      // flow was requested). Drona delivers the cap in his own voice inside
+      // the bubble, and the upgrade banner appears above the input. Kind
+      // is stored so the banner's CTA opens the paywall with the right
+      // context (cap → "coach who never runs out" copy; pro → Pro-feature copy).
+      onCapHit: (kind) => {
+        typewriter.fail(
+          kind === 'cap'
+            ? "That's my three for today. Free coaching resets tomorrow. Or go unlimited and I'll answer everything, and reprogram your week as you train."
+            : 'Full plan generation is an Overload Pro feature. Your current plan is yours to keep; fresh programming is my paid work.',
+        );
+        setCapHit(kind);
+        setLoading(false);
+        streamRef.current = null;
+      },
     }, {
       // Phase 1: persist this turn server-side under the active conversation
       // (ordinary chat only; the in-workout chat stays ephemeral, so no id).
@@ -1095,6 +1144,30 @@ function ChatScreen({
             </TouchableOpacity>
           ))}
         </ScrollView>
+      )}
+
+      {/* Free-tier cap banner (paywall v3): appears when today's allowance
+          is spent. The 3 filled pips make the limit visible and fair; the
+          CTA opens the reusable /upgrade paywall with chat context. */}
+      {capHit && onRequestUpgrade && (
+        <View style={[s.capBanner, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
+          {capHit === 'cap' && (
+            <View style={s.capMeterRow}>
+              <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
+              <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
+              <View style={[s.capPip, { backgroundColor: Colors.primary }]} />
+              <Text style={[s.capMeterText, { color: C.textMuted }]}>3 of 3 free messages used</Text>
+            </View>
+          )}
+          <TouchableOpacity
+            onPress={() => onRequestUpgrade(capHit)}
+            style={s.capCta}
+            accessibilityRole="button"
+            accessibilityLabel="Start my 7 days free"
+          >
+            <Text style={s.capCtaText}>Start my 7 days free</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Input */}
@@ -2600,6 +2673,20 @@ export function AICoachModal({
     if (hasClerkKey) router.push('/(auth)');
   };
 
+  // Paywall v3: free-tier upgrade path. Close the sheet, open the reusable
+  // /upgrade paywall with the given context headline. (The sheet must close
+  // first — it's a root-Portal overlay, so it would otherwise float above
+  // the pushed route.) `pro_feature` was added after review flagged that
+  // "cap_chat" was misused for Pro-feature blocks: a user tapping Plan /
+  // Workout on the coach menu (or hitting pro_required in chat) hasn't run
+  // out of messages, they've asked for something Pro-only.
+  const handleRequestUpgrade = (
+    context: 'cap_chat' | 'cap_parse' | 'milestone' | 'pro_feature',
+  ) => {
+    handleClose();
+    router.push({ pathname: '/upgrade', params: { context } });
+  };
+
   // <Portal> has no onRequestClose, so route the Android hardware back button.
   // Mirror the on-screen affordances instead of always closing the whole
   // sheet: from chat/plan/workout the visible back arrow returns to the menu,
@@ -2884,7 +2971,48 @@ export function AICoachModal({
                 </TouchableOpacity>
               )}
 
-              {screen === 'menu' && <MenuScreen onNavigate={setScreen} />}
+              {/* Free-tier meter (paywall v3): how much of today's coach
+                  allowance is left, with the upgrade path one tap away.
+                  Mirrors the trialing banner above so the menu always states
+                  the user's standing in one quiet line. */}
+              {screen === 'menu' && access.state === 'free' && (
+                <TouchableOpacity
+                  onPress={() => handleRequestUpgrade('cap_chat')}
+                  style={[s.upgradeBanner, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
+                  activeOpacity={0.85}
+                >
+                  <View style={s.upgradeBannerLeft}>
+                    <SparkleIcon size={14} color={C.accentText} />
+                    <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
+                      {typeof access.messagesLeft === 'number'
+                        ? access.messagesLeft > 0
+                          ? `Free plan · ${access.messagesLeft} coach message${access.messagesLeft === 1 ? '' : 's'} left today`
+                          : 'Free plan · out of messages for today'
+                        : 'Free plan'}
+                    </Text>
+                  </View>
+                  <View style={s.upgradeBannerRight}>
+                    <Text style={[s.upgradeBannerCta, { color: C.accentText }]}>Go unlimited</Text>
+                    <Feather name="chevron-right" size={14} color={C.accentText} />
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              {screen === 'menu' && (
+                <MenuScreen
+                  onNavigate={(next) => {
+                    // Free tier is chat-only: the plan / workout generators
+                    // are Pro, so those menu items open the paywall with the
+                    // Pro-feature headline (not the "ran out of messages"
+                    // headline — the user hasn't hit any cap here).
+                    if (access.state === 'free' && next !== 'chat') {
+                      handleRequestUpgrade('pro_feature');
+                      return;
+                    }
+                    setScreen(next);
+                  }}
+                />
+              )}
               {screen === 'chat' && (
                 <ChatScreen
                   // In workout mode the back arrow closes the sheet (no menu
@@ -2894,6 +3022,12 @@ export function AICoachModal({
                   initialPrompt={initialPrompt}
                   userId={user?.id ?? null}
                   workoutContext={workoutContext}
+                  onRequestUpgrade={
+                    access.state === 'free'
+                      ? (kind) =>
+                          handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
+                      : undefined
+                  }
                 />
               )}
               {screen === 'plan' && (
@@ -3142,6 +3276,34 @@ const s = StyleSheet.create({
     fontSize: 10,
     marginTop: 1,
   },
+  // Free-tier cap banner (paywall v3)
+  capBanner: {
+    marginHorizontal: Spacing.xl,
+    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+  },
+  capMeterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  capPip: { width: 22, height: 5, borderRadius: 3 },
+  capMeterText: { fontSize: FontSize.xs, marginLeft: 4 },
+  capCta: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    paddingVertical: Spacing.sm + 2,
+    alignItems: 'center',
+  },
+  capCtaText: {
+    color: Colors.primaryFg,
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+  },
+
   chatInputWrap: {
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.md,

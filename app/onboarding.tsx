@@ -142,14 +142,6 @@ const GOAL_PHRASES: Record<CoachGoal, string> = {
   general: 'Training for life',
 };
 
-const PLAN_TITLES: Record<CoachGoal, string> = {
-  hypertrophy: 'Built for growth.',
-  strength: 'Built for strength.',
-  fat_loss: 'Built to cut, not shrink.',
-  endurance: 'Built to last.',
-  general: 'Built around you.',
-};
-
 export default function OnboardingScreen() {
   const router = useRouter();
   const { C } = useTheme();
@@ -262,14 +254,24 @@ export default function OnboardingScreen() {
     return paceAdjustedTargets(paceCtx.draft, weeklyRate);
   }, [paceCtx, weeklyRate]);
 
-  // Reveal headline: the goal restated as a date when there is one.
+  // Reveal headline: always a dated, quantified promise (paywall-plan.md,
+  // Cal AI's "Lose 11 lbs by August 19" beat). Weight-direction users get
+  // their own number and date; holding-steady users get the 12-week strength
+  // horizon instead of the old undated PLAN_TITLES tagline.
   const revealTitle = useMemo(() => {
     if (paceCtx && paceDate) {
-      const diff = Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1).replace(/\.0$/, '');
-      return `${paceCtx.direction === 'loss' ? 'Down' : 'Up'} ${diff} kg by ${paceDate}.`;
+      // Diff computed in the DISPLAY unit — targetVal/weightVal are already
+      // in weightUnit, so the number and its label must both be in that unit.
+      // The earlier version converted to kg then labeled "kg" regardless of
+      // weightUnit, misrepresenting lbs users' delta on the funnel's
+      // highest-stakes screen. Mirrors targetHint's approach further down.
+      const diff = Math.abs(targetVal - weightVal).toFixed(1).replace(/\.0$/, '');
+      return `${paceCtx.direction === 'loss' ? 'Down' : 'Up'} ${diff} ${weightUnit} by ${paceDate}.`;
     }
-    return PLAN_TITLES[answers.goal ?? 'general'];
-  }, [paceCtx, paceDate, targetVal, weightVal, toKg, answers.goal]);
+    const horizon = new Date(Date.now() + 84 * 24 * 3600 * 1000)
+      .toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `Visibly stronger by ${horizon}.`;
+  }, [paceCtx, paceDate, targetVal, weightVal, weightUnit]);
 
   // Fire Drona generation the moment the commit step mounts: the hold ritual
   // and confetti buy ~4 s of overlap before the build screen even appears,
