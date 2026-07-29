@@ -2024,10 +2024,11 @@ Deno.serve(async (req) => {
   // writing the workout as text. The terminal tool is part of the refine
   // toolkit, so tool_choice can name it.
   //
-  // Resolved HERE, before the retrieval step: retrieval branches on `mode`
-  // (fan-out plans skip it), and the old placement below retrieval read
-  // `mode` inside its temporal dead zone — a ReferenceError on every
-  // request the moment this file was next deployed.
+  // Resolved BEFORE retrieval because the retrieval block below reads `mode`
+  // (it skips the Voyage embed for generate_plan). Declaring `mode` after
+  // that use put it in the temporal dead zone and threw a ReferenceError on
+  // every signed-in coach turn — an uncaught 500 the client surfaced as the
+  // generic "Something broke on my end."
   const rawForceTool = (body as { force_tool?: unknown }).force_tool;
   const forceTool: 'generate_workout' | 'generate_plan' | null =
     rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
