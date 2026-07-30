@@ -16,7 +16,9 @@
   - Product statuses show "Could not check" — expected while ASC products are in Prepare-for-Submission, RC can't verify against Apple yet.
 - Play Store product `overload_monthly:monthly` present but "Not found" (Play billing still blocked on BillDesk, matches project memory).
 
-**Founding Lifetime status (updated 2026-07-29):** the non-consumable IAP EXISTS in ASC (found via In-App Purchases → Founding Lifetime, apple id 6773349598, product id `overload_founding_lifetime`, "Prepare for Submission"). Currently priced $199 US (auto-mapped India ~₹17,900+). **Repricing to $99 US + India override ₹10,000 is pending Sarthak's hand action** — ASC session kept dropping mid-drive today, so handed off with exact clicks. Steps:
+**Founding Lifetime status (updated 2026-07-30):** REPRICED via Global Price Change to $99 US, effective immediately. All 175 storefronts auto-scaled from the US base — India landed at ₹9,900 (nearest Apple tier to the planned ₹10,000; Apple's pricing grid doesn't offer ₹10,000 as an exact tier). Confirmed live in ASC's Current Price modal: US $99 / IN ₹9,900 / AU $149 / EUR €99. Product is complete (name + availability + price) and can be added for review with the app on the next TestFlight submission.
+
+Historical (pre-reprice) steps — kept for reference only, no longer actionable:
   1. Open `https://appstoreconnect.apple.com/apps/6773063775/distribution/iaps/6773349598`
   2. Expand "In-App Purchase Pricing" → click "Current Price" link → click "Edit Price" (bottom-left of modal)
   3. Choose "Recalculate prices for all countries or regions", Country = US, Price = $99.00, Next
@@ -56,7 +58,28 @@ Implemented, typechecked, NOT committed / NOT applied live:
   expo-notifications` before the next native build (worktree node_modules is
   symlinked from the main checkout — install from the main checkout).
 
-## PAYWALL v5 (2026-07-28 late, final of this session)
+## PAYWALL v5.2 (2026-07-29 pivot: readiness out, Weekly Reports + Coach Nudges in as "Soon")
+
+Sarthak pivoted the Pro tier mid-turn: readiness dropped entirely (was
+never gated client-side, so advertising it was false-advertising bait);
+Weekly Reports and Proactive Coach Nudges added to the CORE comparison
+table with "SOON" chips per the RC "Coming soon" pattern. Two build tasks
+spawned (task_1dfd7f89 weekly reports, task_d6e8cb33 coach nudges) as
+deadline commitments — the chip becomes stale if either feature doesn't
+ship within a few weeks. Readiness gating task (task_bd77464b) dismissed.
+
+CORE now 4 rows (real Pro deltas only, no roadmap noise): Coach chat,
+Fast/accurate AI food logs, Personalized plans + workouts, Weekly plan
+rewrites. MORE (behind "See the full comparison") holds Refine any plan
+in chat, Weekly progress reports (SOON), Proactive coach nudges (SOON),
+and the two both-included trust rows (Workout+diet tracking, Unlimited
+routines+history). Sarthak moved the SOON rows to MORE mid-turn: default
+view should show what's real today, expanded view carries the roadmap.
+CompareCell type extended to include `'soon'`; renders as an outlined
+chip (accent border, small caps text) so the eye reads "yes, and it's
+in flight" without competing visually with real checks.
+
+## PAYWALL v5 (2026-07-28 late, superseded by v5.2)
 
 Sarthak flagged v4 as overloaded (three overlapping explainers) but also that
 buyers couldn't see what Pro includes. v5 resolves both with ONE explainer:
