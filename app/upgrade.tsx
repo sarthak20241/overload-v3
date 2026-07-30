@@ -113,11 +113,11 @@ const COMPARE_CORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
   { label: 'Fast, accurate AI food logs', free: '3/day', pro: 'Unlimited' },
   { label: 'Personalized plans + workouts', free: null, pro: 'yes' },
   { label: 'Weekly plan rewrites', free: null, pro: 'yes' },
-  { label: 'Weekly progress reports', free: null, pro: 'soon' },
-  { label: 'Proactive coach nudges', free: null, pro: 'soon' },
 ];
 const COMPARE_MORE: { label: string; free: CompareCell; pro: CompareCell }[] = [
   { label: 'Refine any plan in chat', free: null, pro: 'yes' },
+  { label: 'Weekly progress reports', free: null, pro: 'soon' },
+  { label: 'Proactive coach nudges', free: null, pro: 'soon' },
   { label: 'Workout + diet tracking', free: 'yes', pro: 'yes' },
   { label: 'Unlimited routines + history', free: 'yes', pro: 'yes' },
 ];
