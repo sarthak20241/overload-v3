@@ -12,9 +12,10 @@
  *   - unauthenticated    → "sign in to continue" (no Clerk session)
  *   - eligible_for_trial → big CTA → calls start_coach_trial RPC → refresh()
  *   - trial_ended        → message + paywall stub (real paywall lands Phase 4)
- *   - unknown            → spinner (RPC error or unexpected state — safer to
- *                          wait than to lock the user out, since refresh()
- *                          will retry).
+ *   - unknown            → retry card. Reserved for "we genuinely could not
+ *                          reach the server". A state string the server sent
+ *                          that this build doesn't recognize is NOT this — it
+ *                          falls through to 'allow' (see pickScreen).
  *
  * Why a gate component and not a check inside each screen?
  *   - The chat, plan, and workout screens all need the same gate. Branching
@@ -66,8 +67,19 @@ function pickScreen(access: CoachAccess, loading: boolean): GateScreen {
     case 'trial_ended':
       return 'trial_ended';
     case 'unknown':
-    default:
+      // We genuinely could not reach the server (RPC failed and nothing was
+      // cached). "Couldn't reach Coach Drona / check your network" is honest
+      // copy here, and refresh() retries.
       return 'unknown';
+    default:
+      // A state the server sent that this build doesn't know about — i.e. the
+      // server shipped a new state ahead of the app. Fail OPEN, not closed:
+      // this gate is UX only, and ai-coach re-checks access on every request
+      // and 402s anyone who isn't entitled, so an unrecognized state can never
+      // leak paid features. Failing closed here is exactly how 'free'
+      // (migration 0088, live a day before the client that understood it)
+      // turned every expired trial into a bogus "couldn't reach" dead end.
+      return 'allow';
   }
 }
 
