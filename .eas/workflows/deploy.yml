@@ -46,7 +46,10 @@ jobs:
       profile: production
 
   submit_android:
-    name: Submit to Play Store (internal testing)
+    # Track comes from eas.json submit.production.android.track, which is
+    # "alpha" — the Play Developer API's id for the Closed testing track
+    # (the Console's "Internal testing" is the separate `internal` id).
+    name: Submit to Play Store (closed testing)
     type: submit
     needs: [build_android]
     params:
