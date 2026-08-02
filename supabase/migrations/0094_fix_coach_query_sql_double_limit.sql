@@ -1,9 +1,9 @@
 -- Second defect in coach_query_sql, previously masked by the volatility bug
--- (0090): the wrapper appended ` limit 200` directly onto the caller's SQL, so
+-- (0093): the wrapper appended ` limit 200` directly onto the caller's SQL, so
 -- any query that already ended in a LIMIT produced `limit 3 limit 200` and died
 -- with `syntax error at or near "limit"`. LLMs write LIMIT constantly, so the
--- tool would still have failed on most realistic queries even after 0090 — the
--- very first thing tested post-0090 ("select id, name from exercises order by
+-- tool would still have failed on most realistic queries even after 0093 — the
+-- very first thing tested post-0093 ("select id, name from exercises order by
 -- name limit 3") hit it.
 --
 -- Fix: put the caller's query in a CTE, where its own LIMIT is legal, and apply
@@ -13,7 +13,7 @@
 -- Nesting also keeps a data-modifying CTE out of top-level position, which
 -- Postgres rejects with "WITH clause containing a data-modifying statement must
 -- be at the top level" — defence in depth alongside the `stable` label, which
--- stays exactly where it is (see 0090 for why it is load-bearing).
+-- stays exactly where it is (see 0093 for why it is load-bearing).
 
 create or replace function coach_query_sql(p_sql text)
 returns jsonb
