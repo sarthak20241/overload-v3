@@ -83,6 +83,20 @@ function pickScreen(access: CoachAccess, loading: boolean): GateScreen {
   }
 }
 
+/**
+ * True when the caller should render real coach content instead of the gate.
+ *
+ * Callers MUST branch on this rather than testing `access.state` themselves.
+ * AICoachModal used to hand-roll `state === 'paid' || state === 'trialing'`,
+ * which silently disagreed with pickScreen the moment 'free' was added: the
+ * modal decided the gate should own the body, the gate decided the caller
+ * should render content, and between them they rendered nothing at all — an
+ * empty black sheet for every free-tier user. One predicate, one answer.
+ */
+export function isCoachContentAllowed(access: CoachAccess, loading: boolean): boolean {
+  return pickScreen(access, loading) === 'allow';
+}
+
 export interface CoachAccessGateProps {
   access: CoachAccess;
   loading: boolean;

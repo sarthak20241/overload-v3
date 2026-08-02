@@ -26,7 +26,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
-import { CoachAccessGate } from './CoachAccessGate';
+import { CoachAccessGate, isCoachContentAllowed } from './CoachAccessGate';
 import { Paywall } from './Paywall';
 import type { WorkoutCoachContext } from '@/lib/workoutCoach';
 import {
@@ -2598,8 +2598,10 @@ export function AICoachModal({
   // loading, render the gate's spinner instead of the menu — flashing a
   // menu the user can't use would be worse than waiting 100ms.
   const { access, loading: accessLoading, refresh: refreshAccess } = useCoachAccess();
-  const accessAllowed = !accessLoading
-    && (access.state === 'paid' || access.state === 'trialing');
+  // Ask the gate, don't re-derive. Duplicating the state test here is what
+  // produced the empty-sheet bug: this said 'free' is not allowed, the gate
+  // said it is, so the modal deferred to a gate that rendered null.
+  const accessAllowed = isCoachContentAllowed(access, accessLoading);
   // Manual paywall — opened by the upgrade banner on trialing users' menu.
   // Closing returns to the menu; a successful purchase calls refreshAccess
   // (state → 'paid') which makes the banner disappear on the next render.
