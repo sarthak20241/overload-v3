@@ -328,6 +328,47 @@ async function executeTool(
   }
 }
 
+/**
+ * Pulls the error string out of a tool result, or null when the call worked.
+ *
+ * Two different failures both surface as `{ error }` and both matter:
+ *   - executeTool's own wrapper: unknown tool, RPC error, thrown exception
+ *   - a tool reporting failure inside its payload — coach_query_sql returns
+ *     `{ error: ... }` for every guard rejection and for the inner SQL error
+ *
+ * The second kind is the dangerous one. coach_query_sql threw on every call
+ * for three months (declared `stable` while running `set local`; see migration
+ * 0093) and not one trace showed it: the HTTP request genuinely succeeded, so
+ * every row read status=success, http_status=200, error_message="". Nothing
+ * ever looked inside the tool result. A user screenshot is what surfaced it.
+ */
+function toolErrorOf(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const e = (result as { error?: unknown }).error;
+  if (e === undefined || e === null) return null;
+  return typeof e === "string" ? e : JSON.stringify(e);
+}
+
+/**
+ * Records one tool call on the trace, tagging failures so they're greppable.
+ *
+ * Failed calls land in tool_calls as `${name}__error`, matching the existing
+ * `__truncated` suffix convention, so a dead tool is one query away:
+ *
+ *   select * from coach_traces where tool_calls::text like '%__error%';
+ *
+ * The message itself goes in spans.tool_errors (jsonb, no migration needed).
+ * Capped at 10 entries and 300 chars so a pathological turn can't bloat rows.
+ */
+function recordToolCall(trace: CoachTrace, name: string, result: unknown): void {
+  const err = toolErrorOf(result);
+  trace.tool_calls.push(err ? `${name}__error` : name);
+  if (!err) return;
+  const spans = (trace.spans ??= {});
+  const errors = (spans.tool_errors ??= []) as { tool: string; error: string }[];
+  if (errors.length < 10) errors.push({ tool: name, error: err.slice(0, 300) });
+}
+
 // ── Voyage query embedding (Phase 2.2) ──────────────────────────────────────
 // Asymmetric retrieval: documents were ingested with input_type:"document",
 // queries here use input_type:"query" so the same idea encoded as casual
@@ -692,8 +733,10 @@ async function runStreamingToolLoop(
     }
     const toolResults = await Promise.all(
       toolUses.map(async (block: any) => {
-        trace.tool_calls.push(block.name ?? "<unknown>");
         const result = await executeTool(userClient, block.name ?? "", block.input ?? {});
+        // Record after the call, not before: the result is what tells us
+        // whether the tool actually worked.
+        recordToolCall(trace, block.name ?? "<unknown>", result);
         return {
           type: "tool_result" as const,
           tool_use_id: block.id ?? "",
@@ -2401,8 +2444,10 @@ Deno.serve(async (req) => {
       // turns, loop again.
       const toolResults = await Promise.all(
         toolUses.map(async (block) => {
-          trace.tool_calls.push(block.name ?? "<unknown>");
           const result = await executeTool(userClient, block.name ?? "", block.input ?? {});
+          // Record after the call, not before: the result is what tells us
+          // whether the tool actually worked.
+          recordToolCall(trace, block.name ?? "<unknown>", result);
           return {
             type: "tool_result" as const,
             tool_use_id: block.id ?? "",
