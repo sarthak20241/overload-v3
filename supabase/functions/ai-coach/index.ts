@@ -151,26 +151,20 @@ interface CoachTrace {
   tool_calls: string[];
   last_user_message_preview: string | null;
   response_preview: string | null;
-  // Migration 0080. `latency_ms` alone cannot say WHERE a slow turn went;
-  // these can. `spans` carries ms per phase (auth/access/rate_limit/
-  // user_context/embed/retrieval/ttft/decode) plus, for multi-call pipelines,
-  // a `stages` array with one entry per model call.
+  // Migration 0080. Free-form diagnostic bag. What actually gets written today:
+  //   - generate_plan: pipeline_shape, calls, catalog_ms, pre_llm_ms, stages
+  //   - anon plan:     anon, has_integrity_token
+  //   - any turn:      tool_errors (see recordToolCall)
+  //
+  // The per-phase timings this comment used to advertise (auth / access /
+  // rate_limit / user_context / embed / retrieval / ttft / decode) were never
+  // implemented. A makeSpanRecorder() helper for them was written alongside
+  // 0080 and never called once — sixty days of production traces contain none
+  // of those keys — so it was deleted rather than left to imply coverage that
+  // does not exist. Wiring real phase timings is still worth doing; it just
+  // has not been done.
   mode: string | null;
   spans: Record<string, unknown> | null;
-}
-
-/** Accumulates phase timings without littering the handler with Date.now(). */
-function makeSpanRecorder() {
-  const spans: Record<string, unknown> = {};
-  return {
-    spans,
-    /** Time an awaited step and record its duration under `label`. */
-    async track<T>(label: string, fn: () => Promise<T>): Promise<T> {
-      const t = Date.now();
-      try { return await fn(); } finally { spans[label] = Date.now() - t; }
-    },
-    set(label: string, value: unknown) { spans[label] = value; },
-  };
 }
 
 function newTrace(): CoachTrace {
