@@ -2952,7 +2952,7 @@ export function AICoachModal({
                 >
                   <View style={s.upgradeBannerLeft}>
                     <SparkleIcon size={14} color={C.accentText} />
-                    <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
+                    <Text style={[s.upgradeBannerText, { color: C.foreground }]} numberOfLines={1}>
                       {typeof access.daysLeft === 'number'
                         ? `Trial · ${Math.max(0, Math.ceil(access.daysLeft))} day${Math.ceil(access.daysLeft) === 1 ? '' : 's'} left`
                         : 'Trial active'}
@@ -2985,11 +2985,14 @@ export function AICoachModal({
                 >
                   <View style={s.upgradeBannerLeft}>
                     <SparkleIcon size={14} color={C.accentText} />
-                    <Text style={[s.upgradeBannerText, { color: C.foreground }]}>
+                    {/* Kept short so the "Go unlimited" CTA always fits beside
+                        it on narrow screens — "coach messages" is redundant
+                        inside the coach modal anyway. */}
+                    <Text style={[s.upgradeBannerText, { color: C.foreground }]} numberOfLines={1}>
                       {typeof access.messagesLeft === 'number'
                         ? access.messagesLeft > 0
-                          ? `Free plan · ${access.messagesLeft} coach message${access.messagesLeft === 1 ? '' : 's'} left today`
-                          : 'Free plan · out of messages for today'
+                          ? `Free plan · ${access.messagesLeft} message${access.messagesLeft === 1 ? '' : 's'} left`
+                          : 'Free plan · no messages left'
                         : 'Free plan'}
                     </Text>
                   </View>
@@ -3102,15 +3105,23 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    // Take the leftover width and give it up first: the status line may be
+    // long, but the CTA on the right must never be pushed off-screen.
+    flex: 1,
+    minWidth: 0,
   },
   upgradeBannerText: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
+    flexShrink: 1,
   },
   upgradeBannerRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
+    flexShrink: 0,
+    // Breathing room so the CTA never collides with the status line.
+    marginLeft: Spacing.sm,
   },
   upgradeBannerCta: {
     fontSize: FontSize.sm,
