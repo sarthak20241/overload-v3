@@ -7,19 +7,23 @@ name: Deploy to app stores
 # Paths filter: backend and docs changes don't alter the app binary, so they
 # shouldn't burn a build + store-submission cycle. Everything else triggers.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '**'
-      - '!supabase/**'        # DB migrations + edge functions deploy separately
-      - '!.planning/**'
-      - '!.github/**'
-      - '!.claude/**'
-      - '!.eas/**'            # editing workflows shouldn't rebuild the app
-      - '!store-assets/**'
-      - '!sketches/**'
-      - '!**/*.md'
+  # TEMPORARILY DISABLED — re-enabled in the very next commit. Merging a
+  # UI-only fix shouldn't burn a build + store-submission cycle, and EAS has
+  # no commit-message skip marker, so the trigger is lifted for that one
+  # merge. Restoring it is itself excluded by the '!.eas/**' filter below.
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - '**'
+  #     - '!supabase/**'        # DB migrations + edge functions deploy separately
+  #     - '!.planning/**'
+  #     - '!.github/**'
+  #     - '!.claude/**'
+  #     - '!.eas/**'            # editing workflows shouldn't rebuild the app
+  #     - '!store-assets/**'
+  #     - '!sketches/**'
+  #     - '!**/*.md'
   workflow_dispatch: {}
 
 jobs:
