@@ -388,6 +388,73 @@ function RepRangeInput({
   );
 }
 
+// A clamped whole-number field that stays editable. The obvious pattern —
+// `value={String(n)} onChangeText={v => onChange(clamp(Number(v)))}` — clamps on
+// EVERY keystroke, which quietly breaks editing: a min of 1 re-injects "1" the
+// instant you clear the box, and a max of 10 swallows the second digit, so from
+// "3" you can never reach "5" (clear → "1", type 5 → "15" → clamped back to 10).
+// That was the "can't change the number of sets" bug. Fix mirrors RepRangeInput:
+// hold the raw text locally, allow an empty box mid-edit, and clamp only on blur.
+function IntField({
+  value,
+  min,
+  max = Infinity,
+  onChange,
+  onFocus,
+  maxLength,
+}: {
+  value: number;
+  min: number;
+  max?: number;
+  onChange: (n: number) => void;
+  onFocus?: () => void;
+  maxLength?: number;
+}) {
+  const { C } = useTheme();
+  const [text, setText] = useState(String(value));
+  const clamp = (n: number) => Math.max(min, Math.min(max, n));
+
+  // Re-sync from the parent only when the committed value changes from OUTSIDE
+  // this field (e.g. picking a custom exercise rewrites its set count). Our own
+  // edits already left the parent equal to the clamped text, so this no-ops
+  // while typing and never clobbers a half-typed (or momentarily empty) value.
+  useEffect(() => {
+    const local = parseInt(text, 10);
+    if (!Number.isFinite(local) || clamp(local) !== value) setText(String(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const handleChange = (v: string) => {
+    const digits = v.replace(/[^0-9]/g, '');
+    setText(digits);
+    // Push a valid number up as they type (so a Save mid-edit isn't lost), but
+    // keep the raw text — including "" — on screen so the box can be retyped.
+    if (digits !== '') onChange(clamp(parseInt(digits, 10)));
+  };
+
+  const handleBlur = () => {
+    // Leaving the box empty restores the last committed value instead of
+    // snapping to the minimum.
+    const parsed = text === '' ? value : parseInt(text, 10);
+    const n = clamp(Number.isFinite(parsed) ? parsed : value);
+    setText(String(n));
+    if (n !== value) onChange(n);
+  };
+
+  return (
+    <TextInput
+      value={text}
+      onChangeText={handleChange}
+      onFocus={onFocus}
+      onBlur={handleBlur}
+      keyboardType="number-pad"
+      maxLength={maxLength}
+      style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
+      textAlign="center"
+    />
+  );
+}
+
 // ─── Exercise Editor Card ────────────────────────────────────────────────────
 // Rendered as a ReorderableList item, so it can use the library's drag hooks.
 function ExerciseEditorCard({
@@ -510,13 +577,13 @@ function ExerciseEditorCard({
           <View style={styles.editorRow3}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.editorLabel, { color: C.textMuted }]}>Sets</Text>
-              <TextInput
-                value={String(exercise.targetSets)}
-                onChangeText={(v) => onChange({ ...exercise, targetSets: Math.max(1, Math.min(10, Number(v) || 0)) })}
+              <IntField
+                value={exercise.targetSets}
+                min={1}
+                max={10}
+                maxLength={2}
+                onChange={(n) => onChange({ ...exercise, targetSets: n })}
                 onFocus={onInputFocus}
-                keyboardType="number-pad"
-                style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
-                textAlign="center"
               />
             </View>
             <View style={{ flex: 1.5 }}>
@@ -529,13 +596,12 @@ function ExerciseEditorCard({
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.editorLabel, { color: C.textMuted }]}>Rest (s)</Text>
-              <TextInput
-                value={String(exercise.restSeconds)}
-                onChangeText={(v) => onChange({ ...exercise, restSeconds: Math.max(0, Number(v) || 0) })}
+              <IntField
+                value={exercise.restSeconds}
+                min={0}
+                maxLength={4}
+                onChange={(n) => onChange({ ...exercise, restSeconds: n })}
                 onFocus={onInputFocus}
-                keyboardType="number-pad"
-                style={[styles.editorNumInput, { backgroundColor: C.card, borderColor: C.border, color: C.foreground }]}
-                textAlign="center"
               />
             </View>
           </View>
