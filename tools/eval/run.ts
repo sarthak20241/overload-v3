@@ -120,26 +120,47 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // quietly corrupts the citation criteria. Retry instead of degrading.
 const VOYAGE_MAX_ATTEMPTS = 5;
 const VOYAGE_RETRY_MS = 25_000;
+const VOYAGE_TIMEOUT_MS = 30_000;
 
+// Every failure mode here must end in `return null`, never a throw. embedQuery
+// is called from runCoach, whose caller treats an exception as a failed EVAL —
+// the prompt is recorded as '<eval error>' and scores 0.000. A flaky network or
+// a hung socket should cost us retrieval for that prompt, not the whole score.
 async function embedQuery(text: string): Promise<number[] | null> {
   for (let attempt = 1; attempt <= VOYAGE_MAX_ATTEMPTS; attempt++) {
-    const res = await fetch('https://api.voyageai.com/v1/embeddings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${VOYAGE_API_KEY}` },
-      body: JSON.stringify({ input: [text.slice(0, 4000)], model: 'voyage-3', input_type: 'query' }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data.data?.[0]?.embedding ?? null;
+    const retryable = attempt < VOYAGE_MAX_ATTEMPTS;
+    try {
+      const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${VOYAGE_API_KEY}` },
+        body: JSON.stringify({ input: [text.slice(0, 4000)], model: 'voyage-3', input_type: 'query' }),
+        // Without this a stalled request hangs forever and never reaches the
+        // retry loop's bound.
+        signal: AbortSignal.timeout(VOYAGE_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.data?.[0]?.embedding ?? null;
+      }
+      const body = await res.text().catch(() => '');
+      if (res.status === 429 && retryable) {
+        process.stdout.write(`(voyage 429, retry ${attempt}/${VOYAGE_MAX_ATTEMPTS - 1} in ${VOYAGE_RETRY_MS / 1000}s) `);
+        await sleep(VOYAGE_RETRY_MS);
+        continue;
+      }
+      console.error(`Voyage failed: ${res.status} ${body.slice(0, 200)}`);
+      return null;
+    } catch (e) {
+      // fetch rejects on network error/timeout; res.json() throws on a
+      // truncated or non-JSON body. Both are worth one more try.
+      if (retryable) {
+        process.stdout.write(`(voyage ${String(e).slice(0, 40)}, retry ${attempt}/${VOYAGE_MAX_ATTEMPTS - 1} in ${VOYAGE_RETRY_MS / 1000}s) `);
+        await sleep(VOYAGE_RETRY_MS);
+        continue;
+      }
+      console.error(`Voyage threw: ${String(e).slice(0, 200)}`);
+      return null;
     }
-    const body = await res.text();
-    if (res.status === 429 && attempt < VOYAGE_MAX_ATTEMPTS) {
-      process.stdout.write(`(voyage 429, retry ${attempt}/${VOYAGE_MAX_ATTEMPTS - 1} in ${VOYAGE_RETRY_MS / 1000}s) `);
-      await sleep(VOYAGE_RETRY_MS);
-      continue;
-    }
-    console.error(`Voyage failed: ${res.status} ${body.slice(0, 200)}`);
-    return null;
   }
   return null;
 }
@@ -379,7 +400,22 @@ Be strict. If a criterion says "must NOT do X" and the response does X, that's f
 }
 
 // ── Markdown report ─────────────────────────────────────────────────────────
-function writeReport(results: { id: string; category: string; run: CoachRun; judgement: Judgement }[], outDir: string) {
+// Provenance the report has to carry on its own. A reader who opens the file
+// months later sees an August generation date next to judge rationales
+// reasoning in mid-May relative terms ("5 days ago"), because _user_facts is
+// anchored to whenever fixtures.sql was last seeded. Without this block that
+// looks like a corrupt report rather than a known fixture-drift condition.
+interface RunProvenance {
+  evalUserId: string;
+  fixturesStale: boolean;
+  userFactsAnchor: string | null;
+}
+
+function writeReport(
+  results: { id: string; category: string; run: CoachRun; judgement: Judgement }[],
+  outDir: string,
+  provenance: RunProvenance,
+) {
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const path = join(outDir, `results-${ts}.md`);
@@ -395,6 +431,12 @@ function writeReport(results: { id: string; category: string; run: CoachRun; jud
   const overallAvg = results.reduce((s, r) => s + r.judgement.overall_score, 0) / Math.max(results.length, 1);
 
   let md = `# AI Coach Eval Report\n\nGenerated: ${new Date().toISOString()}\nPrompts: ${results.length}\nJudge: \`${JUDGE_MODEL}\` · Coach: \`${COACH_MODEL}\`\nPrompt: production \`buildSystemPrompt()\` from \`supabase/functions/ai-coach/prompt.ts\` (mode: chat)\n\n`;
+  md += `## Fixture provenance\n\n`;
+  md += `Eval user: \`${provenance.evalUserId}\`  \n`;
+  md += `\`_user_facts\` anchor date: ${provenance.userFactsAnchor ?? '_(not recorded in prompts.json)_'}  \n`;
+  md += `Fixture freshness: ${provenance.fixturesStale
+    ? '**STALE** — the eval user reads as `training_inactive` (no workout in 14+ days). `fixtures.sql` seeds with `now() - interval`, so its dates froze at seed time. The coach correctly reacts to a long layoff while the judge grades against `_user_facts` claiming recent sessions, so `user_data` scores are understated. Re-seed `fixtures.sql` before treating these as a gate.'
+    : 'fresh — the eval user has trained recently, consistent with `_user_facts`.'}\n\n`;
   md += `## Summary\n\n**Overall average score: ${overallAvg.toFixed(3)} / 1.000**\n\n`;
   md += `| Category | Avg | n |\n|---|---|---|\n`;
   for (const [cat, { sum, count }] of byCategory) md += `| ${cat} | ${(sum / count).toFixed(3)} | ${count} |\n`;
@@ -469,7 +511,11 @@ async function main() {
     }
   }
 
-  writeReport(results, join(HERE, 'reports'));
+  writeReport(results, join(HERE, 'reports'), {
+    evalUserId: userId,
+    fixturesStale: staleFixtures,
+    userFactsAnchor: userFacts.todays_date_for_judge_context ?? null,
+  });
 }
 
 main().catch((e) => { console.error('Fatal:', e); process.exit(1); });
