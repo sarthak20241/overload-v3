@@ -402,3 +402,21 @@ export function getPreviousPerformanceForExerciseName(
   }
   return undefined;
 }
+
+/** All-time best weight per exercise across all guest workouts. */
+export function getGuestAllTimeBestWeight(
+  names: string[],
+): Record<string, number> {
+  const best: Record<string, number> = {};
+  for (const w of _guestWorkouts) {
+    if (!w.exercises) continue;
+    for (const ex of w.exercises) {
+      if (!names.includes(ex.name)) continue;
+      for (const s of ex.sets) {
+        if (s.set_type === 'warmup') continue;
+        if (s.weight_kg > (best[ex.name] ?? 0)) best[ex.name] = s.weight_kg;
+      }
+    }
+  }
+  return best;
+}

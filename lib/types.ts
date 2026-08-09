@@ -130,6 +130,7 @@ export interface ActiveWorkoutExercise {
   // above the exercise; not mutated by the user.
   coachNote?: string;
   previousSets?: { weight_kg: number; reps: number }[];
+  allTimeBestWeight?: number;
   targetSets: number;
   repsMin: number;
   repsMax: number;

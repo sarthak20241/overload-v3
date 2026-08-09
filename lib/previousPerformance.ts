@@ -123,3 +123,81 @@ export function getLocalPreviousPerformance(
   }
   return result;
 }
+
+/**
+ * All-time best weight for each exercise, across every local workout.
+ * Used for true all-time PR detection in the active workout screen.
+ * Returns the highest working-set weight_kg ever logged per exercise name.
+ */
+export function getLocalAllTimeBestWeight(
+  userId: string | null | undefined,
+  names: string[],
+): Record<string, number> {
+  if (!userId) return {};
+  const want = new Set(names.map((n) => n.trim().toLowerCase()).filter(Boolean));
+  if (want.size === 0) return {};
+
+  const best: Record<string, number> = {};
+
+  // 1) Pending (not-yet-synced) workouts
+  for (const e of getPendingWorkouts(userId)) {
+    for (const ex of e.exercises) {
+      const key = ex.def.name.trim().toLowerCase();
+      if (!want.has(key)) continue;
+      for (const s of ex.sets) {
+        if (!countsAsWorkingSet(s.set_type)) continue;
+        if (s.weight_kg > (best[key] ?? 0)) best[key] = s.weight_kg;
+      }
+    }
+  }
+
+  // 2) Locally cached workouts (analytics 180d ∪ dashboard 90d)
+  const seen = new Set<string>();
+  const cachedWorkouts = applyEditsToDashboardRows(userId, [
+    ...(readCache<any[]>('analyticsWorkouts', userId) ?? []),
+    ...(readCache<any[]>('dashboardWorkouts', userId) ?? []),
+  ]);
+  for (const w of cachedWorkouts) {
+    if (w?.id) {
+      if (seen.has(w.id)) continue;
+      seen.add(w.id);
+    }
+    for (const s of (w.workout_sets ?? w.sets ?? [])) {
+      const nm = s?.exercises?.name;
+      if (!nm) continue;
+      const key = String(nm).trim().toLowerCase();
+      if (!want.has(key) || s.completed === false || !countsAsWorkingSet(s.set_type)) continue;
+      const wkg = Number(s.weight_kg);
+      if (wkg > (best[key] ?? 0)) best[key] = wkg;
+      if (s.is_unilateral) {
+        const wR = Number(s.weight_kg_right ?? s.weight_kg);
+        if (wR > (best[key] ?? 0)) best[key] = wR;
+      }
+    }
+  }
+
+  // 3) History cache (grouped shape)
+  for (const w of applyEditsToHistoryRows(userId, readCache<any[]>('historyWorkouts', userId) ?? [])) {
+    if (w?.id) {
+      if (seen.has(w.id)) continue;
+      seen.add(w.id);
+    }
+    for (const ex of (w.exercises ?? [])) {
+      const key = String(ex?.name ?? '').trim().toLowerCase();
+      if (!key || !want.has(key)) continue;
+      for (const s of (ex.sets ?? [])) {
+        if (s?.completed === false || !countsAsWorkingSet(s?.set_type)) continue;
+        const wkg = Number(s.weight_kg);
+        if (wkg > (best[key] ?? 0)) best[key] = wkg;
+      }
+    }
+  }
+
+  // Map back to original names
+  const result: Record<string, number> = {};
+  for (const name of names) {
+    const key = name.trim().toLowerCase();
+    if (best[key] !== undefined) result[name] = best[key];
+  }
+  return result;
+}
