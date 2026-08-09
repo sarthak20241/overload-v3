@@ -1048,7 +1048,7 @@ export default function ActiveWorkoutScreen() {
       0,
       currentEx.allTimeBestWeight ?? 0,
       ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
-      ...currentEx.sets.filter(s => s.completed && s.set_type !== 'warmup')
+      ...currentEx.sets.filter(s => s.completed && countsAsWorkingSet(s.set_type))
         .flatMap(s => [s.weight_kg, s.is_unilateral ? (s.weight_kg_right ?? s.weight_kg) : 0]),
     );
     const enteringFirstSide = activeUnilateral && pendingFirst === null;
@@ -1056,7 +1056,7 @@ export default function ActiveWorkoutScreen() {
 
     const hasPriorData = (currentEx.allTimeBestWeight ?? 0) > 0
       || (currentEx.previousSets?.length ?? 0) > 0;
-    const isPR = prWeight > 0 && activeSetType !== 'warmup'
+    const isPR = prWeight > 0 && countsAsWorkingSet(activeSetType)
       && hasPriorData && prWeight > prevBest;
     if (isPR && !enteringFirstSide) {
       haptics.success();

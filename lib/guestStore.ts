@@ -385,7 +385,7 @@ export function getPreviousPerformance(routineId: string): Record<string, { weig
   const map: Record<string, { weight_kg: number; reps: number }[]> = {};
   prev.exercises.forEach(ex => {
     // Warmups never seed previous-performance prefill / PR comparison.
-    map[ex.name] = ex.sets.filter(s => s.set_type !== 'warmup').map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
+    map[ex.name] = ex.sets.filter(s => s.set_type !== 'warmup' && s.set_type !== 'dropset').map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   });
   return map;
 }
@@ -397,7 +397,7 @@ export function getPreviousPerformanceForExerciseName(
   for (const w of _guestWorkouts) {
     if (!w.exercises) continue;
     const found = w.exercises.find(e => e.name === exerciseName);
-    const working = found?.sets.filter(s => s.set_type !== 'warmup') ?? [];
+    const working = found?.sets.filter(s => s.set_type !== 'warmup' && s.set_type !== 'dropset') ?? [];
     if (working.length > 0) return working.map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   }
   return undefined;
