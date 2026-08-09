@@ -189,6 +189,10 @@ export function getLocalAllTimeBestWeight(
         if (s?.completed === false || !countsAsWorkingSet(s?.set_type)) continue;
         const wkg = Number(s.weight_kg);
         if (wkg > (best[key] ?? 0)) best[key] = wkg;
+        if (s.is_unilateral) {
+          const wR = Number(s.weight_kg_right ?? s.weight_kg);
+          if (wR > (best[key] ?? 0)) best[key] = wR;
+        }
       }
     }
   }

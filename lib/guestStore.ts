@@ -413,8 +413,12 @@ export function getGuestAllTimeBestWeight(
     for (const ex of w.exercises) {
       if (!names.includes(ex.name)) continue;
       for (const s of ex.sets) {
-        if (s.set_type === 'warmup') continue;
+        if (s.set_type === 'warmup' || s.set_type === 'dropset') continue;
         if (s.weight_kg > (best[ex.name] ?? 0)) best[ex.name] = s.weight_kg;
+        if (s.is_unilateral) {
+          const wR = Number(s.weight_kg_right ?? s.weight_kg);
+          if (wR > (best[ex.name] ?? 0)) best[ex.name] = wR;
+        }
       }
     }
   }
