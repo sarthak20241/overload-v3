@@ -19,13 +19,13 @@ import { useTheme } from '@/hooks/useTheme';
 import { usePreferences, REST_BETWEEN_SIDES_SECONDS } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
-import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName } from '@/lib/guestStore';
+import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName, getGuestAllTimeBestWeight } from '@/lib/guestStore';
 import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture } from '@/lib/activeWorkoutPersistence';
 import { resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
-import { getLocalPreviousPerformance } from '@/lib/previousPerformance';
+import { getLocalPreviousPerformance, getLocalAllTimeBestWeight } from '@/lib/previousPerformance';
 import {
   exerciseNoteKey,
   hydrateExerciseNotes,
@@ -647,13 +647,16 @@ export default function ActiveWorkoutScreen() {
         // kept fresh by the dashboard/history screens; a just-finished session
         // is reflected immediately via the pending queue.
         let prevPerf: Record<string, { weight_kg: number; reps: number }[]> = {};
+        let allTimeBests: Record<string, number> = {};
+        const names = (routine.routine_exercises || [])
+          .map((re: any) => re.exercises?.name)
+          .filter(Boolean);
         if (isGuestSession) {
           prevPerf = getPreviousPerformance(routine.id);
+          allTimeBests = getGuestAllTimeBestWeight(names);
         } else {
-          const names = (routine.routine_exercises || [])
-            .map((re: any) => re.exercises?.name)
-            .filter(Boolean);
           prevPerf = getLocalPreviousPerformance(user?.id, names);
+          allTimeBests = getLocalAllTimeBestWeight(user?.id, names);
         }
 
         const activeExs: ActiveWorkoutExercise[] = (routine.routine_exercises || [])
@@ -667,18 +670,13 @@ export default function ActiveWorkoutScreen() {
                 reps: prev?.[i]?.reps ?? re.reps_min,
                 completed: false,
               })),
-              // Phase 2.5: carry the AI Coach's per-exercise cue through so
-              // the user sees it while doing the set (e.g. "RIR 2", "Top set
-              // close to failure", "Hams-focused"). Null/missing on
-              // editor-built routines.
               coachNote: typeof re.note === 'string' && re.note.length > 0 ? re.note : undefined,
               previousSets: prev || undefined,
+              allTimeBestWeight: allTimeBests[re.exercises?.name],
               targetSets: re.sets,
               repsMin: re.reps_min,
               repsMax: re.reps_max,
               restSeconds: re.rest_seconds ?? 90,
-              // Supersets (migration 0060): carry the routine's grouping so the active
-              // workout interleaves grouped members + rests only after the round.
               supersetGroup: typeof re.superset_group === 'number' ? re.superset_group : null,
             };
           });
@@ -1042,27 +1040,24 @@ export default function ActiveWorkoutScreen() {
     const weight = usesWeight ? (parseFloat(inputWeight) || 0) : 0;
     const reps = usesReps ? (parseFloat(inputReps) || 0) : 0;
 
-    // A weight PR: this set beats the best weight seen on this lift (previous
-    // sessions + earlier sets today). Celebrate it instead of the plain tap.
-    // previousSets is already warmup-free (filtered at the source); exclude this
-    // session's warmups too so a light primer never sets the bar for a PR.
-    // Prior best weight to beat: previous sessions + this session's working sets,
-    // counting BOTH sides of any unilateral set (per-side weight, migration 0059).
+    // All-time weight PR: this set beats the best weight ever logged for this
+    // exercise (all cached history + earlier sets today). allTimeBestWeight is
+    // pre-computed from the full local cache at workout start; fall back to
+    // previousSets (last session) if the all-time data isn't available.
     const prevBest = Math.max(
       0,
+      currentEx.allTimeBestWeight ?? 0,
       ...(currentEx.previousSets ?? []).map(s => s.weight_kg),
-      ...currentEx.sets.filter(s => s.completed && s.set_type !== 'warmup')
+      ...currentEx.sets.filter(s => s.completed && countsAsWorkingSet(s.set_type))
         .flatMap(s => [s.weight_kg, s.is_unilateral ? (s.weight_kg_right ?? s.weight_kg) : 0]),
     );
-    // Mid-capture: a unilateral set logs its FIRST side first (left or right, per
-    // the swap). Only a real, completed set celebrates a PR — and it weighs the
-    // heavier of the two sides (the first side is already buffered in pendingFirst).
     const enteringFirstSide = activeUnilateral && pendingFirst === null;
     const prWeight = activeUnilateral && pendingFirst ? Math.max(weight, pendingFirst.weight_kg) : weight;
 
-    // Only a PR if there's a prior record to beat, and warmups never count.
-    const isPR = prWeight > 0 && activeSetType !== 'warmup'
-      && (currentEx.previousSets?.length ?? 0) > 0 && prWeight > prevBest;
+    const hasPriorData = (currentEx.allTimeBestWeight ?? 0) > 0
+      || (currentEx.previousSets?.length ?? 0) > 0;
+    const isPR = prWeight > 0 && countsAsWorkingSet(activeSetType)
+      && hasPriorData && prWeight > prevBest;
     if (isPR && !enteringFirstSide) {
       haptics.success();
       setPrCelebrate(true);
@@ -1333,18 +1328,25 @@ export default function ActiveWorkoutScreen() {
   // genuinely can't resolve, rather than dropping the sets silently).
   const reconcileExerciseRow = async (def: ExerciseDef, tempId: string) => {
     if (isGuestSession) {
-      // Guests save sets by exercise name into the local store, so no DB row
-      // is needed - but they still want the previous-sets pre-fill from the
-      // guest store.
       const prev = await fetchPreviousSetsForExercise(null, def.name);
-      if (!prev || prev.length === 0) return;
+      const guestBests = getGuestAllTimeBestWeight([def.name]);
+      if (!prev || prev.length === 0) {
+        if (guestBests[def.name] !== undefined) {
+          workout.updateExercises(prevExs => prevExs.map(e => {
+            if (e.exercise.id !== tempId) return e;
+            return { ...e, allTimeBestWeight: guestBests[def.name] };
+          }));
+        }
+        return;
+      }
       workout.updateExercises(prevExs => prevExs.map(e => {
         if (e.exercise.id !== tempId) return e;
         const userStarted = e.sets.some(s => s.completed);
-        if (userStarted) return { ...e, previousSets: prev };
+        if (userStarted) return { ...e, previousSets: prev, allTimeBestWeight: guestBests[def.name] };
         return {
           ...e,
           previousSets: prev,
+          allTimeBestWeight: guestBests[def.name],
           sets: e.sets.map((s, i) => ({
             weight_kg: prev[i]?.weight_kg ?? s.weight_kg,
             reps: prev[i]?.reps ?? s.reps,
@@ -1357,12 +1359,10 @@ export default function ActiveWorkoutScreen() {
 
     const resolved = await resolveExerciseRow(supabase, def);
     if (!resolved) {
-      // Offline or a transient failure: the exercise keeps its temp id, but its
-      // sets are no longer lost — the finish queues them and the background
-      // flusher resolves the exercise at sync time. Just skip the prefill here.
       return;
     }
     const prev = await fetchPreviousSetsForExercise(resolved.id, def.name);
+    const localBests = getLocalAllTimeBestWeight(user?.id, [def.name]);
     workout.updateExercises(prevExs => prevExs.map(e => {
       if (e.exercise.id !== tempId) return e;
       const userStarted = e.sets.some(s => s.completed);
@@ -1378,6 +1378,7 @@ export default function ActiveWorkoutScreen() {
         exercise: resolved,
         sets: nextSets,
         previousSets: prev || undefined,
+        allTimeBestWeight: localBests[def.name],
       };
     }));
   };

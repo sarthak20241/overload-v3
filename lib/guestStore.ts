@@ -385,7 +385,7 @@ export function getPreviousPerformance(routineId: string): Record<string, { weig
   const map: Record<string, { weight_kg: number; reps: number }[]> = {};
   prev.exercises.forEach(ex => {
     // Warmups never seed previous-performance prefill / PR comparison.
-    map[ex.name] = ex.sets.filter(s => s.set_type !== 'warmup').map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
+    map[ex.name] = ex.sets.filter(s => s.set_type !== 'warmup' && s.set_type !== 'dropset').map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   });
   return map;
 }
@@ -397,8 +397,30 @@ export function getPreviousPerformanceForExerciseName(
   for (const w of _guestWorkouts) {
     if (!w.exercises) continue;
     const found = w.exercises.find(e => e.name === exerciseName);
-    const working = found?.sets.filter(s => s.set_type !== 'warmup') ?? [];
+    const working = found?.sets.filter(s => s.set_type !== 'warmup' && s.set_type !== 'dropset') ?? [];
     if (working.length > 0) return working.map(s => ({ weight_kg: s.weight_kg, reps: s.reps }));
   }
   return undefined;
+}
+
+/** All-time best weight per exercise across all guest workouts. */
+export function getGuestAllTimeBestWeight(
+  names: string[],
+): Record<string, number> {
+  const best: Record<string, number> = {};
+  for (const w of _guestWorkouts) {
+    if (!w.exercises) continue;
+    for (const ex of w.exercises) {
+      if (!names.includes(ex.name)) continue;
+      for (const s of ex.sets) {
+        if (s.set_type === 'warmup' || s.set_type === 'dropset') continue;
+        if (s.weight_kg > (best[ex.name] ?? 0)) best[ex.name] = s.weight_kg;
+        if (s.is_unilateral) {
+          const wR = Number(s.weight_kg_right ?? s.weight_kg);
+          if (wR > (best[ex.name] ?? 0)) best[ex.name] = wR;
+        }
+      }
+    }
+  }
+  return best;
 }
