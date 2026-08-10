@@ -50,8 +50,20 @@ alter table user_profiles add column if not exists weekly_target_sessions intege
 -- Optional free-text onboarding notes, surfaced to the coach's <user_context>
 -- (migration 0097). injury_notes = physical/medical things to train around;
 -- training_preferences = equipment, favourite/avoided lifts, session length.
+-- 1000-char guards mirror 0077 (client caps at 500).
 alter table user_profiles add column if not exists injury_notes text;
 alter table user_profiles add column if not exists training_preferences text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'user_profiles_injury_notes_length_check') then
+    alter table user_profiles add constraint user_profiles_injury_notes_length_check
+      check (char_length(injury_notes) <= 1000);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'user_profiles_training_preferences_length_check') then
+    alter table user_profiles add constraint user_profiles_training_preferences_length_check
+      check (char_length(training_preferences) <= 1000);
+  end if;
+end $$;
 
 -- ─── Exercises ──────────────────────────────────────────────────────────────
 create table if not exists exercises (
