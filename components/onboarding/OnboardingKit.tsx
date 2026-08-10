@@ -21,6 +21,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -191,6 +192,48 @@ export function OptionCard({
   );
 }
 
+// ─── Free-text field: the optional prose steps (health, preferences) ────────
+
+export function TextAreaField({
+  value,
+  onChangeText,
+  placeholder,
+  accessibilityLabel,
+  maxLength = 200,
+  autoFocus = false,
+}: {
+  value: string;
+  onChangeText: (text: string) => void;
+  placeholder: string;
+  accessibilityLabel: string;
+  maxLength?: number;
+  autoFocus?: boolean;
+}) {
+  const { C } = useTheme();
+  return (
+    <Animated.View entering={FadeInDown.delay(100).duration(400)} style={k.textAreaWrap}>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={C.textDim}
+        multiline
+        textAlignVertical="top"
+        maxLength={maxLength}
+        autoFocus={autoFocus}
+        style={[
+          k.textArea,
+          { backgroundColor: C.card, borderColor: C.borderSubtle, color: C.foreground },
+        ]}
+        accessibilityLabel={accessibilityLabel}
+      />
+      <Text style={[k.textAreaCount, { color: C.textDim }]}>
+        {value.length}/{maxLength}
+      </Text>
+    </Animated.View>
+  );
+}
+
 // ─── Primary CTA: the one continue button (pill) ────────────────────────────
 
 export function PrimaryCta({
@@ -303,6 +346,23 @@ const k = StyleSheet.create({
     justifyContent: 'center',
   },
   radioDot: { width: 8, height: 8, borderRadius: 4 },
+
+  textAreaWrap: { marginTop: Spacing.lg },
+  textArea: {
+    minHeight: 132,
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.lg,
+    fontSize: 17,
+    lineHeight: 24,
+  },
+  textAreaCount: {
+    fontSize: FontSize.xs,
+    textAlign: 'right',
+    marginTop: Spacing.sm,
+  },
 
   footer: {
     paddingHorizontal: Spacing.xxl,

@@ -1601,6 +1601,12 @@ interface AnonIntake {
   weeklyRateKg?: number | null;
   direction?: "loss" | "gain" | null;
   targets?: { kcal?: number; protein?: number; carb?: number; fat?: number } | null;
+  // Optional free text. This is the ONLY user-authored prose the unauthenticated
+  // route accepts, so it is whitespace-collapsed and hard length-capped by
+  // anonText() before interpolation, and generate_plan stays force-selected so
+  // the output can never be anything but a catalog-grounded workout plan.
+  healthNotes?: string | null;
+  routinePrefs?: string | null;
 }
 
 const ANON_GOAL_LABEL: Record<string, string> = {
@@ -1621,6 +1627,15 @@ const ANON_GENDER = new Set(["M", "F", "O"]);
 // before it reaches the prompt, so nothing arbitrary is ever interpolated.
 function anonNum(v: unknown, lo: number, hi: number): number | null {
   return typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+}
+
+// Sanitize the one free-text intake field pair: collapse all whitespace (so a
+// caller can't inject prompt structure with newlines) and hard-cap the length.
+// Returns null for empty/non-string input so the line is dropped entirely.
+function anonText(v: unknown, max: number): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.replace(/\s+/g, " ").trim().slice(0, max);
+  return t.length ? t : null;
 }
 
 function buildAnonIntakeMessage(intake: AnonIntake, catalog: string[]): string {
@@ -1656,16 +1671,24 @@ function buildAnonIntakeMessage(intake: AnonIntake, catalog: string[]): string {
         fat: anonNum(rawT.fat, 0, 400),
       }
     : null;
+  const healthNotes = anonText(intake.healthNotes, 200);
+  const routinePrefs = anonText(intake.routinePrefs, 200);
 
   return [
     `I just finished onboarding. Build my starter training plan from these answers.`,
     `Goal: ${goal}. Experience: ${experience}. Training ${frequency} days a week.`,
     body.length ? `Body: ${body.join(", ")}.` : "",
+    healthNotes
+      ? `Physical/medical notes I gave (train around these, avoid movements they contraindicate, swap in safer alternatives): ${healthNotes}`
+      : "",
+    routinePrefs
+      ? `Routine preferences I gave (honor them where they don't compromise the goal or safety): ${routinePrefs}`
+      : "",
     t && t.kcal && t.protein != null && t.carb != null && t.fat != null
       ? `My daily fuel targets are already set: ${t.kcal} kcal, ${t.protein}g protein, ${t.carb}g carbs, ${t.fat}g fat. If you mention nutrition, use exactly these numbers.`
       : "",
     `Rules:`,
-    `- days_per_week is ${frequency}. Create the number of DISTINCT workouts a ${experience} lifter should rotate through ${frequency} sessions a week (fewer distinct workouts than sessions is fine, they repeat). Typical: 1-3 days full body A/B, 4 days upper/lower, 5+ push/pull/legs.`,
+    `- days_per_week is ${frequency}. Create the number of DISTINCT workouts a ${experience} lifter should rotate through ${frequency} sessions a week (fewer distinct workouts than sessions is fine, they repeat). Choose the split that best fits the days, goal, experience${healthNotes || routinePrefs ? ", and the notes/preferences above" : ""}.`,
     `- Exercise names MUST be copied character-for-character from this catalog, nothing else: ${catalog.join("; ")}.`,
     `- 4-6 exercises per workout, compounds first. Sets 2-4, plain rep ranges like "6-10", rest 45-180 seconds.`,
     `- Short workout names ("Full Body A", "Push Day"). One-line note per workout with its focus.`,

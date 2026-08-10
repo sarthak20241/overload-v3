@@ -65,15 +65,24 @@ export function buildOnboardingIntakeMessage(
     );
   }
 
+  const healthNotes = answers.healthNotes?.trim();
+  const routinePrefs = answers.routinePrefs?.trim();
+
   return [
     `I just finished onboarding. Build my starter training plan from these answers.`,
     `Goal: ${GOAL_LABEL[goal]}. Experience: ${experience}. Training ${frequency} days a week.`,
     bodyFacts.length ? `Body: ${bodyFacts.join(', ')}.` : '',
+    healthNotes
+      ? `Physical/medical notes I gave (train around these, avoid movements they contraindicate, swap in safer alternatives): ${healthNotes}`
+      : '',
+    routinePrefs
+      ? `Routine preferences I gave (honor them where they don't compromise the goal or safety): ${routinePrefs}`
+      : '',
     extras.targets
       ? `My daily fuel targets are already set: ${extras.targets.kcal} kcal, ${extras.targets.protein}g protein, ${extras.targets.carb}g carbs, ${extras.targets.fat}g fat. If you mention nutrition, use exactly these numbers.`
       : '',
     `Rules:`,
-    `- days_per_week is ${frequency}. Create the number of DISTINCT workouts that a ${experience} lifter should rotate through ${frequency} sessions a week (fewer distinct workouts than sessions is fine, they repeat). Typical: 1-3 days full body A/B, 4 days upper/lower, 5+ push/pull/legs. Deviate only if it genuinely fits better.`,
+    `- days_per_week is ${frequency}. Create the number of DISTINCT workouts that a ${experience} lifter should rotate through ${frequency} sessions a week (fewer distinct workouts than sessions is fine, they repeat). Choose the split that best fits my days, goal, experience${healthNotes || routinePrefs ? ', and the notes/preferences above' : ''}.`,
     `- Exercise names MUST be copied character-for-character from this catalog, nothing else: ${catalog}.`,
     `- 4-6 exercises per workout, compounds first. Sets 2-4, plain rep ranges like "6-10", rest 45-180 seconds.`,
     `- Short workout names ("Full Body A", "Push Day"). One-line note per workout with its focus.`,
@@ -148,6 +157,9 @@ export interface AnonIntake {
   weeklyRateKg: number | null;
   direction: 'loss' | 'gain' | null;
   targets: { kcal: number; protein: number; carb: number; fat: number } | null;
+  /** Optional free text; the edge sanitizes and length-caps it before use. */
+  healthNotes: string | null;
+  routinePrefs: string | null;
 }
 
 export function buildAnonIntake(
@@ -170,6 +182,8 @@ export function buildAnonIntake(
     weeklyRateKg: extras.weeklyRateKg,
     direction: extras.direction,
     targets: extras.targets,
+    healthNotes: answers.healthNotes,
+    routinePrefs: answers.routinePrefs,
   };
 }
 
