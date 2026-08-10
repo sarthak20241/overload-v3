@@ -101,6 +101,11 @@ const VOYAGE_API_KEY = Deno.env.get("VOYAGE_API_KEY");
 const RETRIEVAL_TOP_K = 8;
 const RETRIEVAL_FLOOR = 0.40; // skip retrieval entirely if no candidate clears this cosine
 const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
+// Messages at or above this length get condensed into a search question before
+// embedding (see buildRetrievalQuery). Shorter ones are already close enough to
+// question-shaped that the extra hop costs latency for nothing.
+const RETRIEVAL_REWRITE_MIN_CHARS = 180;
+const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
 const VOYAGE_TIMEOUT_MS = 6000;
 
 const CORS_HEADERS = {
@@ -147,6 +152,11 @@ interface CoachTrace {
   has_user_context: boolean | null;
   retrieved_doc_ids: string[];
   retrieval_status: string | null;
+  // Set by buildRetrievalQuery: whether the message was condensed into a
+  // search question before embedding, and what that question came out as.
+  retrieval_query_rewritten?: boolean;
+  retrieval_query?: string;
+  retrieval_rewrite_error?: string;
   citation_ids: string[];
   tool_calls: string[];
   last_user_message_preview: string | null;
@@ -439,6 +449,61 @@ async function embedQuery(
   } finally {
     clearTimeout(t);
   }
+}
+
+// ── Retrieval query rewrite ─────────────────────────────────────────────────
+// research_kb documents are embedded HyDE-style: the vector comes from the
+// hypothetical QUESTIONS a paper answers, not from its prose. That means the
+// query side has to be question-shaped too, and a real coach message usually
+// isn't. Measured against the live KB on 2026-08-09:
+//
+//   "How many times per week should I train each muscle?"  → top cosine 0.632
+//   the same question inside a real "rate my split" message → top cosine 0.379
+//
+// RETRIEVAL_FLOOR is 0.40, so the second one retrieved NOTHING even though the
+// KB holds the exact meta-analysis that answers it (Schoenfeld 2016, trust
+// 0.95). The coach then answered unsourced. Condensing the message into a
+// search question first puts the query back in the KB's own vector space.
+//
+// Cheap and non-fatal: Haiku, ~100 output tokens, short timeout, and any
+// failure falls back to the raw message (the previous behaviour).
+async function buildRetrievalQuery(
+  message: string,
+  trace: CoachTrace,
+): Promise<string> {
+  // Short messages are already question-shaped enough; skip the hop.
+  if (message.trim().length < RETRIEVAL_REWRITE_MIN_CHARS) {
+    trace.retrieval_query_rewritten = false;
+    return message;
+  }
+  const result = await callAnthropic({
+    model: RETRIEVAL_QUERY_MODEL,
+    max_tokens: 100,
+    system:
+      "Rewrite the lifter's message as ONE short exercise-science search question " +
+      "capturing what evidence would answer it. Strip greetings, their specific " +
+      "numbers, and any routine listing. Output only the question, nothing else.\n\n" +
+      'Example: a long message listing a Mon/Tue/Wed split and asking to rate it ' +
+      '→ "How does training each muscle once per week compare to twice per week for hypertrophy?"',
+    messages: [{ role: "user", content: message.slice(0, RETRIEVAL_QUERY_CAP) }],
+  });
+  if (!result.ok) {
+    trace.retrieval_query_rewritten = false;
+    trace.retrieval_rewrite_error = `${result.status}`;
+    return message;
+  }
+  const text = (result.data?.content ?? [])
+    .filter((b: { type?: string }) => b.type === "text")
+    .map((b: { text?: string }) => b.text ?? "")
+    .join(" ")
+    .trim();
+  if (!text) {
+    trace.retrieval_query_rewritten = false;
+    return message;
+  }
+  trace.retrieval_query_rewritten = true;
+  trace.retrieval_query = text.slice(0, 300);
+  return text;
 }
 
 // ── Anthropic API ───────────────────────────────────────────────────────────
@@ -2110,7 +2175,8 @@ Deno.serve(async (req) => {
   } else if (!lastUser?.content) {
     trace.retrieval_status = "skipped_empty_message";
   } else {
-    const queryEmbedding = await embedQuery(lastUser.content, admin, userId);
+    const retrievalQuery = await buildRetrievalQuery(lastUser.content, trace);
+    const queryEmbedding = await embedQuery(retrievalQuery, admin, userId);
     if (!queryEmbedding) {
       trace.retrieval_status = "embed_failed";
     } else {
@@ -2557,3 +2623,4 @@ Deno.serve(async (req) => {
     200,
   );
 });
+
