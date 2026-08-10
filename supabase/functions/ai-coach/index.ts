@@ -470,12 +470,14 @@ async function embedQuery(
 async function buildRetrievalQuery(
   message: string,
   trace: CoachTrace,
+  admin: SupabaseClient,
 ): Promise<string> {
   // Short messages are already question-shaped enough; skip the hop.
   if (message.trim().length < RETRIEVAL_REWRITE_MIN_CHARS) {
     trace.retrieval_query_rewritten = false;
     return message;
   }
+  const startMs = Date.now();
   const result = await callAnthropic({
     model: RETRIEVAL_QUERY_MODEL,
     max_tokens: 100,
@@ -487,11 +489,34 @@ async function buildRetrievalQuery(
       '→ "How does training each muscle once per week compare to twice per week for hypertrophy?"',
     messages: [{ role: "user", content: message.slice(0, RETRIEVAL_QUERY_CAP) }],
   });
+  const latencyMs = Date.now() - startMs;
+  // This per-turn Haiku hop is real Anthropic spend; log it like every other
+  // call site so token_usage_log's per-day accounting stays complete.
   if (!result.ok) {
+    void logTokenUsage(admin, {
+      pipeline: "retrieval_query",
+      provider: "anthropic",
+      model: RETRIEVAL_QUERY_MODEL,
+      latency_ms: latencyMs,
+      status: "error",
+      error_message: `${result.status}`,
+    });
     trace.retrieval_query_rewritten = false;
     trace.retrieval_rewrite_error = `${result.status}`;
     return message;
   }
+  const usage = result.data?.usage ?? {};
+  void logTokenUsage(admin, {
+    pipeline: "retrieval_query",
+    provider: "anthropic",
+    model: RETRIEVAL_QUERY_MODEL,
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+    cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
+    latency_ms: latencyMs,
+    status: "success",
+  });
   const text = (result.data?.content ?? [])
     .filter((b: { type?: string }) => b.type === "text")
     .map((b: { text?: string }) => b.text ?? "")
@@ -2175,7 +2200,7 @@ Deno.serve(async (req) => {
   } else if (!lastUser?.content) {
     trace.retrieval_status = "skipped_empty_message";
   } else {
-    const retrievalQuery = await buildRetrievalQuery(lastUser.content, trace);
+    const retrievalQuery = await buildRetrievalQuery(lastUser.content, trace, admin);
     const queryEmbedding = await embedQuery(retrievalQuery, admin, userId);
     if (!queryEmbedding) {
       trace.retrieval_status = "embed_failed";
