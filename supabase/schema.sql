@@ -47,6 +47,12 @@ alter table user_profiles add column if not exists training_age_months integer;
 alter table user_profiles add column if not exists date_of_birth date;
 alter table user_profiles add column if not exists weekly_target_sessions integer;
 
+-- Optional free-text onboarding notes, surfaced to the coach's <user_context>
+-- (migration 0097). injury_notes = physical/medical things to train around;
+-- training_preferences = equipment, favourite/avoided lifts, session length.
+alter table user_profiles add column if not exists injury_notes text;
+alter table user_profiles add column if not exists training_preferences text;
+
 -- ─── Exercises ──────────────────────────────────────────────────────────────
 create table if not exists exercises (
   id uuid primary key default uuid_generate_v4(),

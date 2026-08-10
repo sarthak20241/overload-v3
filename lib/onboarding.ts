@@ -364,6 +364,15 @@ export async function saveOnboardingProfile(
     row.carb_target_g = targets.carb;
     row.fat_target_g = targets.fat;
   }
+  // The optional free-text intake notes persist to the profile so the coach
+  // honors them in ongoing coaching, not just the starter plan. injury_notes is
+  // an existing column; training_preferences is added in migration 0097. Only
+  // written when non-empty, so re-onboarding with a blank field never wipes an
+  // earlier note. Guests skip these (their local store has no such fields).
+  const injury = answers.healthNotes?.trim();
+  const prefs = answers.routinePrefs?.trim();
+  if (injury) row.injury_notes = injury.slice(0, 500);
+  if (prefs) row.training_preferences = prefs.slice(0, 500);
   if (Object.keys(row).length === 1) return; // nothing beyond the id
   try {
     await opts.client

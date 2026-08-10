@@ -2152,6 +2152,38 @@ Deno.serve(async (req) => {
     console.log("[ai-coach] exercise-notes fetch threw:", String(e));
   }
 
+  // 4c. Standing profile notes set at onboarding: injury_notes = physical /
+  // medical things to train around, training_preferences = how they like to
+  // train (equipment, favourite/avoided lifts, session length). Same merge
+  // pattern as 4b — a plain RLS-scoped select folded into the userContext blob
+  // so the prompt builder needs no new parameter. Best-effort: a failure just
+  // means the coach plans without them, exactly as it did before.
+  try {
+    const { data: profileNotes, error: pnError } = await userClient
+      .from("user_profiles")
+      .select("injury_notes, training_preferences")
+      .maybeSingle();
+    if (pnError) {
+      console.log("[ai-coach] profile-notes error:", pnError.message);
+    } else if (profileNotes) {
+      const injuries =
+        typeof profileNotes.injury_notes === "string" ? profileNotes.injury_notes.trim() : "";
+      const prefs =
+        typeof profileNotes.training_preferences === "string"
+          ? profileNotes.training_preferences.trim()
+          : "";
+      if (injuries || prefs) {
+        if (!userContext || typeof userContext !== "object") userContext = {};
+        const ctx = userContext as Record<string, unknown>;
+        if (injuries) ctx.injury_notes = injuries;
+        if (prefs) ctx.training_preferences = prefs;
+        trace.has_user_context = true;
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] profile-notes fetch threw:", String(e));
+  }
+
   // 5. Validate messages (body was parsed once above, before the rate gate)
   const incomingMessages = body.messages;
   if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
