@@ -49,6 +49,10 @@ export interface OnboardingAnswers {
   heightCm: number | null;
   weightKg: number | null;
   goalWeightKg: number | null;
+  /** Optional free text: injuries / conditions the plan should train around. */
+  healthNotes: string | null;
+  /** Optional free text: preferences for the routine (lifts, equipment, etc.). */
+  routinePrefs: string | null;
 }
 
 export const EMPTY_ANSWERS: OnboardingAnswers = {
@@ -60,6 +64,8 @@ export const EMPTY_ANSWERS: OnboardingAnswers = {
   heightCm: null,
   weightKg: null,
   goalWeightKg: null,
+  healthNotes: null,
+  routinePrefs: null,
 };
 
 // Rough training-age estimate per experience band. Editable in Profile; the
@@ -464,13 +470,6 @@ const SETS_BY_EXPERIENCE: Record<ExperienceLevel, { comp: number; iso: number }>
   intermediate: { comp: 3, iso: 3 },
   advanced: { comp: 4, iso: 3 },
 };
-
-export function splitNameFor(frequency: number | null): string {
-  const f = frequency ?? 3;
-  if (f <= 3) return 'Full Body';
-  if (f === 4) return 'Upper / Lower';
-  return 'Push / Pull / Legs';
-}
 
 /**
  * Turn quiz answers into concrete starter routines. Pure: no writes. Unanswered

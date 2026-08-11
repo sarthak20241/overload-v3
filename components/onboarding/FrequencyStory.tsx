@@ -28,13 +28,16 @@ const MAX_DAYS = 7;
 const STEPS = MAX_DAYS - MIN_DAYS; // 6 intervals
 const THUMB = 30;
 
+// Momentum per day count, never a split name: the split is decided later from
+// your goal, experience, and preferences, so the day slider stays about
+// commitment, not a fixed template.
 const STORY: Record<number, string> = {
   1: 'One day a week is a real start. We will make it count.',
   2: 'Twice a week still moves the needle. Slow and steady.',
-  3: 'Full Body, three days. The consistency sweet spot.',
-  4: 'Upper Lower, four days. Faster progress, still easy to recover from.',
-  5: 'Push Pull Legs, five days. Serious pace.',
-  6: 'PPL twice over. The fastest route, and recovery becomes part of the job.',
+  3: 'Three days a week. The consistency sweet spot.',
+  4: 'Four days a week. Faster progress, still easy to recover from.',
+  5: 'Five days a week. Serious pace.',
+  6: 'Six days a week. The fastest route, and recovery becomes part of the job.',
   7: 'Every single day. Only works if sleep and food keep up.',
 };
 
