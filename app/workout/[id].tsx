@@ -235,6 +235,14 @@ export default function ActiveWorkoutScreen() {
   // Previous performance can resolve after an exercise is already on screen.
   // Track direct edits so that late data never replaces a value the user chose.
   const inputEditedRef = useRef(false);
+  // inputWeight/inputReps are ONE shared pair, reused by whichever exercise is
+  // open. Glancing at another exercise mid-rest therefore reseeds them for THAT
+  // exercise, and a hand-typed weight would be gone on the way back. Bank a
+  // typed value under its exercise's id as we navigate away and hand it back on
+  // return. Keyed by id, not index, so a superset reorder can't point a draft at
+  // the wrong exercise. Only edited values are banked — anything auto-seeded is
+  // recomputed on arrival, which keeps late-resolving history in play.
+  const inputDraftsRef = useRef<Record<string, { weight: string; reps: string }>>({});
   // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
   // Each is only rendered when the exercise's metric_type uses that axis.
   const [inputDuration, setInputDuration] = useState('0:00');
@@ -793,6 +801,12 @@ export default function ActiveWorkoutScreen() {
   const skipPrefillRef = useRef(false);
   useEffect(() => {
     if (prevIdxRef.current !== currentIdx) {
+      // Bank the outgoing exercise's hand-typed weight/reps before the prefill
+      // effect below reseeds the shared inputs for the incoming one.
+      const leavingId = exercises[prevIdxRef.current]?.exercise.id;
+      if (leavingId && inputEditedRef.current) {
+        inputDraftsRef.current[leavingId] = { weight: inputWeight, reps: inputReps };
+      }
       haptics.selection();
       prevIdxRef.current = currentIdx;
       // The duration stopwatch belongs to one exercise's active set — clear it
@@ -817,7 +831,7 @@ export default function ActiveWorkoutScreen() {
       // down so its target can't bleed onto the new exercise's rest strip.
       else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
-  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises]);
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises, inputWeight, inputReps]);
 
   // Apply a resume's transient capture once currentIdx settles on the resumed
   // index. Declared AFTER the index-change reset effect so, on the commit where the
@@ -966,14 +980,27 @@ export default function ActiveWorkoutScreen() {
     inputEditedRef.current = false;
   }, [currentIdx]);
 
-  // Sync input defaults when switching exercises or when its previous
-  // performance resolves in the background. Only an untouched start gate may
-  // receive this seed; logging or editing always wins over asynchronous data.
+  // Seed the shared inputs for whichever exercise is now open — on arrival
+  // (navigation, a superset hop, a remount after minimizing) and when its
+  // previous performance resolves in the background. This runs for exercises
+  // already under way too, not just the start gate: a mid-session exercise must
+  // get ITS numbers back rather than keep whatever the last one seeded. Editing
+  // still wins over asynchronous data.
   useEffect(() => {
     // A superset reorder moved the OPEN exercise to a new index — same exercise,
     // same in-flight inputs; consuming the prefill here would stomp them.
     if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
-    if (!currentEx || exerciseStarted[currentIdx] || inputEditedRef.current) return;
+    if (!currentEx || inputEditedRef.current) return;
+    // Back on an exercise we typed a weight into: hand that value back, and
+    // restore the edited flag with it so late data still can't overwrite it.
+    const draft = inputDraftsRef.current[currentEx.exercise.id];
+    if (draft) {
+      delete inputDraftsRef.current[currentEx.exercise.id];
+      setInputWeight(draft.weight);
+      setInputReps(draft.reps);
+      inputEditedRef.current = true;
+      return;
+    }
     // previousSets excludes warmups, so warmups must not advance its index.
     const completedCount = currentEx.sets
       .filter(s => s.completed && s.set_type !== 'warmup').length;
@@ -994,7 +1021,10 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
-  }, [currentIdx, currentEx?.previousSets, exerciseStarted]);
+    // exercise.id, so a session restored from a snapshot (or an ad-hoc exercise
+    // whose real row resolves late) seeds once its exercise actually lands —
+    // currentIdx alone can stay 0 across that whole transition.
+  }, [currentIdx, currentEx?.exercise.id, currentEx?.previousSets]);
 
   // Navigate exercises
   const goTo = (idx: number) => {
