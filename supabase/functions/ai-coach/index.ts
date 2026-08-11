@@ -101,6 +101,16 @@ const VOYAGE_API_KEY = Deno.env.get("VOYAGE_API_KEY");
 const RETRIEVAL_TOP_K = 8;
 const RETRIEVAL_FLOOR = 0.40; // skip retrieval entirely if no candidate clears this cosine
 const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
+// Messages at or above this length get condensed into a search question before
+// embedding (see buildRetrievalQuery). Shorter ones are already close enough to
+// question-shaped that the extra hop costs latency for nothing.
+const RETRIEVAL_REWRITE_MIN_CHARS = 180;
+const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
+// Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
+// optional pre-step that runs synchronously before embed + the main coach call,
+// so if Haiku hangs we bail fast to the raw message rather than block the whole
+// turn for the full 80s ANTHROPIC_TIMEOUT_MS.
+const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 const VOYAGE_TIMEOUT_MS = 6000;
 
 const CORS_HEADERS = {
@@ -147,6 +157,11 @@ interface CoachTrace {
   has_user_context: boolean | null;
   retrieved_doc_ids: string[];
   retrieval_status: string | null;
+  // Set by buildRetrievalQuery: whether the message was condensed into a
+  // search question before embedding, and what that question came out as.
+  retrieval_query_rewritten?: boolean;
+  retrieval_query?: string;
+  retrieval_rewrite_error?: string;
   citation_ids: string[];
   tool_calls: string[];
   last_user_message_preview: string | null;
@@ -257,19 +272,27 @@ async function recordTrace(
     const { error } = await admin.from("coach_traces").insert(row);
     if (!error) return;
 
-    // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
-    // the function ships before the migration is applied, PostgREST rejects
-    // the whole row for unknown columns and we lose EVERY trace, including the
-    // observability this change exists to add. Retry once without them rather
-    // than couple a code deploy to a migration.
+    // Deploy-order resilience. `mode`/`spans` arrive in migration 0080 and the
+    // retrieval_query_* fields in 0095; if the function ships before either
+    // migration is applied, PostgREST rejects the whole row for unknown columns
+    // and we lose EVERY trace, including the observability this change exists to
+    // add. Retry once without the newer columns rather than couple a code
+    // deploy to a migration.
     const missingColumn = /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "");
     if (missingColumn) {
-      const { mode: _mode, spans: _spans, ...legacy } = row;
+      const {
+        mode: _mode,
+        spans: _spans,
+        retrieval_query_rewritten: _rqr,
+        retrieval_query: _rq,
+        retrieval_rewrite_error: _rre,
+        ...legacy
+      } = row;
       const { error: retryErr } = await admin.from("coach_traces").insert(legacy);
       console.log(
         retryErr
           ? `[ai-coach] trace insert failed after legacy retry: ${(retryErr.message ?? "").slice(0, 200)}`
-          : "[ai-coach] trace inserted without mode/spans (migration 0080 not applied yet)",
+          : "[ai-coach] trace inserted without mode/spans/retrieval fields (migration 0080 or 0095 not applied yet)",
       );
       return;
     }
@@ -441,6 +464,86 @@ async function embedQuery(
   }
 }
 
+// ── Retrieval query rewrite ─────────────────────────────────────────────────
+// research_kb documents are embedded HyDE-style: the vector comes from the
+// hypothetical QUESTIONS a paper answers, not from its prose. That means the
+// query side has to be question-shaped too, and a real coach message usually
+// isn't. Measured against the live KB on 2026-08-09:
+//
+//   "How many times per week should I train each muscle?"  → top cosine 0.632
+//   the same question inside a real "rate my split" message → top cosine 0.379
+//
+// RETRIEVAL_FLOOR is 0.40, so the second one retrieved NOTHING even though the
+// KB holds the exact meta-analysis that answers it (Schoenfeld 2016, trust
+// 0.95). The coach then answered unsourced. Condensing the message into a
+// search question first puts the query back in the KB's own vector space.
+//
+// Cheap and non-fatal: Haiku, ~100 output tokens, short timeout, and any
+// failure falls back to the raw message (the previous behaviour).
+async function buildRetrievalQuery(
+  message: string,
+  trace: CoachTrace,
+  admin: SupabaseClient,
+): Promise<string> {
+  // Short messages are already question-shaped enough; skip the hop.
+  if (message.trim().length < RETRIEVAL_REWRITE_MIN_CHARS) {
+    trace.retrieval_query_rewritten = false;
+    return message;
+  }
+  const startMs = Date.now();
+  const result = await callAnthropic({
+    model: RETRIEVAL_QUERY_MODEL,
+    max_tokens: 100,
+    system:
+      "Rewrite the lifter's message as ONE short exercise-science search question " +
+      "capturing what evidence would answer it. Strip greetings, their specific " +
+      "numbers, and any routine listing. Output only the question, nothing else.\n\n" +
+      'Example: a long message listing a Mon/Tue/Wed split and asking to rate it ' +
+      '→ "How does training each muscle once per week compare to twice per week for hypertrophy?"',
+    messages: [{ role: "user", content: message.slice(0, RETRIEVAL_QUERY_CAP) }],
+  }, RETRIEVAL_QUERY_TIMEOUT_MS);
+  const latencyMs = Date.now() - startMs;
+  // This per-turn Haiku hop is real Anthropic spend; log it like every other
+  // call site so token_usage_log's per-day accounting stays complete.
+  if (!result.ok) {
+    void logTokenUsage(admin, {
+      pipeline: "retrieval_query",
+      provider: "anthropic",
+      model: RETRIEVAL_QUERY_MODEL,
+      latency_ms: latencyMs,
+      status: "error",
+      error_message: `${result.status}`,
+    });
+    trace.retrieval_query_rewritten = false;
+    trace.retrieval_rewrite_error = `${result.status}`;
+    return message;
+  }
+  const usage = result.data?.usage ?? {};
+  void logTokenUsage(admin, {
+    pipeline: "retrieval_query",
+    provider: "anthropic",
+    model: RETRIEVAL_QUERY_MODEL,
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+    cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
+    latency_ms: latencyMs,
+    status: "success",
+  });
+  const text = (result.data?.content ?? [])
+    .filter((b: { type?: string }) => b.type === "text")
+    .map((b: { text?: string }) => b.text ?? "")
+    .join(" ")
+    .trim();
+  if (!text) {
+    trace.retrieval_query_rewritten = false;
+    return message;
+  }
+  trace.retrieval_query_rewritten = true;
+  trace.retrieval_query = text.slice(0, 300);
+  return text;
+}
+
 // ── Anthropic API ───────────────────────────────────────────────────────────
 interface AnthropicMessage {
   role: "user" | "assistant";
@@ -449,9 +552,10 @@ interface AnthropicMessage {
 
 async function callAnthropic(
   payload: Record<string, unknown>,
+  timeoutMs: number = ANTHROPIC_TIMEOUT_MS,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ANTHROPIC_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -473,7 +577,7 @@ async function callAnthropic(
       ok: false,
       status: isAbort ? 504 : 502,
       body: isAbort
-        ? `Anthropic call exceeded ${ANTHROPIC_TIMEOUT_MS}ms timeout`
+        ? `Anthropic call exceeded ${timeoutMs}ms timeout`
         : `fetch threw: ${String(e)}`,
     };
   } finally {
@@ -2138,7 +2242,8 @@ Deno.serve(async (req) => {
   } else if (!lastUser?.content) {
     trace.retrieval_status = "skipped_empty_message";
   } else {
-    const queryEmbedding = await embedQuery(lastUser.content, admin, userId);
+    const retrievalQuery = await buildRetrievalQuery(lastUser.content, trace, admin);
+    const queryEmbedding = await embedQuery(retrievalQuery, admin, userId);
     if (!queryEmbedding) {
       trace.retrieval_status = "embed_failed";
     } else {
@@ -2585,3 +2690,4 @@ Deno.serve(async (req) => {
     200,
   );
 });
+

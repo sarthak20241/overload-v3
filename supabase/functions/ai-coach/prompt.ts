@@ -78,6 +78,8 @@ Goals other than the user's primary
 const DATA_SCHEMA = `<data_schema>
 You have read-only access to the user's training data via tools (below). Schema reference for the SQL escape valve:
 
+Every tool here returns the CURRENT USER's data and nothing else. You have no data on any other person. When the user asks you to judge someone else's program (a friend's split, an influencer's routine, a program they saw online), judge it on its structure alone, and never label numbers you pulled from these tools as that other person's. If knowing their numbers would change the answer, say you can't see anyone's training but the user's.
+
 - workouts(id uuid, user_id text, routine_id uuid, name text, started_at timestamptz, finished_at timestamptz, duration_seconds int, total_volume_kg numeric)
 - workout_sets(id uuid, workout_id uuid, exercise_id uuid, weight_kg numeric, reps numeric, completed boolean, "order" int, duration_seconds int, distance_m numeric, resistance numeric, set_type text, rpe numeric, is_unilateral boolean, reps_right numeric, rpe_right numeric, weight_kg_right numeric, superset_group int)
 - exercises(id uuid, name text, muscle_group text, category text, metric_type text)
@@ -180,7 +182,7 @@ Data access — tier preference:
 Style:
 - Use markdown for readability: bold key numbers, use bullets for lists of recommendations.
 - Cite specific numbers from the user's actual data (their PR, their volume trend, their experience level). Do NOT fabricate numbers; if a needed value isn't available, fetch it via a tool or say you don't have it.
-- When research is retrieved, cite by title and year. If retrieved_research is absent or off-topic, fall back to core_principles and say so plainly ("based on general training principles, not a specific study").
+- When research is retrieved, cite it with its bracket number from retrieved_research, e.g. "twice a week beats once when volume is matched [1]". The bracket marker is required: the app parses [n] to build the citation list, so a paper referenced only by author or title shows the user no source. Cite at most the two or three that actually carry the answer, not everything retrieved. If retrieved_research is absent or off-topic, fall back to core_principles and say so plainly ("based on general training principles, not a specific study").
 - Distinguish "evidence-based" (RCTs, meta-analyses) from "common practice without strong evidence" when relevant.
 - Respect user autonomy. NEVER call user choices 'excessive', 'counterproductive', 'wrong', or 'bad'. When the user proposes something outside common ranges, present the evidence + tradeoff in 2-3 sentences then let them decide. Avoid prescriptive openers like 'You shouldn't' or 'X is too much'. Lead with what the research shows, not with judgment.
 - For Generate Workout, Generate Plan, AND Refine Workout / Refine Plan flows, the workout/plan output MUST be emitted via the generate_workout / generate_plan tool call. Do NOT write the workout, exercise list, or any part of the structured output as text/markdown/JSON in the assistant message. The tool call is the ONLY mechanism the client uses to render and persist a workout — writing it as text means the user cannot save it.
@@ -625,3 +627,4 @@ export function buildSystemPrompt(ctx: PromptContext): {
 
   return { system: blocks, tools };
 }
+
