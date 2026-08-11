@@ -142,6 +142,28 @@ function fmt(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/**
+ * A hand-typed set of logger inputs, banked under its exercise's id while some
+ * other exercise borrows the shared input fields (see inputDraftsRef). Only the
+ * axes the exercise actually renders are banked, so a weight_reps exercise never
+ * carries a stray duration and a treadmill never carries a stray resistance.
+ */
+interface InputDraft {
+  weight: string;
+  reps: string;
+  /** 'm:ss' as typed. Present only for exercises whose metric type times a set. */
+  duration?: string;
+  /**
+   * Seconds behind `duration` when the inline stopwatch was in play. Restored as
+   * the stopwatch's base (paused), so ▶ resumes from it rather than from zero.
+   */
+  stopwatchSeconds?: number;
+  /** Km as typed. */
+  distance?: string;
+  /** Machine level as typed. */
+  resistance?: string;
+}
+
 // Post-save offer to bring the source routine in line with what the session
 // actually contained (exercises added or removed mid-workout). Built by
 // buildDbRoutineSyncOffer / buildGuestRoutineSyncOffer after the workout
@@ -235,14 +257,14 @@ export default function ActiveWorkoutScreen() {
   // Previous performance can resolve after an exercise is already on screen.
   // Track direct edits so that late data never replaces a value the user chose.
   const inputEditedRef = useRef(false);
-  // inputWeight/inputReps are ONE shared pair, reused by whichever exercise is
+  // Every logger input below is ONE shared field, reused by whichever exercise is
   // open. Glancing at another exercise mid-rest therefore reseeds them for THAT
-  // exercise, and a hand-typed weight would be gone on the way back. Bank a
-  // typed value under its exercise's id as we navigate away and hand it back on
+  // exercise, and a hand-typed value would be gone on the way back. Bank the typed
+  // inputs under their exercise's id as we navigate away and hand them back on
   // return. Keyed by id, not index, so a superset reorder can't point a draft at
   // the wrong exercise. Only edited values are banked — anything auto-seeded is
   // recomputed on arrival, which keeps late-resolving history in play.
-  const inputDraftsRef = useRef<Record<string, { weight: string; reps: string }>>({});
+  const inputDraftsRef = useRef<Record<string, InputDraft>>({});
   // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
   // Each is only rendered when the exercise's metric_type uses that axis.
   const [inputDuration, setInputDuration] = useState('0:00');
@@ -351,6 +373,9 @@ export default function ActiveWorkoutScreen() {
   const swTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const swStartRef = useRef<number | null>(null); // wall-clock ms at the current run's start
   const swBaseRef = useRef(0);                     // seconds accumulated before the current run
+  // Mirrors swElapsed for readers that must not re-run on every 200ms tick — the
+  // index-change effect banks the live value without taking it as a dependency.
+  const swElapsedRef = useRef(0);
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
@@ -774,6 +799,8 @@ export default function ActiveWorkoutScreen() {
     setSwRunning(false);
   }, []);
 
+  useEffect(() => { swElapsedRef.current = swElapsed; }, [swElapsed]);
+
   const resetStopwatch = useCallback(() => {
     if (swTimerRef.current) clearInterval(swTimerRef.current);
     swTimerRef.current = null;
@@ -801,22 +828,43 @@ export default function ActiveWorkoutScreen() {
   const skipPrefillRef = useRef(false);
   useEffect(() => {
     if (prevIdxRef.current !== currentIdx) {
-      // Bank the outgoing exercise's hand-typed weight/reps before the prefill
-      // effect below reseeds the shared inputs for the incoming one. Skipped when
-      // the same exercise sits in the workout twice: there's nothing unique to key
-      // on, so those fall back to the recomputed seed rather than risk handing one
-      // twin the other's number.
-      const leavingId = exercises[prevIdxRef.current]?.exercise.id;
+      // Bank the outgoing exercise's hand-typed inputs before the prefill effect
+      // below reseeds the shared fields for the incoming one. Skipped when the same
+      // exercise sits in the workout twice: there's nothing unique to key on, so
+      // those fall back to the recomputed seed rather than risk handing one twin
+      // the other's number.
+      const leaving = exercises[prevIdxRef.current];
+      const leavingId = leaving?.exercise.id;
       if (leavingId && inputEditedRef.current
           && exercises.filter(e => e.exercise.id === leavingId).length === 1) {
-        inputDraftsRef.current[leavingId] = { weight: inputWeight, reps: inputReps };
+        // Only the axes this exercise renders — see InputDraft. The stopwatch is
+        // banked from the ref so a running timer's live value is caught without
+        // this effect having to tick along with it.
+        const leavingAxes = metricTypeDef(metricTypeOf(leaving.exercise)).axes;
+        const sw = swElapsedRef.current;
+        inputDraftsRef.current[leavingId] = {
+          weight: inputWeight,
+          reps: inputReps,
+          // While the stopwatch runs, the mm:ss field holds a stale value (it's
+          // only resynced on pause), so read the clock for the text too.
+          ...(leavingAxes.includes('duration') && {
+            duration: swRunning ? formatDuration(sw) : inputDuration,
+            stopwatchSeconds: sw,
+          }),
+          ...(leavingAxes.includes('distance') && { distance: inputDistance }),
+          ...(leavingAxes.includes('resistance') && { resistance: inputResistance }),
+        };
       }
       haptics.selection();
       prevIdxRef.current = currentIdx;
-      // The duration stopwatch belongs to one exercise's active set — clear it
-      // (and the typed fallback) so it never bleeds into the next exercise.
+      // The stopwatch and the non-weight fields belong to one exercise's active
+      // set — clear them so they never bleed into the next exercise. The leaving
+      // exercise's own in-flight values were just banked above, and the prefill
+      // effect hands them back when it comes round again.
       resetStopwatch();
       setInputDuration('0:00');
+      setInputDistance('');
+      setInputResistance('');
       // Per-set type + intensity are per-set; don't bleed across exercises.
       setActiveSetType('normal');
       setInputRpe(null);
@@ -835,7 +883,8 @@ export default function ActiveWorkoutScreen() {
       // down so its target can't bleed onto the new exercise's rest strip.
       else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
-  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises, inputWeight, inputReps]);
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises,
+      inputWeight, inputReps, inputDuration, inputDistance, inputResistance, swRunning]);
 
   // Apply a resume's transient capture once currentIdx settles on the resumed
   // index. Declared AFTER the index-change reset effect so, on the commit where the
@@ -995,13 +1044,24 @@ export default function ActiveWorkoutScreen() {
     // same in-flight inputs; consuming the prefill here would stomp them.
     if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
     if (!currentEx || inputEditedRef.current) return;
-    // Back on an exercise we typed a weight into: hand that value back, and
-    // restore the edited flag with it so late data still can't overwrite it.
+    // Back on an exercise we typed into: hand those values back, and restore the
+    // edited flag with them so late data still can't overwrite them.
     const draft = inputDraftsRef.current[currentEx.exercise.id];
     if (draft) {
       delete inputDraftsRef.current[currentEx.exercise.id];
       setInputWeight(draft.weight);
       setInputReps(draft.reps);
+      if (draft.duration != null) setInputDuration(draft.duration);
+      // A timed hold comes back PAUSED holding the seconds it had on the way out —
+      // the same deal the crash resume above offers, and for the same reason: the
+      // time spent on another exercise isn't time under tension. ▶ picks it up from
+      // there because the base is what the stopwatch resumes on.
+      if (draft.stopwatchSeconds) {
+        swBaseRef.current = draft.stopwatchSeconds;
+        setSwElapsed(draft.stopwatchSeconds);
+      }
+      if (draft.distance != null) setInputDistance(draft.distance);
+      if (draft.resistance != null) setInputResistance(draft.resistance);
       inputEditedRef.current = true;
       return;
     }
@@ -1189,6 +1249,16 @@ export default function ActiveWorkoutScreen() {
       startRestTimer();
     }
 
+    // Zero the duration stopwatch + field so the next set times from scratch. Done
+    // BEFORE the pager hop below, not only on the stay-put path: the index-change
+    // effect banks the leaving exercise's in-flight duration, and the time just
+    // committed to a set is not that — leaving it would hand this exercise back a
+    // pre-loaded clock next round, which then logs itself into the next set.
+    if (usesDuration) {
+      resetStopwatch();
+      setInputDuration('0:00');
+    }
+
     if (willAdvance) {
       // Hop the pager to the next member; the index-change effects prefill the new
       // exercise's inputs + reset its per-set state, so skip the manual reset below.
@@ -1202,11 +1272,6 @@ export default function ActiveWorkoutScreen() {
     if (prev && prev[nextIdx]) {
       setInputWeight(String(prev[nextIdx].weight_kg));
       setInputReps(String(prev[nextIdx].reps));
-    }
-    // Zero the duration stopwatch + field so the next set times from scratch.
-    if (usesDuration) {
-      resetStopwatch();
-      setInputDuration('0:00');
     }
     // Per-set type + intensity reset to defaults for the next set.
     setActiveSetType('normal');
