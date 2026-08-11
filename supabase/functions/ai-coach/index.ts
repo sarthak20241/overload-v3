@@ -736,6 +736,9 @@ async function runStreamingToolLoop(
 
     const blocks: any[] = []; // accumulated content blocks for this iteration
     let stopReason: string | null = null;
+    // Has this iteration streamed any text yet? Used to insert a paragraph
+    // break at the iteration boundary (see the text_delta branch below).
+    let wroteTextThisIteration = false;
 
     try {
       for await (const event of parseAnthropicStream(response.body)) {
@@ -752,6 +755,17 @@ async function runStreamingToolLoop(
           const blk = blocks[event.index];
           if (!blk) continue;
           if (d.type === "text_delta") {
+            // Iteration boundary. The pre-tool-call line ("Let me check your
+            // recent bench history.") and the post-tool answer ("82.5kg for
+            // 3-4 weeks straight") are two separate assistant turns, but the
+            // client appends every delta into one string, so without a
+            // separator they render glued together. Emit a paragraph break
+            // the first time a post-tool iteration produces text.
+            if (!wroteTextThisIteration && iter > 0 && accumulatedText && !/\s$/.test(accumulatedText)) {
+              accumulatedText += "\n\n";
+              sse.write("delta", { text: "\n\n" });
+            }
+            wroteTextThisIteration = true;
             blk._text += d.text;
             accumulatedText += d.text;
             sse.write("delta", { text: d.text });
