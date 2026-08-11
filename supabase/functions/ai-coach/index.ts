@@ -106,6 +106,11 @@ const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
 // question-shaped that the extra hop costs latency for nothing.
 const RETRIEVAL_REWRITE_MIN_CHARS = 180;
 const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
+// Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
+// optional pre-step that runs synchronously before embed + the main coach call,
+// so if Haiku hangs we bail fast to the raw message rather than block the whole
+// turn for the full 80s ANTHROPIC_TIMEOUT_MS.
+const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 const VOYAGE_TIMEOUT_MS = 6000;
 
 const CORS_HEADERS = {
@@ -267,19 +272,27 @@ async function recordTrace(
     const { error } = await admin.from("coach_traces").insert(row);
     if (!error) return;
 
-    // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
-    // the function ships before the migration is applied, PostgREST rejects
-    // the whole row for unknown columns and we lose EVERY trace, including the
-    // observability this change exists to add. Retry once without them rather
-    // than couple a code deploy to a migration.
+    // Deploy-order resilience. `mode`/`spans` arrive in migration 0080 and the
+    // retrieval_query_* fields in 0095; if the function ships before either
+    // migration is applied, PostgREST rejects the whole row for unknown columns
+    // and we lose EVERY trace, including the observability this change exists to
+    // add. Retry once without the newer columns rather than couple a code
+    // deploy to a migration.
     const missingColumn = /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "");
     if (missingColumn) {
-      const { mode: _mode, spans: _spans, ...legacy } = row;
+      const {
+        mode: _mode,
+        spans: _spans,
+        retrieval_query_rewritten: _rqr,
+        retrieval_query: _rq,
+        retrieval_rewrite_error: _rre,
+        ...legacy
+      } = row;
       const { error: retryErr } = await admin.from("coach_traces").insert(legacy);
       console.log(
         retryErr
           ? `[ai-coach] trace insert failed after legacy retry: ${(retryErr.message ?? "").slice(0, 200)}`
-          : "[ai-coach] trace inserted without mode/spans (migration 0080 not applied yet)",
+          : "[ai-coach] trace inserted without mode/spans/retrieval fields (migration 0080 or 0095 not applied yet)",
       );
       return;
     }
@@ -488,7 +501,7 @@ async function buildRetrievalQuery(
       'Example: a long message listing a Mon/Tue/Wed split and asking to rate it ' +
       '→ "How does training each muscle once per week compare to twice per week for hypertrophy?"',
     messages: [{ role: "user", content: message.slice(0, RETRIEVAL_QUERY_CAP) }],
-  });
+  }, RETRIEVAL_QUERY_TIMEOUT_MS);
   const latencyMs = Date.now() - startMs;
   // This per-turn Haiku hop is real Anthropic spend; log it like every other
   // call site so token_usage_log's per-day accounting stays complete.
@@ -539,9 +552,10 @@ interface AnthropicMessage {
 
 async function callAnthropic(
   payload: Record<string, unknown>,
+  timeoutMs: number = ANTHROPIC_TIMEOUT_MS,
 ): Promise<{ ok: true; data: any } | { ok: false; status: number; body: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ANTHROPIC_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -563,7 +577,7 @@ async function callAnthropic(
       ok: false,
       status: isAbort ? 504 : 502,
       body: isAbort
-        ? `Anthropic call exceeded ${ANTHROPIC_TIMEOUT_MS}ms timeout`
+        ? `Anthropic call exceeded ${timeoutMs}ms timeout`
         : `fetch threw: ${String(e)}`,
     };
   } finally {
