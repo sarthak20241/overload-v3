@@ -802,9 +802,13 @@ export default function ActiveWorkoutScreen() {
   useEffect(() => {
     if (prevIdxRef.current !== currentIdx) {
       // Bank the outgoing exercise's hand-typed weight/reps before the prefill
-      // effect below reseeds the shared inputs for the incoming one.
+      // effect below reseeds the shared inputs for the incoming one. Skipped when
+      // the same exercise sits in the workout twice: there's nothing unique to key
+      // on, so those fall back to the recomputed seed rather than risk handing one
+      // twin the other's number.
       const leavingId = exercises[prevIdxRef.current]?.exercise.id;
-      if (leavingId && inputEditedRef.current) {
+      if (leavingId && inputEditedRef.current
+          && exercises.filter(e => e.exercise.id === leavingId).length === 1) {
         inputDraftsRef.current[leavingId] = { weight: inputWeight, reps: inputReps };
       }
       haptics.selection();
@@ -1393,6 +1397,14 @@ export default function ActiveWorkoutScreen() {
     }
     const prev = await fetchPreviousSetsForExercise(resolved.id, def.name);
     const localBests = getLocalAllTimeBestWeight(user?.id, [def.name]);
+    // This swaps the exercise's id below, and input drafts are keyed by it —
+    // carry any banked draft across so a weight typed before the real row landed
+    // isn't orphaned under the dead temp id.
+    const tempDraft = inputDraftsRef.current[tempId];
+    if (tempDraft) {
+      delete inputDraftsRef.current[tempId];
+      inputDraftsRef.current[resolved.id] = tempDraft;
+    }
     workout.updateExercises(prevExs => prevExs.map(e => {
       if (e.exercise.id !== tempId) return e;
       const userStarted = e.sets.some(s => s.completed);
