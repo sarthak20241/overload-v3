@@ -452,6 +452,14 @@ export default function ActiveWorkoutScreen() {
   // edit state would otherwise leak into the next session's first exercise).
   useEffect(() => { setEditingNote(null); }, [currentIdx, workout.routineId]);
 
+  // Same reuse hazard, worse consequence: exercise ids are stable DB rows, so a
+  // draft banked in one session would be handed to the SAME exercise in the next
+  // one — as a number the user never typed today, with the edited flag set, which
+  // then blocks this session's own history from correcting it. That's the very bug
+  // drafts exist to fix, just across sessions. Drafts are in-flight-only, so drop
+  // them wholesale when a new session starts.
+  useEffect(() => { inputDraftsRef.current = {}; }, [workout.routineId]);
+
   // Flush any pending note edit when leaving the screen.
   useEffect(() => () => {
     if (stickyFlushTimer.current) clearTimeout(stickyFlushTimer.current);
@@ -1465,10 +1473,17 @@ export default function ActiveWorkoutScreen() {
     // This swaps the exercise's id below, and input drafts are keyed by it —
     // carry any banked draft across so a weight typed before the real row landed
     // isn't orphaned under the dead temp id.
+    // Two ad-hoc adds of the same exercise start on distinct temp ids, so the
+    // leaving effect's duplicate check passed for both — and resolve-by-name lands
+    // them on ONE real id. A draft already sitting there means this id now has two
+    // exercises behind it and no way to tell them apart, so drop BOTH rather than
+    // let either twin be handed a number it didn't type; they fall back to the
+    // recomputed seed, same as any other duplicate.
     const tempDraft = inputDraftsRef.current[tempId];
     if (tempDraft) {
       delete inputDraftsRef.current[tempId];
-      inputDraftsRef.current[resolved.id] = tempDraft;
+      if (resolved.id in inputDraftsRef.current) delete inputDraftsRef.current[resolved.id];
+      else inputDraftsRef.current[resolved.id] = tempDraft;
     }
     workout.updateExercises(prevExs => prevExs.map(e => {
       if (e.exercise.id !== tempId) return e;
