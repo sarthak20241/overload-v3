@@ -1,21 +1,28 @@
-# Drona Programs: open review findings
+# Drona Programs: review findings
 
-Handoff note for whoever owns the Drona Programs workstream. **None of this is
-in a PR.** It was surfaced by CodeRabbit on [#97][pr97] (a conciseness change to
-the coach prompt) because that PR briefly carried a sync of the deployed
-`ai-coach` source into the repo. The Programs sync was then dropped from #97 to
-keep it reviewable, so these findings have no other home.
+Handoff note for whoever owns the Drona Programs workstream. Surfaced by
+CodeRabbit on [#97][pr97] (a conciseness change to the coach prompt) because
+that PR briefly carried a sync of the deployed `ai-coach` source into the repo.
+The Programs sync was then dropped from #97 to keep it reviewable, so these
+findings had no other home.
 
-Everything below describes code that is **already running in production**
-(ai-coach v87 and later) but has **never been in a merged PR**. `main` still has
-no Programs code at all. Verified against the deployed source on 2026-08-11 by
+**Status 2026-08-14:** findings 1, 2, and 3 are FIXED in [#99][pr99], the PR that
+lands the whole Programs surface (migrations, edge function, client, Goal & Plan
+screen) into `main`. Each was re-verified against that branch before fixing, not
+taken on faith from this doc. Finding 4 needs measurement rather than a code
+change and is still open. The "do not deploy from main" warning at the bottom
+stops applying once #99 merges.
+
+Everything below describes code that was **already running in production**
+(ai-coach v87 and later) but had **never been in a merged PR**. Verified against
+the deployed source on 2026-08-11 by
 `supabase functions download ai-coach --project-ref rjmmslierxhvwdjgjilb`.
 
 Line numbers refer to the DEPLOYED source, not `main`.
 
 ---
 
-## 1. `forceToolAllowed` has no `generate_program` clause
+## 1. `forceToolAllowed` has no `generate_program` clause — FIXED in #99
 
 `supabase/functions/ai-coach/index.ts`, in the mode-resolution block.
 
@@ -48,7 +55,7 @@ gets reached. The conclusion happens to hold only because no caller does it yet.
 Fix: add the missing clause and correct the comment to say the path is currently
 unused rather than unreachable.
 
-## 2. `TARGET_CHANGE_BEHAVIOR` is ungated but `PROPOSE_TARGETS_TOOL` is not
+## 2. `TARGET_CHANGE_BEHAVIOR` is ungated but `PROPOSE_TARGETS_TOOL` is not — FIXED in #99
 
 `supabase/functions/ai-coach/prompt.ts`, `buildSystemPrompt`.
 
@@ -70,7 +77,7 @@ Fix: gate the block to the same condition that appends `PROPOSE_TARGETS_TOOL`.
 Note this changes the cached static block, so it invalidates the prompt cache on
 first deploy.
 
-## 3. Program schema has no numeric bounds
+## 3. Program schema has no numeric bounds — FIXED in #99
 
 `supabase/functions/ai-coach/prompt.ts`, `GENERATE_PROGRAM_TOOL`.
 
@@ -86,7 +93,7 @@ Worth more attention on `PHASE_DIET_SCHEMA` and especially `PROPOSE_TARGETS_TOOL
 where `calories` and `protein_g` flow to the user's profile. An out-of-range
 calorie target there is a real user-facing problem, not just malformed data.
 
-## 4. Confirm the plan-sized token budget covers a worst-case program
+## 4. Confirm the plan-sized token budget covers a worst-case program — STILL OPEN
 
 `supabase/functions/ai-coach/index.ts`, the `maxTokens` selection (both the
 streaming and non-streaming paths).
@@ -133,3 +140,4 @@ Merging the Programs work into `main` and then doing one clean deploy from `main
 is what finally ends this.
 
 [pr97]: https://github.com/sarthak20241/overload-v3/pull/97
+[pr99]: https://github.com/sarthak20241/overload-v3/pull/99
