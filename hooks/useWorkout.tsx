@@ -51,6 +51,15 @@ interface WorkoutContextType {
    * context change triggers — not a debounce of its own.
    */
   setCaptureState: (capture: ActiveWorkoutCapture | null) => void;
+  /**
+   * Persist the snapshot NOW, cancelling the pending debounced write. Call before
+   * deliberately tearing the workout screen down: an in-app navigation fires no
+   * AppState transition, so minimizing otherwise leaves the last ~800ms of typing
+   * unwritten, and a quick reopen inside that window reads (and consumes) the
+   * pre-edit snapshot. Cheap and idempotent — captureRef is already up to date the
+   * moment setCaptureState runs; only the write was deferred.
+   */
+  flushCapture: () => void;
   updateExercises: (
     exercisesOrUpdater:
       | ActiveWorkoutExercise[]
@@ -78,6 +87,7 @@ const WorkoutContext = createContext<WorkoutContextType>({
   finishWorkout: () => {},
   hydrateFromSnapshot: () => {},
   setCaptureState: () => {},
+  flushCapture: () => {},
   updateExercises: () => {},
   pauseWorkout: () => {},
   resumeWorkout: () => {},
@@ -118,6 +128,17 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     captureSaveRef.current = setTimeout(() => {
       if (isActiveRef.current) persistActiveWorkout(buildSnapshotRef.current());
     }, 800);
+  }, []);
+
+  // Write the pending capture immediately (see the interface doc). Guarded by
+  // isActiveRef so a flush racing a finish/discard can't rewrite a snapshot that
+  // was just cleared.
+  const flushCapture = useCallback(() => {
+    if (captureSaveRef.current) {
+      clearTimeout(captureSaveRef.current);
+      captureSaveRef.current = null;
+    }
+    if (isActiveRef.current) persistActiveWorkout(buildSnapshotRef.current());
   }, []);
 
   const startWorkout = useCallback((id: string, name: string, exs: ActiveWorkoutExercise[], meta?: WorkoutOwnerMeta) => {
@@ -264,12 +285,12 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, setExerciseStarted, setExerciseFinished,
     currentIdx, setCurrentIdx,
-    startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, updateExercises,
+    startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, flushCapture, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   }), [
     isActive, isPaused, routineId, routineName, elapsed, exercises,
     exerciseStarted, exerciseFinished, currentIdx,
-    startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, updateExercises,
+    startWorkout, finishWorkout, hydrateFromSnapshot, setCaptureState, flushCapture, updateExercises,
     pauseWorkout, resumeWorkout, togglePause,
   ]);
 

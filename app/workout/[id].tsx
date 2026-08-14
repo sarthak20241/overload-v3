@@ -920,17 +920,22 @@ export default function ActiveWorkoutScreen() {
   useEffect(() => {
     setCaptureState({
       pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed,
-      // The bank and the edit guard are refs, so they can't be dependencies — they
-      // don't need to be. Every input writes markEdited() alongside a setInput*, and
-      // the index-change effect banks a draft as currentIdx moves, so one of the deps
-      // below always moves with them. Copied, not aliased: the ref keeps mutating.
+      // The bank and the edit guard are refs, so they can't be dependencies. The
+      // deps below stand in for them: every input writes markEdited() alongside a
+      // setInput*, the index-change effect banks a draft as currentIdx moves, and
+      // reconcile re-keys both from a temp id to the resolved one as it swaps the
+      // exercise — which is why `exercises` is a dependency even though nothing
+      // here reads it. Without it that swap lands in a ref nothing is watching,
+      // and the capture keeps naming an id the workout no longer has: on restore
+      // the id comparison fails and the typed value is dropped.
+      // Copied, not aliased: the ref keeps mutating.
       inputDrafts: { ...inputDraftsRef.current },
       inputWeight,
       inputReps,
       editedForExId: editedForExRef.current,
     });
   }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed,
-      inputWeight, inputReps, currentIdx]);
+      inputWeight, inputReps, currentIdx, exercises]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
@@ -1617,6 +1622,14 @@ export default function ActiveWorkoutScreen() {
   // mini workout bar is the way back in.
   const handleMinimize = () => {
     Keyboard.dismiss();
+    // This unmounts the screen and every draft living in it, and an in-app
+    // navigation fires no AppState transition, so the debounced write is the only
+    // thing that would have saved the last ~800ms of typing. Reopening inside that
+    // window would read the pre-edit snapshot AND consume it, so the later write
+    // couldn't rescue it either. Flush before leaving. Deliberately not done in an
+    // unmount cleanup: cancelling races the provider re-render that clears
+    // isActive, and a flush landing first would resurrect a discarded session.
+    workout.flushCapture();
     leaveWorkout();
   };
 
