@@ -2055,21 +2055,22 @@ Deno.serve(async (req) => {
   // every signed-in coach turn — an uncaught 500 the client surfaced as the
   // generic "Something broke on my end."
   const rawForceTool = (body as { force_tool?: unknown }).force_tool;
-  const forceTool: 'generate_workout' | 'generate_plan' | null =
-    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
+  const forceTool: 'generate_workout' | 'generate_plan' | 'generate_program' | null =
+    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan' || rawForceTool === 'generate_program'
       ? rawForceTool
       : null;
   const rawMode = (body as { mode?: unknown }).mode;
-  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'discuss_program' | 'refine_program' | null =
     rawMode === 'chat'
     || rawMode === 'refine_workout' || rawMode === 'refine_plan'
     || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
+    || rawMode === 'discuss_program' || rawMode === 'refine_program'
       ? rawMode
       : null;
   // Resolution order: explicit `mode` wins, otherwise derive from
   // `force_tool` (back-compat with existing generate flows that only send
   // force_tool), otherwise default to 'chat'.
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program' =
     explicitMode ?? forceTool ?? 'chat';
   // Cross-mode compatibility check: only honor force_tool when the tool
   // is actually exposed in the resolved mode's toolkit. Refine and discuss
@@ -2078,7 +2079,11 @@ Deno.serve(async (req) => {
   // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
   // exposes no generate_* tool, so a force_tool there must be dropped too —
   // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
-  // tool_choice for a tool that isn't in `tools` (400).
+  // tool_choice for a tool that isn't in `tools` (400). The program modes
+  // (discuss_program / refine_program) expose generate_program, so they may
+  // force it — a resolved `mode === 'generate_program'` never happens because
+  // it is not an explicitMode value; program creation always routes through a
+  // discuss/refine program mode.
   const forceToolAllowed =
     !forceTool
     || (mode === 'generate_workout' && forceTool === 'generate_workout')
@@ -2086,8 +2091,10 @@ Deno.serve(async (req) => {
     || (mode === 'refine_workout' && forceTool === 'generate_workout')
     || (mode === 'refine_plan' && forceTool === 'generate_plan')
     || (mode === 'discuss_workout' && forceTool === 'generate_workout')
-    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
-  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
+    || (mode === 'discuss_plan' && forceTool === 'generate_plan')
+    || (mode === 'discuss_program' && forceTool === 'generate_program')
+    || (mode === 'refine_program' && forceTool === 'generate_program');
+  const effectiveForceTool: 'generate_workout' | 'generate_plan' | 'generate_program' | null =
     forceToolAllowed ? forceTool : null;
 
   // 6. Retrieval (Phase 2.2): embed last user message, look up top-k research
@@ -2223,6 +2230,7 @@ Deno.serve(async (req) => {
     // when unused).
     const maxTokens =
       forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
+        || forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
         ? GENERATE_PLAN_MAX_TOKENS
         : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
           ? GENERATE_WORKOUT_MAX_TOKENS
@@ -2232,12 +2240,16 @@ Deno.serve(async (req) => {
     (async () => {
       try {
         const statusPhase = effectiveForceTool
-          ? `generating_${effectiveForceTool === 'generate_workout' ? 'workout' : 'plan'}`
+          ? effectiveForceTool === 'generate_program'
+            ? 'generating_program'
+            : `generating_${effectiveForceTool === 'generate_workout' ? 'workout' : 'plan'}`
           : mode === 'refine_workout' || mode === 'refine_plan'
             ? 'refining'
             : mode === 'discuss_workout' || mode === 'discuss_plan'
               ? 'discussing'
-              : 'thinking';
+              : mode === 'discuss_program' || mode === 'refine_program'
+                ? 'programming'
+                : 'thinking';
         sse.write("status", { phase: statusPhase });
         const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens);
 
@@ -2353,6 +2365,7 @@ Deno.serve(async (req) => {
   // the matching terminal tool.
   const nonStreamMaxTokens =
     forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
+      || forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
       ? GENERATE_PLAN_MAX_TOKENS
       : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
         ? GENERATE_WORKOUT_MAX_TOKENS
