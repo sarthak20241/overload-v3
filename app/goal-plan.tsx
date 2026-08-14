@@ -232,7 +232,12 @@ export default function GoalPlanScreen() {
                 <Feather name="chevron-right" size={13} color={C.textMuted} />
               </Pressable>
             ))}
-            <Pressable onPress={() => buildSplitFor(ph)} style={styles.rebuildBtn}>
+            <Pressable
+              onPress={() => buildSplitFor(ph)}
+              style={styles.rebuildBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Rebuild the workout split for ${ph.name}`}
+            >
               <Feather name="refresh-cw" size={11} color={C.mutedFg} />
               <Text style={[styles.rebuildText, { color: C.mutedFg }]}>Rebuild split</Text>
             </Pressable>
@@ -241,6 +246,8 @@ export default function GoalPlanScreen() {
           <Pressable
             onPress={() => buildSplitFor(ph)}
             style={[styles.buildSplitBtn, { backgroundColor: C.primarySubtle }]}
+            accessibilityRole="button"
+            accessibilityLabel={`Build the workout split for ${ph.name}`}
           >
             <Feather name="plus" size={13} color={C.accentText} />
             <Text style={[styles.buildSplitText, { color: C.accentText }]}>Build workout split</Text>
@@ -282,7 +289,12 @@ export default function GoalPlanScreen() {
             Tell Drona your goal and it will lay out a phased plan, week by week, and keep your
             targets in step with it.
           </Text>
-          <Pressable onPress={() => setCoachOpen(true)} style={[styles.primaryBtn, { backgroundColor: Colors.primary }]}>
+          <Pressable
+            onPress={() => setCoachOpen(true)}
+            style={[styles.primaryBtn, { backgroundColor: Colors.primary }]}
+            accessibilityRole="button"
+            accessibilityLabel="Build a program with Drona"
+          >
             <Feather name="target" size={16} color={Colors.primaryFg} />
             <Text style={[styles.primaryBtnText, { color: Colors.primaryFg }]}>Build a program</Text>
           </Pressable>
@@ -465,6 +477,8 @@ export default function GoalPlanScreen() {
           <Pressable
             onPress={() => { setBuildSeed(null); setBuildPhaseId(null); setCoachOpen(true); }}
             style={[styles.secondaryBtn, { backgroundColor: C.muted }]}
+            accessibilityRole="button"
+            accessibilityLabel="Adjust this program with Drona"
           >
             <Feather name="message-circle" size={14} color={C.mutedFg} />
             <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>Adjust with Drona</Text>

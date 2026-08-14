@@ -111,7 +111,7 @@ function normalizePhase(v: unknown, i: number): ProgramPhase {
   // fail the whole insert.
   const dur = Math.min(26, Math.max(1, intOrUndef(p.duration_weeks) ?? 1));
   return {
-    name: String(p.name ?? `Phase ${i + 1}`),
+    name: strOrUndef(p.name) ?? `Phase ${i + 1}`,
     duration_weeks: dur,
     diet: normalizeDiet(p.diet),
     diet_directive: strOrUndef(p.diet_directive),
@@ -126,7 +126,7 @@ export function structuredToProgram(input: Record<string, unknown>): GeneratedPr
     ? (input.phases as unknown[]).map(normalizePhase)
     : [];
   return {
-    title: String(input.title ?? 'Your Program'),
+    title: strOrUndef(input.title) ?? 'Your Program',
     objective: strOrUndef(input.objective),
     goal: strOrUndef(input.goal),
     target_weight_kg: numOrUndef(input.target_weight_kg),
@@ -203,9 +203,15 @@ export async function applyPhaseTargets(
  * targets into user_profiles and stamps applied_phase_seq so the reconcile
  * (programSync) treats those targets as already-applied.
  *
- * NOTE: archive-then-insert is not atomic. If the insert fails after the
- * archive, the user is briefly left with no active program; re-applying
- * recovers cleanly (a fresh archive is a no-op, the insert succeeds).
+ * NOTE: these are separate statements, not one transaction. Compensations
+ * cover the two failures that would otherwise leave durable bad state: a
+ * failed program or phase insert rolls back (deletes the new row, un-archives
+ * the prior program), and applied_phase_seq is stamped only AFTER the targets
+ * are mirrored, so a failed mirror leaves the cursor null and the next
+ * reconcile applies the phase instead of skipping it as already-applied.
+ * A Postgres function called via rpc() would make this genuinely atomic and
+ * is the right eventual fix; it needs a new migration, so it is deliberately
+ * left out of the PR that first lands this feature.
  */
 export async function saveProgram(
   supabase: Supa,
@@ -219,7 +225,15 @@ export async function saveProgram(
   const totalWeeks = program.phases.reduce((a, p) => a + p.duration_weeks, 0);
   const activeSeq = computeActivePhaseSeq(startDate, program.phases, todayLocalISO());
 
-  // 1. Archive the prior active program (unique-index requirement).
+  // 1. Archive the prior active program (unique-index requirement). Capture
+  //    which rows we archived first so a later failure can put them back
+  //    rather than leaving the user with nothing.
+  const { data: priorActive } = await supabase
+    .from('coach_programs')
+    .select('id')
+    .eq('user_id', clerkId)
+    .eq('status', 'active');
+  const priorIds = ((priorActive ?? []) as { id: string }[]).map((r) => r.id);
   {
     const { error } = await supabase
       .from('coach_programs')
@@ -228,6 +242,26 @@ export async function saveProgram(
       .eq('status', 'active');
     if (error) throw error;
   }
+
+  // Undo the archive + the new program row, in that order (the partial unique
+  // index allows only one active program, so the new row must go first).
+  // Best-effort: a failure here leaves the user with no active program, which
+  // renders the empty state and is recoverable by applying again.
+  const rollback = async (newProgramId?: string) => {
+    try {
+      if (newProgramId) {
+        await supabase.from('coach_programs').delete().eq('id', newProgramId);
+      }
+      if (priorIds.length > 0) {
+        await supabase
+          .from('coach_programs')
+          .update({ status: 'active', updated_at: new Date().toISOString() })
+          .in('id', priorIds);
+      }
+    } catch (e) {
+      console.warn('[programs] rollback failed', e);
+    }
+  };
 
   // 2. Insert the program.
   const { data: prog, error: progErr } = await supabase
@@ -242,12 +276,19 @@ export async function saveProgram(
       start_date: startDate,
       status: 'active',
       total_weeks: totalWeeks,
-      applied_phase_seq: activeSeq,
+      // Stamped only after the targets are actually mirrored (step 4). Setting
+      // it here would make reconcileActiveProgram's "same phase as last
+      // applied" check short-circuit forever if step 4 failed, stranding the
+      // user on stale targets for the whole first phase with nothing to retry.
+      applied_phase_seq: null,
       source: 'coach',
     })
     .select('id')
     .single();
-  if (progErr || !prog) throw progErr || new Error('Failed to create program');
+  if (progErr || !prog) {
+    await rollback();
+    throw progErr || new Error('Failed to create program');
+  }
 
   // 3. Insert the phases.
   const phaseRows = program.phases.map((ph, i) => ({
@@ -267,11 +308,27 @@ export async function saveProgram(
     training_block: ph.training_block ?? null,
   }));
   const { error: phErr } = await supabase.from('coach_program_phases').insert(phaseRows);
-  if (phErr) throw phErr;
+  if (phErr) {
+    // A phase-less active program is worse than none: loadActiveProgram would
+    // return it with an empty timeline, and reconcileActiveProgram cannot even
+    // complete it (its endReached check requires phases.length > 0).
+    await rollback(prog.id);
+    throw phErr;
+  }
 
-  // 4. Mirror the active phase's diet targets into user_profiles.
+  // 4. Mirror the active phase's diet targets into user_profiles, THEN stamp
+  //    the reconcile cursor. Same order reconcileActiveProgram uses, so a
+  //    failure here leaves applied_phase_seq null and the next foreground
+  //    reconcile applies the phase properly instead of skipping it.
   if (activeSeq != null) {
     await applyPhaseTargets(supabase, clerkId, program.phases[activeSeq].diet);
+    const { error: cursorErr } = await supabase
+      .from('coach_programs')
+      .update({ applied_phase_seq: activeSeq, updated_at: new Date().toISOString() })
+      .eq('id', prog.id);
+    // Non-fatal: the program and its targets are both correct at this point.
+    // A null cursor just means the next reconcile re-applies the same targets.
+    if (cursorErr) console.warn('[programs] cursor stamp failed', cursorErr);
   }
 
   return { programId: prog.id };
@@ -325,19 +382,25 @@ export async function loadActiveProgram(
   supabase: Supa,
   clerkId: string,
 ): Promise<ActiveProgram | null> {
-  const { data: prog } = await supabase
+  const { data: prog, error: progErr } = await supabase
     .from('coach_programs')
     .select('id, title, objective, goal, target_weight_kg, target_date, start_date, total_weeks, applied_phase_seq')
     .eq('user_id', clerkId)
     .eq('status', 'active')
     .maybeSingle();
+  // Throw rather than returning null on error. Returning null is
+  // indistinguishable from "no program", which made the Goal & Plan screen
+  // show its "Build a program" empty state to a user who HAS one — and
+  // building archives the real program. Callers keep their last good state.
+  if (progErr) throw progErr;
   if (!prog) return null;
 
-  const { data: phaseData } = await supabase
+  const { data: phaseData, error: phaseErr } = await supabase
     .from('coach_program_phases')
     .select('id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, diet_protein_g, diet_carb_g, diet_fat_g, diet_directive, training_directive, readiness_directive, training_block, routine_id')
     .eq('program_id', (prog as { id: string }).id)
     .order('seq', { ascending: true });
+  if (phaseErr) throw phaseErr;
   const phases = (phaseData ?? []) as ActiveProgramPhaseRow[];
 
   // Attach the routines built for each phase (routines.program_phase_id, RLS-

@@ -1493,7 +1493,11 @@ function GeneratePlanScreen({
   }, []);
 
   const buildInitialPrompt = () =>
-    seed
+    // Gate on the NOTE, not just `seed`: the note is the entire substance of a
+    // phase-seeded build (it carries the split + cadence). Without it this
+    // branch would emit "Design my training split. undefined Keep sessions..."
+    // — strictly worse than the generic branch, which at least has goal + days.
+    seed?.note
       // Phase-seeded build: the note carries the phase's exact split + cadence
       // (which may be a multi-day rotation, not a weekly count), so follow it
       // rather than imposing a "${days}/week" that would misrepresent it.
@@ -1825,9 +1829,12 @@ function GeneratePlanScreen({
           <View style={[s.formField, { flex: 1 }]}>
             <View style={s.formLabelRow}>
               <Feather name="calendar" size={12} color={C.mutedFg} />
-              <Text style={[s.formLabel, { color: C.mutedFg }]}>{seed ? 'Cadence' : 'Days/Week'}</Text>
+              <Text style={[s.formLabel, { color: C.mutedFg }]}>{seed?.note ? 'Cadence' : 'Days/Week'}</Text>
             </View>
-            {seed ? (
+            {/* Same `seed?.note` condition buildInitialPrompt uses, so the
+                picker never claims "follows your phase" while the prompt is
+                actually sending the generic days-based request. */}
+            {seed?.note ? (
               <View style={[s.formInput, { backgroundColor: C.inputBg, borderColor: C.border, justifyContent: 'center' }]}>
                 <Text style={{ color: C.mutedFg, fontSize: FontSize.sm }}>Follows your phase</Text>
               </View>
