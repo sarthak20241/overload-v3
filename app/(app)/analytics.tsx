@@ -7,7 +7,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeInDown, SlideInDown, SlideOutDown, Easing,
+  FadeInDown, Easing, runOnJS,
   useSharedValue, useAnimatedStyle, withTiming, withDelay,
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
@@ -256,6 +256,31 @@ function BottomDrawer({
   const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
 
+  // The slide in/out is driven by a transform we own, NOT by Reanimated's
+  // entering/exiting layout animations. A view carrying those keeps the native
+  // frame Reanimated gave it, so every later layout change is ignored — with
+  // SlideInDown on this sheet the keyboard lift below never landed and the
+  // keyboard buried the input and the Save button (the reason this drawer felt
+  // unusable on iOS). A plain transform leaves the sheet under normal layout,
+  // so `marginBottom`/`maxHeight` keep working.
+  const translateY = useSharedValue(height);
+  // Stays true through the closing animation so the sheet can slide back out
+  // before it unmounts.
+  const [mounted, setMounted] = useState(visible);
+
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      translateY.value = withTiming(0, { duration: 320, easing: Easing.out(Easing.cubic) });
+    } else {
+      translateY.value = withTiming(height, { duration: 200 }, (finished) => {
+        if (finished) runOnJS(setMounted)(false);
+      });
+    }
+  }, [visible, height, translateY]);
+
+  const slideStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.value }] }));
+
   // <Portal> has no onRequestClose, so wire the Android hardware back button.
   useEffect(() => {
     if (!visible) return;
@@ -287,39 +312,39 @@ function BottomDrawer({
   }, [visible]);
 
   const sheetMaxHeight = (height - kbHeight) * 0.9;
-  // Lift above the keyboard on both platforms — rendered in the app's own
-  // window via <Portal>, which isn't auto-resized for the keyboard.
-  const sheetMarginBottom = kbHeight;
 
   return (
     <Portal>
-      {visible && (
-      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
-        {(
-          <Animated.View
-            entering={SlideInDown.duration(320).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[
-              styles.drawerSheet,
-              {
-                marginBottom: sheetMarginBottom,
-                maxHeight: sheetMaxHeight,
-                backgroundColor: C.elevated,
-                borderColor: C.border,
-                // Flush to the screen bottom now (Portal), so clear the gesture bar.
-                paddingBottom: insets.bottom,
-              },
-            ]}
-          >
-            {/* Plain View — a Pressable here would steal pan gestures from any
-                ScrollView in {children}, breaking scroll inside the drawer. */}
-            <View style={{ flexShrink: 1 }}>
-              <View style={[styles.drawerHandle, { backgroundColor: C.handle }]} />
-              {children}
-            </View>
-          </Animated.View>
+      {mounted && (
+      <View style={{ flex: 1, justifyContent: 'flex-end' }} pointerEvents={visible ? 'auto' : 'none'}>
+        {/* Backdrop tracks `visible`, so it clears the moment the sheet is
+            dismissed instead of lingering through the slide-out. */}
+        {visible && (
+          <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
         )}
+        <Animated.View
+          style={[
+            styles.drawerSheet,
+            slideStyle,
+            {
+              // Lift above the keyboard: this sheet renders in the app's own
+              // window via <Portal>, which is not resized for the keyboard.
+              marginBottom: kbHeight,
+              maxHeight: sheetMaxHeight,
+              backgroundColor: C.elevated,
+              borderColor: C.border,
+              // Flush to the screen bottom now (Portal), so clear the gesture bar.
+              paddingBottom: insets.bottom,
+            },
+          ]}
+        >
+          {/* Plain View — a Pressable here would steal pan gestures from any
+              ScrollView in {children}, breaking scroll inside the drawer. */}
+          <View style={{ flexShrink: 1 }}>
+            <View style={[styles.drawerHandle, { backgroundColor: C.handle }]} />
+            {children}
+          </View>
+        </Animated.View>
       </View>
       )}
     </Portal>
