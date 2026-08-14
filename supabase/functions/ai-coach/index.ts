@@ -2259,9 +2259,11 @@ Deno.serve(async (req) => {
   // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
   // tool_choice for a tool that isn't in `tools` (400). The program modes
   // (discuss_program / refine_program) expose generate_program, so they may
-  // force it — a resolved `mode === 'generate_program'` never happens because
-  // it is not an explicitMode value; program creation always routes through a
-  // discuss/refine program mode.
+  // force it. `mode === 'generate_program'` is not reachable via explicitMode,
+  // but IS reachable through the `?? forceTool` fallback above, and that mode's
+  // toolkit is exactly [GENERATE_PROGRAM_TOOL], so it may force it too. No
+  // client forces generate_program today; the clause keeps the path correct for
+  // when one does.
   const forceToolAllowed =
     !forceTool
     || (mode === 'generate_workout' && forceTool === 'generate_workout')
@@ -2270,6 +2272,7 @@ Deno.serve(async (req) => {
     || (mode === 'refine_plan' && forceTool === 'generate_plan')
     || (mode === 'discuss_workout' && forceTool === 'generate_workout')
     || (mode === 'discuss_plan' && forceTool === 'generate_plan')
+    || (mode === 'generate_program' && forceTool === 'generate_program')
     || (mode === 'discuss_program' && forceTool === 'generate_program')
     || (mode === 'refine_program' && forceTool === 'generate_program');
   const effectiveForceTool: 'generate_workout' | 'generate_plan' | 'generate_program' | null =

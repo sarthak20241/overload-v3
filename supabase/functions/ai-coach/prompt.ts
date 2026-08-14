@@ -497,10 +497,10 @@ const PHASE_DIET_SCHEMA = {
   type: 'object' as const,
   description: 'Daily nutrition targets for THIS phase.',
   properties: {
-    calories: { type: 'integer', description: 'Daily calorie target (kcal).' },
-    protein_g: { type: 'integer', description: 'Daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
-    carb_g: { type: 'integer', description: 'Daily carb target (g). Optional.' },
-    fat_g: { type: 'integer', description: 'Daily fat target (g). Optional.' },
+    calories: { type: 'integer', minimum: 800, maximum: 6000, description: 'Daily calorie target (kcal).' },
+    protein_g: { type: 'integer', minimum: 20, maximum: 400, description: 'Daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
+    carb_g: { type: 'integer', minimum: 0, maximum: 1000, description: 'Daily carb target (g). Optional.' },
+    fat_g: { type: 'integer', minimum: 0, maximum: 400, description: 'Daily fat target (g). Optional.' },
   },
   required: ['calories', 'protein_g'],
 };
@@ -510,7 +510,7 @@ const TRAINING_BLOCK_SCHEMA = {
   description: 'A SHORT descriptor of the training block, NOT an exercise list. The concrete routine is generated from this later.',
   properties: {
     split_type: { type: 'string', description: 'e.g. "Upper/Lower", "Push/Pull/Legs", "Full Body x3".' },
-    days_per_week: { type: 'integer', description: 'Training days per week.' },
+    days_per_week: { type: 'integer', minimum: 1, maximum: 7, description: 'Training days per week.' },
     emphasis: { type: 'string', description: 'Primary emphasis this block, e.g. "chest + back volume", "squat + deadlift strength".' },
     note: { type: 'string', description: 'Optional one-line extra intent for the block. No em dashes.' },
   },
@@ -534,11 +534,13 @@ export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
       phases: {
         type: 'array',
         description: 'Ordered phases/blocks, earliest first. Typically 2-6.',
+        minItems: 1,
+        maxItems: 12,
         items: {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Phase name, e.g. "Deficit + Volume Block", "Deload Week", "Lean Bulk".' },
-            duration_weeks: { type: 'integer', description: 'How many weeks this phase runs. 1-26.' },
+            duration_weeks: { type: 'integer', minimum: 1, maximum: 26, description: 'How many weeks this phase runs. 1-26.' },
             diet: PHASE_DIET_SCHEMA,
             diet_directive: { type: 'string', description: 'One line of diet guidance for the phase, e.g. "High-protein deficit, refeed on your two hardest training days." No em dashes.' },
             training_directive: { type: 'string', description: 'One line of training guidance/progression, e.g. "RIR 2, add a set to lagging muscles each week." No em dashes.' },
@@ -564,10 +566,10 @@ export const PROPOSE_TARGETS_TOOL: AnthropicTool = {
   input_schema: {
     type: 'object',
     properties: {
-      calories: { type: 'integer', description: 'New daily calorie target (kcal).' },
-      protein_g: { type: 'integer', description: 'New daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
-      carb_g: { type: 'integer', description: 'New daily carb target (g). Optional.' },
-      fat_g: { type: 'integer', description: 'New daily fat target (g). Optional.' },
+      calories: { type: 'integer', minimum: 800, maximum: 6000, description: 'New daily calorie target (kcal).' },
+      protein_g: { type: 'integer', minimum: 20, maximum: 400, description: 'New daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
+      carb_g: { type: 'integer', minimum: 0, maximum: 1000, description: 'New daily carb target (g). Optional.' },
+      fat_g: { type: 'integer', minimum: 0, maximum: 400, description: 'New daily fat target (g). Optional.' },
       rationale: { type: 'string', description: 'One sentence on why these targets, referencing their goal / bodyweight / recent intake. No em dashes.' },
     },
     required: ['calories', 'protein_g', 'rationale'],
@@ -749,7 +751,12 @@ export function buildSystemPrompt(ctx: PromptContext): {
         : mode === 'refine_program'
           ? `\n\n${REFINE_PROGRAM_BEHAVIOR}`
           : '';
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}\n\n${TARGET_CHANGE_BEHAVIOR}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
+  // Only chat mode carries PROPOSE_TARGETS_TOOL (see baseTools below), so only
+  // chat mode is told it can change targets. Telling the generate/refine/discuss
+  // modes to route target changes through a tool they do not have is an
+  // instruction/tool mismatch, and it burns cached prompt tokens they cannot use.
+  const targetBlock = mode === 'chat' ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',
