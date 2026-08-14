@@ -24,7 +24,7 @@ import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
-import { structuredToProgram, saveProgram, applyPhaseTargets, type GeneratedProgram } from '@/lib/programData';
+import { structuredToProgram, saveProgram, applyPhaseTargets, clampDiet, type GeneratedProgram } from '@/lib/programData';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate, isCoachContentAllowed } from './CoachAccessGate';
@@ -976,11 +976,19 @@ function ChatScreen({
         // apply card above the input (the assistant's one-line intent still
         // streams into the bubble above it).
         if (name === 'propose_targets' && typeof input.calories === 'number') {
-          setTargetProposal({
+          // Clamp: the tool schema's minimum/maximum only steer the model, and
+          // these numbers go straight to user_profiles on Apply.
+          const c = clampDiet({
             calories: Math.round(Number(input.calories)),
             protein_g: Math.round(Number(input.protein_g ?? 0)),
             carb_g: input.carb_g != null ? Math.round(Number(input.carb_g)) : undefined,
             fat_g: input.fat_g != null ? Math.round(Number(input.fat_g)) : undefined,
+          });
+          setTargetProposal({
+            calories: c.calories!,
+            protein_g: c.protein_g!,
+            carb_g: c.carb_g,
+            fat_g: c.fat_g,
             rationale: typeof input.rationale === 'string' ? input.rationale : undefined,
           });
         }
@@ -3202,7 +3210,7 @@ export function AICoachModal({
       });
   };
 
-  const handleSaveRoutines = (workouts: GeneratedWorkout[]) => {
+  const handleSaveRoutines = (workouts: GeneratedWorkout[], isRetry = false) => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     handleClose();
@@ -3212,6 +3220,27 @@ export function AICoachModal({
       // otherwise a failure on item N produces duplicates of 0..N-1 on retry.
       let attemptingIndex = 0;
       try {
+        // "Rebuild split" REPLACES a phase's split, so clear the phase's
+        // previous routines first. Without this, the old routines keep their
+        // program_phase_id and every rebuild stacks another full set under the
+        // phase on the Goal & Plan screen.
+        //
+        // Unlink rather than delete: the routines stay in the Routines tab and
+        // any workout history pointing at them stays intact. They just stop
+        // claiming to be this phase's current split.
+        //
+        // Skipped on Retry — the earlier items of this batch already saved AND
+        // linked, so unlinking here would strip the work that just succeeded.
+        if (linkRoutinesToPhaseId && !isRetry && supabase) {
+          try {
+            await supabase
+              .from('routines')
+              .update({ program_phase_id: null })
+              .eq('program_phase_id', linkRoutinesToPhaseId);
+          } catch (e) {
+            console.warn('[routine-save] could not clear the phase’s prior split:', e);
+          }
+        }
         for (let i = 0; i < workouts.length; i++) {
           attemptingIndex = i;
           toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
@@ -3233,7 +3262,7 @@ export function AICoachModal({
         if (attemptingIndex > 0) onRoutineCreated?.();
         toast.error(
           `Couldn't save “${workouts[attemptingIndex]?.name}” (${attemptingIndex + 1}/${workouts.length})${err?.message ? ` — ${String(err.message).slice(0, 60)}` : ''}`,
-          { action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining) } },
+          { action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining, true) } },
         );
       } finally {
         inFlightRef.current = false;

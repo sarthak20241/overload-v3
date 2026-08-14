@@ -84,14 +84,44 @@ const intOrUndef = (v: unknown): number | undefined => {
   return n == null ? undefined : Math.round(n);
 };
 
+/**
+ * Sane daily-intake bounds, mirroring the ranges the coach tool schemas
+ * document. The schemas only STEER the model: Anthropic reliably honors
+ * `type` and `required`, not `minimum`/`maximum`, and the only DB constraint
+ * (user_profiles_nutrition_targets_nonneg, migration 0069) just requires >= 0.
+ * So an out-of-range emission would otherwise flow straight into
+ * user_profiles and drive the FUEL card, Nutrition screen, and readiness
+ * diet directives. Clamp here, on the one path everything shares.
+ */
+export const DIET_BOUNDS = {
+  calories: [800, 6000],
+  protein_g: [20, 400],
+  carb_g: [0, 1000],
+  fat_g: [0, 400],
+} as const;
+
+export function clampDiet(d: ProgramDiet): ProgramDiet {
+  const at = (k: keyof typeof DIET_BOUNDS, n: number | undefined) => {
+    if (n == null) return undefined;
+    const [lo, hi] = DIET_BOUNDS[k];
+    return Math.min(hi, Math.max(lo, n));
+  };
+  return {
+    calories: at('calories', d.calories),
+    protein_g: at('protein_g', d.protein_g),
+    carb_g: at('carb_g', d.carb_g),
+    fat_g: at('fat_g', d.fat_g),
+  };
+}
+
 function normalizeDiet(v: unknown): ProgramDiet {
   const d = (v ?? {}) as Record<string, unknown>;
-  return {
+  return clampDiet({
     calories: intOrUndef(d.calories),
     protein_g: intOrUndef(d.protein_g),
     carb_g: intOrUndef(d.carb_g),
     fat_g: intOrUndef(d.fat_g),
-  };
+  });
 }
 
 function normalizeBlock(v: unknown): ProgramTrainingBlock | undefined {
@@ -218,6 +248,14 @@ export async function saveProgram(
   clerkId: string,
   program: GeneratedProgram,
 ): Promise<{ programId: string }> {
+  // A zero-phase program is not saveable: total_weeks would be 0, activeSeq
+  // null, the phases insert a no-op, and the Goal & Plan screen would render a
+  // program with no NOW card and no timeline. The tool schema's minItems only
+  // steers the model, so reject it here rather than persisting the bad state.
+  if (program.phases.length === 0) {
+    throw new Error('That program came back empty. Ask Drona to lay out the phases again.');
+  }
+
   const startDate = program.start_date && ISO_RE.test(program.start_date)
     ? program.start_date
     : todayLocalISO();

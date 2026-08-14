@@ -1,4 +1,6 @@
--- 0097_coach_program_phases_scope.sql
+-- 0099_coach_program_phases_scope.sql
+-- (Applied to prod as 0097 before main landed its own 0097/0098; renumbered
+--  on merge to keep disk ordering unique. Same body, already live.)
 --
 -- Security fix for 0096. The coach_program_phases INSERT/UPDATE policies checked
 -- only that the row's denormalized user_id equals the caller, NOT that the parent

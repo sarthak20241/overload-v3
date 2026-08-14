@@ -1,4 +1,6 @@
--- 0098_routines_program_phase.sql
+-- 0100_routines_program_phase.sql
+-- (Applied to prod as 0098 before main landed its own 0097/0098; renumbered
+--  on merge to keep disk ordering unique. Same body, already live.)
 --
 -- Link routines built for a program phase back to that phase, so the Goal & Plan
 -- screen can show "this phase's split is built: [routines]" instead of offering
