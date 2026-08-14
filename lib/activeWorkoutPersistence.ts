@@ -24,6 +24,19 @@ const SCHEMA_VERSION = 1 as const;
  * + additive, so old snapshots without it stay valid (no schema bump); the fields
  * added after the first release are individually optional for the same reason.
  */
+/**
+ * One exercise's typed-but-not-logged logger inputs. Weight and reps are always
+ * present (every exercise has the pair, even when its metric type hides them);
+ * the other axes only exist for the metric types that render them.
+ */
+export interface InputDraft {
+  weight: string;
+  reps: string;
+  duration?: string;
+  distance?: string;
+  resistance?: string;
+}
+
 export interface ActiveWorkoutCapture {
   /** Mid-unilateral "L+R": the first side logged but not yet committed to a set. */
   pendingFirst: { side: 'left' | 'right'; weight_kg: number; reps: number; rpe: number | null } | null;
@@ -35,14 +48,22 @@ export interface ActiveWorkoutCapture {
    * time while killed isn't training time). 0 when unused. */
   stopwatchSeconds: number;
   /**
-   * Hand-typed weight/reps banked per exercise id (the screen's `inputDraftsRef`)
-   * — a number the user entered on an exercise they then navigated away from,
-   * without logging it.
+   * Hand-typed inputs banked per exercise id (the screen's `inputDraftsRef`) — a
+   * value the user entered on an exercise they then navigated away from, without
+   * logging it. The non-weight axes are optional: snapshots written before they
+   * were banked still restore, they just carry weight/reps.
    */
-  inputDrafts?: Record<string, { weight: string; reps: string }>;
-  /** The shared logger's live weight/reps for the open exercise. */
+  inputDrafts?: Record<string, InputDraft>;
+  /**
+   * The shared logger's live inputs for the open exercise. The non-weight axes
+   * are only meaningful for the metric types that render them; `stopwatchSeconds`
+   * wins over `inputDuration` when a stopwatch was actually running.
+   */
   inputWeight?: string;
   inputReps?: string;
+  inputDuration?: string;
+  inputDistance?: string;
+  inputResistance?: string;
   /**
    * Which exercise the live weight/reps above were TYPED for (`editedForExRef`),
    * or null when they're an auto-seeded value. Only a typed value is worth
