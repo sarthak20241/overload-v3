@@ -233,8 +233,23 @@ export default function ActiveWorkoutScreen() {
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
   // Previous performance can resolve after an exercise is already on screen.
-  // Track direct edits so that late data never replaces a value the user chose.
-  const inputEditedRef = useRef(false);
+  // Track direct edits so that late data never replaces a value the user chose:
+  // this holds the id of the exercise whose inputs were typed into, or null.
+  // Keyed by exercise rather than index because the two come apart in both
+  // directions — a superset reorder moves the SAME exercise to a new index (the
+  // guard has to survive), and removing an exercise slides a DIFFERENT one under
+  // an unchanged index (the guard must not carry over to it). markEdited() below
+  // is how every input writes it; reconcile migrates it across the temp→real id
+  // swap so late previous-performance data still can't overwrite a typed value.
+  const editedForExRef = useRef<string | null>(null);
+  // inputWeight/inputReps are ONE shared pair, reused by whichever exercise is
+  // open. Glancing at another exercise mid-rest therefore reseeds them for THAT
+  // exercise, and a hand-typed weight would be gone on the way back. Bank a
+  // typed value under its exercise's id as we navigate away and hand it back on
+  // return. Keyed by id, not index, so a superset reorder can't point a draft at
+  // the wrong exercise. Only edited values are banked — anything auto-seeded is
+  // recomputed on arrival, which keeps late-resolving history in play.
+  const inputDraftsRef = useRef<Record<string, { weight: string; reps: string }>>({});
   // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
   // Each is only rendered when the exercise's metric_type uses that axis.
   const [inputDuration, setInputDuration] = useState('0:00');
@@ -362,6 +377,9 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
+  // Every logger input calls this, stamping the open exercise onto the edit
+  // guard. Effects compare editedForExRef against their own exercise's id.
+  const markEdited = () => { editedForExRef.current = currentEx?.exercise.id ?? null; };
 
   // ── Sticky per-exercise note (user_exercise_notes) ──────────────────────────
   // A personal reminder shown under the exercise header every session ("seat
@@ -598,6 +616,12 @@ export default function ActiveWorkoutScreen() {
     }
 
     const load = async () => {
+      // Starting a session over a discarded one reuses this screen (reloadKey
+      // re-runs the effect without a remount), so drop the previous workout's
+      // typed drafts + edit guard — an exercise common to both would otherwise
+      // open with last session's number.
+      inputDraftsRef.current = {};
+      editedForExRef.current = null;
       if (id === 'new') {
         workout.startWorkout('new', 'New Workout', [], { ownerId: user?.id ?? null, isGuestSession });
         setLoading(false);
@@ -793,6 +817,23 @@ export default function ActiveWorkoutScreen() {
   const skipPrefillRef = useRef(false);
   useEffect(() => {
     if (prevIdxRef.current !== currentIdx) {
+      // Bank the outgoing exercise's hand-typed weight/reps before the prefill
+      // effect below reseeds the shared inputs for the incoming one. Skipped when
+      // the same exercise sits in the workout twice: there's nothing unique to key
+      // on, so those fall back to the recomputed seed rather than risk handing one
+      // twin the other's number.
+      const leavingId = exercises[prevIdxRef.current]?.exercise.id;
+      if (leavingId && editedForExRef.current === leavingId
+          && exercises.filter(e => e.exercise.id === leavingId).length === 1) {
+        inputDraftsRef.current[leavingId] = { weight: inputWeight, reps: inputReps };
+      }
+      // The guard names the exercise whose typed value is IN the inputs, and the
+      // prefill effect below is about to reseed them for the incoming exercise.
+      // That typed value now lives in the draft, so release the guard — leaving
+      // it set would make the effect skip its own restore on the way back.
+      // A superset reorder never reaches this branch (it pre-sets prevIdxRef), so
+      // the guard survives there, which is the point: same exercise, new index.
+      editedForExRef.current = null;
       haptics.selection();
       prevIdxRef.current = currentIdx;
       // The duration stopwatch belongs to one exercise's active set — clear it
@@ -817,7 +858,7 @@ export default function ActiveWorkoutScreen() {
       // down so its target can't bleed onto the new exercise's rest strip.
       else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
-  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises]);
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises, inputWeight, inputReps]);
 
   // Apply a resume's transient capture once currentIdx settles on the resumed
   // index. Declared AFTER the index-change reset effect so, on the commit where the
@@ -959,21 +1000,27 @@ export default function ActiveWorkoutScreen() {
     }
   }, [workout.isPaused]);
 
-  // A new exercise starts with no local input edits. This is deliberately reset
-  // by index rather than by the exercise object: reconciliation replaces the
-  // object after resolving previous performance and must preserve this guard.
-  useEffect(() => {
-    inputEditedRef.current = false;
-  }, [currentIdx]);
-
-  // Sync input defaults when switching exercises or when its previous
-  // performance resolves in the background. Only an untouched start gate may
-  // receive this seed; logging or editing always wins over asynchronous data.
+  // Seed the shared inputs for whichever exercise is now open — on arrival
+  // (navigation, a superset hop, a remount after minimizing) and when its
+  // previous performance resolves in the background. This runs for exercises
+  // already under way too, not just the start gate: a mid-session exercise must
+  // get ITS numbers back rather than keep whatever the last one seeded. Editing
+  // still wins over asynchronous data.
   useEffect(() => {
     // A superset reorder moved the OPEN exercise to a new index — same exercise,
     // same in-flight inputs; consuming the prefill here would stomp them.
     if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
-    if (!currentEx || exerciseStarted[currentIdx] || inputEditedRef.current) return;
+    if (!currentEx || editedForExRef.current === currentEx.exercise.id) return;
+    // Back on an exercise we typed a weight into: hand that value back, and
+    // restore the edited guard with it so late data still can't overwrite it.
+    const draft = inputDraftsRef.current[currentEx.exercise.id];
+    if (draft) {
+      delete inputDraftsRef.current[currentEx.exercise.id];
+      setInputWeight(draft.weight);
+      setInputReps(draft.reps);
+      editedForExRef.current = currentEx.exercise.id;
+      return;
+    }
     // previousSets excludes warmups, so warmups must not advance its index.
     const completedCount = currentEx.sets
       .filter(s => s.completed && s.set_type !== 'warmup').length;
@@ -994,7 +1041,10 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
-  }, [currentIdx, currentEx?.previousSets, exerciseStarted]);
+    // exercise.id, so a session restored from a snapshot (or an ad-hoc exercise
+    // whose real row resolves late) seeds once its exercise actually lands —
+    // currentIdx alone can stay 0 across that whole transition.
+  }, [currentIdx, currentEx?.exercise.id, currentEx?.previousSets]);
 
   // Navigate exercises
   const goTo = (idx: number) => {
@@ -1011,7 +1061,7 @@ export default function ActiveWorkoutScreen() {
     const nextSetIndex = currentEx?.sets
       .filter(s => s.completed && s.set_type !== 'warmup').length ?? 0;
     const previousSet = currentEx?.previousSets?.[nextSetIndex];
-    if (previousSet && !inputEditedRef.current) {
+    if (previousSet && editedForExRef.current !== currentEx?.exercise.id) {
       setInputWeight(String(previousSet.weight_kg));
       setInputReps(String(previousSet.reps));
     }
@@ -1363,6 +1413,23 @@ export default function ActiveWorkoutScreen() {
     }
     const prev = await fetchPreviousSetsForExercise(resolved.id, def.name);
     const localBests = getLocalAllTimeBestWeight(user?.id, [def.name]);
+    // This swaps the exercise's id below, and both the edit guard and the input
+    // drafts are keyed by it — carry them across so a weight typed before the
+    // real row landed isn't orphaned under the dead temp id. The draft only
+    // moves when the resolved id is still unique in the workout: two ad-hoc
+    // copies of one exercise resolve to the SAME row id, and a shared key would
+    // hand the second copy the first one's numbers.
+    if (editedForExRef.current === tempId) editedForExRef.current = resolved.id;
+    const tempDraft = inputDraftsRef.current[tempId];
+    delete inputDraftsRef.current[tempId];
+    const collides = exercisesRef.current.some(
+      e => e.exercise.id === resolved.id && e.exercise.id !== tempId);
+    // Two copies resolve one at a time, so the collision only appears when the
+    // SECOND one lands — by which point the first has already banked a draft
+    // under the shared id. Drop it rather than hand it to whichever copy opens
+    // next; both fall back to the recomputed seed.
+    if (collides) delete inputDraftsRef.current[resolved.id];
+    else if (tempDraft) inputDraftsRef.current[resolved.id] = tempDraft;
     workout.updateExercises(prevExs => prevExs.map(e => {
       if (e.exercise.id !== tempId) return e;
       const userStarted = e.sets.some(s => s.completed);
@@ -2390,7 +2457,7 @@ export default function ActiveWorkoutScreen() {
         // editing the field sets the stopwatch base so ▶ resumes from it and the
         // logged set reads the same value.
         const onTimeChange = (t: string) => {
-          inputEditedRef.current = true;
+          markEdited();
           setInputDuration(t);
           const secs = parseDuration(t);
           swBaseRef.current = secs;
@@ -2436,42 +2503,42 @@ export default function ActiveWorkoutScreen() {
       const cfg = isWeight
         ? {
             value: inputWeight,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputWeight(value); },
+            onChangeText: (value: string) => { markEdited(); setInputWeight(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); },
-            inc: () => { inputEditedRef.current = true; setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); },
+            dec: () => { markEdited(); setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); },
+            inc: () => { markEdited(); setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); },
           }
         : a === 'reps'
         ? {
             // decimal-pad so a partial rep (e.g. 8.5) can be typed; ± steps stay whole.
             value: inputReps,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputReps(value); },
+            onChangeText: (value: string) => { markEdited(); setInputReps(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))); },
-            inc: () => { inputEditedRef.current = true; setInputReps(String((parseFloat(inputReps) || 0) + 1)); },
+            dec: () => { markEdited(); setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))); },
+            inc: () => { markEdited(); setInputReps(String((parseFloat(inputReps) || 0) + 1)); },
           }
         : a === 'duration'
         ? {
             value: inputDuration,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputDuration(value); },
+            onChangeText: (value: string) => { markEdited(); setInputDuration(value); },
             keyboardType: (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default') as 'numbers-and-punctuation' | 'default',
-            dec: () => { inputEditedRef.current = true; setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))); },
-            inc: () => { inputEditedRef.current = true; setInputDuration(formatDuration(parseDuration(inputDuration) + 15)); },
+            dec: () => { markEdited(); setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))); },
+            inc: () => { markEdited(); setInputDuration(formatDuration(parseDuration(inputDuration) + 15)); },
           }
         : a === 'distance'
         ? {
             value: inputDistance,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputDistance(value); },
+            onChangeText: (value: string) => { markEdited(); setInputDistance(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))); },
-            inc: () => { inputEditedRef.current = true; setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)); },
+            dec: () => { markEdited(); setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))); },
+            inc: () => { markEdited(); setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)); },
           }
         : {
             value: inputResistance,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputResistance(value); },
+            onChangeText: (value: string) => { markEdited(); setInputResistance(value); },
             keyboardType: 'number-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))); },
-            inc: () => { inputEditedRef.current = true; setInputResistance(String((parseFloat(inputResistance) || 0) + 1)); },
+            dec: () => { markEdited(); setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))); },
+            inc: () => { markEdited(); setInputResistance(String((parseFloat(inputResistance) || 0) + 1)); },
           };
 
       return (

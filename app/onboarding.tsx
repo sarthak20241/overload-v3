@@ -5,7 +5,11 @@
  *   welcome    orientation: what Overload is, in Drona's voice
  *   goal       what the user trains for (rep ranges, calorie direction)
  *   experience how long they've lifted (starting volume)
- *   frequency  days per week as a story slider (split choice, activity factor)
+ *   frequency  days per week as a story slider (activity factor). The split is
+ *              NOT chosen here: it's decided at generation from goal,
+ *              experience, days, and the optional notes below.
+ *   health     optional free text: injuries / conditions to train around
+ *   prefs      optional free text: preferences for the routine
  *   gender     one tap, auto-advance (BMR math)
  *   age        age wheel, the page hero (BMR math)
  *   height     height wheel (BMR math)
@@ -61,6 +65,7 @@ import {
   OptionCard,
   PrimaryCta,
   QuestionStep,
+  TextAreaField,
 } from '@/components/onboarding/OnboardingKit';
 import { NumberWheel, RulerSlider } from '@/components/onboarding/BodyPickers';
 import { FrequencyStory } from '@/components/onboarding/FrequencyStory';
@@ -82,7 +87,6 @@ import {
   saveOnboardingProfile,
   markOnboardingDone,
   onboardingIdentity,
-  splitNameFor,
 } from '@/lib/onboarding';
 import {
   buildAnonIntake,
@@ -113,12 +117,12 @@ function formatMeasurement(value: number): string {
 }
 
 type Step =
-  | 'welcome' | 'goal' | 'experience' | 'frequency'
+  | 'welcome' | 'goal' | 'experience' | 'frequency' | 'health' | 'prefs'
   | 'gender' | 'age' | 'height' | 'weight' | 'target' | 'pace'
   | 'interlude' | 'commit' | 'build' | 'plan';
-const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+const STEP_ORDER: Step[] = ['welcome', 'goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 // Steps counted by the progress header (welcome and the build moment hide it).
-const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
+const PROGRESS_STEPS: Step[] = ['goal', 'experience', 'frequency', 'health', 'prefs', 'gender', 'age', 'height', 'weight', 'target', 'pace', 'interlude', 'commit', 'build', 'plan'];
 
 const GOAL_OPTIONS: { value: CoachGoal; icon: keyof typeof Feather.glyphMap; title: string; sub: string }[] = [
   { value: 'hypertrophy', icon: 'layers', title: 'Build muscle', sub: 'Add size with steady, trackable volume' },
@@ -663,8 +667,7 @@ export default function OnboardingScreen() {
             stepKey="frequency"
             question="How many days a week?"
             sub="Be honest. A plan you keep beats a plan you admire."
-            caption={`${splitNameFor(answers.frequency)} split`}
-            footer={<PrimaryCta label="Continue" onPress={() => goTo('gender')} />}
+            footer={<PrimaryCta label="Continue" onPress={() => goTo('health')} />}
           >
               <Animated.View entering={FadeInDown.delay(120).duration(400)} style={{ marginTop: Spacing.lg }}>
                 <FrequencyStory
@@ -672,6 +675,52 @@ export default function OnboardingScreen() {
                   onChange={(days) => setAnswers((a) => ({ ...a, frequency: days }))}
                 />
               </Animated.View>
+          </QuestionStep>
+        )}
+
+        {step === 'health' && (
+          <QuestionStep
+            stepKey="health"
+            question="Anything I should train around?"
+            sub="Injuries, joint pain, past surgeries, anything that changes how you should move. I will plan around it."
+            caption="Optional. Leave it blank if there is nothing."
+            keyboardTaps
+            footer={
+              <PrimaryCta
+                label={answers.healthNotes?.trim() ? 'Continue' : 'Skip for now'}
+                onPress={() => goTo('prefs')}
+              />
+            }
+          >
+              <TextAreaField
+                value={answers.healthNotes ?? ''}
+                onChangeText={(text) => setAnswers((a) => ({ ...a, healthNotes: text }))}
+                placeholder="e.g. Trick left knee, avoid heavy squats. Sore right shoulder on overhead pressing."
+                accessibilityLabel="Physical or medical notes"
+              />
+          </QuestionStep>
+        )}
+
+        {step === 'prefs' && (
+          <QuestionStep
+            stepKey="prefs"
+            question="How do you like to train?"
+            sub="Lifts you love or hate, equipment you have, home or gym, time per session. I will shape the plan to fit."
+            caption="Optional. Leave it blank and I will use what works best."
+            keyboardTaps
+            footer={
+              <PrimaryCta
+                label={answers.routinePrefs?.trim() ? 'Continue' : 'Skip for now'}
+                onPress={() => goTo('gender')}
+              />
+            }
+          >
+              <TextAreaField
+                value={answers.routinePrefs ?? ''}
+                onChangeText={(text) => setAnswers((a) => ({ ...a, routinePrefs: text }))}
+                placeholder="e.g. Love deadlifts, hate burpees. Dumbbells only at home. Keep sessions under 45 min."
+                accessibilityLabel="Routine preferences"
+              />
           </QuestionStep>
         )}
 
@@ -953,7 +1002,7 @@ export default function OnboardingScreen() {
           <QuestionStep
             stepKey="plan"
             question={revealTitle}
-            sub={`${splitNameFor(answers.frequency)}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
+            sub={`${finalPlan.length} ${finalPlan.length === 1 ? 'workout' : 'workouts'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
             footer={
               <>
                 <PrimaryCta
