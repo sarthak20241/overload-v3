@@ -42,11 +42,13 @@ interface WorkoutContextType {
   hydrateFromSnapshot: (snap: ActiveWorkoutSnapshot) => void;
   /**
    * Mirror the workout screen's transient per-set capture (mid-unilateral side,
-   * inline stopwatch) into the next snapshot, so an OS-kill mid-set doesn't lose a
-   * half-logged set. Writes a ref only (no re-render). A capture-only change doesn't
-   * touch a context field, so it rides the on-background save (the kill-safety net)
-   * plus whatever debounced write the next context change triggers — not a debounce
-   * of its own.
+   * inline stopwatch, typed-but-not-logged weight/reps) into the next snapshot, so
+   * an OS-kill mid-set doesn't lose a half-logged set — and so minimizing the
+   * workout, which unmounts the screen and all of that local state with it, doesn't
+   * lose a number the user typed but hadn't committed. Writes a ref only (no
+   * re-render). A capture-only change doesn't touch a context field, so it rides the
+   * on-background save (the kill-safety net) plus whatever debounced write the next
+   * context change triggers — not a debounce of its own.
    */
   setCaptureState: (capture: ActiveWorkoutCapture | null) => void;
   updateExercises: (
@@ -99,8 +101,8 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   // resume flow tell whose session it is (guest vs a specific signed-in user).
   const metaRef = useRef<WorkoutOwnerMeta>({ ownerId: null, isGuestSession: false });
   // Latest transient per-set capture from the workout screen (mid-unilateral side,
-  // inline stopwatch). A ref so the screen's 200ms stopwatch tick doesn't re-render
-  // the whole context; buildSnapshot reads it.
+  // inline stopwatch, typed-but-not-logged weight/reps). A ref so the screen's 200ms
+  // stopwatch tick doesn't re-render the whole context; buildSnapshot reads it.
   const captureRef = useRef<ActiveWorkoutCapture | null>(null);
   const captureSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setCaptureState = useCallback((c: ActiveWorkoutCapture | null) => {
@@ -122,7 +124,9 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     const now = Date.now();
     startTimeRef.current = now;
     pausedElapsedRef.current = 0;
-    captureRef.current = null; // fresh session: don't inherit a prior session's half-set
+    // Fresh session: don't inherit a prior session's half-set or its typed-but-unlogged
+    // numbers. The screen clears its own copies in load(); this is the persisted side.
+    captureRef.current = null;
     metaRef.current = meta ?? { ownerId: null, isGuestSession: false };
     setRoutineId(id);
     setRoutineName(name);

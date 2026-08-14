@@ -19,8 +19,10 @@ const SCHEMA_VERSION = 1 as const;
 
 /**
  * Transient capture state that lives in the workout SCREEN (not the context), so
- * it would otherwise be lost on an OS-kill mid-set. Optional + additive, so old
- * snapshots without it stay valid (no schema bump).
+ * it would otherwise be lost on an OS-kill mid-set — or on the far more ordinary
+ * unmount of minimizing the workout and reopening it from the mini bar. Optional
+ * + additive, so old snapshots without it stay valid (no schema bump); the fields
+ * added after the first release are individually optional for the same reason.
  */
 export interface ActiveWorkoutCapture {
   /** Mid-unilateral "L+R": the first side logged but not yet committed to a set. */
@@ -32,6 +34,22 @@ export interface ActiveWorkoutCapture {
   /** Inline duration stopwatch elapsed for the open set (restored paused — dead
    * time while killed isn't training time). 0 when unused. */
   stopwatchSeconds: number;
+  /**
+   * Hand-typed weight/reps banked per exercise id (the screen's `inputDraftsRef`)
+   * — a number the user entered on an exercise they then navigated away from,
+   * without logging it.
+   */
+  inputDrafts?: Record<string, { weight: string; reps: string }>;
+  /** The shared logger's live weight/reps for the open exercise. */
+  inputWeight?: string;
+  inputReps?: string;
+  /**
+   * Which exercise the live weight/reps above were TYPED for (`editedForExRef`),
+   * or null when they're an auto-seeded value. Only a typed value is worth
+   * restoring; a seeded one recomputes on arrival, which keeps late-resolving
+   * previous performance in play.
+   */
+  editedForExId?: string | null;
 }
 
 export interface ActiveWorkoutSnapshot {

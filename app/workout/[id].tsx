@@ -619,9 +619,14 @@ export default function ActiveWorkoutScreen() {
       // Starting a session over a discarded one reuses this screen (reloadKey
       // re-runs the effect without a remount), so drop the previous workout's
       // typed drafts + edit guard — an exercise common to both would otherwise
-      // open with last session's number.
+      // open with last session's number. Those drafts now also ride the crash
+      // snapshot, so drop the un-applied resume capture with them: the discard
+      // cleared the snapshot itself (finishWorkout → clearActiveWorkout), but a
+      // capture already pulled out of it would still be sitting here waiting for
+      // its index, and the new session's index 0 could be the one it's waiting for.
       inputDraftsRef.current = {};
       editedForExRef.current = null;
+      resumePendingRef.current = null;
       if (id === 'new') {
         workout.startWorkout('new', 'New Workout', [], { ownerId: user?.id ?? null, isGuestSession });
         setLoading(false);
@@ -879,17 +884,53 @@ export default function ActiveWorkoutScreen() {
       setSwElapsed(cap.stopwatchSeconds);
       setInputDuration(formatDuration(cap.stopwatchSeconds));
     }
+    // Typed-but-not-logged weight/reps. Merged rather than assigned so a draft
+    // banked since this mount (possible when the snapshot's index lagged the live
+    // one, leaving the capture pending until the user navigated here) isn't dropped.
+    if (cap.inputDrafts) {
+      inputDraftsRef.current = { ...inputDraftsRef.current, ...cap.inputDrafts };
+    }
+    // The live inputs are only worth handing back when the open exercise is the one
+    // they were typed for: an auto-seeded value recomputes on arrival anyway, and a
+    // mismatch means the capture belongs to some other exercise (its number is in
+    // the drafts above, and it gets it back on arrival). The guard is a REF, so it
+    // lands synchronously — the prefill effect is declared after this one and runs
+    // on this same commit, and reading the restored guard is what stops it reseeding
+    // the value we just restored.
+    if (cap.editedForExId && cap.editedForExId === currentEx?.exercise.id) {
+      editedForExRef.current = cap.editedForExId;
+      if (cap.inputWeight != null) setInputWeight(cap.inputWeight);
+      if (cap.inputReps != null) setInputReps(cap.inputReps);
+    }
+    // currentEx is read above but deliberately not a dependency: this fires on the
+    // commit where the index settles, where currentEx is already the resumed
+    // exercise (hydrateFromSnapshot batches exercises + currentIdx together).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentIdx]);
 
   // Mirror the transient per-set capture into the crash snapshot so an OS-kill
   // mid-set survives: a half-logged unilateral side (buffered in pendingFirst, not
-  // yet a committed set) and the inline duration stopwatch. setCaptureState is a
-  // stable ref write (no context re-render); the on-background persist in useWorkout
-  // reads it live, so it lands on the same save that survives a swipe-away.
+  // yet a committed set), the inline duration stopwatch, and the typed-but-not-yet-
+  // logged weight/reps. All of it is screen-local, so it also dies on the ordinary
+  // unmount of minimizing the workout — this snapshot is what the restore effect
+  // above reads back. setCaptureState is a stable ref write (no context re-render);
+  // the on-background persist in useWorkout reads it live, so it lands on the same
+  // save that survives a swipe-away.
   const setCaptureState = workout.setCaptureState;
   useEffect(() => {
-    setCaptureState({ pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed });
-  }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed]);
+    setCaptureState({
+      pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed,
+      // The bank and the edit guard are refs, so they can't be dependencies — they
+      // don't need to be. Every input writes markEdited() alongside a setInput*, and
+      // the index-change effect banks a draft as currentIdx moves, so one of the deps
+      // below always moves with them. Copied, not aliased: the ref keeps mutating.
+      inputDrafts: { ...inputDraftsRef.current },
+      inputWeight,
+      inputReps,
+      editedForExId: editedForExRef.current,
+    });
+  }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed,
+      inputWeight, inputReps, currentIdx]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
