@@ -452,14 +452,6 @@ export default function ActiveWorkoutScreen() {
   // edit state would otherwise leak into the next session's first exercise).
   useEffect(() => { setEditingNote(null); }, [currentIdx, workout.routineId]);
 
-  // Same reuse hazard, worse consequence: exercise ids are stable DB rows, so a
-  // draft banked in one session would be handed to the SAME exercise in the next
-  // one — as a number the user never typed today, with the edited flag set, which
-  // then blocks this session's own history from correcting it. That's the very bug
-  // drafts exist to fix, just across sessions. Drafts are in-flight-only, so drop
-  // them wholesale when a new session starts.
-  useEffect(() => { inputDraftsRef.current = {}; }, [workout.routineId]);
-
   // Flush any pending note edit when leaving the screen.
   useEffect(() => () => {
     if (stickyFlushTimer.current) clearTimeout(stickyFlushTimer.current);
@@ -893,6 +885,20 @@ export default function ActiveWorkoutScreen() {
     }
   }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises,
       inputWeight, inputReps, inputDuration, inputDistance, inputResistance, swRunning]);
+
+  // This screen instance is reused across sessions (see the editingNote reset) and
+  // exercise ids are stable DB rows, so a draft banked in one session would be
+  // handed to the SAME exercise in the next — a number the user never typed today,
+  // with the edited flag set, which then blocks this session's own history from
+  // correcting it. That's the very bug drafts exist to fix, just across sessions.
+  // Drafts are in-flight-only, so drop them wholesale when the session changes.
+  //
+  // Declared AFTER the banking effect above so it gets the last word: startWorkout /
+  // hydrateFromSnapshot set routineId, exercises and currentIdx in ONE batch, so the
+  // bank fires in this same commit — against the incoming session's exercise list,
+  // still holding the outgoing session's typed values. Clearing first would leave
+  // that one entry behind.
+  useEffect(() => { inputDraftsRef.current = {}; }, [workout.routineId]);
 
   // Apply a resume's transient capture once currentIdx settles on the resumed
   // index. Declared AFTER the index-change reset effect so, on the commit where the
