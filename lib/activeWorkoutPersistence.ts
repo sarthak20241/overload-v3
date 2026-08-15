@@ -18,6 +18,32 @@ const ACTIVE_WORKOUT_KEY = 'active_workout_v1';
 const SCHEMA_VERSION = 1 as const;
 
 /**
+ * A hand-typed set of logger inputs, banked under its exercise's id while some
+ * other exercise borrows the shared input fields (the screen's `inputDraftsRef`).
+ *
+ * Only the axes an exercise's metric type actually renders are banked, so a
+ * weight_reps exercise never carries a stray duration and a treadmill never
+ * carries a stray resistance. Every non-weight field is optional for that reason
+ * AND so snapshots written before they existed stay valid — same additive rule as
+ * ActiveWorkoutCapture below.
+ */
+export interface InputDraft {
+  weight: string;
+  reps: string;
+  /** 'm:ss' as typed. Present only for exercises whose metric type times a set. */
+  duration?: string;
+  /**
+   * Seconds behind `duration` when the inline stopwatch was in play. Restored as
+   * the stopwatch's base (paused), so ▶ resumes from it rather than from zero.
+   */
+  stopwatchSeconds?: number;
+  /** Km as typed. */
+  distance?: string;
+  /** Machine level as typed. */
+  resistance?: string;
+}
+
+/**
  * Transient capture state that lives in the workout SCREEN (not the context), so
  * it would otherwise be lost on an OS-kill mid-set — or on the far more ordinary
  * unmount of minimizing the workout and reopening it from the mini bar. Optional
@@ -35,14 +61,21 @@ export interface ActiveWorkoutCapture {
    * time while killed isn't training time). 0 when unused. */
   stopwatchSeconds: number;
   /**
-   * Hand-typed weight/reps banked per exercise id (the screen's `inputDraftsRef`)
-   * — a number the user entered on an exercise they then navigated away from,
-   * without logging it.
+   * Hand-typed inputs banked per exercise id (the screen's `inputDraftsRef`) — a
+   * number the user entered on an exercise they then navigated away from, without
+   * logging it.
    */
-  inputDrafts?: Record<string, { weight: string; reps: string }>;
-  /** The shared logger's live weight/reps for the open exercise. */
+  inputDrafts?: Record<string, InputDraft>;
+  /**
+   * The shared logger's live values for the open exercise. Duration rides
+   * `stopwatchSeconds` above when the inline timer was used; `inputDuration` covers
+   * the manual mm:ss field, which leaves the stopwatch at zero.
+   */
   inputWeight?: string;
   inputReps?: string;
+  inputDuration?: string;
+  inputDistance?: string;
+  inputResistance?: string;
   /**
    * Which exercise the live weight/reps above were TYPED for (`editedForExRef`),
    * or null when they're an auto-seeded value. Only a typed value is worth
