@@ -820,18 +820,34 @@ export default function ActiveWorkoutScreen() {
   // A light tick whenever the active exercise changes (chip tap, swipe pager, or
   // auto-advance). Seeded with the initial index so it doesn't fire on mount.
   const prevIdxRef = useRef(currentIdx);
+  // Which exercise was open when this effect last settled. The reset below belongs
+  // to the EXERCISE, not to the slot, and the index alone can't see the two come
+  // apart: removing the open exercise slides a different one into the same index,
+  // so nothing reset and its stopwatch, duration, distance, resistance, set type,
+  // RPE, unilateral side and rest override all carried onto the replacement.
+  // reconcile migrates this across the temp→real id swap, so that reads as the
+  // same exercise (it is).
+  const prevExIdRef = useRef<string | null>(exercises[currentIdx]?.exercise.id ?? null);
   // One-shot: skip the input-prefill effect on a superset reorder where the OPEN
   // exercise only changed index (prevIdxRef suppresses the reset effect, but the
   // prefill effect below would still stomp typed weight/reps — including a
   // half-logged unilateral side's seeded values).
   const skipPrefillRef = useRef(false);
   useEffect(() => {
-    if (prevIdxRef.current !== currentIdx) {
+    const curId = exercises[currentIdx]?.exercise.id ?? null;
+    const indexChanged = prevIdxRef.current !== currentIdx;
+    const exerciseChanged = prevExIdRef.current !== curId;
+    // A superset reorder is neither: it pre-sets prevIdxRef, and the exercise it
+    // moved is the same one. Duplicates of one exercise are caught by the index.
+    if (!indexChanged && !exerciseChanged) return;
+    if (indexChanged) {
       // Bank the outgoing exercise's hand-typed inputs before the prefill effect
       // below reseeds the shared fields for the incoming one. Skipped when the same
       // exercise sits in the workout twice: there's nothing unique to key on, so
       // those fall back to the recomputed seed rather than risk handing one twin
-      // the other's number.
+      // the other's number. Only on an index change — when the list shifted under a
+      // fixed index the outgoing exercise is already gone from it, and this slot now
+      // reads as the one that replaced it.
       const leaving = exercises[prevIdxRef.current];
       const leavingId = leaving?.exercise.id;
       if (leavingId && editedForExRef.current === leavingId
@@ -854,41 +870,44 @@ export default function ActiveWorkoutScreen() {
           ...(leavingAxes.includes('resistance') && { resistance: inputResistance }),
         };
       }
-      // The guard names the exercise whose typed value is IN the inputs, and the
-      // prefill effect below is about to reseed them for the incoming exercise.
-      // That typed value now lives in the draft, so release the guard — leaving
-      // it set would make the effect skip its own restore on the way back.
-      // A superset reorder never reaches this branch (it pre-sets prevIdxRef), so
-      // the guard survives there, which is the point: same exercise, new index.
-      editedForExRef.current = null;
       haptics.selection();
-      prevIdxRef.current = currentIdx;
-      // The stopwatch and the non-weight fields belong to one exercise's active
-      // set — clear them so they never bleed into the next exercise. The leaving
-      // exercise's own in-flight values were just banked above, and the prefill
-      // effect hands them back when it comes round again.
-      resetStopwatch();
-      setInputDuration('0:00');
-      setInputDistance('');
-      setInputResistance('');
-      // Per-set type + intensity are per-set; don't bleed across exercises.
-      setActiveSetType('normal');
-      setInputRpe(null);
-      // Unilateral is per-exercise; reset to bilateral and drop any half-entered
-      // left side so it can't carry into the next exercise.
-      setActiveUnilateral(false);
-      setFirstSide('left');
-      setSideEntering('left');
-      setPendingFirst(null);
-      // A short inter-side rest started for the first side must not bleed its 20s
-      // target onto the next exercise's rest; tear it down (a normal between-sets
-      // rest, override null, is left running).
-      if (restOverrideTarget != null) stopRestTimer();
-      // A pinned superset round rest survives auto-advancing WITHIN its group, but if
-      // the user manually navigates to a different group / a solo exercise, tear it
-      // down so its target can't bleed onto the new exercise's rest strip.
-      else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
+    // The guard names the exercise whose typed value is IN the inputs, and the
+    // prefill effect below is about to reseed them for the incoming exercise.
+    // That typed value now lives in the draft, so release the guard — leaving
+    // it set would make the effect skip its own restore on the way back.
+    // A superset reorder never reaches here (it pre-sets prevIdxRef), so the
+    // guard survives there, which is the point: same exercise, new index.
+    editedForExRef.current = null;
+    prevIdxRef.current = currentIdx;
+    prevExIdRef.current = curId;
+    // The stopwatch and the non-weight fields belong to one exercise's active
+    // set — clear them so they never bleed into the next exercise. The leaving
+    // exercise's own in-flight values were just banked above, and the prefill
+    // effect hands them back when it comes round again. Unconditional, not gated
+    // on indexChanged: an exercise replacing another under a fixed index must not
+    // open holding its distance or machine level any more than its duration.
+    resetStopwatch();
+    setInputDuration('0:00');
+    setInputDistance('');
+    setInputResistance('');
+    // Per-set type + intensity are per-set; don't bleed across exercises.
+    setActiveSetType('normal');
+    setInputRpe(null);
+    // Unilateral is per-exercise; reset to bilateral and drop any half-entered
+    // left side so it can't carry into the next exercise.
+    setActiveUnilateral(false);
+    setFirstSide('left');
+    setSideEntering('left');
+    setPendingFirst(null);
+    // A short inter-side rest started for the first side must not bleed its 20s
+    // target onto the next exercise's rest; tear it down (a normal between-sets
+    // rest, override null, is left running).
+    if (restOverrideTarget != null) stopRestTimer();
+    // A pinned superset round rest survives auto-advancing WITHIN its group, but if
+    // the user manually navigates to a different group / a solo exercise, tear it
+    // down so its target can't bleed onto the new exercise's rest strip.
+    else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
   }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises,
       inputWeight, inputReps, inputDuration, inputDistance, inputResistance, swRunning]);
 
@@ -1523,6 +1542,11 @@ export default function ActiveWorkoutScreen() {
     // copies of one exercise resolve to the SAME row id, and a shared key would
     // hand the second copy the first one's numbers.
     if (editedForExRef.current === tempId) editedForExRef.current = resolved.id;
+    // Same for the reset effect's identity: this is the SAME exercise wearing a
+    // new id, so it must not read as the exercise having changed underneath the
+    // open slot — that would wipe a running stopwatch or a half-entered side the
+    // moment the real row landed.
+    if (prevExIdRef.current === tempId) prevExIdRef.current = resolved.id;
     const tempDraft = inputDraftsRef.current[tempId];
     delete inputDraftsRef.current[tempId];
     const collides = exercisesRef.current.some(
