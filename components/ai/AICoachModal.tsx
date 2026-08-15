@@ -3082,7 +3082,11 @@ export function AICoachModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, accessAllowed, screen, showPaywall, workoutContext]);
 
-  const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
+  // phaseId is passed in rather than read off the prop, because callers run
+  // AFTER handleClose() has told the Goal & Plan screen to clear buildPhaseId.
+  // Reading the prop there yields nothing — that is what silently disabled the
+  // rebuild unlink and let duplicate splits stack up under a phase.
+  const insertRoutineToBackend = async (workout: GeneratedWorkout, phaseId = linkRoutinesToPhaseId) => {
     const clerkId = user?.id;
     if (!isSupabaseConfigured || !clerkId) {
       const routineId = `guest-r-${Date.now()}`;
@@ -3131,11 +3135,11 @@ export function AICoachModal({
     // update (not part of the insert) so a transient failure on the newer
     // program_phase_id column (e.g. PostgREST schema-cache lag) can never block
     // the core routine save — the routine still lands, only the link is skipped.
-    if (linkRoutinesToPhaseId) {
+    if (phaseId) {
       try {
         await supabase
           .from('routines')
-          .update({ program_phase_id: linkRoutinesToPhaseId })
+          .update({ program_phase_id: phaseId })
           .eq('id', routine.id);
       } catch { /* linking is non-critical */ }
     }
@@ -3189,9 +3193,11 @@ export function AICoachModal({
   const handleSaveRoutine = (workout: GeneratedWorkout) => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    // Captured before handleClose() for the same reason as handleSaveRoutines.
+    const phaseId = linkRoutinesToPhaseId;
     handleClose();
     toast.info(`Saving “${workout.name}”…`);
-    insertRoutineToBackend(workout)
+    insertRoutineToBackend(workout, phaseId)
       .then(() => {
         toast.success('Routine saved');
         onRoutineCreated?.();
@@ -3213,6 +3219,10 @@ export function AICoachModal({
   const handleSaveRoutines = (workouts: GeneratedWorkout[], isRetry = false) => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    // Capture the phase BEFORE handleClose(): closing tells the Goal & Plan
+    // screen to reset its buildPhaseId, and reading the prop after that is a
+    // staleness question we should not have to reason about.
+    const phaseId = linkRoutinesToPhaseId;
     handleClose();
     (async () => {
       // Track which item we're attempting so Retry resumes from the failure
@@ -3231,20 +3241,27 @@ export function AICoachModal({
         //
         // Skipped on Retry — the earlier items of this batch already saved AND
         // linked, so unlinking here would strip the work that just succeeded.
-        if (linkRoutinesToPhaseId && !isRetry && supabase) {
-          try {
-            await supabase
-              .from('routines')
-              .update({ program_phase_id: null })
-              .eq('program_phase_id', linkRoutinesToPhaseId);
-          } catch (e) {
-            console.warn('[routine-save] could not clear the phase’s prior split:', e);
+        if (phaseId && !isRetry && supabase) {
+          // .select() so we get the affected rows back: supabase-js RESOLVES
+          // with { error } instead of throwing, so a bare try/catch here would
+          // swallow a failed unlink and silently leave the duplicates behind.
+          const { data: cleared, error: unlinkErr } = await supabase
+            .from('routines')
+            .update({ program_phase_id: null })
+            .eq('program_phase_id', phaseId)
+            .select('id');
+          if (unlinkErr) {
+            // Surface it: continuing would stack a second full split under the
+            // phase, which is exactly the bug this unlink exists to prevent.
+            console.warn('[routine-save] unlink of prior split failed:', unlinkErr.message, unlinkErr.code ?? '');
+            throw unlinkErr;
           }
+          console.log(`[routine-save] cleared ${cleared?.length ?? 0} prior routine(s) from phase ${phaseId}`);
         }
         for (let i = 0; i < workouts.length; i++) {
           attemptingIndex = i;
           toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
-          await insertRoutineToBackend(workouts[i]);
+          await insertRoutineToBackend(workouts[i], phaseId);
         }
         toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
         onRoutineCreated?.();
