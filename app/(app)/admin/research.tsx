@@ -13,7 +13,7 @@
  *
  * Non-admins who deep-link here get a polite "no access" screen.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, BackHandler, Pressable, TextInput,
@@ -320,10 +320,12 @@ function PaperDetailSheet({
   // frame and swallow the keyboard lift below. See useSheetSlide.
   const { mounted, slideStyle } = useSheetSlide(!!openPaper, 350, 200);
   // The sheet outlives the prop by one slide-out, so keep rendering the paper it
-  // was opened with until the animation finishes.
-  const lastPaper = useRef(openPaper);
-  if (openPaper) lastPaper.current = openPaper;
-  const paper = openPaper ?? lastPaper.current;
+  // was opened with until the animation finishes. Committed state rather than a
+  // ref written during render: React may discard a render, and that would leave
+  // a paper behind that the UI never showed.
+  const [lastPaper, setLastPaper] = useState(openPaper);
+  useEffect(() => { if (openPaper) setLastPaper(openPaper); }, [openPaper]);
+  const paper = openPaper ?? lastPaper;
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   // kb_ids that should be marked superseded_by the new paper on approve.
