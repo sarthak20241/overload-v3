@@ -1617,6 +1617,16 @@ function GeneratePlanScreen({
           setRefining(false);
           streamRef.current = null;
         },
+        // Plan generation is Pro, so a free user 402s here. Without this the
+        // 402 fell through to the generic "Something broke on my end", which
+        // reads as a crash for what is really an upgrade prompt. callAICoach-
+        // Streaming only routes 402s when onCapHit is present.
+        onCapHit: (kind) => {
+          setLoading(false);
+          setRefining(false);
+          streamRef.current = null;
+          onRequestUpgrade?.(kind);
+        },
       },
       { forceTool: 'generate_plan' },
     );
@@ -2215,6 +2225,14 @@ function GenerateWorkoutScreen({
           setLoading(false);
           setRefining(false);
           streamRef.current = null;
+        },
+        // Same as the plan generator: a free user's 402 is an upgrade prompt,
+        // not a failure. Without onCapHit it renders as "Something broke".
+        onCapHit: (kind) => {
+          setLoading(false);
+          setRefining(false);
+          streamRef.current = null;
+          onRequestUpgrade?.(kind);
         },
       },
       { forceTool: 'generate_workout' },
