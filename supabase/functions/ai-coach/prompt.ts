@@ -751,11 +751,14 @@ export function buildSystemPrompt(ctx: PromptContext): {
         : mode === 'refine_program'
           ? `\n\n${REFINE_PROGRAM_BEHAVIOR}`
           : '';
-  // Only chat mode carries PROPOSE_TARGETS_TOOL (see baseTools below), so only
-  // chat mode is told it can change targets. Telling the generate/refine/discuss
-  // modes to route target changes through a tool they do not have is an
-  // instruction/tool mismatch, and it burns cached prompt tokens they cannot use.
-  const targetBlock = mode === 'chat' ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
+  // Chat is the only mode that carries PROPOSE_TARGETS_TOOL. Derived ONCE and
+  // used for both the toolset (baseTools below) and the behavior block, so the
+  // two cannot drift apart: a tool without its instructions, or instructions
+  // for a tool that is not there, is an instruction/tool mismatch either way.
+  // Every other mode is matched explicitly in baseTools, so this is also what
+  // keeps a newly added mode from silently inheriting the tool via the fallback.
+  const carriesProposeTargets = mode === 'chat';
+  const targetBlock = carriesProposeTargets ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
   const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
@@ -804,7 +807,9 @@ export function buildSystemPrompt(ctx: PromptContext): {
             ? [GENERATE_PROGRAM_TOOL]
             : mode === 'discuss_program' || mode === 'refine_program'
               ? [...COACH_TOOLS, GENERATE_PROGRAM_TOOL]
-              : [...COACH_TOOLS, PROPOSE_TARGETS_TOOL];
+              : carriesProposeTargets
+                ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
+                : [...COACH_TOOLS];
 
   // Tools: cache them since they're static. Last tool gets the cache_control
   // marker per Anthropic's convention.

@@ -358,15 +358,23 @@ export async function saveProgram(
   //    the reconcile cursor. Same order reconcileActiveProgram uses, so a
   //    failure here leaves applied_phase_seq null and the next foreground
   //    reconcile applies the phase properly instead of skipping it.
+  //    The WHOLE step is non-fatal. By now the program and its phases are
+  //    committed, so rejecting here would surface "couldn't save your program"
+  //    over a program that actually saved — and that toast offers Retry, which
+  //    re-runs saveProgram, archives the good program, and inserts a duplicate.
+  //    Leaving applied_phase_seq null is the designed fallback: the next
+  //    foreground reconcile sees the cursor is unset and applies the phase.
   if (activeSeq != null) {
-    await applyPhaseTargets(supabase, clerkId, program.phases[activeSeq].diet);
-    const { error: cursorErr } = await supabase
-      .from('coach_programs')
-      .update({ applied_phase_seq: activeSeq, updated_at: new Date().toISOString() })
-      .eq('id', prog.id);
-    // Non-fatal: the program and its targets are both correct at this point.
-    // A null cursor just means the next reconcile re-applies the same targets.
-    if (cursorErr) console.warn('[programs] cursor stamp failed', cursorErr);
+    try {
+      await applyPhaseTargets(supabase, clerkId, program.phases[activeSeq].diet);
+      const { error: cursorErr } = await supabase
+        .from('coach_programs')
+        .update({ applied_phase_seq: activeSeq, updated_at: new Date().toISOString() })
+        .eq('id', prog.id);
+      if (cursorErr) throw cursorErr;
+    } catch (e) {
+      console.warn('[programs] target mirror/cursor stamp failed; reconcile will retry', e);
+    }
   }
 
   return { programId: prog.id };
