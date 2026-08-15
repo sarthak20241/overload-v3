@@ -7,12 +7,13 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeInDown, Easing, runOnJS,
+  FadeInDown,
   useSharedValue, useAnimatedStyle, withTiming, withDelay,
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
@@ -256,30 +257,9 @@ function BottomDrawer({
   const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
 
-  // The slide in/out is driven by a transform we own, NOT by Reanimated's
-  // entering/exiting layout animations. A view carrying those keeps the native
-  // frame Reanimated gave it, so every later layout change is ignored — with
-  // SlideInDown on this sheet the keyboard lift below never landed and the
-  // keyboard buried the input and the Save button (the reason this drawer felt
-  // unusable on iOS). A plain transform leaves the sheet under normal layout,
-  // so `marginBottom`/`maxHeight` keep working.
-  const translateY = useSharedValue(height);
-  // Stays true through the closing animation so the sheet can slide back out
-  // before it unmounts.
-  const [mounted, setMounted] = useState(visible);
-
-  useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      translateY.value = withTiming(0, { duration: 320, easing: Easing.out(Easing.cubic) });
-    } else {
-      translateY.value = withTiming(height, { duration: 200 }, (finished) => {
-        if (finished) runOnJS(setMounted)(false);
-      });
-    }
-  }, [visible, height, translateY]);
-
-  const slideStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.value }] }));
+  // Transform-driven slide — see useSheetSlide for why this can't be
+  // Reanimated's entering/exiting (they would pin the keyboard lift below).
+  const { mounted, slideStyle } = useSheetSlide(visible, 320, 200);
 
   // <Portal> has no onRequestClose, so wire the Android hardware back button.
   useEffect(() => {
