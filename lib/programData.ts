@@ -440,6 +440,16 @@ export async function loadActiveProgram(
     .order('seq', { ascending: true });
   if (phaseErr) throw phaseErr;
   const phases = (phaseData ?? []) as ActiveProgramPhaseRow[];
+  // An active program with no phases is corruption, not a real state:
+  // saveProgram rejects zero-phase programs, so the only way to get one is a
+  // failed phase insert whose rollback also failed. Rendering it gives a hero
+  // card with no NOW card and no timeline, which the user can neither read nor
+  // fix. Report "no program" instead, so they get the empty state and can
+  // rebuild. This is the read-side counterpart to the write-side guard.
+  if (phases.length === 0) {
+    console.warn('[programs] active program has no phases; treating as none', prog);
+    return null;
+  }
 
   // Attach the routines built for each phase (routines.program_phase_id, RLS-
   // scoped to this user). Empty until a split is built for the phase.
