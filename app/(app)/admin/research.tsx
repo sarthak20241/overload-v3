@@ -22,14 +22,13 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import Animated, {
-  FadeInDown, SlideInDown, SlideOutDown, Easing,
-} from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Phase 3 contradiction detection. Set on pending rows by the ingest worker
@@ -305,7 +304,7 @@ function PendingCard({
 
 // ─── Detail Sheet ───────────────────────────────────────────────────────────
 function PaperDetailSheet({
-  paper, busy, onClose, onApprove, onReject,
+  paper: openPaper, busy, onClose, onApprove, onReject,
 }: {
   paper: PendingPaper | null;
   busy: boolean;
@@ -317,6 +316,16 @@ function PaperDetailSheet({
   onReject: (reason: string) => void;
 }) {
   const { C } = useTheme();
+  // Transform-driven slide — Reanimated's entering/exiting would pin the sheet's
+  // frame and swallow the keyboard lift below. See useSheetSlide.
+  const { mounted, slideStyle } = useSheetSlide(!!openPaper, 350, 200);
+  // The sheet outlives the prop by one slide-out, so keep rendering the paper it
+  // was opened with until the animation finishes. Committed state rather than a
+  // ref written during render: React may discard a render, and that would leave
+  // a paper behind that the UI never showed.
+  const [lastPaper, setLastPaper] = useState(openPaper);
+  useEffect(() => { if (openPaper) setLastPaper(openPaper); }, [openPaper]);
+  const paper = openPaper ?? lastPaper;
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   // kb_ids that should be marked superseded_by the new paper on approve.
@@ -371,7 +380,7 @@ function PaperDetailSheet({
     return () => sub.remove();
   }, [paper, rejectMode, onClose]);
 
-  if (!paper) return null;
+  if (!mounted || !paper) return null;
 
   const meta = paper.source_meta ?? {};
   const doi = typeof meta.doi === 'string' ? meta.doi : undefined;
@@ -382,13 +391,19 @@ function PaperDetailSheet({
     // a <Modal> is a separate Dialog window inset by the system nav bar, so a
     // bottom sheet floats above it with a gap (see components/ui/Portal.tsx).
     <Portal>
-      <View style={[s.backdrop, { backgroundColor: C.overlay }]}>
-        <Pressable style={{ flex: 1 }} onPress={onClose} />
+      <View style={s.backdrop} pointerEvents={openPaper ? 'auto' : 'none'}>
+        {/* Backdrop tracks the open prop, so the dim clears the moment the sheet
+            is dismissed instead of lingering through the slide-out. */}
+        {openPaper && (
+          <Pressable
+            style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+            onPress={onClose}
+          />
+        )}
         <Animated.View
-          entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-          exiting={SlideOutDown.duration(200)}
           style={[
             s.sheet,
+            slideStyle,
             {
               backgroundColor: C.background,
               // Lift above the keyboard on both platforms — the portal window

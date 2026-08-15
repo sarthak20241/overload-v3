@@ -8,10 +8,11 @@ import {
   StyleSheet, BackHandler, Pressable, ScrollView, Keyboard, Platform,
   useWindowDimensions, Image,
 } from 'react-native';
-import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -101,6 +102,9 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
+  // Transform-driven slide — Reanimated's entering/exiting would pin the sheet's
+  // frame and swallow the keyboard lift below. See useSheetSlide.
+  const { mounted, slideStyle } = useSheetSlide(visible, 350, 200);
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const isGuest = useIsGuestSession();
@@ -380,13 +384,20 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
 
   return (
     <Portal>
-      {visible && (
-      <Pressable style={[s.backdrop, { backgroundColor: C.overlay }]} onPress={resetAndClose}>
+      {mounted && (
+      <View style={s.backdrop} pointerEvents={visible ? 'auto' : 'none'}>
+        {/* Backdrop tracks `visible`, so the dim clears the moment the sheet is
+            dismissed instead of lingering through the slide-out. */}
+        {visible && (
+          <Pressable
+            style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+            onPress={resetAndClose}
+          />
+        )}
         <Animated.View
-          entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-          exiting={SlideOutDown.duration(200)}
           style={[
             s.sheet,
+            slideStyle,
             {
               backgroundColor: C.elevated,
               // Lift above the keyboard (both platforms — rendered in the app's
@@ -763,7 +774,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
             )}
           </Pressable>
         </Animated.View>
-      </Pressable>
+      </View>
       )}
     </Portal>
   );

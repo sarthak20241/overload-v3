@@ -8,8 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft,
-  SlideInDown, SlideOutDown, Easing,
+  FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft, Easing,
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSpring, runOnJS,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
@@ -45,6 +44,7 @@ import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
 import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useToast } from '@/components/ui/Toast';
 import { openMusicApp } from '@/lib/musicLinks';
 import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
@@ -547,6 +547,11 @@ export default function ActiveWorkoutScreen() {
     });
     return () => sub.remove();
   }, [showFinishSheet]);
+
+  // Transform-driven slide for the finish sheet — Reanimated's entering/exiting
+  // would pin its frame and swallow the keyboard lift. See useSheetSlide.
+  const { mounted: finishSheetMounted, slideStyle: finishSlideStyle } =
+    useSheetSlide(showFinishSheet, 350, 200);
 
   // Load routine on mount
   useEffect(() => {
@@ -3371,13 +3376,20 @@ export default function ActiveWorkoutScreen() {
           (backdating), notes, summary, Review with Coach, and — for blank
           sessions only — one-tap save the performed exercises as a reusable routine. */}
       <Portal>
-        {showFinishSheet && (
-        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowFinishSheet(false)}>
+        {finishSheetMounted && (
+        <View style={styles.modalBackdrop} pointerEvents={showFinishSheet ? 'auto' : 'none'}>
+          {/* Backdrop tracks `showFinishSheet`, so the dim clears the moment the
+              sheet is dismissed instead of lingering through the slide-out. */}
+          {showFinishSheet && (
+            <Pressable
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+              onPress={() => setShowFinishSheet(false)}
+            />
+          )}
           <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
             style={[
               styles.modalSheet,
+              finishSlideStyle,
               {
                 backgroundColor: C.elevated,
                 // Same keyboard handling as the custom-exercise sheet: <Portal>
@@ -3540,7 +3552,7 @@ export default function ActiveWorkoutScreen() {
               </View>
             </Pressable>
           </Animated.View>
-        </Pressable>
+        </View>
         )}
       </Portal>
 
