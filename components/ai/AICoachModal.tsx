@@ -2948,6 +2948,7 @@ export function AICoachModal({
   visible,
   onClose,
   onRoutineCreated,
+  onProgramApplied,
   initialScreen = 'menu',
   initialPrompt,
   planSeed,
@@ -2957,6 +2958,10 @@ export function AICoachModal({
   visible: boolean;
   onClose: () => void;
   onRoutineCreated?: () => void;
+  // Fires AFTER saveProgram resolves, not at close. The Apply flow closes the
+  // modal first and persists in the background, so a caller that refetches in
+  // onClose reads the DB before the new program lands and renders stale data.
+  onProgramApplied?: () => void;
   initialScreen?: Screen;
   // When set (from a dashboard insight card), the chat auto-asks this question
   // once on open. Pass initialScreen="chat" alongside it.
@@ -3323,6 +3328,7 @@ export function AICoachModal({
     saveProgram(supabase, clerkId, program)
       .then(() => {
         toast.success('Program set. Your targets are updated.');
+        onProgramApplied?.();
       })
       .catch((err) => {
         console.warn('[program-save] failed:', err?.message ?? err, err?.code ?? '');

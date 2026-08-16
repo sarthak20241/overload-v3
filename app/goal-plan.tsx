@@ -504,6 +504,10 @@ export default function GoalPlanScreen() {
         planSeed={buildSeed ?? undefined}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
         onRoutineCreated={() => load()}
+        // Fires after saveProgram actually commits. The load() in onClose runs
+        // at close time and races the background save, so on Apply it reads
+        // the OLD program and the screen looked stale until the next visit.
+        onProgramApplied={() => load()}
       />
     </View>
   );
