@@ -8,8 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft,
-  SlideInDown, SlideOutDown, Easing,
+  FadeIn, FadeOut, FadeInDown, ZoomIn, SlideInRight, SlideInLeft, Easing,
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, withSpring, runOnJS,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
@@ -20,7 +19,7 @@ import { usePreferences, REST_BETWEEN_SIDES_SECONDS } from '@/hooks/usePreferenc
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName, getGuestAllTimeBestWeight } from '@/lib/guestStore';
-import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture } from '@/lib/activeWorkoutPersistence';
+import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture, type InputDraft } from '@/lib/activeWorkoutPersistence';
 import { findCatalogExerciseByName, resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
@@ -45,6 +44,7 @@ import { RpePickerSheet } from '@/components/workout/RpePickerSheet';
 import { StartTimeEditor } from '@/components/workout/StartTimeEditor';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useToast } from '@/components/ui/Toast';
 import { openMusicApp } from '@/lib/musicLinks';
 import { startRestEndCue, endRestEndCue } from '@/lib/restCue';
@@ -238,8 +238,23 @@ export default function ActiveWorkoutScreen() {
   const [inputWeight, setInputWeight] = useState('0');
   const [inputReps, setInputReps] = useState('10');
   // Previous performance can resolve after an exercise is already on screen.
-  // Track direct edits so that late data never replaces a value the user chose.
-  const inputEditedRef = useRef(false);
+  // Track direct edits so that late data never replaces a value the user chose:
+  // this holds the id of the exercise whose inputs were typed into, or null.
+  // Keyed by exercise rather than index because the two come apart in both
+  // directions — a superset reorder moves the SAME exercise to a new index (the
+  // guard has to survive), and removing an exercise slides a DIFFERENT one under
+  // an unchanged index (the guard must not carry over to it). markEdited() below
+  // is how every input writes it; reconcile migrates it across the temp→real id
+  // swap so late previous-performance data still can't overwrite a typed value.
+  const editedForExRef = useRef<string | null>(null);
+  // Every logger input below is ONE shared field, reused by whichever exercise is
+  // open. Glancing at another exercise mid-rest therefore reseeds them for THAT
+  // exercise, and a hand-typed value would be gone on the way back. Bank the typed
+  // inputs under their exercise's id as we navigate away and hand them back on
+  // return. Keyed by id, not index, so a superset reorder can't point a draft at
+  // the wrong exercise. Only edited values are banked — anything auto-seeded is
+  // recomputed on arrival, which keeps late-resolving history in play.
+  const inputDraftsRef = useRef<Record<string, InputDraft>>({});
   // Phase A — non-weight/rep axes. inputDuration is "m:ss"; inputDistance is km.
   // Each is only rendered when the exercise's metric_type uses that axis.
   const [inputDuration, setInputDuration] = useState('0:00');
@@ -348,6 +363,9 @@ export default function ActiveWorkoutScreen() {
   const swTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const swStartRef = useRef<number | null>(null); // wall-clock ms at the current run's start
   const swBaseRef = useRef(0);                     // seconds accumulated before the current run
+  // Mirrors swElapsed for readers that must not re-run on every 200ms tick — the
+  // index-change effect banks the live value without taking it as a dependency.
+  const swElapsedRef = useRef(0);
   const exerciseStartTimeRef = useRef<number | null>(null);
   const lastSetTimeRef = useRef<number | null>(null);
   const pillsScrollRef = useRef<ScrollView>(null);
@@ -367,6 +385,9 @@ export default function ActiveWorkoutScreen() {
 
   const exercises = workout.exercises;
   const currentEx = exercises[currentIdx];
+  // Every logger input calls this, stamping the open exercise onto the edit
+  // guard. Effects compare editedForExRef against their own exercise's id.
+  const markEdited = () => { editedForExRef.current = currentEx?.exercise.id ?? null; };
 
   // ── Sticky per-exercise note (user_exercise_notes) ──────────────────────────
   // A personal reminder shown under the exercise header every session ("seat
@@ -535,6 +556,11 @@ export default function ActiveWorkoutScreen() {
     return () => sub.remove();
   }, [showFinishSheet]);
 
+  // Transform-driven slide for the finish sheet — Reanimated's entering/exiting
+  // would pin its frame and swallow the keyboard lift. See useSheetSlide.
+  const { mounted: finishSheetMounted, slideStyle: finishSlideStyle } =
+    useSheetSlide(showFinishSheet, 350, 200);
+
   // Load routine on mount
   useEffect(() => {
     if (workout.isActive) {
@@ -603,6 +629,17 @@ export default function ActiveWorkoutScreen() {
     }
 
     const load = async () => {
+      // Starting a session over a discarded one reuses this screen (reloadKey
+      // re-runs the effect without a remount), so drop the previous workout's
+      // typed drafts + edit guard — an exercise common to both would otherwise
+      // open with last session's number. Those drafts now also ride the crash
+      // snapshot, so drop the un-applied resume capture with them: the discard
+      // cleared the snapshot itself (finishWorkout → clearActiveWorkout), but a
+      // capture already pulled out of it would still be sitting here waiting for
+      // its index, and the new session's index 0 could be the one it's waiting for.
+      inputDraftsRef.current = {};
+      editedForExRef.current = null;
+      resumePendingRef.current = null;
       if (id === 'new') {
         workout.startWorkout('new', 'New Workout', [], { ownerId: user?.id ?? null, isGuestSession });
         setLoading(false);
@@ -771,6 +808,8 @@ export default function ActiveWorkoutScreen() {
     setSwRunning(false);
   }, []);
 
+  useEffect(() => { swElapsedRef.current = swElapsed; }, [swElapsed]);
+
   const resetStopwatch = useCallback(() => {
     if (swTimerRef.current) clearInterval(swTimerRef.current);
     swTimerRef.current = null;
@@ -791,38 +830,96 @@ export default function ActiveWorkoutScreen() {
   // A light tick whenever the active exercise changes (chip tap, swipe pager, or
   // auto-advance). Seeded with the initial index so it doesn't fire on mount.
   const prevIdxRef = useRef(currentIdx);
+  // Which exercise was open when this effect last settled. The reset below belongs
+  // to the EXERCISE, not to the slot, and the index alone can't see the two come
+  // apart: removing the open exercise slides a different one into the same index,
+  // so nothing reset and its stopwatch, duration, distance, resistance, set type,
+  // RPE, unilateral side and rest override all carried onto the replacement.
+  // reconcile migrates this across the temp→real id swap, so that reads as the
+  // same exercise (it is).
+  const prevExIdRef = useRef<string | null>(exercises[currentIdx]?.exercise.id ?? null);
   // One-shot: skip the input-prefill effect on a superset reorder where the OPEN
   // exercise only changed index (prevIdxRef suppresses the reset effect, but the
   // prefill effect below would still stomp typed weight/reps — including a
   // half-logged unilateral side's seeded values).
   const skipPrefillRef = useRef(false);
   useEffect(() => {
-    if (prevIdxRef.current !== currentIdx) {
+    const curId = exercises[currentIdx]?.exercise.id ?? null;
+    const indexChanged = prevIdxRef.current !== currentIdx;
+    const exerciseChanged = prevExIdRef.current !== curId;
+    // A superset reorder is neither: it pre-sets prevIdxRef, and the exercise it
+    // moved is the same one. Duplicates of one exercise are caught by the index.
+    if (!indexChanged && !exerciseChanged) return;
+    if (indexChanged) {
+      // Bank the outgoing exercise's hand-typed inputs before the prefill effect
+      // below reseeds the shared fields for the incoming one. Skipped when the same
+      // exercise sits in the workout twice: there's nothing unique to key on, so
+      // those fall back to the recomputed seed rather than risk handing one twin
+      // the other's number. Only on an index change — when the list shifted under a
+      // fixed index the outgoing exercise is already gone from it, and this slot now
+      // reads as the one that replaced it.
+      const leaving = exercises[prevIdxRef.current];
+      const leavingId = leaving?.exercise.id;
+      if (leavingId && editedForExRef.current === leavingId
+          && exercises.filter(e => e.exercise.id === leavingId).length === 1) {
+        // Only the axes this exercise renders — see InputDraft. The stopwatch is
+        // banked from the ref so a running timer's live value is caught without
+        // this effect having to tick along with it.
+        const leavingAxes = metricTypeDef(metricTypeOf(leaving.exercise)).axes;
+        const sw = swElapsedRef.current;
+        inputDraftsRef.current[leavingId] = {
+          weight: inputWeight,
+          reps: inputReps,
+          // While the stopwatch runs, the mm:ss field holds a stale value (it's
+          // only resynced on pause), so read the clock for the text too.
+          ...(leavingAxes.includes('duration') && {
+            duration: swRunning ? formatDuration(sw) : inputDuration,
+            stopwatchSeconds: sw,
+          }),
+          ...(leavingAxes.includes('distance') && { distance: inputDistance }),
+          ...(leavingAxes.includes('resistance') && { resistance: inputResistance }),
+        };
+      }
       haptics.selection();
-      prevIdxRef.current = currentIdx;
-      // The duration stopwatch belongs to one exercise's active set — clear it
-      // (and the typed fallback) so it never bleeds into the next exercise.
-      resetStopwatch();
-      setInputDuration('0:00');
-      // Per-set type + intensity are per-set; don't bleed across exercises.
-      setActiveSetType('normal');
-      setInputRpe(null);
-      // Unilateral is per-exercise; reset to bilateral and drop any half-entered
-      // left side so it can't carry into the next exercise.
-      setActiveUnilateral(false);
-      setFirstSide('left');
-      setSideEntering('left');
-      setPendingFirst(null);
-      // A short inter-side rest started for the first side must not bleed its 20s
-      // target onto the next exercise's rest; tear it down (a normal between-sets
-      // rest, override null, is left running).
-      if (restOverrideTarget != null) stopRestTimer();
-      // A pinned superset round rest survives auto-advancing WITHIN its group, but if
-      // the user manually navigates to a different group / a solo exercise, tear it
-      // down so its target can't bleed onto the new exercise's rest strip.
-      else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
     }
-  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises]);
+    // The guard names the exercise whose typed value is IN the inputs, and the
+    // prefill effect below is about to reseed them for the incoming exercise.
+    // That typed value now lives in the draft, so release the guard — leaving
+    // it set would make the effect skip its own restore on the way back.
+    // A superset reorder never reaches here (it pre-sets prevIdxRef), so the
+    // guard survives there, which is the point: same exercise, new index.
+    editedForExRef.current = null;
+    prevIdxRef.current = currentIdx;
+    prevExIdRef.current = curId;
+    // The stopwatch and the non-weight fields belong to one exercise's active
+    // set — clear them so they never bleed into the next exercise. The leaving
+    // exercise's own in-flight values were just banked above, and the prefill
+    // effect hands them back when it comes round again. Unconditional, not gated
+    // on indexChanged: an exercise replacing another under a fixed index must not
+    // open holding its distance or machine level any more than its duration.
+    resetStopwatch();
+    setInputDuration('0:00');
+    setInputDistance('');
+    setInputResistance('');
+    // Per-set type + intensity are per-set; don't bleed across exercises.
+    setActiveSetType('normal');
+    setInputRpe(null);
+    // Unilateral is per-exercise; reset to bilateral and drop any half-entered
+    // left side so it can't carry into the next exercise.
+    setActiveUnilateral(false);
+    setFirstSide('left');
+    setSideEntering('left');
+    setPendingFirst(null);
+    // A short inter-side rest started for the first side must not bleed its 20s
+    // target onto the next exercise's rest; tear it down (a normal between-sets
+    // rest, override null, is left running).
+    if (restOverrideTarget != null) stopRestTimer();
+    // A pinned superset round rest survives auto-advancing WITHIN its group, but if
+    // the user manually navigates to a different group / a solo exercise, tear it
+    // down so its target can't bleed onto the new exercise's rest strip.
+    else if (restGroupId != null && exercises[currentIdx]?.supersetGroup !== restGroupId) stopRestTimer();
+  }, [currentIdx, resetStopwatch, restOverrideTarget, stopRestTimer, restGroupId, exercises,
+      inputWeight, inputReps, inputDuration, inputDistance, inputResistance, swRunning]);
 
   // Apply a resume's transient capture once currentIdx settles on the resumed
   // index. Declared AFTER the index-change reset effect so, on the commit where the
@@ -843,17 +940,72 @@ export default function ActiveWorkoutScreen() {
       setSwElapsed(cap.stopwatchSeconds);
       setInputDuration(formatDuration(cap.stopwatchSeconds));
     }
+    // Typed-but-not-logged weight/reps. Merged rather than assigned so a draft
+    // banked since this mount (possible when the snapshot's index lagged the live
+    // one, leaving the capture pending until the user navigated here) isn't dropped.
+    if (cap.inputDrafts) {
+      inputDraftsRef.current = { ...inputDraftsRef.current, ...cap.inputDrafts };
+    }
+    // The live inputs are only worth handing back when the open exercise is the one
+    // they were typed for: an auto-seeded value recomputes on arrival anyway, and a
+    // mismatch means the capture belongs to some other exercise (its number is in
+    // the drafts above, and it gets it back on arrival). The guard is a REF, so it
+    // lands synchronously — the prefill effect is declared after this one and runs
+    // on this same commit, and reading the restored guard is what stops it reseeding
+    // the value we just restored.
+    if (cap.editedForExId && cap.editedForExId === currentEx?.exercise.id) {
+      editedForExRef.current = cap.editedForExId;
+      if (cap.inputWeight != null) setInputWeight(cap.inputWeight);
+      if (cap.inputReps != null) setInputReps(cap.inputReps);
+      // Duration only when the stopwatch wasn't in play — the branch above already
+      // set the field from stopwatchSeconds, which is the more authoritative of the
+      // two (a running timer leaves the mm:ss text stale until it's paused).
+      if (!cap.stopwatchSeconds && cap.inputDuration != null) setInputDuration(cap.inputDuration);
+      if (cap.inputDistance != null) setInputDistance(cap.inputDistance);
+      if (cap.inputResistance != null) setInputResistance(cap.inputResistance);
+    }
+    // currentEx is read above but deliberately not a dependency: this fires on the
+    // commit where the index settles, where currentEx is already the resumed
+    // exercise (hydrateFromSnapshot batches exercises + currentIdx together).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentIdx]);
 
   // Mirror the transient per-set capture into the crash snapshot so an OS-kill
   // mid-set survives: a half-logged unilateral side (buffered in pendingFirst, not
-  // yet a committed set) and the inline duration stopwatch. setCaptureState is a
-  // stable ref write (no context re-render); the on-background persist in useWorkout
-  // reads it live, so it lands on the same save that survives a swipe-away.
+  // yet a committed set), the inline duration stopwatch, and the typed-but-not-yet-
+  // logged weight/reps. All of it is screen-local, so it also dies on the ordinary
+  // unmount of minimizing the workout — this snapshot is what the restore effect
+  // above reads back. setCaptureState is a stable ref write (no context re-render);
+  // the on-background persist in useWorkout reads it live, so it lands on the same
+  // save that survives a swipe-away.
   const setCaptureState = workout.setCaptureState;
   useEffect(() => {
-    setCaptureState({ pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed });
-  }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed]);
+    setCaptureState({
+      pendingFirst, sideEntering, firstSide, activeUnilateral, stopwatchSeconds: swElapsed,
+      // The bank and the edit guard are refs, so they can't be dependencies. The
+      // deps below stand in for them: every input writes markEdited() alongside a
+      // setInput*, the index-change effect banks a draft as currentIdx moves, and
+      // reconcile re-keys both from a temp id to the resolved one as it swaps the
+      // exercise — which is why `exercises` is a dependency even though nothing
+      // here reads it. Without it that swap lands in a ref nothing is watching,
+      // and the capture keeps naming an id the workout no longer has: on restore
+      // the id comparison fails and the typed value is dropped.
+      // Copied, not aliased: the ref keeps mutating.
+      inputDrafts: { ...inputDraftsRef.current },
+      inputWeight,
+      inputReps,
+      // The non-weight axes ride along for the same reason: they're the same shared
+      // fields, so minimizing loses a typed distance or machine level exactly the way
+      // it lost a weight. Duration is carried by stopwatchSeconds above whenever the
+      // inline timer was used; inputDuration covers the manual mm:ss field, where the
+      // stopwatch stays at zero and there'd otherwise be nothing to restore from.
+      inputDuration,
+      inputDistance,
+      inputResistance,
+      editedForExId: editedForExRef.current,
+    });
+  }, [setCaptureState, pendingFirst, sideEntering, firstSide, activeUnilateral, swElapsed,
+      inputWeight, inputReps, inputDuration, inputDistance, inputResistance, currentIdx, exercises]);
 
   // A success buzz the moment a rest period crosses its target (rest done).
   const restDoneFiredRef = useRef(false);
@@ -964,21 +1116,38 @@ export default function ActiveWorkoutScreen() {
     }
   }, [workout.isPaused]);
 
-  // A new exercise starts with no local input edits. This is deliberately reset
-  // by index rather than by the exercise object: reconciliation replaces the
-  // object after resolving previous performance and must preserve this guard.
-  useEffect(() => {
-    inputEditedRef.current = false;
-  }, [currentIdx]);
-
-  // Sync input defaults when switching exercises or when its previous
-  // performance resolves in the background. Only an untouched start gate may
-  // receive this seed; logging or editing always wins over asynchronous data.
+  // Seed the shared inputs for whichever exercise is now open — on arrival
+  // (navigation, a superset hop, a remount after minimizing) and when its
+  // previous performance resolves in the background. This runs for exercises
+  // already under way too, not just the start gate: a mid-session exercise must
+  // get ITS numbers back rather than keep whatever the last one seeded. Editing
+  // still wins over asynchronous data.
   useEffect(() => {
     // A superset reorder moved the OPEN exercise to a new index — same exercise,
     // same in-flight inputs; consuming the prefill here would stomp them.
     if (skipPrefillRef.current) { skipPrefillRef.current = false; return; }
-    if (!currentEx || exerciseStarted[currentIdx] || inputEditedRef.current) return;
+    if (!currentEx || editedForExRef.current === currentEx.exercise.id) return;
+    // Back on an exercise we typed into: hand those values back, and restore the
+    // edited guard with them so late data still can't overwrite them.
+    const draft = inputDraftsRef.current[currentEx.exercise.id];
+    if (draft) {
+      delete inputDraftsRef.current[currentEx.exercise.id];
+      setInputWeight(draft.weight);
+      setInputReps(draft.reps);
+      if (draft.duration != null) setInputDuration(draft.duration);
+      // A timed hold comes back PAUSED holding the seconds it had on the way out —
+      // the same deal the resume capture above offers, and for the same reason: the
+      // time spent on another exercise isn't time under tension. ▶ picks it up from
+      // there because the base is what the stopwatch resumes on.
+      if (draft.stopwatchSeconds) {
+        swBaseRef.current = draft.stopwatchSeconds;
+        setSwElapsed(draft.stopwatchSeconds);
+      }
+      if (draft.distance != null) setInputDistance(draft.distance);
+      if (draft.resistance != null) setInputResistance(draft.resistance);
+      editedForExRef.current = currentEx.exercise.id;
+      return;
+    }
     // previousSets excludes warmups, so warmups must not advance its index.
     const completedCount = currentEx.sets
       .filter(s => s.completed && s.set_type !== 'warmup').length;
@@ -999,7 +1168,10 @@ export default function ActiveWorkoutScreen() {
       setInputWeight('0');
       setInputReps(String(currentEx.sets[0]?.reps || 10));
     }
-  }, [currentIdx, currentEx?.previousSets, exerciseStarted]);
+    // exercise.id, so a session restored from a snapshot (or an ad-hoc exercise
+    // whose real row resolves late) seeds once its exercise actually lands —
+    // currentIdx alone can stay 0 across that whole transition.
+  }, [currentIdx, currentEx?.exercise.id, currentEx?.previousSets]);
 
   // Navigate exercises
   const goTo = (idx: number) => {
@@ -1016,7 +1188,7 @@ export default function ActiveWorkoutScreen() {
     const nextSetIndex = currentEx?.sets
       .filter(s => s.completed && s.set_type !== 'warmup').length ?? 0;
     const previousSet = currentEx?.previousSets?.[nextSetIndex];
-    if (previousSet && !inputEditedRef.current) {
+    if (previousSet && editedForExRef.current !== currentEx?.exercise.id) {
       setInputWeight(String(previousSet.weight_kg));
       setInputReps(String(previousSet.reps));
     }
@@ -1160,6 +1332,16 @@ export default function ActiveWorkoutScreen() {
       startRestTimer();
     }
 
+    // Zero the duration stopwatch + field so the next set times from scratch. Done
+    // BEFORE the pager hop below, not only on the stay-put path: the index-change
+    // effect banks the leaving exercise's in-flight duration, and the time just
+    // committed to a set is not that — leaving it would hand this exercise back a
+    // pre-loaded clock next round, which then logs itself into the next set.
+    if (usesDuration) {
+      resetStopwatch();
+      setInputDuration('0:00');
+    }
+
     if (willAdvance) {
       // Hop the pager to the next member; the index-change effects prefill the new
       // exercise's inputs + reset its per-set state, so skip the manual reset below.
@@ -1173,11 +1355,6 @@ export default function ActiveWorkoutScreen() {
     if (prev && prev[nextIdx]) {
       setInputWeight(String(prev[nextIdx].weight_kg));
       setInputReps(String(prev[nextIdx].reps));
-    }
-    // Zero the duration stopwatch + field so the next set times from scratch.
-    if (usesDuration) {
-      resetStopwatch();
-      setInputDuration('0:00');
     }
     // Per-set type + intensity reset to defaults for the next set.
     setActiveSetType('normal');
@@ -1368,6 +1545,28 @@ export default function ActiveWorkoutScreen() {
     }
     const prev = await fetchPreviousSetsForExercise(resolved.id, def.name);
     const localBests = getLocalAllTimeBestWeight(user?.id, [def.name]);
+    // This swaps the exercise's id below, and both the edit guard and the input
+    // drafts are keyed by it — carry them across so a weight typed before the
+    // real row landed isn't orphaned under the dead temp id. The draft only
+    // moves when the resolved id is still unique in the workout: two ad-hoc
+    // copies of one exercise resolve to the SAME row id, and a shared key would
+    // hand the second copy the first one's numbers.
+    if (editedForExRef.current === tempId) editedForExRef.current = resolved.id;
+    // Same for the reset effect's identity: this is the SAME exercise wearing a
+    // new id, so it must not read as the exercise having changed underneath the
+    // open slot — that would wipe a running stopwatch or a half-entered side the
+    // moment the real row landed.
+    if (prevExIdRef.current === tempId) prevExIdRef.current = resolved.id;
+    const tempDraft = inputDraftsRef.current[tempId];
+    delete inputDraftsRef.current[tempId];
+    const collides = exercisesRef.current.some(
+      e => e.exercise.id === resolved.id && e.exercise.id !== tempId);
+    // Two copies resolve one at a time, so the collision only appears when the
+    // SECOND one lands — by which point the first has already banked a draft
+    // under the shared id. Drop it rather than hand it to whichever copy opens
+    // next; both fall back to the recomputed seed.
+    if (collides) delete inputDraftsRef.current[resolved.id];
+    else if (tempDraft) inputDraftsRef.current[resolved.id] = tempDraft;
     workout.updateExercises(prevExs => prevExs.map(e => {
       if (e.exercise.id !== tempId) return e;
       const userStarted = e.sets.some(s => s.completed);
@@ -1678,6 +1877,14 @@ export default function ActiveWorkoutScreen() {
   // mini workout bar is the way back in.
   const handleMinimize = () => {
     Keyboard.dismiss();
+    // This unmounts the screen and every draft living in it, and an in-app
+    // navigation fires no AppState transition, so the debounced write is the only
+    // thing that would have saved the last ~800ms of typing. Reopening inside that
+    // window would read the pre-edit snapshot AND consume it, so the later write
+    // couldn't rescue it either. Flush before leaving. Deliberately not done in an
+    // unmount cleanup: cancelling races the provider re-render that clears
+    // isActive, and a flush landing first would resurrect a discarded session.
+    workout.flushCapture();
     leaveWorkout();
   };
 
@@ -2559,7 +2766,7 @@ export default function ActiveWorkoutScreen() {
         // editing the field sets the stopwatch base so ▶ resumes from it and the
         // logged set reads the same value.
         const onTimeChange = (t: string) => {
-          inputEditedRef.current = true;
+          markEdited();
           setInputDuration(t);
           const secs = parseDuration(t);
           swBaseRef.current = secs;
@@ -2568,7 +2775,10 @@ export default function ActiveWorkoutScreen() {
         return (
           <View key={a} style={[styles.colVal, styles.swCell]}>
             <TouchableOpacity
-              onPress={() => { haptics.tick(); if (swRunning) { pauseStopwatch(); } else { startStopwatch(); } }}
+              // Running the clock is this exercise's value being entered, same as
+              // typing it — mark it, or the bank skips a hold started the usual way
+              // (press ▶, never touch the field) and navigating away loses it.
+              onPress={() => { haptics.tick(); markEdited(); if (swRunning) { pauseStopwatch(); } else { startStopwatch(); } }}
               style={[styles.swBtn, { backgroundColor: swRunning ? C.muted : Colors.primary }]}
               hitSlop={6}
               accessibilityLabel={swRunning ? 'Pause timer' : 'Start timer'}
@@ -2605,42 +2815,42 @@ export default function ActiveWorkoutScreen() {
       const cfg = isWeight
         ? {
             value: inputWeight,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputWeight(value); },
+            onChangeText: (value: string) => { markEdited(); setInputWeight(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); },
-            inc: () => { inputEditedRef.current = true; setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); },
+            dec: () => { markEdited(); setInputWeight(String(Math.max(0, (parseFloat(inputWeight) || 0) - 2.5))); },
+            inc: () => { markEdited(); setInputWeight(String((parseFloat(inputWeight) || 0) + 2.5)); },
           }
         : a === 'reps'
         ? {
             // decimal-pad so a partial rep (e.g. 8.5) can be typed; ± steps stay whole.
             value: inputReps,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputReps(value); },
+            onChangeText: (value: string) => { markEdited(); setInputReps(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))); },
-            inc: () => { inputEditedRef.current = true; setInputReps(String((parseFloat(inputReps) || 0) + 1)); },
+            dec: () => { markEdited(); setInputReps(String(Math.max(0, (parseFloat(inputReps) || 0) - 1))); },
+            inc: () => { markEdited(); setInputReps(String((parseFloat(inputReps) || 0) + 1)); },
           }
         : a === 'duration'
         ? {
             value: inputDuration,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputDuration(value); },
+            onChangeText: (value: string) => { markEdited(); setInputDuration(value); },
             keyboardType: (Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default') as 'numbers-and-punctuation' | 'default',
-            dec: () => { inputEditedRef.current = true; setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))); },
-            inc: () => { inputEditedRef.current = true; setInputDuration(formatDuration(parseDuration(inputDuration) + 15)); },
+            dec: () => { markEdited(); setInputDuration(formatDuration(Math.max(0, parseDuration(inputDuration) - 15))); },
+            inc: () => { markEdited(); setInputDuration(formatDuration(parseDuration(inputDuration) + 15)); },
           }
         : a === 'distance'
         ? {
             value: inputDistance,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputDistance(value); },
+            onChangeText: (value: string) => { markEdited(); setInputDistance(value); },
             keyboardType: 'decimal-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))); },
-            inc: () => { inputEditedRef.current = true; setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)); },
+            dec: () => { markEdited(); setInputDistance(String(Math.max(0, Math.round(((parseFloat(inputDistance) || 0) - 0.5) * 100) / 100))); },
+            inc: () => { markEdited(); setInputDistance(String(Math.round(((parseFloat(inputDistance) || 0) + 0.5) * 100) / 100)); },
           }
         : {
             value: inputResistance,
-            onChangeText: (value: string) => { inputEditedRef.current = true; setInputResistance(value); },
+            onChangeText: (value: string) => { markEdited(); setInputResistance(value); },
             keyboardType: 'number-pad' as const,
-            dec: () => { inputEditedRef.current = true; setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))); },
-            inc: () => { inputEditedRef.current = true; setInputResistance(String((parseFloat(inputResistance) || 0) + 1)); },
+            dec: () => { markEdited(); setInputResistance(String(Math.max(0, (parseFloat(inputResistance) || 0) - 1))); },
+            inc: () => { markEdited(); setInputResistance(String((parseFloat(inputResistance) || 0) + 1)); },
           };
 
       return (
@@ -3473,13 +3683,20 @@ export default function ActiveWorkoutScreen() {
           (backdating), notes, summary, Review with Coach, and — for blank
           sessions only — one-tap save the performed exercises as a reusable routine. */}
       <Portal>
-        {showFinishSheet && (
-        <Pressable style={[styles.modalBackdrop, { backgroundColor: C.overlay }]} onPress={() => setShowFinishSheet(false)}>
+        {finishSheetMounted && (
+        <View style={styles.modalBackdrop} pointerEvents={showFinishSheet ? 'auto' : 'none'}>
+          {/* Backdrop tracks `showFinishSheet`, so the dim clears the moment the
+              sheet is dismissed instead of lingering through the slide-out. */}
+          {showFinishSheet && (
+            <Pressable
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+              onPress={() => setShowFinishSheet(false)}
+            />
+          )}
           <Animated.View
-            entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
             style={[
               styles.modalSheet,
+              finishSlideStyle,
               {
                 backgroundColor: C.elevated,
                 // Same keyboard handling as the custom-exercise sheet: <Portal>
@@ -3642,7 +3859,7 @@ export default function ActiveWorkoutScreen() {
               </View>
             </Pressable>
           </Animated.View>
-        </Pressable>
+        </View>
         )}
       </Portal>
 
