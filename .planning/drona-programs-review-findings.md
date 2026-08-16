@@ -6,11 +6,13 @@ that PR briefly carried a sync of the deployed `ai-coach` source into the repo.
 The Programs sync was then dropped from #97 to keep it reviewable, so these
 findings had no other home.
 
-**Status 2026-08-14:** findings 1, 2, and 3 are FIXED in [#99][pr99], the PR that
+**Status 2026-08-16: all four findings are FIXED in [#99][pr99]**, the PR that
 lands the whole Programs surface (migrations, edge function, client, Goal & Plan
 screen) into `main`. Each was re-verified against that branch before fixing, not
-taken on faith from this doc. Finding 4 needs measurement rather than a code
-change and is still open. The "do not deploy from main" warning at the bottom
+taken on faith from this doc — one entry in an earlier round turned out to be a
+false positive on re-reading, so treat the claims here as leads, not verdicts.
+Finding 4 needed measurement rather than a code change; that measurement is now
+recorded in its section. The "do not deploy from main" warning at the bottom
 stops applying once #99 merges.
 
 Everything below describes code that was **already running in production**
@@ -93,7 +95,7 @@ Worth more attention on `PHASE_DIET_SCHEMA` and especially `PROPOSE_TARGETS_TOOL
 where `calories` and `protein_g` flow to the user's profile. An out-of-range
 calorie target there is a real user-facing problem, not just malformed data.
 
-## 4. Confirm the plan-sized token budget covers a worst-case program — STILL OPEN
+## 4. Confirm the plan-sized token budget covers a worst-case program — FIXED in #99
 
 `supabase/functions/ai-coach/index.ts`, the `maxTokens` selection (both the
 streaming and non-streaming paths).
@@ -107,6 +109,16 @@ and surfaced as `tool_truncated`. But the user still loses the turn. Worth
 measuring a serialized worst-case payload against the budget before the feature
 ships more widely, and either raising the budget or bounding program size per
 finding 3.
+
+**Resolved (2026-08-16, PR #99).** Measured against a real 6-phase emission:
+~465 chars of prose per phase plus ~250 of JSON keys/numbers, so a schema-max
+12-phase program with a 5-sentence rationale is ~9.5k chars, roughly 2.4-2.7k
+tokens. `GENERATE_PLAN_MAX_TOKENS` (4096) covered that but thinly. Program modes
+now use their own `GENERATE_PROGRAM_MAX_TOKENS` (6144) on both the streaming and
+non-streaming paths. Anthropic bills actual output, so the higher ceiling is free
+on the typical 2-6 phase program. Both halves of finding 3 also landed: the tool
+schema carries `maxItems: 12`, and `structuredToProgram` now enforces that cap
+client-side along with a 2000-char clamp on free-text fields.
 
 ---
 
