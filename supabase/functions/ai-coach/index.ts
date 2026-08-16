@@ -348,7 +348,7 @@ async function executeTool(
       // Escape PostgREST's LIKE wildcards so a query like "50%" searches for
       // the literal string instead of matching everything.
       if (q) query = query.ilike("name", `%${q.replace(/[%_]/g, "\\$&")}%`);
-      if (muscle) query = query.ilike("muscle_group", muscle);
+      if (muscle) query = query.ilike("muscle_group", muscle.replace(/[%_]/g, "\\$&"));
       const { data, error } = await query.order("name").limit(limit);
       if (error) return { error: error.message };
       const rows = data ?? [];

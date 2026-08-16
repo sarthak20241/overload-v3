@@ -1209,9 +1209,12 @@ function ChatScreen({
   // Apply one proposed edit to the live session. The screen owns the actual
   // mutation (and the toast); we only record what came back so a card whose
   // ops were all refused can say why instead of looking like it worked.
+  const appliedRef = useRef<Set<string>>(new Set());
   const handleApplyEdit = useCallback((messageId: string) => {
     const entry = edits.find((e) => e.messageId === messageId);
     if (!entry || entry.result || !onApplyWorkoutEdit) return;
+    if (appliedRef.current.has(messageId)) return;
+    appliedRef.current.add(messageId);
     const result = onApplyWorkoutEdit(entry.edit.operations);
     setEdits((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, result } : e)));
   }, [edits, onApplyWorkoutEdit]);
