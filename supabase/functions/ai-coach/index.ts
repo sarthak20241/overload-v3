@@ -54,6 +54,15 @@ const MAX_TOOL_ITERATIONS = 5;
 const CHAT_MAX_TOKENS = 1024;
 const GENERATE_WORKOUT_MAX_TOKENS = 2048;
 const GENERATE_PLAN_MAX_TOKENS = 4096;
+// generate_program has its own ceiling. Measured from a real 6-phase emission
+// (~465 chars of prose per phase + ~250 of JSON keys/numbers) a schema-max
+// 12-phase program with a 5-sentence rationale is ~9.5k chars, roughly 2.4-2.7k
+// tokens. 4096 covers that but thinly; a rationale that runs long, or a
+// verbose model turn, ate the margin. Anthropic bills actual output, so the
+// extra ceiling costs nothing on the typical 2-6 phase program and only exists
+// for the tail. Truncation is still hard-errored (tool_truncated), never
+// silently dropped, so this is about avoiding a retry, not about correctness.
+const GENERATE_PROGRAM_MAX_TOKENS = 6144;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // Hard cap on a single Anthropic call — a guard against a HUNG upstream, not
 // a latency budget. The original 30s was set from n=4 production samples and
@@ -2340,7 +2349,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
+  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode, freeTier });
   // Free tier is chat-only: strip the terminal generation tools (plan /
   // workout emission is Pro) and tell Drona so it answers in coach voice
   // instead of attempting a tool that isn't there. Appended AFTER the
@@ -2411,8 +2420,9 @@ Deno.serve(async (req) => {
     // short (Anthropic bills actual output, so the larger ceiling is free
     // when unused).
     const maxTokens =
-      forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
-        || forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
+      forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
+        ? GENERATE_PROGRAM_MAX_TOKENS
+        : forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
         ? GENERATE_PLAN_MAX_TOKENS
         : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
           ? GENERATE_WORKOUT_MAX_TOKENS
@@ -2546,8 +2556,9 @@ Deno.serve(async (req) => {
   // generate-sized ceiling because the session ends with an emission of
   // the matching terminal tool.
   const nonStreamMaxTokens =
-    forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
-      || forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
+    forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
+      ? GENERATE_PROGRAM_MAX_TOKENS
+      : forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
       ? GENERATE_PLAN_MAX_TOKENS
       : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
         ? GENERATE_WORKOUT_MAX_TOKENS

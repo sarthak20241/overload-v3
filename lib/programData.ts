@@ -75,8 +75,14 @@ export function daysBetweenISO(aISO: string, bISO: string): number {
 }
 
 // ── Normalizer (generate_program tool input -> GeneratedProgram) ──────────────
+// Free-text fields are capped so an oversized or adversarial emission cannot
+// push unbounded text into Postgres. 2000 chars is well past any legitimate
+// directive/rationale (the prompt asks for 1-5 sentences) and far under any
+// column limit; slicing rather than rejecting keeps a slightly-long but valid
+// program saveable.
+const MAX_TEXT = 2000;
 const strOrUndef = (v: unknown): string | undefined =>
-  typeof v === 'string' && v.length > 0 ? v : undefined;
+  typeof v === 'string' && v.length > 0 ? v.slice(0, MAX_TEXT) : undefined;
 const numOrUndef = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 const intOrUndef = (v: unknown): number | undefined => {
@@ -91,7 +97,9 @@ const intOrUndef = (v: unknown): number | undefined => {
  * (user_profiles_nutrition_targets_nonneg, migration 0069) just requires >= 0.
  * So an out-of-range emission would otherwise flow straight into
  * user_profiles and drive the FUEL card, Nutrition screen, and readiness
- * diet directives. Clamp here, on the one path everything shares.
+ * diet directives. Applied in TWO places: normalizeDiet (LLM output on the way
+ * in) and applyPhaseTargets (the single choke point for every write to
+ * user_profiles, which also covers rows already stored in coach_program_phases).
  */
 export const DIET_BOUNDS = {
   calories: [800, 6000],
@@ -153,7 +161,9 @@ function normalizePhase(v: unknown, i: number): ProgramPhase {
 
 export function structuredToProgram(input: Record<string, unknown>): GeneratedProgram {
   const phases = Array.isArray(input.phases)
-    ? (input.phases as unknown[]).map(normalizePhase)
+    // Cap at the tool schema's maxItems (12). The schema only steers the model,
+    // so enforce it here too.
+    ? (input.phases as unknown[]).slice(0, 12).map(normalizePhase)
     : [];
   return {
     title: strOrUndef(input.title) ?? 'Your Program',
@@ -177,17 +187,24 @@ export function structuredToProgram(input: Record<string, unknown>): GeneratedPr
  */
 export function computeActivePhaseSeq(
   startDateISO: string,
-  phases: Array<{ duration_weeks: number }>,
+  phases: Array<{ duration_weeks: number; start_offset_weeks?: number }>,
   todayISO: string,
 ): number | null {
   const days = daysBetweenISO(startDateISO, todayISO);
   if (days < 0) return null;
-  let offsetWeeks = 0;
+  // Prefer the PERSISTED start_offset_weeks when the row carries one (the
+  // load path), and only derive it cumulatively when it does not (the save
+  // path, which is what computes those offsets in the first place). Deriving
+  // unconditionally was correct only while seq always equalled array index;
+  // an update-in-place that edits one phase's duration would silently desync
+  // the DB offsets from the recomputed ones with no error surfaced.
+  let derivedOffset = 0;
   for (let i = 0; i < phases.length; i++) {
+    const offsetWeeks = phases[i].start_offset_weeks ?? derivedOffset;
     const startD = offsetWeeks * 7;
     const endD = (offsetWeeks + phases[i].duration_weeks) * 7;
     if (days >= startD && days < endD) return i;
-    offsetWeeks += phases[i].duration_weeks;
+    derivedOffset = offsetWeeks + phases[i].duration_weeks;
   }
   return null;
 }
@@ -211,8 +228,15 @@ type Supa = SupabaseClient;
 export async function applyPhaseTargets(
   supabase: Supa,
   clerkId: string,
-  diet: ProgramDiet,
+  rawDiet: ProgramDiet,
 ): Promise<void> {
+  // Clamp HERE, at the one function every write to user_profiles targets goes
+  // through, not only at LLM-normalize time. reconcileActiveProgram mirrors
+  // rows already stored in coach_program_phases, and those columns have no DB
+  // CHECK bounds, so a row edited out-of-range via the REST API (self-directed,
+  // RLS is owner-only) would otherwise flow unclamped into the FUEL card and
+  // readiness on the next foreground sync.
+  const diet = clampDiet(rawDiet);
   const payload: Record<string, unknown> = { clerk_user_id: clerkId };
   if (diet.calories != null) payload.daily_calorie_target = diet.calories;
   if (diet.protein_g != null) payload.protein_target_g = diet.protein_g;
@@ -266,11 +290,16 @@ export async function saveProgram(
   // 1. Archive the prior active program (unique-index requirement). Capture
   //    which rows we archived first so a later failure can put them back
   //    rather than leaving the user with nothing.
-  const { data: priorActive } = await supabase
+  const { data: priorActive, error: priorErr } = await supabase
     .from('coach_programs')
     .select('id')
     .eq('user_id', clerkId)
     .eq('status', 'active');
+  // If we cannot READ the prior program we must not proceed to ARCHIVE it:
+  // the archive would still succeed, priorIds would be empty, and a later
+  // rollback would have nothing to restore — the user's real program is gone.
+  // Failing here leaves everything untouched, and Retry runs the whole thing.
+  if (priorErr) throw priorErr;
   const priorIds = ((priorActive ?? []) as { id: string }[]).map((r) => r.id);
   {
     const { error } = await supabase

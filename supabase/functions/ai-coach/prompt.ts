@@ -22,6 +22,12 @@ export interface PromptContext {
   // prompt's recap assumption breaks and the model falls back to writing
   // the plan as prose, which the client can't save.
   mode?: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program';
+  // Free tier gets no terminal tools (index.ts strips them). The prompt must
+  // agree, or a free chat user is told to change targets "only via the
+  // propose_targets tool" that is not in their toolkit. Passing tier in here
+  // lets the TARGET_CHANGE_BEHAVIOR block and the tool derive from the SAME
+  // predicate instead of two layers that can drift.
+  freeTier?: boolean;
 }
 
 export interface ResearchSnippet {
@@ -757,7 +763,7 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // for a tool that is not there, is an instruction/tool mismatch either way.
   // Every other mode is matched explicitly in baseTools, so this is also what
   // keeps a newly added mode from silently inheriting the tool via the fallback.
-  const carriesProposeTargets = mode === 'chat';
+  const carriesProposeTargets = mode === 'chat' && !ctx.freeTier;
   const targetBlock = carriesProposeTargets ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
   const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [

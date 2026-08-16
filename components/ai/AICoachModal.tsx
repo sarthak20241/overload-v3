@@ -1065,16 +1065,22 @@ function ChatScreen({
       return;
     }
     setApplyingTargets(true);
+    // Pin the proposal we are submitting. If a NEWER propose_targets streams
+    // in while this one is in flight, an unconditional setTargetProposal(null)
+    // on success would discard that newer, never-applied card. Clear only if
+    // the card is still the one we submitted.
+    const submitted = targetProposal;
     try {
       await applyPhaseTargets(supabase, userId, {
-        calories: targetProposal.calories,
-        protein_g: targetProposal.protein_g,
-        carb_g: targetProposal.carb_g,
-        fat_g: targetProposal.fat_g,
+        calories: submitted.calories,
+        protein_g: submitted.protein_g,
+        carb_g: submitted.carb_g,
+        fat_g: submitted.fat_g,
       });
       toast.success('Targets updated');
-      setTargetProposal(null);
-    } catch {
+      setTargetProposal((cur) => (cur === submitted ? null : cur));
+    } catch (e) {
+      console.warn('[targets] apply failed:', e);
       toast.error("Couldn't update your targets");
     } finally {
       setApplyingTargets(false);
@@ -3252,6 +3258,13 @@ export function AICoachModal({
       // point instead of replaying earlier items that already committed —
       // otherwise a failure on item N produces duplicates of 0..N-1 on retry.
       let attemptingIndex = 0;
+      // Set only once the unlink has succeeded (or was not needed). Retry
+      // passes this as isRetry: a failure INSIDE the unlink must retry as a
+      // fresh attempt (unlink again), because nothing has saved yet, whereas
+      // a failure in the save loop must NOT unlink again, because the earlier
+      // items are already saved and linked. Keying isRetry off "was the batch
+      // ever attempted" made an unlink failure skip the unlink forever.
+      let unlinkDone = false;
       try {
         // "Rebuild split" REPLACES a phase's split, so clear the phase's
         // previous routines first. Without this, the old routines keep their
@@ -3281,6 +3294,7 @@ export function AICoachModal({
           }
           console.log(`[routine-save] cleared ${cleared?.length ?? 0} prior routine(s) from phase ${phaseId}`);
         }
+        unlinkDone = true;
         for (let i = 0; i < workouts.length; i++) {
           attemptingIndex = i;
           toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
@@ -3302,7 +3316,7 @@ export function AICoachModal({
         if (attemptingIndex > 0) onRoutineCreated?.();
         toast.error(
           `Couldn't save “${workouts[attemptingIndex]?.name}” (${attemptingIndex + 1}/${workouts.length})${err?.message ? ` — ${String(err.message).slice(0, 60)}` : ''}`,
-          { action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining, true) } },
+          { action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining, unlinkDone) } },
         );
       } finally {
         inFlightRef.current = false;
