@@ -25,7 +25,7 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -39,6 +39,7 @@ import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, METRIC_TYPES, metricTypeOf
 import type { MetricType } from '@/lib/exercises';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 
@@ -80,6 +81,14 @@ export default function ExerciseLibraryScreen() {
   // Delete confirmation (with usage counts so the warning is concrete)
   const [deleteTarget, setDeleteTarget] = useState<DbExercise | null>(null);
   const [deleteUsage, setDeleteUsage] = useState<{ routines: number; sets: number } | null>(null);
+
+  // Transform-driven slide — Reanimated's entering/exiting would pin the sheet's
+  // frame and swallow the keyboard lift below. See useSheetSlide.
+  const { mounted: sheetMounted, slideStyle } = useSheetSlide(!!editTarget, 300, 200);
+  // The sheet outlives `editTarget` by one slide-out, so keep the row it was
+  // opened for around to render (and to hand to the delete action) until then.
+  const [sheetTarget, setSheetTarget] = useState<DbExercise | null>(null);
+  useEffect(() => { if (editTarget) setSheetTarget(editTarget); }, [editTarget]);
 
   // Keyboard lift for the edit sheet — same pattern as ExercisePickerSheet.
   const [kbHeight, setKbHeight] = useState(0);
@@ -527,13 +536,20 @@ export default function ExerciseLibraryScreen() {
 
       {/* ── Edit sheet (own exercises only) ── */}
       <Portal>
-        {editTarget && (
-          <Pressable style={[styles.backdrop, { backgroundColor: C.overlay }]} onPress={closeEdit}>
+        {sheetMounted && sheetTarget && (
+          <View style={styles.backdrop} pointerEvents={editTarget ? 'auto' : 'none'}>
+            {/* Backdrop tracks the open state, so the dim clears the moment the
+                sheet is dismissed instead of lingering through the slide-out. */}
+            {editTarget && (
+              <Pressable
+                style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+                onPress={closeEdit}
+              />
+            )}
             <Animated.View
-              entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
-              exiting={SlideOutDown.duration(200)}
               style={[
                 styles.sheet,
+                slideStyle,
                 {
                   backgroundColor: C.elevated,
                   marginBottom: kbHeight,
@@ -634,7 +650,7 @@ export default function ExerciseLibraryScreen() {
                     <Text style={styles.saveBtnText}>Save Changes</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => askDelete(editTarget)}
+                    onPress={() => askDelete(sheetTarget)}
                     style={[styles.deleteBtn, { borderColor: 'rgba(239,68,68,0.3)', backgroundColor: 'rgba(239,68,68,0.08)' }]}
                   >
                     <Feather name="trash-2" size={14} color="#f87171" />
@@ -643,7 +659,7 @@ export default function ExerciseLibraryScreen() {
                 </View>
               </Pressable>
             </Animated.View>
-          </Pressable>
+          </View>
         )}
       </Portal>
 

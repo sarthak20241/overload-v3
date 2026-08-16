@@ -10,7 +10,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   FadeInDown, useSharedValue, useAnimatedStyle, withTiming,
-  SlideInDown, SlideOutDown, FadeIn, FadeOut, Easing,
+  FadeIn, FadeOut,
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -21,6 +21,7 @@ import { getLevelInfo, getTierForLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
@@ -300,6 +301,9 @@ export default function ProfileScreen() {
   // keyboard itself, so this would just scroll the hidden background.
   const { kbHeight, scrollRef, scrollFocusedIntoView, scrollProps } =
     useKeyboardAwareScroll(!bugModalOpen);
+  // Transform-driven slide — Reanimated's entering/exiting would pin the sheet's
+  // frame and swallow the keyboard lift below. See useSheetSlide.
+  const { mounted: bugSheetMounted, slideStyle: bugSlideStyle } = useSheetSlide(bugModalOpen, 300, 200);
   const [bugKbHeight, setBugKbHeight] = useState(0);
   useEffect(() => {
     if (!bugModalOpen) { setBugKbHeight(0); return; }
@@ -1231,17 +1235,21 @@ export default function ProfileScreen() {
           edge-to-edge a <Modal> is a separate Dialog window inset by the
           system nav bar, so a bottom sheet floats above it with a gap. */}
       <Portal>
-        {bugModalOpen && (
-        <Animated.View
-          entering={FadeIn.duration(200)}
-          exiting={FadeOut.duration(150)}
-          style={[styles.modalBackdrop, { backgroundColor: C.overlay }]}
-        >
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setBugModalOpen(false)} />
+        {bugSheetMounted && (
+        <View style={styles.modalBackdrop} pointerEvents={bugModalOpen ? 'auto' : 'none'}>
+          {/* Backdrop tracks `bugModalOpen`, so the dim clears the moment the
+              sheet is dismissed instead of lingering through the slide-out. */}
+          {bugModalOpen && (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              exiting={FadeOut.duration(150)}
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+            >
+              <Pressable style={StyleSheet.absoluteFill} onPress={() => setBugModalOpen(false)} />
+            </Animated.View>
+          )}
           <Animated.View
-            entering={SlideInDown.duration(300).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[styles.bugSheet, {
+            style={[styles.bugSheet, bugSlideStyle, {
               backgroundColor: C.elevated,
               borderTopColor: C.borderSubtle,
               // Lift above the keyboard on both platforms — the portal window
@@ -1350,7 +1358,7 @@ export default function ProfileScreen() {
                 )}
               </TouchableOpacity>
           </Animated.View>
-        </Animated.View>
+        </View>
         )}
       </Portal>
 

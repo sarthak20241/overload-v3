@@ -7,12 +7,13 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
-  FadeInDown, SlideInDown, SlideOutDown, Easing,
+  FadeInDown,
   useSharedValue, useAnimatedStyle, withTiming, withDelay,
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
@@ -256,6 +257,10 @@ function BottomDrawer({
   const insets = useSafeAreaInsets();
   const [kbHeight, setKbHeight] = useState(0);
 
+  // Transform-driven slide — see useSheetSlide for why this can't be
+  // Reanimated's entering/exiting (they would pin the keyboard lift below).
+  const { mounted, slideStyle } = useSheetSlide(visible, 320, 200);
+
   // <Portal> has no onRequestClose, so wire the Android hardware back button.
   useEffect(() => {
     if (!visible) return;
@@ -287,39 +292,39 @@ function BottomDrawer({
   }, [visible]);
 
   const sheetMaxHeight = (height - kbHeight) * 0.9;
-  // Lift above the keyboard on both platforms — rendered in the app's own
-  // window via <Portal>, which isn't auto-resized for the keyboard.
-  const sheetMarginBottom = kbHeight;
 
   return (
     <Portal>
-      {visible && (
-      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
-        {(
-          <Animated.View
-            entering={SlideInDown.duration(320).easing(Easing.out(Easing.cubic))}
-            exiting={SlideOutDown.duration(200)}
-            style={[
-              styles.drawerSheet,
-              {
-                marginBottom: sheetMarginBottom,
-                maxHeight: sheetMaxHeight,
-                backgroundColor: C.elevated,
-                borderColor: C.border,
-                // Flush to the screen bottom now (Portal), so clear the gesture bar.
-                paddingBottom: insets.bottom,
-              },
-            ]}
-          >
-            {/* Plain View — a Pressable here would steal pan gestures from any
-                ScrollView in {children}, breaking scroll inside the drawer. */}
-            <View style={{ flexShrink: 1 }}>
-              <View style={[styles.drawerHandle, { backgroundColor: C.handle }]} />
-              {children}
-            </View>
-          </Animated.View>
+      {mounted && (
+      <View style={{ flex: 1, justifyContent: 'flex-end' }} pointerEvents={visible ? 'auto' : 'none'}>
+        {/* Backdrop tracks `visible`, so it clears the moment the sheet is
+            dismissed instead of lingering through the slide-out. */}
+        {visible && (
+          <Pressable style={[StyleSheet.absoluteFillObject, { backgroundColor: C.overlay }]} onPress={onClose} />
         )}
+        <Animated.View
+          style={[
+            styles.drawerSheet,
+            slideStyle,
+            {
+              // Lift above the keyboard: this sheet renders in the app's own
+              // window via <Portal>, which is not resized for the keyboard.
+              marginBottom: kbHeight,
+              maxHeight: sheetMaxHeight,
+              backgroundColor: C.elevated,
+              borderColor: C.border,
+              // Flush to the screen bottom now (Portal), so clear the gesture bar.
+              paddingBottom: insets.bottom,
+            },
+          ]}
+        >
+          {/* Plain View — a Pressable here would steal pan gestures from any
+              ScrollView in {children}, breaking scroll inside the drawer. */}
+          <View style={{ flexShrink: 1 }}>
+            <View style={[styles.drawerHandle, { backgroundColor: C.handle }]} />
+            {children}
+          </View>
+        </Animated.View>
       </View>
       )}
     </Portal>

@@ -21,7 +21,12 @@ export interface PromptContext {
   // confirmation call the terminal tool. Without this branch the refine
   // prompt's recap assumption breaks and the model falls back to writing
   // the plan as prose, which the client can't save.
-  mode?: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program';
+  // 'live_workout' — the chat opened from an ACTIVE workout. Read toolkit
+  // plus edit_active_workout, the one tool that can actually change the
+  // in-progress session. Loaded with LIVE_WORKOUT_BEHAVIOR. Without this
+  // mode the model has no way to touch the session but nothing tells it so,
+  // and it answers "done, swapped it" for a change that never happened.
+  mode?: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program' | 'live_workout';
   // Free tier gets no terminal tools (index.ts strips them). The prompt must
   // agree, or a free chat user is told to change targets "only via the
   // propose_targets tool" that is not in their toolkit. Passing tier in here
@@ -373,6 +378,28 @@ export const COACH_TOOLS: AnthropicTool[] = [
     },
   },
   {
+    name: 'coach_search_exercise_catalog',
+    description:
+      'Search the app\'s exercise catalog by name or muscle group. Use this whenever you need the EXACT name of an exercise as the app knows it — before proposing a substitution, and ALWAYS before naming an exercise in edit_active_workout. The catalog has ~800 entries with inconsistent phrasing ("Seated Cable Row" and "Seated Cable Rows" both exist, "T-Bar Row" is hyphenated, there is no "Chest Supported Row"), so a name you invent will not match and creates a junk duplicate in the user\'s history. Returns name, muscle_group, category and metric_type for each match.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Substring to match against exercise names, case-insensitive. Keep it SHORT and generic — "row", "chest press", "curl" — so you see the full family of variants rather than one guess. Omit to list by muscle alone.',
+        },
+        muscle: {
+          type: 'string',
+          description: 'Optional muscle-group filter: Chest, Back, Shoulders, Quads, Hamstrings, Glutes, Biceps, Triceps, Calves, Core, Cardio.',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Max rows to return. Default 40, max 100.',
+        },
+      },
+    },
+  },
+  {
     name: 'coach_query_sql',
     description:
       'Read-only SQL escape valve. Use ONLY when no typed tool fits — e.g. cross-cutting filters, custom aggregates, or questions that combine multiple tables in an unusual way ("find me every set above 80% of my e1RM in the last month", "which muscle have I undertrained relative to its MAV"). The query is automatically scoped to the calling user by RLS. Keep queries short and specific. Returns up to 200 rows.',
@@ -503,10 +530,10 @@ const PHASE_DIET_SCHEMA = {
   type: 'object' as const,
   description: 'Daily nutrition targets for THIS phase.',
   properties: {
-    calories: { type: 'integer', minimum: 800, maximum: 6000, description: 'Daily calorie target (kcal).' },
-    protein_g: { type: 'integer', minimum: 20, maximum: 400, description: 'Daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
-    carb_g: { type: 'integer', minimum: 0, maximum: 1000, description: 'Daily carb target (g). Optional.' },
-    fat_g: { type: 'integer', minimum: 0, maximum: 400, description: 'Daily fat target (g). Optional.' },
+    calories: { type: 'integer', description: 'Daily calorie target (kcal).' },
+    protein_g: { type: 'integer', description: 'Daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
+    carb_g: { type: 'integer', description: 'Daily carb target (g). Optional.' },
+    fat_g: { type: 'integer', description: 'Daily fat target (g). Optional.' },
   },
   required: ['calories', 'protein_g'],
 };
@@ -516,7 +543,7 @@ const TRAINING_BLOCK_SCHEMA = {
   description: 'A SHORT descriptor of the training block, NOT an exercise list. The concrete routine is generated from this later.',
   properties: {
     split_type: { type: 'string', description: 'e.g. "Upper/Lower", "Push/Pull/Legs", "Full Body x3".' },
-    days_per_week: { type: 'integer', minimum: 1, maximum: 7, description: 'Training days per week.' },
+    days_per_week: { type: 'integer', description: 'Training days per week.' },
     emphasis: { type: 'string', description: 'Primary emphasis this block, e.g. "chest + back volume", "squat + deadlift strength".' },
     note: { type: 'string', description: 'Optional one-line extra intent for the block. No em dashes.' },
   },
@@ -540,13 +567,11 @@ export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
       phases: {
         type: 'array',
         description: 'Ordered phases/blocks, earliest first. Typically 2-6.',
-        minItems: 1,
-        maxItems: 12,
         items: {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Phase name, e.g. "Deficit + Volume Block", "Deload Week", "Lean Bulk".' },
-            duration_weeks: { type: 'integer', minimum: 1, maximum: 26, description: 'How many weeks this phase runs. 1-26.' },
+            duration_weeks: { type: 'integer', description: 'How many weeks this phase runs. 1-26.' },
             diet: PHASE_DIET_SCHEMA,
             diet_directive: { type: 'string', description: 'One line of diet guidance for the phase, e.g. "High-protein deficit, refeed on your two hardest training days." No em dashes.' },
             training_directive: { type: 'string', description: 'One line of training guidance/progression, e.g. "RIR 2, add a set to lagging muscles each week." No em dashes.' },
@@ -572,13 +597,84 @@ export const PROPOSE_TARGETS_TOOL: AnthropicTool = {
   input_schema: {
     type: 'object',
     properties: {
-      calories: { type: 'integer', minimum: 800, maximum: 6000, description: 'New daily calorie target (kcal).' },
-      protein_g: { type: 'integer', minimum: 20, maximum: 400, description: 'New daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
-      carb_g: { type: 'integer', minimum: 0, maximum: 1000, description: 'New daily carb target (g). Optional.' },
-      fat_g: { type: 'integer', minimum: 0, maximum: 400, description: 'New daily fat target (g). Optional.' },
+      calories: { type: 'integer', description: 'New daily calorie target (kcal).' },
+      protein_g: { type: 'integer', description: 'New daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
+      carb_g: { type: 'integer', description: 'New daily carb target (g). Optional.' },
+      fat_g: { type: 'integer', description: 'New daily fat target (g). Optional.' },
       rationale: { type: 'string', description: 'One sentence on why these targets, referencing their goal / bodyweight / recent intake. No em dashes.' },
     },
     required: ['calories', 'protein_g', 'rationale'],
+  },
+};
+
+// ── Live-workout editing (live_workout mode) ─────────────────────────────────
+// The one tool that can change a workout the user is CURRENTLY doing. Like the
+// generate tools it is never executed server-side: the active session lives
+// only in the client's memory (hooks/useWorkout) until it's finished and
+// written to Supabase, so there is nothing here to write to. The input is
+// emitted to the client, which renders it as a confirm card and applies it to
+// the live session on tap.
+//
+// Exercises are addressed by their 1-based number in the session recap that
+// opens the conversation, with the name repeated for verification — the client
+// refuses an op whose name doesn't match what's actually at that index, so a
+// miscounted index can never rewrite the wrong exercise.
+const EDIT_OPERATION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['replace', 'add', 'remove', 'update'],
+      description:
+        'replace = swap the exercise at target_index for a different one (its unlogged sets are rebuilt for the new movement). add = insert a new exercise. remove = drop an exercise from the session. update = keep the exercise, change its sets / rep range / rest / cue.',
+    },
+    target_index: {
+      type: 'integer',
+      description: 'Which exercise this operates on: its 1-based number in the session recap. Required for replace, remove and update. Ignored for add.',
+    },
+    target_name: {
+      type: 'string',
+      description: 'The exercise name exactly as it appears at target_index in the recap. Required for replace, remove and update — the client verifies it before touching anything.',
+    },
+    exercise_name: {
+      type: 'string',
+      description: 'The exercise being brought IN. Required for replace and add. MUST be an exact name returned by coach_search_exercise_catalog; anything else creates a duplicate entry that breaks the user\'s history for that movement.',
+    },
+    position: {
+      type: 'integer',
+      description: 'For add only: the 1-based slot the new exercise should occupy. Omit to append at the end of the session.',
+    },
+    sets: { type: 'integer', description: 'Target working sets, 1-10. For replace/add, defaults to what the outgoing exercise had (or 3). For update, omit to leave unchanged.' },
+    reps_min: { type: 'integer', description: 'Bottom of the target rep range.' },
+    reps_max: { type: 'integer', description: 'Top of the target rep range.' },
+    rest_seconds: { type: 'integer', description: 'Rest between sets, 30-300.' },
+    note: {
+      type: 'string',
+      description: 'Optional one-line coaching cue for this exercise in this session ("chest tight to the pad, pull to the belly"). No em dashes.',
+    },
+  },
+  required: ['action'],
+};
+
+export const EDIT_ACTIVE_WORKOUT_TOOL: AnthropicTool = {
+  name: 'edit_active_workout',
+  description:
+    'Change the workout the user is doing RIGHT NOW: swap an exercise for another, add one, drop one, or adjust sets/reps/rest. This is the ONLY way to change the live session — there is no other mechanism, and describing a change in text does not perform it. The user taps to confirm, so emit the tool as soon as you know what they want rather than asking permission first. Call coach_search_exercise_catalog first for any exercise you are bringing in, so the name matches the catalog exactly.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      summary: {
+        type: 'string',
+        description:
+          'One short line, your voice, saying what this changes and why: "Chest Supported Row instead, same 3x8-12 — easier on the lower back and your gym has the pad." Shown on the confirm card. No em dashes.',
+      },
+      operations: {
+        type: 'array',
+        description: 'The changes to make, applied in order. Usually one.',
+        items: EDIT_OPERATION_SCHEMA,
+      },
+    },
+    required: ['summary', 'operations'],
   },
 };
 
@@ -586,6 +682,12 @@ export const PROPOSE_TARGETS_TOOL: AnthropicTool = {
 // produce the structured response the client renders directly. The streaming
 // loop emits them as a `structured` SSE event and ends the iteration.
 export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan', 'generate_program', 'propose_targets']);
+
+// Every tool that ends the loop with a `structured` payload instead of being
+// executed. Superset of TERMINAL_TOOLS, which is left alone because it ALSO
+// means "Pro-only": the free tier strips everything in it, while editing the
+// session you are standing in the middle of stays free.
+export const STRUCTURED_TOOLS = new Set([...TERMINAL_TOOLS, 'edit_active_workout']);
 
 // Phase 4: prepended to the system prompt when get_user_coach_context()'s
 // `training_inactive` flag is true (no completed workout in the last 14
@@ -711,6 +813,41 @@ How to run it:
 
 CRITICAL — the refined program reaches the user EXCLUSIVELY through a generate_program tool_use call. Same DO NOT / DO rules as designing one: never write the program as text, JSON, or a table; after confirmation your next turn is the tool call, optionally preceded by one short intent sentence. The tool call is non-optional.
 </refine_program_behavior>`;
+// Behavioral steering for live_workout mode — the chat opened from a workout
+// that is happening right now. The opening user turn is a recap of the live
+// session (built client-side in lib/workoutCoach.ts; the sets exist only in
+// memory, so no server tool can see them) with the exercises numbered.
+//
+// This block exists because of a real bug report: a user asked the coach to
+// swap T-Bar Row for a chest-supported row, the coach replied that it had
+// changed it and gave the new sets and reps, and the workout screen still
+// showed T-Bar Row. Twice. Nothing had ever been able to change the session,
+// and nothing told the model that, so it narrated the swap it had "made".
+// The tool is half the fix; this block is the other half.
+const LIVE_WORKOUT_BEHAVIOR = `<live_workout_behavior>
+The user has a workout session OPEN right now, and the opening user turn is a recap of it: exercises numbered 1..N, what is logged so far, what is current, and what they lifted last time. Two situations, and that turn tells you which. Mid-session, they are standing between sets holding their phone, so keep it to a few sentences. Reviewing a session they have just finished but not yet saved, they have asked for a proper read, so give them one. Either way the session is still editable.
+
+What you can actually change:
+- You CAN change this session, through the edit_active_workout tool and ONLY through it: swap an exercise, add one, drop one, or adjust sets / reps / rest. The user gets a confirm card and taps to apply.
+- Address exercises by their number in the recap and repeat the name exactly as written there. The client checks the name against that slot and rejects the change if they disagree, so getting the number wrong is safe but wasted.
+- Any exercise you bring IN must be named exactly as the catalog has it. Call coach_search_exercise_catalog first, every time, with a short generic query ("row", "curl", "leg press") so you see the real variants. Do not guess a name, and do not assume the obvious phrasing exists.
+- You CANNOT log, edit or delete sets the user has performed, change the weight actually lifted, or finish the workout. Those are theirs. If they want a set changed, tell them to tap it on the screen.
+- An exercise with sets already logged cannot be swapped out or removed — the client refuses, to protect work they have done. For those, coach them through it instead: finish it, cut it short, or drop the load.
+
+How to handle a change request:
+1. If they name what they want ("swap T-Bar Row for a chest supported row", "add some curls", "cut the last exercise"), do it. Search the catalog for the incoming name, then emit edit_active_workout. Do not ask them to confirm first — the card IS the confirmation, and asking costs them rest time.
+2. If the request is open ("this hurts my back, what else can I do?"), propose ONE specific alternative in a sentence, then emit the tool for it. They can decline by not tapping.
+3. Only ask a clarifying question when you genuinely cannot pick — two equally good options and no way to choose. One question, one line.
+4. Carry over what fits: unless they asked otherwise, a swapped-in exercise keeps the sets, rep range and rest of the one it replaces.
+
+CRITICAL — never claim a change you did not make:
+The tool call is the only thing that changes anything. Text in your reply changes nothing.
+- NEVER say "I've changed it", "done", "swapped", "updated your workout", or give the new sets and reps as though they are now on screen, unless that turn contains an edit_active_workout tool call.
+- If you cannot make the change (they have logged sets on it, the catalog has no such exercise, they are asking for something outside the list above), say so plainly in one line and tell them what to tap instead. An honest "I can't change that one, you've already logged two sets on it" is worth far more than a confident lie.
+- After the tool call, one short line is enough. The card shows them what changed.
+
+Everything else — weight for the next set, whether to push or stop, form cues, rest length, how the session went — is ordinary coaching. Answer it directly, at the length the situation calls for.
+</live_workout_behavior>`;
 
 export function buildSystemPrompt(ctx: PromptContext): {
   system: AnthropicSystemBlock[];
@@ -756,13 +893,14 @@ export function buildSystemPrompt(ctx: PromptContext): {
         ? `\n\n${DISCUSS_PROGRAM_BEHAVIOR}`
         : mode === 'refine_program'
           ? `\n\n${REFINE_PROGRAM_BEHAVIOR}`
-          : '';
-  // Chat is the only mode that carries PROPOSE_TARGETS_TOOL. Derived ONCE and
-  // used for both the toolset (baseTools below) and the behavior block, so the
-  // two cannot drift apart: a tool without its instructions, or instructions
-  // for a tool that is not there, is an instruction/tool mismatch either way.
-  // Every other mode is matched explicitly in baseTools, so this is also what
-  // keeps a newly added mode from silently inheriting the tool via the fallback.
+          : mode === 'live_workout'
+            ? `\n\n${LIVE_WORKOUT_BEHAVIOR}`
+            : '';
+  // Chat is the only mode that carries PROPOSE_TARGETS_TOOL, and free tier has
+  // its terminal tools stripped by index.ts. Derived ONCE and used for both the
+  // behavior block and the toolset below, so the two cannot drift apart: a tool
+  // without its instructions, or instructions for a tool that is not there, is
+  // an instruction/tool mismatch either way.
   const carriesProposeTargets = mode === 'chat' && !ctx.freeTier;
   const targetBlock = carriesProposeTargets ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
   const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
@@ -800,6 +938,9 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // refine and discuss modes both get the full read toolkit PLUS the
   // matching terminal tool (so the model can pull training data while
   // iterating, then emit structured output once the user confirms).
+  // live_workout gets the read toolkit plus edit_active_workout — the
+  // generate tools are deliberately absent: mid-session the answer is
+  // never "here's a whole new workout to save".
   // (`mode` was hoisted above for the behavior branch.)
   const baseTools: AnthropicTool[] = mode === 'generate_workout'
     ? [GENERATE_TOOLS[0]]
@@ -813,9 +954,11 @@ export function buildSystemPrompt(ctx: PromptContext): {
             ? [GENERATE_PROGRAM_TOOL]
             : mode === 'discuss_program' || mode === 'refine_program'
               ? [...COACH_TOOLS, GENERATE_PROGRAM_TOOL]
-              : carriesProposeTargets
-                ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
-                : [...COACH_TOOLS];
+              : mode === 'live_workout'
+                ? [...COACH_TOOLS, EDIT_ACTIVE_WORKOUT_TOOL]
+                : carriesProposeTargets
+                  ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
+                  : [...COACH_TOOLS];
 
   // Tools: cache them since they're static. Last tool gets the cache_control
   // marker per Anthropic's convention.

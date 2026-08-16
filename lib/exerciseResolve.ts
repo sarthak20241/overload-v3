@@ -4,6 +4,7 @@ import type { ExerciseDef, MetricType } from '@/lib/exercises';
 import { EXERCISE_LIBRARY, metricTypeOf } from '@/lib/exercises';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { readCache, writeCache } from '@/lib/localCache';
+import { normalizeExerciseName } from '@/lib/workoutCoachEdit';
 
 /** Row shape stored in the 'exercises' localCache (matches DbExercise). */
 export interface CachedExercise {
@@ -66,6 +67,55 @@ export function mergeLocalCustoms(
       !serverNames.has(r.name.toLowerCase()),
   );
   return surviving.length > 0 ? [...surviving, ...serverRows] : serverRows;
+}
+
+/**
+ * Look a name up in whatever catalog this device already has, WITHOUT touching
+ * the network: the cached global library first, then the user's own rows
+ * (including offline customs), then the static seed.
+ *
+ * Used when something outside the exercise picker names an exercise as a
+ * string — today that's Coach Drona swapping an exercise mid-workout. Matching
+ * is on a loose key because the ~800-row catalog is inconsistently punctuated
+ * ("T-Bar Row" vs "T Bar Row"), and a miss here is not fatal: it only costs the
+ * optimistic render its muscle group and metric type, since resolveExerciseRow
+ * finds the real row by name (case-insensitively) a moment later.
+ *
+ * Returning the CATALOG's spelling rather than the caller's is the point. Save
+ * the caller's and you get a near-duplicate exercise row whose history is split
+ * from the real one.
+ */
+export function findCatalogExerciseByName(
+  name: string,
+  userId: string | null | undefined,
+): ExerciseDef | null {
+  const key = normalizeExerciseName(name);
+  if (!key) return null;
+
+  const globals = readCache<ExerciseDef[]>('catalog', userId) ?? [];
+  const hitGlobal = globals.find((e) => normalizeExerciseName(e.name) === key);
+  if (hitGlobal) {
+    return {
+      name: hitGlobal.name,
+      muscle_group: hitGlobal.muscle_group || 'Other',
+      category: hitGlobal.category || 'Other',
+      metric_type: metricTypeOf(hitGlobal),
+    };
+  }
+
+  const own = readCache<CachedExercise[]>('exercises', userId) ?? [];
+  const hitOwn = own.find((e) => normalizeExerciseName(e.name) === key);
+  if (hitOwn) {
+    return {
+      name: hitOwn.name,
+      muscle_group: hitOwn.muscle_group || 'Other',
+      category: hitOwn.category || 'Other',
+      metric_type: metricTypeOf(hitOwn),
+    };
+  }
+
+  const hitSeed = EXERCISE_LIBRARY.find((e) => normalizeExerciseName(e.name) === key);
+  return hitSeed ? { ...hitSeed, metric_type: metricTypeOf(hitSeed) } : null;
 }
 
 /**

@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
-import { buildSystemPrompt, TERMINAL_TOOLS } from "./prompt.ts";
+import { buildSystemPrompt, STRUCTURED_TOOLS, TERMINAL_TOOLS } from "./prompt.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -56,12 +56,10 @@ const GENERATE_WORKOUT_MAX_TOKENS = 2048;
 const GENERATE_PLAN_MAX_TOKENS = 4096;
 // generate_program has its own ceiling. Measured from a real 6-phase emission
 // (~465 chars of prose per phase + ~250 of JSON keys/numbers) a schema-max
-// 12-phase program with a 5-sentence rationale is ~9.5k chars, roughly 2.4-2.7k
-// tokens. 4096 covers that but thinly; a rationale that runs long, or a
-// verbose model turn, ate the margin. Anthropic bills actual output, so the
-// extra ceiling costs nothing on the typical 2-6 phase program and only exists
-// for the tail. Truncation is still hard-errored (tool_truncated), never
-// silently dropped, so this is about avoiding a retry, not about correctness.
+// 12-phase program is ~9.5k chars, roughly 2.4-2.7k tokens. 4096 covered that
+// but thinly. Anthropic bills actual output, so the extra ceiling costs nothing
+// on the typical 2-6 phase program and only exists for the tail. Truncation is
+// still hard-errored (tool_truncated), never silently dropped.
 const GENERATE_PROGRAM_MAX_TOKENS = 6144;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // Hard cap on a single Anthropic call — a guard against a HUNG upstream, not
@@ -73,6 +71,11 @@ const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // killing a truly wedged connection. Note the onboarding client
 // (lib/onboardingDrona.ts) aborts at 75s, so it gives up before we do.
 const ANTHROPIC_TIMEOUT_MS = 80000;
+// Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
+// optional pre-step that runs synchronously before embed + the main coach call,
+// so if Haiku hangs we bail fast to the raw message rather than block the whole
+// turn for the full 80s ANTHROPIC_TIMEOUT_MS.
+const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 
 // parse_meal mode (AI food logging). Haiku for speed + cost: this fires on
 // every meal, and the catalog does the nutrition work — the model only
@@ -115,11 +118,6 @@ const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
 // question-shaped that the extra hop costs latency for nothing.
 const RETRIEVAL_REWRITE_MIN_CHARS = 180;
 const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
-// Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
-// optional pre-step that runs synchronously before embed + the main coach call,
-// so if Haiku hangs we bail fast to the raw message rather than block the whole
-// turn for the full 80s ANTHROPIC_TIMEOUT_MS.
-const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 const VOYAGE_TIMEOUT_MS = 6000;
 
 const CORS_HEADERS = {
@@ -281,12 +279,11 @@ async function recordTrace(
     const { error } = await admin.from("coach_traces").insert(row);
     if (!error) return;
 
-    // Deploy-order resilience. `mode`/`spans` arrive in migration 0080 and the
-    // retrieval_query_* fields in 0095; if the function ships before either
-    // migration is applied, PostgREST rejects the whole row for unknown columns
-    // and we lose EVERY trace, including the observability this change exists to
-    // add. Retry once without the newer columns rather than couple a code
-    // deploy to a migration.
+    // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
+    // the function ships before the migration is applied, PostgREST rejects
+    // the whole row for unknown columns and we lose EVERY trace, including the
+    // observability this change exists to add. Retry once without them rather
+    // than couple a code deploy to a migration.
     const missingColumn = /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "");
     if (missingColumn) {
       const {
@@ -341,6 +338,37 @@ async function executeTool(
       args: (i) => ({ p_sql: String(i.sql ?? "") }),
     },
   };
+
+  // Catalog search is a plain PostgREST read, not an RPC — the global library
+  // rows (created_by null) are world-readable, so no security-definer function
+  // and no migration is needed. Handled ahead of rpcMap for that reason.
+  if (name === "coach_search_exercise_catalog") {
+    const q = String(input.query ?? "").trim();
+    const muscle = String(input.muscle ?? "").trim();
+    const limit = Math.min(Math.max(Number(input.limit ?? 40) || 40, 1), 100);
+    try {
+      let query = userClient
+        .from("exercises")
+        .select("name, muscle_group, category, metric_type")
+        .is("created_by", null);
+      // Escape PostgREST's LIKE wildcards so a query like "50%" searches for
+      // the literal string instead of matching everything.
+      if (q) query = query.ilike("name", `%${q.replace(/[%_]/g, "\\$&")}%`);
+      if (muscle) query = query.ilike("muscle_group", muscle);
+      const { data, error } = await query.order("name").limit(limit);
+      if (error) return { error: error.message };
+      const rows = data ?? [];
+      return rows.length > 0
+        ? { matches: rows }
+        : {
+          matches: [],
+          note:
+            "No catalog exercise matched. Try a shorter, more generic query (one word) before concluding it does not exist. Never invent a name for edit_active_workout.",
+        };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
 
   const tool = rpcMap[name];
   if (!tool) return { error: `unknown tool: ${name}` };
@@ -822,7 +850,7 @@ async function runStreamingToolLoop(
       // UI can show a real error instead of bouncing back to the form.
       if (stopReason === "max_tokens") {
         const partialTerminal = cleanBlocks.find(
-          (b: any) => b.type === "tool_use" && TERMINAL_TOOLS.has(b.name),
+          (b: any) => b.type === "tool_use" && STRUCTURED_TOOLS.has(b.name),
         );
         if (partialTerminal) {
           trace.tool_calls.push(`${partialTerminal.name}__truncated`);
@@ -835,13 +863,13 @@ async function runStreamingToolLoop(
       return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
     }
 
-    // Tool calls. Separate terminal tools (generate_workout / generate_plan)
-    // from regular data-fetch tools.
+    // Tool calls. Separate the structured tools (generate_workout /
+    // generate_plan / edit_active_workout) from regular data-fetch tools.
     const toolUses = cleanBlocks.filter((b: any) => b.type === "tool_use");
-    const terminalUse = toolUses.find((b: any) => TERMINAL_TOOLS.has(b.name));
+    const terminalUse = toolUses.find((b: any) => STRUCTURED_TOOLS.has(b.name));
 
     if (terminalUse) {
-      // Terminal tool: emit input as a structured SSE event and exit. Don't
+      // Structured tool: emit input as a structured SSE event and exit. Don't
       // try to "execute" it — its input IS the response.
       trace.tool_calls.push(terminalUse.name);
       structured = { name: terminalUse.name, input: terminalUse.input ?? {} };
@@ -2036,10 +2064,14 @@ Deno.serve(async (req) => {
       // Peek at the requested mode (fully resolved later, same rules): an
       // explicit non-chat mode or any force_tool means a generate / refine /
       // discuss flow, which is Pro-only.
+      // 'live_workout' is chat, not a Pro flow: it's the coach sheet opened
+      // from a session in progress. Its extra tool edits the workout the user
+      // is standing in the middle of — that's core logging, not programming —
+      // so it stays on the free tier's metered messages alongside plain chat.
       const peekMode = (body as { mode?: unknown }).mode;
       const peekForce = (body as { force_tool?: unknown }).force_tool;
       const wantsProFlow =
-        (typeof peekMode === "string" && peekMode !== "chat")
+        (typeof peekMode === "string" && peekMode !== "chat" && peekMode !== "live_workout")
         || typeof peekForce === "string";
       if (wantsProFlow) {
         trace.status = "unauthorized";
@@ -2247,17 +2279,18 @@ Deno.serve(async (req) => {
       ? rawForceTool
       : null;
   const rawMode = (body as { mode?: unknown }).mode;
-  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'discuss_program' | 'refine_program' | null =
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'discuss_program' | 'refine_program' | 'live_workout' | null =
     rawMode === 'chat'
     || rawMode === 'refine_workout' || rawMode === 'refine_plan'
     || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
     || rawMode === 'discuss_program' || rawMode === 'refine_program'
+    || rawMode === 'live_workout'
       ? rawMode
       : null;
   // Resolution order: explicit `mode` wins, otherwise derive from
   // `force_tool` (back-compat with existing generate flows that only send
   // force_tool), otherwise default to 'chat'.
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program' =
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program' | 'live_workout' =
     explicitMode ?? forceTool ?? 'chat';
   // Cross-mode compatibility check: only honor force_tool when the tool
   // is actually exposed in the resolved mode's toolkit. Refine and discuss
@@ -2268,11 +2301,9 @@ Deno.serve(async (req) => {
   // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
   // tool_choice for a tool that isn't in `tools` (400). The program modes
   // (discuss_program / refine_program) expose generate_program, so they may
-  // force it. `mode === 'generate_program'` is not reachable via explicitMode,
-  // but IS reachable through the `?? forceTool` fallback above, and that mode's
-  // toolkit is exactly [GENERATE_PROGRAM_TOOL], so it may force it too. No
-  // client forces generate_program today; the clause keeps the path correct for
-  // when one does.
+  // force it — a resolved `mode === 'generate_program'` never happens because
+  // it is not an explicitMode value; program creation always routes through a
+  // discuss/refine program mode.
   const forceToolAllowed =
     !forceTool
     || (mode === 'generate_workout' && forceTool === 'generate_workout')
@@ -2419,12 +2450,17 @@ Deno.serve(async (req) => {
     // as a fresh generate — even though the back-and-forth chat turns are
     // short (Anthropic bills actual output, so the larger ceiling is free
     // when unused).
+    // live_workout gets the generate-sized budget for the same reason as
+    // refine: the turn may end in a structured tool call, and a payload
+    // truncated at the cap is an outright failure rather than a short answer.
+    // Its actual turns are the shortest of any mode, so the ceiling is free.
     const maxTokens =
       forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
         ? GENERATE_PROGRAM_MAX_TOKENS
         : forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
         ? GENERATE_PLAN_MAX_TOKENS
         : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
+          || mode === 'live_workout'
           ? GENERATE_WORKOUT_MAX_TOKENS
           : CHAT_MAX_TOKENS;
 
@@ -2619,12 +2655,12 @@ Deno.serve(async (req) => {
         break;
       }
 
-      // Tool calls. Split terminal tools (generate_workout / generate_plan)
-      // from regular data-fetch tools — terminal tools are NOT executed
-      // server-side; their `input` IS the structured response.
+      // Tool calls. Split structured tools (generate_workout / generate_plan /
+      // edit_active_workout) from regular data-fetch tools — structured tools
+      // are NOT executed server-side; their `input` IS the structured response.
       const toolUses = contentBlocks.filter((b) => b.type === "tool_use");
       const terminalUse = toolUses.find(
-        (b) => typeof b.name === "string" && TERMINAL_TOOLS.has(b.name),
+        (b) => typeof b.name === "string" && STRUCTURED_TOOLS.has(b.name),
       );
       if (terminalUse) {
         trace.tool_calls.push(terminalUse.name ?? "<terminal>");
