@@ -40,6 +40,13 @@ import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
+import {
+  describeCoachEditOp,
+  parseCoachWorkoutEdit,
+  type CoachEditApplyResult,
+  type CoachWorkoutEdit,
+  type CoachWorkoutEditOp,
+} from '@/lib/workoutCoachEdit';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Screen = 'menu' | 'chat' | 'plan' | 'workout';
@@ -416,6 +423,10 @@ interface StreamingCallbacks {
   onPlanDay?: (index: number, workout: Record<string, unknown>) => void;
 }
 
+// The in-workout mode, named once because both the request and the 402
+// downgrade check below have to agree on it exactly.
+const LIVE_WORKOUT_MODE = 'live_workout' as const;
+
 interface StreamingOptions {
   // When set, forces tool_choice on that tool — used for Generate Workout /
   // Generate Plan flows so output is guaranteed structured.
@@ -428,7 +439,10 @@ interface StreamingOptions {
   // from scratch (no recap assumption — different system-prompt branch).
   // (Caller still listens via onStructured for the final emission — same
   // as the forceTool path.)
-  mode?: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan';
+  // 'live_workout' is the in-workout chat: read toolkit plus
+  // edit_active_workout, the only tool that can change a session already in
+  // progress. Its structured emission arrives on the same onStructured path.
+  mode?: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout';
   // Phase 1 history: when set, the edge function mirrors this turn into the
   // server-side coach_conversations / coach_conversation_messages rows under
   // this conversation id. `clientMsgId` (the user message's id) keys the user +
@@ -505,8 +519,9 @@ function callAICoachStreaming(
     }
   };
 
-  (async () => {
-    try {
+  // One attempt. Returns 'retry_without_mode' when the server rejected the
+  // requested mode as a Pro flow because it predates that mode existing.
+  const attempt = async (mode: StreamingOptions['mode']): Promise<'retry_without_mode' | void> => {
       const response = await expoFetch(`${supabaseUrl}/functions/v1/ai-coach`, {
         method: 'POST',
         headers: {
@@ -519,7 +534,7 @@ function callAICoachStreaming(
           messages,
           stream: true,
           ...(options.forceTool ? { force_tool: options.forceTool } : {}),
-          ...(options.mode ? { mode: options.mode } : {}),
+          ...(mode ? { mode } : {}),
           ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
           ...(options.clientMsgId ? { client_msg_id: options.clientMsgId } : {}),
         }),
@@ -531,16 +546,36 @@ function callAICoachStreaming(
         // 402s carry a structured reason. Cap hits are a product moment
         // (upgrade sheet), not an error state — route them to onCapHit when
         // the caller can render one.
-        if (response.status === 402 && callbacks.onCapHit) {
+        if (response.status === 402) {
           try {
-            const parsed = JSON.parse(body) as { error?: string };
-            if (parsed.error === 'free_cap_hit') {
-              callbacks.onCapHit('cap');
-              return;
+            const parsed = JSON.parse(body) as { error?: string; feature?: string };
+            // Deploy-order safety, live_workout ONLY. The edge function reads
+            // any mode it doesn't recognise as a Pro flow and 402s free-tier
+            // users on it, so a client that knows this mode before the deployed
+            // function does would paywall the in-workout coach for exactly the
+            // users who still get it free. Drop the mode and ask again as plain
+            // chat: they lose the coach's ability to edit the session, which
+            // that server couldn't do anyway, and keep the conversation.
+            //
+            // Scoped to this one mode on purpose. The refine/discuss modes are
+            // genuinely Pro, and downgrading those would swallow the paywall
+            // the 402 exists to trigger.
+            if (
+              parsed.error === 'pro_required'
+              && mode === LIVE_WORKOUT_MODE
+              && parsed.feature === LIVE_WORKOUT_MODE
+            ) {
+              return 'retry_without_mode';
             }
-            if (parsed.error === 'pro_required') {
-              callbacks.onCapHit('pro');
-              return;
+            if (callbacks.onCapHit) {
+              if (parsed.error === 'free_cap_hit') {
+                callbacks.onCapHit('cap');
+                return;
+              }
+              if (parsed.error === 'pro_required') {
+                callbacks.onCapHit('pro');
+                return;
+              }
             }
           } catch { /* fall through to the generic failure */ }
         }
@@ -565,6 +600,16 @@ function callAICoachStreaming(
         const text = await response.text();
         processChunk(text);
         if (buffer.length > 0) processChunk('\n\n');
+      }
+  };
+
+  (async () => {
+    try {
+      if (await attempt(options.mode) === 'retry_without_mode') {
+        // Second and last attempt; a plain-chat request can't trip the same
+        // guard, so this can't loop.
+        buffer = '';
+        await attempt(undefined);
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
@@ -781,6 +826,73 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
   );
 }
 
+// ─── Live-workout edit card ──────────────────────────────────────────────────
+// The confirm step for edit_active_workout. The coach proposes; nothing on the
+// workout screen moves until this is tapped. That's deliberate: the failure
+// this whole path fixes was a coach that claimed changes it never made, and a
+// silent auto-apply would have the opposite failure mode (changes the user
+// never agreed to). One tap, and they can see exactly what it does first.
+function WorkoutEditCard({
+  edit,
+  result,
+  onApply,
+}: {
+  edit: CoachWorkoutEdit;
+  result: CoachEditApplyResult | null;
+  onApply: () => void;
+}) {
+  const { C } = useTheme();
+  // Everything was refused (already-logged sets, unknown exercise): there's
+  // nothing left to apply, so the card becomes an explanation.
+  const deadEnd = !!result && result.applied === 0;
+
+  return (
+    <Animated.View
+      entering={FadeInDown.duration(240)}
+      style={[s.editCard, { backgroundColor: C.card, borderColor: C.primaryBorder }]}
+    >
+      <View style={s.editCardHead}>
+        <SparkleIcon size={13} color={C.accentText} />
+        <Text style={[s.editCardTitle, { color: C.accentText }]}>
+          {result ? (deadEnd ? 'Not applied' : 'Applied to your workout') : 'Change your workout'}
+        </Text>
+      </View>
+
+      <Text style={[s.editCardSummary, { color: C.foreground }]}>{edit.summary}</Text>
+
+      <View style={s.editOpList}>
+        {edit.operations.map((op, i) => (
+          <View key={i} style={s.editOpRow}>
+            <View style={[s.editOpDot, { backgroundColor: Colors.primary }]} />
+            <Text style={[s.editOpText, { color: C.mutedFg }]}>{describeCoachEditOp(op)}</Text>
+          </View>
+        ))}
+      </View>
+
+      {result && result.skipped.length > 0 && (
+        <View style={s.editSkipList}>
+          {result.skipped.map((reason, i) => (
+            <Text key={i} style={[s.editSkipText, { color: C.textMuted }]}>{reason}</Text>
+          ))}
+        </View>
+      )}
+
+      {!result && (
+        <TouchableOpacity
+          onPress={onApply}
+          style={[s.editApplyBtn, { backgroundColor: Colors.primary }]}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Apply this change to my workout"
+        >
+          <Feather name="check" size={14} color={Colors.primaryFg} />
+          <Text style={s.editApplyText}>Apply to workout</Text>
+        </TouchableOpacity>
+      )}
+    </Animated.View>
+  );
+}
+
 // ─── Chat Screen ─────────────────────────────────────────────────────────────
 function ChatScreen({
   onBack,
@@ -796,6 +908,12 @@ function ChatScreen({
   // chips are shown. Null/undefined \u2192 ordinary coach chat. Workout chats are
   // intentionally ephemeral, so persistence is disabled in that mode.
   workoutContext,
+  // Set alongside a LIVE workoutContext: applies the coach's
+  // edit_active_workout operations to the session on screen. Its presence is
+  // what unlocks live_workout mode — without a way to apply an edit there's no
+  // point offering the tool, and a coach that can't change anything must not
+  // be told it can.
+  onApplyWorkoutEdit,
   // Paywall v3: closes the coach sheet and opens the /upgrade paywall. Set
   // for free-tier users; the kind determines which paywall headline the
   // /upgrade screen shows ('cap' = ran out of daily messages; 'pro' = asked
@@ -807,6 +925,7 @@ function ChatScreen({
   initialPrompt?: string;
   userId: string | null;
   workoutContext?: WorkoutCoachContext | null;
+  onApplyWorkoutEdit?: (ops: CoachWorkoutEditOp[]) => CoachEditApplyResult;
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
 }) {
   const { C } = useTheme();
@@ -832,13 +951,27 @@ function ChatScreen({
     enabled: !workoutContext,
     makeStarter,
   });
+  // Pending edit_active_workout cards, keyed to the assistant turn that
+  // produced them. Held here rather than on the message because ChatMessage is
+  // the persisted shape and these are live-session-only; the in-workout chat is
+  // ephemeral anyway. Usually at most one: the tool ends the turn.
+  const [edits, setEdits] = useState<
+    { messageId: string; edit: CoachWorkoutEdit; result: CoachEditApplyResult | null }[]
+  >([]);
+  // Both kinds, not just 'live': the review chat opens from the finish sheet
+  // with the session still unsaved and still editable, so a coach without the
+  // tool there could promise a change it can't make. Same hole, other door.
+  const canEditWorkout = !!onApplyWorkoutEdit && !!workoutContext;
   // Re-seed the chat whenever a fresh workout snapshot arrives (the user
   // reopened the coach after logging more sets). Identity is stable within a
   // single open \u2014 the workout screen snapshots once per open \u2014 so this only
   // fires on a genuine reopen, never wiping an in-progress conversation.
+  // Proposed edits are dropped with it: they were written against the old
+  // snapshot's numbering, and the coach will re-propose against the new one.
   useEffect(() => {
     if (!workoutContext) return;
     setMessages([{ id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
+    setEdits([]);
     setInput('');
   }, [workoutContext]);
   const [input, setInput] = useState('');
@@ -958,6 +1091,9 @@ function ChatScreen({
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
     const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    // Per-invocation flag: did the live `structured` event already deliver this
+    // turn's workout edit? Guards the onDone fallback against a double card.
+    let handledEdit = false;
     streamRef.current = callAICoachStreaming(allMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
       onStatus: (phase, payload) => {
@@ -972,6 +1108,7 @@ function ChatScreen({
           else if (tools.some(t => t.includes('recent_workouts'))) label = 'Pulling your recent workouts';
           else if (tools.some(t => t.includes('workout_detail'))) label = 'Reviewing that workout';
           else if (tools.some(t => t.includes('muscle_volume'))) label = 'Checking your volume trends';
+          else if (tools.some(t => t.includes('exercise_catalog'))) label = 'Finding the right exercise';
           else if (tools.some(t => t.includes('query_sql'))) label = 'Querying your training data';
           else label = 'Checking your data';
         }
@@ -979,7 +1116,23 @@ function ChatScreen({
           m.id === assistantId && m.content === '' ? { ...m, thinkingPhase: label } : m
         ));
       },
-      onDone: ({ citations }) => {
+      // Live-workout edits: the coach emitted edit_active_workout, which ends
+      // its turn. Attach a confirm card to this assistant message; nothing
+      // changes on the workout screen until the user taps Apply.
+      onStructured: ({ name, input: toolInput }) => {
+        if (!canEditWorkout || name !== 'edit_active_workout') return;
+        const edit = parseCoachWorkoutEdit(toolInput);
+        if (!edit) return;
+        handledEdit = true;
+        setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+      },
+      onDone: ({ citations, structured }) => {
+        // Defensive fallback, mirroring the generate screens: if the live
+        // `structured` event was missed, the same payload rides the done event.
+        if (canEditWorkout && !handledEdit && structured?.name === 'edit_active_workout') {
+          const edit = parseCoachWorkoutEdit(structured.input);
+          if (edit) setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+        }
         typewriter.finish(() => {
           // Attach citations only AFTER the typewriter has finished animating
           // everything — feels weird if citations appear before the response
@@ -1014,12 +1167,16 @@ function ChatScreen({
         streamRef.current = null;
       },
     }, {
+      // Live workout: ask for the mode that carries edit_active_workout. Only
+      // when we can actually apply the result — a review chat (session already
+      // over) and the ordinary coach chat both stay plain chat mode.
+      ...(canEditWorkout ? { mode: LIVE_WORKOUT_MODE } : {}),
       // Phase 1: persist this turn server-side under the active conversation
       // (ordinary chat only; the in-workout chat stays ephemeral, so no id).
       conversationId: workoutContext ? undefined : ensureActiveConversationId(userId),
       clientMsgId: workoutContext ? undefined : userMsg.id,
     });
-  }, [input, loading, messages, supabase, getToken, workoutContext, markStarted, setMessages, userId]);
+  }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
   // Review mode: auto-ask the coach for a session review once the chat opens,
   // so the user doesn't have to type. Fires exactly once per snapshot — the
@@ -1048,6 +1205,19 @@ function ChatScreen({
     seededPromptRef.current = initialPrompt;
     handleSend(initialPrompt);
   }, [initialPrompt, workoutContext, loading, messages, handleSend]);
+
+  // Apply one proposed edit to the live session. The screen owns the actual
+  // mutation (and the toast); we only record what came back so a card whose
+  // ops were all refused can say why instead of looking like it worked.
+  const appliedRef = useRef<Set<string>>(new Set());
+  const handleApplyEdit = useCallback((messageId: string) => {
+    const entry = edits.find((e) => e.messageId === messageId);
+    if (!entry || entry.result || !onApplyWorkoutEdit) return;
+    if (appliedRef.current.has(messageId)) return;
+    appliedRef.current.add(messageId);
+    const result = onApplyWorkoutEdit(entry.edit.operations);
+    setEdits((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, result } : e)));
+  }, [edits, onApplyWorkoutEdit]);
 
   // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
   // parent shrinks the sheet and lifts it via marginBottom (both platforms)
@@ -1087,36 +1257,55 @@ function ChatScreen({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {messages.map((msg) => (
-          <View
-            key={msg.id}
-            style={[
-              s.chatBubble,
-              msg.role === 'user'
-                ? [s.userBubble, { backgroundColor: Colors.primary }]
-                : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
-            ]}
-          >
-            {msg.role === 'assistant' && msg.content === '' ? (
-              // Streaming placeholder: phase text + animated dots while we
-              // wait on first token. Replaces the bare spinner with something
-              // informative ("Thinking", "Checking your data", etc).
-              <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
-            ) : msg.role === 'assistant' ? (
-              // Markdown-flavored rendering: bold, bullet lists, citation pills
-              <MessageContent
-                content={msg.content}
-                citations={msg.citations}
-                textColor={C.foreground}
-              />
-            ) : (
-              <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
-            )}
-            {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
-              <CitationList citations={msg.citations} />
-            )}
-          </View>
-        ))}
+        {messages.map((msg) => {
+          // A workout edit proposed on this turn renders under its bubble, so
+          // the coach's sentence and the change it describes stay together.
+          const edit = edits.find((e) => e.messageId === msg.id);
+          // The coach is told to precede the tool call with a short line, but
+          // it may emit the tool alone. Then the card IS the message: an empty
+          // bubble would otherwise sit above it stuck on "Thinking".
+          const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === '' && !!edit;
+          return (
+            <View key={msg.id}>
+              {!bubbleOnlyHoldsTheCard && (
+              <View
+                style={[
+                  s.chatBubble,
+                  msg.role === 'user'
+                    ? [s.userBubble, { backgroundColor: Colors.primary }]
+                    : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
+                ]}
+              >
+                {msg.role === 'assistant' && msg.content === '' ? (
+                  // Streaming placeholder: phase text + animated dots while we
+                  // wait on first token. Replaces the bare spinner with something
+                  // informative ("Thinking", "Checking your data", etc).
+                  <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
+                ) : msg.role === 'assistant' ? (
+                  // Markdown-flavored rendering: bold, bullet lists, citation pills
+                  <MessageContent
+                    content={msg.content}
+                    citations={msg.citations}
+                    textColor={C.foreground}
+                  />
+                ) : (
+                  <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+                )}
+                {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+                  <CitationList citations={msg.citations} />
+                )}
+              </View>
+              )}
+              {edit && (
+                <WorkoutEditCard
+                  edit={edit.edit}
+                  result={edit.result}
+                  onApply={() => handleApplyEdit(msg.id)}
+                />
+              )}
+            </View>
+          );
+        })}
       </ScrollView>
 
       {/* Quick-question chips (workout mode only). Shown until the user's
@@ -2574,6 +2763,7 @@ export function AICoachModal({
   initialScreen = 'menu',
   initialPrompt,
   workoutContext,
+  onApplyWorkoutEdit,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -2587,6 +2777,11 @@ export function AICoachModal({
   // and the chat's back arrow closes the sheet (there's no menu detour
   // mid-workout). Callers pass initialScreen="chat" alongside this.
   workoutContext?: WorkoutCoachContext | null;
+  // Applies a coach-proposed change (swap / add / drop / retarget) to the live
+  // session, returning what actually landed. Passing this is what lets the
+  // coach change the workout at all: without it the edit tool isn't offered,
+  // so the coach is never in a position to promise a change it can't make.
+  onApplyWorkoutEdit?: (ops: CoachWorkoutEditOp[]) => CoachEditApplyResult;
 }) {
   const { C } = useTheme();
   const { user } = useClerkUser();
@@ -2712,6 +2907,18 @@ export function AICoachModal({
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, accessAllowed, screen, showPaywall, workoutContext]);
+
+  // Live-workout edit: hand the operations to the workout screen, then get out
+  // of the way. Anything that actually landed is on the screen behind this
+  // sheet, so closing IS the confirmation; the screen raises the toast. If
+  // every operation was refused we stay put, and the card explains why.
+  const handleApplyWorkoutEdit = onApplyWorkoutEdit
+    ? (ops: CoachWorkoutEditOp[]): CoachEditApplyResult => {
+      const result = onApplyWorkoutEdit(ops);
+      if (result.applied > 0) handleClose();
+      return result;
+    }
+    : undefined;
 
   const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
     const clerkId = user?.id;
@@ -3027,6 +3234,7 @@ export function AICoachModal({
                   initialPrompt={initialPrompt}
                   userId={user?.id ?? null}
                   workoutContext={workoutContext}
+                  onApplyWorkoutEdit={handleApplyWorkoutEdit}
                   onRequestUpgrade={
                     access.state === 'free'
                       ? (kind) =>
@@ -3361,6 +3569,69 @@ const s = StyleSheet.create({
   suggestionChipText: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
+  },
+
+  // In-workout edit card (edit_active_workout confirm step)
+  editCard: {
+    marginTop: 8,
+    marginBottom: 4,
+    padding: Spacing.lg,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    gap: 10,
+    alignSelf: 'flex-start',
+    maxWidth: '92%',
+  },
+  editCardHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  editCardTitle: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  editCardSummary: {
+    fontSize: FontSize.sm,
+    lineHeight: 20,
+  },
+  editOpList: { gap: 6 },
+  editOpRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  editOpDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    marginTop: 7,
+  },
+  editOpText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    lineHeight: 19,
+  },
+  editSkipList: { gap: 4 },
+  editSkipText: {
+    fontSize: FontSize.xs,
+    lineHeight: 17,
+  },
+  editApplyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: Radius.md,
+    marginTop: 2,
+  },
+  editApplyText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryFg,
   },
 
   // Forms

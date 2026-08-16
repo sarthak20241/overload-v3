@@ -20,7 +20,7 @@ import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { findGuestRoutine, addGuestWorkout, addGuestRoutine, getGuestRoutines, updateGuestRoutine, getPreviousPerformance, getPreviousPerformanceForExerciseName, getGuestAllTimeBestWeight } from '@/lib/guestStore';
 import { getActiveWorkoutSnapshot, clearActiveWorkout, takeResumeCapture, type ActiveWorkoutCapture, type InputDraft } from '@/lib/activeWorkoutPersistence';
-import { resolveExerciseRow } from '@/lib/exerciseResolve';
+import { findCatalogExerciseByName, resolveExerciseRow } from '@/lib/exerciseResolve';
 import { enqueueWorkout, newClientId, type PendingWorkout } from '@/lib/syncQueue';
 import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
@@ -59,6 +59,11 @@ import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/ro
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
+import {
+  planCoachWorkoutEdit,
+  type CoachEditApplyResult,
+  type CoachWorkoutEditOp,
+} from '@/lib/workoutCoachEdit';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 // Paused-state colour now lives in Colors.paused (constants/theme.ts).
@@ -1605,6 +1610,170 @@ export default function ActiveWorkoutScreen() {
     setExerciseFinished(newFinished);
     if (currentIdx >= updated.length) setCurrentIdx(Math.max(0, updated.length - 1));
   };
+
+  // ── Coach edits to the live session ─────────────────────────────────────────
+  // Coach Drona's edit_active_workout, landed. The coach proposes, the user taps
+  // Apply in the chat, and this is where it becomes real. Everything the coach
+  // sends has already been through planCoachWorkoutEdit, which resolves each
+  // operation against the CURRENT list by name (not the coach's index) and
+  // refuses to swap or drop an exercise with logged sets, so what arrives here
+  // is a list of steps that are safe to run in order.
+  //
+  // Reuses the same machinery as a manual add: temp id now, real row and
+  // previous-session numbers filled in by reconcileExerciseRow a moment later.
+  const applyCoachWorkoutEdit = useCallback((ops: CoachWorkoutEditOp[]): CoachEditApplyResult => {
+    const { steps, skipped } = planCoachWorkoutEdit(
+      exercises.map((e) => ({
+        name: e.exercise.name,
+        hasLoggedSets: e.sets.some((s) => s.completed),
+      })),
+      ops,
+    );
+    if (steps.length === 0) return { applied: 0, skipped };
+
+    // Build the whole result locally, then commit once — a half-applied list
+    // with mismatched started/finished arrays would be worse than no change.
+    const items = exercises.slice();
+    const started = exerciseStarted.slice();
+    const finished = exerciseFinished.slice();
+    const pills = pillLayoutsRef.current.slice();
+    const pendingReconcile: { def: ExerciseDef; tempId: string }[] = [];
+    // The pager must keep pointing at the same exercise when inserts and
+    // removals shift the list under it.
+    let nextIdx = currentIdx;
+    // Whether the exercise the user is actually looking at changed identity —
+    // its timers and per-set input state belong to the old movement.
+    let currentReplaced = false;
+    let applied = 0;
+
+    for (const step of steps) {
+      const { op } = step;
+      if (step.action === 'remove') {
+        items.splice(step.index, 1);
+        started.splice(step.index, 1);
+        finished.splice(step.index, 1);
+        pills.splice(step.index, 1);
+        if (step.index < nextIdx) nextIdx -= 1;
+        else if (step.index === nextIdx) currentReplaced = true;
+        applied += 1;
+        continue;
+      }
+
+      if (step.action === 'update') {
+        const ex = items[step.index];
+        const targetSets = op.sets ?? ex.targetSets;
+        const repsMin = op.repsMin ?? ex.repsMin;
+        const repsMax = Math.max(op.repsMax ?? ex.repsMax, repsMin);
+        // Never drop a set the user has already logged: trimming stops just
+        // past the LAST completed one. Counting completed sets instead would
+        // cut a logged set loose whenever the completed ones aren't the
+        // leading run (a set edited out of order leaves exactly that shape).
+        const lastCompleted = ex.sets.reduce((last, s, i) => (s.completed ? i : last), -1);
+        const finalSets = Math.max(targetSets, lastCompleted + 1);
+        const sets = ex.sets.slice(0, finalSets);
+        while (sets.length < finalSets) sets.push({ weight_kg: 0, reps: repsMin, completed: false });
+        items[step.index] = {
+          ...ex,
+          sets,
+          targetSets: finalSets,
+          repsMin,
+          repsMax,
+          restSeconds: op.restSeconds ?? ex.restSeconds,
+          coachNote: op.note ?? ex.coachNote,
+        };
+        applied += 1;
+        continue;
+      }
+
+      // replace / add — both bring a new movement into the session.
+      const name = op.exerciseName;
+      if (!name) continue;
+      // Prefer the catalog's own spelling and metadata; fall back to the
+      // coach's string, which resolveExerciseRow will create as a new row.
+      const def: ExerciseDef = findCatalogExerciseByName(name, user?.id)
+        ?? { name, muscle_group: 'Other', category: 'Other' };
+      const outgoing = step.action === 'replace' ? items[step.index] : null;
+      // Unstated targets carry over from the exercise being replaced: a swap is
+      // a change of movement, not a change of prescription.
+      const targetSets = op.sets ?? outgoing?.targetSets ?? 3;
+      const repsMin = op.repsMin ?? outgoing?.repsMin ?? 8;
+      const repsMax = Math.max(op.repsMax ?? outgoing?.repsMax ?? 12, repsMin);
+      const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const newEx: ActiveWorkoutExercise = {
+        exercise: {
+          id: tempId,
+          name: def.name,
+          muscle_group: def.muscle_group,
+          category: def.category,
+          metric_type: def.metric_type,
+        },
+        sets: Array.from({ length: targetSets }, () => ({ weight_kg: 0, reps: repsMin, completed: false })),
+        targetSets,
+        repsMin,
+        repsMax,
+        restSeconds: op.restSeconds ?? outgoing?.restSeconds ?? 90,
+        coachNote: op.note ?? undefined,
+        // A swap inherits its slot's superset membership, so replacing one
+        // half of a paired round leaves the pairing intact.
+        supersetGroup: outgoing?.supersetGroup ?? null,
+      };
+
+      if (step.action === 'replace') {
+        items[step.index] = newEx;
+        started[step.index] = false;
+        finished[step.index] = false;
+        delete pills[step.index];
+        if (step.index === nextIdx) currentReplaced = true;
+      } else {
+        items.splice(step.index, 0, newEx);
+        started.splice(step.index, 0, false);
+        finished.splice(step.index, 0, false);
+        pills.splice(step.index, 0, undefined as never);
+        if (step.index <= nextIdx) nextIdx += 1;
+      }
+      pendingReconcile.push({ def, tempId });
+      applied += 1;
+    }
+
+    if (applied === 0) return { applied: 0, skipped };
+
+    // The reset effect below fires its own selection buzz when the open
+    // exercise changes, so only speak up here when it won't.
+    if (!currentReplaced) haptics.success();
+    // The open exercise is a different movement now: its stopwatch, set type,
+    // RPE and half-logged unilateral side all belonged to the old one. The
+    // index hasn't changed, so nudge the index-change reset effect into
+    // running (it re-runs on `exercises`, and fires when prevIdx disagrees).
+    if (currentReplaced) {
+      stopExerciseTimer();
+      stopRestTimer();
+      prevIdxRef.current = -1;
+      inputEditedRef.current = false;
+    }
+    pillLayoutsRef.current = pills;
+    pillLayoutsRef.current.length = items.length;
+    // A removal can leave a superset holding one member; normalize dissolves it.
+    workout.updateExercises(normalizeSupersetGroups(items));
+    setExerciseStarted(started);
+    setExerciseFinished(finished);
+    const clamped = Math.max(0, Math.min(nextIdx, items.length - 1));
+    if (clamped !== currentIdx) setCurrentIdx(clamped);
+
+    for (const { def, tempId } of pendingReconcile) void reconcileExerciseRow(def, tempId);
+
+    return { applied, skipped };
+  }, [exercises, exerciseStarted, exerciseFinished, currentIdx, user?.id, workout, stopExerciseTimer, stopRestTimer]);
+
+  // What the coach sheet calls. The sheet closes itself on any success, so the
+  // toast is the only thing telling the user the change landed on the screen
+  // they're now looking at. Anything refused stays in the chat card instead.
+  const handleCoachWorkoutEdit = useCallback((ops: CoachWorkoutEditOp[]): CoachEditApplyResult => {
+    const result = applyCoachWorkoutEdit(ops);
+    if (result.applied > 0) {
+      toast.success(result.applied === 1 ? 'Workout updated' : `${result.applied} changes applied`);
+    }
+    return result;
+  }, [applyCoachWorkoutEdit, toast]);
 
   // Ad-hoc supersets: group / ungroup the open exercise with its neighbour mid-workout.
   // The grouping rides ActiveWorkoutExercise.supersetGroup, so the interleave kicks in on
@@ -3802,6 +3971,7 @@ export default function ActiveWorkoutScreen() {
         onClose={() => setCoachOpen(false)}
         initialScreen="chat"
         workoutContext={coachContext}
+        onApplyWorkoutEdit={handleCoachWorkoutEdit}
       />
     </View>
   );

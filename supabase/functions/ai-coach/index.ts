@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
-import { buildSystemPrompt, TERMINAL_TOOLS } from "./prompt.ts";
+import { buildSystemPrompt, STRUCTURED_TOOLS, TERMINAL_TOOLS } from "./prompt.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -332,6 +332,37 @@ async function executeTool(
       args: (i) => ({ p_sql: String(i.sql ?? "") }),
     },
   };
+
+  // Catalog search is a plain PostgREST read, not an RPC — the global library
+  // rows (created_by null) are world-readable, so no security-definer function
+  // and no migration is needed. Handled ahead of rpcMap for that reason.
+  if (name === "coach_search_exercise_catalog") {
+    const q = String(input.query ?? "").trim();
+    const muscle = String(input.muscle ?? "").trim();
+    const limit = Math.min(Math.max(Number(input.limit ?? 40) || 40, 1), 100);
+    try {
+      let query = userClient
+        .from("exercises")
+        .select("name, muscle_group, category, metric_type")
+        .is("created_by", null);
+      // Escape PostgREST's LIKE wildcards so a query like "50%" searches for
+      // the literal string instead of matching everything.
+      if (q) query = query.ilike("name", `%${q.replace(/[%_]/g, "\\$&")}%`);
+      if (muscle) query = query.ilike("muscle_group", muscle.replace(/[%_]/g, "\\$&"));
+      const { data, error } = await query.order("name").limit(limit);
+      if (error) return { error: error.message };
+      const rows = data ?? [];
+      return rows.length > 0
+        ? { matches: rows }
+        : {
+          matches: [],
+          note:
+            "No catalog exercise matched. Try a shorter, more generic query (one word) before concluding it does not exist. Never invent a name for edit_active_workout.",
+        };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
 
   const tool = rpcMap[name];
   if (!tool) return { error: `unknown tool: ${name}` };
@@ -813,7 +844,7 @@ async function runStreamingToolLoop(
       // UI can show a real error instead of bouncing back to the form.
       if (stopReason === "max_tokens") {
         const partialTerminal = cleanBlocks.find(
-          (b: any) => b.type === "tool_use" && TERMINAL_TOOLS.has(b.name),
+          (b: any) => b.type === "tool_use" && STRUCTURED_TOOLS.has(b.name),
         );
         if (partialTerminal) {
           trace.tool_calls.push(`${partialTerminal.name}__truncated`);
@@ -826,13 +857,13 @@ async function runStreamingToolLoop(
       return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
     }
 
-    // Tool calls. Separate terminal tools (generate_workout / generate_plan)
-    // from regular data-fetch tools.
+    // Tool calls. Separate the structured tools (generate_workout /
+    // generate_plan / edit_active_workout) from regular data-fetch tools.
     const toolUses = cleanBlocks.filter((b: any) => b.type === "tool_use");
-    const terminalUse = toolUses.find((b: any) => TERMINAL_TOOLS.has(b.name));
+    const terminalUse = toolUses.find((b: any) => STRUCTURED_TOOLS.has(b.name));
 
     if (terminalUse) {
-      // Terminal tool: emit input as a structured SSE event and exit. Don't
+      // Structured tool: emit input as a structured SSE event and exit. Don't
       // try to "execute" it — its input IS the response.
       trace.tool_calls.push(terminalUse.name);
       structured = { name: terminalUse.name, input: terminalUse.input ?? {} };
@@ -2027,10 +2058,14 @@ Deno.serve(async (req) => {
       // Peek at the requested mode (fully resolved later, same rules): an
       // explicit non-chat mode or any force_tool means a generate / refine /
       // discuss flow, which is Pro-only.
+      // 'live_workout' is chat, not a Pro flow: it's the coach sheet opened
+      // from a session in progress. Its extra tool edits the workout the user
+      // is standing in the middle of — that's core logging, not programming —
+      // so it stays on the free tier's metered messages alongside plain chat.
       const peekMode = (body as { mode?: unknown }).mode;
       const peekForce = (body as { force_tool?: unknown }).force_tool;
       const wantsProFlow =
-        (typeof peekMode === "string" && peekMode !== "chat")
+        (typeof peekMode === "string" && peekMode !== "chat" && peekMode !== "live_workout")
         || typeof peekForce === "string";
       if (wantsProFlow) {
         trace.status = "unauthorized";
@@ -2238,16 +2273,17 @@ Deno.serve(async (req) => {
       ? rawForceTool
       : null;
   const rawMode = (body as { mode?: unknown }).mode;
-  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | null =
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout' | null =
     rawMode === 'chat'
     || rawMode === 'refine_workout' || rawMode === 'refine_plan'
     || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
+    || rawMode === 'live_workout'
       ? rawMode
       : null;
   // Resolution order: explicit `mode` wins, otherwise derive from
   // `force_tool` (back-compat with existing generate flows that only send
   // force_tool), otherwise default to 'chat'.
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout' =
     explicitMode ?? forceTool ?? 'chat';
   // Cross-mode compatibility check: only honor force_tool when the tool
   // is actually exposed in the resolved mode's toolkit. Refine and discuss
@@ -2400,10 +2436,15 @@ Deno.serve(async (req) => {
     // as a fresh generate — even though the back-and-forth chat turns are
     // short (Anthropic bills actual output, so the larger ceiling is free
     // when unused).
+    // live_workout gets the generate-sized budget for the same reason as
+    // refine: the turn may end in a structured tool call, and a payload
+    // truncated at the cap is an outright failure rather than a short answer.
+    // Its actual turns are the shortest of any mode, so the ceiling is free.
     const maxTokens =
       forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
         ? GENERATE_PLAN_MAX_TOKENS
         : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
+          || mode === 'live_workout'
           ? GENERATE_WORKOUT_MAX_TOKENS
           : CHAT_MAX_TOKENS;
 
@@ -2592,12 +2633,12 @@ Deno.serve(async (req) => {
         break;
       }
 
-      // Tool calls. Split terminal tools (generate_workout / generate_plan)
-      // from regular data-fetch tools — terminal tools are NOT executed
-      // server-side; their `input` IS the structured response.
+      // Tool calls. Split structured tools (generate_workout / generate_plan /
+      // edit_active_workout) from regular data-fetch tools — structured tools
+      // are NOT executed server-side; their `input` IS the structured response.
       const toolUses = contentBlocks.filter((b) => b.type === "tool_use");
       const terminalUse = toolUses.find(
-        (b) => typeof b.name === "string" && TERMINAL_TOOLS.has(b.name),
+        (b) => typeof b.name === "string" && STRUCTURED_TOOLS.has(b.name),
       );
       if (terminalUse) {
         trace.tool_calls.push(terminalUse.name ?? "<terminal>");
