@@ -26,7 +26,13 @@ export interface PromptContext {
   // in-progress session. Loaded with LIVE_WORKOUT_BEHAVIOR. Without this
   // mode the model has no way to touch the session but nothing tells it so,
   // and it answers "done, swapped it" for a change that never happened.
-  mode?: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout';
+  mode?: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program' | 'live_workout';
+  // Free tier gets no terminal tools (index.ts strips them). The prompt must
+  // agree, or a free chat user is told to change targets "only via the
+  // propose_targets tool" that is not in their toolkit. Passing tier in here
+  // lets the TARGET_CHANGE_BEHAVIOR block and the tool derive from the SAME
+  // predicate instead of two layers that can drift.
+  freeTier?: boolean;
 }
 
 export interface ResearchSnippet {
@@ -163,6 +169,27 @@ How to coach with it:
 - This is general performance nutrition, not clinical advice. For medical diets or conditions, defer to a dietitian or clinician.
 </nutrition>`;
 
+// How Drona reads the user's active PROGRAM (Drona Programs). The plan-of-record
+// arrives in user_context.program (from get_user_coach_context): the goal, the
+// current phase with its diet targets + directives, and the phase list. This
+// teaches Drona to coach FROM the program the user is on, and how the scheduled
+// multi-week program it can build (via generate_program) is structured.
+const PROGRAM_COACHING = `<program>
+A PROGRAM is a scheduled, multi-week plan toward the user's goal: a dated sequence of PHASES (blocks). Each phase carries its own daily diet targets (calories + macros), a diet directive, a training directive, a readiness directive, and a short training-block descriptor (split + days/week + emphasis). The app advances the program automatically: whichever phase today falls in is the "current phase", and that phase's diet targets become the user's live daily targets.
+
+Reading the active program (user_context.program, present only when the user has one):
+- objective / goal / target_weight_kg / target_date: the destination and why.
+- current_phase: the phase the user is in RIGHT NOW, with week_in_phase / weeks_total, its diet_targets, and its diet/training/readiness directives. Coach from THIS. When they ask "what should I eat today" or "how should I train this week", answer from the current phase, naming its numbers.
+- phases: the whole schedule (name, weeks, start offset, calories), so you can tell them what is coming next and why.
+When user_context.program is absent, they have no active program. You can offer to build one if the conversation calls for it, but do not nag.
+
+Building a program (generate_program, in discuss_program / refine_program mode):
+- A phase's diet is TARGETS + a one-line directive, never a day-by-day meal plan (meal plans are still not your lane). Ground calories and protein in the profile: Mifflin-St Jeor for maintenance, a modest deficit for fat loss (roughly 15-20% under), a slight surplus for muscle gain, protein 1.6-2.2 g/kg bodyweight. Tie the numbers to the target_date and a sane rate (about 0.5-1% bodyweight per week for a cut, slower for a gain).
+- A phase's training is a BLOCK DESCRIPTOR (split, days/week, emphasis), not an exercise list. The concrete per-day routine is generated separately from that descriptor, so keep the program itself compact.
+- Sequence phases with intent: progress load or volume across blocks, insert a deload every 4-8 weeks of hard work, and step diet phases realistically (e.g. deficit, then a maintenance or diet-break week, then the next block). The readiness directive per phase should tell the user how to bend the plan on a low-recovery day.
+- Everything is in your coach voice, and the em-dash rule in <writing_style> applies to every field.
+</program>`;
+
 // The user's sticky per-exercise notes (user_exercise_notes), merged into the
 // user_context blob by index.ts. These are standing instructions about how they
 // train a movement, not observations — the point is that Drona plans WITH them
@@ -250,6 +277,13 @@ const WRITING_STYLE = `<writing_style>
 Write the way a coach texts a client: plain, direct, second person, short sentences.
 Hard rule: never use an em dash (—) in anything you produce, whether chat replies, exercise cues or notes, plan summaries, or day names. Use a comma, a period, or parentheses instead. (Hyphens in ranges like "3-5g" or "6-8 reps" are fine.)
 </writing_style>`;
+
+// In-chat target changes (P4). Teaches the coach to route any calorie/macro
+// target change through the propose_targets tool (an apply card) rather than
+// claiming it in prose. Lives in the cached static block.
+const TARGET_CHANGE_BEHAVIOR = `<target_changes>
+You can change the user's daily nutrition targets (calories + macros) from chat, but ONLY through the propose_targets tool, which shows them a card to apply. When the conversation calls for new targets (they ask to cut harder, add calories, hit more protein, or you recommend a change), confirm the direction in one short line, then call propose_targets with the new numbers. Never say you have updated their targets, and never write the numbers as a done deal without the tool. Ground the numbers in their bodyweight, goal, and recent intake (user_context.nutrition). If they are on an active program and want to change a whole phase's targets, that belongs in the program (they can adjust it on the Goal & Plan screen); use propose_targets for an in-the-moment tweak to today's numbers.
+</target_changes>`;
 
 export interface AnthropicSystemBlock {
   type: 'text';
@@ -486,6 +520,93 @@ export const GENERATE_TOOLS: AnthropicTool[] = [
   },
 ];
 
+// ── Program tool (Drona Programs) ────────────────────────────────────────────
+// Also terminal: generate_program's input IS the structured program the client
+// renders as a saveable card. Each phase emits a training-block DESCRIPTOR, not
+// an exercise list — the concrete per-day routine is generated separately from
+// that descriptor, which keeps this payload small (guards against max_tokens
+// truncation of a terminal tool) and reuses the existing generate_plan flow.
+const PHASE_DIET_SCHEMA = {
+  type: 'object' as const,
+  description: 'Daily nutrition targets for THIS phase.',
+  properties: {
+    calories: { type: 'integer', description: 'Daily calorie target (kcal).' },
+    protein_g: { type: 'integer', description: 'Daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
+    carb_g: { type: 'integer', description: 'Daily carb target (g). Optional.' },
+    fat_g: { type: 'integer', description: 'Daily fat target (g). Optional.' },
+  },
+  required: ['calories', 'protein_g'],
+};
+
+const TRAINING_BLOCK_SCHEMA = {
+  type: 'object' as const,
+  description: 'A SHORT descriptor of the training block, NOT an exercise list. The concrete routine is generated from this later.',
+  properties: {
+    split_type: { type: 'string', description: 'e.g. "Upper/Lower", "Push/Pull/Legs", "Full Body x3".' },
+    days_per_week: { type: 'integer', description: 'Training days per week.' },
+    emphasis: { type: 'string', description: 'Primary emphasis this block, e.g. "chest + back volume", "squat + deadlift strength".' },
+    note: { type: 'string', description: 'Optional one-line extra intent for the block. No em dashes.' },
+  },
+  required: ['split_type', 'days_per_week'],
+};
+
+export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
+  name: 'generate_program',
+  description:
+    'Emit a structured, scheduled multi-week PROGRAM toward the user\'s goal. Before calling, write 1 short sentence (5-15 words) signaling what you are building, e.g. "Building your 12-week lean-cut program now." A program is a dated sequence of PHASES; each phase has its own diet targets, diet/training/readiness directives, and a training-block DESCRIPTOR. CRITICAL: never emit exercise lists here — each phase\'s training_block is a short descriptor (split, days/week, emphasis); the concrete per-day routine is generated separately. Keep the program compact. No em dashes in any field.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Short program name, e.g. "12-Week Lean Cut", "Off-Season Hypertrophy Block".' },
+      objective: { type: 'string', description: '1-2 sentence plain-language goal narrative in your coach voice, e.g. "Drop to 78kg lean while holding your big lifts, then ease into a slow lean bulk." No em dashes.' },
+      goal: { type: 'string', enum: ['hypertrophy', 'strength', 'fat_loss', 'endurance', 'general'], description: 'Closest matching training-goal category for the profile.' },
+      target_weight_kg: { type: 'number', description: 'Target bodyweight in kg if the goal is weight-based. Omit if not applicable.' },
+      target_date: { type: 'string', description: 'Target completion date as YYYY-MM-DD if there is a deadline. Omit if open-ended.' },
+      start_date: { type: 'string', description: 'Program start date as YYYY-MM-DD. Default to today unless the user asked to start later.' },
+      rationale: { type: 'string', description: '3-5 sentences on why this phase structure + progression fits THIS user: reference their goal, training age, weekly sessions, recovery, and current lifts/bodyweight. Confident coach voice, specific.' },
+      phases: {
+        type: 'array',
+        description: 'Ordered phases/blocks, earliest first. Typically 2-6.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Phase name, e.g. "Deficit + Volume Block", "Deload Week", "Lean Bulk".' },
+            duration_weeks: { type: 'integer', description: 'How many weeks this phase runs. 1-26.' },
+            diet: PHASE_DIET_SCHEMA,
+            diet_directive: { type: 'string', description: 'One line of diet guidance for the phase, e.g. "High-protein deficit, refeed on your two hardest training days." No em dashes.' },
+            training_directive: { type: 'string', description: 'One line of training guidance/progression, e.g. "RIR 2, add a set to lagging muscles each week." No em dashes.' },
+            readiness_directive: { type: 'string', description: 'One line on adapting to recovery this phase, e.g. "On low-readiness days cut the top set, keep the working volume." No em dashes.' },
+            training_block: TRAINING_BLOCK_SCHEMA,
+          },
+          required: ['name', 'duration_weeks', 'diet', 'training_block'],
+        },
+      },
+    },
+    required: ['title', 'objective', 'rationale', 'phases'],
+  },
+};
+
+// ── In-chat target change (Drona Programs P4) ────────────────────────────────
+// Terminal tool exposed in plain chat so the coach can change the user's daily
+// nutrition targets conversationally, as a card they tap to apply. The card is
+// the only path to their profile; the coach never "updates" targets in prose.
+export const PROPOSE_TARGETS_TOOL: AnthropicTool = {
+  name: 'propose_targets',
+  description:
+    'Propose a change to the user\'s daily nutrition targets (calories + macros) as a card they tap to apply. Use when the conversation lands on changing intake (they ask to cut harder, add calories, hit more protein, or you recommend a new target). Before calling, write one short sentence in your coach voice explaining the change. Do NOT say you have updated their targets in prose, the card is the only thing that writes to their profile. Ground the numbers in their bodyweight, goal, and recent intake (user_context.nutrition). No em dashes.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      calories: { type: 'integer', description: 'New daily calorie target (kcal).' },
+      protein_g: { type: 'integer', description: 'New daily protein target (g). Usually 1.6-2.2 g/kg bodyweight.' },
+      carb_g: { type: 'integer', description: 'New daily carb target (g). Optional.' },
+      fat_g: { type: 'integer', description: 'New daily fat target (g). Optional.' },
+      rationale: { type: 'string', description: 'One sentence on why these targets, referencing their goal / bodyweight / recent intake. No em dashes.' },
+    },
+    required: ['calories', 'protein_g', 'rationale'],
+  },
+};
+
 // ── Live-workout editing (live_workout mode) ─────────────────────────────────
 // The one tool that can change a workout the user is CURRENTLY doing. Like the
 // generate tools it is never executed server-side: the active session lives
@@ -560,12 +681,12 @@ export const EDIT_ACTIVE_WORKOUT_TOOL: AnthropicTool = {
 // Tool names whose tool_use blocks should NOT be executed server-side. They
 // produce the structured response the client renders directly. The streaming
 // loop emits them as a `structured` SSE event and ends the iteration.
-export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan']);
+export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan', 'generate_program', 'propose_targets']);
 
 // Every tool that ends the loop with a `structured` payload instead of being
-// executed. Superset of TERMINAL_TOOLS, which stays exactly the two generate
-// tools because it ALSO means "Pro-only" — the free tier strips those, while
-// editing the session you're standing in the middle of stays free.
+// executed. Superset of TERMINAL_TOOLS, which is left alone because it ALSO
+// means "Pro-only": the free tier strips everything in it, while editing the
+// session you are standing in the middle of stays free.
 export const STRUCTURED_TOOLS = new Set([...TERMINAL_TOOLS, 'edit_active_workout']);
 
 // Phase 4: prepended to the system prompt when get_user_coach_context()'s
@@ -655,6 +776,43 @@ DO:
 If you write the workout/plan as text instead of calling the tool, the user sees text in the chat and CANNOT save it — the discuss session is broken. The tool call is non-optional.
 </discuss_behavior>`;
 
+// Behavioral steering for the program modes. discuss_program designs a NEW
+// scheduled multi-week program from a goal; refine_program iterates on the
+// active one (its recap opens the conversation). Both end by emitting the
+// generate_program terminal tool, which the client renders as a saveable
+// program card. Same probe-propose-confirm-emit shape as discuss/refine, with
+// the extra job of settling the goal and phase structure before building.
+const DISCUSS_PROGRAM_BEHAVIOR = `<discuss_program_behavior>
+You are designing a NEW scheduled multi-week PROGRAM with the user. The opening user turn states the intent (a goal, or "help me plan toward X"). Settle the goal and the shape of the plan through conversation, then build.
+
+How to run it:
+1. Pin the goal first. Ask 1-3 tight questions to get what you need: the objective (fat loss, muscle gain, recomp, strength, event), a target (bodyweight and/or date) if there is one, training days per week, and any constraint (equipment, injury, schedule). Read the profile, recent activity, readiness, and nutrition from user_context before asking things you can already see.
+2. Pull training data via read tools only when it changes the plan (e.g. current volume on a lagging muscle, recent bodyweight trend). Do not preemptively fetch on the opening turn.
+3. Propose the arc in 2-4 sentences: how many phases, what each block does, the diet direction, and roughly how long to the target. Then ask ONE explicit confirmation question, e.g. "That's a 12-week cut: 4-week volume block, deload, 4-week block, then a diet-break week. Want me to build it now, or adjust the shape first?"
+4. ONLY call generate_program AFTER the user affirmatively confirms ("yes", "build it", "go ahead", "sounds good", etc.). Set start_date to today unless they asked to start later. Make each phase's diet targets realistic for the objective and grounded in their bodyweight, and give every phase a training-block descriptor (not exercises), a diet directive, a training directive, and a readiness directive.
+5. If they change direction mid-session, absorb it and re-ask confirmation before emitting. Never call the tool with an open question on the table.
+
+CRITICAL — How the program reaches the user:
+The program reaches the user EXCLUSIVELY through a tool_use call to generate_program. The client renders the structured JSON as a saveable program card and dismisses this chat. There is NO other path.
+
+DO NOT: claim you lack the tool (you have it in this mode); write the program as a markdown table/list of phases or exercises; paste JSON; or say "here's your program:" and describe it inline.
+DO: after the user confirms in step 3, your VERY NEXT assistant turn is the generate_program tool_use, optionally preceded by one short sentence (5-15 words) like "Building your program now, here we go." That sentence is the only text allowed alongside the tool call.
+
+If you write the program as text instead of calling the tool, the user cannot save it and the session is broken. The tool call is non-optional.
+</discuss_program_behavior>`;
+
+const REFINE_PROGRAM_BEHAVIOR = `<refine_program_behavior>
+You are refining the user's ACTIVE program. The opening user turn contains a plain-text recap of the current program (goal, phases, current phase) — treat it as the live state. Iterate on it, do not start from scratch.
+
+How to run it:
+1. Understand what they want to change: the goal or target date, a phase's diet targets, the phase lengths or order, a training block's emphasis, or the readiness handling. Ask 1-3 tight questions if the ask is ambiguous.
+2. Pull data via read tools only when it changes the recommendation (e.g. bodyweight trend before re-cutting calories). Do not preemptively fetch.
+3. When you have enough and they have signalled they are happy with the direction, ask one explicit confirmation question ("Want me to rebuild the program with those changes now, or anything else to adjust?").
+4. ONLY call generate_program AFTER an affirmative confirmation. Preserve everything they liked and change only what they asked. Keep phases already completed intact where it makes sense, and keep start_date consistent with the existing program unless they want to restart. The rationale should note what changed and why, not re-justify the whole program.
+5. If they change their mind mid-session, absorb it and re-ask confirmation before emitting.
+
+CRITICAL — the refined program reaches the user EXCLUSIVELY through a generate_program tool_use call. Same DO NOT / DO rules as designing one: never write the program as text, JSON, or a table; after confirmation your next turn is the tool call, optionally preceded by one short intent sentence. The tool call is non-optional.
+</refine_program_behavior>`;
 // Behavioral steering for live_workout mode — the chat opened from a workout
 // that is happening right now. The opening user turn is a recap of the live
 // session (built client-side in lib/workoutCoach.ts; the sets exist only in
@@ -731,10 +889,21 @@ export function buildSystemPrompt(ctx: PromptContext): {
     ? `\n\n${REFINE_BEHAVIOR}`
     : isDiscuss
       ? `\n\n${DISCUSS_BEHAVIOR}`
-      : mode === 'live_workout'
-        ? `\n\n${LIVE_WORKOUT_BEHAVIOR}`
-        : '';
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
+      : mode === 'discuss_program'
+        ? `\n\n${DISCUSS_PROGRAM_BEHAVIOR}`
+        : mode === 'refine_program'
+          ? `\n\n${REFINE_PROGRAM_BEHAVIOR}`
+          : mode === 'live_workout'
+            ? `\n\n${LIVE_WORKOUT_BEHAVIOR}`
+            : '';
+  // Chat is the only mode that carries PROPOSE_TARGETS_TOOL, and free tier has
+  // its terminal tools stripped by index.ts. Derived ONCE and used for both the
+  // behavior block and the toolset below, so the two cannot drift apart: a tool
+  // without its instructions, or instructions for a tool that is not there, is
+  // an instruction/tool mismatch either way.
+  const carriesProposeTargets = mode === 'chat' && !ctx.freeTier;
+  const targetBlock = carriesProposeTargets ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',
@@ -781,9 +950,15 @@ export function buildSystemPrompt(ctx: PromptContext): {
         ? [...COACH_TOOLS, GENERATE_TOOLS[0]]
         : mode === 'refine_plan' || mode === 'discuss_plan'
           ? [...COACH_TOOLS, GENERATE_TOOLS[1]]
-          : mode === 'live_workout'
-            ? [...COACH_TOOLS, EDIT_ACTIVE_WORKOUT_TOOL]
-            : COACH_TOOLS;
+          : mode === 'generate_program'
+            ? [GENERATE_PROGRAM_TOOL]
+            : mode === 'discuss_program' || mode === 'refine_program'
+              ? [...COACH_TOOLS, GENERATE_PROGRAM_TOOL]
+              : mode === 'live_workout'
+                ? [...COACH_TOOLS, EDIT_ACTIVE_WORKOUT_TOOL]
+                : carriesProposeTargets
+                  ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
+                  : [...COACH_TOOLS];
 
   // Tools: cache them since they're static. Last tool gets the cache_control
   // marker per Anthropic's convention.

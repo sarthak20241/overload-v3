@@ -54,6 +54,13 @@ const MAX_TOOL_ITERATIONS = 5;
 const CHAT_MAX_TOKENS = 1024;
 const GENERATE_WORKOUT_MAX_TOKENS = 2048;
 const GENERATE_PLAN_MAX_TOKENS = 4096;
+// generate_program has its own ceiling. Measured from a real 6-phase emission
+// (~465 chars of prose per phase + ~250 of JSON keys/numbers) a schema-max
+// 12-phase program is ~9.5k chars, roughly 2.4-2.7k tokens. 4096 covered that
+// but thinly. Anthropic bills actual output, so the extra ceiling costs nothing
+// on the typical 2-6 phase program and only exists for the tail. Truncation is
+// still hard-errored (tool_truncated), never silently dropped.
+const GENERATE_PROGRAM_MAX_TOKENS = 6144;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // Hard cap on a single Anthropic call — a guard against a HUNG upstream, not
 // a latency budget. The original 30s was set from n=4 production samples and
@@ -64,6 +71,11 @@ const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // killing a truly wedged connection. Note the onboarding client
 // (lib/onboardingDrona.ts) aborts at 75s, so it gives up before we do.
 const ANTHROPIC_TIMEOUT_MS = 80000;
+// Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
+// optional pre-step that runs synchronously before embed + the main coach call,
+// so if Haiku hangs we bail fast to the raw message rather than block the whole
+// turn for the full 80s ANTHROPIC_TIMEOUT_MS.
+const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 
 // parse_meal mode (AI food logging). Haiku for speed + cost: this fires on
 // every meal, and the catalog does the nutrition work — the model only
@@ -106,11 +118,6 @@ const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
 // question-shaped that the extra hop costs latency for nothing.
 const RETRIEVAL_REWRITE_MIN_CHARS = 180;
 const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
-// Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
-// optional pre-step that runs synchronously before embed + the main coach call,
-// so if Haiku hangs we bail fast to the raw message rather than block the whole
-// turn for the full 80s ANTHROPIC_TIMEOUT_MS.
-const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 const VOYAGE_TIMEOUT_MS = 6000;
 
 const CORS_HEADERS = {
@@ -272,12 +279,11 @@ async function recordTrace(
     const { error } = await admin.from("coach_traces").insert(row);
     if (!error) return;
 
-    // Deploy-order resilience. `mode`/`spans` arrive in migration 0080 and the
-    // retrieval_query_* fields in 0095; if the function ships before either
-    // migration is applied, PostgREST rejects the whole row for unknown columns
-    // and we lose EVERY trace, including the observability this change exists to
-    // add. Retry once without the newer columns rather than couple a code
-    // deploy to a migration.
+    // Deploy-order resilience. `mode` and `spans` arrive in migration 0080; if
+    // the function ships before the migration is applied, PostgREST rejects
+    // the whole row for unknown columns and we lose EVERY trace, including the
+    // observability this change exists to add. Retry once without them rather
+    // than couple a code deploy to a migration.
     const missingColumn = /column .* does not exist|could not find the '.*' column/i.test(error.message ?? "");
     if (missingColumn) {
       const {
@@ -348,7 +354,7 @@ async function executeTool(
       // Escape PostgREST's LIKE wildcards so a query like "50%" searches for
       // the literal string instead of matching everything.
       if (q) query = query.ilike("name", `%${q.replace(/[%_]/g, "\\$&")}%`);
-      if (muscle) query = query.ilike("muscle_group", muscle.replace(/[%_]/g, "\\$&"));
+      if (muscle) query = query.ilike("muscle_group", muscle);
       const { data, error } = await query.order("name").limit(limit);
       if (error) return { error: error.message };
       const rows = data ?? [];
@@ -2268,22 +2274,23 @@ Deno.serve(async (req) => {
   // every signed-in coach turn — an uncaught 500 the client surfaced as the
   // generic "Something broke on my end."
   const rawForceTool = (body as { force_tool?: unknown }).force_tool;
-  const forceTool: 'generate_workout' | 'generate_plan' | null =
-    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan'
+  const forceTool: 'generate_workout' | 'generate_plan' | 'generate_program' | null =
+    rawForceTool === 'generate_workout' || rawForceTool === 'generate_plan' || rawForceTool === 'generate_program'
       ? rawForceTool
       : null;
   const rawMode = (body as { mode?: unknown }).mode;
-  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout' | null =
+  const explicitMode: 'chat' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'discuss_program' | 'refine_program' | 'live_workout' | null =
     rawMode === 'chat'
     || rawMode === 'refine_workout' || rawMode === 'refine_plan'
     || rawMode === 'discuss_workout' || rawMode === 'discuss_plan'
+    || rawMode === 'discuss_program' || rawMode === 'refine_program'
     || rawMode === 'live_workout'
       ? rawMode
       : null;
   // Resolution order: explicit `mode` wins, otherwise derive from
   // `force_tool` (back-compat with existing generate flows that only send
   // force_tool), otherwise default to 'chat'.
-  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout' =
+  const mode: 'chat' | 'generate_workout' | 'generate_plan' | 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'generate_program' | 'discuss_program' | 'refine_program' | 'live_workout' =
     explicitMode ?? forceTool ?? 'chat';
   // Cross-mode compatibility check: only honor force_tool when the tool
   // is actually exposed in the resolved mode's toolkit. Refine and discuss
@@ -2292,7 +2299,11 @@ Deno.serve(async (req) => {
   // to null rather than producing an Anthropic 400. Explicit `mode: 'chat'`
   // exposes no generate_* tool, so a force_tool there must be dropped too —
   // otherwise `{ mode: 'chat', force_tool: 'generate_plan' }` would send a
-  // tool_choice for a tool that isn't in `tools` (400).
+  // tool_choice for a tool that isn't in `tools` (400). The program modes
+  // (discuss_program / refine_program) expose generate_program, so they may
+  // force it — a resolved `mode === 'generate_program'` never happens because
+  // it is not an explicitMode value; program creation always routes through a
+  // discuss/refine program mode.
   const forceToolAllowed =
     !forceTool
     || (mode === 'generate_workout' && forceTool === 'generate_workout')
@@ -2300,8 +2311,11 @@ Deno.serve(async (req) => {
     || (mode === 'refine_workout' && forceTool === 'generate_workout')
     || (mode === 'refine_plan' && forceTool === 'generate_plan')
     || (mode === 'discuss_workout' && forceTool === 'generate_workout')
-    || (mode === 'discuss_plan' && forceTool === 'generate_plan');
-  const effectiveForceTool: 'generate_workout' | 'generate_plan' | null =
+    || (mode === 'discuss_plan' && forceTool === 'generate_plan')
+    || (mode === 'generate_program' && forceTool === 'generate_program')
+    || (mode === 'discuss_program' && forceTool === 'generate_program')
+    || (mode === 'refine_program' && forceTool === 'generate_program');
+  const effectiveForceTool: 'generate_workout' | 'generate_plan' | 'generate_program' | null =
     forceToolAllowed ? forceTool : null;
 
   // 6. Retrieval (Phase 2.2): embed last user message, look up top-k research
@@ -2366,7 +2380,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode });
+  let { system, tools } = buildSystemPrompt({ userContext, retrievedResearch, mode, freeTier });
   // Free tier is chat-only: strip the terminal generation tools (plan /
   // workout emission is Pro) and tell Drona so it answers in coach voice
   // instead of attempting a tool that isn't there. Appended AFTER the
@@ -2441,7 +2455,9 @@ Deno.serve(async (req) => {
     // truncated at the cap is an outright failure rather than a short answer.
     // Its actual turns are the shortest of any mode, so the ceiling is free.
     const maxTokens =
-      forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
+      forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
+        ? GENERATE_PROGRAM_MAX_TOKENS
+        : forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
         ? GENERATE_PLAN_MAX_TOKENS
         : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
           || mode === 'live_workout'
@@ -2452,12 +2468,16 @@ Deno.serve(async (req) => {
     (async () => {
       try {
         const statusPhase = effectiveForceTool
-          ? `generating_${effectiveForceTool === 'generate_workout' ? 'workout' : 'plan'}`
+          ? effectiveForceTool === 'generate_program'
+            ? 'generating_program'
+            : `generating_${effectiveForceTool === 'generate_workout' ? 'workout' : 'plan'}`
           : mode === 'refine_workout' || mode === 'refine_plan'
             ? 'refining'
             : mode === 'discuss_workout' || mode === 'discuss_plan'
               ? 'discussing'
-              : 'thinking';
+              : mode === 'discuss_program' || mode === 'refine_program'
+                ? 'programming'
+                : 'thinking';
         sse.write("status", { phase: statusPhase });
         const result = await runStreamingToolLoop(sse, system, tools, initialConversation, userClient, trace, effectiveForceTool, maxTokens);
 
@@ -2572,7 +2592,9 @@ Deno.serve(async (req) => {
   // generate-sized ceiling because the session ends with an emission of
   // the matching terminal tool.
   const nonStreamMaxTokens =
-    forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
+    forceTool === 'generate_program' || mode === 'refine_program' || mode === 'discuss_program'
+      ? GENERATE_PROGRAM_MAX_TOKENS
+      : forceTool === 'generate_plan' || mode === 'refine_plan' || mode === 'discuss_plan'
       ? GENERATE_PLAN_MAX_TOKENS
       : forceTool === 'generate_workout' || mode === 'refine_workout' || mode === 'discuss_workout'
         ? GENERATE_WORKOUT_MAX_TOKENS

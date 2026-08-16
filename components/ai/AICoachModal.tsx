@@ -24,6 +24,7 @@ import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
+import { structuredToProgram, saveProgram, applyPhaseTargets, clampDiet, type GeneratedProgram } from '@/lib/programData';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate, isCoachContentAllowed } from './CoachAccessGate';
@@ -49,7 +50,7 @@ import {
 } from '@/lib/workoutCoachEdit';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type Screen = 'menu' | 'chat' | 'plan' | 'workout';
+type Screen = 'menu' | 'chat' | 'plan' | 'workout' | 'program';
 
 // Chat message + citation shapes live in lib/coachConversations.ts so the
 // persistence layer and the UI share one definition. Aliased here to keep the
@@ -430,7 +431,7 @@ const LIVE_WORKOUT_MODE = 'live_workout' as const;
 interface StreamingOptions {
   // When set, forces tool_choice on that tool — used for Generate Workout /
   // Generate Plan flows so output is guaranteed structured.
-  forceTool?: 'generate_workout' | 'generate_plan';
+  forceTool?: 'generate_workout' | 'generate_plan' | 'generate_program';
   // Conversational refine / discuss sessions. The backend exposes both
   // the read toolkit and the matching terminal tool, but leaves
   // tool_choice auto so the model can probe priorities first and only
@@ -442,7 +443,7 @@ interface StreamingOptions {
   // 'live_workout' is the in-workout chat: read toolkit plus
   // edit_active_workout, the only tool that can change a session already in
   // progress. Its structured emission arrives on the same onStructured path.
-  mode?: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'live_workout';
+  mode?: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'refine_program' | 'discuss_program' | 'live_workout';
   // Phase 1 history: when set, the edge function mirrors this turn into the
   // server-side coach_conversations / coach_conversation_messages rows under
   // this conversation id. `clientMsgId` (the user message's id) keys the user +
@@ -788,6 +789,7 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
 
   const options: { screen: Screen; icon: string; title: string; sub: string }[] = [
     { screen: 'chat', icon: 'message-circle', title: 'Chat with Coach Drona', sub: 'Talk progress, PRs, plateaus, or anything on your mind' },
+    { screen: 'program', icon: 'target', title: 'Build a Program', sub: 'A multi-week plan with diet and training phases toward your goal' },
     { screen: 'plan', icon: 'calendar', title: 'Generate Workout Plan', sub: 'Multi-day program tailored to your goals' },
     { screen: 'workout', icon: 'activity', title: 'Generate a Workout', sub: 'Single session designed for today' },
   ];
@@ -976,6 +978,15 @@ function ChatScreen({
   }, [workoutContext]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const toast = useToast();
+  // P4: a coach-proposed nutrition-target change (from the propose_targets
+  // terminal tool). Transient, not persisted: it is an action prompt that sits
+  // above the input until the user applies or dismisses it. applyPhaseTargets
+  // writes only the fields present, leaving the rest of the profile untouched.
+  const [targetProposal, setTargetProposal] = useState<
+    null | { calories: number; protein_g: number; carb_g?: number; fat_g?: number; rationale?: string }
+  >(null);
+  const [applyingTargets, setApplyingTargets] = useState(false);
   // Free tier: null while OK; set to which kind of 402 hit when the server
   // rejects. 'cap' = daily allowance spent; 'pro' = asked for a Pro-only
   // flow (plan/refine) — the banner and the /upgrade route need to know
@@ -1096,6 +1107,45 @@ function ChatScreen({
     let handledEdit = false;
     streamRef.current = callAICoachStreaming(allMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
+      // One handler for both terminal tools this chat can receive. They are
+      // mutually exclusive by `name`: propose_targets (nutrition change, P4)
+      // and edit_active_workout (live-session edit). The merge that brought
+      // live_workout in briefly left these as two separate onStructured keys
+      // on the same object literal, where the second silently shadowed the
+      // first and target proposals stopped rendering.
+      onStructured: ({ name, input }) => {
+        // Live-workout edits: the coach emitted edit_active_workout, which
+        // ends its turn. Attach a confirm card to this assistant message;
+        // nothing changes on the workout screen until the user taps Apply.
+        if (name === 'edit_active_workout') {
+          if (!canEditWorkout) return;
+          const edit = parseCoachWorkoutEdit(input);
+          if (!edit) return;
+          handledEdit = true;
+          setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+          return;
+        }
+        // P4: the coach proposed a nutrition-target change. Surface it as an
+        // apply card above the input (the assistant's one-line intent still
+        // streams into the bubble above it).
+        if (name === 'propose_targets' && typeof input.calories === 'number') {
+          // Clamp: the tool schema's minimum/maximum only steer the model, and
+          // these numbers go straight to user_profiles on Apply.
+          const c = clampDiet({
+            calories: Math.round(Number(input.calories)),
+            protein_g: Math.round(Number(input.protein_g ?? 0)),
+            carb_g: input.carb_g != null ? Math.round(Number(input.carb_g)) : undefined,
+            fat_g: input.fat_g != null ? Math.round(Number(input.fat_g)) : undefined,
+          });
+          setTargetProposal({
+            calories: c.calories!,
+            protein_g: c.protein_g!,
+            carb_g: c.carb_g,
+            fat_g: c.fat_g,
+            rationale: typeof input.rationale === 'string' ? input.rationale : undefined,
+          });
+        }
+      },
       onStatus: (phase, payload) => {
         // Translate server phase tokens into friendly UI labels. The labels
         // show up under the spinner while the message bubble is still empty.
@@ -1115,16 +1165,6 @@ function ChatScreen({
         setMessages(prev => prev.map(m =>
           m.id === assistantId && m.content === '' ? { ...m, thinkingPhase: label } : m
         ));
-      },
-      // Live-workout edits: the coach emitted edit_active_workout, which ends
-      // its turn. Attach a confirm card to this assistant message; nothing
-      // changes on the workout screen until the user taps Apply.
-      onStructured: ({ name, input: toolInput }) => {
-        if (!canEditWorkout || name !== 'edit_active_workout') return;
-        const edit = parseCoachWorkoutEdit(toolInput);
-        if (!edit) return;
-        handledEdit = true;
-        setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
       },
       onDone: ({ citations, structured }) => {
         // Defensive fallback, mirroring the generate screens: if the live
@@ -1177,6 +1217,39 @@ function ChatScreen({
       clientMsgId: workoutContext ? undefined : userMsg.id,
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
+
+  // P4: apply a coach-proposed target change. Writes only the provided fields
+  // to user_profiles (the machine-read layer the Nutrition screen + FUEL card
+  // read), so the change reflects on their next focus of those screens.
+  const applyTargetProposal = useCallback(async () => {
+    if (!targetProposal || applyingTargets) return;
+    if (!isSupabaseConfigured || !supabase || !userId) {
+      toast.info('Sign in to update your targets');
+      setTargetProposal(null);
+      return;
+    }
+    setApplyingTargets(true);
+    // Pin the proposal we are submitting. If a NEWER propose_targets streams
+    // in while this one is in flight, an unconditional setTargetProposal(null)
+    // on success would discard that newer, never-applied card. Clear only if
+    // the card is still the one we submitted.
+    const submitted = targetProposal;
+    try {
+      await applyPhaseTargets(supabase, userId, {
+        calories: submitted.calories,
+        protein_g: submitted.protein_g,
+        carb_g: submitted.carb_g,
+        fat_g: submitted.fat_g,
+      });
+      toast.success('Targets updated');
+      setTargetProposal((cur) => (cur === submitted ? null : cur));
+    } catch (e) {
+      console.warn('[targets] apply failed:', e);
+      toast.error("Couldn't update your targets");
+    } finally {
+      setApplyingTargets(false);
+    }
+  }, [targetProposal, applyingTargets, supabase, userId, toast]);
 
   // Review mode: auto-ask the coach for a session review once the chat opens,
   // so the user doesn't have to type. Fires exactly once per snapshot — the
@@ -1359,6 +1432,42 @@ function ChatScreen({
         </View>
       )}
 
+      {/* P4: coach-proposed target change. Sits above the input as an apply
+          card; nothing changes until the user taps Apply. */}
+      {targetProposal && (
+        <View style={{ marginHorizontal: Spacing.lg, marginBottom: Spacing.sm, padding: Spacing.md, borderRadius: Radius.lg, borderWidth: 1, backgroundColor: C.card, borderColor: C.primaryBorder, gap: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Feather name="target" size={13} color={C.accentText} />
+            <Text style={{ color: C.accentText, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.3 }}>NEW TARGETS</Text>
+          </View>
+          <Text style={{ color: C.foreground, fontSize: FontSize.base, fontWeight: FontWeight.semibold }}>
+            {[`${targetProposal.calories} kcal`, `${targetProposal.protein_g}g protein`,
+              targetProposal.carb_g != null ? `${targetProposal.carb_g}g carb` : null,
+              targetProposal.fat_g != null ? `${targetProposal.fat_g}g fat` : null].filter(Boolean).join(' · ')}
+          </Text>
+          {targetProposal.rationale && (
+            <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, lineHeight: 19 }}>{targetProposal.rationale}</Text>
+          )}
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+            <TouchableOpacity
+              onPress={() => setTargetProposal(null)}
+              disabled={applyingTargets}
+              style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: Radius.lg, backgroundColor: C.muted }}
+            >
+              <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, fontWeight: FontWeight.medium }}>Dismiss</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={applyTargetProposal}
+              disabled={applyingTargets}
+              style={{ flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: 10, borderRadius: Radius.lg, backgroundColor: Colors.primary, opacity: applyingTargets ? 0.6 : 1 }}
+            >
+              <Feather name="check" size={14} color={Colors.primaryFg} />
+              <Text style={{ color: Colors.primaryFg, fontSize: FontSize.sm, fontWeight: FontWeight.semibold }}>Apply</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Input */}
       <View style={[s.chatInputWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
         <View style={[s.chatInputBox, { backgroundColor: C.inputBg, borderColor: C.border }]}>
@@ -1498,21 +1607,62 @@ function planToText(p: GeneratedPlan): string {
   return lines.join('\n');
 }
 
+// Recap of the active program, sent as the synthetic opener when refining it so
+// the model reasons about the live state (mirrors planToText for plans).
+function programToText(p: GeneratedProgram): string {
+  const lines: string[] = [];
+  lines.push(`[Current program]`);
+  lines.push(`Title: ${p.title}`);
+  if (p.objective) lines.push(`Objective: ${p.objective}`);
+  if (p.goal) lines.push(`Goal: ${p.goal}`);
+  if (p.target_weight_kg) lines.push(`Target weight: ${p.target_weight_kg} kg`);
+  if (p.target_date) lines.push(`Target date: ${p.target_date}`);
+  if (p.start_date) lines.push(`Start date: ${p.start_date}`);
+  p.phases.forEach((ph, i) => {
+    lines.push('');
+    lines.push(`Phase ${i + 1}: ${ph.name} (${ph.duration_weeks}w)`);
+    const d = ph.diet;
+    const macros = [
+      d.calories != null ? `${d.calories} kcal` : null,
+      d.protein_g != null ? `${d.protein_g}g protein` : null,
+      d.carb_g != null ? `${d.carb_g}g carb` : null,
+      d.fat_g != null ? `${d.fat_g}g fat` : null,
+    ].filter(Boolean).join(', ');
+    if (macros) lines.push(`  Diet: ${macros}`);
+    if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
+    if (ph.training_block) {
+      const b = ph.training_block;
+      const t = [b.split_type, b.days_per_week ? `${b.days_per_week}d/wk` : null, b.emphasis]
+        .filter(Boolean).join(', ');
+      if (t) lines.push(`  Training: ${t}`);
+    }
+    if (ph.training_directive) lines.push(`  Training note: ${ph.training_directive}`);
+    if (ph.readiness_directive) lines.push(`  Readiness: ${ph.readiness_directive}`);
+  });
+  return lines.join('\n');
+}
+
 // ─── Generate Plan Screen ────────────────────────────────────────────────────
 function GeneratePlanScreen({
   onBack,
   onSaveRoutines,
+  onRequestUpgrade,
+  seed,
 }: {
   onBack: () => void;
   onSaveRoutines: (routines: GeneratedWorkout[]) => void;
+  onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
+  // When present (from the Goal & Plan screen "Build workout split"), pre-seeds
+  // the form + prompt so the generated split matches a specific program phase.
+  seed?: { goal?: string; days?: string; note?: string };
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const clerkAuth = hasClerkKey ? require('@clerk/clerk-expo').useAuth() : null;
   const getToken: (() => Promise<string | null>) | null = clerkAuth?.getToken ?? null;
 
-  const [goal, setGoal] = useState('');
-  const [days, setDays] = useState('4 days');
+  const [goal, setGoal] = useState(seed?.goal ?? '');
+  const [days, setDays] = useState(seed?.days ?? '4 days');
   const [sessionLength, setSessionLength] = useState('45-60 min');
   const [level, setLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced'>('Intermediate');
   const [loading, setLoading] = useState(false);
@@ -1553,7 +1703,16 @@ function GeneratePlanScreen({
   }, []);
 
   const buildInitialPrompt = () =>
-    `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
+    // Gate on the NOTE, not just `seed`: the note is the entire substance of a
+    // phase-seeded build (it carries the split + cadence). Without it this
+    // branch would emit "Design my training split. undefined Keep sessions..."
+    // — strictly worse than the generic branch, which at least has goal + days.
+    seed?.note
+      // Phase-seeded build: the note carries the phase's exact split + cadence
+      // (which may be a multi-day rotation, not a weekly count), so follow it
+      // rather than imposing a "${days}/week" that would misrepresent it.
+      ? `Design my training split. ${seed.note} Keep sessions about ${sessionLength}, ${level} level. Match that split and cadence exactly, do not convert it into a generic fixed number of days per week. Use my training data for exercise selection, volume, and progression. Give each day a short "note" with its theme and per-exercise cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`
+      : `Design a multi-day training plan for me. Goal: ${goal || 'general fitness'}. ${days}/week, ${sessionLength} sessions, ${level} level. Use my training data to choose appropriate volume, exercise selection, and progression. Give each day a short "note" with its theme and add per-exercise notes for form, intent, or RIR cues. Before calling generate_plan, write one short sentence (5-15 words) signaling your intent.`;
 
   const runGeneration = async (
     conversation: { role: string; content: string }[],
@@ -1660,6 +1819,16 @@ function GeneratePlanScreen({
           setRefining(false);
           streamRef.current = null;
         },
+        // Plan generation is Pro, so a free user 402s here. Without this the
+        // 402 fell through to the generic "Something broke on my end", which
+        // reads as a crash for what is really an upgrade prompt. callAICoach-
+        // Streaming only routes 402s when onCapHit is present.
+        onCapHit: (kind) => {
+          setLoading(false);
+          setRefining(false);
+          streamRef.current = null;
+          onRequestUpgrade?.(kind);
+        },
       },
       { forceTool: 'generate_plan' },
     );
@@ -1683,6 +1852,7 @@ function GeneratePlanScreen({
       <RefineChatScreen
         kind="discuss"
         mode="refine_plan"
+        onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowDiscussChat(false)}
         onRefined={(next) => {
           const p = next as GeneratedPlan;
@@ -1710,6 +1880,7 @@ function GeneratePlanScreen({
         kind="refine"
         mode="refine_plan"
         plan={result}
+        onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowRefineChat(false)}
         onRefined={(next) => {
           setResult(next as GeneratedPlan);
@@ -1871,14 +2042,25 @@ function GeneratePlanScreen({
           />
         </View>
 
-        {/* Days + Session Length */}
+        {/* Days + Session Length. For a phase-seeded build the cadence comes
+            from the phase (which may be a rotation, not a weekly count), so the
+            Days/Week picker is replaced by a read-only "follows your phase". */}
         <View style={s.formRow}>
           <View style={[s.formField, { flex: 1 }]}>
             <View style={s.formLabelRow}>
               <Feather name="calendar" size={12} color={C.mutedFg} />
-              <Text style={[s.formLabel, { color: C.mutedFg }]}>Days/Week</Text>
+              <Text style={[s.formLabel, { color: C.mutedFg }]}>{seed?.note ? 'Cadence' : 'Days/Week'}</Text>
             </View>
-            <DropdownPicker options={DAYS_OPTIONS} value={days} onSelect={setDays} />
+            {/* Same `seed?.note` condition buildInitialPrompt uses, so the
+                picker never claims "follows your phase" while the prompt is
+                actually sending the generic days-based request. */}
+            {seed?.note ? (
+              <View style={[s.formInput, { backgroundColor: C.inputBg, borderColor: C.border, justifyContent: 'center' }]}>
+                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm }}>Follows your phase</Text>
+              </View>
+            ) : (
+              <DropdownPicker options={DAYS_OPTIONS} value={days} onSelect={setDays} />
+            )}
           </View>
           <View style={[s.formField, { flex: 1 }]}>
             <View style={s.formLabelRow}>
@@ -1950,13 +2132,176 @@ function GeneratePlanScreen({
   );
 }
 
+// ─── Generate Program Screen ─────────────────────────────────────────────────
+// Coach designs a scheduled multi-week program through conversation
+// (discuss_program), emits it via generate_program, and the user reviews the
+// phase timeline and taps Apply. Apply (handleSaveProgram in the parent)
+// persists the program + phases and points the machine-read nutrition targets at
+// the active phase. Mirrors GeneratePlanScreen's discuss-then-result shape.
+function GenerateProgramScreen({
+  onBack,
+  onApply,
+  onRequestUpgrade,
+}: {
+  onBack: () => void;
+  onApply: (program: GeneratedProgram) => void;
+  onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
+}) {
+  const { C } = useTheme();
+  const [result, setResult] = useState<GeneratedProgram | null>(null);
+  const [showRefine, setShowRefine] = useState(false);
+
+  // Discuss first: talk it through, coach emits generate_program → result card.
+  if (!result) {
+    return (
+      <RefineChatScreen
+        kind="discuss"
+        mode="refine_program"
+        onBack={onBack}
+        onRefined={(next) => setResult(next as GeneratedProgram)}
+        onRequestUpgrade={onRequestUpgrade}
+      />
+    );
+  }
+
+  // Iterate on the emitted program before applying.
+  if (showRefine) {
+    return (
+      <RefineChatScreen
+        kind="refine"
+        mode="refine_program"
+        program={result}
+        onBack={() => setShowRefine(false)}
+        onRefined={(next) => { setResult(next as GeneratedProgram); setShowRefine(false); }}
+        onRequestUpgrade={onRequestUpgrade}
+      />
+    );
+  }
+
+  // Cumulative week ranges for the phase timeline (relative to program start).
+  let acc = 0;
+  const ranges = result.phases.map((p) => {
+    const start = acc + 1;
+    acc += p.duration_weeks;
+    return { start, end: acc };
+  });
+  const totalWeeks = acc;
+
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
+        <TouchableOpacity
+          onPress={() => setResult(null)}
+          style={[s.backBtn, { backgroundColor: C.muted }]}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
+          <Feather name="arrow-left" size={16} color={C.foreground} />
+        </TouchableOpacity>
+        <SparkleIcon size={16} color={C.accentText} />
+        <Text style={[s.screenTitle, { color: C.foreground }]}>Your Program</Text>
+      </View>
+      <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: 24, gap: 16 }}>
+        <Animated.View
+          entering={FadeInDown.duration(300)}
+          style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+        >
+          <Text style={[s.resultCardTitle, { color: C.foreground }]}>{result.title}</Text>
+          <View style={s.planMetaRow}>
+            {totalWeeks > 0 && (
+              <Text style={[s.planMetaText, { color: C.accentText }]}>{totalWeeks} weeks</Text>
+            )}
+            {result.target_weight_kg != null && (
+              <Text style={[s.planMetaText, { color: C.mutedFg }]}>· target {result.target_weight_kg} kg</Text>
+            )}
+            {result.target_date && (
+              <Text style={[s.planMetaText, { color: C.mutedFg }]}>· by {result.target_date}</Text>
+            )}
+          </View>
+          {result.objective && (
+            <Text style={[s.rationaleText, { color: C.foreground, marginTop: 8 }]}>{result.objective}</Text>
+          )}
+          {result.rationale && (
+            <View style={[s.rationaleCallout, { backgroundColor: C.primarySubtle, borderColor: C.borderSubtle }]}>
+              <View style={s.rationaleHeader}>
+                <SparkleIcon size={11} color={C.accentText} />
+                <Text style={[s.rationaleHeaderText, { color: C.accentText }]}>WHY THIS PROGRAM</Text>
+              </View>
+              <Text style={[s.rationaleText, { color: C.foreground }]}>{result.rationale}</Text>
+            </View>
+          )}
+        </Animated.View>
+
+        {result.phases.map((ph, i) => {
+          const r = ranges[i];
+          const weekLabel = r.start === r.end ? `Week ${r.start}` : `Weeks ${r.start}-${r.end}`;
+          const d = ph.diet;
+          const dietLine = [
+            d.calories != null ? `${d.calories} kcal` : null,
+            d.protein_g != null ? `${d.protein_g}g protein` : null,
+          ].filter(Boolean).join(' · ');
+          const blockLine = ph.training_block
+            ? [ph.training_block.split_type,
+               ph.training_block.days_per_week ? `${ph.training_block.days_per_week} days/week` : null,
+               ph.training_block.emphasis].filter(Boolean).join(' · ')
+            : '';
+          return (
+            <Animated.View
+              key={i}
+              entering={FadeInDown.duration(300).delay((i + 1) * 70)}
+              style={[s.resultCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+            >
+              <Text style={[s.resultCardTitle, { color: C.foreground, fontSize: FontSize.base }]}>{ph.name}</Text>
+              <Text style={[s.planMetaText, { color: C.accentText, marginTop: 2 }]}>
+                {weekLabel} · {ph.duration_weeks} week{ph.duration_weeks === 1 ? '' : 's'}
+              </Text>
+              {dietLine !== '' && (
+                <Text style={{ color: C.foreground, fontSize: FontSize.sm, marginTop: 8 }}>{dietLine}</Text>
+              )}
+              {ph.diet_directive && (
+                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Diet: {ph.diet_directive}</Text>
+              )}
+              {blockLine !== '' && (
+                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Training: {blockLine}</Text>
+              )}
+              {ph.training_directive && (
+                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>{ph.training_directive}</Text>
+              )}
+              {ph.readiness_directive && (
+                <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Recovery: {ph.readiness_directive}</Text>
+              )}
+            </Animated.View>
+          );
+        })}
+      </ScrollView>
+
+      <View style={[s.refineWrap, { backgroundColor: C.background, borderColor: C.borderSubtle }]}>
+        <TouchableOpacity
+          onPress={() => setShowRefine(true)}
+          style={[s.secondaryBtn, { backgroundColor: C.muted }]}
+        >
+          <Feather name="message-circle" size={14} color={C.mutedFg} />
+          <Text style={[s.secondaryBtnText, { color: C.mutedFg }]}>Refine with Drona</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => onApply(result)} style={s.primaryBtn}>
+          <Feather name="check" size={16} color={Colors.primaryFg} />
+          <Text style={s.primaryBtnText}>Apply Program</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 // ─── Generate Workout Screen ─────────────────────────────────────────────────
 function GenerateWorkoutScreen({
   onBack,
   onSaveRoutine,
+  onRequestUpgrade,
 }: {
   onBack: () => void;
   onSaveRoutine: (workout: GeneratedWorkout) => void;
+  onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -2083,6 +2428,14 @@ function GenerateWorkoutScreen({
           setRefining(false);
           streamRef.current = null;
         },
+        // Same as the plan generator: a free user's 402 is an upgrade prompt,
+        // not a failure. Without onCapHit it renders as "Something broke".
+        onCapHit: (kind) => {
+          setLoading(false);
+          setRefining(false);
+          streamRef.current = null;
+          onRequestUpgrade?.(kind);
+        },
       },
       { forceTool: 'generate_workout' },
     );
@@ -2105,6 +2458,7 @@ function GenerateWorkoutScreen({
       <RefineChatScreen
         kind="discuss"
         mode="refine_workout"
+        onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowDiscussChat(false)}
         onRefined={(next) => {
           const w = next as GeneratedWorkout;
@@ -2130,6 +2484,7 @@ function GenerateWorkoutScreen({
         kind="refine"
         mode="refine_workout"
         workout={result}
+        onRequestUpgrade={onRequestUpgrade}
         onBack={() => setShowRefineChat(false)}
         onRefined={(next) => {
           setResult(next as GeneratedWorkout);
@@ -2405,8 +2760,10 @@ function RefineChatScreen({
   mode,
   workout,
   plan,
+  program,
   onBack,
   onRefined,
+  onRequestUpgrade,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -2417,14 +2774,18 @@ function RefineChatScreen({
   // both read tools and the matching terminal tool — exactly what discuss
   // needs.
   kind?: 'refine' | 'discuss';
-  mode: 'refine_workout' | 'refine_plan';
+  mode: 'refine_workout' | 'refine_plan' | 'refine_program';
   workout?: GeneratedWorkout;
   plan?: GeneratedPlan;
+  program?: GeneratedProgram;
   onBack: () => void;
   // Caller updates its `result` state with this and pops back to the
   // result view. The parent decides whether to remount the chat (next
   // "Refine with AI" tap) with the new state as context.
-  onRefined: (next: GeneratedWorkout | GeneratedPlan) => void;
+  onRefined: (next: GeneratedWorkout | GeneratedPlan | GeneratedProgram) => void;
+  // Free-tier 402 handler: a Pro-only mode (or a spent daily cap) routes here so
+  // the caller can open the paywall instead of surfacing a generic error.
+  onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -2442,15 +2803,23 @@ function RefineChatScreen({
   // of "here's the recap, refine it."
   const recapText = kind === 'discuss'
     ? null
-    : (mode === 'refine_plan'
+    : mode === 'refine_program'
+      ? programToText(program!)
+      : mode === 'refine_plan'
         ? planToText(plan!)
-        : workoutToText(workout!));
+        : workoutToText(workout!);
 
   const starterText = (() => {
     if (kind === 'discuss') {
+      if (mode === 'refine_program') {
+        return "I'm Coach Drona. Let's build a program toward your goal. Tell me what you're chasing, your timeline if you have one, how many days a week you can train, and anything I should work around. When you're set, I'll lay out the phases.";
+      }
       return mode === 'refine_plan'
         ? "I'm Coach Drona. Let's talk through your plan before I build it. Tell me what matters most — goal, days per week, session length, exercise preferences, recovery, equipment, anything else on your mind. When you're set, I'll build it."
         : "I'm Coach Drona. Let's talk through your workout before I build it. Tell me what you're after — target muscles, intensity, equipment, time you've got, anything else. When you're set, I'll build it.";
+    }
+    if (mode === 'refine_program') {
+      return `You're looking at "${program!.title}". Before I rework it: what's not fitting? Could be the targets, a phase length, the training focus, the timeline, or how it handles recovery.`;
     }
     return mode === 'refine_plan'
       ? (plan!.split_type
@@ -2512,6 +2881,9 @@ function RefineChatScreen({
     } else if (mode === 'refine_plan' && name === 'generate_plan') {
       refinedFiredRef.current = true;
       onRefined(structuredToPlan(input));
+    } else if (mode === 'refine_program' && name === 'generate_program') {
+      refinedFiredRef.current = true;
+      onRefined(structuredToProgram(input));
     }
   }, [mode, onRefined]);
 
@@ -2545,10 +2917,12 @@ function RefineChatScreen({
     // therefore optional) overrides. For refine kind, the opener carries
     // the recap because the model needs the live state of the workout/plan.
     const syntheticOpener = kind === 'discuss'
-      ? (mode === 'refine_plan'
-          ? "I want to build a new training plan. Let's discuss what should be in it before you write it."
-          : "I want to build a new workout. Let's discuss what should be in it before you write it.")
-      : `Here's the current ${mode === 'refine_plan' ? 'plan' : 'workout'} you generated for me. I'd like to refine it.\n\n${recapText}`;
+      ? (mode === 'refine_program'
+          ? "I want to build a scheduled multi-week program toward my goal. Let's discuss it before you lay out the phases."
+          : mode === 'refine_plan'
+            ? "I want to build a new training plan. Let's discuss what should be in it before you write it."
+            : "I want to build a new workout. Let's discuss what should be in it before you write it.")
+      : `Here's my current ${mode === 'refine_program' ? 'program' : mode === 'refine_plan' ? 'plan' : 'workout'}. I'd like to refine it.\n\n${recapText}`;
 
     const apiMessages = [
       { role: 'user' as const, content: syntheticOpener },
@@ -2572,17 +2946,18 @@ function RefineChatScreen({
     const shouldForceTool = isPureAffirmative(text) && priorUserTurns >= 1;
     // The terminal tool the model will call for THIS mode (refine/discuss
     // both map plan→generate_plan, workout→generate_workout).
+    const isProgram = mode === 'refine_program';
     const wantsPlan = mode === 'refine_plan';
-    const forceToolName: 'generate_workout' | 'generate_plan' =
-      wantsPlan ? 'generate_plan' : 'generate_workout';
+    const forceToolName: 'generate_workout' | 'generate_plan' | 'generate_program' =
+      isProgram ? 'generate_program' : wantsPlan ? 'generate_plan' : 'generate_workout';
     // The mode actually sent to the edge function: discuss kind translates
     // to discuss_* (different system-prompt branch with no recap
     // assumption — fixes the "no access to tool" hallucination the model
     // produced when refine_plan was used with no recap). Refine kind
     // passes the mode through unchanged.
-    const effectiveMode: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' =
+    const effectiveMode: 'refine_workout' | 'refine_plan' | 'discuss_workout' | 'discuss_plan' | 'discuss_program' | 'refine_program' =
       kind === 'discuss'
-        ? (wantsPlan ? 'discuss_plan' : 'discuss_workout')
+        ? (isProgram ? 'discuss_program' : wantsPlan ? 'discuss_plan' : 'discuss_workout')
         : mode;
 
     // Guest / no-Clerk: degrade to a notice in-chat. We can't refine
@@ -2660,6 +3035,21 @@ function RefineChatScreen({
         setLoading(false);
         streamRef.current = null;
       },
+      onCapHit: (capKind) => {
+        // Free-tier 402: a Pro-only mode (discuss / refine / program) or a spent
+        // daily cap. Route to the paywall instead of a generic "something broke".
+        setLoading(false);
+        streamRef.current = null;
+        if (onRequestUpgrade) {
+          onRequestUpgrade(capKind);
+        } else {
+          typewriter.fail(
+            capKind === 'pro'
+              ? 'That one is part of Overload Pro.'
+              : "That's your free coaching for today. It resets tomorrow.",
+          );
+        }
+      },
     }, {
       mode: effectiveMode,
       // forceTool is the escape hatch for pure-affirmative turns —
@@ -2671,7 +3061,7 @@ function RefineChatScreen({
       // combinations.
       ...(shouldForceTool ? { forceTool: forceToolName } : {}),
     });
-  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured]);
+  }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
 
   // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
   // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
@@ -2685,7 +3075,7 @@ function RefineChatScreen({
         </TouchableOpacity>
         <SparkleIcon size={16} color={C.accentText} state={headerMarkState} />
         <Text style={[s.screenTitle, { color: C.foreground }]}>
-          {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_plan' ? 'Plan' : 'Workout'}
+          {kind === 'discuss' ? 'Discuss' : 'Refine'} {mode === 'refine_program' ? 'Program' : mode === 'refine_plan' ? 'Plan' : 'Workout'}
         </Text>
       </View>
 
@@ -2760,18 +3150,33 @@ export function AICoachModal({
   visible,
   onClose,
   onRoutineCreated,
+  onProgramApplied,
   initialScreen = 'menu',
   initialPrompt,
+  planSeed,
+  linkRoutinesToPhaseId,
   workoutContext,
   onApplyWorkoutEdit,
 }: {
   visible: boolean;
   onClose: () => void;
   onRoutineCreated?: () => void;
+  // Fires AFTER saveProgram resolves, not at close. The Apply flow closes the
+  // modal first and persists in the background, so a caller that refetches in
+  // onClose reads the DB before the new program lands and renders stale data.
+  onProgramApplied?: () => void;
   initialScreen?: Screen;
   // When set (from a dashboard insight card), the chat auto-asks this question
   // once on open. Pass initialScreen="chat" alongside it.
   initialPrompt?: string;
+  // When set (from the Goal & Plan screen "Build workout split"), pre-seeds the
+  // plan generator's form + prompt to a specific program phase. Pass
+  // initialScreen="plan" alongside it.
+  planSeed?: { goal?: string; days?: string; note?: string };
+  // When set, routines saved from this session are linked to the program phase
+  // (routines.program_phase_id), so the Goal & Plan screen shows the phase's
+  // split as built. Paired with planSeed for a "Build workout split" flow.
+  linkRoutinesToPhaseId?: string;
   // When set, the chat screen runs in in-workout mode: the live session is
   // injected as context, the greeting is tailored, quick-question chips show,
   // and the chat's back arrow closes the sheet (there's no menu detour
@@ -2920,7 +3325,11 @@ export function AICoachModal({
     }
     : undefined;
 
-  const insertRoutineToBackend = async (workout: GeneratedWorkout) => {
+  // phaseId is passed in rather than read off the prop, because callers run
+  // AFTER handleClose() has told the Goal & Plan screen to clear buildPhaseId.
+  // Reading the prop there yields nothing — that is what silently disabled the
+  // rebuild unlink and let duplicate splits stack up under a phase.
+  const insertRoutineToBackend = async (workout: GeneratedWorkout, phaseId = linkRoutinesToPhaseId) => {
     const clerkId = user?.id;
     if (!isSupabaseConfigured || !clerkId) {
       const routineId = `guest-r-${Date.now()}`;
@@ -2963,6 +3372,20 @@ export function AICoachModal({
       .single();
 
     if (error || !routine) throw error || new Error('Failed to create routine');
+
+    // Best-effort: link this routine to the program phase it was built for, so
+    // the Goal & Plan screen shows the phase's split as built. Done as a SEPARATE
+    // update (not part of the insert) so a transient failure on the newer
+    // program_phase_id column (e.g. PostgREST schema-cache lag) can never block
+    // the core routine save — the routine still lands, only the link is skipped.
+    if (phaseId) {
+      try {
+        await supabase
+          .from('routines')
+          .update({ program_phase_id: phaseId })
+          .eq('id', routine.id);
+      } catch { /* linking is non-critical */ }
+    }
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
@@ -3013,15 +3436,21 @@ export function AICoachModal({
   const handleSaveRoutine = (workout: GeneratedWorkout) => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    // Captured before handleClose() for the same reason as handleSaveRoutines.
+    const phaseId = linkRoutinesToPhaseId;
     handleClose();
     toast.info(`Saving “${workout.name}”…`);
-    insertRoutineToBackend(workout)
+    insertRoutineToBackend(workout, phaseId)
       .then(() => {
         toast.success('Routine saved');
         onRoutineCreated?.();
       })
-      .catch(() => {
-        toast.error(`Couldn't save “${workout.name}”`, {
+      .catch((err) => {
+        // Log the real failure — a swallowed error here made "couldn't save"
+        // undiagnosable (and once masked a save that had actually succeeded
+        // on retry). Keep the toast short but carry the error's own message.
+        console.warn('[routine-save] failed:', err?.message ?? err, err?.code ?? '');
+        toast.error(`Couldn't save “${workout.name}”${err?.message ? ` (${String(err.message).slice(0, 80)})` : ''}`, {
           action: { label: 'Retry', onPress: () => handleSaveRoutine(workout) },
         });
       })
@@ -3030,34 +3459,114 @@ export function AICoachModal({
       });
   };
 
-  const handleSaveRoutines = (workouts: GeneratedWorkout[]) => {
+  const handleSaveRoutines = (workouts: GeneratedWorkout[], isRetry = false) => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    // Capture the phase BEFORE handleClose(): closing tells the Goal & Plan
+    // screen to reset its buildPhaseId, and reading the prop after that is a
+    // staleness question we should not have to reason about.
+    const phaseId = linkRoutinesToPhaseId;
     handleClose();
     (async () => {
       // Track which item we're attempting so Retry resumes from the failure
       // point instead of replaying earlier items that already committed —
       // otherwise a failure on item N produces duplicates of 0..N-1 on retry.
       let attemptingIndex = 0;
+      // Set only once the unlink has succeeded (or was not needed). Retry
+      // passes this as isRetry: a failure INSIDE the unlink must retry as a
+      // fresh attempt (unlink again), because nothing has saved yet, whereas
+      // a failure in the save loop must NOT unlink again, because the earlier
+      // items are already saved and linked. Keying isRetry off "was the batch
+      // ever attempted" made an unlink failure skip the unlink forever.
+      let unlinkDone = false;
       try {
+        // "Rebuild split" REPLACES a phase's split, so clear the phase's
+        // previous routines first. Without this, the old routines keep their
+        // program_phase_id and every rebuild stacks another full set under the
+        // phase on the Goal & Plan screen.
+        //
+        // Unlink rather than delete: the routines stay in the Routines tab and
+        // any workout history pointing at them stays intact. They just stop
+        // claiming to be this phase's current split.
+        //
+        // Skipped on Retry — the earlier items of this batch already saved AND
+        // linked, so unlinking here would strip the work that just succeeded.
+        if (phaseId && !isRetry && supabase) {
+          // .select() so we get the affected rows back: supabase-js RESOLVES
+          // with { error } instead of throwing, so a bare try/catch here would
+          // swallow a failed unlink and silently leave the duplicates behind.
+          const { data: cleared, error: unlinkErr } = await supabase
+            .from('routines')
+            .update({ program_phase_id: null })
+            .eq('program_phase_id', phaseId)
+            .select('id');
+          if (unlinkErr) {
+            // Surface it: continuing would stack a second full split under the
+            // phase, which is exactly the bug this unlink exists to prevent.
+            console.warn('[routine-save] unlink of prior split failed:', unlinkErr.message, unlinkErr.code ?? '');
+            throw unlinkErr;
+          }
+          console.log(`[routine-save] cleared ${cleared?.length ?? 0} prior routine(s) from phase ${phaseId}`);
+        }
+        unlinkDone = true;
         for (let i = 0; i < workouts.length; i++) {
           attemptingIndex = i;
           toast.info(`Saving “${workouts[i].name}” (${i + 1}/${workouts.length})…`);
-          await insertRoutineToBackend(workouts[i]);
+          await insertRoutineToBackend(workouts[i], phaseId);
         }
         toast.success(workouts.length > 1 ? `Saved ${workouts.length} routines` : 'Routine saved');
         onRoutineCreated?.();
-      } catch {
+      } catch (err: any) {
+        // Log the real failure — a swallowed error here made "couldn't save"
+        // undiagnosable, and a transport-level throw on attempt 1 once left
+        // this toast on screen while the Retry quietly succeeded behind it.
+        console.warn(
+          `[routine-save] batch failed at ${attemptingIndex + 1}/${workouts.length} (“${workouts[attemptingIndex]?.name}”):`,
+          err?.message ?? err,
+          err?.code ?? '',
+        );
         const remaining = workouts.slice(attemptingIndex);
         // Refresh to surface whatever did save before the failure.
         if (attemptingIndex > 0) onRoutineCreated?.();
-        toast.error("Couldn't save all routines", {
-          action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining) },
-        });
+        toast.error(
+          `Couldn't save “${workouts[attemptingIndex]?.name}” (${attemptingIndex + 1}/${workouts.length})${err?.message ? ` — ${String(err.message).slice(0, 60)}` : ''}`,
+          { action: { label: 'Retry', onPress: () => handleSaveRoutines(remaining, unlinkDone) } },
+        );
       } finally {
         inFlightRef.current = false;
       }
     })();
+  };
+
+  // Apply a coach-designed program: persist it + its phases and point the
+  // machine-read nutrition targets at the active phase (saveProgram). The
+  // Nutrition screen and dashboard FUEL card pick up the new targets on their
+  // next focus refetch, once this sheet closes. Program creation is Pro /
+  // signed-in only (the edge function already gates the discuss flow).
+  const handleSaveProgram = (program: GeneratedProgram) => {
+    if (inFlightRef.current) return;
+    const clerkId = user?.id;
+    if (!isSupabaseConfigured || !supabase || !clerkId) {
+      toast.info('Sign in to save your program');
+      return;
+    }
+    inFlightRef.current = true;
+    handleClose();
+    toast.info('Setting up your program…');
+    saveProgram(supabase, clerkId, program)
+      .then(() => {
+        toast.success('Program set. Your targets are updated.');
+        onProgramApplied?.();
+      })
+      .catch((err) => {
+        console.warn('[program-save] failed:', err?.message ?? err, err?.code ?? '');
+        toast.error(`Couldn't save your program${err?.message ? ` (${String(err.message).slice(0, 80)})` : ''}`, {
+          action: { label: 'Retry', onPress: () => handleSaveProgram(program) },
+        });
+      })
+      .finally(() => {
+        inFlightRef.current = false;
+      });
   };
 
   return (
@@ -3247,12 +3756,28 @@ export function AICoachModal({
                 <GeneratePlanScreen
                   onBack={() => setScreen('menu')}
                   onSaveRoutines={handleSaveRoutines}
+                  seed={planSeed}
+                  onRequestUpgrade={(kind) =>
+                    handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
+                  }
                 />
               )}
               {screen === 'workout' && (
                 <GenerateWorkoutScreen
                   onBack={() => setScreen('menu')}
                   onSaveRoutine={handleSaveRoutine}
+                  onRequestUpgrade={(kind) =>
+                    handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
+                  }
+                />
+              )}
+              {screen === 'program' && (
+                <GenerateProgramScreen
+                  onBack={() => setScreen('menu')}
+                  onApply={handleSaveProgram}
+                  onRequestUpgrade={(kind) =>
+                    handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
+                  }
                 />
               )}
             </>

@@ -1748,7 +1748,12 @@ export default function ActiveWorkoutScreen() {
       stopExerciseTimer();
       stopRestTimer();
       prevIdxRef.current = -1;
-      inputEditedRef.current = false;
+      // Was `inputEditedRef.current = false` before the shared-draft rework
+      // (51677ad) replaced that boolean with an exercise-id ref. The rename
+      // missed this one call site, leaving a reference to a name that no
+      // longer exists: a ReferenceError the moment a coach edit replaces the
+      // open exercise. Same clear as the index-change reset path does.
+      editedForExRef.current = null;
     }
     pillLayoutsRef.current = pills;
     pillLayoutsRef.current.length = items.length;

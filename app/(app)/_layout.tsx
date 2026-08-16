@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import { useForegroundHealthSync } from '@/lib/useHealthSync';
+import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
 import { useSync } from '@/components/SyncProvider';
@@ -328,6 +329,12 @@ export default function AppLayout() {
   // No-op for guests and when no hub adapter exists. Called before the early
   // returns below so the hook runs on every render (rules of hooks).
   useForegroundHealthSync();
+
+  // Advance the active program's targets to the current phase on app-open /
+  // foreground (boundary-only, idempotent). No-op for guests and users with no
+  // active program. Kept beside health sync so both run before the early
+  // returns below (rules of hooks).
+  useForegroundProgramSync();
 
   // Wait for both auth and guest-flag reads on cold start; otherwise we may
   // briefly redirect a signed-in user (Clerk hasn't restored from SecureStore

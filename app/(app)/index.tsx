@@ -491,15 +491,17 @@ export default function DashboardScreen() {
             <XPBar xp={userXP} />
           </View>
           <View style={styles.headerRight}>
-            {/* Start button */}
+            {/* Goal & Plan entry (replaces the redundant Start button — a workout
+                still starts from the center ▶ tab and the coach's Quick Workout).
+                Leads to the coach-built program and this phase's targets. */}
             <PressableScale
               style={styles.startBtn}
-              onPress={() => router.push('/workout/new')}
+              onPress={() => router.push('/goal-plan' as any)}
               accessibilityRole="button"
-              accessibilityLabel="Start a workout"
+              accessibilityLabel="Goal and plan"
             >
-              <Feather name="activity" size={16} color={Colors.primaryFg} />
-              <Text style={styles.startBtnText}>Start</Text>
+              <Feather name="target" size={16} color={Colors.primaryFg} />
+              <Text style={styles.startBtnText}>Goal</Text>
             </PressableScale>
             {/* Avatar */}
             <TouchableOpacity
