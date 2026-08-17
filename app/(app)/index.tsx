@@ -38,10 +38,6 @@ import { DronaMark } from '@/components/coach/DronaMark';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
-// Figma-matched muscle group colors. Module-scoped so consumers get a stable
-// identity across renders.
-// Muscle-group accent colours now live in Colors.muscle (constants/theme.ts).
-
 function formatDuration(sec: number) {
   const m = Math.floor(sec / 60);
   if (m < 60) return `${m}m`;
