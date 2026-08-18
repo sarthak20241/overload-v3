@@ -26,6 +26,9 @@ import { SetTypeBadge, setTypeOf } from '@/components/workout/SetTypeBadge';
 import { getXpForWorkout } from '@/lib/xp';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
+import { ShareSheet } from '@/components/share/ShareSheet';
+import { RecapShareCard } from '@/components/share/RecapShareCard';
+import { isShareAvailable } from '@/lib/share/captureAndShare';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache, evictWorkoutFromCaches } from '@/lib/localCache';
@@ -53,6 +56,7 @@ const MONTH_FULL = [
 
 interface ExerciseDetail {
   name: string;
+  muscle_group?: string;
   metric_type?: MetricType;
   // How this exercise went in this session (workout_exercise_notes, migration
   // 0080) — "shoulders felt sore on the last two sets". Written during the
@@ -368,12 +372,14 @@ function SessionCard({
   colorIndex,
   onDelete,
   onEdit,
+  onShare,
   openRowRef,
 }: {
   workout: WorkoutRaw;
   colorIndex: number;
   onDelete: () => void;
   onEdit: () => void;
+  onShare: () => void;
   openRowRef: { current: SwipeableMethods | null };
 }) {
   const { C } = useTheme();
@@ -631,6 +637,15 @@ function SessionCard({
               <Text style={[styles.notesText, { color: C.mutedFg }]}>{workout.notes}</Text>
             </View>
           )}
+          {isShareAvailable() && (
+            <TouchableOpacity
+              onPress={onShare}
+              style={[styles.shareRow, { borderTopColor: C.borderSubtle }]}
+            >
+              <Feather name="share" size={13} color={C.textMuted} />
+              <Text style={[styles.shareText, { color: C.textMuted }]}>Share workout</Text>
+            </TouchableOpacity>
+          )}
         </Animated.View>
       )}
     </View>
@@ -681,6 +696,7 @@ export default function HistoryScreen() {
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [shareWorkout, setShareWorkout] = useState<WorkoutRaw | null>(null);
 
   const today = new Date();
   const [calYear, setCalYear] = useState(today.getFullYear());
@@ -733,7 +749,7 @@ export default function HistoryScreen() {
       // The notes embed carries its own exercises(name) join: an exercise can be
       // in a workout for its note alone (no completed sets), and then there is no
       // workout_sets row to read the name from.
-      .select('*, workout_exercise_notes(exercise_id, note, exercises(name, metric_type)), workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type))')
+      .select('*, workout_exercise_notes(exercise_id, note, exercises(name, metric_type, muscle_group)), workout_sets(id, exercise_id, weight_kg, reps, completed, duration_seconds, distance_m, resistance, set_type, rpe, is_unilateral, reps_right, rpe_right, weight_kg_right, superset_group, exercises(name, metric_type, muscle_group))')
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
@@ -746,17 +762,17 @@ export default function HistoryScreen() {
         // can hang each one off its exercise. Most match an exercise that has
         // sets; one written on an exercise with no completed sets has no set
         // rows at all, and is appended as a sets-less entry after the grouping.
-        const noteByExercise: Record<string, { note: string; name?: string; metric_type?: MetricType }> = {};
+        const noteByExercise: Record<string, { note: string; name?: string; metric_type?: MetricType; muscle_group?: string }> = {};
         (w.workout_exercise_notes || []).forEach((n: any) => {
           if (n?.exercise_id && typeof n.note === 'string') {
-            noteByExercise[n.exercise_id] = { note: n.note, name: n.exercises?.name, metric_type: n.exercises?.metric_type };
+            noteByExercise[n.exercise_id] = { note: n.note, name: n.exercises?.name, metric_type: n.exercises?.metric_type, muscle_group: n.exercises?.muscle_group };
           }
         });
         const exerciseMap: Record<string, ExerciseDetail> = {};
         (w.workout_sets || []).forEach((s: any) => {
           const exId = s.exercise_id;
           if (!exerciseMap[exId]) {
-            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', metric_type: s.exercises?.metric_type, note: noteByExercise[exId]?.note ?? null, sets: [] };
+            exerciseMap[exId] = { name: s.exercises?.name || 'Exercise', muscle_group: s.exercises?.muscle_group, metric_type: s.exercises?.metric_type, note: noteByExercise[exId]?.note ?? null, sets: [] };
           }
           exerciseMap[exId].sets.push({ weight_kg: s.weight_kg, reps: s.reps, completed: s.completed, duration_seconds: s.duration_seconds, distance_m: s.distance_m, resistance: s.resistance, set_type: s.set_type, rpe: s.rpe, is_unilateral: s.is_unilateral, reps_right: s.reps_right, rpe_right: s.rpe_right, weight_kg_right: s.weight_kg_right, superset_group: s.superset_group });
         });
@@ -765,7 +781,7 @@ export default function HistoryScreen() {
         // append them as sets-less entries; the row renders name + note only.
         for (const [exId, n] of Object.entries(noteByExercise)) {
           if (!exerciseMap[exId]) {
-            exerciseMap[exId] = { name: n.name || 'Exercise', metric_type: n.metric_type, note: n.note, sets: [] };
+            exerciseMap[exId] = { name: n.name || 'Exercise', muscle_group: n.muscle_group, metric_type: n.metric_type, note: n.note, sets: [] };
           }
         }
         return {
@@ -1082,6 +1098,7 @@ export default function HistoryScreen() {
                     openRowRef={openRowRef}
                     onDelete={() => handleDelete(workout.id)}
                     onEdit={() => router.push(`/workout/edit/${workout.id}`)}
+                    onShare={() => setShareWorkout(workout)}
                   />
                 ))}
               </View>
@@ -1103,6 +1120,36 @@ export default function HistoryScreen() {
       ]}
       onClose={() => setDeleteId(null)}
     />
+
+    {shareWorkout && (
+      <ShareSheet
+        visible={!!shareWorkout}
+        onClose={() => setShareWorkout(null)}
+        card={(() => {
+          const w = shareWorkout;
+          const counts: Record<string, number> = {};
+          (w.exercises || []).forEach((ex) => {
+            if (!ex.muscle_group) return;
+            const completed = ex.sets?.filter(s => s.completed !== false) || [];
+            counts[ex.muscle_group] = (counts[ex.muscle_group] || 0) + completed.length;
+          });
+          const setCount = (w.exercises || []).reduce(
+            (s, ex) => s + (ex.sets?.filter(s2 => s2.completed !== false).length || 0), 0,
+          );
+          return (
+            <RecapShareCard
+              name={w.name}
+              startedAt={w.started_at}
+              durationSeconds={w.duration_seconds || 0}
+              totalVolumeKg={w.total_volume_kg || 0}
+              setCount={setCount}
+              exerciseCount={(w.exercises || []).length}
+              counts={counts}
+            />
+          );
+        })()}
+      />
+    )}
     </>
   );
 }
@@ -1469,5 +1516,17 @@ const styles = StyleSheet.create({
   notesText: {
     fontSize: FontSize.xs,
     fontStyle: 'italic',
+  },
+  shareRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  shareText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
   },
 });

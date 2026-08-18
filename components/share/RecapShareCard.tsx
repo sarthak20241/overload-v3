@@ -1,0 +1,100 @@
+import { forwardRef, useMemo } from 'react';
+import { View, Text, StyleSheet } from 'react-native';
+import Body from 'react-native-body-highlighter';
+import { ShareCanvas } from './ShareCanvas';
+import { RAMP_DARK, buildBodyData } from '@/components/ui/BodyHeatmap';
+import { recapCoachLine, formatDate } from '@/lib/share/shareCopy';
+
+const UNTRAINED = '#2c2c31';
+const OUTLINE = 'rgba(255,255,255,0.16)';
+const FG = '#ffffff';
+const FONT_BOLD = 'SpaceGrotesk_700Bold';
+
+interface Props {
+  name: string;
+  startedAt: Date | string;
+  durationSeconds: number;
+  totalVolumeKg: number;
+  setCount: number;
+  exerciseCount: number;
+  counts: Record<string, number>;
+  gender?: string | null;
+  prCount?: number;
+}
+
+export const RecapShareCard = forwardRef<View, Props>(function RecapShareCard(
+  { name, startedAt, durationSeconds, totalVolumeKg, setCount, exerciseCount, counts, gender, prCount = 0 },
+  ref,
+) {
+  const data = useMemo(() => buildBodyData(counts, RAMP_DARK, UNTRAINED), [counts]);
+  const hasMuscle = Object.values(counts).some((v) => v > 0);
+  const libGender = gender === 'F' ? 'female' : 'male';
+
+  const statRow = useMemo(() => {
+    const vol = totalVolumeKg >= 1000
+      ? `${(totalVolumeKg / 1000).toFixed(1)}t`
+      : `${Math.round(totalVolumeKg)}kg`;
+
+    const stats: { label: string; value: string; dotColor?: string }[] = [
+      { label: 'Volume', value: vol },
+    ];
+
+    if (prCount > 0) {
+      stats.push({ label: 'PRs', value: String(prCount), dotColor: '#c8ff00' });
+    } else {
+      stats.push({ label: 'Sets', value: String(setCount) });
+    }
+
+    stats.push({ label: 'Time', value: `${Math.floor(durationSeconds / 60)}m` });
+    return stats;
+  }, [totalVolumeKg, setCount, durationSeconds, prCount]);
+
+  const d = typeof startedAt === 'string' ? new Date(startedAt) : startedAt;
+  const subline = `${exerciseCount} exercise${exerciseCount !== 1 ? 's' : ''} · ${formatDate(d)}`;
+
+  return (
+    <ShareCanvas
+      ref={ref}
+      eyebrow="WORKOUT RECAP"
+      headline={name || 'Workout done.'}
+      subline={subline}
+      footer={formatDate(d)}
+      statRow={statRow}
+      coachLine={recapCoachLine(prCount, durationSeconds)}
+    >
+      {hasMuscle ? (
+        <Body
+          data={data}
+          side="front"
+          gender={libGender}
+          scale={2.0}
+          border={OUTLINE}
+          defaultFill={UNTRAINED}
+        />
+      ) : (
+        <View style={styles.bigStat}>
+          <Text style={styles.bigNumber}>{Math.round(totalVolumeKg)}</Text>
+          <Text style={styles.bigUnit}>kg</Text>
+        </View>
+      )}
+    </ShareCanvas>
+  );
+});
+
+const styles = StyleSheet.create({
+  bigStat: {
+    alignItems: 'center',
+  },
+  bigNumber: {
+    fontFamily: FONT_BOLD,
+    fontSize: 200,
+    color: FG,
+    lineHeight: 220,
+  },
+  bigUnit: {
+    fontFamily: FONT_BOLD,
+    fontSize: 60,
+    color: '#8a8a93',
+    marginTop: -20,
+  },
+});
