@@ -34,8 +34,7 @@ const GROUP_SLUGS: Record<string, Slug[]> = {
   Glutes: ['gluteal'],
 };
 
-/** Real muscle groups, i.e. everything Full Body spreads across. */
-const REAL_GROUPS = Object.keys(GROUP_SLUGS);
+const MAPPED_GROUPS = Object.keys(GROUP_SLUGS);
 
 /**
  * Every slug the library draws, including the ones no exercise maps to.
@@ -52,13 +51,6 @@ const ALL_SLUGS: Slug[] = [
   'knees', 'lower-back', 'neck', 'obliques', 'quadriceps', 'tibialis',
   'trapezius', 'triceps', 'upper-back',
 ];
-
-/**
- * A "Full Body" set (burpee, clean, thruster) genuinely touches most regions,
- * so it credits every group at half a set rather than being dropped or parked
- * on one slug. Half keeps a dedicated chest day still reading as a chest day.
- */
-const FULL_BODY_WEIGHT = 0.5;
 
 /**
  * Sequential lime ramps, low → high, one per theme.
@@ -80,25 +72,17 @@ export interface BodyHeatmapEntry {
 
 /** Sets per muscle group → that group's colour on the ramp. */
 function buildScale(counts: Record<string, number>, ramp: string[]): Record<string, string> {
-  const weighted: Record<string, number> = {};
-  for (const g of REAL_GROUPS) {
-    if (counts[g]) weighted[g] = counts[g];
-  }
-  const fullBody = counts['Full Body'] || 0;
-  if (fullBody > 0) {
-    for (const g of REAL_GROUPS) {
-      weighted[g] = (weighted[g] || 0) + fullBody * FULL_BODY_WEIGHT;
-    }
+  const mapped: Record<string, number> = {};
+  for (const g of MAPPED_GROUPS) {
+    if (counts[g]) mapped[g] = counts[g];
   }
 
-  const max = Math.max(0, ...Object.values(weighted));
+  const max = Math.max(0, ...Object.values(mapped));
   const scale: Record<string, string> = {};
   if (max <= 0) return scale;
 
-  for (const [group, value] of Object.entries(weighted)) {
+  for (const [group, value] of Object.entries(mapped)) {
     if (value <= 0) continue;
-    // Ceil so any logged work lights at least step 1 — a single set should
-    // never render as "untrained".
     const step = Math.min(STEPS, Math.max(1, Math.ceil((value / max) * STEPS)));
     scale[group] = ramp[step - 1];
   }
@@ -145,9 +129,7 @@ export function BodyHeatmap({ counts, gender, width, legendLimit = 6 }: Props) {
       .map(([name, sets]) => ({
         name,
         sets,
-        // 'Full Body' has no silhouette region of its own, so it borrows the
-        // top of the ramp rather than showing an untrained swatch.
-        color: scale[name] ?? (name === 'Full Body' ? ramp[STEPS - 1] : untrained),
+        color: scale[name] ?? untrained,
       }));
   }, [counts, scale, ramp, untrained, legendLimit]);
 
