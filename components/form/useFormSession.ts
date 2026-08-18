@@ -129,7 +129,14 @@ export function useFormSession({
         return;
       }
       try {
-        const loaded = await loadTensorflowModel({ url: file.uri }, DELEGATES);
+        // Try hardware-accelerated first, fall back to CPU if the delegate
+        // is unavailable (e.g. CoreML on the iOS Simulator).
+        let loaded: TfliteModel;
+        try {
+          loaded = await loadTensorflowModel({ url: file.uri }, DELEGATES);
+        } catch {
+          loaded = await loadTensorflowModel({ url: file.uri }, []);
+        }
         if (cancelled) return;
 
         // Validate once, loudly. A multi-person or oddly shaped model would

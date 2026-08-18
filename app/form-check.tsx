@@ -23,7 +23,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { Camera, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, FontSize, FontWeight, LetterSpacing, Radius, Spacing } from '@/constants/theme';
@@ -48,6 +48,7 @@ export default function FormCheckScreen() {
   const exerciseName = typeof params.name === 'string' ? params.name : 'this lift';
 
   const { hasPermission, requestPermission } = useCameraPermission();
+  const cameraDevice = useCameraDevice('back');
   const [phase, setPhase] = useState<Phase>('resolving');
   const [rules, setRules] = useState<RuleResolution | null>(null);
   const [note, setNote] = useState<FormNote | null>(null);
@@ -181,12 +182,12 @@ export default function FormCheckScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: C.background }]}>
-      {showCamera && hasPermission && session.frameOutput && (
+      {showCamera && hasPermission && cameraDevice && session.frameOutput && (
         <>
           <Camera
             style={StyleSheet.absoluteFill}
             isActive
-            device="back"
+            device={cameraDevice}
             outputs={[session.frameOutput]}
           />
           <PoseOverlay
@@ -196,6 +197,15 @@ export default function FormCheckScreen() {
             muted={session.live.wrongView || session.live.lowConfidence}
           />
         </>
+      )}
+      {showCamera && hasPermission && !cameraDevice && (
+        <Centered>
+          <Feather name="camera-off" size={28} color={C.textMuted} />
+          <Text style={[styles.body, { color: C.textSecondary }]}>
+            No back camera found. This needs a real device.
+          </Text>
+          <PrimaryButton label="Back" onPress={close} />
+        </Centered>
       )}
 
       <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
