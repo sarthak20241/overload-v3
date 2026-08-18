@@ -21,15 +21,14 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
 /**
- * MoveNet SinglePose Thunder, float16. Google's own hosting on Kaggle Models,
- * which is where TFHub redirects to now.
+ * MoveNet SinglePose Thunder, float16 (~12 MB).
  *
- * Pinned to a specific version rather than a floating "latest" so the model
- * cannot silently change under the thresholds in lib/form/patterns.ts, which
- * were tuned against this one.
+ * Kaggle Models and TFHub both require authentication now, so the model is
+ * served from a public GitHub mirror of the official release. Pinned to
+ * version 4 so the thresholds in lib/form/patterns.ts stay valid.
  */
 export const POSE_MODEL_URL =
-  'https://www.kaggle.com/api/v1/models/google/movenet/tfLite/singlepose-thunder/4/download';
+  'https://raw.githubusercontent.com/Kazuhito00/MoveNet-Python-Example/main/tflite/lite-model_movenet_singlepose_thunder_tflite_float16_4.tflite';
 
 const MODEL_DIR = 'pose';
 const MODEL_NAME = 'movenet_thunder.tflite';
