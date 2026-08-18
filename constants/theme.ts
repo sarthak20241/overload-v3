@@ -121,23 +121,6 @@ export const Colors = {
     active_energy: '#f97316',
   },
 
-  // Muscle-group accents (dashboard donut + tags). Categorical, theme-independent.
-  // Toned: distinct hues (colour still encodes which muscle) but desaturated to a
-  // cohesive, harmonised set instead of clashing full-saturation primaries.
-  muscle: {
-    Chest: '#e09a9a',
-    Back: '#9bb8e3',
-    Shoulders: '#eccf94',
-    Quads: '#97cbb4',
-    Hamstrings: '#98c9d4',
-    Biceps: '#c3aee0',
-    Triceps: '#e6a8c8',
-    Calves: '#c4dd9a',
-    Core: '#f0b58f',
-    Glutes: '#9fd0c4',
-    'Full Body': '#b6a8e0',
-  } as Record<string, string>,
-
   // Profile data-field row-icon accents. Categorical.
   rowIcon: {
     gender: '#a855f7',

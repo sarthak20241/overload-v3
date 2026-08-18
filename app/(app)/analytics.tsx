@@ -20,9 +20,9 @@ import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { setVolumeKg } from '@/lib/sets';
 import { metricTypeOf, type MetricType } from '@/lib/exercises';
 import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } from '@/lib/setDisplay';
-import { getGuestWorkoutsDetailed } from '@/lib/guestStore';
+import { getGuestWorkoutsDetailed, getGuestProfile } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
-import { MiniDonutChart } from '@/components/ui/MiniDonutChart';
+import { BodyHeatmap } from '@/components/ui/BodyHeatmap';
 import { NutritionTrendsCard } from '@/components/diet/NutritionTrendsCard';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -1144,6 +1144,9 @@ export default function AnalyticsScreen() {
   const goalWeight = ctxGoal ?? null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   const [addBfOpen, setAddBfOpen] = useState(false);
+  // Picks the body silhouette in the distribution card. Null just means "not
+  // known yet" and falls back to the male drawing — never blocks the card.
+  const [profileGender, setProfileGender] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     const apply = (list: WorkoutRaw[]) => {
@@ -1156,6 +1159,7 @@ export default function AnalyticsScreen() {
 
     if (isGuestSession) {
       apply(getGuestWorkoutsDetailed() as any[]);
+      setProfileGender(getGuestProfile().gender ?? null);
       return;
     }
 
@@ -1176,6 +1180,10 @@ export default function AnalyticsScreen() {
     };
 
     await hydrateCache(clerkId);
+    // The profile screen already caches the whole row, so on most launches the
+    // silhouette picks itself with no request at all.
+    const cachedProfile = readCache<{ profile: { gender?: string | null } | null }>('profile', clerkId);
+    if (cachedProfile?.profile?.gender) setProfileGender(cachedProfile.profile.gender);
     const cached = readCache<WorkoutRaw[]>('analyticsWorkouts', clerkId);
     // Apply pending even with no cache yet (fresh login), so a just-finished
     // offline workout appears in the charts immediately.
@@ -1192,6 +1200,23 @@ export default function AnalyticsScreen() {
       .gte('started_at', sinceIso)
       .order('started_at', { ascending: false });
     if (clerkId) q = q.eq('user_id', clerkId);
+    // Only when the profile cache had nothing: one indexed single-column read,
+    // fired alongside the workouts query so it costs no extra wall time. A
+    // failure here is silent — the card still renders on the default body.
+    if (clerkId && !cachedProfile?.profile?.gender) {
+      void (async () => {
+        try {
+          const { data } = await supabase
+            .from('user_profiles')
+            .select('gender')
+            .eq('clerk_user_id', clerkId)
+            .maybeSingle();
+          if (data?.gender) setProfileGender(data.gender);
+        } catch {
+          // Offline or unauthenticated — the default silhouette is fine.
+        }
+      })();
+    }
     try {
       const { data, error } = await q;
       if (error) throw error;
@@ -1439,8 +1464,10 @@ export default function AnalyticsScreen() {
   const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
 
-  // Muscle split — moved here from the dashboard (the readiness card took that slot).
-  const muscleData = useMemo(() => {
+  // Body distribution — moved here from the dashboard (the readiness card took
+  // that slot). Raw per-group set counts; BodyHeatmap does the shading and the
+  // legend so the picture and the list stay on one colour scale.
+  const muscleCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     workouts.forEach((w) => {
       (w.workout_sets || []).forEach((s) => {
@@ -1448,11 +1475,10 @@ export default function AnalyticsScreen() {
         if (mg) counts[mg] = (counts[mg] || 0) + 1;
       });
     });
-    return Object.entries(counts)
-      .map(([name, value]) => ({ name, value, color: Colors.muscle[name] || '#6b7280' }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
+    return counts;
   }, [workouts]);
+
+  const hasMuscleData = Object.keys(muscleCounts).length > 0;
 
   const hasAny = workouts.length > 0 || weightLog.length > 0 || bodyFatLog.length > 0;
 
@@ -1590,28 +1616,17 @@ export default function AnalyticsScreen() {
             {/* 3.6 Nutrition trends (self-gating: renders only if food is logged). */}
             <NutritionTrendsCard />
 
-            {/* 3.5 Muscle Split (moved here from the dashboard). */}
-            {muscleData.length > 0 && (
+            {/* 3.5 Body Distribution (moved here from the dashboard). */}
+            {hasMuscleData && (
               <View style={[styles.bigCard, { backgroundColor: C.card, borderColor: C.borderSubtle }, Shadow.card]}>
                 <View style={[styles.cardGlow, { backgroundColor: Colors.stat.muscles, opacity: 0.04 }]} />
                 <View style={styles.trendHeader}>
                   <View style={styles.trendHeaderLeft}>
                     <Feather name="activity" size={14} color={Colors.stat.muscles} />
-                    <Text style={[styles.trendTitle, { color: C.foreground }]}>Muscle Split</Text>
+                    <Text style={[styles.trendTitle, { color: C.foreground }]}>Body Distribution</Text>
                   </View>
                 </View>
-                <View style={styles.muscleSplitRow}>
-                  <MiniDonutChart data={muscleData} size={132} thickness={22} gap={2} subColor={C.textMuted} />
-                  <View style={styles.muscleLegend}>
-                    {muscleData.map((m) => (
-                      <View key={m.name} style={styles.muscleLegendRow}>
-                        <View style={[styles.muscleDot, { backgroundColor: m.color }]} />
-                        <Text style={[styles.muscleLegendName, { color: C.foreground }]} numberOfLines={1}>{m.name}</Text>
-                        <Text style={[styles.muscleLegendVal, { color: C.textMuted }]}>{m.value}</Text>
-                      </View>
-                    ))}
-                  </View>
-                </View>
+                <BodyHeatmap counts={muscleCounts} gender={profileGender} width={bigChartWidth} />
               </View>
             )}
 
@@ -1862,12 +1877,6 @@ const styles = StyleSheet.create({
   trendHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   trendHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   trendTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  muscleSplitRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg, marginTop: Spacing.md },
-  muscleLegend: { flex: 1, gap: 6 },
-  muscleLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  muscleDot: { width: 9, height: 9, borderRadius: 5 },
-  muscleLegendName: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  muscleLegendVal: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   trendLatest: { fontSize: FontSize.base, fontWeight: FontWeight.black },
   trendUnit: { fontSize: 10, fontWeight: FontWeight.medium },
   diffText: { fontSize: 10, fontWeight: FontWeight.bold },
