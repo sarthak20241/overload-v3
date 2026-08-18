@@ -60,7 +60,7 @@
     "react-native-vision-camera": "^5.2.2",
     "react-native-vision-camera-resizer": "^5.2.2",
     "react-native-vision-camera-worklets": "^5.2.2",
-    "react-native-worklets": "0.5.1",
+    "react-native-worklets": "0.8.3",
     "victory-native": "^41.16.0"
   },
   "devDependencies": {
