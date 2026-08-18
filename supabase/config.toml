@@ -16,7 +16,7 @@
 # project HMAC secret and rejects valid Clerk JWTs at the network layer —
 # function code never executes, every call returns 401.
 #
-# Both functions below verify the Clerk JWT themselves (jose + Clerk JWKS) at
+# Every function below verifies the Clerk JWT itself (jose + Clerk JWKS) at
 # the top of the handler. That's stricter than the gateway's check anyway
 # (issuer-pinned), and it lets us extract the Clerk subject into a `userId`
 # variable for RLS-bound RPCs and admin-client writes.
@@ -28,4 +28,7 @@
 verify_jwt = false
 
 [functions.delete-account]
+verify_jwt = false
+
+[functions.form-check]
 verify_jwt = false
