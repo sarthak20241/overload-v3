@@ -38,34 +38,34 @@ export function fakeClient(globalRows: Row[] = [], ownRows: Row[] = []) {
           return builder;
         },
         is() {
+          // `.is('created_by', null)` narrows to the global catalog. These
+          // fixtures hold only global rows, so it is a pass-through.
           return builder;
-        },
-        ilike(_col: string, value: string) {
-          // The real query escapes ILIKE wildcards; undo that here so the
-          // comparison is against the literal name the caller asked for.
-          const wanted = value.replace(/\\([\\%_])/g, '$1').toLowerCase();
-          const match = globalRows.filter((r) => String(r.name).toLowerCase() === wanted);
-          return {
-            limit: async () => ({ data: match, error: null }),
-          };
         },
         update(patch: Row) {
           state.patch = patch;
           return builder;
         },
-        eq(_col: string, id: string) {
-          // A write: `update(...).eq(id)` resolves straight to a result.
+        eq(col: string, value: string) {
+          // A write: `update(...).eq('id', id)` resolves straight to a result.
           if (state.patch) {
             const patch = state.patch;
-            const result = Promise.resolve({ error: null });
-            updates.push({ id, patch });
-            return result;
+            updates.push({ id: value, patch });
+            return Promise.resolve({ error: null });
           }
-          // A read: `select(...).eq(id).maybeSingle()`.
+          // The twin lookup: an indexed equality on the generated lowercase
+          // name, then `.limit(1)`.
+          if (col === 'name_lower') {
+            const match = globalRows.filter(
+              (r) => String(r.name).toLowerCase() === value
+            );
+            return { limit: async () => ({ data: match, error: null }) };
+          }
+          // Reading the exercise's own row: `.eq('id', id).maybeSingle()`.
           return {
             maybeSingle: async () => {
               rowReads++;
-              return { data: ownRows.find((r) => r.id === id) ?? null, error: null };
+              return { data: ownRows.find((r) => r.id === value) ?? null, error: null };
             },
           };
         },

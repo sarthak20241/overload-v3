@@ -63,9 +63,14 @@ export function deriveInputSpec(input: ModelTensor | undefined): InputSpecResult
   let dataType: InputSpec['dataType'];
   switch (input.dataType) {
     case 'uint8':
-    case 'int8':
       dataType = 'uint8';
       break;
+    case 'int8':
+      // The resizer emits 0..255; an int8 tensor reads those same bytes as
+      // -128..127, so every pixel above mid grey arrives negative. Feeding it
+      // anyway would produce confident nonsense rather than an obvious
+      // failure, and there is no signed output format to ask the resizer for.
+      return { ok: false, reason: 'int8 input models are not supported' };
     case 'float32':
     case 'float16':
       dataType = 'float32';

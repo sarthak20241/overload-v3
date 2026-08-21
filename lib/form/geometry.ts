@@ -46,6 +46,13 @@ export function clamp(v: number, lo: number, hi: number): number {
  * Returns null when the joint is missing or below the confidence floor, which
  * callers MUST treat as "unknown", never as zero.
  */
+/**
+ * How much better the far limb must score before a front-on view switches to
+ * it. Comfortably above MoveNet's frame-to-frame noise, so the choice holds
+ * for a whole rep instead of flickering.
+ */
+const SIDE_SWITCH_MARGIN = 0.15;
+
 export function resolveJoint(
   frame: PoseFrame,
   ref: JointRef,
@@ -70,11 +77,19 @@ export function resolveJoint(
     const [left, right] = SIDE_PAIRS[ref];
     if (side === 'left') name = left;
     else if (side === 'right') name = right;
-    else {
-      // Front or unknown view: take whichever side the model is more sure of.
+    else if (side === 'unknown') {
+      // No established view means no basis for choosing a limb. Picking by
+      // this frame's score would make the driver alternate between two
+      // DIFFERENT joints from frame to frame -- exactly the oscillation the
+      // SideVoter exists to prevent. Report nothing instead; the engine reads
+      // that as an unclear frame and declines to grade it.
+      return null;
+    } else {
+      // Front on, both limbs visible. Default to one side and switch only on a
+      // clear margin, so keypoint jitter cannot flip the choice mid-rep.
       const l = frame.keypoints[left];
       const r = frame.keypoints[right];
-      name = l.score >= r.score ? left : right;
+      name = r.score > l.score + SIDE_SWITCH_MARGIN ? right : left;
     }
   }
   if (!name) return null;
@@ -184,13 +199,32 @@ export function detectSide(frame: PoseFrame, aspect = 1): CameraSide {
  */
 export class Ema {
   private value: number | null = null;
+  private staleFrames = 0;
 
   constructor(private readonly alpha = 0.35) {}
 
   push(v: number): number {
-    if (Number.isNaN(v)) return this.value ?? NaN;
+    if (Number.isNaN(v)) {
+      this.staleFrames++;
+      return this.value ?? NaN;
+    }
+    this.staleFrames = 0;
     this.value = this.value === null ? v : this.alpha * v + (1 - this.alpha) * this.value;
     return this.value;
+  }
+
+  /**
+   * Frames since the last real sample; 0 means fresh.
+   *
+   * Holding the last value across a brief occlusion is the point of the EMA,
+   * but a caller that cannot tell "unchanged" from "unavailable" will fold the
+   * same stale number into min, max, mean and range for as long as the joint
+   * stays hidden. Confidence gating does not catch this: meanKeypointScore
+   * samples shoulders, hips, knees and elbows, so a lost ankle or wrist never
+   * raises it.
+   */
+  get stale(): number {
+    return this.staleFrames;
   }
 
   get current(): number {
@@ -199,6 +233,7 @@ export class Ema {
 
   reset() {
     this.value = null;
+    this.staleFrames = 0;
   }
 }
 

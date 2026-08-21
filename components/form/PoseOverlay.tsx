@@ -30,6 +30,8 @@ interface Props {
   /** Preview size in points, so normalised coordinates can be scaled up. */
   width: number;
   height: number;
+  /** The camera frame's width / height, from the session. */
+  frameAspect: SharedValue<number>;
   /** Dim the whole rig when the view is wrong or tracking is poor. */
   muted?: boolean;
 }
@@ -41,11 +43,32 @@ const EDGE_PAIRS = SKELETON_EDGES.map(
 
 const JOINT_INDICES = Object.values(KEYPOINT_INDEX);
 
-export function PoseOverlay({ pose, width, height, muted = false }: Props) {
+/**
+ * Where the preview actually draws the frame, in points.
+ *
+ * The keypoints describe the camera frame, but `<Camera>` fills the screen by
+ * scaling that frame up until it covers, then centring and letting the overflow
+ * crop. Mapping straight onto the window instead would stretch the skeleton on
+ * whichever axis the crop removed, and the mismatch grows with the difference
+ * between the sensor's shape and the screen's -- exactly the case on a phone,
+ * where a 16:9 sensor feeds a much taller display.
+ */
+function coverRect(width: number, height: number, aspect: number) {
+  'worklet';
+  const a = aspect > 0 ? aspect : 1;
+  // The frame scaled to cover: one axis matches the screen, the other overflows.
+  const drawnW = Math.max(width, height * a);
+  const drawnH = Math.max(height, width / a);
+  return { drawnW, drawnH, offX: (width - drawnW) / 2, offY: (height - drawnH) / 2 };
+}
+
+export function PoseOverlay({ pose, width, height, frameAspect, muted = false }: Props) {
   const skeleton = useDerivedValue(() => {
     const path = Skia.Path.Make();
     const buf = pose.value;
     if (!buf || buf.length < 51) return path;
+
+    const { drawnW, drawnH, offX, offY } = coverRect(width, height, frameAspect.value);
 
     for (const [ai, bi] of EDGE_PAIRS) {
       // Layout is (y, x, score) per keypoint, y first, matching MoveNet.
@@ -58,11 +81,11 @@ export function PoseOverlay({ pose, width, height, muted = false }: Props) {
       // Never draw a bone to a joint the model is unsure about: a confident
       // looking line to a hallucinated ankle is worse than no line.
       if (as < MIN_KEYPOINT_SCORE || bs < MIN_KEYPOINT_SCORE) continue;
-      path.moveTo(ax * width, ay * height);
-      path.lineTo(bx * width, by * height);
+      path.moveTo(offX + ax * drawnW, offY + ay * drawnH);
+      path.lineTo(offX + bx * drawnW, offY + by * drawnH);
     }
     return path;
-  }, [pose, width, height]);
+  }, [pose, width, height, frameAspect]);
 
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -76,7 +99,14 @@ export function PoseOverlay({ pose, width, height, muted = false }: Props) {
           color={Colors.primary}
         />
         {JOINT_INDICES.map((i) => (
-          <Joint key={i} pose={pose} index={i} width={width} height={height} />
+          <Joint
+            key={i}
+            pose={pose}
+            index={i}
+            width={width}
+            height={height}
+            frameAspect={frameAspect}
+          />
         ))}
       </Group>
     </Canvas>
@@ -93,14 +123,22 @@ function Joint({
   index,
   width,
   height,
+  frameAspect,
 }: {
   pose: PoseBuffer;
   index: number;
   width: number;
   height: number;
+  frameAspect: SharedValue<number>;
 }) {
-  const cx = useDerivedValue(() => (pose.value?.[index * 3 + 1] ?? 0) * width, [pose, width]);
-  const cy = useDerivedValue(() => (pose.value?.[index * 3] ?? 0) * height, [pose, height]);
+  const cx = useDerivedValue(() => {
+    const { drawnW, offX } = coverRect(width, height, frameAspect.value);
+    return offX + (pose.value?.[index * 3 + 1] ?? 0) * drawnW;
+  }, [pose, width, height, frameAspect]);
+  const cy = useDerivedValue(() => {
+    const { drawnH, offY } = coverRect(width, height, frameAspect.value);
+    return offY + (pose.value?.[index * 3] ?? 0) * drawnH;
+  }, [pose, width, height, frameAspect]);
   // Radius carries the confidence: uncertain joints shrink to nothing rather
   // than sitting there looking authoritative.
   const r = useDerivedValue(() => {

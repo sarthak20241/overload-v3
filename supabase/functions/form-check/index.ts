@@ -136,6 +136,47 @@ function terminalInput(
  * Best effort, never allowed to fail the request. supabase-js resolves with
  * `{ error }` instead of throwing, so the error has to be inspected explicitly.
  */
+/**
+ * Keep a fire-and-forget write alive past the response.
+ *
+ * The isolate is free to shut down as soon as the handler returns, which drops
+ * whatever was still in flight. Mirrors the helper in ai-coach.
+ */
+function keepAlive(p: Promise<unknown>): void {
+  const er = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } })
+    .EdgeRuntime;
+  if (er?.waitUntil) er.waitUntil(p);
+  else void p;
+}
+
+/**
+ * Hand back the slot this request reserved.
+ *
+ * Called on the paths that never produced coaching -- an Anthropic outage, a
+ * malformed completion. The user got nothing, so charging them one of three
+ * daily checks for it is indefensible. Best effort, and scoped to this user's
+ * own rows.
+ */
+async function refundFormCheckSlot(admin: SupabaseClient, userId: string): Promise<void> {
+  try {
+    const { data } = await admin
+      .from("form_check_rate_limit")
+      .select("request_at")
+      .eq("user_id", userId)
+      .order("request_at", { ascending: false })
+      .limit(1);
+    const newest = data?.[0]?.request_at;
+    if (!newest) return;
+    await admin
+      .from("form_check_rate_limit")
+      .delete()
+      .eq("user_id", userId)
+      .eq("request_at", newest);
+  } catch (e) {
+    console.log("[form-check] slot refund failed", (e as Error).message);
+  }
+}
+
 async function logTokenUsage(
   admin: SupabaseClient,
   args: {
@@ -228,6 +269,33 @@ const MAX_REPS = 40;
 /** Generous next to a real entry (~200 bytes) and still bounds the prompt. */
 const MAX_ENTRY_BYTES = 2_000;
 
+/**
+ * The movement patterns 0101 allows on `exercises.movement_pattern`.
+ *
+ * `form_checks.movement_pattern` carries no such constraint, so this is the
+ * only thing standing between a client and an arbitrary string persisted under
+ * service_role.
+ */
+const PATTERNS = new Set([
+  "squat",
+  "hinge",
+  "lunge",
+  "horizontal_press",
+  "vertical_press",
+  "horizontal_pull",
+  "vertical_pull",
+  "elbow_flexion",
+  "elbow_extension",
+  "none",
+]);
+
+/** A number in range, treating absent as fine. */
+function finiteInRange(v: unknown, lo: number, hi: number): boolean {
+  if (v === undefined || v === null) return true;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= lo && n <= hi;
+}
+
 /** Is this an array within its count limit, with no oversized entry? */
 function withinPromptBudget(v: unknown, maxLen: number): boolean {
   if (v === undefined || v === null) return true;
@@ -286,6 +354,21 @@ function validateRequest(mode: string, body: Record<string, unknown>): string | 
   // every other check and still be handed to the model in full.
   if (!withinPromptBudget(summary.reps, MAX_REPS)) return "summary.reps is out of range";
 
+  // Scalars reach the prompt AND the stored row just as the arrays do, so
+  // bounding only the arrays would leave the same hole open one field over: a
+  // multi-megabyte `durationMs` string is forwarded verbatim by compactSummary.
+  if (
+    summary.pattern !== undefined &&
+    summary.pattern !== null &&
+    !(typeof summary.pattern === "string" && PATTERNS.has(summary.pattern))
+  ) {
+    return "summary.pattern is not a known movement pattern";
+  }
+  if (!finiteInRange(summary.durationMs, 0, 24 * 60 * 60 * 1000)) {
+    return "summary.durationMs is out of range";
+  }
+  if (!finiteInRange(summary.confidence, 0, 1)) return "summary.confidence is out of range";
+
   return null;
 }
 
@@ -315,14 +398,18 @@ async function handleAnalyze(args: {
   const latencyMs = Date.now() - startedAtMs;
 
   if (!result.ok) {
-    void logTokenUsage(admin, {
-      mode: "analyze",
-      userId,
-      usage: undefined,
-      latencyMs,
-      status: "error",
-      errorMessage: `anthropic_${result.status}: ${result.body}`,
-    });
+    keepAlive(
+      logTokenUsage(admin, {
+        mode: "analyze",
+        userId,
+        usage: undefined,
+        latencyMs,
+        status: "error",
+        errorMessage: `anthropic_${result.status}: ${result.body}`,
+      }),
+    );
+    // Our outage, not their check.
+    keepAlive(refundFormCheckSlot(admin, userId));
     return respond(
       { error: "form_check_failed", message: "I could not write that one up. Try again in a moment." },
       result.status === 504 ? 504 : 502,
@@ -330,16 +417,19 @@ async function handleAnalyze(args: {
   }
 
   const input = terminalInput(result.data, WRITE_NOTE_TOOL.name);
-  void logTokenUsage(admin, {
-    mode: "analyze",
-    userId,
-    usage: result.data.usage,
-    latencyMs,
-    status: input ? "success" : "error",
-    errorMessage: input ? undefined : "no_terminal_tool",
-  });
+  keepAlive(
+    logTokenUsage(admin, {
+      mode: "analyze",
+      userId,
+      usage: result.data.usage,
+      latencyMs,
+      status: input ? "success" : "error",
+      errorMessage: input ? undefined : "no_terminal_tool",
+    }),
+  );
 
   if (!input || typeof input.note !== "string") {
+    keepAlive(refundFormCheckSlot(admin, userId));
     return respond(
       { error: "form_check_failed", message: "I could not write that one up. Try again in a moment." },
       502,
@@ -525,28 +615,36 @@ async function handleAuthorRules(args: {
   const latencyMs = Date.now() - startedAtMs;
 
   if (!result.ok) {
-    void logTokenUsage(admin, {
-      mode: "author_rules",
-      userId,
-      usage: undefined,
-      latencyMs,
-      status: "error",
-      errorMessage: `anthropic_${result.status}: ${result.body}`,
-    });
+    keepAlive(
+      logTokenUsage(admin, {
+        mode: "author_rules",
+        userId,
+        usage: undefined,
+        latencyMs,
+        status: "error",
+        errorMessage: `anthropic_${result.status}: ${result.body}`,
+      }),
+    );
+    keepAlive(refundFormCheckSlot(admin, userId));
     return respond({ error: "author_failed" }, result.status === 504 ? 504 : 502);
   }
 
   const input = terminalInput(result.data, AUTHOR_TOOL.name);
-  void logTokenUsage(admin, {
-    mode: "author_rules",
-    userId,
-    usage: result.data.usage,
-    latencyMs,
-    status: input ? "success" : "error",
-    errorMessage: input ? undefined : "no_terminal_tool",
-  });
+  keepAlive(
+    logTokenUsage(admin, {
+      mode: "author_rules",
+      userId,
+      usage: result.data.usage,
+      latencyMs,
+      status: input ? "success" : "error",
+      errorMessage: input ? undefined : "no_terminal_tool",
+    }),
+  );
 
-  if (!input) return respond({ error: "author_failed" }, 502);
+  if (!input) {
+    keepAlive(refundFormCheckSlot(admin, userId));
+    return respond({ error: "author_failed" }, 502);
+  }
 
   if (input.unsupported === true) {
     return respond({ unsupported: true, pattern: "none" }, 200);
@@ -557,6 +655,7 @@ async function handleAuthorRules(args: {
   // every read, so a spec that slips through here can never be acted on. The
   // check below exists to fail fast, not to be the gate.
   if (!looksLikeSpec(input.spec)) {
+    keepAlive(refundFormCheckSlot(admin, userId));
     return respond({ error: "author_failed", reason: "malformed_spec" }, 502);
   }
 

@@ -66,6 +66,14 @@ export interface FormSession {
   live: LiveState;
   /** Pass to <Camera outputs={[...]}>. Null until the model is ready. */
   frameOutput: ReturnType<typeof useFrameOutput> | null;
+  /**
+   * The camera frame's aspect ratio (width / height), 1 until the first frame.
+   *
+   * The overlay needs it to place the skeleton: pose coordinates describe the
+   * frame, but the preview shows that frame scaled to cover the screen, so
+   * they only line up once the same crop is applied.
+   */
+  frameAspect: ReturnType<typeof useSharedValue<number>>;
   /** Close the set and hand back everything the engine measured. */
   finish: () => SetAnalysis | null;
   reset: () => void;
@@ -95,6 +103,7 @@ export function useFormSession({
   paused = false,
 }: UseFormSessionArgs): FormSession {
   const pose = useSharedValue<number[]>([]);
+  const frameAspect = useSharedValue(1);
   const [live, setLive] = useState<LiveState>(IDLE_LIVE);
   const [modelError, setModelError] = useState<string | null>(null);
 
@@ -267,8 +276,9 @@ export function useFormSession({
             else flat[i] = view[i];
           }
 
-          // UI thread reads this directly, no bridge hop.
+          // UI thread reads these directly, no bridge hop.
           pose.value = flat;
+          frameAspect.value = frame.height > 0 ? frame.width / frame.height : 1;
           // JS thread runs the rules.
           runOnJS(ingest)(flat, Date.now(), frame.width, frame.height);
         } finally {
@@ -301,6 +311,7 @@ export function useFormSession({
     pose,
     live,
     frameOutput: ready ? frameOutput : null,
+    frameAspect,
     finish,
     reset,
   };

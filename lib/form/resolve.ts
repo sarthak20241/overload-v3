@@ -21,6 +21,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { isCapError } from './api';
 import { guessPattern, isMovementPattern, specForPattern, type MovementPattern } from './patterns';
 import { parseFormRuleSpec, type FormRuleSpec } from './spec';
 
@@ -165,6 +166,10 @@ export async function resolveFormRules({
   try {
     raw = await authorSpec(exercise.name);
   } catch (e) {
+    // A spent allowance is not "we cannot check this lift" -- the rules are a
+    // day away, not impossible -- so it travels up to the screen instead of
+    // being flattened into the unsupported answer with everything else.
+    if (isCapError(e)) throw e;
     console.warn(`[form] rule authoring failed for "${exercise.name}"`, e);
     return { spec: null, pattern: null, origin: 'none', unsupported: false };
   }
@@ -239,11 +244,6 @@ async function persistRules(
   if (error) console.warn('[form] could not persist form_rules', error.message);
 }
 
-/** Escape the ILIKE wildcards so a name is matched literally. */
-function escapeLikePattern(s: string): string {
-  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
-
 /**
  * Fill in `form_rules` / `movement_pattern` from the row when the caller did
  * not already have them.
@@ -284,25 +284,22 @@ async function findGlobalTwin(
 ): Promise<{ form_rules: unknown; movement_pattern: string | null } | null> {
   const trimmed = name.trim();
   if (!trimmed) return null;
+  // An indexed equality on the generated `name_lower` column (0101), not
+  // ILIKE. ILIKE could not use an index, and its wildcards would let a name
+  // like "50% Deficit Pull" match unrelated rows and inherit the wrong lift's
+  // rules. An equality has neither problem, so there is nothing to escape and
+  // nothing to re-check afterwards.
   const { data, error } = await client
     .from('exercises')
-    .select('name, form_rules, movement_pattern')
+    .select('form_rules, movement_pattern')
     .is('created_by', null)
-    // `%` and `_` are ILIKE wildcards, and PostgREST additionally rewrites `*`
-    // to `%`. An exercise called "50% Deficit Pull" would otherwise match
-    // unrelated rows and silently inherit the wrong lift's rules.
-    .ilike('name', escapeLikePattern(trimmed))
-    .limit(5);
+    .eq('name_lower', trimmed.toLowerCase())
+    .limit(1);
   if (error) {
     console.warn('[form] global twin lookup failed', error.message);
     return null;
   }
-  // Escaping cannot neutralise PostgREST's `*` rewrite, so confirm the name
-  // really is the same one rather than trusting whatever the filter returned.
-  const wanted = trimmed.toLowerCase();
-  const row = (data ?? []).find(
-    (r) => typeof r.name === 'string' && r.name.trim().toLowerCase() === wanted
-  );
+  const row = data?.[0];
   return row ? { form_rules: row.form_rules, movement_pattern: row.movement_pattern } : null;
 }
 

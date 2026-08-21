@@ -31,7 +31,13 @@ import { haptics } from '@/lib/haptics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PoseOverlay } from '@/components/form/PoseOverlay';
 import { useFormSession } from '@/components/form/useFormSession';
-import { requestAuthoredRules, requestFormNote, type FormNote } from '@/lib/form/api';
+import {
+  isCapError,
+  requestAuthoredRules,
+  requestFormNote,
+  type FormNote,
+  type FormNoteResult,
+} from '@/lib/form/api';
 import { isPersistableId, resolveFormRules, type RuleResolution } from '@/lib/form/resolve';
 import { summarize, unusableMessage, type FormSummary } from '@/lib/form/summarize';
 
@@ -87,11 +93,16 @@ export default function FormCheckScreen() {
           return;
         }
         setPhase('setup');
-      } catch {
-        if (!cancelled) {
-          setProblem('Something went wrong setting that up. Try again in a moment.');
-          setPhase('unsupported');
-        }
+      } catch (e) {
+        if (cancelled) return;
+        // Working out the rules for a new lift costs a check. Running out
+        // there is a "come back tomorrow", not a "this lift cannot be judged".
+        setProblem(
+          isCapError(e)
+            ? capMessage(e.result)
+            : 'Something went wrong setting that up. Try again in a moment.'
+        );
+        setPhase('unsupported');
       }
     })();
     return () => {
@@ -110,7 +121,15 @@ export default function FormCheckScreen() {
     haptics.medium();
 
     const analysis = session.finish();
-    if (!analysis) return;
+    if (!analysis) {
+      // Returning here without moving the phase would leave the screen in
+      // `recording` with a Done button that visibly does nothing.
+      setNote(null);
+      setSummary(null);
+      setProblem('I did not get a usable read on that set. Try another one.');
+      setPhase('result');
+      return;
+    }
 
     const built = summarize({
       analysis,
@@ -141,14 +160,8 @@ export default function FormCheckScreen() {
       setProblem(null);
     } else if (res.kind === 'unusable') {
       setProblem(unusableMessage(res.reason, spec));
-    } else if (res.kind === 'cap') {
-      setProblem(
-        res.scope === 'free'
-          ? 'That is your form checks for today. Come back tomorrow, or go Pro for more.'
-          : 'You have used all of today\'s form checks. They reset in a day.'
-      );
-    } else if (res.kind === 'no_access') {
-      setProblem('Form checks come with Drona. Start a plan to have me watch your sets.');
+    } else if (res.kind === 'cap' || res.kind === 'no_access') {
+      setProblem(capMessage(res));
     } else {
       setProblem(res.message);
     }
@@ -191,6 +204,7 @@ export default function FormCheckScreen() {
             pose={session.pose}
             width={width}
             height={height}
+            frameAspect={session.frameAspect}
             muted={session.live.wrongView || session.live.lowConfidence}
           />
         </>
@@ -269,6 +283,23 @@ export default function FormCheckScreen() {
       )}
     </View>
   );
+}
+
+/**
+ * One wording for a spent allowance, wherever it is hit.
+ *
+ * Both the rule-authoring step and the analysis step are metered, so the same
+ * user can meet this from two different places in the flow and must hear the
+ * same thing.
+ */
+function capMessage(res: FormNoteResult): string {
+  if (res.kind === 'no_access') {
+    return 'Form checks come with Drona. Start a plan to have me watch your sets.';
+  }
+  if (res.kind === 'cap' && res.scope === 'free') {
+    return 'That is your form checks for today. Come back tomorrow, or go Pro for more.';
+  }
+  return "You have used all of today's form checks. They reset in a day.";
 }
 
 // ── panels ──────────────────────────────────────────────────────────────────

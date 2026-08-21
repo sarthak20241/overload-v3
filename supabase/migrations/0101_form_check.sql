@@ -61,13 +61,19 @@ comment on column exercises.form_rules is
 
 -- The rule ladder's one repeated query is the global-twin lookup in
 -- lib/form/resolve.ts: a case-insensitive exact name match over catalog rows.
--- Without this it is a sequential scan of the whole catalog every time an
--- unknown exercise is checked.
 --
--- (An index on exercises (id) where form_rules is not null would be pointless:
--- the planner would never choose it over the primary key it is built on.)
-create index if not exists idx_exercises_global_name
-  on exercises (lower(name)) where created_by is null;
+-- It is expressed as an equality on this generated column rather than as
+-- ILIKE, for two reasons. ILIKE cannot use a btree index, so the lookup would
+-- stay a sequential scan however the index were written. And ILIKE treats `%`
+-- and `_` as wildcards (PostgREST additionally rewrites `*` to `%`), so an
+-- exercise named "50% Deficit Pull" could match unrelated rows and inherit the
+-- wrong lift's rules.
+alter table exercises
+  add column if not exists name_lower text
+  generated always as (lower(name)) stored;
+
+create index if not exists idx_exercises_global_name_lower
+  on exercises (name_lower) where created_by is null;
 
 -- Backfill. This CASE chain mirrors NAME_RULES in lib/form/patterns.ts and the
 -- ORDER IS LOAD-BEARING: "Romanian Deadlift" must be caught by the hinge rule
@@ -175,7 +181,16 @@ as $$
 declare
   v_uid   text;
   v_count int;
+  v_cap   int;
 begin
+  -- The cap is an argument, and this function is `security definer` and
+  -- executable by every authenticated role. A client calling it directly with
+  -- a huge cap cannot buy itself extra model calls -- the edge function
+  -- derives its own cap -- but it could insert unbounded rows here for its own
+  -- user_id, since the definer performs the insert and RLS does not apply.
+  -- Bound it: no tier is ever entitled to more than this.
+  v_cap := least(greatest(coalesce(p_cap, 0), 0), 100);
+
   v_uid := current_clerk_user_id();
   if v_uid is null then
     inserted := false;
@@ -193,7 +208,7 @@ begin
    where user_id = v_uid
      and request_at >= now() - interval '24 hours';
 
-  if v_count >= p_cap then
+  if v_count >= v_cap then
     inserted := false;
     current_count := v_count;
     return next;

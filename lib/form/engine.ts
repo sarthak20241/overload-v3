@@ -111,6 +111,14 @@ class SideVoter {
   }
 }
 
+/**
+ * How long a measure may coast on its last real sample before it counts as
+ * unavailable. At the ~22 fps the engine is fed, this is about a third of a
+ * second: long enough to ride out a hand crossing a knee, short enough that a
+ * joint lost for a whole rep stops contributing to that rep's numbers.
+ */
+const MAX_STALE_FRAMES = 7;
+
 /** Running accumulator for one measure inside the rep currently in progress. */
 interface MeasureAcc {
   min: number;
@@ -198,7 +206,9 @@ export class FormEngine {
     // has to stop the rep machine, because with no side every joint lookup
     // falls back to whichever of the left/right pair scored higher on THIS
     // frame, and the driver ends up alternating between two different joints.
-    const sideUnknown = this.spec.view !== 'any' && this.side === 'unknown';
+    // Not conditioned on spec.view: an 'any' spec still resolves sided joints,
+    // so it needs a committed side just as much as a 'side' one does.
+    const sideUnknown = this.side === 'unknown';
     const lowConf = conf < MIN_KEYPOINT_SCORE || sideUnknown;
     if (lowConf) this.lowConfFrames++;
 
@@ -206,7 +216,13 @@ export class FormEngine {
     const values = new Map<string, number>();
     for (const m of this.spec.measures) {
       const raw = evalMeasure(m, frame, this.side, this.aspect);
-      values.set(m.id, this.ema.get(m.id)!.push(raw));
+      const ema = this.ema.get(m.id)!;
+      const smoothed = ema.push(raw);
+      // Riding out a frame or two of occlusion is what the EMA is for. Beyond
+      // that the value is a memory, not a measurement, and folding it into the
+      // aggregates would report a joint that has not been seen in a second as
+      // if it were holding perfectly still.
+      values.set(m.id, ema.stale > MAX_STALE_FRAMES ? NaN : smoothed);
     }
 
     const driver = values.get(this.spec.rep.driver) ?? NaN;

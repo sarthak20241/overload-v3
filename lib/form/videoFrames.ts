@@ -15,7 +15,7 @@ import { File } from 'expo-file-system';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Skia } from '@shopify/react-native-skia';
 
-import { decodeMoveNet, type PoseFrame } from './keypoints';
+import { decodeMoveNet, letterboxFor, type PoseFrame } from './keypoints';
 
 /**
  * Sampling rate. A rep lasts one to three seconds, so 6 fps puts a dozen or
@@ -49,6 +49,14 @@ export interface SampleResult {
   /** Frames the extractor or decoder could not produce. */
   skipped: number;
   cancelled: boolean;
+  /**
+   * The clip's aspect ratio (width / height), read off the decoded frames.
+   *
+   * The engine needs it for the same reason the live path does: coordinates
+   * are normalised per axis, so every angle depends on the frame's real shape.
+   * 1 when nothing decoded.
+   */
+  aspect: number;
 }
 
 /**
@@ -73,6 +81,7 @@ export async function samplePoses({
   const frames: PoseFrame[] = [];
   const scratch: string[] = [];
   let skipped = 0;
+  let aspect = 1;
   let cancelled = false;
 
   try {
@@ -109,8 +118,13 @@ export async function samplePoses({
       if (!raw || raw.length < 51) {
         skipped++;
       } else {
-        // Stamp with the position in the VIDEO, not the wall clock.
-        frames.push(decodeMoveNet(raw, atMs));
+        aspect = decoded.height > 0 ? decoded.width / decoded.height : 1;
+        // Same un-letterboxing the live path does on the frame thread, so both
+        // paths hand the engine coordinates describing the real frame rather
+        // than the padded square the model saw.
+        frames.push(
+          decodeMoveNet(raw, atMs, false, letterboxFor(decoded.width, decoded.height))
+        );
       }
       onProgress?.((i + 1) / count);
     }
@@ -120,7 +134,7 @@ export async function samplePoses({
     cleanUp(scratch);
   }
 
-  return { frames, skipped, cancelled };
+  return { frames, skipped, cancelled, aspect };
 }
 
 interface DecodedImage {
@@ -134,17 +148,31 @@ interface DecodedImage {
  * so this needs no extra native module.
  */
 async function decodeImage(uri: string): Promise<DecodedImage | null> {
+  let data: { dispose?: () => void } | null = null;
+  let image: { dispose?: () => void } | null = null;
   try {
-    const data = await Skia.Data.fromURI(uri);
-    const image = Skia.Image.MakeImageFromEncoded(data);
-    if (!image) return null;
-    const width = image.width();
-    const height = image.height();
-    const pixels = image.readPixels() as Uint8Array | null;
+    const d = await Skia.Data.fromURI(uri);
+    data = d as unknown as { dispose?: () => void };
+    const img = Skia.Image.MakeImageFromEncoded(d);
+    if (!img) return null;
+    image = img as unknown as { dispose?: () => void };
+    const width = img.width();
+    const height = img.height();
+    const pixels = img.readPixels() as Uint8Array | null;
     if (!pixels) return null;
     return { pixels, width, height };
   } catch {
     return null;
+  } finally {
+    // Both wrap native memory. A 30 second clip decodes up to 180 full
+    // resolution images, so waiting for the collector to notice is the
+    // difference between a bounded working set and an unbounded one.
+    try {
+      image?.dispose?.();
+      data?.dispose?.();
+    } catch {
+      // Older Skia builds do not expose dispose; the collector handles it.
+    }
   }
 }
 

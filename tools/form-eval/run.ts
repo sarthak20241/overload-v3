@@ -18,7 +18,7 @@ import {
   deriveInputSpec,
   viewOutput,
 } from '../../lib/form/model';
-import { angleAt, detectSide, resolveJoint } from '../../lib/form/geometry';
+import { Ema, angleAt, detectSide, resolveJoint } from '../../lib/form/geometry';
 import { PATTERN_SPECS, guessPattern, specForPattern } from '../../lib/form/patterns';
 import { parseFormRuleSpec, type FormRuleSpec } from '../../lib/form/spec';
 import { occlude, pressSequence, squatSequence, squatSkeleton } from './synth';
@@ -240,6 +240,25 @@ check('an abandoned dip does not contaminate the next rep', () => {
   // have been averaged into the first one.
   const means = analysis.reps.map((r) => r.measures.torsoLean?.mean ?? NaN);
   near(means[0], means[1], 0.5, 'rep 1 vs rep 2 torsoLean mean');
+});
+
+check('a joint that stays missing stops feeding the aggregates', () => {
+  // The EMA holds its last value through a NaN so a blink does not break a rep.
+  // Past a few frames that value is a memory, not a measurement: without a
+  // staleness cut-off an ankle lost for a whole rep is folded into min, max,
+  // mean and range as though the lifter were holding perfectly still. Nothing
+  // else catches it -- meanKeypointScore samples shoulders, hips, knees and
+  // elbows, so a lost ankle never raises lowConfidence.
+  const ema = new Ema(0.35);
+  eq(Number.isNaN(ema.push(NaN)), true, 'no value yet');
+  ema.push(100);
+  eq(ema.stale, 0, 'fresh after a real sample');
+  ema.push(NaN);
+  ema.push(NaN);
+  eq(ema.stale, 2, 'counts frames since the last real sample');
+  near(ema.current, 100, 1e-9, 'still reports the held value');
+  ema.push(100);
+  eq(ema.stale, 0, 'resets when a real sample returns');
 });
 
 check('rep confidence describes the rep, not the whole session', () => {

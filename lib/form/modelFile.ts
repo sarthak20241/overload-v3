@@ -108,6 +108,18 @@ export function poseModelUri(): string {
  * on the next run.
  */
 export async function ensurePoseModel(): Promise<ModelFileState> {
+  // Two callers arriving together (a remount, or the screen reopened while the
+  // first download is still running) would otherwise both delete the partial
+  // file and download over each other. Share the first attempt instead.
+  inFlight ??= runEnsurePoseModel().finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+let inFlight: Promise<ModelFileState> | null = null;
+
+async function runEnsurePoseModel(): Promise<ModelFileState> {
   try {
     if (isPoseModelReady()) return { status: 'ready', uri: poseModelUri() };
 

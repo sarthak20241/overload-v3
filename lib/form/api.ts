@@ -80,9 +80,31 @@ export async function requestFormNote({
       note: data.note,
       headline: typeof data.headline === 'string' ? data.headline : null,
       focus: typeof data.focus === 'string' ? data.focus : null,
-      score: Number(data.score ?? summary.score),
+      // The score is computed on the device; the server only echoes it back.
+      // A non-numeric echo must not turn into a NaN rendered at the user.
+      score: Number.isFinite(Number(data.score)) ? Number(data.score) : summary.score,
     },
   };
+}
+
+/**
+ * Thrown when authoring is refused because the allowance is spent.
+ *
+ * Authoring is metered like analysis, but the ladder treats any failure as
+ * "no rules for this lift". Without a distinct type a capped user is told the
+ * exercise cannot be checked at all, which is both wrong and unrecoverable
+ * sounding -- their rules are one day away, not impossible.
+ */
+export class FormCapError extends Error {
+  constructor(readonly result: FormNoteResult) {
+    super('form check allowance spent');
+    this.name = 'FormCapError';
+  }
+}
+
+/** Narrow an unknown caught value to a cap refusal. */
+export function isCapError(e: unknown): e is FormCapError {
+  return e instanceof FormCapError;
 }
 
 /**
@@ -98,7 +120,11 @@ export async function requestAuthoredRules(
     region: FunctionRegion.UsEast1,
     body: { mode: 'author_rules', exercise_name: exerciseName },
   });
-  if (res.error) throw res.error;
+  if (res.error) {
+    const capped = await readCapError(res.error);
+    if (capped) throw new FormCapError(capped);
+    throw res.error;
+  }
   return res.data;
 }
 
