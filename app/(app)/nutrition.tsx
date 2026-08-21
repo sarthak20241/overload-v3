@@ -277,6 +277,14 @@ export default function NutritionScreen() {
    *  patches the reviewed meal in place. */
   const [editIndex, setEditIndex] = useState<number | null>(null);
   const onEditItem = useCallback((i: number) => setEditIndex(i), []);
+  const onRemoveItem = useCallback((i: number) => {
+    setFlow((f): ParseFlow => {
+      if (f.status !== 'review') return f;
+      const items = f.meal.items.filter((_, idx) => idx !== i);
+      if (items.length === 0) return { status: 'idle' };
+      return { ...f, meal: { ...f.meal, items } };
+    });
+  }, []);
   const onEditSave = useCallback((patch: ParsedMealItem) => {
     setFlow((f) => {
       if (f.status !== 'review' || editIndex === null) return f;
@@ -469,6 +477,7 @@ export default function NutritionScreen() {
               ))}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
               onEditItem={flow.status === 'review' ? onEditItem : undefined}
+              onRemoveItem={flow.status === 'review' ? onRemoveItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
