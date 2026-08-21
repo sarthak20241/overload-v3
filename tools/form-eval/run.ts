@@ -170,6 +170,26 @@ check('rejects cue thresholds the measure can never produce', () => {
   assert(parseFormRuleSpec(PATTERN_SPECS.squat).ok, 'the real spec still passes');
 });
 
+check('bounds a range-sampled cue by the width it can reach, not the raw value', () => {
+  // `range` is max - min over the rep, so it is a width: never negative, and
+  // for a signed measure able to reach the full span of both bounds. Judging
+  // it against the raw bounds would accept a negative threshold that can never
+  // fire and reject a legitimately wide one.
+  const ranged = (a: number) => ({
+    ...PATTERN_SPECS.squat,
+    cues: [
+      {
+        ...PATTERN_SPECS.squat.cues[0],
+        measure: 'torsoLean',
+        sample: 'range',
+        test: { op: '>', a },
+      },
+    ],
+  });
+  assert(!parseFormRuleSpec(ranged(-5)).ok, 'a width can never be negative');
+  assert(parseFormRuleSpec(ranged(40)).ok, 'a wide but reachable spread is fine');
+});
+
 check('rejects rep thresholds the driver can never reach', () => {
   // A jointAngle is 0..180 by construction. Thresholds outside it mean isUp is
   // never true: zero reps for the life of the exercise, and a depth bar pinned

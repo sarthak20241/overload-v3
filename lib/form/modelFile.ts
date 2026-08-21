@@ -107,7 +107,13 @@ function dropSupersededModels(dir: Directory): void {
       if (!(entry instanceof File)) continue;
       const name = entry.name;
       if (name === MODEL_NAME) continue;
-      if (!name.startsWith('movenet_thunder_') || !name.endsWith('.tflite')) continue;
+      // No trailing underscore in the prefix, deliberately. Before the name
+      // carried a hash the file was plainly `movenet_thunder.tflite`, and that
+      // is the one file every existing install is about to supersede -- the
+      // whole reason this function exists. Requiring the underscore would skip
+      // exactly that case and orphan 12 MB on every device that already ran a
+      // form check.
+      if (!name.startsWith('movenet_thunder') || !name.endsWith('.tflite')) continue;
       entry.delete();
     }
   } catch {

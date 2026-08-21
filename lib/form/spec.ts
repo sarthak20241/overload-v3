@@ -155,6 +155,20 @@ function measureRange(kind: MeasureKind): [number, number] {
   }
 }
 
+/**
+ * What a given SAMPLE of a measure can report, which is not always what the
+ * measure itself can.
+ *
+ * `range` is `max - min` over the rep, so it is a width rather than a value: it
+ * can never be negative, and for a signed measure it can reach the full span of
+ * the two bounds. Judging it against the raw bounds would accept a negative
+ * threshold that can never fire, and reject a legitimately wide one.
+ */
+function sampleRange(kind: MeasureKind, sample: CueSample): [number, number] {
+  const [lo, hi] = measureRange(kind);
+  return sample === 'range' ? [0, hi - lo] : [lo, hi];
+}
+
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -352,13 +366,15 @@ export function parseFormRuleSpec(input: unknown): SpecParseResult {
       // way the cue is silently useless and the set still reports a score.
       const cueMeasure = measures.find((m) => m.id === raw.measure);
       if (cueMeasure) {
-        const [lo, hi] = measureRange(cueMeasure.kind);
+        const [lo, hi] = sampleRange(cueMeasure.kind, raw.sample as CueSample);
         const outOfRange = ([['a', test.a], ['b', (test as { b?: number }).b]] as const).filter(
           ([, v]) => typeof v === 'number' && (v < lo || v > hi)
         );
         if (outOfRange.length) {
           const which = outOfRange.map(([k]) => `test.${k}`).join(' and ');
-          errors.push(`${where}.${which} must be within ${lo}..${hi} for a ${cueMeasure.kind}`);
+          errors.push(
+            `${where}.${which} must be within ${lo}..${hi} for ${raw.sample} of a ${cueMeasure.kind}`
+          );
           return;
         }
       }
