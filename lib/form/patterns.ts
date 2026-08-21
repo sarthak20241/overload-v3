@@ -380,7 +380,10 @@ export function specForPattern(pattern: string | null | undefined): FormRuleSpec
  */
 const NAME_RULES: ReadonlyArray<readonly [RegExp, MovementPattern]> = [
   // Anything machine-seated and isolated that a side camera cannot judge.
-  [/\b(treadmill|run|jog|cycl|bike|row erg|elliptical|stair|walk|sled|carry|plank|hold|stretch)\b/i, 'none'],
+  // Cardio stems need their inflections: catalogs say "Running", not "Run".
+  // `walk` and `row` deliberately stay unstemmed -- these rules run first, so
+  // stemming them would swallow "Walking Lunge" and "Barbell Row".
+  [/\b(treadmill|run(ning)?|jog(ging)?|cycl\w*|bike|row(ing)? erg\w*|elliptical|stair\w*|walk|sled|carry|plank|hold|stretch)\b/i, 'none'],
   [/\b(calf|shrug|fly|flye|lateral raise|front raise|rear delt|face pull|pullover|wrist|crunch|sit.?up|twist|raise)\b/i, 'none'],
   // Leg curl and leg extension must be caught HERE, before the generic
   // curl/extension rules below, or a hamstring machine ends up graded as a

@@ -223,6 +223,8 @@ The cue list you are given includes a plain-language detail for each fault. Use 
 const MAX_NAME_CHARS = 120;
 const MAX_CUES = 10;
 const MAX_MEASURES = 12;
+/** `compactSummary` forwards at most this many reps; anything beyond is noise. */
+const MAX_REPS = 40;
 /** Generous next to a real entry (~200 bytes) and still bounds the prompt. */
 const MAX_ENTRY_BYTES = 2_000;
 
@@ -245,6 +247,48 @@ interface FormSummaryPayload {
   [k: string]: unknown;
 }
 
+/**
+ * Reject a malformed request BEFORE a rate-limit slot is spent on it.
+ *
+ * Reserving first would let a client bug burn a free user's entire daily
+ * allowance on three 400s without a single model call ever happening. Returns
+ * an error message, or null when the body is worth paying for.
+ *
+ * The size limits mirror the spec validator in lib/form/spec.ts, so no summary
+ * a real spec can produce is ever refused; they exist to stop one slot buying
+ * an arbitrarily large prompt.
+ */
+function validateRequest(mode: string, body: Record<string, unknown>): string | null {
+  if (mode === "author_rules") {
+    const name = typeof body.exercise_name === "string" ? body.exercise_name.trim() : "";
+    if (!name || name.length > MAX_NAME_CHARS) return "author_rules requires an exercise_name";
+    return null;
+  }
+
+  const summary = body.summary as FormSummaryPayload | undefined;
+  if (!summary || typeof summary !== "object") return "form_check requires a summary object";
+
+  const name = typeof summary.exerciseName === "string" ? summary.exerciseName.trim() : "";
+  if (!name) return "summary.exerciseName is required";
+  if (name.length > MAX_NAME_CHARS) return "summary.exerciseName is too long";
+
+  const repCount = Number(summary.repCount ?? 0);
+  if (!Number.isFinite(repCount) || repCount < 0 || repCount > 200) {
+    return "summary.repCount is out of range";
+  }
+
+  if (!withinPromptBudget(summary.cues, MAX_CUES)) return "summary.cues is out of range";
+  if (!withinPromptBudget(summary.measures, MAX_MEASURES)) {
+    return "summary.measures is out of range";
+  }
+  // compactSummary slices reps to MAX_REPS but never checks how big each one
+  // is, so without this a payload of 40 megabyte-long flag strings would pass
+  // every other check and still be handed to the model in full.
+  if (!withinPromptBudget(summary.reps, MAX_REPS)) return "summary.reps is out of range";
+
+  return null;
+}
+
 async function handleAnalyze(args: {
   admin: SupabaseClient;
   userId: string;
@@ -253,38 +297,9 @@ async function handleAnalyze(args: {
   respond: (body: unknown, status: number) => Response;
 }): Promise<Response> {
   const { admin, userId, body, startedAtMs, respond } = args;
-  const summary = body.summary as FormSummaryPayload | undefined;
-
-  if (!summary || typeof summary !== "object") {
-    return respond({ error: "form_check requires a summary object" }, 400);
-  }
-  const exerciseName = typeof summary.exerciseName === "string" ? summary.exerciseName.trim() : "";
-  if (!exerciseName) {
-    return respond({ error: "summary.exerciseName is required" }, 400);
-  }
-  if (exerciseName.length > MAX_NAME_CHARS) {
-    return respond({ error: "summary.exerciseName is too long" }, 400);
-  }
-  const repCount = Number(summary.repCount ?? 0);
-  if (!Number.isFinite(repCount) || repCount < 0 || repCount > 200) {
-    return respond({ error: "summary.repCount is out of range" }, 400);
-  }
-  // Everything below is forwarded into the prompt, so it is bounded HERE rather
-  // than at the persist step further down: a rejected request must cost nothing
-  // at the model. The limits match the spec validator in lib/form/spec.ts, so
-  // no summary a real spec can produce is ever refused.
-  if (!withinPromptBudget(summary.cues, MAX_CUES)) {
-    return respond({ error: "summary.cues is out of range" }, 400);
-  }
-  if (!withinPromptBudget(summary.measures, MAX_MEASURES)) {
-    return respond({ error: "summary.measures is out of range" }, 400);
-  }
-
-  // A set the device already judged unusable never reaches the model: there is
-  // nothing to write about, and the honest message is better than prose.
-  if (summary.unusableReason) {
-    return respond({ note: null, unusable: String(summary.unusableReason) }, 200);
-  }
+  // Shape already checked by validateRequest before the slot was reserved.
+  const summary = body.summary as FormSummaryPayload;
+  const exerciseName = (summary.exerciseName as string).trim();
 
   const score = clampScore(summary.score);
 
@@ -345,7 +360,10 @@ async function handleAnalyze(args: {
       exercise_name: exerciseName.slice(0, 120),
       movement_pattern: typeof summary.pattern === "string" ? summary.pattern : null,
       source: summary.source === "upload" ? "upload" : "live",
-      summary,
+      // The compacted view, not the raw body. `FormSummaryPayload` carries an
+      // index signature, so storing the request verbatim would let a client
+      // write arbitrary unrecognised keys into the row.
+      summary: compactSummary(summary),
       note,
       score,
     })
@@ -611,6 +629,18 @@ Deno.serve(async (req) => {
 
   const mode = body.mode === "author_rules" ? "author_rules" : "analyze";
 
+  // Before anything is metered: a request that can never reach the model must
+  // not cost the user one of their checks for the day.
+  const invalid = validateRequest(mode, body);
+  if (invalid) return respond({ error: invalid }, 400);
+
+  // A set the device already judged unjudgeable never reaches the model, so it
+  // is answered here rather than after a slot has been spent on it.
+  if (mode === "analyze") {
+    const unusable = (body.summary as FormSummaryPayload).unusableReason;
+    if (unusable) return respond({ note: null, unusable: String(unusable) }, 200);
+  }
+
   // Access check. Form check is available on the free tier with a smaller cap,
   // so unlike the Pro-only coach flows this accepts 'free' as well as 'paid'
   // and 'trialing'. Fail closed if the check itself errors.
@@ -620,10 +650,19 @@ Deno.serve(async (req) => {
     return respond({ error: "Access check failed" }, 500);
   }
   const state = (accessData as { state?: string } | null)?.state ?? "unauthenticated";
-  if (state !== "paid" && state !== "trialing" && state !== "free") {
-    return respond({ error: "drona_access_required", state, details: accessData }, 402);
+  // Only a missing user is refused outright. Any state this build has not heard
+  // of falls through to the free tier rather than a hard block: form check is
+  // the free-tier hook, and a server-side enum gaining a value it does not know
+  // has dead-ended users behind a misleading message here before. The cost of
+  // guessing wrong is three checks a day; the cost of guessing wrong the other
+  // way is a user who cannot use the feature at all until a client ships.
+  if (state === "unauthenticated") {
+    return respond({ error: "drona_access_required", state }, 402);
   }
-  const freeTier = state === "free";
+  if (state !== "paid" && state !== "trialing" && state !== "free") {
+    console.log("[form-check] unrecognised access state, treating as free", JSON.stringify({ state }));
+  }
+  const freeTier = state !== "paid" && state !== "trialing";
   const cap = freeTier ? FREE_FORM_CHECK_LIMIT : FORM_CHECK_LIMIT;
 
   // Both modes consume a slot. Authoring is rare (once per novel movement) but

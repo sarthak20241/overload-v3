@@ -59,10 +59,15 @@ comment on column exercises.form_rules is
   'to the movement_pattern template. Always re-validated client-side before '
   'use: a spec authored by an older model must never be trusted blindly.';
 
--- Only rows that actually carry an override need the index; the vast majority
--- are NULL and inherit their family template.
-create index if not exists idx_exercises_form_rules
-  on exercises (id) where form_rules is not null;
+-- The rule ladder's one repeated query is the global-twin lookup in
+-- lib/form/resolve.ts: a case-insensitive exact name match over catalog rows.
+-- Without this it is a sequential scan of the whole catalog every time an
+-- unknown exercise is checked.
+--
+-- (An index on exercises (id) where form_rules is not null would be pointless:
+-- the planner would never choose it over the primary key it is built on.)
+create index if not exists idx_exercises_global_name
+  on exercises (lower(name)) where created_by is null;
 
 -- Backfill. This CASE chain mirrors NAME_RULES in lib/form/patterns.ts and the
 -- ORDER IS LOAD-BEARING: "Romanian Deadlift" must be caught by the hinge rule
@@ -72,7 +77,7 @@ create index if not exists idx_exercises_form_rules
 --
 -- Postgres word boundaries are \y, not \b (\b is a backspace escape here).
 update exercises set movement_pattern = case
-  when name ~* '\y(treadmill|run|jog|cycl|bike|row erg|elliptical|stair|walk|sled|carry|plank|hold|stretch)\y'
+  when name ~* '\y(treadmill|run(ning)?|jog(ging)?|cycl\w*|bike|row(ing)? erg\w*|elliptical|stair\w*|walk|sled|carry|plank|hold|stretch)\y'
     then 'none'
   when name ~* '\y(calf|shrug|fly|flye|lateral raise|front raise|rear delt|face pull|pullover|wrist|crunch|sit.?up|twist|raise)\y'
     then 'none'
@@ -104,7 +109,10 @@ where movement_pattern is null;
 
 create table if not exists form_checks (
   id uuid primary key default uuid_generate_v4(),
-  user_id text not null default (auth.jwt()->>'sub'),
+  -- Same expression the RLS policies below compare against. Using
+  -- auth.jwt()->>'sub' here while the policies use current_clerk_user_id()
+  -- would let the two disagree the moment the helper's definition changes.
+  user_id text not null default current_clerk_user_id(),
   -- Keep the check when the exercise row goes away; the coaching still applies.
   exercise_id uuid references exercises(id) on delete set null,
   -- Denormalised so history stays readable after a rename or a deletion.
@@ -195,6 +203,14 @@ begin
   insert into form_check_rate_limit(user_id) values (v_uid);
   inserted := true;
   current_count := v_count + 1;
+
+  -- Nothing older than the window is ever read again. Pruning here keeps the
+  -- table proportional to active users instead of growing forever, and it is
+  -- free: this user's rows are already locked by the advisory lock above.
+  delete from form_check_rate_limit
+   where user_id = v_uid
+     and request_at < now() - interval '24 hours';
+
   return next;
 end;
 $$;

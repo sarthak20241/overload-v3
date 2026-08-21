@@ -145,6 +145,26 @@ check('rejects a non-object', () => {
   assert(!parseFormRuleSpec('squat').ok, 'string');
 });
 
+check('rejects a spec with no cues at all', () => {
+  // Such a spec can never find a fault, so every set scores a flawless 100 and
+  // the model is handed that number with nothing to say about it. Cached to a
+  // row it would mean perfect scores forever from rules that detect nothing.
+  const bad = { ...PATTERN_SPECS.squat, cues: [] };
+  assert(!parseFormRuleSpec(bad).ok, 'should have been rejected');
+});
+
+check('rejects rep thresholds the driver can never reach', () => {
+  // A jointAngle is 0..180 by construction. Thresholds outside it mean isUp is
+  // never true: zero reps for the life of the exercise, and a depth bar pinned
+  // at half, with nothing anywhere reporting a problem.
+  const bad = {
+    ...PATTERN_SPECS.squat,
+    rep: { ...PATTERN_SPECS.squat.rep, top: 1e9, bottom: -1e9 },
+  };
+  assert(!parseFormRuleSpec(bad).ok, 'out of range for a jointAngle driver');
+  assert(parseFormRuleSpec(PATTERN_SPECS.squat).ok, 'the real spec still passes');
+});
+
 // ── rep counting ────────────────────────────────────────────────────────────
 section('rep counting');
 
@@ -187,6 +207,72 @@ check('reports plausible tempo', () => {
   const r = analysis.reps[1];
   near(r.tempoDownMs, 1000, 350, 'tempoDown');
   near(r.tempoUpMs, 1000, 350, 'tempoUp');
+});
+
+check('an abandoned dip does not contaminate the next rep', () => {
+  // A re-grip or a false start: down partway, back up, a long pause, then the
+  // real set. Without a descending -> top transition the machine stays parked
+  // in `descending`, and the dip plus every second of standing still is folded
+  // into the first real rep -- an eight second eccentric reported for a rep
+  // that took under one, and mean-sampled cues diluted below their thresholds.
+  const frames: ReturnType<typeof squatSequence> = [];
+  let t = 0;
+  const dt = 1000 / 30;
+  const push = (d: number) => {
+    frames.push({ t, keypoints: squatSkeleton({ depth: d }) });
+    t += dt;
+  };
+  for (let i = 0; i < 15; i++) push(0);
+  for (let f = 0; f < 30; f++) push((0.35 * (1 - Math.cos((f / 30) * 2 * Math.PI))) / 2);
+  for (let i = 0; i < 180; i++) push(0);
+  for (let r = 0; r < 3; r++) {
+    for (let f = 0; f < 60; f++) push((1 - Math.cos((f / 60) * 2 * Math.PI)) / 2);
+  }
+  for (let i = 0; i < 15; i++) push(0);
+
+  const { analysis } = runSquat(frames);
+  eq(analysis.reps.length, 3, 'reps');
+  for (const r of analysis.reps) {
+    near(r.tempoDownMs, 733, 200, `rep ${r.n} tempoDown`);
+    near(r.tempoUpMs, 767, 200, `rep ${r.n} tempoUp`);
+  }
+  // Identical reps must aggregate identically; the standing frames must not
+  // have been averaged into the first one.
+  const means = analysis.reps.map((r) => r.measures.torsoLean?.mean ?? NaN);
+  near(means[0], means[1], 0.5, 'rep 1 vs rep 2 torsoLean mean');
+});
+
+check('rep confidence describes the rep, not the whole session', () => {
+  // Confidence drops partway through the set. A rep that happened entirely in
+  // the bad stretch must not inherit the good stretch's average.
+  const frames = squatSequence({ reps: 4, peak: 1, framesPerRep: 60, fps: 30 });
+  frames.forEach((f, i) => {
+    const score = i < frames.length / 2 ? 0.95 : 0.45;
+    for (const k of Object.keys(f.keypoints) as (keyof typeof f.keypoints)[]) {
+      f.keypoints[k] = { ...f.keypoints[k], score };
+    }
+  });
+  const { analysis } = runSquat(frames);
+  const first = analysis.reps[0].confidence;
+  const last = analysis.reps[analysis.reps.length - 1].confidence;
+  near(first, 0.95, 0.02, 'first rep ran while tracking was good');
+  near(last, 0.45, 0.02, 'last rep ran while tracking was poor');
+});
+
+check('an unestablished side is not graded as a good view', () => {
+  // Hips below the confidence floor on most frames: detectSide cannot commit.
+  // The set must read as unclear rather than being silently graded with the
+  // joint lookup flip-flopping between the near and far leg each frame.
+  const frames = squatSequence({ reps: 3, peak: 1 });
+  for (const f of frames) {
+    f.keypoints.leftHip = { ...f.keypoints.leftHip, score: 0.05 };
+    f.keypoints.rightHip = { ...f.keypoints.rightHip, score: 0.05 };
+    f.keypoints.leftShoulder = { ...f.keypoints.leftShoulder, score: 0.05 };
+    f.keypoints.rightShoulder = { ...f.keypoints.rightShoulder, score: 0.05 };
+  }
+  const { analysis } = runSquat(frames);
+  eq(analysis.side, 'unknown', 'side should stay unknown');
+  assert(analysis.framesLowConf > 0, 'an unknown side must count as unclear');
 });
 
 check('ignores frames where the tracked joints vanish', () => {
@@ -310,6 +396,18 @@ const GUESSES: Array<[string, string | null]> = [
   ['Back Extension', 'hinge'],
   ['Front Squat', 'squat'],
   ['Overhead Squat', 'squat'],
+  // Catalogs name cardio in the -ing form, so the stems have to match it.
+  // Without this these fall all the way through the ladder and pay the model
+  // to author form rules for running.
+  ['Running', 'none'],
+  ['Jogging', 'none'],
+  ['Cycling', 'none'],
+  ['Stairmaster', 'none'],
+  ['Rowing Erg', 'none'],
+  // ...but stemming must not swallow the lifts that share those prefixes.
+  ['Walking Lunge', 'lunge'],
+  ['Seated Cable Row', 'horizontal_pull'],
+  ['Pendlay Row', 'horizontal_pull'],
 ];
 
 check('name guessing maps the catalog correctly', () => {
@@ -447,10 +545,21 @@ check('mirrors x for the front camera', () => {
   near(frame.keypoints.nose.x, 0.25, 1e-6, 'mirrored nose x');
 });
 
-check('viewOutput picks the right typed array', () => {
+check('viewOutput reads float output and refuses quantised output', () => {
   assert(viewOutput(new ArrayBuffer(8), 'float32') instanceof Float32Array, 'float32');
-  assert(viewOutput(new ArrayBuffer(8), 'uint8') instanceof Uint8Array, 'uint8');
+  // Quantised buffers are raw integers needing the tensor's scale and zero
+  // point, which nothing applies. Read as-is, a score arrives as 0..255 and
+  // every joint looks confident, so these must not be viewed at all.
+  eq(viewOutput(new ArrayBuffer(8), 'uint8'), null, 'uint8');
+  eq(viewOutput(new ArrayBuffer(8), 'int8'), null, 'int8');
   eq(viewOutput(new ArrayBuffer(8), 'int64'), null, 'unsupported');
+});
+
+check('a quantised output model is refused at load', () => {
+  const shape = [1, 1, 17, 3];
+  assert(checkOutputShape({ name: 'o', dataType: 'float32', shape }).ok, 'float32 is fine');
+  assert(!checkOutputShape({ name: 'o', dataType: 'uint8', shape }).ok, 'uint8 refused');
+  assert(!checkOutputShape({ name: 'o', dataType: 'int8', shape }).ok, 'int8 refused');
 });
 
 check('aspectOf reports the source ratio', () => {

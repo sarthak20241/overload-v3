@@ -92,16 +92,22 @@ class SideVoter {
     if (this.window.length > this.size) this.window.shift();
     const counts = new Map<CameraSide, number>();
     for (const s of this.window) counts.set(s, (counts.get(s) ?? 0) + 1);
+    // 'unknown' is the absence of a reading, not a reading. Counting it as a
+    // candidate lets a partly occluded lifter be graded with no established
+    // view at all, and leaves resolveJoint picking whichever of the left/right
+    // pair scored higher on each individual frame -- so the driver alternates
+    // between two different joints and carries a permanent oscillation.
     let best: CameraSide = 'unknown';
-    let bestN = -1;
+    let bestN = 0;
     for (const [s, n] of counts) {
-      // 'unknown' only wins if nothing else was ever seen.
-      if (n > bestN || (n === bestN && best === 'unknown')) {
+      if (s === 'unknown') continue;
+      if (n > bestN) {
         best = s;
         bestN = n;
       }
     }
-    return best;
+    // Only commit to a side once a real majority of the window agrees.
+    return bestN * 2 > this.window.length ? best : 'unknown';
   }
 }
 
@@ -133,6 +139,9 @@ export class FormEngine {
   private bottomDriver = NaN;
   private confSum = 0;
   private confN = 0;
+  /** Same running mean, but scoped to the rep in progress. */
+  private repConfSum = 0;
+  private repConfN = 0;
 
   private readonly reps: RepResult[] = [];
   /**
@@ -177,11 +186,21 @@ export class FormEngine {
     const conf = meanKeypointScore(frame);
     this.confSum += conf;
     this.confN++;
-    const lowConf = conf < MIN_KEYPOINT_SCORE;
-    if (lowConf) this.lowConfFrames++;
+    this.repConfSum += conf;
+    this.repConfN++;
 
     this.side = this.sideVoter.push(detectSide(frame, this.aspect));
     const wrongView = this.isWrongView();
+
+    // An unestablished side is missing information, not a wrong camera angle,
+    // so it reads as low confidence: the honest prompt is "step back so I can
+    // see all of you", not an accusation about how the phone is placed. It also
+    // has to stop the rep machine, because with no side every joint lookup
+    // falls back to whichever of the left/right pair scored higher on THIS
+    // frame, and the driver ends up alternating between two different joints.
+    const sideUnknown = this.spec.view !== 'any' && this.side === 'unknown';
+    const lowConf = conf < MIN_KEYPOINT_SCORE || sideUnknown;
+    if (lowConf) this.lowConfFrames++;
 
     // Evaluate + smooth every measure for this frame.
     const values = new Map<string, number>();
@@ -264,6 +283,8 @@ export class FormEngine {
     for (const m of this.spec.measures) this.acc.set(m.id, newAcc());
     this.bottomDriver = NaN;
     this.repBottomT = NaN;
+    this.repConfSum = 0;
+    this.repConfN = 0;
   }
 
   private accumulate(values: Map<string, number>) {
@@ -301,7 +322,6 @@ export class FormEngine {
         return;
 
       case 'top':
-        this.snapshotTop(values);
         if (!this.isUp(driver)) {
           this.phase = 'descending';
           this.repStartT = t;
@@ -317,7 +337,22 @@ export class FormEngine {
           this.repBottomT = t;
           this.snapshotBottom(values);
         }
-        if (this.isDown(driver)) this.phase = 'ascending';
+        if (this.isDown(driver)) {
+          this.phase = 'ascending';
+          return;
+        }
+        // Back to standing without ever reaching the bottom: a re-grip, a
+        // adjustment, a false start. Without this the machine stays parked in
+        // `descending`, and the abandoned dip plus every second of standing
+        // still gets folded into the NEXT rep -- reporting an eight second
+        // eccentric for a rep that took under a second, and diluting every
+        // mean-sampled cue below its threshold.
+        if (this.isUp(driver)) {
+          this.phase = 'top';
+          this.repStartT = t;
+          this.resetAcc();
+          return;
+        }
         // Abandoned rep: they went down and just stayed there.
         if (t - this.repStartT > this.spec.rep.maxRepMs) {
           this.phase = 'waiting';
@@ -408,7 +443,9 @@ export class FormEngine {
       endT,
       tempoDownMs: Math.max(0, bottomT - this.repStartT),
       tempoUpMs: Math.max(0, endT - bottomT),
-      confidence: this.confN ? this.confSum / this.confN : 0,
+      // Scoped to this rep, per RepResult.confidence's contract. The
+      // session-wide mean lives on SetAnalysis.confidenceAvg.
+      confidence: this.repConfN ? this.repConfSum / this.repConfN : 0,
       measures,
       flags,
     });

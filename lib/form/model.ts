@@ -98,6 +98,18 @@ export function checkOutputShape(output: ModelTensor | undefined): OutputCheck {
       reason: `expected ${MOVENET_OUTPUT_LENGTH} output values (17 keypoints), got ${total} from shape [${output.shape.join(', ')}]`,
     };
   }
+  // Everything downstream reads these as coordinates and scores already
+  // normalised to 0..1. A quantised output is raw integers needing the tensor's
+  // scale and zero point applied, which nothing here does -- so scores would
+  // arrive as 0..255, every joint would look confident including the
+  // hallucinated ones, and the overlay would draw off screen. Refusing the file
+  // is the honest outcome; silently grading it is not.
+  if (output.dataType !== 'float32') {
+    return {
+      ok: false,
+      reason: `output must be float32, got ${output.dataType}. Quantised MoveNet builds are not supported.`,
+    };
+  }
   return { ok: true };
 }
 
@@ -109,19 +121,10 @@ export function checkOutputShape(output: ModelTensor | undefined): OutputCheck {
  * dataType decides the view.
  */
 export function viewOutput(buffer: ArrayBuffer, dataType: string): ArrayLike<number> | null {
-  switch (dataType) {
-    case 'float32':
-      return new Float32Array(buffer);
-    case 'float16':
-      // No Float16Array on this runtime; a float16 output model is not supported.
-      return null;
-    case 'uint8':
-      return new Uint8Array(buffer);
-    case 'int8':
-      return new Int8Array(buffer);
-    default:
-      return null;
-  }
+  // float32 only, matching checkOutputShape. Quantised buffers are deliberately
+  // NOT viewed: without the tensor's scale and zero point they are integers
+  // masquerading as normalised coordinates.
+  return dataType === 'float32' ? new Float32Array(buffer) : null;
 }
 
 /**

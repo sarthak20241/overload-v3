@@ -68,18 +68,28 @@ function modelFile(): File {
 }
 
 /**
- * Is the model already on disk and exactly the file we expect?
+ * Is the model on disk and the right size?
  *
- * The size window is checked first only because it is the cheaper way to reject
- * an obviously wrong file; the hash is what actually decides.
+ * Deliberately does NOT hash: `File.md5` is a synchronous getter that reads all
+ * 12 MB on the calling thread, and this runs every time the screen mounts.
+ * The hash is checked once, by `verifyPoseModel` below, at the only moment the
+ * bytes can have changed -- immediately after a download.
  */
 export function isPoseModelReady(): boolean {
   try {
     const file = modelFile();
     if (!file.exists) return false;
     const size = file.size ?? 0;
-    if (size < MIN_BYTES || size > MAX_BYTES) return false;
-    return file.md5 === MODEL_MD5;
+    return size >= MIN_BYTES && size <= MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+/** Does the file on disk hash to the model we pinned? */
+function verifyPoseModel(): boolean {
+  try {
+    return modelFile().md5 === MODEL_MD5;
   } catch {
     return false;
   }
@@ -110,15 +120,17 @@ export async function ensurePoseModel(): Promise<ModelFileState> {
 
     await File.downloadFileAsync(POSE_MODEL_URL, existing);
 
-    if (!isPoseModelReady()) {
+    // Hash exactly here: the file is new, and this is the one moment its bytes
+    // could differ from the pinned model.
+    if (!isPoseModelReady() || !verifyPoseModel()) {
       const size = modelFile().exists ? (modelFile().size ?? 0) : 0;
       try {
         if (modelFile().exists) modelFile().delete();
       } catch {
         // Nothing more we can do; the checks will catch it next time too.
       }
-      // A file of the right size that still fails is a wrong file, not a flaky
-      // connection, so it never gets loaded and the retry advice is honest.
+      // A file of the right size that still fails the hash is the wrong file,
+      // not a flaky connection, so it is never loaded.
       return {
         status: 'error',
         message:

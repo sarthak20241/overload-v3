@@ -135,6 +135,26 @@ const LIMITS = {
   setupChars: 200,
 } as const;
 
+/**
+ * What a measure of this kind can actually report.
+ *
+ * Angles are interior angles, so 0..180 by construction. Gaps and segment
+ * angles are divided by torso length, which keeps them small; the bound is
+ * deliberately loose because the point is to catch nonsense, not to second
+ * guess a plausible threshold.
+ */
+function measureRange(kind: MeasureKind): [number, number] {
+  switch (kind) {
+    case 'jointAngle':
+      return [0, 180];
+    case 'segmentVertical':
+    case 'segmentHorizontal':
+      return [-180, 180];
+    default:
+      return [-20, 20];
+  }
+}
+
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -248,6 +268,18 @@ export function parseFormRuleSpec(input: unknown): SpecParseResult {
       if (Math.abs(r.top - r.bottom) < 5) {
         problems.push('rep.top and rep.bottom must differ by at least 5');
       }
+      // Thresholds outside what the driver can ever report would silently mean
+      // "no rep, ever": `isUp` never becomes true, the set ends with zero reps,
+      // and the depth bar sits pinned at half for the life of the exercise.
+      const driver = measures.find((m) => m.id === r.driver);
+      if (driver) {
+        const [lo, hi] = measureRange(driver.kind);
+        for (const [label, v] of [['top', r.top], ['bottom', r.bottom]] as const) {
+          if (v < lo || v > hi) {
+            problems.push(`rep.${label} must be within ${lo}..${hi} for a ${driver.kind} driver`);
+          }
+        }
+      }
     }
     if (isFiniteNum(r.minRepMs) && isFiniteNum(r.maxRepMs) && r.minRepMs >= r.maxRepMs) {
       problems.push('rep.minRepMs must be < rep.maxRepMs');
@@ -269,6 +301,12 @@ export function parseFormRuleSpec(input: unknown): SpecParseResult {
   const cueIds = new Set<string>();
   if (!Array.isArray(input.cues)) {
     errors.push('cues must be an array');
+  } else if (input.cues.length === 0) {
+    // A spec with no cues cannot find a single fault, so every set scores a
+    // flawless 100 and the coach is handed that number with nothing to say
+    // about it. Caching one to a row would mean an unbroken run of perfect
+    // scores from rules that can detect nothing.
+    errors.push('cues must not be empty');
   } else if (input.cues.length > LIMITS.cues) {
     errors.push(`at most ${LIMITS.cues} cues`);
   } else {

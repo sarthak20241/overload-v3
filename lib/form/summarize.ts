@@ -31,8 +31,17 @@ export interface MeasureSummary {
   meanBottom: number | null;
   /** Mean across reps of the value at the top of each rep. */
   meanTop: number | null;
-  best: number | null;
-  worst: number | null;
+  /**
+   * Smallest and largest value the measure reached across the set.
+   *
+   * Deliberately NOT called best/worst: which end is good depends on the
+   * measure. A lower torso lean is better, a higher lockout angle is better, so
+   * one naming would be inverted for half of them -- and these go into the
+   * model's payload under a prompt that forbids it from disputing the labels
+   * it is handed.
+   */
+  min: number | null;
+  max: number | null;
 }
 
 export interface CueSummary {
@@ -113,8 +122,8 @@ export function summarize({
       id: m.id,
       meanBottom: round1(mean(bottoms)),
       meanTop: round1(mean(tops)),
-      best: round1(minOf(mins)),
-      worst: round1(maxOf(maxs)),
+      min: round1(minOf(mins)),
+      max: round1(maxOf(maxs)),
     };
   });
 

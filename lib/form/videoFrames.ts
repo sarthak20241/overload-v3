@@ -11,7 +11,7 @@
  * call count small and the temporary files cleaned up.
  */
 
-import * as FileSystem from 'expo-file-system';
+import { File } from 'expo-file-system';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Skia } from '@shopify/react-native-skia';
 
@@ -117,7 +117,7 @@ export async function samplePoses({
   } finally {
     // Thumbnails land in the cache directory and would otherwise accumulate
     // there for every clip the user ever checked.
-    await cleanUp(scratch);
+    cleanUp(scratch);
   }
 
   return { frames, skipped, cancelled };
@@ -148,16 +148,18 @@ async function decodeImage(uri: string): Promise<DecodedImage | null> {
   }
 }
 
-async function cleanUp(uris: string[]): Promise<void> {
-  await Promise.all(
-    uris.map(async (u) => {
-      try {
-        await FileSystem.deleteAsync(u, { idempotent: true });
-      } catch {
-        // Best effort. A leftover cache file is not worth failing the check.
-      }
-    })
-  );
+function cleanUp(uris: string[]): void {
+  for (const u of uris) {
+    try {
+      // The `File` class, not the legacy `deleteAsync`: on SDK 54 that name is
+      // a stub that throws unconditionally, so the catch below would have
+      // swallowed every single delete and leaked the whole clip's thumbnails.
+      const f = new File(u);
+      if (f.exists) f.delete();
+    } catch {
+      // Best effort. A leftover cache file is not worth failing the check.
+    }
+  }
 }
 
 /**
