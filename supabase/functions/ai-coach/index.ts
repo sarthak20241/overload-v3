@@ -12,6 +12,7 @@ import {
   runParseMeal,
   runWebRefine,
 } from "./parseMeal.ts";
+import { searchFatSecret } from "./fatsecret.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
@@ -110,6 +111,16 @@ const PLAN_FANOUT_ENABLED = Deno.env.get("PLAN_FANOUT") !== "false";
 // retrieval and the coach falls back to user_context + core_principles. That
 // degrades quality but doesn't break the function; useful for local/dev.
 const VOYAGE_API_KEY = Deno.env.get("VOYAGE_API_KEY");
+
+// FatSecret (parse_meal tier 2b). Absent credentials = source disabled, which
+// is the feature flag: nothing else in the pipeline changes. OAuth 1.0 is
+// deliberate, see fatsecret.ts (OAuth 2.0 is IP-whitelisted and edge functions
+// have dynamic egress IPs). FATSECRET_REGION/LANGUAGE are Premier-only and must
+// stay unset on Basic, where sending them is an error.
+const FATSECRET_KEY = Deno.env.get("FATSECRET_CONSUMER_KEY");
+const FATSECRET_SECRET = Deno.env.get("FATSECRET_CONSUMER_SECRET");
+const FATSECRET_REGION = Deno.env.get("FATSECRET_REGION") || undefined;
+const FATSECRET_LANGUAGE = Deno.env.get("FATSECRET_LANGUAGE") || undefined;
 const RETRIEVAL_TOP_K = 8;
 const RETRIEVAL_FLOOR = 0.40; // skip retrieval entirely if no candidate clears this cosine
 const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
@@ -1127,6 +1138,61 @@ function escapeIlike(s: string): string {
   return s.replace(/([\\%_])/g, "\\$1");
 }
 
+/** Whether a stored OFF row's macro panel has drifted from the panel OFF
+ *  serves today. Open Food Facts is crowd-sourced and gets CORRECTED upstream
+ *  after we snapshot it: an Amul skimmed milk row sat at 0.51x the true panel
+ *  (18 kcal / 1.8 g protein against the real 35 / 3.5) for six weeks because
+ *  the reuse path below only ever read the stored id and never looked at the
+ *  fresh numbers it was already holding. Tolerance absorbs rounding and
+ *  unit-conversion noise, nothing more. */
+function offMacrosDrifted(
+  stored: { kcal: number; protein_g: number; carb_g: number; fat_g: number },
+  fresh: { kcal: number; protein_g: number; carb_g: number; fat_g: number },
+): boolean {
+  // Band chosen against a 26-row live sample: it fires on the real corrections
+  // (an Amul milk row at 0.51x, a Myprotein whey row at 291 vs 378 kcal) and
+  // stays quiet on rounding churn (a cereal row 3 kcal and 0.7 g apart), so
+  // this path writes when a row is WRONG, not merely when OFF was re-rounded.
+  const drifted = (a: number, b: number, floor: number): boolean => {
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    const diff = Math.abs(a - b);
+    if (diff <= floor) return false;
+    return diff / Math.max(a, b, 1) > 0.15;
+  };
+  return drifted(stored.kcal, fresh.kcal, 5)
+    || drifted(stored.protein_g, fresh.protein_g, 1)
+    || drifted(stored.carb_g, fresh.carb_g, 1)
+    || drifted(stored.fat_g, fresh.fat_g, 1);
+}
+
+/** The existing global row this OFF product collides with. Barcode first: it
+ *  identifies the PRODUCT, whereas the name index is what the insert usually
+ *  trips over, and the two can point at different rows. */
+async function findExistingOffRow(
+  admin: SupabaseClient,
+  p: OffProduct,
+): Promise<Record<string, unknown> | null> {
+  const cols = "id, name, kcal, protein_g, carb_g, fat_g, source";
+  if (p.barcode) {
+    const { data } = await admin
+      .from("foods")
+      .select(cols)
+      .is("created_by", null)
+      .eq("barcode", p.barcode)
+      .limit(1)
+      .maybeSingle();
+    if (data) return data as Record<string, unknown>;
+  }
+  const { data } = await admin
+    .from("foods")
+    .select(cols)
+    .is("created_by", null)
+    .ilike("name", escapeIlike(p.name))
+    .limit(1)
+    .maybeSingle();
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
 // Tier 2 backfill: persist an OFF product as a GLOBAL foods row (service
 // role => created_by null) so the next lookup for it is a tier-1 catalog
 // hit for every user. ODbL guardrail: source 'off' keeps the row in the
@@ -1162,20 +1228,51 @@ async function backfillOffFoodRow(admin: SupabaseClient, p: OffProduct): Promise
     let foodId: string | null = (inserted as { id?: string } | null)?.id ?? null;
 
     if (error) {
-      // Unique violation on lower(name) for global rows (or a race): reuse
-      // the existing row instead. Any other error => give up quietly; the
-      // model still gets the OFF macros, just without a food_id.
-      const { data: existing } = await admin
-        .from("foods")
-        .select("id")
-        .is("created_by", null)
-        .ilike("name", escapeIlike(p.name))
-        .limit(1)
-        .maybeSingle();
-      foodId = (existing as { id?: string } | null)?.id ?? null;
+      // Unique violation on barcode or lower(name) for global rows (or a
+      // race): reuse the existing row instead. Any other error => give up
+      // quietly; the model still gets the OFF macros, just without a food_id.
+      const existing = await findExistingOffRow(admin, p);
+      foodId = (existing?.id as string | undefined) ?? null;
       if (!foodId) {
         console.log("[parse_meal] OFF backfill failed:", error.message?.slice(0, 160));
         return null;
+      }
+      // Self-heal. We are holding a fresh, plausibility-screened panel for this
+      // exact product, so a stored row that has drifted gets corrected now
+      // instead of serving stale macros to everyone who logs it from here on.
+      // Scoped to source 'off': USDA/curated/user rows are never overwritten
+      // with crowd-sourced values (the ODbL segregation rule in
+      // scripts/diet-catalog/README.md depends on that staying true).
+      const stored = {
+        kcal: Number(existing?.kcal ?? NaN),
+        protein_g: Number(existing?.protein_g ?? NaN),
+        carb_g: Number(existing?.carb_g ?? NaN),
+        fat_g: Number(existing?.fat_g ?? NaN),
+      };
+      if (existing?.source === "off" && offMacrosDrifted(stored, p)) {
+        const { error: freshErr } = await admin
+          .from("foods")
+          .update({
+            kcal: p.kcal,
+            protein_g: p.protein_g,
+            carb_g: p.carb_g,
+            fat_g: p.fat_g,
+            fiber_g: p.fiber_g,
+            sugar_g: p.sugar_g,
+            sat_fat_g: p.sat_fat_g,
+            sodium_mg: p.sodium_mg,
+          })
+          .eq("id", foodId)
+          .eq("source", "off")
+          .is("created_by", null);
+        if (freshErr) {
+          console.log("[parse_meal] OFF refresh failed:", freshErr.message?.slice(0, 120));
+        } else {
+          console.log(
+            `[parse_meal] OFF row refreshed "${String(existing?.name ?? "")}": ` +
+            `${stored.kcal}kcal/${stored.protein_g}p -> ${p.kcal}kcal/${p.protein_g}p`,
+          );
+        }
       }
     }
 
@@ -1331,15 +1428,32 @@ function makeParseDeps(
     webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
     searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
     backfillOffFood: (p) => backfillOffFoodRow(admin, p),
+    // Only present when configured, so an unconfigured deploy simply never
+    // calls FatSecret and the meal resolves from catalog + OFF as before.
+    searchFatSecret: FATSECRET_KEY && FATSECRET_SECRET
+      ? (q: string) =>
+        searchFatSecret(
+          q,
+          {
+            consumerKey: FATSECRET_KEY,
+            consumerSecret: FATSECRET_SECRET,
+            region: FATSECRET_REGION,
+            language: FATSECRET_LANGUAGE,
+          },
+          fetch,
+          (m) => console.log(m),
+        )
+      : undefined,
     getFoodPer100: async (foodId) => {
       const { data } = await userClient
         .from("foods")
-        .select("base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
+        .select("name, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
         .eq("id", foodId)
         .maybeSingle();
       if (!data) return null;
       const row = data as Record<string, unknown>;
       return {
+        name: String(row.name ?? ""),
         base_unit: String(row.base_unit ?? "g"),
         kcal: Number(row.kcal ?? 0),
         protein_g: Number(row.protein_g ?? 0),

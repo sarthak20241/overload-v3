@@ -163,12 +163,13 @@ const deps: ParseMealDeps = {
   getFoodPer100: async (foodId) => {
     const { data } = await supabase
       .from("foods")
-      .select("base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
+      .select("name, base_unit, kcal, protein_g, carb_g, fat_g, fiber_g")
       .eq("id", foodId)
       .maybeSingle();
     if (!data) return null;
     const row = data as Record<string, unknown>;
     return {
+      name: String(row.name ?? ""),
       base_unit: String(row.base_unit ?? "g"),
       kcal: Number(row.kcal ?? 0),
       protein_g: Number(row.protein_g ?? 0),

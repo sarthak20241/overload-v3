@@ -26,6 +26,17 @@
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 
+/** Prefix for candidate ids that name NO row in `foods`. FatSecret rows cannot
+ *  be persisted (their terms allow serving a request, not replicating the DB),
+ *  but decide selects candidates BY id, so they still need to be addressable.
+ *  These ids are resolved from the in-memory candidate map and stripped before
+ *  anything reaches meal_entries, whose food_id is a real uuid FK. */
+export const EPHEMERAL_ID_PREFIX = "fs:";
+
+export function isEphemeralId(id: string | null): boolean {
+  return !!id && id.startsWith(EPHEMERAL_ID_PREFIX);
+}
+
 export interface ServingOption {
   label: string;
   grams: number;
@@ -45,7 +56,10 @@ export interface CandidateFood {
   fat_g: number;
   fiber_g: number | null;
   servings: ServingOption[];
-  source: "catalog" | "off";
+  // 'fatsecret' rows are NOT persisted (their terms allow serving a request,
+  // not replicating the DB), so those candidates carry food_id null and their
+  // per-100 numbers travel with them. See fatsecret.ts.
+  source: "catalog" | "off" | "fatsecret";
 }
 
 export interface ParsedItem {
@@ -61,7 +75,7 @@ export interface ParsedItem {
   fiber_g: number | null;
   // 'manual' never originates here: it comes back from the client when the user
   // corrected a line in the review card, and must round-trip intact.
-  source: "catalog" | "off" | "web" | "estimate" | "manual";
+  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
 }
@@ -335,9 +349,15 @@ export interface ParseMealDeps {
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
   // Returns the new (or pre-existing) food id, or null on failure/dry-run.
   backfillOffFood(food: OffProduct): Promise<string | null>;
+  // Tier 2b: FatSecret lookup. Optional - absent when no credentials are
+  // configured, which is how the source stays behind a flag.
+  searchFatSecret?(query: string): Promise<CandidateFood[]>;
   // Tier 1/2 verification: per-100 macros for a food row, for the
   // server-side recompute. Null when the row can't be read.
   getFoodPer100(foodId: string): Promise<{
+    // The row's own name. Carried so a line's LABEL can be made to agree with
+    // the macros we compute from that same row (see verifyItems).
+    name: string;
     base_unit: string;
     kcal: number;
     protein_g: number;
@@ -605,7 +625,8 @@ const LOG_MEAL_TOOL = {
             food_id: {
               type: ["string", "null"],
               description:
-                "The id of the chosen candidate from search_foods / lookup_packaged_food. " +
+                "The id of the chosen candidate from search_foods / lookup_packaged_food / " +
+                "lookup_fatsecret, copied EXACTLY as given (FatSecret ids look like 'fs:12345'). " +
                 "null ONLY for web-sourced or estimated items.",
             },
             food_name: { type: "string", description: "Display name for the log." },
@@ -632,9 +653,10 @@ const LOG_MEAL_TOOL = {
             fiber_g: { type: ["number", "null"], description: "TOTAL fiber grams. Omit when food_id is set." },
             source: {
               type: "string",
-              enum: ["catalog", "off", "web", "estimate"],
+              enum: ["catalog", "off", "fatsecret", "web", "estimate"],
               description:
                 "catalog = matched via search_foods. off = matched via lookup_packaged_food. " +
+                "fatsecret = matched via lookup_fatsecret (its ids start with 'fs:'). " +
                 "web = numbers read from a web_search result (cite the label site in assumption). " +
                 "estimate = your own knowledge, last resort.",
             },
@@ -1139,12 +1161,36 @@ async function resolveOneItem(
     return found;
   };
 
-  const [catalogCands, offCands] = await Promise.all([runCatalog(), runOff()]);
-  // Catalog first, then OFF rows the catalog set did not already carry. Dedupe
-  // by food_id, falling back to a normalised name for OFF rows not yet backfilled.
+  const runFatSecret = async (): Promise<CandidateFood[]> => {
+    if (!deps.searchFatSecret) return [];
+    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    toolCalls.push("lookup_fatsecret");
+    let found: CandidateFood[] = [];
+    try {
+      found = await deps.searchFatSecret(q);
+    } catch (e) {
+      deps.log?.(`[parse_meal] FatSecret resolve threw for "${q}": ${String(e).slice(0, 120)}`);
+    }
+    steps.push({
+      iter: 1,
+      tool: "lookup_fatsecret",
+      input: { query: q },
+      result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
+    });
+    return found;
+  };
+
+  const [catalogCands, offCands, fsCands] = await Promise.all([
+    runCatalog(),
+    runOff(),
+    runFatSecret(),
+  ]);
+  // Catalog first (a curated row with real servings should outrank a raw
+  // label), then OFF, then FatSecret. Dedupe by food_id, falling back to a
+  // normalised name for rows with no id of their own.
   const seenKey = new Set<string>();
   const candidates: CandidateFood[] = [];
-  for (const c of [...catalogCands, ...offCands]) {
+  for (const c of [...catalogCands, ...offCands, ...fsCands]) {
     const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
     if (seenKey.has(key)) continue;
     seenKey.add(key);
@@ -1180,6 +1226,98 @@ function scrubDashes(s: string): string {
 
 type Per100 = { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
 
+// ── Name/row agreement ──────────────────────────────────────────────────────
+// decide hands back a food_id AND a display name for the same line. They can
+// disagree, and when they do the macros follow the id while the user reads the
+// name, so a slipped id is invisible: the reported case logged pure YOLK
+// macros (347 kcal, 31 g fat per 100 g) under the label "Eggs, chicken, whole,
+// raw", 2.6x the real figure for the whole eggs the user actually ate. Two
+// guards: repoint the id when the model's own words name a different row it
+// was shown, then display the row's real name either way.
+
+/** Order- and punctuation-insensitive, singular-folded token key.
+ *  "Eggs, chicken, whole, raw" and "raw whole chicken egg" share a key. */
+function nameKey(s: string): string {
+  return s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w))
+    .sort().join(" ");
+}
+
+/** Whether `outer` contains every (singular-folded) word of `inner`. */
+function coversAllWords(outer: string, inner: string): boolean {
+  const fold = (s: string) =>
+    s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+      .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w));
+  const have = new Set(fold(outer));
+  const want = fold(inner);
+  return want.length > 0 && want.every((w) => have.has(w));
+}
+
+/** Mutually exclusive variants that move macros a lot. Only these: a blanket
+ *  "the names differ" test fires on every harmless shortening ("Chicken
+ *  breast" for "Chicken, breast, meat only, roasted") and a chip the user
+ *  learns to ignore is worse than no chip. */
+const VARIANT_GROUPS: string[][] = [
+  ["whole", "yolk", "white"],  // egg part: 143 vs 347 vs 52 kcal per 100 g
+  ["raw", "boiled", "fried", "poached", "scrambled", "roasted", "grilled", "dried"],
+  ["skimmed", "toned", "full", "semi"],  // milk fat
+];
+
+/** What the row is vs what the model called it, when the two contradict each
+ *  other inside one group. null when they agree, or when either says nothing. */
+export function variantClash(
+  said: string,
+  rowName: string,
+): { said: string; row: string } | null {
+  const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z]+/).filter(Boolean));
+  const a = words(said), b = words(rowName);
+  for (const group of VARIANT_GROUPS) {
+    const inSaid = group.find((g) => a.has(g));
+    const inRow = group.find((g) => b.has(g));
+    if (inSaid && inRow && inSaid !== inRow) return { said: inSaid, row: inRow };
+  }
+  return null;
+}
+
+/** Repoint a line whose food_id contradicts its own name.
+ *
+ *  Deliberately narrow: it moves the id only when another candidate FROM THE
+ *  SAME SEARCH carries a name the model wrote out token-for-token. That is a
+ *  slip rather than a judgement call, so acting on it is safe. Anything looser
+ *  would overrule deliberate picks, where the model shortens a branded row's
+ *  name or names a row no search returned. Everything it cannot fix is still
+ *  made visible downstream by the row-name display + variant chip. */
+export function retargetMismatchedIds(
+  items: ParsedItem[],
+  resolved: ResolvedItem[],
+  log?: (msg: string) => void,
+): ParsedItem[] {
+  if (resolved.length === 0) return items;
+  return items.map((item) => {
+    if (!item.food_id || (item.source !== "catalog" && item.source !== "off")) return item;
+    // The candidate set this line was actually chosen from.
+    const group = resolved.find((r) => r.candidates.some((c) => c.food_id === item.food_id));
+    if (!group) return item;
+    const chosen = group.candidates.find((c) => c.food_id === item.food_id);
+    const key = nameKey(item.food_name);
+    if (!key || (chosen && nameKey(chosen.name) === key)) return item;
+    // A chosen row that CONTAINS every word of the stated name is the model
+    // shortening a label it meant ("Toned milk" for "Amul taaza Toned Milk"),
+    // not slipping. Only a name the chosen row contradicts is evidence of a
+    // slip, so this is what keeps the rule off deliberate branded picks.
+    if (chosen && coversAllWords(chosen.name, item.food_name)) return item;
+    const exact = group.candidates.find(
+      (c) => c.food_id && c.food_id !== item.food_id && nameKey(c.name) === key,
+    );
+    if (!exact) return item;
+    log?.(
+      `[parse_meal] id/name slip: "${item.food_name}" pointed at ` +
+      `"${chosen?.name ?? item.food_id}", repointed to the row it names`,
+    );
+    return { ...item, food_id: exact.food_id, source: exact.source };
+  });
+}
+
 // The receipts step: for items the model matched to a real food row, recompute
 // line macros from the row's per-100 values so catalog-backed numbers are
 // deterministic, never model arithmetic.
@@ -1196,9 +1334,16 @@ export async function verifyItems(
   fallback?: Map<string, Per100>,
 ): Promise<ParsedItem[]> {
   return await Promise.all(items.map(async (item) => {
-    if (item.source !== "catalog" && item.source !== "off") return item;
+    if (item.source !== "catalog" && item.source !== "off" && item.source !== "fatsecret") {
+      return item;
+    }
     const usable = item.food_id && Number.isFinite(item.grams) && item.grams > 0;
-    const per100 = usable ? await deps.getFoodPer100(item.food_id!) : null;
+    // An ephemeral id names no row, so skip the read and let the candidate map
+    // below supply the basis. The macros are still recomputed in CODE from a
+    // real per-100 panel, never taken from model arithmetic.
+    const per100 = usable && !isEphemeralId(item.food_id)
+      ? await deps.getFoodPer100(item.food_id!)
+      : null;
     // A catalog/OFF claim we cannot check is not a catalog/OFF number. Fall
     // back to the candidate's own per-100 basis; failing that, call the line
     // what it is - an estimate - rather than let the UI present an unverified
@@ -1230,14 +1375,31 @@ export async function verifyItems(
       };
     }
     const f = item.grams / 100;
-    const scaled = {
+    // Label and numbers now come from the SAME row, so they cannot disagree.
+    // The model's own wording is kept only when the row has no usable name.
+    const rowName = (per100.name ?? "").trim();
+    const clash = rowName ? variantClash(item.food_name, rowName) : null;
+    let scaled: ParsedItem = {
       ...item,
+      food_name: rowName || item.food_name,
       kcal: round1(per100.kcal * f),
       protein_g: round1(per100.protein_g * f),
       carb_g: round1(per100.carb_g * f),
       fat_g: round1(per100.fat_g * f),
       fiber_g: per100.fiber_g === null ? item.fiber_g : round1(per100.fiber_g * f),
     };
+    if (clash) {
+      // retargetMismatchedIds could not fix this one, so say it out loud
+      // rather than let a confident-looking line carry the wrong variant.
+      deps.log?.(
+        `[parse_meal] variant mismatch: model said "${item.food_name}", row is "${rowName}"`,
+      );
+      scaled = {
+        ...scaled,
+        confidence: "low",
+        assumption: appendAssumption(scaled, `I logged the ${clash.row} one, not the ${clash.said}`),
+      };
+    }
     // Last line of defence. Deliberately understated: we mark the line low
     // confidence (so the UI can show it as unverified) but do NOT editorialise
     // on the card. Volunteering doubt about our own numbers on every borderline
@@ -2151,7 +2313,14 @@ export async function runParseMeal(
       }
     }
   }
-  let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
+  // Fix a slipped food_id BEFORE the macro recompute, so the numbers are
+  // computed from the row the user actually meant.
+  const picked = retargetMismatchedIds(
+    clampVolumetricGrams(sanitizeItems(raw.items)),
+    resolved,
+    deps.log,
+  );
+  let items = await verifyItems(deps, picked, candidatePer100);
   if (correctsPrevious) {
     // Enforce the correction contract on every line the user did not re-target:
     // still present (1), and if it was hand-edited, its provenance and numbers
@@ -2190,6 +2359,10 @@ export async function runParseMeal(
   }
 
   items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), prepByFoodId);
+  // Ephemeral ids have done their job (addressing a candidate for decide and
+  // keying the per-100 recompute). Drop them before the client can try to log
+  // one against meal_entries.food_id, which is a uuid FK into `foods`.
+  items = items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
