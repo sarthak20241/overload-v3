@@ -145,12 +145,12 @@ fast-path and escalates only the bhakarwadi.
 Each phase ships alone, is verifiable alone, and never breaks the pipeline it
 lands in. Order chosen so accuracy fixes land before speed work.
 
-### P0. Land the deployed work  [DONE when committed + PR'd]
+### P0. Land the deployed work  [COMMITTED 2026-08-22; PR pending]
 The egg/name/self-heal fixes + FatSecret source are DEPLOYED but uncommitted
 (the coach-retrieval drift mistake, again). Commit on this branch, PR to main.
 Verify: git clean, PR open, next parse trace shows lookup_fatsecret firing.
 
-### P1. Ranking layer (zero latency)  <- the egg-class fix
+### P1. Ranking layer (zero latency)  [DONE 2026-08-22: migration 0102 live, 'eggs' ranks whole chicken egg 1st, 32ms]
 Migration: foods.rank_boost column + curated staple boosts (whole chicken egg,
 cow milks, common dals...) + rewrite search_foods_ranked_with_servings to score
 trigram + rank_boost + global popularity (distinct users >= 2, log-scaled) +
@@ -158,7 +158,7 @@ caller's own frequent foods (>= 2 logs, via meals.user_id = jwt sub).
 Verify: SQL before/after for 'eggs' (whole chicken egg must rank 1st), 'milk',
 'paneer'; parse-meal-eval regression run.
 
-### P2. Reranker in resolve
+### P2. Reranker in resolve  [DONE 2026-08-22: rerank.ts deployed, live-tested, margin logged; vendor eval vs Cohere still open]
 Voyage rerank-2.5-lite over merged candidates (top ~20 -> ordered top 6 +
 margin), inside the resolve window, behind VOYAGE_RERANK env flag.
 Also: eval harness compares Voyage vs Cohere on parse_traces real queries.
