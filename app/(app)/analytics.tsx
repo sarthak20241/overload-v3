@@ -1630,7 +1630,12 @@ export default function AnalyticsScreen() {
                     <Text style={[styles.trendTitle, { color: C.foreground }]}>Body Distribution</Text>
                   </View>
                   {isShareAvailable() && (
-                    <TouchableOpacity onPress={() => setShareBodyOpen(true)} hitSlop={12}>
+                    <TouchableOpacity
+                      onPress={() => setShareBodyOpen(true)}
+                      hitSlop={12}
+                      accessibilityRole="button"
+                      accessibilityLabel="Share body distribution"
+                    >
                       <Feather name="share" size={14} color={C.textMuted} />
                     </TouchableOpacity>
                   )}
@@ -1805,7 +1810,7 @@ export default function AnalyticsScreen() {
           <BodyShareCard
             counts={muscleCounts}
             gender={profileGender}
-            windowLabel="All time"
+            windowLabel="Last 6 months"
           />
         }
       />

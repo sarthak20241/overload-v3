@@ -697,6 +697,7 @@ export default function HistoryScreen() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [shareWorkout, setShareWorkout] = useState<WorkoutRaw | null>(null);
+  const [profileGender, setProfileGender] = useState<string | null>(null);
 
   const today = new Date();
   const [calYear, setCalYear] = useState(today.getFullYear());
@@ -733,6 +734,8 @@ export default function HistoryScreen() {
     };
 
     await hydrateCache(clerkId);
+    const cachedProfile = readCache<{ profile: { gender?: string | null } | null }>('profile', clerkId);
+    if (cachedProfile?.profile?.gender) setProfileGender(cachedProfile.profile.gender);
     const cached = readCache<WorkoutRaw[]>('historyWorkouts', clerkId);
     // Always merge pending on top, even with no cache yet (e.g. a fresh login
     // that never loaded History online), so a just-finished offline workout
@@ -1145,6 +1148,7 @@ export default function HistoryScreen() {
               setCount={setCount}
               exerciseCount={(w.exercises || []).length}
               counts={counts}
+              gender={profileGender}
             />
           );
         })()}

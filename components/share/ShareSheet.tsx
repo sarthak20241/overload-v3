@@ -65,7 +65,12 @@ export function ShareSheet({ visible, onClose, card }: Props) {
           <View style={[styles.handle, { backgroundColor: C.handle }]} />
           <View style={styles.sheetHeader}>
             <Text style={[styles.sheetTitle, { color: C.foreground }]}>Share</Text>
-            <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}>
+            <TouchableOpacity
+              onPress={onClose}
+              style={[styles.closeBtn, { backgroundColor: C.closeBtn }]}
+              accessibilityRole="button"
+              accessibilityLabel="Close share sheet"
+            >
               <Feather name="x" size={15} color={C.foreground} />
             </TouchableOpacity>
           </View>
@@ -97,7 +102,7 @@ export function ShareSheet({ visible, onClose, card }: Props) {
               <ActivityIndicator color="#0a0a0a" size="small" />
             ) : (
               <>
-                <Feather name="share" size={18} color="#0a0a0a" />
+                <Feather name="share" size={16} color="#0a0a0a" />
                 <Text style={styles.shareBtnText}>Share to Stories</Text>
               </>
             )}
