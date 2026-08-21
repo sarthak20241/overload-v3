@@ -121,6 +121,11 @@ const VOYAGE_API_KEY = Deno.env.get("VOYAGE_API_KEY");
 // Candidate rerank (parse_meal). On by default whenever the Voyage key is
 // present; PARSE_RERANK=false is the kill switch.
 const PARSE_RERANK_ENABLED = Deno.env.get("PARSE_RERANK") !== "false";
+// P3 skip-decide. Defaults to SHADOW: decide still runs and still owns the
+// answer, we only record whether the code fill would have agreed. Flip to "on"
+// once that agreement rate justifies dropping the call.
+const PARSE_SKIP_DECIDE =
+  (Deno.env.get("PARSE_SKIP_DECIDE") as "off" | "shadow" | "on" | undefined) ?? "shadow";
 const FATSECRET_KEY = Deno.env.get("FATSECRET_CONSUMER_KEY");
 const FATSECRET_SECRET = Deno.env.get("FATSECRET_CONSUMER_SECRET");
 const FATSECRET_REGION = Deno.env.get("FATSECRET_REGION") || undefined;
@@ -1448,6 +1453,7 @@ function makeParseDeps(
           (m) => console.log(m),
         )
       : undefined,
+    skipDecideMode: PARSE_SKIP_DECIDE,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
         voyageRerank(VOYAGE_API_KEY, q, docs, fetch, (m) => console.log(m))

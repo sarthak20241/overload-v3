@@ -1838,6 +1838,16 @@ export function reconcileQuantity(
 ): ParsedItem[] {
   return items.map((item) => {
     if (!item.food_id || !(item.grams > 0)) return item;
+    // A bare unit label ("g", "ml") IS the amount: there is no serving size to
+    // divide by, so the displayed quantity must equal the logged grams. Without
+    // this the card prints decide's own quantity verbatim, which is how "250ml
+    // toned milk" shipped reading "100 x ml" while its macros were right for
+    // 250 (observed on device 2026-08-22). The anchor path below cannot catch
+    // it: a bare unit never matches a serving label, so it returned untouched.
+    if (MASS_UNITS.has(item.serving_label.trim().toLowerCase())) {
+      const q = Math.round(item.grams * 100) / 100;
+      return q > 0 && Math.abs(q - item.quantity) > 0.05 ? { ...item, quantity: q } : item;
+    }
     const servings = servingsByFood.get(item.food_id);
     if (!servings || servings.length === 0) return item;
     const match = servings.find((s) => s.label.toLowerCase() === item.serving_label.toLowerCase());
@@ -2563,6 +2573,26 @@ export async function runParseMeal(
     checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
     prepForItems(resolved),
   );
+
+  // Shadow mode: decide already produced the real answer above. Compare what
+  // the code fill WOULD have shipped, so the decision to skip decide is made on
+  // measured agreement over real traffic rather than on how sure the gate feels.
+  if (skipMode === "shadow" && codeFill && !codeFill.blockedBy) {
+    const agree = codeFill.items.length === items.length &&
+      codeFill.items.every((cf, i) =>
+        cf.food_id === items[i].food_id &&
+        Math.abs(cf.grams - items[i].grams) <= Math.max(1, items[i].grams * 0.05)
+      );
+    steps.push({
+      iter: 8,
+      tool: "code_fill_shadow",
+      input: { agree },
+      result: agree ? { agree: true } : {
+        code: codeFill.items.map((it) => `${it.food_name} ${it.grams}g`),
+        decide: items.map((it) => `${it.food_name} ${it.grams}g`),
+      },
+    });
+  }
   // Ephemeral ids have done their job (addressing a candidate for decide and
   // keying the per-100 recompute). Drop them before the client can try to log
   // one against meal_entries.food_id, which is a uuid FK into `foods`.
