@@ -5,8 +5,10 @@ name: CodeRabbit Auto Trigger
 # (See its own note on PR #109: "This repository does not receive automatic
 # reviews because it has fewer than 10 stars.")
 #
-# This workflow types the trigger for us: on every PR open/reopen it posts
-# "@coderabbitai review", which CodeRabbit honors even under the star gate.
+# This workflow types the trigger for us: on PR open/reopen AND on every push to
+# an open PR it posts "@coderabbitai review", which CodeRabbit honors even under
+# the star gate. On a push that command is an incremental review of the new
+# commits, which is what the star gate would otherwise have given us for free.
 #
 # TOKEN: it must be a REAL user token, not the built-in GITHUB_TOKEN, because
 # CodeRabbit ignores comments authored by bots (github-actions[bot]) to avoid
@@ -19,8 +21,11 @@ name: CodeRabbit Auto Trigger
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
 
+# One trigger per PR at a time. cancel-in-progress means a burst of pushes
+# collapses into a single review of the newest head instead of queueing one
+# review per commit.
 concurrency:
   group: coderabbit-trigger-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -28,19 +33,23 @@ concurrency:
 jobs:
   trigger:
     # Fork PRs don't get repo secrets, so there'd be no token to post with.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Draft PRs are still being written; review them once they're ready.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ secrets.CODERABBIT_TRIGGER_TOKEN }}
       PR: ${{ github.event.pull_request.number }}
       REPO: ${{ github.repository }}
+      SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - name: Wait for CodeRabbit to register the PR
+      - name: Wait for CodeRabbit to catch up
         if: env.GH_TOKEN != ''
-        # CodeRabbit needs to see the pull_request webhook and post its own
-        # walkthrough before a review command means anything. Commenting in the
-        # same second the PR opens can land before it knows the PR exists.
+        # CodeRabbit needs to see the webhook and index the new head before a
+        # review command means anything. Commenting in the same second the PR
+        # opens (or the push lands) can beat it to the punch.
         run: sleep 45
 
       - name: Ask CodeRabbit to review
@@ -48,17 +57,20 @@ jobs:
         run: |
           set -eo pipefail
 
-          # Idempotence: if CodeRabbit already reviewed (star gate lifted, or a
-          # human beat us to it), don't stack a second run on the same PR.
+          # Idempotence is per-commit, not per-PR: each new head SHA deserves a
+          # fresh review, but a re-run or a duplicate event on the same SHA must
+          # not stack a second one. The marker is an HTML comment, so it's
+          # invisible in the PR thread and ignored by CodeRabbit's parser.
+          MARKER="<!-- coderabbit-trigger: ${SHA} -->"
+
           if gh pr view "$PR" --repo "$REPO" --json comments \
-              --jq '.comments[] | select(.author.login == "coderabbitai") | .body' \
-              | grep -q 'CodeRabbit review command invoked'; then
-            echo "Review already requested on #${PR}; nothing to do."
+              --jq '.comments[].body' | grep -qF "$MARKER"; then
+            echo "Already triggered a review for ${SHA} on #${PR}; nothing to do."
             exit 0
           fi
 
-          gh pr comment "$PR" --repo "$REPO" --body "@coderabbitai review"
-          echo "Posted review trigger on #${PR}."
+          gh pr comment "$PR" --repo "$REPO" --body "$(printf '@coderabbitai review\n\n%s\n' "$MARKER")"
+          echo "Posted review trigger for ${SHA} on #${PR}."
 
       - name: Explain the no-op
         if: env.GH_TOKEN == ''
