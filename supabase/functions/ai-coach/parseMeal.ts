@@ -2578,18 +2578,31 @@ export async function runParseMeal(
   // the code fill WOULD have shipped, so the decision to skip decide is made on
   // measured agreement over real traffic rather than on how sure the gate feels.
   if (skipMode === "shadow" && codeFill && !codeFill.blockedBy) {
-    const agree = codeFill.items.length === items.length &&
-      codeFill.items.every((cf, i) =>
-        cf.food_id === items[i].food_id &&
-        Math.abs(cf.grams - items[i].grams) <= Math.max(1, items[i].grams * 0.05)
-      );
+    const sameShape = codeFill.items.length === items.length;
+    // STRICT: identical row and amount.
+    const sameRow = sameShape && codeFill.items.every((cf, i) =>
+      cf.food_id === items[i].food_id &&
+      Math.abs(cf.grams - items[i].grams) <= Math.max(1, items[i].grams * 0.05)
+    );
+    // WHAT THE USER SEES: two different rows for the same food ("Whey Protein"
+    // vs "100% Whey Protein") are not a defect if the numbers land in the same
+    // place. Strict row equality would veto the skip over distinctions nobody
+    // can perceive, so the decision to flip this on is judged on the macros.
+    const sum = (xs: ParsedItem[], k: "kcal" | "protein_g") =>
+      xs.reduce((a, it) => a + (it[k] || 0), 0);
+    const near = (a: number, b: number, floor: number) =>
+      Math.abs(a - b) <= Math.max(floor, Math.max(a, b) * 0.1);
+    const sameMacros = sameShape &&
+      near(sum(codeFill.items, "kcal"), sum(items, "kcal"), 20) &&
+      near(sum(codeFill.items, "protein_g"), sum(items, "protein_g"), 3);
     steps.push({
       iter: 8,
       tool: "code_fill_shadow",
-      input: { agree },
-      result: agree ? { agree: true } : {
-        code: codeFill.items.map((it) => `${it.food_name} ${it.grams}g`),
-        decide: items.map((it) => `${it.food_name} ${it.grams}g`),
+      input: { same_row: sameRow, same_macros: sameMacros },
+      result: sameRow ? { agree: true } : {
+        code: codeFill.items.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
+        decide: items.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
+        same_macros: sameMacros,
       },
     });
   }

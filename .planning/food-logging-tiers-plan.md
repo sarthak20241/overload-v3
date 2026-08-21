@@ -164,7 +164,29 @@ margin), inside the resolve window, behind VOYAGE_RERANK env flag.
 Also: eval harness compares Voyage vs Cohere on parse_traces real queries.
 Verify: margin logged in steps; eval NDCG/top-1 up vs P1 baseline.
 
-### P3. Smart skip-decide gate
+### P3. Smart skip-decide gate  [BUILT, RUNNING IN SHADOW 2026-08-22]
+
+Shipped behind PARSE_SKIP_DECIDE (off | shadow | on), deployed on SHADOW:
+decide still owns the answer, we only record whether the code fill agreed.
+
+Findings from the first on-device shadow samples:
+- Gate keys on rerank **topScore, NOT margin**. Real margins are tiny
+  (0.012-0.094) precisely because the top candidates are near-duplicates of the
+  same food; topScore (0.83-0.90) is what actually says "right food found".
+- "100g paneer and 250ml toned milk" -> filled, AGREED with decide exactly.
+- "250ml toned milk and 1 scoop whey" -> filled, DISAGREED on row: code fill
+  took "100% Whey Protein 31g", decide took "Whey Protein 32g". Both defensible,
+  near-identical macros. This is why the metric now records same_row AND
+  same_macros: strict row equality would veto the skip over distinctions the
+  user cannot perceive.
+- "2 rotis and a bowl of dal" -> correctly BLOCKED ("unresolvable unit bowl"),
+  fell through to decide as designed.
+
+Flip to "on" when same_macros agreement holds over a real sample (target: 50+
+parses, >95% same_macros, zero cases where code fill grounds an item decide
+refused). Not yet: n=2 filled.
+
+### P3 (original scope)
 Per-item confidence gate (rerank margin + clear units + not a correction) ->
 code fill with no decide call; mini-decide only for unsure items; ungrounded
 items get the Haiku estimate in the fill step (chipped). Drona line: template
