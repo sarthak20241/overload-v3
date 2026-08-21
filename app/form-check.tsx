@@ -218,7 +218,10 @@ export default function FormCheckScreen() {
       // `analyzing` with a spinner that never resolves.
       if (!aliveRef.current) return;
       setNote(null);
-      setProblem(`That did not go through. ${(e as Error).message}`);
+      // Not every throw is an Error; a bare string or object would otherwise
+      // render as "That did not go through. undefined".
+      const why = e instanceof Error && e.message ? e.message : 'Try again in a moment.';
+      setProblem(`That did not go through. ${why}`);
       setPhase('result');
     } finally {
       // Released on every path, including the early returns above: otherwise

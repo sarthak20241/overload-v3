@@ -114,10 +114,20 @@ export function isCapError(e: unknown): e is FormCapError {
   return e instanceof FormCapError;
 }
 
-const UNUSABLE_REASONS: readonly UnusableReason[] = ['wrong_view', 'too_unclear', 'no_reps'];
+/**
+ * Keyed by the union rather than listed as an array, so adding a reason to
+ * `UnusableReason` fails to compile until it is handled here too. A plain
+ * array would let a new reason drift out of sync silently, and the symptom
+ * would be the generic error message replacing a specific one.
+ */
+const UNUSABLE_REASONS: Record<UnusableReason, true> = {
+  wrong_view: true,
+  too_unclear: true,
+  no_reps: true,
+};
 
 function isUnusableReason(v: unknown): v is UnusableReason {
-  return typeof v === 'string' && (UNUSABLE_REASONS as readonly string[]).includes(v);
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(UNUSABLE_REASONS, v);
 }
 
 /**
