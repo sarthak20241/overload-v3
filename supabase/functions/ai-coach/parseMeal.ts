@@ -352,6 +352,13 @@ export interface ParseMealDeps {
   // Tier 2b: FatSecret lookup. Optional - absent when no credentials are
   // configured, which is how the source stays behind a flag.
   searchFatSecret?(query: string): Promise<CandidateFood[]>;
+  // Cross-encoder rerank over the merged candidate docs. Optional - absent
+  // when unconfigured; the merge order stands. See rerank.ts.
+  rerankCandidates?(query: string, docs: string[]): Promise<{
+    order: number[];
+    margin: number;
+    topScore: number;
+  } | null>;
   // Tier 1/2 verification: per-100 macros for a food row, for the
   // server-side recompute. Null when the row can't be read.
   getFoodPer100(foodId: string): Promise<{
@@ -1210,7 +1217,34 @@ async function resolveOneItem(
     deps.log?.(`[parse_meal] dropped ${dropped} implausible candidate(s) for "${item.name}"`);
     steps.push({ iter: 1, tool: "implausible_filtered", input: { item: item.name, dropped } });
   }
-  const usable = sane.length > 0 ? sane : candidates;
+  let usable = sane.length > 0 ? sane : candidates;
+
+  // Rerank: the user's own phrase against each candidate, best first. This is
+  // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
+  // the sources returned. Fail-open: on any miss the merge order stands.
+  if (deps.rerankCandidates && usable.length > 1) {
+    const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
+    const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
+    const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
+    if (rr) {
+      usable = rr.order.map((idx) => usable[idx]).filter(Boolean);
+      steps.push({
+        iter: 1,
+        tool: "rerank",
+        input: { item: item.name },
+        // margin recorded for P3: a wide margin is what will let Smart skip
+        // the decide call for this item.
+        result: {
+          top: usable.slice(0, 3).map((c) => c.name),
+          margin: Math.round(rr.margin * 1000) / 1000,
+          top_score: Math.round(rr.topScore * 1000) / 1000,
+        },
+      });
+    }
+  }
+
+  // decide reads every candidate we pass; past ~6 the list is distractors.
+  usable = usable.slice(0, 6);
   return { ...item, candidates: usable.map(synthesizeVolumeAnchors) };
 }
 

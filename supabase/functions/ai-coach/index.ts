@@ -13,6 +13,7 @@ import {
   runWebRefine,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
+import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
@@ -117,6 +118,9 @@ const VOYAGE_API_KEY = Deno.env.get("VOYAGE_API_KEY");
 // deliberate, see fatsecret.ts (OAuth 2.0 is IP-whitelisted and edge functions
 // have dynamic egress IPs). FATSECRET_REGION/LANGUAGE are Premier-only and must
 // stay unset on Basic, where sending them is an error.
+// Candidate rerank (parse_meal). On by default whenever the Voyage key is
+// present; PARSE_RERANK=false is the kill switch.
+const PARSE_RERANK_ENABLED = Deno.env.get("PARSE_RERANK") !== "false";
 const FATSECRET_KEY = Deno.env.get("FATSECRET_CONSUMER_KEY");
 const FATSECRET_SECRET = Deno.env.get("FATSECRET_CONSUMER_SECRET");
 const FATSECRET_REGION = Deno.env.get("FATSECRET_REGION") || undefined;
@@ -1443,6 +1447,10 @@ function makeParseDeps(
           fetch,
           (m) => console.log(m),
         )
+      : undefined,
+    rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
+      ? (q: string, docs: string[]) =>
+        voyageRerank(VOYAGE_API_KEY, q, docs, fetch, (m) => console.log(m))
       : undefined,
     getFoodPer100: async (foodId) => {
       const { data } = await userClient
