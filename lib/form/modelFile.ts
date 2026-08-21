@@ -101,9 +101,13 @@ export function isPoseModelReady(): boolean {
 function dropSupersededModels(dir: Directory): void {
   try {
     for (const entry of dir.list()) {
+      // Files only, and only ones shaped like a model we wrote. A bare prefix
+      // match would also sweep up a directory that happened to start with the
+      // same characters, which is not this function's business to delete.
+      if (!(entry instanceof File)) continue;
       const name = entry.name;
       if (name === MODEL_NAME) continue;
-      if (!name.startsWith('movenet_thunder')) continue;
+      if (!name.startsWith('movenet_thunder_') || !name.endsWith('.tflite')) continue;
       entry.delete();
     }
   } catch {
