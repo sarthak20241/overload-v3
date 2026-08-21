@@ -8,13 +8,14 @@
  * day-aware line). Portal sheet, matching EntryEditSheet / SetTypeSheet.
  */
 import { useEffect, useState } from 'react';
-import { View, Text, TextInput, Pressable, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
-import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
+import { View, Text, TextInput, ScrollView, Pressable, TouchableOpacity, StyleSheet, BackHandler, Keyboard, Platform, useWindowDimensions } from 'react-native';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import { saveNutritionTargets, type NutritionTargets } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -38,6 +39,7 @@ interface Props {
 export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
 
@@ -46,6 +48,18 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     kcal: '', protein: '', carb: '', fat: '',
   });
   const [busy, setBusy] = useState(false);
+
+  const { mounted, slideStyle } = useSheetSlide(open);
+  const [kbHeight, setKbHeight] = useState(0);
+
+  useEffect(() => {
+    if (!open) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -65,7 +79,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     return () => sub.remove();
   }, [open, onClose]);
 
-  if (!open) return <Portal>{null}</Portal>;
+  if (!mounted) return <Portal>{null}</Portal>;
 
   const onSave = async () => {
     const clerkId = user?.id;
@@ -93,25 +107,39 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
 
   return (
     <Portal>
-      <Pressable style={[s.backdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
+      <View style={s.backdrop} pointerEvents={open ? 'auto' : 'none'}>
+        {open && (
+          <Animated.View
+            entering={FadeIn.duration(200)}
+            exiting={FadeOut.duration(150)}
+            style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+          >
+            <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+          </Animated.View>
+        )}
         <Animated.View
-          entering={SlideInDown.duration(320).easing(Easing.out(Easing.cubic))}
-          exiting={SlideOutDown.duration(180)}
-          style={[s.sheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom + Spacing.md }]}
+          style={[s.sheet, slideStyle, {
+            backgroundColor: C.elevated,
+            // The keyboard covers the home indicator, so reserving its inset
+            // while the keyboard is up just leaves dead space under the button.
+            paddingBottom: kbHeight > 0 ? Spacing.md : insets.bottom + Spacing.md,
+            marginBottom: kbHeight,
+            maxHeight: (winH - kbHeight) * 0.9,
+          }]}
         >
-          <Pressable style={{ flexShrink: 1 }}>
-            <View style={[s.handle, { backgroundColor: C.handle }]} />
+          <View style={[s.handle, { backgroundColor: C.handle }]} />
 
-            <View style={s.header}>
-              <View style={{ flex: 1 }}>
-                <Text style={[s.title, { color: C.foreground }]}>Daily goal</Text>
-                <Text style={[s.subtitle, { color: C.mutedFg }]}>What Drona coaches you toward</Text>
-              </View>
-              <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
-                <Feather name="x" size={15} color={C.foreground} />
-              </TouchableOpacity>
+          <View style={s.header}>
+            <View style={{ flex: 1 }}>
+              <Text style={[s.title, { color: C.foreground }]}>Daily goal</Text>
+              <Text style={[s.subtitle, { color: C.mutedFg }]}>What Drona coaches you toward</Text>
             </View>
+            <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
+              <Feather name="x" size={15} color={C.foreground} />
+            </TouchableOpacity>
+          </View>
 
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
             {FIELDS.map((f) => (
               <View key={f.key} style={[s.row, { borderColor: C.borderSubtle }]}>
                 <View style={[s.dot, { backgroundColor: f.color(C) }]} />
@@ -129,19 +157,19 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
                 <Text style={[s.unit, { color: C.textMuted }]}>{f.unit}</Text>
               </View>
             ))}
+          </ScrollView>
 
-            <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
-              <Text style={s.saveTxt}>{busy ? 'Saving...' : 'Save goal'}</Text>
-            </Pressable>
+          <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
+            <Text style={s.saveTxt}>{busy ? 'Saving...' : 'Save goal'}</Text>
           </Pressable>
         </Animated.View>
-      </Pressable>
+      </View>
     </Portal>
   );
 }
 
 const s = StyleSheet.create({
-  backdrop: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
+  backdrop: { flex: 1, justifyContent: 'flex-end' },
   sheet: { borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.md },
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md },
