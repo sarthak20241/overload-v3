@@ -108,7 +108,15 @@ acted on.
    fall back to MoveNet Lightning (the code already adapts to the model's own
    input spec, so this is a URL change).
 5. **Tune thresholds against real footage.** Every number in `patterns.ts` is
-   reasoned, none is validated against real lifters yet.
+   reasoned, none is validated against real lifters yet. This pass MUST also
+   fix the seven unreachable "top"-sampled cues (`noLockout` x5, `noStretch`,
+   `shortRange`): `rep.top` currently gates rep completion more strictly than
+   the cue meant to catch a short lockout, and `atTop` is captured at the
+   threshold crossing rather than at the true peak, so the cue cannot fire and
+   a lifter who does not lock out is told no rep was seen at all. The header
+   comment in `patterns.ts` has the full diagnosis. Both halves have to change
+   together: fixing the thresholds alone gives false positives, fixing the
+   capture alone leaves the cues dead.
 6. **Upload UI (P3).** `videoFrames.ts` exists; picker, trim, and progress do not.
 7. **Coach context.** Feed the last few `form_checks` into ai-coach.
 8. **Analytics + store copy.** PostHog events, privacy nutrition label.

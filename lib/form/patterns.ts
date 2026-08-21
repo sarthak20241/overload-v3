@@ -15,6 +15,28 @@
  * partial squat should still count as a rep and then get told it was shallow.
  * If the rep threshold itself demanded depth, a shallow set would show zero
  * reps and no feedback, which reads as the feature being broken.
+ *
+ * KNOWN GAP, for the threshold-tuning pass against real footage:
+ * the philosophy above holds at the BOTTOM of a rep but is inverted at the TOP,
+ * so every "top"-sampled cue below is currently unreachable. Seven of them:
+ * squat/hinge/horizontal_press/vertical_press/elbow_extension `noLockout`,
+ * vertical_pull `noStretch`, elbow_flexion `shortRange`.
+ *
+ * Two things cause it, and both need fixing together:
+ *   1. `rep.top` gates rep completion, and it is STRICTER than the cue meant to
+ *      catch a short lockout (squat: rep.top 160 vs the cue's `< 155`). A
+ *      lifter who tops out at 150 does not get "you cut the top short" -- the
+ *      rep never completes at all and they are told no rep was seen.
+ *   2. `atTop` is snapshotted the instant the driver crosses `rep.top`, so it
+ *      is always on the far side of it (measured: 163.6 against a `< 155`
+ *      test). The true peak happens later, during the `top` phase, but cues
+ *      are evaluated inside `completeRep` before that is known.
+ *
+ * Fixing (1) alone gives false positives; fixing (2) alone leaves the cues
+ * dead. It wants: evaluate top-sampled cues when the `top` phase ENDS, and
+ * lower every `rep.top` below its pattern's cue threshold. Deliberately left
+ * for footage rather than guessed at, since it changes rep counting for
+ * everyone.
  */
 
 import type { FormRuleSpec } from './spec';
