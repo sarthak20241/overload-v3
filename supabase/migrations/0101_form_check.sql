@@ -76,7 +76,7 @@ update exercises set movement_pattern = case
     then 'none'
   when name ~* '\y(calf|shrug|fly|flye|lateral raise|front raise|rear delt|face pull|pullover|wrist|crunch|sit.?up|twist|raise)\y'
     then 'none'
-  when name ~* '\y(leg curl|leg extension|hamstring curl|lying curl)\y'
+  when name ~* '\y(leg curl|leg extension|hamstring curl|lying curl|seated curl machine)\y'
     then 'none'
   when name ~* '\y(romanian|rdl|stiff.?leg|good morning|hip thrust|hip hinge|back extension|deadlift)\y'
     then 'hinge'

@@ -28,6 +28,11 @@ export type FormNoteResult =
   | { kind: 'unusable'; reason: UnusableReason }
   /** Daily allowance spent. `pro` means upgrading lifts the cap. */
   | { kind: 'cap'; scope: 'free' | 'paid'; retryAfterSeconds?: number }
+  /**
+   * The account cannot use Drona at all (expired or cancelled), which is a
+   * different conversation from having spent today's allowance.
+   */
+  | { kind: 'no_access' }
   | { kind: 'error'; message: string };
 
 export interface RequestNoteArgs {
@@ -117,7 +122,9 @@ async function readCapError(error: unknown): Promise<FormNoteResult | null> {
         retryAfterSeconds: Number(body.retry_after_seconds ?? 0) || undefined,
       };
     }
-    if (body.error === 'drona_access_required') return { kind: 'cap', scope: 'free' };
+    // Not a cap: the allowance is untouched, the account simply has no Drona
+    // access. Telling this user to "come back tomorrow" would be a lie.
+    if (body.error === 'drona_access_required') return { kind: 'no_access' };
   } catch {
     // Body already consumed or not JSON. Fall through to the generic path.
   }

@@ -26,9 +26,26 @@ import { Directory, File, Paths } from 'expo-file-system';
  * Kaggle Models and TFHub both require authentication now, so the model is
  * served from a public GitHub mirror of the official release. Pinned to
  * version 4 so the thresholds in lib/form/patterns.ts stay valid.
+ *
+ * The URL names a COMMIT SHA rather than `main`. That matters: this binary is
+ * handed straight to the TFLite runtime, and a branch ref would let whatever
+ * the mirror points at today become code we execute. A commit path is
+ * content-addressed by git, so its bytes cannot change under us.
  */
+const MODEL_COMMIT = '9d70b988fe9bb936e9fc3155aae0e9de2cd4dde1';
 export const POSE_MODEL_URL =
-  'https://raw.githubusercontent.com/Kazuhito00/MoveNet-Python-Example/main/tflite/lite-model_movenet_singlepose_thunder_tflite_float16_4.tflite';
+  `https://raw.githubusercontent.com/Kazuhito00/MoveNet-Python-Example/${MODEL_COMMIT}/tflite/lite-model_movenet_singlepose_thunder_tflite_float16_4.tflite`;
+
+/**
+ * MD5 of the file at that commit, verified after every download.
+ *
+ * MD5 is not collision-resistant, but it is not being asked to be: the commit
+ * pin above is what makes the bytes immutable. This is the belt to that
+ * braces, catching a corrupted, truncated, or substituted download that the
+ * size window would wave through. It is also free -- the OS computes it, so
+ * nothing has to read 12 MB into JS.
+ */
+const MODEL_MD5 = '79f70a81ff84589ae74250a7ea914a09';
 
 const MODEL_DIR = 'pose';
 const MODEL_NAME = 'movenet_thunder.tflite';
@@ -50,13 +67,19 @@ function modelFile(): File {
   return new File(new Directory(Paths.document, MODEL_DIR), MODEL_NAME);
 }
 
-/** Is the model already on disk and plausible? */
+/**
+ * Is the model already on disk and exactly the file we expect?
+ *
+ * The size window is checked first only because it is the cheaper way to reject
+ * an obviously wrong file; the hash is what actually decides.
+ */
 export function isPoseModelReady(): boolean {
   try {
     const file = modelFile();
     if (!file.exists) return false;
     const size = file.size ?? 0;
-    return size >= MIN_BYTES && size <= MAX_BYTES;
+    if (size < MIN_BYTES || size > MAX_BYTES) return false;
+    return file.md5 === MODEL_MD5;
   } catch {
     return false;
   }
@@ -92,8 +115,10 @@ export async function ensurePoseModel(): Promise<ModelFileState> {
       try {
         if (modelFile().exists) modelFile().delete();
       } catch {
-        // Nothing more we can do; the size check will catch it next time too.
+        // Nothing more we can do; the checks will catch it next time too.
       }
+      // A file of the right size that still fails is a wrong file, not a flaky
+      // connection, so it never gets loaded and the retry advice is honest.
       return {
         status: 'error',
         message:

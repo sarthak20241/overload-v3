@@ -24,9 +24,10 @@ type Row = Record<string, unknown>;
  * assert the ladder cached what it learned, and counts reads so a test can
  * assert the cheap tiers short-circuited before any query happened.
  */
-export function fakeClient(globalRows: Row[] = []) {
+export function fakeClient(globalRows: Row[] = [], ownRows: Row[] = []) {
   const updates: Array<{ id: string; patch: Row }> = [];
   let selects = 0;
+  let rowReads = 0;
 
   const client = {
     from(_table: string) {
@@ -40,9 +41,10 @@ export function fakeClient(globalRows: Row[] = []) {
           return builder;
         },
         ilike(_col: string, value: string) {
-          const match = globalRows.filter(
-            (r) => String(r.name).toLowerCase() === value.toLowerCase()
-          );
+          // The real query escapes ILIKE wildcards; undo that here so the
+          // comparison is against the literal name the caller asked for.
+          const wanted = value.replace(/\\([\\%_])/g, '$1').toLowerCase();
+          const match = globalRows.filter((r) => String(r.name).toLowerCase() === wanted);
           return {
             limit: async () => ({ data: match, error: null }),
           };
@@ -51,9 +53,21 @@ export function fakeClient(globalRows: Row[] = []) {
           state.patch = patch;
           return builder;
         },
-        async eq(_col: string, id: string) {
-          if (state.patch) updates.push({ id, patch: state.patch });
-          return { error: null };
+        eq(_col: string, id: string) {
+          // A write: `update(...).eq(id)` resolves straight to a result.
+          if (state.patch) {
+            const patch = state.patch;
+            const result = Promise.resolve({ error: null });
+            updates.push({ id, patch });
+            return result;
+          }
+          // A read: `select(...).eq(id).maybeSingle()`.
+          return {
+            maybeSingle: async () => {
+              rowReads++;
+              return { data: ownRows.find((r) => r.id === id) ?? null, error: null };
+            },
+          };
         },
       };
       return builder;
@@ -65,6 +79,10 @@ export function fakeClient(globalRows: Row[] = []) {
     updates,
     get selects() {
       return selects;
+    },
+    /** How many times the ladder read the exercise's own row. */
+    get rowReads() {
+      return rowReads;
     },
   };
 }
@@ -133,11 +151,13 @@ export async function runResolveTests({ check, eq, assert }: LadderHarness) {
   // ── the network tiers ─────────────────────────────────────────────────────
 
   await check('a known lift never touches the network or the model', async () => {
+    // The exercise list already holds these columns, so a caller that passes
+    // them costs the ladder nothing at all.
     const f = fakeClient();
     let authored = 0;
     const r = await resolveFormRules({
       client: f.client,
-      exercise: { id: UUID, name: 'Barbell Back Squat' },
+      exercise: { id: UUID, name: 'Barbell Back Squat', form_rules: null, movement_pattern: null },
       authorSpec: async () => {
         authored++;
         return {};
@@ -146,6 +166,41 @@ export async function runResolveTests({ check, eq, assert }: LadderHarness) {
     eq(r.origin, 'name_guess', 'origin');
     eq(authored, 0, 'model calls');
     eq(f.selects, 0, 'catalog queries');
+  });
+
+  await check('rules already cached on the row are reused, never re-authored', async () => {
+    // The form-check screen only knows the id and name, both from route params.
+    // If the ladder did not read the row it would skip straight past the spec a
+    // previous check already paid the model to author, and buy it again on
+    // every single open.
+    const f = fakeClient(
+      [],
+      [{ id: UUID, form_rules: PATTERN_SPECS.hinge, movement_pattern: 'hinge' }]
+    );
+    let authored = 0;
+    const r = await resolveFormRules({
+      client: f.client,
+      exercise: { id: UUID, name: 'Turkish Getup' },
+      authorSpec: async () => {
+        authored++;
+        return { unsupported: false, pattern: 'lunge', spec: PATTERN_SPECS.lunge };
+      },
+    });
+    eq(f.rowReads, 1, 'row reads');
+    eq(r.origin, 'exercise', 'origin');
+    eq(authored, 0, 'model calls');
+  });
+
+  await check('a curated override on the row beats the name guess', async () => {
+    // Step 1 must outrank step 4, or curating rules for a specific lift would
+    // have no effect whenever its name happens to be guessable.
+    const f = fakeClient([], [{ id: UUID, form_rules: PATTERN_SPECS.hinge, movement_pattern: null }]);
+    const r = await resolveFormRules({
+      client: f.client,
+      exercise: { id: UUID, name: 'Barbell Back Squat' },
+    });
+    eq(r.origin, 'exercise', 'origin');
+    assert(r.spec?.rep.driver === 'hip', 'should be the curated hinge spec, not the squat guess');
   });
 
   await check('a name guess is written back so the next check is free', async () => {

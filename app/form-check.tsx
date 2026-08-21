@@ -152,6 +152,8 @@ export default function FormCheckScreen() {
           ? 'That is your form checks for today. Come back tomorrow, or go Pro for more.'
           : 'You have used all of today\'s form checks. They reset in a day.'
       );
+    } else if (res.kind === 'no_access') {
+      setProblem('Form checks come with Drona. Start a plan to have me watch your sets.');
     } else {
       setProblem(res.message);
     }

@@ -212,6 +212,28 @@ Rules, in priority order:
 
 The cue list you are given includes a plain-language detail for each fault. Use it to explain the fix, in your own words, not verbatim.`;
 
+/**
+ * Ceilings on the parts of a summary that get pasted into the prompt.
+ *
+ * The client builds summaries from a validated spec, so these mirror
+ * lib/form/spec.ts LIMITS and never reject an honest payload. They exist for
+ * the dishonest one: without them a caller can spend a single rate-limit slot
+ * and still hand the model an arbitrarily large body to read.
+ */
+const MAX_NAME_CHARS = 120;
+const MAX_CUES = 10;
+const MAX_MEASURES = 12;
+/** Generous next to a real entry (~200 bytes) and still bounds the prompt. */
+const MAX_ENTRY_BYTES = 2_000;
+
+/** Is this an array within its count limit, with no oversized entry? */
+function withinPromptBudget(v: unknown, maxLen: number): boolean {
+  if (v === undefined || v === null) return true;
+  if (!Array.isArray(v)) return false;
+  if (v.length > maxLen) return false;
+  return v.every((entry) => JSON.stringify(entry ?? null).length <= MAX_ENTRY_BYTES);
+}
+
 interface FormSummaryPayload {
   exerciseName?: unknown;
   repCount?: unknown;
@@ -240,9 +262,22 @@ async function handleAnalyze(args: {
   if (!exerciseName) {
     return respond({ error: "summary.exerciseName is required" }, 400);
   }
+  if (exerciseName.length > MAX_NAME_CHARS) {
+    return respond({ error: "summary.exerciseName is too long" }, 400);
+  }
   const repCount = Number(summary.repCount ?? 0);
   if (!Number.isFinite(repCount) || repCount < 0 || repCount > 200) {
     return respond({ error: "summary.repCount is out of range" }, 400);
+  }
+  // Everything below is forwarded into the prompt, so it is bounded HERE rather
+  // than at the persist step further down: a rejected request must cost nothing
+  // at the model. The limits match the spec validator in lib/form/spec.ts, so
+  // no summary a real spec can produce is ever refused.
+  if (!withinPromptBudget(summary.cues, MAX_CUES)) {
+    return respond({ error: "summary.cues is out of range" }, 400);
+  }
+  if (!withinPromptBudget(summary.measures, MAX_MEASURES)) {
+    return respond({ error: "summary.measures is out of range" }, 400);
   }
 
   // A set the device already judged unusable never reaches the model: there is
@@ -456,7 +491,7 @@ async function handleAuthorRules(args: {
 }): Promise<Response> {
   const { admin, userId, body, startedAtMs, respond } = args;
   const name = typeof body.exercise_name === "string" ? body.exercise_name.trim() : "";
-  if (!name || name.length > 120) {
+  if (!name || name.length > MAX_NAME_CHARS) {
     return respond({ error: "author_rules requires an exercise_name" }, 400);
   }
 
@@ -553,7 +588,9 @@ Deno.serve(async (req) => {
     JSON.stringify({ has_header: !!authHeader, reason: auth.reason }),
   );
   if (!auth.sub) {
-    return respond({ error: "Unauthorized", debug: auth.reason }, 401);
+    // The reason is logged just above; it stays out of the response so an
+    // unauthenticated caller learns nothing about why verification failed.
+    return respond({ error: "Unauthorized" }, 401);
   }
   const userId = auth.sub;
 

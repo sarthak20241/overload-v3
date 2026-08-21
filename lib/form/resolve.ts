@@ -116,7 +116,12 @@ export async function resolveFormRules({
   exercise,
   authorSpec,
 }: ResolveOptions): Promise<RuleResolution> {
-  const local = resolveLocal(exercise);
+  // Callers that only know the id and name (the form-check screen gets both
+  // from route params) would otherwise skip steps 1 and 3 entirely and re-author
+  // a spec the row already holds — paying the metered model call every single
+  // time. Fetch the two columns the ladder needs before starting.
+  const hydrated = await hydrate(client, exercise);
+  const local = resolveLocal(hydrated);
   if (local.spec || local.unsupported) {
     // A name guess is worth writing back so the next check skips the guessing
     // and so the coach can see the pattern. Best effort: never block on it.
@@ -234,6 +239,45 @@ async function persistRules(
   if (error) console.warn('[form] could not persist form_rules', error.message);
 }
 
+/** Escape the ILIKE wildcards so a name is matched literally. */
+function escapeLikePattern(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/**
+ * Fill in `form_rules` / `movement_pattern` from the row when the caller did
+ * not already have them.
+ *
+ * A caller that already read the row costs nothing extra. A failed read is not
+ * fatal: the ladder simply carries on from step 2.
+ */
+async function hydrate(
+  client: SupabaseClient,
+  exercise: FormCheckableExercise
+): Promise<FormCheckableExercise> {
+  // Keyed on `form_rules` alone: that is the field whose absence sends the
+  // ladder all the way to the model. `undefined` means "caller does not know";
+  // an explicit `null` means "caller looked and there are none", which is
+  // answer enough and costs no query.
+  if (exercise.form_rules !== undefined || !isPersistableId(exercise.id)) return exercise;
+
+  const { data, error } = await client
+    .from('exercises')
+    .select('form_rules, movement_pattern')
+    .eq('id', exercise.id)
+    .maybeSingle();
+  if (error) {
+    console.warn('[form] could not read stored rules', error.message);
+    return exercise;
+  }
+  if (!data) return exercise;
+  return {
+    ...exercise,
+    form_rules: data.form_rules,
+    movement_pattern: data.movement_pattern,
+  };
+}
+
 async function findGlobalTwin(
   client: SupabaseClient,
   name: string
@@ -242,15 +286,23 @@ async function findGlobalTwin(
   if (!trimmed) return null;
   const { data, error } = await client
     .from('exercises')
-    .select('form_rules, movement_pattern')
+    .select('name, form_rules, movement_pattern')
     .is('created_by', null)
-    .ilike('name', trimmed)
-    .limit(1);
+    // `%` and `_` are ILIKE wildcards, and PostgREST additionally rewrites `*`
+    // to `%`. An exercise called "50% Deficit Pull" would otherwise match
+    // unrelated rows and silently inherit the wrong lift's rules.
+    .ilike('name', escapeLikePattern(trimmed))
+    .limit(5);
   if (error) {
     console.warn('[form] global twin lookup failed', error.message);
     return null;
   }
-  const row = data?.[0];
+  // Escaping cannot neutralise PostgREST's `*` rewrite, so confirm the name
+  // really is the same one rather than trusting whatever the filter returned.
+  const wanted = trimmed.toLowerCase();
+  const row = (data ?? []).find(
+    (r) => typeof r.name === 'string' && r.name.trim().toLowerCase() === wanted
+  );
   return row ? { form_rules: row.form_rules, movement_pattern: row.movement_pattern } : null;
 }
 

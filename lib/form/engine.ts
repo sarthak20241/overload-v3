@@ -135,7 +135,14 @@ export class FormEngine {
   private confN = 0;
 
   private readonly reps: RepResult[] = [];
-  private lastCues: CueSpec[] = [];
+  /**
+   * The cues the live badge shows, already trimmed to the two it can display.
+   * Stored pre-sliced and only reassigned when the fired set actually changes,
+   * because the screen dedups renders by comparing this array by reference —
+   * slicing on every push would allocate a fresh array ~20 times a second and
+   * defeat the guard entirely.
+   */
+  private liveCues: CueSpec[] = [];
   private frames = 0;
   private lowConfFrames = 0;
   private firstT = NaN;
@@ -182,7 +189,7 @@ export class FormEngine {
       phase: this.phase,
       side: this.side,
       depth: this.depthOf(driver),
-      cues: this.lastCues.slice(0, 2),
+      cues: this.liveCues,
       wrongView,
       lowConfidence: lowConf,
     };
@@ -377,7 +384,10 @@ export class FormEngine {
     }
     // Worst first, so the two-cue live badge always shows the real problem.
     fired.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'bad' ? -1 : 1));
-    this.lastCues = fired;
+    // Reuse the previous array when the same cues fired again, so the screen's
+    // reference-equality render guard keeps holding across unchanged reps.
+    const nextLive = fired.slice(0, 2);
+    if (!sameCues(this.liveCues, nextLive)) this.liveCues = nextLive;
 
     const bottomT = Number.isFinite(this.repBottomT) ? this.repBottomT : this.repStartT;
     this.reps.push({
@@ -403,6 +413,13 @@ export interface SetAnalysis {
   durationMs: number;
   view: FormRuleSpec['view'];
   wrongView: boolean;
+}
+
+/** Same cues, in the same order? Compared by id: specs are immutable. */
+function sameCues(a: CueSpec[], b: CueSpec[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i].id !== b[i].id) return false;
+  return true;
 }
 
 function sampleOf(stats: RepMeasureStats, sample: CueSample): number {
