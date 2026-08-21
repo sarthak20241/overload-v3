@@ -1,0 +1,67 @@
+name: CodeRabbit Auto Trigger
+
+# CodeRabbit stopped auto-reviewing this repo: public repos with fewer than 10
+# stars only get a walkthrough comment plus a manual "Trigger review" checkbox.
+# (See its own note on PR #109: "This repository does not receive automatic
+# reviews because it has fewer than 10 stars.")
+#
+# This workflow types the trigger for us: on every PR open/reopen it posts
+# "@coderabbitai review", which CodeRabbit honors even under the star gate.
+#
+# TOKEN: it must be a REAL user token, not the built-in GITHUB_TOKEN, because
+# CodeRabbit ignores comments authored by bots (github-actions[bot]) to avoid
+# reply loops. Create a fine-grained PAT with Pull requests: Read and write on
+# this repo, then save it as the repo secret CODERABBIT_TRIGGER_TOKEN
+# (Settings -> Secrets and variables -> Actions -> New repository secret).
+# Without the secret the job simply no-ops instead of failing every PR.
+#
+# Delete this workflow once the repo passes 10 stars and auto-review returns.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+concurrency:
+  group: coderabbit-trigger-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trigger:
+    # Fork PRs don't get repo secrets, so there'd be no token to post with.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.CODERABBIT_TRIGGER_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Wait for CodeRabbit to register the PR
+        if: env.GH_TOKEN != ''
+        # CodeRabbit needs to see the pull_request webhook and post its own
+        # walkthrough before a review command means anything. Commenting in the
+        # same second the PR opens can land before it knows the PR exists.
+        run: sleep 45
+
+      - name: Ask CodeRabbit to review
+        if: env.GH_TOKEN != ''
+        run: |
+          set -eo pipefail
+
+          # Idempotence: if CodeRabbit already reviewed (star gate lifted, or a
+          # human beat us to it), don't stack a second run on the same PR.
+          if gh pr view "$PR" --repo "$REPO" --json comments \
+              --jq '.comments[] | select(.author.login == "coderabbitai") | .body' \
+              | grep -q 'CodeRabbit review command invoked'; then
+            echo "Review already requested on #${PR}; nothing to do."
+            exit 0
+          fi
+
+          gh pr comment "$PR" --repo "$REPO" --body "@coderabbitai review"
+          echo "Posted review trigger on #${PR}."
+
+      - name: Explain the no-op
+        if: env.GH_TOKEN == ''
+        run: |
+          echo "::warning::CODERABBIT_TRIGGER_TOKEN is not set, so no review was requested."
+          echo "Add a fine-grained PAT (Pull requests: Read and write) as that repo secret."
