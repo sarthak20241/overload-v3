@@ -1,7 +1,7 @@
 import { useRef, useState, ReactElement, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, Pressable, StyleSheet,
-  ActivityIndicator, useWindowDimensions,
+  ActivityIndicator, useWindowDimensions, Alert,
 } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -34,7 +34,10 @@ export function ShareSheet({ visible, onClose, card }: Props) {
     if (sharing) return;
     setSharing(true);
     try {
-      await captureAndShare(captureRef);
+      const ok = await captureAndShare(captureRef);
+      if (!ok) Alert.alert('Sharing unavailable', 'This device does not support sharing.');
+    } catch {
+      Alert.alert('Share failed', 'Something went wrong while sharing.');
     } finally {
       setSharing(false);
     }
