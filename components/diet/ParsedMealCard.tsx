@@ -60,6 +60,8 @@ interface Props {
   onDismissNotice?: () => void;
   /** Tap a line to correct its serving/quantity/macros before adding. */
   onEditItem?: (index: number) => void;
+  /** Remove a single line from the card before adding. */
+  onRemoveItem?: (index: number) => void;
   onAdd?: () => void;
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
@@ -82,7 +84,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 
 export function ParsedMealCard({
   state, rawText, meal, mealType, message, adding, saved, notice, refiningItems, proposalLabel,
-  onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onAdd, onSave, onRetry, onDismiss,
+  onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
   const { C } = useTheme();
   const s = makeStyles(C);
@@ -146,6 +148,16 @@ export function ParsedMealCard({
                   </Text>
                   {prov && <Text style={s.provChip}>{prov}</Text>}
                   {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
+                  {onRemoveItem && meal.items.length > 1 && (
+                    <Pressable
+                      onPress={(e) => { e.stopPropagation(); onRemoveItem(i); }}
+                      hitSlop={6}
+                      style={s.removeBtn}
+                      accessibilityLabel={`Remove ${it.food_name}`}
+                    >
+                      <Feather name="x" size={13} color={C.textMuted} />
+                    </Pressable>
+                  )}
                 </View>
                 <View style={s.macros}>
                   <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)}</Text>
@@ -329,6 +341,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     saveIcon: { padding: 8 },
     savedChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 8, paddingHorizontal: 8 },
     savedTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.semibold },
+    removeBtn: { padding: 4 },
     discard: { paddingVertical: 8, paddingHorizontal: 12 },
     discardTxt: { fontSize: FontSize.base, color: C.textSecondary, fontWeight: FontWeight.medium },
     addBtn: {
