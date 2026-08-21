@@ -278,6 +278,160 @@ export function reconcileExtracted(
   return missing.length > 0 ? [...items, ...missing] : items;
 }
 
+// ── P3: code fill (skip the decide call when we are sure) ───────────────────
+//
+// decide is the single most expensive step in a parse (2.2s of a 7.8s meal,
+// measured 2026-08-22). For "100g paneer" or "2 eggs" it adds nothing a
+// deterministic function cannot do: the reranked top candidate IS the answer
+// and the quantity is unambiguous. This gate decides when that is true.
+//
+// WHY topScore AND NOT margin. The obvious gate is "the winner beat the
+// runner-up by a lot". Real traffic says otherwise: margins are tiny (0.016
+// and 0.012 on the first live parse) precisely BECAUSE the top candidates are
+// near-duplicates of the same food ("Egg, whole, raw" vs "Egg (Whole)"), where
+// picking either is correct. A small margin there is harmless. What actually
+// signals "we found the right food" is the absolute relevance of the winner,
+// which was 0.83 and 0.93 on that same parse.
+const SKIP_DECIDE_MIN_TOP_SCORE = 0.75;
+
+/** Units we can convert without asking a model. */
+const MASS_UNITS = new Set(["g", "gram", "grams", "gm", "gms", "ml", "millilitre", "milliliter"]);
+
+/** Grams for one unit of what the user said, or null when it needs judgment. */
+function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
+  const u = unit.trim().toLowerCase();
+  if (MASS_UNITS.has(u)) return { grams: 1, label: cand.base_unit === "ml" ? "ml" : "g" };
+  // A serving anchor whose label mentions the user's word ("1 large" for
+  // "large", "1 scoop (30 g)" for "scoop").
+  if (u) {
+    const hit = cand.servings.find((sv) => sv.grams > 0 && sv.label.toLowerCase().includes(u));
+    if (hit) return { grams: hit.grams, label: hit.label };
+  }
+  // A bare count ("2 eggs", "1 bar") resolves against the row's own default.
+  if (!u || u === "serving" || u === "servings" || u === "piece" || u === "pieces") {
+    const def = cand.servings.find((sv) => sv.is_default && sv.grams > 0) ??
+      cand.servings.find((sv) => sv.grams > 0);
+    if (def) return { grams: def.grams, label: def.label };
+  }
+  return null;
+}
+
+export interface CodeFillOutcome {
+  items: ParsedItem[];
+  /** Why the gate refused, for the trace. Empty when it filled everything. */
+  blockedBy: string | null;
+}
+
+/**
+ * Build the meal from resolved candidates with NO model call, or refuse.
+ *
+ * All-or-nothing on purpose: decide emits the whole meal in one shot, so a
+ * per-item mix would mean merging two sources of truth for one card. A mixed
+ * meal ("2 eggs and a bhakarwadi") still pays for decide; splitting that is a
+ * follow-up, not a v1 risk worth taking.
+ */
+export function codeFillItems(
+  resolved: ResolvedItem[],
+  candidatePer100: Map<string, Per100>,
+): CodeFillOutcome {
+  if (resolved.length === 0) return { items: [], blockedBy: "no items" };
+  const out: ParsedItem[] = [];
+  for (const r of resolved) {
+    const top = r.candidates[0];
+    if (!top || !top.food_id) return { items: [], blockedBy: `ungrounded: ${r.name}` };
+    const per = candidatePer100.get(top.food_id);
+    if (!per) return { items: [], blockedBy: `no per-100: ${r.name}` };
+    const score = r.rerankTopScore;
+    if (score === undefined) return { items: [], blockedBy: `no rerank score: ${r.name}` };
+    if (score < SKIP_DECIDE_MIN_TOP_SCORE) {
+      return { items: [], blockedBy: `weak match ${score.toFixed(2)}: ${r.name}` };
+    }
+    const per1 = gramsPerUnit(r.unit, top);
+    if (!per1) return { items: [], blockedBy: `unresolvable unit "${r.unit}": ${r.name}` };
+    const qty = r.quantity > 0 ? r.quantity : 1;
+    const grams = round1(per1.grams * qty);
+    if (!(grams > 0)) return { items: [], blockedBy: `zero grams: ${r.name}` };
+    const f = grams / 100;
+    out.push({
+      food_id: top.food_id,
+      food_name: top.name,
+      quantity: qty,
+      serving_label: per1.label,
+      grams,
+      // verifyItems recomputes these from the row anyway; filling them here
+      // keeps the shape honest if a downstream guard reads them first.
+      kcal: round1(per.kcal * f),
+      protein_g: round1(per.protein_g * f),
+      carb_g: round1(per.carb_g * f),
+      fat_g: round1(per.fat_g * f),
+      fiber_g: per.fiber_g === null ? null : round1(per.fiber_g * f),
+      source: top.source,
+      assumption: null,
+      confidence: "high",
+    });
+  }
+  return { items: out, blockedBy: null };
+}
+
+/** Per-100 basis for every candidate we showed the model, so a failed row read
+ *  falls back to the numbers we already had rather than to zero. */
+function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
+  const byFood = new Map<string, Per100>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, {
+          kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
+        });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** Serving options for every candidate we offered, so the display quantity can
+ *  be reconciled against the logged grams (see reconcileQuantity). */
+function servingsForItems(resolved: ResolvedItem[]): Map<string, ServingOption[]> {
+  const byFood = new Map<string, ServingOption[]>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.servings.length > 0 && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, c.servings);
+      }
+    }
+  }
+  return byFood;
+}
+
+/** What the user asked for, per matched row. Each resolved item's prep intent
+ *  (from its prep field and its own name) maps to every candidate food_id it
+ *  could resolve to, paired with that candidate's real row name. */
+function prepForItems(
+  resolved: ResolvedItem[],
+): Map<string, { userIntent: PrepState; rowName: string }> {
+  const byFood = new Map<string, { userIntent: PrepState; rowName: string }>();
+  for (const r of resolved) {
+    const userIntent = prepStateOf(`${r.prep ?? ""} ${r.name}`);
+    if (!userIntent) continue;
+    for (const c of r.candidates) {
+      if (c.food_id && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, { userIntent, rowName: c.name });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** Coach line without a model call, keyed on what the meal actually is. */
+export function templateDronaLine(items: ParsedItem[]): string {
+  const protein = Math.round(items.reduce((a, it) => a + (it.protein_g || 0), 0));
+  const kcal = Math.round(items.reduce((a, it) => a + (it.kcal || 0), 0));
+  if (protein >= 30) return `${protein}g protein in there. That is how you build.`;
+  if (protein >= 15) return `${protein}g protein logged. Solid, keep stacking.`;
+  if (kcal >= 400) return `${kcal} calories, light on protein. Add a protein hit next.`;
+  return "Logged. Keep the protein coming.";
+}
+
 /** A rough, clearly-flagged line for a food decide dropped. Uses the top
  *  resolved candidate's per-100 where we have it, and keeps food_id null so it
  *  reads (and refines) as the estimate it is. */
@@ -344,6 +498,11 @@ export interface ParseMealDeps {
   maxTokens: number;
   timeoutMs: number;
   webSearchEnabled: boolean;
+  /** P3 skip-decide. 'off' always calls decide; 'shadow' calls decide but also
+   *  computes the code fill and records whether they agree; 'on' skips decide
+   *  when the gate passes. Default off: this removes the model from the
+   *  decision, so it earns its way in on shadow-mode agreement data. */
+  skipDecideMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
   searchFoods(query: string): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
@@ -1045,6 +1204,9 @@ export interface ExtractedItem {
 
 interface ResolvedItem extends ExtractedItem {
   candidates: CandidateFood[];
+  /** Absolute relevance of the top candidate after rerank. The P3 skip-decide
+   *  gate keys on this; absent when rerank did not run. */
+  rerankTopScore?: number;
 }
 
 // A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
@@ -1218,6 +1380,7 @@ async function resolveOneItem(
     steps.push({ iter: 1, tool: "implausible_filtered", input: { item: item.name, dropped } });
   }
   let usable = sane.length > 0 ? sane : candidates;
+  let rerankTopScore: number | undefined;
 
   // Rerank: the user's own phrase against each candidate, best first. This is
   // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
@@ -1228,6 +1391,7 @@ async function resolveOneItem(
     const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
     if (rr) {
       usable = rr.order.map((idx) => usable[idx]).filter(Boolean);
+      rerankTopScore = rr.topScore;
       steps.push({
         iter: 1,
         tool: "rerank",
@@ -1245,7 +1409,7 @@ async function resolveOneItem(
 
   // decide reads every candidate we pass; past ~6 the list is distractors.
   usable = usable.slice(0, 6);
-  return { ...item, candidates: usable.map(synthesizeVolumeAnchors) };
+  return { ...item, candidates: usable.map(synthesizeVolumeAnchors), rerankTopScore };
 }
 
 function round1(n: number): number {
@@ -2288,6 +2452,46 @@ export async function runParseMeal(
   // deliberate, user-visible SECOND phase (runWebRefine) that the client fires
   // for items this phase left weak. Phase 1 stays fast and always returns a
   // usable meal immediately; the web only ever improves it afterwards.
+  //
+  // P3: when every item reranked strongly and its quantity converts without
+  // judgment, the code fill IS the answer and this whole call is skipped.
+  const candidatePer100 = per100ForItems(resolved);
+  const skipMode = deps.skipDecideMode ?? "off";
+  const codeFill = (skipMode !== "off" && !correctsPrevious)
+    ? codeFillItems(resolved, candidatePer100)
+    : null;
+  if (codeFill) {
+    steps.push({
+      iter: 2,
+      tool: "code_fill",
+      input: { mode: skipMode },
+      result: codeFill.blockedBy
+        ? { filled: false, blocked_by: codeFill.blockedBy }
+        : { filled: true, items: codeFill.items.map((it) => `${it.food_name} ${it.grams}g`) },
+    });
+  }
+  if (skipMode === "on" && codeFill && !codeFill.blockedBy) {
+    T.decide_ms = 0;
+    const filled = flagPrepMismatch(
+      checkAtwater(reconcileQuantity(await verifyItems(deps, codeFill.items, candidatePer100), servingsForItems(resolved))),
+      prepForItems(resolved),
+    );
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
+    return {
+      parsed: {
+        meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+        items: filled,
+        drona_line: templateDronaLine(filled),
+        corrects_previous: false,
+      },
+      declined: null,
+      web_refine: null,
+      usage,
+      tool_calls: toolCalls,
+      steps,
+      iterations: anthropicCalls,
+    };
+  }
   const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
     user_text: input.text.trim().slice(0, 500),
@@ -2335,18 +2539,6 @@ export async function runParseMeal(
     input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
   });
 
-  // Per-100 basis for every candidate we showed the model, so a failed row
-  // read falls back to the numbers we already had rather than to zero.
-  const candidatePer100 = new Map<string, Per100>();
-  for (const r of resolved) {
-    for (const c of r.candidates) {
-      if (c.food_id && !candidatePer100.has(c.food_id)) {
-        candidatePer100.set(c.food_id, {
-          kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
-        });
-      }
-    }
-  }
   // Fix a slipped food_id BEFORE the macro recompute, so the numbers are
   // computed from the row the user actually meant.
   const picked = retargetMismatchedIds(
@@ -2367,32 +2559,10 @@ export async function runParseMeal(
     items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
-  // Serving options for every candidate we offered, so the display quantity can
-  // be reconciled against the logged grams (see reconcileQuantity).
-  const servingsByFood = new Map<string, ServingOption[]>();
-  for (const r of resolved) {
-    for (const c of r.candidates) {
-      if (c.food_id && c.servings.length > 0 && !servingsByFood.has(c.food_id)) {
-        servingsByFood.set(c.food_id, c.servings);
-      }
-    }
-  }
-
-  // What the user asked for, per matched row. Each resolved item's prep intent
-  // (from its prep field and its own name) maps to every candidate food_id it
-  // could resolve to, paired with that candidate's real row name.
-  const prepByFoodId = new Map<string, { userIntent: PrepState; rowName: string }>();
-  for (const r of resolved) {
-    const userIntent = prepStateOf(`${r.prep ?? ""} ${r.name}`);
-    if (!userIntent) continue;
-    for (const c of r.candidates) {
-      if (c.food_id && !prepByFoodId.has(c.food_id)) {
-        prepByFoodId.set(c.food_id, { userIntent, rowName: c.name });
-      }
-    }
-  }
-
-  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), prepByFoodId);
+  items = flagPrepMismatch(
+    checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
+    prepForItems(resolved),
+  );
   // Ephemeral ids have done their job (addressing a candidate for decide and
   // keying the per-100 recompute). Drop them before the client can try to log
   // one against meal_entries.food_id, which is a uuid FK into `foods`.
