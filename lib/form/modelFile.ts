@@ -48,7 +48,18 @@ export const POSE_MODEL_URL =
 const MODEL_MD5 = '79f70a81ff84589ae74250a7ea914a09';
 
 const MODEL_DIR = 'pose';
-const MODEL_NAME = 'movenet_thunder.tflite';
+/**
+ * The filename carries the model's identity, so changing MODEL_COMMIT or
+ * MODEL_MD5 changes where the app looks.
+ *
+ * Without this, bumping the pinned model would strand every existing install:
+ * the fast path only checks the file's SIZE (hashing 12 MB on every mount is
+ * not affordable), so a cached older build of similar size would satisfy it
+ * forever -- no re-download, no error, and the thresholds in patterns.ts
+ * silently applied to a model they were never tuned against. A new identity is
+ * simply a cache miss, which resolves itself.
+ */
+const MODEL_NAME = `movenet_thunder_${MODEL_MD5.slice(0, 8)}.tflite`;
 
 /**
  * Sanity bounds on the downloaded file. The float16 Thunder build is about
@@ -83,6 +94,30 @@ export function isPoseModelReady(): boolean {
     return size >= MIN_BYTES && size <= MAX_BYTES;
   } catch {
     return false;
+  }
+}
+
+/** Remove pose models from earlier pins, which nothing will ask for again. */
+function dropSupersededModels(dir: Directory): void {
+  try {
+    for (const entry of dir.list()) {
+      // Files only, and only ones shaped like a model we wrote. A bare prefix
+      // match would also sweep up a directory that happened to start with the
+      // same characters, which is not this function's business to delete.
+      if (!(entry instanceof File)) continue;
+      const name = entry.name;
+      if (name === MODEL_NAME) continue;
+      // No trailing underscore in the prefix, deliberately. Before the name
+      // carried a hash the file was plainly `movenet_thunder.tflite`, and that
+      // is the one file every existing install is about to supersede -- the
+      // whole reason this function exists. Requiring the underscore would skip
+      // exactly that case and orphan 12 MB on every device that already ran a
+      // form check.
+      if (!name.startsWith('movenet_thunder') || !name.endsWith('.tflite')) continue;
+      entry.delete();
+    }
+  } catch {
+    // Best effort: a leftover file wastes space but breaks nothing.
   }
 }
 
@@ -125,6 +160,9 @@ async function runEnsurePoseModel(): Promise<ModelFileState> {
 
     const dir = new Directory(Paths.document, MODEL_DIR);
     if (!dir.exists) dir.create({ intermediates: true });
+    // A version bump makes the old file dead weight: 12 MB of a model nothing
+    // will ever ask for again.
+    dropSupersededModels(dir);
 
     // Clear a previous bad attempt so the download does not append or collide.
     const existing = modelFile();

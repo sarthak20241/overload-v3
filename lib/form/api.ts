@@ -66,7 +66,14 @@ export async function requestFormNote({
 
   const data = res.data as Record<string, unknown> | null;
   if (data?.unusable) {
-    return { kind: 'unusable', reason: data.unusable as UnusableReason };
+    // Checked against the allow-list rather than cast, like every other field
+    // crossing this boundary: `unusableMessage` switches on this value and an
+    // unrecognised one would fall through to no message at all.
+    const reason = data.unusable;
+    if (!isUnusableReason(reason)) {
+      return { kind: 'error', message: 'I could not read that set. Try another one.' };
+    }
+    return { kind: 'unusable', reason };
   }
   if (!data || typeof data.note !== 'string') {
     return { kind: 'error', message: 'I could not write that one up. Try again in a moment.' };
@@ -105,6 +112,22 @@ export class FormCapError extends Error {
 /** Narrow an unknown caught value to a cap refusal. */
 export function isCapError(e: unknown): e is FormCapError {
   return e instanceof FormCapError;
+}
+
+/**
+ * Keyed by the union rather than listed as an array, so adding a reason to
+ * `UnusableReason` fails to compile until it is handled here too. A plain
+ * array would let a new reason drift out of sync silently, and the symptom
+ * would be the generic error message replacing a specific one.
+ */
+const UNUSABLE_REASONS: Record<UnusableReason, true> = {
+  wrong_view: true,
+  too_unclear: true,
+  no_reps: true,
+};
+
+function isUnusableReason(v: unknown): v is UnusableReason {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(UNUSABLE_REASONS, v);
 }
 
 /**

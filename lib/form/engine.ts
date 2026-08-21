@@ -343,6 +343,23 @@ export class FormEngine {
           this.repStartT = t;
           this.resetAcc();
           this.accumulate(values);
+          // The frame that leaves the top is still a frame of the descent, so
+          // it gets the same bottom-tracking every other descending frame gets.
+          //
+          // NOT covered by the suite, deliberately rather than by oversight:
+          // reaching `isDown` here needs the smoothed driver to fall from
+          // rep.top to rep.bottom in a single EMA step, which at alpha 0.35
+          // means a raw knee angle under ~46 degrees AND the previous value
+          // sitting right on 160 rather than the ~180 of standing. A real deep
+          // squat can produce the angle; the synthetic skeleton clamps at 55,
+          // so the harness cannot construct the case without contriving it.
+          // The branch costs nothing and removes the doubt.
+          if (this.isDeeper(driver)) {
+            this.bottomDriver = driver;
+            this.repBottomT = t;
+            this.snapshotBottom(values);
+          }
+          if (this.isDown(driver)) this.phase = 'ascending';
         }
         return;
 
