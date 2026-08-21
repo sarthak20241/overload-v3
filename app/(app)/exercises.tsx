@@ -28,6 +28,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { canCheckForm } from '@/lib/form/resolve';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -53,6 +54,8 @@ interface DbExercise {
   category: string;
   created_by: string | null;
   metric_type?: MetricType;
+  /** Form-check movement family (migration 0101). Absent on bundled library rows. */
+  movement_pattern?: string | null;
 }
 
 export default function ExerciseLibraryScreen() {
@@ -140,7 +143,7 @@ export default function ExerciseLibraryScreen() {
     try {
       const { data, error } = await supabase
         .from('exercises')
-        .select('id, name, muscle_group, category, created_by, metric_type')
+        .select('id, name, muscle_group, category, created_by, metric_type, movement_pattern')
         .order('created_at', { ascending: false });
       if (error) throw error;
       if (data) {
@@ -410,6 +413,20 @@ export default function ExerciseLibraryScreen() {
           {ex.muscle_group} · {ex.category}
         </Text>
       </View>
+      {/* Form check. Hidden for exercises a phone camera cannot judge (cardio,
+          machine isolation, static holds) rather than shown and then refused. */}
+      {canCheckForm({ id: ex.id, name: ex.name, movement_pattern: ex.movement_pattern }) && (
+        <TouchableOpacity
+          onPress={() =>
+            router.push({ pathname: '/form-check', params: { exerciseId: ex.id, name: ex.name } })
+          }
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={styles.formCheckBtn}
+          accessibilityLabel={`Check my form on ${ex.name}`}
+        >
+          <Feather name="video" size={14} color={C.accentText} />
+        </TouchableOpacity>
+      )}
       {isCustom && <Feather name="edit-2" size={14} color={C.textMuted} />}
     </TouchableOpacity>
   );
@@ -737,6 +754,7 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, gap: 10 },
+  formCheckBtn: { paddingHorizontal: 6, paddingVertical: 4 },
   rowNameLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, flexShrink: 1 },
   rowMeta: { fontSize: FontSize.sm, marginTop: 2 },
