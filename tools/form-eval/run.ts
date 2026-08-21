@@ -153,6 +153,23 @@ check('rejects a spec with no cues at all', () => {
   assert(!parseFormRuleSpec(bad).ok, 'should have been rejected');
 });
 
+check('rejects cue thresholds the measure can never produce', () => {
+  // Specs are AI-authorable jsonb. A threshold outside the measure's range is
+  // a cue that either fires on every rep or can never fire, and in both cases
+  // the set still reports a confident score built on it.
+  const always = {
+    ...PATTERN_SPECS.squat,
+    cues: [{ ...PATTERN_SPECS.squat.cues[0], test: { op: '>', a: -1000 } }],
+  };
+  assert(!parseFormRuleSpec(always).ok, 'a threshold below every real angle');
+  const never = {
+    ...PATTERN_SPECS.squat,
+    cues: [{ ...PATTERN_SPECS.squat.cues[0], test: { op: '<', a: -1000 } }],
+  };
+  assert(!parseFormRuleSpec(never).ok, 'a threshold no angle can go under');
+  assert(parseFormRuleSpec(PATTERN_SPECS.squat).ok, 'the real spec still passes');
+});
+
 check('rejects rep thresholds the driver can never reach', () => {
   // A jointAngle is 0..180 by construction. Thresholds outside it mean isUp is
   // never true: zero reps for the life of the exercise, and a depth bar pinned

@@ -346,6 +346,22 @@ export function parseFormRuleSpec(input: unknown): SpecParseResult {
       }
       const test = parseTest(raw.test, where, errors);
       if (!test) return;
+      // Bound the thresholds the same way rep.top/rep.bottom are bounded. A
+      // spec is AI-authorable jsonb, and `{op:'>', a:-1000}` fires on every
+      // single rep while `{op:'<', a:-1000}` can never fire at all -- either
+      // way the cue is silently useless and the set still reports a score.
+      const cueMeasure = measures.find((m) => m.id === raw.measure);
+      if (cueMeasure) {
+        const [lo, hi] = measureRange(cueMeasure.kind);
+        const outOfRange = ([['a', test.a], ['b', (test as { b?: number }).b]] as const).filter(
+          ([, v]) => typeof v === 'number' && (v < lo || v > hi)
+        );
+        if (outOfRange.length) {
+          const which = outOfRange.map(([k]) => `test.${k}`).join(' and ');
+          errors.push(`${where}.${which} must be within ${lo}..${hi} for a ${cueMeasure.kind}`);
+          return;
+        }
+      }
       cues.push({
         id: raw.id as string,
         measure: raw.measure,

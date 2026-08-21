@@ -13,6 +13,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -60,6 +61,21 @@ export default function FormCheckScreen() {
   const [note, setNote] = useState<FormNote | null>(null);
   const [summary, setSummary] = useState<FormSummary | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+
+  /**
+   * One finish per set. The Done button sits under the user's thumb at the end
+   * of a hard set, so a double tap is likely rather than exotic, and each call
+   * spends one of a metered daily allowance.
+   */
+  const finishingRef = useRef(false);
+  /** False once the screen is gone, so a late response cannot set state. */
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   const session = useFormSession({
     spec: rules?.spec ?? null,
@@ -110,62 +126,105 @@ export default function FormCheckScreen() {
     };
   }, [client, exerciseId, exerciseName]);
 
+  /**
+   * True once asking again cannot help.
+   *
+   * iOS and Android only ever show the permission sheet once. After that
+   * `requestPermission()` resolves false immediately, so a button wired
+   * straight to it looks broken: the user taps, nothing happens, and there is
+   * nothing on screen telling them the only way out is Settings.
+   */
+  const [permissionBlocked, setPermissionBlocked] = useState(false);
+
+  const askForCamera = useCallback(async () => {
+    const granted = await requestPermission();
+    if (!granted && aliveRef.current) setPermissionBlocked(true);
+  }, [requestPermission]);
+
   useEffect(() => {
-    if (!hasPermission) void requestPermission();
-  }, [hasPermission, requestPermission]);
+    if (!hasPermission) void askForCamera();
+  }, [hasPermission, askForCamera]);
+
+  /** The camera itself failed: no device, hardware in use, config rejected. */
+  const handleCameraError = useCallback((e: { message?: string }) => {
+    console.warn('[form] camera error', e?.message);
+    if (!aliveRef.current) return;
+    setProblem(`I could not start the camera. ${e?.message ?? 'Try again in a moment.'}`);
+    setPhase('unsupported');
+  }, []);
 
   // ── finish the set and get the note ───────────────────────────────────────
   const handleFinish = useCallback(async () => {
     const spec = rules?.spec;
     if (!spec) return;
+    // A second tap while the first is still in flight would spend another
+    // check and race a second response into the same state.
+    if (finishingRef.current) return;
+    finishingRef.current = true;
     haptics.medium();
 
-    const analysis = session.finish();
-    if (!analysis) {
-      // Returning here without moving the phase would leave the screen in
-      // `recording` with a Done button that visibly does nothing.
-      setNote(null);
-      setSummary(null);
-      setProblem('I did not get a usable read on that set. Try another one.');
+    try {
+      const analysis = session.finish();
+      if (!analysis) {
+        // Returning here without moving the phase would leave the screen in
+        // `recording` with a Done button that visibly does nothing.
+        setNote(null);
+        setSummary(null);
+        setProblem('I did not get a usable read on that set. Try another one.');
+        setPhase('result');
+        return;
+      }
+
+      const built = summarize({
+        analysis,
+        spec,
+        exerciseName,
+        pattern: rules?.pattern ?? null,
+        source: 'live',
+      });
+      setSummary(built);
+      setPhase('analyzing');
+
+      if (built.unusableReason) {
+        setNote(null);
+        setProblem(unusableMessage(built.unusableReason, spec));
+        setPhase('result');
+        return;
+      }
+
+      // Bundled library rows and guest customs have no database row to attach
+      // the check to; the coaching still works, it just is not filed by id.
+      const res = await requestFormNote({
+        client,
+        summary: built,
+        exerciseId: exerciseId && isPersistableId(exerciseId) ? exerciseId : null,
+      });
+      // Backing out mid-analysis unmounts the screen; a response landing after
+      // that must not set state on it.
+      if (!aliveRef.current) return;
+      if (res.kind === 'ok') {
+        setNote(res.note);
+        setProblem(null);
+      } else if (res.kind === 'unusable') {
+        setProblem(unusableMessage(res.reason, spec));
+      } else if (res.kind === 'cap' || res.kind === 'no_access') {
+        setProblem(capMessage(res));
+      } else {
+        setProblem(res.message);
+      }
       setPhase('result');
-      return;
-    }
-
-    const built = summarize({
-      analysis,
-      spec,
-      exerciseName,
-      pattern: rules?.pattern ?? null,
-      source: 'live',
-    });
-    setSummary(built);
-    setPhase('analyzing');
-
-    if (built.unusableReason) {
+    } catch (e) {
+      // The request itself threw. Say so rather than stranding the screen in
+      // `analyzing` with a spinner that never resolves.
+      if (!aliveRef.current) return;
       setNote(null);
-      setProblem(unusableMessage(built.unusableReason, spec));
+      setProblem(`That did not go through. ${(e as Error).message}`);
       setPhase('result');
-      return;
+    } finally {
+      // Released on every path, including the early returns above: otherwise
+      // "Check another set" would lead to a Done button that never works again.
+      finishingRef.current = false;
     }
-
-    // Bundled library rows and guest customs have no database row to attach the
-    // check to; the coaching still works, it just is not filed against an id.
-    const res = await requestFormNote({
-      client,
-      summary: built,
-      exerciseId: exerciseId && isPersistableId(exerciseId) ? exerciseId : null,
-    });
-    if (res.kind === 'ok') {
-      setNote(res.note);
-      setProblem(null);
-    } else if (res.kind === 'unusable') {
-      setProblem(unusableMessage(res.reason, spec));
-    } else if (res.kind === 'cap' || res.kind === 'no_access') {
-      setProblem(capMessage(res));
-    } else {
-      setProblem(res.message);
-    }
-    setPhase('result');
   }, [client, exerciseId, exerciseName, rules, session]);
 
   const startRecording = useCallback(() => {
@@ -199,6 +258,7 @@ export default function FormCheckScreen() {
             isActive
             device={cameraDevice}
             outputs={[session.frameOutput]}
+            onError={handleCameraError}
           />
           <PoseOverlay
             pose={session.pose}
@@ -249,7 +309,9 @@ export default function FormCheckScreen() {
           status={session.status}
           error={session.error}
           hasPermission={hasPermission}
-          onRequestPermission={requestPermission}
+          permissionBlocked={permissionBlocked}
+          onRequestPermission={askForCamera}
+          onOpenSettings={openAppSettings}
           onStart={startRecording}
         />
       )}
@@ -285,6 +347,13 @@ export default function FormCheckScreen() {
   );
 }
 
+/** Take the user to this app's settings page, where camera access lives. */
+function openAppSettings(): void {
+  void Linking.openSettings().catch(() => {
+    // Nothing sensible to do if the OS refuses; the copy already says where.
+  });
+}
+
 /**
  * One wording for a spent allowance, wherever it is hit.
  *
@@ -310,7 +379,9 @@ function SetupPanel({
   status,
   error,
   hasPermission,
+  permissionBlocked,
   onRequestPermission,
+  onOpenSettings,
   onStart,
 }: {
   bottomInset: number;
@@ -318,17 +389,27 @@ function SetupPanel({
   status: string;
   error: string | null;
   hasPermission: boolean;
+  permissionBlocked: boolean;
   onRequestPermission: () => void;
+  onOpenSettings: () => void;
   onStart: () => void;
 }) {
   if (!hasPermission) {
+    // Once the OS has been answered, it will not ask again. Sending the user to
+    // Settings is the only route back, so say that instead of offering a button
+    // that silently does nothing.
     return (
       <Sheet bottomInset={bottomInset}>
         <Text style={styles.sheetLead}>I need the camera to watch your set.</Text>
         <Text style={styles.sheetSub}>
-          Everything is worked out on your phone. Your video is never uploaded.
+          {permissionBlocked
+            ? 'Camera access is turned off for Overload. Open Settings to switch it on, then come back.'
+            : 'Everything is worked out on your phone. Your video is never uploaded.'}
         </Text>
-        <PrimaryButton label="Allow camera" onPress={onRequestPermission} />
+        <PrimaryButton
+          label={permissionBlocked ? 'Open Settings' : 'Allow camera'}
+          onPress={permissionBlocked ? onOpenSettings : onRequestPermission}
+        />
       </Sheet>
     );
   }

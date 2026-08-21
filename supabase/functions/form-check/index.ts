@@ -157,12 +157,26 @@ function keepAlive(p: Promise<unknown>): void {
  * daily checks for it is indefensible. Best effort, and scoped to this user's
  * own rows.
  */
-async function refundFormCheckSlot(admin: SupabaseClient, userId: string): Promise<void> {
+async function refundFormCheckSlot(
+  admin: SupabaseClient,
+  userId: string,
+  reservedAfterMs: number,
+): Promise<void> {
   try {
+    // Bounded to rows this request could have created. The table has no id, so
+    // the newest row is the best handle available -- but without the lower
+    // bound a refund could delete a reservation made minutes earlier, handing
+    // back a slot that was legitimately spent.
+    //
+    // Which physical row goes is not important: all rows here belong to the
+    // same user and the cap counts them, so the balance lands in the same
+    // place either way.
+    const since = new Date(reservedAfterMs - 1000).toISOString();
     const { data } = await admin
       .from("form_check_rate_limit")
       .select("request_at")
       .eq("user_id", userId)
+      .gte("request_at", since)
       .order("request_at", { ascending: false })
       .limit(1);
     const newest = data?.[0]?.request_at;
@@ -409,7 +423,7 @@ async function handleAnalyze(args: {
       }),
     );
     // Our outage, not their check.
-    keepAlive(refundFormCheckSlot(admin, userId));
+    keepAlive(refundFormCheckSlot(admin, userId, startedAtMs));
     return respond(
       { error: "form_check_failed", message: "I could not write that one up. Try again in a moment." },
       result.status === 504 ? 504 : 502,
@@ -429,7 +443,7 @@ async function handleAnalyze(args: {
   );
 
   if (!input || typeof input.note !== "string") {
-    keepAlive(refundFormCheckSlot(admin, userId));
+    keepAlive(refundFormCheckSlot(admin, userId, startedAtMs));
     return respond(
       { error: "form_check_failed", message: "I could not write that one up. Try again in a moment." },
       502,
@@ -625,7 +639,7 @@ async function handleAuthorRules(args: {
         errorMessage: `anthropic_${result.status}: ${result.body}`,
       }),
     );
-    keepAlive(refundFormCheckSlot(admin, userId));
+    keepAlive(refundFormCheckSlot(admin, userId, startedAtMs));
     return respond({ error: "author_failed" }, result.status === 504 ? 504 : 502);
   }
 
@@ -642,7 +656,7 @@ async function handleAuthorRules(args: {
   );
 
   if (!input) {
-    keepAlive(refundFormCheckSlot(admin, userId));
+    keepAlive(refundFormCheckSlot(admin, userId, startedAtMs));
     return respond({ error: "author_failed" }, 502);
   }
 
@@ -655,7 +669,7 @@ async function handleAuthorRules(args: {
   // every read, so a spec that slips through here can never be acted on. The
   // check below exists to fail fast, not to be the gate.
   if (!looksLikeSpec(input.spec)) {
-    keepAlive(refundFormCheckSlot(admin, userId));
+    keepAlive(refundFormCheckSlot(admin, userId, startedAtMs));
     return respond({ error: "author_failed", reason: "malformed_spec" }, 502);
   }
 

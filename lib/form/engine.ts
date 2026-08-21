@@ -343,6 +343,17 @@ export class FormEngine {
           this.repStartT = t;
           this.resetAcc();
           this.accumulate(values);
+          // The frame that leaves the top is still a frame of the descent, so
+          // it gets the same bottom-tracking every other descending frame gets.
+          // Skipping it would lose the bottom whenever the deepest sample
+          // happens to be this one -- unlikely at 22 fps, much less so on the
+          // upload path, which samples at 6.
+          if (this.isDeeper(driver)) {
+            this.bottomDriver = driver;
+            this.repBottomT = t;
+            this.snapshotBottom(values);
+          }
+          if (this.isDown(driver)) this.phase = 'ascending';
         }
         return;
 
