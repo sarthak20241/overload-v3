@@ -37,6 +37,9 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.draft == false
+    # Nothing here uses GITHUB_TOKEN: gh runs on the PAT in GH_TOKEN. Drop the
+    # default token's scopes entirely rather than leave them lying around.
+    permissions: {}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
