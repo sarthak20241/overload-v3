@@ -86,7 +86,20 @@ export function ShareSheet({ visible, onClose, card }: Props) {
                 },
               ]}
             >
-              <View style={{ transform: [{ scale: previewScale }], width: 1080, height: 1920 }}>
+              {/*
+                Anchor the scale to the top-left. `transform: scale` pivots on the
+                element's centre by default, and this child is 1080x1920 inside a
+                frame a third that size — pivoting on its centre threw the card
+                outside the frame, where `overflow: hidden` clipped it to nothing.
+              */}
+              <View
+                style={{
+                  transform: [{ scale: previewScale }],
+                  transformOrigin: 'top left',
+                  width: 1080,
+                  height: 1920,
+                }}
+              >
                 {card}
               </View>
             </View>
