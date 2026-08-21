@@ -8,7 +8,9 @@ import { recapCoachLine, formatDate } from '@/lib/share/shareCopy';
 const UNTRAINED = '#2c2c31';
 const OUTLINE = 'rgba(255,255,255,0.16)';
 const FG = '#ffffff';
+const MUTED = '#8a8a93';
 const FONT_BOLD = 'SpaceGrotesk_700Bold';
+const FONT_MEDIUM = 'SpaceGrotesk_500Medium';
 
 interface Props {
   name: string;
@@ -63,14 +65,26 @@ export const RecapShareCard = forwardRef<View, Props>(function RecapShareCard(
       coachLine={recapCoachLine(prCount, durationSeconds)}
     >
       {hasMuscle ? (
-        <Body
-          data={data}
-          side="front"
-          gender={libGender}
-          scale={2.0}
-          border={OUTLINE}
-          defaultFill={UNTRAINED}
-        />
+        // Both sides, like the Body Distribution card. Front-only used to hide
+        // the whole session for anything pull- or leg-biased: a back day lit
+        // nothing but the tips of the traps.
+        <View style={styles.bodies}>
+          {(['front', 'back'] as const).map((side) => (
+            <View key={side} style={styles.bodyCol}>
+              <Body
+                data={data}
+                side={side}
+                gender={libGender}
+                scale={1.7}
+                border={OUTLINE}
+                defaultFill={UNTRAINED}
+              />
+              <Text style={styles.sideLabel}>
+                {side === 'front' ? 'Front' : 'Back'}
+              </Text>
+            </View>
+          ))}
+        </View>
       ) : (
         <View style={styles.bigStat}>
           <Text style={styles.bigNumber}>{Math.round(totalVolumeKg)}</Text>
@@ -82,6 +96,22 @@ export const RecapShareCard = forwardRef<View, Props>(function RecapShareCard(
 });
 
 const styles = StyleSheet.create({
+  bodies: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    gap: 60,
+  },
+  bodyCol: {
+    alignItems: 'center',
+    gap: 12,
+  },
+  sideLabel: {
+    fontFamily: FONT_MEDIUM,
+    fontSize: 28,
+    color: MUTED,
+    letterSpacing: 1,
+  },
   bigStat: {
     alignItems: 'center',
   },
