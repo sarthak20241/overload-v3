@@ -110,22 +110,63 @@ export const SKELETON_EDGES: ReadonlyArray<readonly [KeypointName, KeypointName]
 ];
 
 /**
+ * Where the frame sits inside the square the model actually saw.
+ *
+ * The resizer runs in `contain` mode, which preserves the frame's aspect ratio
+ * and pads the leftover with bars. MoveNet then reports coordinates against the
+ * PADDED SQUARE, not against the frame, so a point halfway across the image is
+ * not at x = 0.5. `spanX`/`spanY` are the fraction of the square the frame
+ * occupies on each axis, and `padX`/`padY` the bar before it.
+ */
+export interface Letterbox {
+  padX: number;
+  padY: number;
+  spanX: number;
+  spanY: number;
+}
+
+/** No padding: coordinates already describe the frame. */
+export const NO_LETTERBOX: Letterbox = { padX: 0, padY: 0, spanX: 1, spanY: 1 };
+
+/**
+ * Work out the padding a `contain` resize into a square introduces.
+ *
+ * The longer axis fills the square; the shorter one is centred inside it.
+ */
+export function letterboxFor(frameWidth: number, frameHeight: number): Letterbox {
+  'worklet';
+  if (!(frameWidth > 0) || !(frameHeight > 0)) return NO_LETTERBOX;
+  if (frameWidth >= frameHeight) {
+    const spanY = frameHeight / frameWidth;
+    return { padX: 0, padY: (1 - spanY) / 2, spanX: 1, spanY };
+  }
+  const spanX = frameWidth / frameHeight;
+  return { padX: (1 - spanX) / 2, padY: 0, spanX, spanY: 1 };
+}
+
+/**
  * Decode a MoveNet output tensor into a PoseFrame.
+ *
+ * Coordinates come out normalised to the FRAME (0..1 across its real width and
+ * height), with the letterbox padding removed. That is the space the overlay
+ * draws in and the space `geometry.ts` expects, given the frame's aspect ratio.
  *
  * @param out  Flat Float32Array of length 51: 17 * (y, x, score).
  * @param t    Frame timestamp in ms.
  * @param mirrored  True for the front camera, where the preview is mirrored and
  *                  x must be flipped so "left knee" means the user's left.
+ * @param box  Padding the resize introduced. Defaults to none.
  */
 export function decodeMoveNet(
   out: ArrayLike<number>,
   t: number,
-  mirrored = false
+  mirrored = false,
+  box: Letterbox = NO_LETTERBOX
 ): PoseFrame {
   const keypoints = {} as Record<KeypointName, Keypoint>;
   for (let i = 0; i < KEYPOINT_NAMES.length; i++) {
-    const y = out[i * 3];
-    const x = out[i * 3 + 1];
+    const y = (out[i * 3] - box.padY) / box.spanY;
+    const x = (out[i * 3 + 1] - box.padX) / box.spanX;
     const score = out[i * 3 + 2];
     keypoints[KEYPOINT_NAMES[i]] = {
       x: mirrored ? 1 - x : x,

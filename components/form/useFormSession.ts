@@ -28,7 +28,7 @@ import { useFrameOutput } from 'react-native-vision-camera';
 import { useResizer } from 'react-native-vision-camera-resizer';
 
 import { FormEngine, type LiveState, type SetAnalysis } from '@/lib/form/engine';
-import { decodeMoveNet } from '@/lib/form/keypoints';
+import { decodeMoveNet, letterboxFor } from '@/lib/form/keypoints';
 import { checkOutputShape, deriveInputSpec, viewOutput } from '@/lib/form/model';
 import { ensurePoseModel } from '@/lib/form/modelFile';
 import type { FormRuleSpec } from '@/lib/form/spec';
@@ -83,8 +83,6 @@ const IDLE_LIVE: LiveState = {
 
 export interface UseFormSessionArgs {
   spec: FormRuleSpec | null;
-  /** Source frame aspect ratio. Undoes the squeeze into the square model input. */
-  aspect: number;
   /** True for the front camera, where the preview is mirrored. */
   mirrored?: boolean;
   /** Stop feeding the engine without tearing the camera down. */
@@ -93,7 +91,6 @@ export interface UseFormSessionArgs {
 
 export function useFormSession({
   spec,
-  aspect,
   mirrored = false,
   paused = false,
 }: UseFormSessionArgs): FormSession {
@@ -105,13 +102,21 @@ export function useFormSession({
   const lastFedAtRef = useRef(0);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  /**
+   * The camera frame's aspect ratio, learned from the first frame.
+   *
+   * It has to come from the frame and not from the screen: the sensor delivers
+   * something like 16:9 regardless of how tall the phone is, and grading a lift
+   * with the screen's ratio skews every angle by tens of degrees.
+   */
+  const frameAspectRef = useRef(1);
 
   // A fresh engine whenever the rules change, so switching exercise mid-screen
   // never grades one lift with another's thresholds.
   useEffect(() => {
-    engineRef.current = spec ? new FormEngine(spec, { aspect }) : null;
+    engineRef.current = spec ? new FormEngine(spec, { aspect: frameAspectRef.current }) : null;
     setLive(IDLE_LIVE);
-  }, [spec, aspect]);
+  }, [spec]);
 
   // The model is fetched to disk on first use rather than bundled; see
   // lib/form/modelFile.ts for why. Loading is imperative rather than via
@@ -192,7 +197,7 @@ export function useFormSession({
    * and pushes a snapshot into React only when the rendered numbers change.
    */
   const ingest = useCallback(
-    (buffer: number[], t: number) => {
+    (buffer: number[], t: number, frameWidth: number, frameHeight: number) => {
       if (pausedRef.current) return;
       const engine = engineRef.current;
       if (!engine) return;
@@ -201,6 +206,16 @@ export function useFormSession({
       if (now - lastFedAtRef.current < ENGINE_MIN_INTERVAL_MS) return;
       lastFedAtRef.current = now;
 
+      // The first real frame tells us the sensor's shape. Nothing before this
+      // point could have known it, so the engine starts on 1 and is corrected
+      // here, before it has seen a single pose.
+      const a = frameHeight > 0 ? frameWidth / frameHeight : 1;
+      if (a !== frameAspectRef.current) {
+        frameAspectRef.current = a;
+        engine.setAspect(a);
+      }
+
+      // Already un-letterboxed on the frame thread, so no correction here.
       const frame = decodeMoveNet(buffer, now, mirrored);
       const next = engine.push(frame);
 
@@ -239,13 +254,23 @@ export function useFormSession({
 
           // Copy into a plain array: the underlying buffer is reused by the
           // next inference, so holding a view would show tearing.
+          //
+          // The padding the `contain` resize added is removed here, once, so
+          // both consumers below work in the same space: coordinates across the
+          // real frame rather than across the padded square the model saw.
+          const box = letterboxFor(frame.width, frame.height);
           const flat: number[] = new Array(51);
-          for (let i = 0; i < 51; i++) flat[i] = view[i];
+          for (let i = 0; i < 51; i++) {
+            const c = i % 3;
+            if (c === 0) flat[i] = (view[i] - box.padY) / box.spanY;
+            else if (c === 1) flat[i] = (view[i] - box.padX) / box.spanX;
+            else flat[i] = view[i];
+          }
 
           // UI thread reads this directly, no bridge hop.
           pose.value = flat;
           // JS thread runs the rules.
-          runOnJS(ingest)(flat, Date.now());
+          runOnJS(ingest)(flat, Date.now(), frame.width, frame.height);
         } finally {
           resized.dispose();
         }
@@ -260,11 +285,13 @@ export function useFormSession({
   const finish = useCallback(() => engineRef.current?.finish() ?? null, []);
 
   const reset = useCallback(() => {
-    engineRef.current = spec ? new FormEngine(spec, { aspect }) : null;
+    // Keep the aspect the camera already reported: a reset starts a new set on
+    // the same sensor, so re-learning it would grade the first frames on 1.
+    engineRef.current = spec ? new FormEngine(spec, { aspect: frameAspectRef.current }) : null;
     lastFedAtRef.current = 0;
     pose.value = [];
     setLive(IDLE_LIVE);
-  }, [spec, aspect, pose]);
+  }, [spec, pose]);
 
   const status: SessionStatus = modelError ? 'error' : ready ? 'ready' : 'loading';
 

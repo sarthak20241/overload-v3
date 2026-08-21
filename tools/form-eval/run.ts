@@ -10,7 +10,7 @@
  */
 
 import { FormEngine, evalMeasure } from '../../lib/form/engine';
-import { decodeMoveNet } from '../../lib/form/keypoints';
+import { decodeMoveNet, letterboxFor } from '../../lib/form/keypoints';
 import {
   MOVENET_OUTPUT_LENGTH,
   aspectOf,
@@ -18,7 +18,7 @@ import {
   deriveInputSpec,
   viewOutput,
 } from '../../lib/form/model';
-import { angleAt, detectSide } from '../../lib/form/geometry';
+import { angleAt, detectSide, resolveJoint } from '../../lib/form/geometry';
 import { PATTERN_SPECS, guessPattern, specForPattern } from '../../lib/form/patterns';
 import { parseFormRuleSpec, type FormRuleSpec } from '../../lib/form/spec';
 import { occlude, pressSequence, squatSequence, squatSkeleton } from './synth';
@@ -392,6 +392,52 @@ check('decodes a MoveNet buffer into keypoints, y first', () => {
   near(frame.keypoints.nose.x, 0.75, 1e-6, 'nose x');
   near(frame.keypoints.nose.score, 0.9, 1e-6, 'nose score');
   eq(frame.t, 1234, 't');
+});
+
+check('letterbox padding is computed from the frame, not the screen', () => {
+  // A 16:9 frame contained into a square keeps its full width and is centred
+  // vertically: 1080 * 256/1920 = 144 rows of 256, so 0.5625 of the square.
+  const land = letterboxFor(1920, 1080);
+  near(land.spanY, 0.5625, 1e-9, 'landscape spanY');
+  near(land.padY, 0.21875, 1e-9, 'landscape padY');
+  eq(land.spanX, 1, 'landscape spanX');
+  const port = letterboxFor(1080, 1920);
+  near(port.spanX, 0.5625, 1e-9, 'portrait spanX');
+  near(port.padY, 0, 1e-9, 'portrait padY');
+  eq(letterboxFor(512, 512).spanX, 1, 'square needs no padding');
+  // A frame with no dimensions must not produce Infinity coordinates.
+  eq(letterboxFor(0, 0).spanX, 1, 'degenerate falls back to none');
+});
+
+check('decoding undoes the letterbox so coordinates describe the frame', () => {
+  const box = letterboxFor(1920, 1080);
+  const raw = new Float32Array(MOVENET_OUTPUT_LENGTH);
+  // Centre of the square is the centre of the image.
+  raw[0] = 0.5;
+  raw[1] = 0.5;
+  // The image's top edge sits just below the top bar.
+  raw[3] = box.padY;
+  raw[4] = 0;
+  const frame = decodeMoveNet(raw, 0, false, box);
+  near(frame.keypoints.nose.y, 0.5, 1e-9, 'centre y');
+  near(frame.keypoints.nose.x, 0.5, 1e-9, 'centre x');
+  near(frame.keypoints.leftEye.y, 0, 1e-9, 'top edge maps to 0');
+});
+
+check('the frame aspect, not the screen aspect, decides the angles', () => {
+  // A phone screen is about 0.46 wide-to-tall while the sensor is 16:9. Feeding
+  // the screen's ratio bends every angle by tens of degrees, which is the
+  // difference between counting a rep and telling the lifter there was none.
+  const pose = { t: 0, keypoints: squatSkeleton({ depth: 0.7 }) };
+  const angle = (aspect: number) => {
+    const hip = resolveJoint(pose, 'hip', 'right', aspect)!;
+    const knee = resolveJoint(pose, 'knee', 'right', aspect)!;
+    const ankle = resolveJoint(pose, 'ankle', 'right', aspect)!;
+    return angleAt(hip, knee, ankle);
+  };
+  const withFrame = angle(1920 / 1080);
+  const withScreen = angle(1179 / 2556);
+  assert(Math.abs(withFrame - withScreen) > 20, 'the two must not be interchangeable');
 });
 
 check('mirrors x for the front camera', () => {

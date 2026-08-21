@@ -55,13 +55,8 @@ export default function FormCheckScreen() {
   const [summary, setSummary] = useState<FormSummary | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
-  // The preview fills the screen, so the frames the model sees carry the
-  // screen's aspect ratio. Without this every angle would be skewed.
-  const aspect = width / height;
-
   const session = useFormSession({
     spec: rules?.spec ?? null,
-    aspect,
     paused: phase !== 'recording',
   });
 

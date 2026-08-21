@@ -120,7 +120,7 @@ function newAcc(): MeasureAcc {
 }
 
 export class FormEngine {
-  private readonly aspect: number;
+  private aspect: number;
   private readonly ema = new Map<string, Ema>();
   private readonly sideVoter = new SideVoter();
 
@@ -155,6 +155,17 @@ export class FormEngine {
     this.aspect = opts.aspect ?? 1;
     for (const m of spec.measures) this.ema.set(m.id, new Ema(opts.alpha ?? 0.35));
     this.resetAcc();
+  }
+
+  /**
+   * Correct the frame aspect ratio once the camera has reported it.
+   *
+   * Nothing knows the sensor's shape until the first frame arrives, and every
+   * angle depends on it, so the engine is built with a placeholder and told the
+   * real value before it grades anything.
+   */
+  setAspect(aspect: number): void {
+    if (Number.isFinite(aspect) && aspect > 0) this.aspect = aspect;
   }
 
   /** Feed one inference result. Returns the state to render this frame. */
