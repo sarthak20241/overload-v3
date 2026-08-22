@@ -697,4 +697,142 @@ export const CASES: EvalCase[] = [
     hour: 14,
     expect: { declined: true },
   },
+
+  // ── Audit-derived cases (2026-08-22 prompt/schema audit) ─────────────────
+  // Each case asserts DESIRED behavior. Ones tagged [I6*]/[I8] are expected to
+  // FAIL until that improvement lands; they are the gate for it, not noise.
+
+  // Qualifier survival (the low-fat-paneer class; fixed 2026-08-21, keep guarded).
+  {
+    id: "audit-low-fat-paneer",
+    text: "50g milky mist low fat paneer",
+    hour: 9,
+    expect: {
+      minItems: 1, maxItems: 1,
+      // Real product: 190 kcal/100g -> ~95 for 50g. Full-fat would be ~132-142.
+      items: [{ nameIncludes: "paneer", kcalBetween: [80, 120] }],
+    },
+  },
+  {
+    id: "audit-double-toned-300",
+    text: "amul double toned milk 300ml",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      // Double toned ~35-42 kcal/100ml. Toned (58) or full cream (67+) lands >150.
+      items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [90, 140] }],
+    },
+  },
+  {
+    id: "audit-roti-medium-size",
+    text: "roti medium size",
+    hour: 13,
+    // Size words belong in unit, not name; must not derail the roti match.
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "roti" }] },
+  },
+
+  // [I6a] Deletion by text. Impossible today (nets restore, qty clamp).
+  {
+    id: "audit-delete-by-text",
+    text: "100g paneer and 50g tofu",
+    hour: 13,
+    followUp: "remove the tofu",
+    expectCorrection: true,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer" }] },
+  },
+  // [I6b] Challenge + fix must keep the fix.
+  {
+    id: "audit-challenge-plus-fix",
+    text: "150g paneer",
+    hour: 13,
+    followUp: "that seems high, make it 100g",
+    expectCorrection: true,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer", gramsBetween: [100, 100] }] },
+  },
+  // [I6c] Correction mixed with addition.
+  {
+    id: "audit-correction-plus-addition",
+    text: "2 roti and dal",
+    hour: 13,
+    followUp: "make the roti 3 and add a dosa",
+    expectCorrection: true,
+    expect: {
+      minItems: 3, maxItems: 3,
+      items: [
+        { nameIncludes: "roti", gramsBetween: [105, 230] },
+        { nameIncludes: "dal" },
+        { nameIncludes: "dosa" },
+      ],
+    },
+  },
+  // [I8] Full-day logging (user-requested FEATURE: one message, several meals).
+  {
+    id: "audit-multi-meal-day",
+    text: "breakfast was 2 eggs, lunch was dal chawal",
+    hour: 20,
+    expect: { minItems: 2, items: [{ nameIncludes: "egg" }] },
+  },
+  // [I6e] Mentioned food is not eaten food.
+  {
+    id: "audit-asked-not-eaten",
+    text: "should I eat a protein bar after my workout?",
+    hour: 18,
+    expect: { declined: true },
+  },
+  {
+    id: "audit-skipped-meal",
+    text: "skipped breakfast today",
+    hour: 11,
+    expect: { declined: true },
+  },
+  {
+    id: "audit-craving",
+    text: "craving pizza right now",
+    hour: 16,
+    expect: { declined: true },
+  },
+
+  // Ambiguities from the same audit.
+  {
+    id: "audit-no-sugar-tea",
+    text: "1 cup milk tea",
+    hour: 17,
+    followUp: "no sugar in the tea",
+    expectCorrection: true,
+    // Unsugared milk tea for a cup: the sugared row (~70-110) must not survive.
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "tea", kcalBetween: [10, 75] }] },
+  },
+  {
+    id: "audit-hindi-doodh",
+    text: "1 glass doodh and 2 roti",
+    hour: 8,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [{ nameIncludes: "milk", nameIncludesAny: ["doodh"] }, { nameIncludes: "roti" }],
+    },
+  },
+  {
+    id: "audit-range-quantity",
+    text: "2-3 rotis with sabzi",
+    hour: 13,
+    expect: { minItems: 2, items: [{ nameIncludes: "roti", gramsBetween: [80, 215] }] },
+  },
+  {
+    id: "audit-half-glass",
+    text: "half glass milk",
+    hour: 21,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "milk", gramsBetween: [90, 160] }] },
+  },
+  {
+    id: "audit-compound-amount",
+    text: "half packet (35g) maggi",
+    hour: 17,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "maggi", gramsBetween: [35, 35] }] },
+  },
+  {
+    id: "audit-brand-typo",
+    text: "milkymist paneer 50g",
+    hour: 9,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer", gramsBetween: [50, 50] }] },
+  },
 ];
