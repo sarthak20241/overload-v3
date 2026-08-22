@@ -21,6 +21,7 @@ import {
 import { Ema, angleAt, detectSide, resolveJoint } from '../../lib/form/geometry';
 import { PATTERN_SPECS, guessPattern, specForPattern } from '../../lib/form/patterns';
 import { parseFormRuleSpec, type FormRuleSpec } from '../../lib/form/spec';
+import { summarize } from '../../lib/form/summarize';
 import { occlude, pressSequence, squatSequence, squatSkeleton } from './synth';
 import { runResolveTests } from './resolve.test';
 
@@ -244,6 +245,37 @@ check('reports plausible tempo', () => {
   const r = analysis.reps[1];
   near(r.tempoDownMs, 1000, 350, 'tempoDown');
   near(r.tempoUpMs, 1000, 350, 'tempoUp');
+});
+
+check('a clip and a live stream of the same lift grade the same', () => {
+  // The upload path samples at 6 fps, the live path feeds the engine at ~22.
+  // videoFrames.ts promises "same engine, same rules, same summary" -- that
+  // only holds if the smoothing is anchored to time rather than to frame
+  // count. With a per-sample alpha the filter was 3.7x more aggressive on a
+  // clip, and a clean deep squat that scored 100 live came back as 1 rep and
+  // "Sit deeper".
+  const grade = (fps: number, framesPerRep: number, peak: number) => {
+    const eng = new FormEngine(SQUAT, { aspect: 1 });
+    for (const f of squatSequence({ reps: 3, peak, fps, framesPerRep })) eng.push(f);
+    const a = eng.finish();
+    const s = summarize({
+      analysis: a,
+      spec: SQUAT,
+      exerciseName: 'Squat',
+      pattern: 'squat',
+      source: 'live',
+    });
+    return { reps: s.repCount, score: s.score, cues: s.cues.map((c) => c.id).join(',') };
+  };
+
+  // 2 seconds per rep at each cadence, three depths.
+  for (const peak of [1.0, 0.75, 0.5]) {
+    const live = grade(22, 44, peak);
+    const clip = grade(6, 12, peak);
+    eq(clip.reps, live.reps, `reps at peak ${peak}`);
+    eq(clip.score, live.score, `score at peak ${peak}`);
+    eq(clip.cues, live.cues, `cues at peak ${peak}`);
+  }
 });
 
 check('an abandoned dip does not contaminate the next rep', () => {

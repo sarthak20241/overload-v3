@@ -196,20 +196,52 @@ export function detectSide(frame: PoseFrame, aspect = 1): CameraSide {
  * both rep edges and cue thresholds. Alpha 0.35 removes that jitter while
  * staying responsive enough for a fast rep (the lag is roughly two frames).
  * NaN inputs (a missing joint) pass through without poisoning the state.
+ *
+ * The smoothing is anchored to TIME, not to sample count. A fixed per-sample
+ * alpha means the filter is 3.7x more aggressive at the upload path's 6 fps
+ * than at the live path's ~22, which flattens the peaks of the rep: measured
+ * on a clean deep squat, the live path counted 3 reps and scored 100 while the
+ * same motion at 6 fps counted 1 and fired "Sit deeper". Two paths grading one
+ * lift differently is exactly what lib/form/videoFrames.ts promises cannot
+ * happen, so alpha is interpreted at NOMINAL_DT_MS and rescaled by the real
+ * gap between samples.
  */
+/** The live path's frame interval; the cadence alpha is quoted against. */
+const NOMINAL_DT_MS = 45;
 export class Ema {
   private value: number | null = null;
   private staleFrames = 0;
+  private readonly tau: number;
 
-  constructor(private readonly alpha = 0.35) {}
+  /**
+   * `alpha` is the weight a new sample gets at NOMINAL_DT_MS. It is converted
+   * to a time constant so the smoothing is per unit time rather than per
+   * sample, which is the only way one engine can grade two cadences alike.
+   */
+  constructor(alpha = 0.35) {
+    const a = clamp(alpha, 0.01, 0.999);
+    this.tau = -NOMINAL_DT_MS / Math.log(1 - a);
+  }
 
-  push(v: number): number {
+  /**
+   * @param dtMs Time since the previous sample. Omitted means nominal.
+   */
+  push(v: number, dtMs: number = NOMINAL_DT_MS): number {
     if (Number.isNaN(v)) {
       this.staleFrames++;
       return this.value ?? NaN;
     }
     this.staleFrames = 0;
-    this.value = this.value === null ? v : this.alpha * v + (1 - this.alpha) * this.value;
+    if (this.value === null) {
+      this.value = v;
+      return this.value;
+    }
+    // More elapsed time means the old value is less relevant, so a sparse
+    // stream follows the signal harder. At the nominal step this reduces
+    // exactly to the old fixed-alpha behaviour.
+    const dt = Number.isFinite(dtMs) && dtMs > 0 ? dtMs : NOMINAL_DT_MS;
+    const a = 1 - Math.exp(-dt / this.tau);
+    this.value = a * v + (1 - a) * this.value;
     return this.value;
   }
 

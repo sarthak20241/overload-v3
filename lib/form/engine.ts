@@ -188,6 +188,9 @@ export class FormEngine {
   /** Feed one inference result. Returns the state to render this frame. */
   push(frame: PoseFrame): LiveState {
     this.frames++;
+    // Gap since the previous sample, so smoothing tracks time rather than
+    // frame count and a 6 fps clip is filtered like a 22 fps stream.
+    const dtMs = Number.isNaN(this.lastT) ? NaN : frame.t - this.lastT;
     if (Number.isNaN(this.firstT)) this.firstT = frame.t;
     this.lastT = frame.t;
 
@@ -217,7 +220,7 @@ export class FormEngine {
     for (const m of this.spec.measures) {
       const raw = evalMeasure(m, frame, this.side, this.aspect);
       const ema = this.ema.get(m.id)!;
-      const smoothed = ema.push(raw);
+      const smoothed = ema.push(raw, dtMs);
       // Riding out a frame or two of occlusion is what the EMA is for. Beyond
       // that the value is a memory, not a measurement, and folding it into the
       // aggregates would report a joint that has not been seen in a second as
