@@ -344,6 +344,14 @@ improvement log). Open items surfaced by walking the code with the user:
   decide latency (output-token bound at ~7.4ms/tok).
   Complements 0102 (boosts 2+-logged foods in SEARCH ranking - different stage:
   which rows surface, vs which candidate decide picks).
+- I14 (ux, PROPOSED, user question): the challenge path is undiscoverable.
+  Ungrounded items already trigger an AUTOMATIC web refine with a visible
+  "checking trusted sources online" line on the card - that half works with no
+  user action. But a WRONGLY-matched item offers nothing: the user must know to
+  type "that seems high" before answerAboutPrevious offers a lookup. No hint
+  exists anywhere. Keep the principle (never volunteer doubt on every meal, it
+  teaches distrust); add a small affordance on LOW-CONFIDENCE lines only, which
+  already carry a chip, or one-time empty-state coaching.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
