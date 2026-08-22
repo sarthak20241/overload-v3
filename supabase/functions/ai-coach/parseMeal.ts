@@ -1933,17 +1933,24 @@ export function reconcileQuantity(
   servingsByFood: Map<string, ServingOption[]>,
 ): ParsedItem[] {
   return items.map((item) => {
-    if (!item.food_id || !(item.grams > 0)) return item;
+    if (!(item.grams > 0)) return item;
     // A bare unit label ("g", "ml") IS the amount: there is no serving size to
     // divide by, so the displayed quantity must equal the logged grams. Without
     // this the card prints decide's own quantity verbatim, which is how "250ml
     // toned milk" shipped reading "100 x ml" while its macros were right for
     // 250 (observed on device 2026-08-22). The anchor path below cannot catch
     // it: a bare unit never matches a serving label, so it returned untouched.
+    //
+    // This branch runs for EVERY source, before the food_id gate below. It is
+    // pure display arithmetic and needs no row: an ESTIMATE line has a quantity
+    // and a label just like a catalog one, and gating it on food_id left
+    // exactly the same "100 x ml" caption on every ungrounded line.
     if (MASS_UNITS.has(item.serving_label.trim().toLowerCase())) {
       const q = Math.round(item.grams * 100) / 100;
       return q > 0 && Math.abs(q - item.quantity) > 0.05 ? { ...item, quantity: q } : item;
     }
+    // The serving-anchor path below DOES need a row to look anchors up on.
+    if (!item.food_id) return item;
     const servings = servingsByFood.get(item.food_id);
     if (!servings || servings.length === 0) return item;
     const match = servings.find((s) => s.label.toLowerCase() === item.serving_label.toLowerCase());
