@@ -6,7 +6,7 @@
 // (which curated row it picks, exact grams for "1 plate") and tight where
 // the math must be right (explicit amounts like "50g" or "500 ml").
 
-export type Tier = "catalog" | "off" | "web" | "estimate" | "manual";
+export type Tier = "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
 
 export interface ItemExpectation {
   // Case-insensitive substring that must appear in some logged item's name.
@@ -834,5 +834,61 @@ export const CASES: EvalCase[] = [
     text: "milkymist paneer 50g",
     hour: 9,
     expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer", gramsBetween: [50, 50] }] },
+  },
+
+  // ── Candidate acceptability (I11) ────────────────────────────────────────
+  // Droppable qualifiers: the generic row IS correct, must NOT become estimate.
+  {
+    id: "accept-brand-on-commodity",
+    text: "200ml amul toned milk",
+    hour: 8,
+    // Toned milk is grade-standardized: a generic Toned Milk row is right.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", tiers: ["catalog", "off", "fatsecret"],
+                gramsBetween: [200, 200], kcalBetween: [90, 145] }],
+    },
+  },
+  {
+    id: "accept-provenance-words",
+    text: "100g fresh homemade curd",
+    hour: 13,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludesAny: ["curd", "dahi", "yogurt"], nameIncludes: "curd",
+                tiers: ["catalog", "off", "fatsecret"] }],
+    },
+  },
+  // Non-droppable qualifiers: a row without them is NOT acceptable.
+  {
+    id: "accept-grade-double-toned",
+    text: "500ml double toned milk",
+    hour: 8,
+    // Double toned ~1.5% fat (~42 kcal/100ml). A Toned row (58) reads ~38% high.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", gramsBetween: [500, 500], kcalBetween: [150, 240] }],
+    },
+  },
+  {
+    id: "accept-brand-on-formulated",
+    text: "1 quest protein bar",
+    hour: 17,
+    // Generic "protein bar" averages over 180-250 kcal products: not acceptable.
+    // Either the real Quest row, or an estimate - never a generic bar row.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "bar", kcalBetween: [170, 230], proteinBetween: [17, 24] }],
+    },
+  },
+  {
+    id: "accept-dish-not-ingredient",
+    text: "1 katori paneer butter masala",
+    hour: 20,
+    // The gravy, oil and cream are most of the calories: plain Paneer is wrong.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "paneer", nameExcludes: ["milky mist"], kcalBetween: [200, 500] }],
+    },
   },
 ];
