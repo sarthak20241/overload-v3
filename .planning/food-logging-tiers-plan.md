@@ -245,3 +245,11 @@ improvement log). Open items surfaced by walking the code with the user:
 - I4 (cost, ACCEPTED): prompt cache dead on Haiku 4.5 (4096-token min, ~1.5k
   prefix). Do not pad. See memory reference-prompt-cache-haiku-minimum.
 - I5 (latency, IN SHADOW): P3 skip-decide gate, see phase section above.
+- I6 (quality, EVAL CASES FIRST): extract prompt holes found by field audit:
+  deletion by text is impossible (nets restore + qty clamp), challenge+fix
+  drops the fix, correction+addition undefined, multi-meal collapses to one
+  section, mentioned food logs as eaten. Delete needs a contract change.
+- I7 (quality, PROPOSED): strict tool use on extract. Schema is advisory
+  today; proven trap: quantity emitted as string "250" sanitizes to 1, so
+  "250ml milk" becomes 1 ml. strict:true + additionalProperties:false +
+  full required lists kills the class. Verify Haiku 4.5 support first.
