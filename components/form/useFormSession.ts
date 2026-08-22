@@ -104,8 +104,20 @@ export function useFormSession({
 }: UseFormSessionArgs): FormSession {
   const pose = useSharedValue<number[]>([]);
   const frameAspect = useSharedValue(1);
+  /** Set by the frame processor when inference throws; stops it feeding. */
+  const frameFailed = useSharedValue(false);
   const [live, setLive] = useState<LiveState>(IDLE_LIVE);
   const [modelError, setModelError] = useState<string | null>(null);
+
+  /**
+   * Called from the frame thread when inference fails.
+   *
+   * Routed into the same error the model-loading path uses, so the screen has
+   * one thing to render and the "I'm ready" button disables itself.
+   */
+  const reportFrameError = useCallback((message: string) => {
+    setModelError(`I could not read the camera. ${message}`);
+  }, []);
 
   const engineRef = useRef<FormEngine | null>(null);
   const lastFedAtRef = useRef(0);
@@ -254,6 +266,9 @@ export function useFormSession({
       'worklet';
       try {
         if (!ready || !resizer || !model) return;
+        // Once inference has thrown once it will throw on every frame, at ~30
+        // per second. Stop after the first.
+        if (frameFailed.value) return;
 
         const resized = resizer.resize(frame);
         try {
@@ -284,6 +299,21 @@ export function useFormSession({
         } finally {
           resized.dispose();
         }
+      } catch (e) {
+        // A frame processor MUST NOT throw. This runs on VisionCamera's frame
+        // thread, where an uncaught exception is a fatal JS error: expo-updates
+        // catches it, attempts recovery, and then aborts the process. The user
+        // sees the app disappear, with no message and nothing to retry.
+        //
+        // Anything in here can throw on a device that the simulator never
+        // exercises, because without a camera no frame ever runs: the resize,
+        // the delegate-backed inference, the pixel buffer. So the whole body is
+        // caught, the session is stopped, and the reason is handed to the
+        // screen to show like any other setup failure.
+        frameFailed.value = true;
+        runOnJS(reportFrameError)(
+          e instanceof Error && e.message ? e.message : 'Something went wrong reading the camera.'
+        );
       } finally {
         // Always dispose, on every path. A leaked frame stalls the whole
         // camera pipeline within a second or two.
@@ -300,8 +330,13 @@ export function useFormSession({
     engineRef.current = spec ? new FormEngine(spec, { aspect: frameAspectRef.current }) : null;
     lastFedAtRef.current = 0;
     pose.value = [];
+    // Let the frame processor try again. If whatever threw is permanent it
+    // will latch straight back off on the next frame, but a transient failure
+    // should not make "Check another set" permanently dead.
+    frameFailed.value = false;
+    setModelError(null);
     setLive(IDLE_LIVE);
-  }, [spec, pose]);
+  }, [spec, pose, frameFailed]);
 
   const status: SessionStatus = modelError ? 'error' : ready ? 'ready' : 'loading';
 
