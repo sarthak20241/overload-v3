@@ -35,6 +35,7 @@
  * the user isn't paid/trialing. This hook only chooses which UI to render.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -87,8 +88,67 @@ const UNKNOWN: CoachAccess = { state: 'unknown' };
 // user id lets us detect an auth change and refetch automatically.
 let cachedAccess: { userId: string | null; access: CoachAccess } | null = null;
 
-export function resetCoachAccessCache(): void {
+// Mounted hooks that want to be told when the cache is invalidated.
+//
+// Clearing `cachedAccess` alone is NOT enough, and assuming it was is what let
+// a paid user keep seeing "Free plan · 3 messages left" until they force-quit:
+// AICoachModal renders with `visible={false}` rather than unmounting, so its
+// hook instance holds the pre-purchase value in React state and has no reason
+// to look at the module cache ever again. Emptying a variable it already read
+// cannot reach it. Subscribers close that gap.
+type Listener = () => void;
+const listeners = new Set<Listener>();
+
+// Entitlement can change while the app is backgrounded: a renewal lands, a
+// subscription lapses, or the user cancels from iOS Settings. Re-read on the way
+// back in so the UI isn't arguing with the App Store.
+//
+// One subscription for the whole app, attached while anything is listening,
+// rather than one per mounted hook — otherwise N consumers would each fire an
+// invalidation on every foreground.
+let appStateSub: { remove: () => void } | null = null;
+
+function subscribeToCoachAccess(fn: Listener): () => void {
+  listeners.add(fn);
+  if (!appStateSub) {
+    appStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') invalidateCoachAccess();
+    });
+  }
+  return () => {
+    listeners.delete(fn);
+    if (listeners.size === 0) {
+      appStateSub?.remove();
+      appStateSub = null;
+    }
+  };
+}
+
+/** Tell every mounted hook to refetch. Listeners never notify, so no loop. */
+function notifyCoachAccessListeners(): void {
+  for (const fn of Array.from(listeners)) fn();
+}
+
+/**
+ * Drop the cached access AND make every mounted `useCoachAccess` refetch.
+ *
+ * Call after anything that can change entitlement out from under the UI: a
+ * completed purchase, a restore, a trial start, returning to the foreground.
+ */
+export function invalidateCoachAccess(): void {
+  // Bump first: any request already in flight was fired before whatever just
+  // changed, so its answer must not be allowed to land.
+  cacheGeneration += 1;
   cachedAccess = null;
+  notifyCoachAccessListeners();
+}
+
+/**
+ * @deprecated Use {@link invalidateCoachAccess}. This only empties the cache
+ * for the NEXT mount; already-mounted screens keep rendering the stale value.
+ */
+export function resetCoachAccessCache(): void {
+  invalidateCoachAccess();
 }
 
 function normalize(row: any): CoachAccess {
@@ -109,6 +169,68 @@ function normalize(row: any): CoachAccess {
     endReason: row.end_reason ?? undefined,
     endedAt: row.ended_at ?? undefined,
   };
+}
+
+// One RPC in flight at a time, shared by every mounted hook. Without this,
+// invalidating with both AICoachModal and MilestoneUpsellCard mounted fires the
+// same query twice for the same answer.
+//
+// Sharing is only safe when the pending request is asking the SAME question, so
+// it is tagged with both the user it was fired for and the invalidation
+// generation it started in:
+//
+//   - userId, or a request started as user A would be handed to user B on a
+//     fast account switch and paint A's entitlement into B's UI.
+//   - generation, or an invalidation that lands mid-request gets answered by
+//     data fetched BEFORE the thing that triggered it. Opening the Coach sheet
+//     starts a fetch; buying moments later would then reuse that pre-purchase
+//     response and leave the user on "Free plan" — the exact bug this is
+//     supposed to fix.
+interface InFlightFetch {
+  userId: string | null;
+  generation: number;
+  promise: Promise<CoachAccess | null>;
+}
+let inFlight: InFlightFetch | null = null;
+let cacheGeneration = 0;
+
+/**
+ * Fetch, cache and persist the access for `userId`. Resolves null when the RPC
+ * failed, so callers can keep whatever they were already showing rather than
+ * downgrading a paying user on a network blip. Also resolves null when a newer
+ * invalidation superseded this request, so a stale answer can't repopulate the
+ * cache — the invalidation already started a fresh fetch of its own.
+ */
+function fetchCoachAccess(
+  supabase: ReturnType<typeof useSupabaseClient>,
+  userId: string | null,
+): Promise<CoachAccess | null> {
+  const generation = cacheGeneration;
+  if (inFlight && inFlight.userId === userId && inFlight.generation === generation) {
+    return inFlight.promise;
+  }
+  const promise = (async (): Promise<CoachAccess | null> => {
+    try {
+      const { data, error } = await supabase.rpc('get_coach_access_status');
+      if (error) return null;
+      if (generation !== cacheGeneration) return null; // superseded mid-flight
+      const next = normalize(data);
+      cachedAccess = { userId, access: next };
+      if (userId) {
+        AsyncStorage.setItem(coachAccessKey(userId), JSON.stringify(next)).catch(() => {});
+      }
+      return next;
+    } catch {
+      return null;
+    }
+  })();
+  inFlight = { userId, generation, promise };
+  // Only clear the marker if it's still ours; a newer request may have replaced
+  // it while this one was resolving.
+  void promise.finally(() => {
+    if (inFlight?.promise === promise) inFlight = null;
+  });
+  return promise;
 }
 
 export function useCoachAccess(): UseCoachAccessReturn {
@@ -156,28 +278,13 @@ export function useCoachAccess(): UseCoachAccessReturn {
         setAccess(lastKnown);
         setLoading(false);
       }
-      try {
-        const { data, error } = await supabaseRef.current.rpc(
-          'get_coach_access_status',
-        );
-        if (cancelled) return;
-        if (error) {
-          // Network blip / RLS rejection. Fall back to the last-known access
-          // (or UNKNOWN) — never claim a signed-in user is unauthenticated.
-          // The edge function re-checks on every send, so this is UI-only.
-          setAccess(lastKnown ?? UNKNOWN);
-        } else {
-          const next = normalize(data);
-          cachedAccess = { userId, access: next };
-          setAccess(next);
-          if (userId) AsyncStorage.setItem(coachAccessKey(userId), JSON.stringify(next)).catch(() => {});
-        }
-      } catch {
-        if (cancelled) return;
-        setAccess(lastKnown ?? UNKNOWN);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      const next = await fetchCoachAccess(supabaseRef.current, userId);
+      if (cancelled) return;
+      // On failure fall back to the last-known access (or UNKNOWN) — never
+      // claim a signed-in user is unauthenticated. The edge function re-checks
+      // on every request, so this is UI-only.
+      setAccess(next ?? lastKnown ?? UNKNOWN);
+      setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -185,23 +292,38 @@ export function useCoachAccess(): UseCoachAccessReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]); // Refire when the authenticated user changes.
 
+  // Re-read whenever anything calls invalidateCoachAccess(). This is what makes
+  // a purchase visible on a screen that is already mounted — the effect above
+  // only reruns on an auth change, and AICoachModal never unmounts.
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = subscribeToCoachAccess(() => {
+      void (async () => {
+        const next = await fetchCoachAccess(supabaseRef.current, userId);
+        if (!cancelled && next) setAccess(next);
+      })();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [userId]);
+
   const refresh = useCallback(async (): Promise<void> => {
     // Manual invalidation. Used after starting a trial, after a purchase
     // completes, or on pull-to-refresh. Doesn't flip `loading` to true —
     // existing data is fine as a placeholder while the new value lands.
-    cachedAccess = null;
-    try {
-      const { data, error } = await supabaseRef.current.rpc(
-        'get_coach_access_status',
-      );
-      if (error) return; // keep current state on a failed refresh (e.g. offline)
-      const next = normalize(data);
-      cachedAccess = { userId, access: next };
-      setAccess(next);
-      if (userId) AsyncStorage.setItem(coachAccessKey(userId), JSON.stringify(next)).catch(() => {});
-    } catch {
-      // Keep the current state on a failed refresh rather than downgrading.
-    }
+    //
+    // Goes through invalidateCoachAccess rather than only updating this
+    // instance, so a purchase made on /upgrade also refreshes the Coach sheet
+    // mounted behind it. It also bumps the generation, which is what discards
+    // any request that started before this refresh was asked for. Listeners
+    // only fetch (they never notify), so there is no feedback loop, and the
+    // await below joins the fetch the notify just started rather than adding
+    // a second RPC.
+    invalidateCoachAccess();
+    const next = await fetchCoachAccess(supabaseRef.current, userId);
+    if (next) setAccess(next);
   }, [userId]);
 
   return { access, loading, refresh };

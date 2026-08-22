@@ -3211,6 +3211,13 @@ export function AICoachModal({
   useEffect(() => {
     if (!visible) setShowPaywall(false);
   }, [visible]);
+  // Re-check entitlement each time the sheet is opened. This screen is rendered
+  // with visible={false} rather than unmounted, so without this it can show the
+  // access it fetched once, hours ago — including "Free plan · N messages left"
+  // to someone who has since paid.
+  useEffect(() => {
+    if (visible) void refreshAccess();
+  }, [visible, refreshAccess]);
   // Sub-frame double-tap guard — modal closes immediately on save, so the
   // visible-button block goes away fast, but the close animation leaves a tiny
   // window where a second tap could fire before React re-renders.
