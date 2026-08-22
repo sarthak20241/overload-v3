@@ -270,6 +270,12 @@ improvement log). Open items surfaced by walking the code with the user:
   targeted web search on that item. Brand alone does NOT trigger (generic rows
   are correct for commodity foods). Detector exists: unhonouredGrade, today a
   verify-time chip; move the signal before decide.
+- I12 (latency, PROPOSED, user question): parallel per-item decide. Decide is
+  ONE serial call; latency is output tokens at ~7.4 ms/tok (measured, 55
+  parses, 262-1289 tok). N concurrent per-item calls => wall time ~2s at any
+  meal size (7-item: 9.2s -> ~2s); cost is input tokens x N, ~1 paisa/meal.
+  Blockers: meal_type (move to code) and drona_line (async/template).
+  Composes with P3 (skip) and I1 (changed-only).
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*). I6*/I8-tagged ones are EXPECTED to fail until fixed; they are the
   gates. Full corpus now 84 cases.
