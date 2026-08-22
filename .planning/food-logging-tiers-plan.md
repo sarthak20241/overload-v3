@@ -263,6 +263,13 @@ improvement log). Open items surfaced by walking the code with the user:
   (katori/bowl/glass/roti) vary +/-30% by household; spoon weights are physics
   and stay hardcoded. Learn per-user unit weights from edit history, inject
   into decide user_context, fall back to population defaults.
+- I11 (quality, PROPOSED, user idea refined): unhonoured macro-changing
+  qualifier (low fat / high protein / zero sugar / prep) with NO candidate
+  honouring it => treat as no-acceptable-candidate: decide estimates (visible
+  chip) instead of passing a generic row as a confident match; Super spends a
+  targeted web search on that item. Brand alone does NOT trigger (generic rows
+  are correct for commodity foods). Detector exists: unhonouredGrade, today a
+  verify-time chip; move the signal before decide.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*). I6*/I8-tagged ones are EXPECTED to fail until fixed; they are the
   gates. Full corpus now 84 cases.
