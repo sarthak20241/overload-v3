@@ -259,6 +259,10 @@ improvement log). Open items surfaced by walking the code with the user:
   own section. Needs meal type PER ITEM (extract schema + decide + card +
   client sections) and a rethink of the 500-char input cap. Gate:
   audit-multi-meal-day eval case.
+- I10 (quality, PROPOSED): personalized household units. Container sizes
+  (katori/bowl/glass/roti) vary +/-30% by household; spoon weights are physics
+  and stay hardcoded. Learn per-user unit weights from edit history, inject
+  into decide user_context, fall back to population defaults.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*). I6*/I8-tagged ones are EXPECTED to fail until fixed; they are the
   gates. Full corpus now 84 cases.
