@@ -312,6 +312,17 @@ improvement log). Open items surfaced by walking the code with the user:
   RISK: thin Indian branded coverage means stricter rules convert some grounded
   rows into estimates. Eval must measure the flip rate before shipping.
   Gates: accept-* cases in cases.ts (both directions).
+- I13 (quality, PROPOSED, user idea): decide context should rank the user's
+  staples by FREQUENCY, not recency. fetchRecentFoods today = last 25 meals,
+  dedupe, take 20, ordered by logged_at, so a one-off dish outranks a daily
+  staple. Replace with ONE frequency-ranked list carrying the count and the
+  MEDIAN amount ("Toned Milk (28 times, usually 200 ml)"), not a second list.
+  Measured cost: 10.4ms on the existing idx_meals_user_logged_at, inside the
+  Promise.all that already runs concurrently with extract => no added latency;
+  ~200 extra input tokens do not move decide latency (output-token bound).
+  Complements 0102 (which boosts frequent foods in SEARCH ranking; this is
+  about which candidate decide PICKS). Risk: habit lock-in; 60-day window
+  supplies decay.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
