@@ -228,3 +228,20 @@ When sales replies: set FATSECRET_REGION=IN (+ others), re-eval India coverage
 - Rerank vendor: Cohere vs Voyage; pick by eval NDCG on our own query log
   (parse_traces has every real query + what was picked).
 - Commonality table refresh cadence (nightly cron vs trigger).
+
+## Exploration findings (2026-08-22, ongoing)
+
+Living companion: the Drona Parse Explorer artifact (clickable pipeline map +
+improvement log). Open items surfaced by walking the code with the user:
+
+- I1 (quality+latency, PROPOSED, user idea): corrections re-resolve and
+  re-decide UNTOUCHED lines; a re-decide can silently flip an unchanged line to
+  a different row. Fix: filter extItems to changed-only before resolve;
+  keepUncoveredPrevious already restores the rest verbatim. Doubt => re-resolve.
+- I2 (process, NEXT): eval corpus (parse_traces + synthetic + user cases)
+  gating ALL prompt edits. Prereq for I1/I3.
+- I3 (quality, after I2): prompt organization drift; rules split between system
+  prompt and schema descriptions with no principle; name-field overloaded.
+- I4 (cost, ACCEPTED): prompt cache dead on Haiku 4.5 (4096-token min, ~1.5k
+  prefix). Do not pad. See memory reference-prompt-cache-haiku-minimum.
+- I5 (latency, IN SHADOW): P3 skip-decide gate, see phase section above.
