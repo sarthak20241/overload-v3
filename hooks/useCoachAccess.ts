@@ -136,6 +136,9 @@ function notifyCoachAccessListeners(): void {
  * completed purchase, a restore, a trial start, returning to the foreground.
  */
 export function invalidateCoachAccess(): void {
+  // Bump first: any request already in flight was fired before whatever just
+  // changed, so its answer must not be allowed to land.
+  cacheGeneration += 1;
   cachedAccess = null;
   notifyCoachAccessListeners();
 }
@@ -171,22 +174,46 @@ function normalize(row: any): CoachAccess {
 // One RPC in flight at a time, shared by every mounted hook. Without this,
 // invalidating with both AICoachModal and MilestoneUpsellCard mounted fires the
 // same query twice for the same answer.
-let inFlight: Promise<CoachAccess | null> | null = null;
+//
+// Sharing is only safe when the pending request is asking the SAME question, so
+// it is tagged with both the user it was fired for and the invalidation
+// generation it started in:
+//
+//   - userId, or a request started as user A would be handed to user B on a
+//     fast account switch and paint A's entitlement into B's UI.
+//   - generation, or an invalidation that lands mid-request gets answered by
+//     data fetched BEFORE the thing that triggered it. Opening the Coach sheet
+//     starts a fetch; buying moments later would then reuse that pre-purchase
+//     response and leave the user on "Free plan" — the exact bug this is
+//     supposed to fix.
+interface InFlightFetch {
+  userId: string | null;
+  generation: number;
+  promise: Promise<CoachAccess | null>;
+}
+let inFlight: InFlightFetch | null = null;
+let cacheGeneration = 0;
 
 /**
  * Fetch, cache and persist the access for `userId`. Resolves null when the RPC
  * failed, so callers can keep whatever they were already showing rather than
- * downgrading a paying user on a network blip.
+ * downgrading a paying user on a network blip. Also resolves null when a newer
+ * invalidation superseded this request, so a stale answer can't repopulate the
+ * cache — the invalidation already started a fresh fetch of its own.
  */
 function fetchCoachAccess(
   supabase: ReturnType<typeof useSupabaseClient>,
   userId: string | null,
 ): Promise<CoachAccess | null> {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  const generation = cacheGeneration;
+  if (inFlight && inFlight.userId === userId && inFlight.generation === generation) {
+    return inFlight.promise;
+  }
+  const promise = (async (): Promise<CoachAccess | null> => {
     try {
       const { data, error } = await supabase.rpc('get_coach_access_status');
       if (error) return null;
+      if (generation !== cacheGeneration) return null; // superseded mid-flight
       const next = normalize(data);
       cachedAccess = { userId, access: next };
       if (userId) {
@@ -196,10 +223,14 @@ function fetchCoachAccess(
     } catch {
       return null;
     }
-  })().finally(() => {
-    inFlight = null;
+  })();
+  inFlight = { userId, generation, promise };
+  // Only clear the marker if it's still ours; a newer request may have replaced
+  // it while this one was resolving.
+  void promise.finally(() => {
+    if (inFlight?.promise === promise) inFlight = null;
   });
-  return inFlight;
+  return promise;
 }
 
 export function useCoachAccess(): UseCoachAccessReturn {
@@ -283,12 +314,14 @@ export function useCoachAccess(): UseCoachAccessReturn {
     // completes, or on pull-to-refresh. Doesn't flip `loading` to true —
     // existing data is fine as a placeholder while the new value lands.
     //
-    // Notifies rather than only updating this instance, so a purchase made on
-    // /upgrade also refreshes the Coach sheet mounted behind it. Listeners only
-    // fetch (they never notify), so there is no feedback loop, and the in-flight
-    // dedupe means the extra awaits below share one RPC.
-    cachedAccess = null;
-    notifyCoachAccessListeners();
+    // Goes through invalidateCoachAccess rather than only updating this
+    // instance, so a purchase made on /upgrade also refreshes the Coach sheet
+    // mounted behind it. It also bumps the generation, which is what discards
+    // any request that started before this refresh was asked for. Listeners
+    // only fetch (they never notify), so there is no feedback loop, and the
+    // await below joins the fetch the notify just started rather than adding
+    // a second RPC.
+    invalidateCoachAccess();
     const next = await fetchCoachAccess(supabaseRef.current, userId);
     if (next) setAccess(next);
   }, [userId]);
