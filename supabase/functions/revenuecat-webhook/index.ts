@@ -25,6 +25,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { pickTransferIds } from "./transferIds.ts";
 
 const REVENUECAT_WEBHOOK_SECRET = Deno.env.get("REVENUECAT_WEBHOOK_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -108,6 +109,8 @@ interface RcEvent {
   cancel_reason?: string;
   expiration_reason?: string;
   is_family_share?: boolean;
+  transferred_from?: string[];
+  transferred_to?: string[];
 }
 
 interface RcEnvelope {
@@ -195,9 +198,7 @@ Deno.serve(async (req) => {
         console.log(`[revenuecat] subscriber alias: ${event.app_user_id}`);
         break;
       case "TRANSFER":
-        // Subscription moved between Apple IDs (family sharing, account swap).
-        // The new app_user_id will appear in the next RENEWAL event.
-        console.log(`[revenuecat] transfer: ${event.app_user_id}`);
+        await handleTransfer(event);
         break;
       default:
         console.log(`[revenuecat] unhandled type: ${event.type}`);
@@ -219,6 +220,59 @@ Deno.serve(async (req) => {
 });
 
 // ── Handlers ────────────────────────────────────────────────────────────────
+
+async function handleTransfer(event: RcEvent): Promise<void> {
+  const { newClerkId, oldClerkId } = pickTransferIds(event);
+
+  if (!newClerkId) {
+    console.error("[revenuecat] TRANSFER has no non-anonymous transferred_to ID");
+    return;
+  }
+
+  if (oldClerkId) {
+    const { data: oldProfile } = await admin
+      .from("user_profiles")
+      .select("tier, tier_started_at, tier_expires_at, purchase_provider, purchase_id")
+      .eq("clerk_user_id", oldClerkId)
+      .single();
+
+    if (oldProfile && oldProfile.tier && oldProfile.tier !== "free") {
+      const { data, error } = await admin
+        .from("user_profiles")
+        .update({
+          tier: oldProfile.tier,
+          tier_started_at: oldProfile.tier_started_at,
+          tier_expires_at: oldProfile.tier_expires_at,
+          purchase_provider: oldProfile.purchase_provider,
+          purchase_id: oldProfile.purchase_id,
+        })
+        .eq("clerk_user_id", newClerkId)
+        .select("clerk_user_id");
+
+      if (error) throw new Error(`transfer update failed: ${error.message}`);
+      if (!data || data.length === 0) {
+        console.error(
+          `[revenuecat] transfer matched 0 user_profiles rows for new_user=${newClerkId} — forcing retry`,
+        );
+        throw new Error(`no user_profiles row for new_user=${newClerkId}`);
+      }
+
+      await admin.rpc("mark_trial_converted", { p_clerk_user_id: newClerkId });
+      console.log(
+        `[revenuecat] transferred tier=${oldProfile.tier} from=${oldClerkId} to=${newClerkId}`,
+      );
+      return;
+    }
+  }
+
+  // Old user not found or was on free. The next RENEWAL event will carry
+  // product_id and will activate the tier via handleRenewal's needsActivation
+  // check. Log so we know this path was hit.
+  console.log(
+    `[revenuecat] TRANSFER: old user ${oldClerkId ?? "(anonymous)"} not found or free; ` +
+    `new user ${newClerkId} will activate on next RENEWAL`,
+  );
+}
 
 async function handleSubscriptionStart(event: RcEvent): Promise<void> {
   const tier = productIdToTier(event.product_id);
@@ -345,26 +399,49 @@ async function handleRenewal(event: RcEvent): Promise<void> {
   if (!tier || tier === "founding_lifetime") return;  // lifetime doesn't renew
   if (!event.app_user_id || !event.expiration_at_ms) return;
 
+  // Check the user's current tier. If it's "free", the INITIAL_PURCHASE was
+  // missed (e.g. sandbox gate was active when it fired). Treat this renewal as
+  // a full activation so the user isn't stuck on free forever.
+  const { data: profile } = await admin
+    .from("user_profiles")
+    .select("tier")
+    .eq("clerk_user_id", event.app_user_id)
+    .single();
+
+  const needsActivation = !profile?.tier || profile.tier === "free";
+
   const expiresAt = new Date(event.expiration_at_ms).toISOString();
+  const updatePayload: Record<string, unknown> = {
+    tier_expires_at: expiresAt,
+  };
+  if (needsActivation) {
+    updatePayload.tier = tier;
+    updatePayload.tier_started_at = event.purchased_at_ms
+      ? new Date(event.purchased_at_ms).toISOString()
+      : new Date().toISOString();
+    updatePayload.purchase_provider = storeToProvider(event.store);
+    updatePayload.purchase_id = event.original_transaction_id ?? event.transaction_id ?? null;
+  }
+
   const { data, error } = await admin
     .from("user_profiles")
-    .update({
-      tier_expires_at: expiresAt,
-      // Keep tier and provider as-is. RC handles provider stability across renewals.
-    })
+    .update(updatePayload)
     .eq("clerk_user_id", event.app_user_id)
     .select("clerk_user_id");
 
   if (error) throw new Error(`renewal update failed: ${error.message}`);
   if (!data || data.length === 0) {
-    // 0 rows → the grant never landed; force RevenueCat to retry rather than
-    // silently leaving the subscription unextended.
     console.error(
       `[revenuecat] renewal matched 0 user_profiles rows for app_user_id=${event.app_user_id} — forcing retry`,
     );
     throw new Error(`no user_profiles row for app_user_id=${event.app_user_id}`);
   }
-  console.log(`[revenuecat] renewed: ${tier} expires=${expiresAt} user=${event.app_user_id}`);
+  if (needsActivation) {
+    await admin.rpc("mark_trial_converted", { p_clerk_user_id: event.app_user_id });
+    console.log(`[revenuecat] renewal activated missed grant: ${tier} expires=${expiresAt} user=${event.app_user_id}`);
+  } else {
+    console.log(`[revenuecat] renewed: ${tier} expires=${expiresAt} user=${event.app_user_id}`);
+  }
 }
 
 async function handleExpiration(event: RcEvent): Promise<void> {
