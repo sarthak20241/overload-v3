@@ -276,6 +276,43 @@ improvement log). Open items surfaced by walking the code with the user:
   meal size (7-item: 9.2s -> ~2s); cost is input tokens x N, ~1 paisa/meal.
   Blockers: meal_type (move to code) and drona_line (async/template).
   Composes with P3 (skip) and I1 (changed-only).
+- I11b (quality, DRAFTED): DEFINE "acceptable candidate". The decide prompt
+  says "No acceptable candidate: estimate" but never defines acceptable, so
+  the rule fires on an undefined predicate. Proposed test and taxonomy:
+
+    A candidate is ACCEPTABLE if eating it instead of what the user described
+    moves the macros by less than ~10%. Judge the WORDS THE USER USED, not how
+    close the names look.
+
+    DROPPABLE (match the row anyway):
+      - brand on a STANDARDIZED food (toned milk is 3% fat by regulation, so
+        Amul = Mother Dairy): milk of a stated grade, curd, plain paneer, ghee,
+        oil, atta, rice, dal, sugar, eggs
+      - provenance/marketing: fresh, farm, pure, natural, organic, homemade,
+        packet, tetra pack
+      - regional synonyms: doodh = milk, dahi = curd, chawal = rice
+
+    NOT DROPPABLE (no candidate carries it => estimate instead):
+      - fat/grade: low fat, full fat, full cream, toned, double toned, skimmed
+      - protein/sugar claims: high protein, zero sugar, no added sugar, diet
+      - part/variant: yolk, white, whole, brown, wholewheat, maida
+      - prep state: raw, boiled, roasted, fried, dried (2-3x density)
+      - brand on a FORMULATED product (the recipe IS the product): protein bars
+        and powders, biscuits, cereals, sauces, ready meals, flavoured yogurt
+      - a DISH reduced to an ingredient: paneer butter masala is not Paneer
+
+    Principle: commodity = composition fixed by standard or nature, brand is
+    decoration. Formulated = composition is the manufacturer's recipe, brand IS
+    the product. Same phrase shape ("amul toned milk" vs "quest protein bar"),
+    opposite verdicts.
+
+  Evidence from real logs 2026-08-23: "low fat paneer" -> Milky Mist Paneer,
+  "high protein paneer" -> Milky Mist Paneer, "double toned milk amul" ->
+  Amul Taaza Toned Milk (~38% kcal error). All silent.
+  RISK: thin Indian branded coverage means stricter rules convert some grounded
+  rows into estimates. Eval must measure the flip rate before shipping.
+  Gates: accept-* cases in cases.ts (both directions).
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
-  (audit-*). I6*/I8-tagged ones are EXPECTED to fail until fixed; they are the
-  gates. Full corpus now 84 cases.
+  (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
+  EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
+  Also fixed: eval Tier type was missing 'fatsecret' since that source landed.
