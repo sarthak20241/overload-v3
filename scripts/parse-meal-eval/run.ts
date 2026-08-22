@@ -22,6 +22,8 @@ import {
   type ParseMealResult,
   runParseMeal,
 } from "../../supabase/functions/ai-coach/parseMeal";
+import { searchFatSecret } from "../../supabase/functions/ai-coach/fatsecret";
+import { voyageRerank } from "../../supabase/functions/ai-coach/rerank";
 import { CASES, type EvalCase } from "./cases";
 import { makeClaudeCliFetch } from "./claude-cli-fetch";
 
@@ -75,6 +77,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 // query and hit search_foods_semantic only when trigram returns nothing.
 // Needs VOYAGE_API_KEY in env/.env.local; silently skipped without it.
 const VOYAGE_API_KEY = env("VOYAGE_API_KEY");
+// FatSecret (tier 2b). Absent creds = source silently off, same as production.
+const FATSECRET_KEY = env("FATSECRET_CONSUMER_KEY");
+const FATSECRET_SECRET = env("FATSECRET_CONSUMER_SECRET");
 async function embedQueryForEval(text: string): Promise<number[] | null> {
   if (!VOYAGE_API_KEY) return null;
   try {
@@ -160,6 +165,19 @@ const deps: ParseMealDeps = {
     offLookups++;
     return null;
   },
+  // Mirror production: the eval is only a gate if it runs the same sources the
+  // app runs. Both stay silent when their keys are absent, exactly as in prod.
+  searchFatSecret: FATSECRET_KEY && FATSECRET_SECRET
+    ? (q: string) =>
+      searchFatSecret(q, {
+        consumerKey: FATSECRET_KEY,
+        consumerSecret: FATSECRET_SECRET,
+        region: env("FATSECRET_REGION") || undefined,
+      }, fetch)
+    : undefined,
+  rerankCandidates: VOYAGE_API_KEY
+    ? (q: string, docs: string[]) => voyageRerank(VOYAGE_API_KEY, q, docs, fetch)
+    : undefined,
   getFoodPer100: async (foodId) => {
     const { data } = await supabase
       .from("foods")

@@ -553,4 +553,148 @@ export const CASES: EvalCase[] = [
       items: [{ nameIncludes: "tea", kcalBetween: [0, 15] }],
     },
   },
+  // ── Product qualifiers must survive extraction (regression, 2026-08-22) ────
+  // The extract step used to compress names to 1-3 words and "drop filler
+  // adjectives", which stripped the words that identify WHICH product: "milky
+  // mist low fat paneer" was searched as "paneer" and silently logged FULL FAT
+  // (283 kcal/100g against the real 190). Ranking cannot fix this, the wrong
+  // query never returns the right row. These cases guard the fix.
+  {
+    id: "qualifier-low-fat-paneer",
+    text: "50g milky mist low fat paneer",
+    hour: 9,
+    expect: {
+      minItems: 1, maxItems: 1,
+      // 50 g of LOW FAT paneer is ~95 kcal; full-fat would be ~142. The upper
+      // bound is what actually fails when the qualifier is dropped.
+      items: [{ nameIncludes: "paneer", gramsBetween: [50, 50], kcalBetween: [60, 125] }],
+    },
+  },
+  {
+    id: "qualifier-double-toned-milk",
+    text: "amul double toned milk 300ml",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      // Double toned is ~55-60 kcal/100ml, so 300 ml is ~165-180. A model
+      // estimate of "17 kcal per 100 ml" (observed) lands far below this.
+      items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [110, 230] }],
+    },
+  },
+  {
+    id: "qualifier-skimmed-not-toned",
+    text: "200 ml amul skimmed milk",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", gramsBetween: [200, 200], kcalBetween: [50, 110] }],
+    },
+  },
+  {
+    id: "qualifier-high-protein-paneer",
+    text: "35g milky mist high protein paneer",
+    hour: 10,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "paneer", gramsBetween: [35, 35] }],
+    },
+  },
+
+  // ── Whole egg must beat its neighbours (the 2026-08-20 yolk mislog) ───────
+  {
+    id: "eggs-whole-not-yolk",
+    text: "2 whole eggs",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "egg",
+        // Yolk is 347 kcal/100g and white is 43: both sit outside this band,
+        // so a wrong part fails loudly instead of looking plausible.
+        nameExcludes: ["yolk", "white", "duck", "quail", "turkey"],
+        kcalBetween: [120, 200], proteinBetween: [10, 16],
+      }],
+    },
+  },
+
+  // ── Bare units display the amount they logged (fixed 2026-08-22) ──────────
+  {
+    id: "bare-ml-quantity",
+    text: "250ml toned milk",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", gramsBetween: [250, 250], kcalBetween: [90, 180] }],
+    },
+  },
+
+  // ── Real inputs mined from parse_traces ──────────────────────────────────
+  {
+    id: "log-mixed-units-bowl",
+    text: "2 rotis and a bowl of dal",
+    hour: 13,
+    expect: { minItems: 2, maxItems: 2, mealType: "lunch" },
+  },
+  {
+    id: "log-branded-us-bar",
+    text: "2 whole eggs and a quest protein bar",
+    hour: 9,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "egg", nameExcludes: ["yolk", "white"] },
+        { nameIncludes: "protein bar", proteinBetween: [15, 25] },
+      ],
+    },
+  },
+  {
+    id: "log-scoop-whey",
+    text: "250ml toned milk and 1 scoop whey protein",
+    hour: 17,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "milk", gramsBetween: [250, 250] },
+        { nameIncludes: "whey", proteinBetween: [18, 30] },
+      ],
+    },
+  },
+  {
+    id: "log-freeform-multi-meal",
+    // Observed DECLINED once and parsed 4 items another time. It is food, so a
+    // decline is a bug; this pins the non-decline.
+    text: "In the morning i ate Yogabar kesar pista oats with milk double toned and in snacks i had 24 gm peanuts",
+    hour: 11,
+    expect: { declined: false, minItems: 2 },
+  },
+  {
+    id: "log-typo-tolerant",
+    text: "2 whle eggs and a quest protien bar",
+    hour: 9,
+    expect: { minItems: 2, maxItems: 2, items: [{ nameIncludes: "egg", nameExcludes: ["yolk"] }] },
+  },
+  {
+    id: "log-oats-and-milk-500",
+    text: "kesar pista oats yogabar 70g and 500 ml double toned milk",
+    hour: 8,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "oats", gramsBetween: [70, 70] },
+        { nameIncludes: "milk", gramsBetween: [500, 500], kcalBetween: [180, 380] },
+      ],
+    },
+  },
+  {
+    id: "log-biscuits-and-chai",
+    text: "2 good day biscuits and chai half cup",
+    hour: 17,
+    expect: { minItems: 2, maxItems: 2 },
+  },
+  {
+    id: "log-question-declines",
+    text: "Are you sure about the calories",
+    hour: 14,
+    expect: { declined: true },
+  },
 ];

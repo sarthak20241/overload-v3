@@ -740,10 +740,22 @@ const EXTRACT_TOOL = {
             name: {
               type: "string",
               description:
-                'The food\'s COMMON name in 1-3 words, spelling corrected: "roasted edamame", ' +
-                'not "2 tblspn roasted edameme"; "almonds", not "almonds raw whole". Keep a ' +
-                "prep word only when it names a different food (roasted vs plain); drop " +
-                "filler adjectives (raw, whole, fresh, homemade). No brand, no quantity.",
+                'The food\'s COMMON name, spelling corrected: "roasted edamame", not ' +
+                '"2 tblspn roasted edameme". No brand, no quantity, no size word.\n' +
+                "KEEP every word that changes WHICH PRODUCT it is, even if that makes the " +
+                "name longer. These are the product, not decoration:\n" +
+                '  fat/grade: "low fat", "full fat", "full cream", "double toned", "toned", ' +
+                '"skimmed", "semi skimmed"\n' +
+                '  protein/sugar claims: "high protein", "zero sugar", "no added sugar"\n' +
+                '  part or variant: "yolk", "white", "whole", "brown", "wholewheat"\n' +
+                '  prep when it names a different food: "roasted" vs plain, "boiled" vs raw\n' +
+                'So "milky mist low fat paneer" -> "low fat paneer" (NOT "paneer"), and ' +
+                '"amul double toned milk" -> "double toned milk" (NOT "milk"). Dropping one ' +
+                "of these words searches for a DIFFERENT food and silently logs the wrong " +
+                "macros.\n" +
+                "DROP only words that leave the product unchanged: fresh, homemade, plain " +
+                "(when no roasted/salted variant is meant), and size words (small, medium, " +
+                "large) which belong in unit.",
             },
             brand: { type: ["string", "null"], description: "Brand if the text names one." },
             quantity: { type: "number", description: "How many of unit, e.g. 2 for '2 rotis'. 1 if unstated." },
@@ -1273,15 +1285,37 @@ async function resolveOneItem(
   // and sanity-check whatever it picks. Catalog still leads the merged list
   // (a curated row with real servings should outrank a raw label), and items
   // resolve in parallel, so the meal pays roughly one OFF latency, not N.
+  // A multi-word name has TWO plausible identities, and the ladder above only
+  // explores one of them. It drops LEADING words first, which is right for
+  // "roasted edamame" (prep prefix) and wrong for "paneer bhurji", where the
+  // head noun IS the food and the tail is the style: the full query matches
+  // nothing (the 0079 search requires every word), so it falls to "bhurji"
+  // alone and returns Egg Bhurji. Running BOTH ends and merging lets rerank
+  // decide which reading the user meant. Catalog search is ~30ms, so the
+  // second query is far cheaper than the wrong food.
+  const multiWord = words.length > 1;
   const runCatalog = async (): Promise<CandidateFood[]> => {
-    let found: CandidateFood[] = [];
+    const merged: CandidateFood[] = [];
+    const seenKeys = new Set<string>();
+    let successes = 0;
     for (const q of queries.slice(0, 4)) {
-      if (found.length > 0) break;
+      if (successes >= (multiWord ? 2 : 1)) break;
       toolCalls.push("search_foods");
+      let found: CandidateFood[] = [];
       try {
         found = (await deps.searchFoods(q)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
+      }
+      if (found.length > 0) {
+        successes++;
+        for (const c of found) {
+          const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            merged.push(c);
+          }
+        }
       }
       steps.push({
         iter: 1,
@@ -1290,7 +1324,7 @@ async function resolveOneItem(
         result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
       });
     }
-    return found;
+    return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
@@ -1458,8 +1492,21 @@ function coversAllWords(outer: string, inner: string): boolean {
 const VARIANT_GROUPS: string[][] = [
   ["whole", "yolk", "white"],  // egg part: 143 vs 347 vs 52 kcal per 100 g
   ["raw", "boiled", "fried", "poached", "scrambled", "roasted", "grilled", "dried"],
-  ["skimmed", "toned", "full", "semi"],  // milk fat
+  // Fat/protein grade. PHRASES, not words: "double toned" and "toned" are
+  // different milks, and "low fat" is two words. Matched longest-first against
+  // the whole name so "double toned" never reads as "toned". This group is why
+  // a 50 g "low fat paneer" request cannot silently log full-fat paneer (190
+  // vs 283 kcal per 100 g), which is exactly what shipped on 2026-08-22.
+  ["double toned", "low fat", "full cream", "full fat", "semi skimmed", "skimmed", "toned"],
+  ["high protein", "regular"],
 ];
+
+/** The GRADE groups (fat level, protein claim). Unlike an egg part or a prep
+ *  word, a grade the user asked for and the row does not mention is a real
+ *  problem: "low fat paneer" matched to a plain "Milky Mist Paneer" row logs
+ *  283 kcal/100g against the product's real 190, and nothing else in the chain
+ *  notices, because no term CONTRADICTS, the row is simply silent. */
+const GRADE_GROUPS = VARIANT_GROUPS.slice(2);
 
 /** What the row is vs what the model called it, when the two contradict each
  *  other inside one group. null when they agree, or when either says nothing. */
@@ -1467,12 +1514,30 @@ export function variantClash(
   said: string,
   rowName: string,
 ): { said: string; row: string } | null {
-  const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z]+/).filter(Boolean));
-  const a = words(said), b = words(rowName);
+  const norm = (s: string) => ` ${s.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+  const a = norm(said), b = norm(rowName);
   for (const group of VARIANT_GROUPS) {
-    const inSaid = group.find((g) => a.has(g));
-    const inRow = group.find((g) => b.has(g));
+    // Longest first: "double toned" must win over "toned" inside the same name.
+    const ordered = [...group].sort((x, y) => y.length - x.length);
+    const inSaid = ordered.find((g) => a.includes(` ${g} `));
+    const inRow = ordered.find((g) => b.includes(` ${g} `));
     if (inSaid && inRow && inSaid !== inRow) return { said: inSaid, row: inRow };
+  }
+  return null;
+}
+
+/** A GRADE the user asked for that the matched row does not claim at all, or
+ *  null. Silence is the failure mode variantClash cannot see: no term
+ *  contradicts, so the wrong-grade row ships looking confident. */
+export function unhonouredGrade(said: string, rowName: string): string | null {
+  const norm = (s: string) => ` ${s.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+  const a = norm(said), b = norm(rowName);
+  for (const group of GRADE_GROUPS) {
+    const ordered = [...group].sort((x, y) => y.length - x.length);
+    const inSaid = ordered.find((g) => a.includes(` ${g} `));
+    if (!inSaid) continue;
+    const rowHasAny = ordered.some((g) => b.includes(` ${g} `));
+    if (!rowHasAny) return inSaid;
   }
   return null;
 }
@@ -1533,7 +1598,22 @@ export async function verifyItems(
 ): Promise<ParsedItem[]> {
   return await Promise.all(items.map(async (item) => {
     if (item.source !== "catalog" && item.source !== "off" && item.source !== "fatsecret") {
-      return item;
+      // An estimate carries the model's OWN numbers, so an all-zero line means
+      // it omitted them (the decide schema says to omit only when a food_id is
+      // set, and it sometimes applies that to the wrong line). NOTHING
+      // downstream catches this: 0 kcal against 0 macros is internally
+      // consistent, so checkAtwater passes it and "Chicken Breast 200g" ships
+      // reading 0 kcal / 0 g protein, which is worse than a rough guess
+      // because it silently drags the day's totals down.
+      const zeroed = item.grams > 0 &&
+        !item.kcal && !item.protein_g && !item.carb_g && !item.fat_g;
+      if (!zeroed) return item;
+      deps.log?.(`[parse_meal] estimate line came back with no numbers: "${item.food_name}"`);
+      return {
+        ...item,
+        confidence: "low",
+        assumption: appendAssumption(item, "I could not put numbers on this one, tap to set them"),
+      };
     }
     const usable = item.food_id && Number.isFinite(item.grams) && item.grams > 0;
     // An ephemeral id names no row, so skip the read and let the candidate map
@@ -1577,6 +1657,7 @@ export async function verifyItems(
     // The model's own wording is kept only when the row has no usable name.
     const rowName = (per100.name ?? "").trim();
     const clash = rowName ? variantClash(item.food_name, rowName) : null;
+    const missingGrade = rowName && !clash ? unhonouredGrade(item.food_name, rowName) : null;
     let scaled: ParsedItem = {
       ...item,
       food_name: rowName || item.food_name,
@@ -1596,6 +1677,21 @@ export async function verifyItems(
         ...scaled,
         confidence: "low",
         assumption: appendAssumption(scaled, `I logged the ${clash.row} one, not the ${clash.said}`),
+      };
+    } else if (missingGrade) {
+      // We have no row for the grade they asked for (usually a coverage gap,
+      // e.g. an India-only low fat SKU). Say so instead of shipping the plain
+      // row's macros as if they were the product's.
+      deps.log?.(
+        `[parse_meal] grade not honoured: asked "${missingGrade}", row is "${rowName}"`,
+      );
+      scaled = {
+        ...scaled,
+        confidence: "low",
+        assumption: appendAssumption(
+          scaled,
+          `I could not find a ${missingGrade} row for this, so these are the regular numbers`,
+        ),
       };
     }
     // Last line of defence. Deliberately understated: we mark the line low
