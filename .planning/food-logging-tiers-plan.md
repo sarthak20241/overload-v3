@@ -312,35 +312,38 @@ improvement log). Open items surfaced by walking the code with the user:
   RISK: thin Indian branded coverage means stricter rules convert some grounded
   rows into estimates. Eval must measure the flip rate before shipping.
   Gates: accept-* cases in cases.ts (both directions).
-- I13 (quality, PROPOSED, user idea; window refined by user challenge):
-  ONE staples list in decide context, ordered by frequency x recency decay.
-  Today fetchRecentFoods is PURELY recency (last 25 meals, dedupe, take 20),
-  so a one-off dish outranks a daily staple. Frequency and recency are
-  different signals (staple vs what you are eating NOW) but two lists is the
-  wrong shape: the vocabulary is small and stable so they overlap almost
-  entirely, doubling tokens and forcing the model to reconcile them.
-  Design: one list, exponential recency decay (~7-day half-life) over a
-  frequency count, showing the COUNT and the MEDIAN amount:
+- I13 (quality, PROPOSED; user idea, window settled by RESEARCH not our DB):
+  ONE staples list in decide context. Today fetchRecentFoods is purely recency
+  (last 25 meals, dedupe, take 20), so a one-off dish outranks a daily staple.
+  Design: one list (not two - vocabularies overlap, doubling tokens and forcing
+  the model to reconcile), ordered by frequency with exponential recency decay
+  (~7d half-life), showing COUNT + MEDIAN amount:
     "Toned Milk (28 times, usually 200 ml)"
-  so 4 logs this week outrank 6 logs a fortnight ago.
 
-  WINDOW = 14 DAYS, measured on real logs (2026-08-23), not guessed:
-    prediction hit-rate saturates at 7d: 69.2% @3d, 82.4% @7d, and EXACTLY
-    82.4% at 14/21/30/45/60/90 (the residual ~18% are genuinely new foods no
-    window catches). But vocabulary needs 14d for evidence:
-      7d  -> 27 foods, 82 logs, 3.0 logs/food
-      14d -> 28 foods, 159 logs, 5.7 logs/food
-      30d -> 28 foods, 159 logs (identical, adds nothing)
-    So 14d = same coverage as 7d, DOUBLE the ranking evidence, zero waste
-    beyond. Keep today's logs in: decay stops one fresh log outranking a
-    fortnight pattern, and same-day repeats are real signal.
+  WINDOW = 14 DAYS, FILTER = >= 2 OCCURRENCES.
+  Our DB has n=1 meaningful logger, so it cannot settle this. Published data:
+  - Wang et al., PMC12340925 (n=21,006 adults, 2.5M logs, 14 days): diets are
+    LESS repetitive than intuition. 9.7 unique items day 1, 33.8 day 7, 50.3
+    day 14, cumulative diversity still climbing at 14d. BUT only ~4 of ~51
+    unique items eaten on 7+ days, and ~HALF of unique items appear ONCE.
+    => Core repertoire is tiny; the tail is huge and never repeats.
+    => The win is NOT a longer window, it is FILTERING the one-off tail.
+  - PMC8746681 (7-day records): habitual variety reliability r=0.84 at 3 days,
+    r=0.98 at 7 days. Reliability saturates well before 14d.
+  => Require >= 2 occurrences in the window (same threshold 0102 already uses
+     for search ranking): drops ~half the vocabulary for free, since a one-off
+     can never be predicted again.
+  => Keep 14d rather than 7d so WEEKLY-cadence foods (Sunday biryani, weekend
+     meals) can reach 2 occurrences at all.
+  Cross-check: our n=1 power user shows 82.4% per-occasion hit-rate saturating
+  at 7d; the same arithmetic on the 21k study gives ~63%. A fitness-app logger
+  is more repetitive than the general population - tune to the study, not to us.
+  New users with <14d history: degrade to a short list or none.
   LATENCY: 10.4ms on existing idx_meals_user_logged_at, inside the Promise.all
-  already concurrent with extract => none added; ~200 extra input tokens do not
-  move decide latency (output-token bound at ~7.4ms/tok).
-  Complements 0102, which boosts 2+-logged foods in SEARCH ranking - different
-  stage (which rows surface, vs which candidate decide picks).
-  CAVEAT: measured on ONE user (~159 food-logs). Recheck at more users; a wider
-  diet may need a longer window.
+  already concurrent with extract => none added; ~200 input tokens do not move
+  decide latency (output-token bound at ~7.4ms/tok).
+  Complements 0102 (boosts 2+-logged foods in SEARCH ranking - different stage:
+  which rows surface, vs which candidate decide picks).
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
