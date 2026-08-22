@@ -312,17 +312,35 @@ improvement log). Open items surfaced by walking the code with the user:
   RISK: thin Indian branded coverage means stricter rules convert some grounded
   rows into estimates. Eval must measure the flip rate before shipping.
   Gates: accept-* cases in cases.ts (both directions).
-- I13 (quality, PROPOSED, user idea): decide context should rank the user's
-  staples by FREQUENCY, not recency. fetchRecentFoods today = last 25 meals,
-  dedupe, take 20, ordered by logged_at, so a one-off dish outranks a daily
-  staple. Replace with ONE frequency-ranked list carrying the count and the
-  MEDIAN amount ("Toned Milk (28 times, usually 200 ml)"), not a second list.
-  Measured cost: 10.4ms on the existing idx_meals_user_logged_at, inside the
-  Promise.all that already runs concurrently with extract => no added latency;
-  ~200 extra input tokens do not move decide latency (output-token bound).
-  Complements 0102 (which boosts frequent foods in SEARCH ranking; this is
-  about which candidate decide PICKS). Risk: habit lock-in; 60-day window
-  supplies decay.
+- I13 (quality, PROPOSED, user idea; window refined by user challenge):
+  ONE staples list in decide context, ordered by frequency x recency decay.
+  Today fetchRecentFoods is PURELY recency (last 25 meals, dedupe, take 20),
+  so a one-off dish outranks a daily staple. Frequency and recency are
+  different signals (staple vs what you are eating NOW) but two lists is the
+  wrong shape: the vocabulary is small and stable so they overlap almost
+  entirely, doubling tokens and forcing the model to reconcile them.
+  Design: one list, exponential recency decay (~7-day half-life) over a
+  frequency count, showing the COUNT and the MEDIAN amount:
+    "Toned Milk (28 times, usually 200 ml)"
+  so 4 logs this week outrank 6 logs a fortnight ago.
+
+  WINDOW = 14 DAYS, measured on real logs (2026-08-23), not guessed:
+    prediction hit-rate saturates at 7d: 69.2% @3d, 82.4% @7d, and EXACTLY
+    82.4% at 14/21/30/45/60/90 (the residual ~18% are genuinely new foods no
+    window catches). But vocabulary needs 14d for evidence:
+      7d  -> 27 foods, 82 logs, 3.0 logs/food
+      14d -> 28 foods, 159 logs, 5.7 logs/food
+      30d -> 28 foods, 159 logs (identical, adds nothing)
+    So 14d = same coverage as 7d, DOUBLE the ranking evidence, zero waste
+    beyond. Keep today's logs in: decay stops one fresh log outranking a
+    fortnight pattern, and same-day repeats are real signal.
+  LATENCY: 10.4ms on existing idx_meals_user_logged_at, inside the Promise.all
+  already concurrent with extract => none added; ~200 extra input tokens do not
+  move decide latency (output-token bound at ~7.4ms/tok).
+  Complements 0102, which boosts 2+-logged foods in SEARCH ranking - different
+  stage (which rows surface, vs which candidate decide picks).
+  CAVEAT: measured on ONE user (~159 food-logs). Recheck at more users; a wider
+  diet may need a longer window.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
