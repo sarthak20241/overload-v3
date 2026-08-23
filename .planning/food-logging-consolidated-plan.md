@@ -1,189 +1,197 @@
-# Food Logging: Consolidated Plan (tiers + exploration improvements)
+# Food Logging: Master Build & Test Plan
 
-Status: ACTIVE (2026-08-23). This file owns the SEQUENCE. The evidence lives in
-food-logging-tiers-plan.md (measurements, benchmarks, full reasoning per item);
-item IDs (I1-I17, P0-P6) refer to that file. Do not duplicate reasoning here.
+Status: ACTIVE v2 (2026-08-23). This file owns the sequence, the build tasks,
+and the test gates. The evidence record stays in food-logging-tiers-plan.md
+(all IDs I1-I17 and P0-P6 refer there; do not duplicate reasoning here).
 
 ## Where we are
 
 SHIPPED + DEPLOYED on branch claude/eggs-amul-milk-macros-c94f42 (pushed, NOT
 merged to main):
-- P0 guardrail fixes: id retarget, row-name display, variant chips, both
-  caption bugs (bare-unit quantity, estimate-line gate)
-- P1 ranking layer: migration 0102 live (rank_boost + popularity + user history)
-- P2 Voyage reranker: live, fail-open, margin + topScore logged
-- FatSecret source: OAuth 1.0, Basic key (US data), v1 search + food.get.v4
-- OFF self-heal (15% drift band)
-- P3 code-fill: built, running in SHADOW (PARSE_SKIP_DECIDE=shadow), n=2 so far
+- P0 guardrail fixes (id retarget, row-name display, variant chips, both
+  caption bugs), P1 ranking layer (migration 0102 live), P2 Voyage reranker,
+  FatSecret source (OAuth 1.0, Basic/US), OFF self-heal.
+- P3 code-fill built, in SHADOW (PARSE_SKIP_DECIDE=shadow), n=2 so far.
 
 NOT STARTED: Fast / Smart / Super as user-facing modes.
-NEVER RUN: the eval baseline. 88 cases exist; no baseline number is recorded.
+NEVER RUN: the eval baseline. 88 cases exist, no baseline number recorded.
 
-CLOSED (do not reopen):
-- I4 prompt cache dead on Haiku 4.5 (4096-token minimum, ours ~1.5k). Accepted.
-- Guardrail parallelization: measured 20 microseconds per meal. A no-op.
-- I5 is the same thing as P3; tracked as P3 below.
+CLOSED (do not reopen): I4 prompt cache dead on Haiku 4.5 (accepted);
+guardrail parallelization (measured 20 microseconds, a no-op); I5 = P3.
 
-## Sequencing principle
+## Locked design decisions (2026-08-23, with user)
 
-1. Merge + baseline first. Nothing ships un-evaled again.
-2. Deterministic code fixes next: no prompts touched, low risk, high value.
-3. Prompt and extract quality, each change gated by eval before/after.
-4. Mode SEMANTICS: what the modes mean (I15 + I14, P3 flip, I12 prereqs).
-5. The modes themselves, then features on top.
+1. Modes are USER-FACING: Smart default, Fast a choice, Super credit-gated.
+2. ONE SSE transport + ONE event vocabulary for all three modes:
+   item (row appears, shimmer macros) / fill (macros land, chips) /
+   progress (source status lines) / end (totals + Drona line, seals card).
+   The progressive card is built ONCE and must tolerate out-of-order fills;
+   totals recompute per fill until end seals them.
+3. Fast = two lanes over ONE shared backend (search -> code pick -> fill).
+   - Lane A (zero-LLM naming): grammar (qty+unit+food) or user-staple match.
+     HEDGE: a small Haiku estimate call fires in PARALLEL with every Lane A
+     search; grounded -> discarded, miss -> fills at ~1.3s with the chip.
+   - Lane B (streaming): Haiku extract WITHOUT forced tool (forced tool does
+     not stream, measured); NDJSON one item per line; each completed line
+     paints the row, fires that item's search, holds qty/unit for conversion.
+   - Fast excludes decide, reranker (~400ms/item + 429 risk), FatSecret
+     (~4s cold cache), web. Corrections -> Smart, challenge -> Super,
+     malformed stream -> silent Smart fallback.
+   - REJECTED: the old fused extract+estimate call (estimates fatten output;
+     output tokens ARE the latency; forced tools do not stream).
+4. acceptCandidate(userWords, row): ONE shared pure gate used by Lane A,
+   Lane B, and the P3 skip-decide path. Walks top ~5 candidates in 0102
+   order; accept only if ALL pass: (1) word coverage with I17 proportional
+   typo tolerance, (2) no variantClash, (3) no unhonouredGrade,
+   (4) similarity floor OR user-history row, (5) per-100 plausibility.
+   No survivor => ungrounded => estimate. Pure string ops (microseconds).
+   Unit-tested against the full real bug corpus (egg/yolk, milky mist,
+   bikano/bikaji, creatine/creatinine).
+5. I12 per-item decide is ADOPTED for Smart AND Super. Each item's decide
+   call finishes on its own clock; its completion is that item's fill event.
+   In Super, an item's decide fires when THAT item's sources are done, so a
+   cache-hit item lands at Smart speed while a web-bound sibling still cooks.
+6. Super: per-ITEM web queries, web ALWAYS parallel (not only on
+   disagreement), precise cache short-circuits web, 2+ independent sources
+   within 10% = verified badge, Sonnet decide with disagreements in-prompt.
+7. I15: the post-card web refine dies; I14 discoverability ships with it.
 
-Why this order: Fast and Super are thin wrappers once the quality substrate is
-right. Building them first would bake today's extract and matching bugs into
-three pipelines instead of one.
+Invariant everywhere: every number the user sees is source-grounded or wears
+the estimate chip. No silent model arithmetic. No bulk-copy of licensed rows.
+Version-skew rule (learned on 0088): the client must understand a capability
+BEFORE the server starts emitting it; unknown enum values fail open.
 
-## The sequence
+## Phases
 
-### Step 0. Merge to main  [USER DECISION]
-Branch is 27+ commits ahead and its code is already DEPLOYED to ai-coach, so
-main currently lies about production (the coach-retrieval drift mistake).
-Merge before new work, or accept the drift consciously.
+Each phase ships alone, deploys alone, and has a written gate. Risky flips
+(P3, I12, I11) pass through SHADOW with criteria written BEFORE the flip.
 
-### Step 1. Eval baseline (I2)  - THE GATE
-Run the full 88-case suite once. Record pass/fail per case and per tag in
-scripts/parse-meal-eval/ (a BASELINE.md or json). audit-* and accept-* cases
-are EXPECTED to fail; they are gates for later steps. The suite is flaky
-(~4 cases drift per run): judge any change by rerunning its failures, never by
-one full-suite number. Every later step reruns its relevant tags against this.
+### Phase 0. Merge + eval baseline  [MERGE = USER GATE]
+Build: merge the branch to main. Run the 88-case suite once; write
+scripts/parse-meal-eval/BASELINE.md (pass/fail per case + per tag).
+Test: audit-*/accept-* are EXPECTED failures (they gate later phases). The
+suite is flaky (~4 cases/run): judge changes by rerunning failures, never by
+one full-suite number.
+Gate: baseline committed. After this, no prompt/pipeline change lands
+without its eval delta.
 
-### Step 2. Deterministic code fixes (no prompt changes)
-- I17: wordsOverlap fuzzy match -> proportional Damerau-Levenshtein,
-  distance / shorter-word length <= ~0.2. Settled with user; benchmark 11/11.
-  Unit tests from the 11-pair table in the tiers plan.
-- I16: delete/rewrite the stale hedged-web-lookup comments. While in there,
-  recover WHY the pre-card web race was dropped; that answer feeds Super.
-- I7: strict tool use on extract (verify Haiku 4.5 supports strict first).
-  Kills the string-"250"-sanitizes-to-1 class.
-Gate: eval no-regression on the full suite + new unit tests green.
+### Phase 1. Deterministic code fixes (no prompts)
+Build:
+- I17: wordsOverlap -> proportional Damerau-Levenshtein (distance / shorter
+  length <= ~0.2). Extract the distance fn as a shared util; acceptCandidate
+  reuses it in Phase 6.
+- I16: delete stale hedged-web-lookup comments; ARCHAEOLOGY: recover why the
+  pre-card web race was removed, write the finding into the tiers plan
+  (it shapes Phase 7).
+- I7: strict tool use on extract (verify Haiku 4.5 support first; kills the
+  string-"250"-sanitizes-to-1 class).
+Test: 11-pair unit table for I17; strict-mode schema round-trip; full-suite
+eval no-regression.
+Deploy: edge deploy; watch parse_traces for one day.
 
-### Step 3. Extract and decide quality (prompt work, each eval-gated)
-In order:
-1. I6 extract holes (user named this the first work item): deletion contract,
-   challenge+fix drops the fix, correction+addition undefined, multi-meal
-   collapse, mentioned-food-logs-as-eaten. Gates: audit-* cases.
-2. I11 + I11b: define "acceptable candidate" in decide (commodity vs
-   formulated taxonomy). MEASURE the grounded->estimate flip rate on real
-   traces before shipping; thin Indian branded coverage makes this the risk.
-   Gates: accept-* cases, both directions.
-3. I13: one staples list in decide context. 14-day window, >= 2 occurrences,
-   frequency-ranked with ~7d-half-life recency decay, "name (N times, usually
-   X ml)" format. Degrade gracefully under 14d of history.
-4. I1: corrections re-resolve CHANGED lines only; keepUncoveredPrevious
-   restores the rest verbatim. Doubt => re-resolve.
-5. I3: prompt reorganization LAST, once the content above is settled.
+### Phase 2. Extract & decide quality (prompt work, each change eval-gated)
+In order, one deploy per sub-step:
+- 2a I6 extract holes: deletion contract, challenge+fix, correction+addition,
+  multi-meal collapse, mentioned-not-eaten. Gates: audit-* cases.
+- 2b I11/I11b acceptable-candidate (commodity vs formulated taxonomy) into
+  decide. FIRST measure the grounded->estimate flip rate in shadow on real
+  traces (thin Indian branded coverage is the risk); write the acceptable
+  flip threshold before enabling. Gates: accept-* cases, both directions.
+- 2c I13 staples list: 14d window, >=2 occurrences, frequency + ~7d-half-life
+  decay, "name (N times, usually X ml)". Degrade under 14d of history.
+  Test: decide latency unchanged (input tokens do not move output-bound
+  latency); 10.4ms query verified on the existing index.
+- 2d I1 changed-only corrections: filter extItems to changed lines;
+  keepUncoveredPrevious restores the rest verbatim. Doubt => re-resolve.
+  Test: correction eval cases; unchanged lines byte-identical after a
+  correction.
+- 2e I3 prompt reorganization LAST, once content is settled. Test: full-suite
+  eval parity (this change must be behavior-neutral).
 
-### Step 4. Mode semantics
-- I15 + I14 SHIP TOGETHER: kill the post-card web refine (kickWebRefine,
-  web_refine field, refineMeal, the "checking trusted sources" card state) and
-  add the challenge affordance on low-confidence lines in the same release.
-  Once the automatic path is gone, the manual path is the only recovery route.
-- P3 flip shadow -> on. Criteria unchanged: 50+ shadow parses, > 95%
-  same_macros, zero cases where code fill grounds an item decide refused.
-  Shadow data accumulates passively during steps 1-3; check the counter here.
-- I12 prerequisites: move meal_type assignment to code, make the drona line
-  async/template. The actual per-item parallel decide flip can ride with Step 5
-  (it IS Fast/Smart latency work).
+### Phase 3. Mode semantics (pre-transport)
+Build:
+- I15 + I14 TOGETHER (client + server): remove kickWebRefine, web_refine,
+  refineMeal, the "checking trusted sources" card state; add the challenge
+  affordance on low-confidence lines only.
+- P3 flip check: query shadow counters; flip PARSE_SKIP_DECIDE to "on" only
+  at 50+ parses, >95% same_macros, zero cases where code grounds what decide
+  refused. If underpowered, leave in shadow and continue.
+- I12 prereqs: meal_type -> code (clock-based), Drona line -> template/async.
+Test: on-device, the card never mutates after render; affordance renders on
+low-confidence lines only; meal_type parity on traces.
 
-### Step 5. The modes (DESIGN LOCKED 2026-08-23; supersedes the P4/P5
-sketches in the tiers plan, including the fused extract+estimate call, which
-is REJECTED: estimates fatten the extract output, output tokens are the
-latency, and forced tool calls do not stream)
+### Phase 4. Transport (the risk phase)
+Build: SSE streaming out of the edge function BEHIND a client-declared flag
+(old clients keep the JSON response; version-skew rule); expo/fetch streaming
+consumption; the progressive card UI; the 4-event vocabulary.
+Test DAY ONE: a throwaway probe streams 10 events through the production path
+on iOS AND Android dev clients. Then: mid-stream disconnect -> client falls
+back to buffered-complete; event replay/idempotence; old-client compat.
+Gate: stream verified on device, both platforms, with fallback proven.
 
-Transport first: ONE SSE stream out of the edge function; client consumes via
-expo/fetch (SDK 53, verify on device day one); the card renders progressively.
-ONE event vocabulary shared by ALL THREE modes (locked 2026-08-23):
-  item (row appears, shimmer macros) / fill (macros land, chips) /
-  progress (Super source status lines) / end (totals + Drona line).
-Build the progressive card once; every mode feeds it. Streaming in Smart and
-Super is FREE: pipelines unchanged, events emitted at existing stage
-boundaries. Smart TTFT drops ~6s -> ~1.3s (rows paint when extract returns,
-macros land when decide returns; per-item macro landing arrives later with
-I12, since forced-tool decide cannot stream). Super adds progress events per
-source and a per-item verified badge landing.
+### Phase 5. Smart progressive
+- 5a Stage-boundary events, ZERO pipeline change: item events when extract
+  returns (~1.3s), fill events when decide returns, end after guardrails.
+  Test: TTFT measured on device (target rows <= 1.5s); out-of-order render.
+- 5b I12 per-item decide behind PARSE_ITEM_DECIDE (off|shadow|on). N parallel
+  per-item Haiku calls; each completion emits that item's fill.
+  Test: SHADOW first, same pattern as P3 (per-item vs monolith, same_macros
+  metric, cost delta logged; criteria: 50+ parses, >95%, then flip). Eval
+  parity on the full suite; 7-item meal wall time ~9s -> ~3.5s in traces.
 
-FAST (targets: Lane A card ~0.5s; Lane B first row < 1s, complete ~2.5-3s)
-Two lanes, ONE shared backend (search -> code pick -> code fill). The lanes
-differ only in who NAMES the items.
-- Lane A (instant, zero-LLM naming): a grammar (qty + unit + food words) or a
-  user-staple match names the items; straight to search.
-  HEDGE (user decision 2026-08-23): a small Haiku estimate call fires in
-  PARALLEL with every Lane A search so an estimate is always ready. Search
-  grounds the item -> estimate discarded. Search misses or is vetoed ->
-  estimate fills at ~1.5s with the estimate chip. Rationale: our DBs will
-  never carry everything; the wasted call costs a fraction of a paisa.
-- Lane B (streaming): Haiku extract WITHOUT forced tool use (forced tool does
-  not stream, measured); output is NDJSON, one item per line. Each completed
-  line is used three ways at once: paints the card row, becomes the search
-  query, holds qty/unit for gram conversion. Each item's search fires the
-  moment its line closes; items never wait for each other. Ungrounded items
-  are filled by one estimate call, chipped.
-- Code pick = the codeFillItems machinery (P3) behind ONE shared pure
-  function, acceptCandidate(userWords, row), used by Lane A, Lane B, and the
-  P3 skip-decide gate. Walks the top ~5 candidates in 0102 order (word match
-  + user history + staples + popularity); a candidate is accepted only if it
-  passes ALL of: (1) word coverage with I17 proportional typo tolerance,
-  (2) no variantClash, (3) no unhonouredGrade, (4) similarity floor OR a
-  user-history row, (5) per-100 plausibility. First survivor wins; no
-  survivor => ungrounded => the hedge estimate fills (already in flight since
-  t=0, so the miss path costs no restart: fill lands ~1.3s). Estimate ALSO
-  failed => silent reroute to Smart. Gate is pure string ops (guardrail chain
-  measured 20 microseconds; same class), unit-tested against the full real
-  bug corpus: egg/yolk, milky mist, bikano/bikaji, creatine/creatinine.
-  Unit tables convert: mass direct, volume x density, piece via serving
-  anchors, spoons fixed. Household units (bowl/katori) use population
-  defaults shown plainly on the card ("1 bowl - 150g") until I10 personalizes.
-- meal_type from the clock; Drona line from a template.
-- Deliberate exclusions: no decide, no reranker (~400ms/item + 429 risk), no
-  FatSecret (~4s cold cache), no web. CORRECTIONS AND CHALLENGES REROUTE
-  (corrections -> Smart, challenge -> Super); Fast is first-shot logging only.
-  Malformed/blocked stream falls back to Smart silently.
+### Phase 6. Fast
+- 6a Lane A + hedge: grammar parser, staple matcher, acceptCandidate gate,
+  parallel estimate, template line, meal_type by clock.
+  Test: grammar unit corpus incl. Hinglish ("2 roti", "paneer 200g",
+  "doodh 1 glass"); acceptCandidate bug-corpus table; on-device full card
+  <= 0.8s; estimate-fallback path <= 1.5s.
+- 6b Lane B: streaming NDJSON extract, per-line search fire, per-item fill.
+  Test: malformed-line injection (skip line, keep stream); first row <= 1.2s
+  on device; every-line-garbage -> silent Smart fallback.
+- 6c Hardening: correction/challenge reroutes, both-fail reroute, eval run
+  with mode=fast across the corpus. EXPECTED: parity with Smart on
+  simple-tagged cases; measured (not assumed) small loss on messy phrasing.
+Gate: Lane A parity on simple cases; reroutes silent; TTFT numbers recorded.
 
-SMART: the current pipeline, unchanged. It receives the Step 1-4 quality work,
-the P3 skip-decide flip, and I15. Gets the streaming card shell for free after
-M1 (rows appear when decide returns; perceived speed up, zero pipeline change).
+### Phase 7. Super
+- 7a precise_cache migration: write-through after verification, read
+  short-circuit before web. REVOKE-first grants (Supabase default-grant
+  lesson); anon NOT granted.
+- 7b Per-item web search in the resolve fan-out (shaped by the Phase 1 I16
+  archaeology); code cross-check + verified badge; Sonnet per-item decide
+  (reuse 5b machinery, model swap + disagreements in-prompt).
+- 7c Progress events per source; challenge flow reroutes here; credit gate.
+Test: THE CANONICAL CASE: "milky mist low fat paneer" must ground from web
+with the right macros. Cache: the second identical parse must serve without a
+web call (trace assert). Badge only at 2+ independent sources within 10%
+(OFF rows sourced from FatSecret are NOT independent). Credit-gate deny path.
+Cost per parse logged to token_usage_log.
+Gate: canonical case green; cache short-circuit proven; super-tagged evals.
 
-SUPER (credit-gated, p50 ~8-12s):
-extract -> ALL parallel: catalog + OFF + FatSecret + per-ITEM web search +
-precise cache -> rerank -> code cross-check (2+ independent sources within
-10% = verified badge) -> Sonnet decide with disagreements in-prompt, card
-names the winning label -> guardrails -> cache write-through.
-- Web queries are per item ("amul double toned milk nutrition per 100g"),
-  never per meal.
-- Cache hit skips that item's web call: the second user of any food gets
-  Super accuracy at Smart speed.
-- DECIDED: web fires ALWAYS in parallel, not only on source disagreement.
-  The accuracy mode does not skip its accuracy step; credits cover the cost.
-- Streams progress events ("checking the label for milky mist paneer") so the
-  wait feels alive. The challenge flow lands here.
-- Prereq homework (I16): recover why the old pre-card web race was removed.
+### Phase 8. Mode UI + routing
+Build: toggle on the input bar, persisted pref, routing matrix (Fast
+fail-silent -> Smart; corrections -> Smart; challenge -> Super; Super needs
+credits). Test: pref survives restart; typed-routes compile; reroute matrix
+exercised on device; Fast toggle hidden/disabled gracefully on old servers.
 
-Build order within Step 5:
-- M1 Transport: SSE out, expo/fetch in, progressive card UI. THE risk item.
-- M2 Fast Lane A + hedge.
-- M3 Fast Lane B streaming extract.
-- M4 Fast hardening: fallbacks, estimate path, eval cases, on-device TTFT.
-- M5 Super: cache table, per-item web, cross-check, Sonnet, badge, credit gate.
-- M6 Mode toggle UI + routing (Fast fail-silent to Smart, corrections to
-  Smart, challenge to Super) + persisted pref.
+### Phase 9. Features on top
+- I8 full-day logging: meal type per item end-to-end (extract schema, decide,
+  card sections, client). Gate: audit-multi-meal-day. Revisit the 500-char cap.
+- I10 personalized household units: learn per-user bowl/katori/glass weights
+  from edit history; population defaults until n>=3 edits; spoons stay fixed.
 
-### Step 6. Features on top
-- I8 full-day logging (meal type per item end to end; gate audit-multi-meal-day).
-- I10 personalized household units (learn per-user katori/bowl/glass weights
-  from edit history; spoons stay physics).
+## Testing infrastructure (cross-phase)
+- Eval harness gains a mode parameter; new tags fast-* / super-*;
+  BASELINE.md updated at every phase gate.
+- TTFT is measured on the CLIENT (send -> first item event) and reported into
+  the trace on Add; server stage timings already in steps.
+- Shadow pattern is the standard for risky flips (P3, I12 5b, I11 2b):
+  SQL-queryable counters, flip criteria written before the flag exists.
+- Device verification per phase on iOS sim + Android dev client.
 
 ## Parallel / external tracks (not on the critical path)
-- P6 FatSecret Premier: awaiting their reply (asked US+India+UK+EU,
-  2026-08-21). On grant: set region, retest the milky-mist case at tier 2.
+- P6 FatSecret Premier: awaiting reply (US+India+UK+EU asked 2026-08-21).
+  On grant: set region, retest the canonical case at tier 2.
 - INDB (Anuvaad): confirm license, then batch-ingest as source='indb'.
 - Rerank vendor eval (Voyage vs Cohere) on parse_traces, open since P2.
 - food_log_stats / commonality refresh cadence.
-
-## Standing gates for every step
-- Eval: rerun the step's tagged cases + a full-suite sanity pass.
-- Deploy: edge function deploys are cheap; client changes ride releases.
-- Invariant: every number the user sees is source-grounded or carries the
-  estimate chip. No silent model arithmetic. No bulk-copying licensed rows.
