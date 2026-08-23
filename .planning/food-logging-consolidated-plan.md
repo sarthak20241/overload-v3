@@ -161,6 +161,13 @@ Gate: Lane A parity on simple cases; reroutes silent; TTFT numbers recorded.
   archaeology); code cross-check + verified badge; Sonnet per-item decide
   (reuse 5b machinery, model swap + disagreements in-prompt).
 - 7c Progress events per source; challenge flow reroutes here; credit gate.
+- 7d Cache-to-catalog promotion (user decision 2026-08-23): a NIGHTLY job
+  promotes precise_cache rows into foods so Fast/Smart search finds them too.
+  Bar: verified only (2+ INDEPENDENT sources within 10%; FatSecret-only
+  evidence never qualifies, keeps us clear of replicating their DB), logged
+  >=2 times or by >=2 users, dedup check against existing rows first,
+  source='web_verified' + last_verified_at (self-heal pattern re-checks).
+  Never inline with a parse.
 Test: THE CANONICAL CASE: "milky mist low fat paneer" must ground from web
 with the right macros. Cache: the second identical parse must serve without a
 web call (trace assert). Badge only at 2+ independent sources within 10%
