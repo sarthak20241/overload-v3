@@ -1,8 +1,10 @@
 // parse_meal mode: free-text food logging ("oats yogabar 50g and milk 500 ml")
 // parsed into catalog-grounded meal entries. Kept separate from index.ts and
-// runtime-agnostic (no Deno/jsr imports, dependencies injected) so the eval
-// harness in scripts/parse-meal-eval/ can drive the exact production pipeline
-// from Node against real catalog data.
+// runtime-agnostic (dependencies injected; no Deno globals, no jsr:/https:
+// imports) so the eval harness in scripts/parse-meal-eval/ can drive the exact
+// production pipeline from Node against real catalog data. Relative imports of
+// pure-TS siblings are fine - both Deno and tsx resolve them - and the
+// injected-deps rule is what actually keeps this file portable.
 //
 // Architecture: extract -> resolve -> decide.
 //   1. EXTRACT  one fast model call, no tools: segment the text into items
@@ -21,6 +23,8 @@
 // catalog/off rows are recomputed server-side (verifyItems) and every line
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
+
+import { nearWord } from "./textMatch.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 

@@ -560,28 +560,6 @@ export const CASES: EvalCase[] = [
   // (283 kcal/100g against the real 190). Ranking cannot fix this, the wrong
   // query never returns the right row. These cases guard the fix.
   {
-    id: "qualifier-low-fat-paneer",
-    text: "50g milky mist low fat paneer",
-    hour: 9,
-    expect: {
-      minItems: 1, maxItems: 1,
-      // 50 g of LOW FAT paneer is ~95 kcal; full-fat would be ~142. The upper
-      // bound is what actually fails when the qualifier is dropped.
-      items: [{ nameIncludes: "paneer", gramsBetween: [50, 50], kcalBetween: [60, 125] }],
-    },
-  },
-  {
-    id: "qualifier-double-toned-milk",
-    text: "amul double toned milk 300ml",
-    hour: 8,
-    expect: {
-      minItems: 1, maxItems: 1,
-      // Double toned is ~55-60 kcal/100ml, so 300 ml is ~165-180. A model
-      // estimate of "17 kcal per 100 ml" (observed) lands far below this.
-      items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [110, 230] }],
-    },
-  },
-  {
     id: "qualifier-skimmed-not-toned",
     text: "200 ml amul skimmed milk",
     hour: 8,
@@ -709,8 +687,12 @@ export const CASES: EvalCase[] = [
     hour: 9,
     expect: {
       minItems: 1, maxItems: 1,
-      // Real product: 190 kcal/100g -> ~95 for 50g. Full-fat would be ~132-142.
-      items: [{ nameIncludes: "paneer", kcalBetween: [80, 120] }],
+      // Milky Mist High Protein Low Fat Paneer is 190 kcal/100 g, so 50 g is
+      // ~95. Full-fat paneer is 265-283/100 g, landing 132-142 - which is what
+      // ships today when the "low fat" qualifier is dropped. I11/I11b gate.
+      // (Merged with the former qualifier-low-fat-paneer, which asserted the
+      // same fact through a looser band.)
+      items: [{ nameIncludes: "paneer", gramsBetween: [50, 50], kcalBetween: [80, 120] }],
     },
   },
   {
@@ -719,7 +701,13 @@ export const CASES: EvalCase[] = [
     hour: 8,
     expect: {
       minItems: 1, maxItems: 1,
-      // Double toned ~35-42 kcal/100ml. Toned (58) or full cream (67+) lands >150.
+      // FSSAI fixes these by composition, which is exactly why the qualifier is
+      // not droppable: skimmed <0.5% fat ~35 kcal/100 ml, DOUBLE TONED 1.5%
+      // ~42, toned 3.0% ~58, full cream 6% ~87. So 300 ml is ~126, and Amul
+      // Taaza Toned (the row that wins today) lands 174. I11/I11b gate.
+      // (Replaced the former qualifier-double-toned-milk, whose band [110,230]
+      // and "~55-60 kcal/100ml" comment described TONED milk - it PASSED on the
+      // wrong product and would have certified this bug as correct.)
       items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [90, 140] }],
     },
   },

@@ -139,7 +139,7 @@ Order of signals, applied to the merged candidate list before decide:
 
 ## Routing summary
 
-```
+```text
 user text
   -> extract
   -> catalog search + history match
