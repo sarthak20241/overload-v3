@@ -94,9 +94,16 @@ is REJECTED: estimates fatten the extract output, output tokens are the
 latency, and forced tool calls do not stream)
 
 Transport first: ONE SSE stream out of the edge function; client consumes via
-expo/fetch (SDK 53, verify on device day one); the card renders progressively
-(item event = row appears with shimmer, fill event = macros land, end event =
-totals + Drona line). Smart and Super reuse the same transport once it exists.
+expo/fetch (SDK 53, verify on device day one); the card renders progressively.
+ONE event vocabulary shared by ALL THREE modes (locked 2026-08-23):
+  item (row appears, shimmer macros) / fill (macros land, chips) /
+  progress (Super source status lines) / end (totals + Drona line).
+Build the progressive card once; every mode feeds it. Streaming in Smart and
+Super is FREE: pipelines unchanged, events emitted at existing stage
+boundaries. Smart TTFT drops ~6s -> ~1.3s (rows paint when extract returns,
+macros land when decide returns; per-item macro landing arrives later with
+I12, since forced-tool decide cannot stream). Super adds progress events per
+source and a per-item verified badge landing.
 
 FAST (targets: Lane A card ~0.5s; Lane B first row < 1s, complete ~2.5-3s)
 Two lanes, ONE shared backend (search -> code pick -> code fill). The lanes
@@ -114,11 +121,20 @@ differ only in who NAMES the items.
   query, holds qty/unit for gram conversion. Each item's search fires the
   moment its line closes; items never wait for each other. Ungrounded items
   are filled by one estimate call, chipped.
-- Code pick = the codeFillItems machinery (P3): top-ranked candidate in 0102
-  order (word match + user history + staples + popularity), vetoed by
-  variantClash and unhonouredGrade (veto with no survivor => ungrounded =>
-  estimate). Unit tables convert: mass direct, volume x density, piece via
-  serving anchors, spoons fixed. Household units (bowl/katori) use population
+- Code pick = the codeFillItems machinery (P3) behind ONE shared pure
+  function, acceptCandidate(userWords, row), used by Lane A, Lane B, and the
+  P3 skip-decide gate. Walks the top ~5 candidates in 0102 order (word match
+  + user history + staples + popularity); a candidate is accepted only if it
+  passes ALL of: (1) word coverage with I17 proportional typo tolerance,
+  (2) no variantClash, (3) no unhonouredGrade, (4) similarity floor OR a
+  user-history row, (5) per-100 plausibility. First survivor wins; no
+  survivor => ungrounded => the hedge estimate fills (already in flight since
+  t=0, so the miss path costs no restart: fill lands ~1.3s). Estimate ALSO
+  failed => silent reroute to Smart. Gate is pure string ops (guardrail chain
+  measured 20 microseconds; same class), unit-tested against the full real
+  bug corpus: egg/yolk, milky mist, bikano/bikaji, creatine/creatinine.
+  Unit tables convert: mass direct, volume x density, piece via serving
+  anchors, spoons fixed. Household units (bowl/katori) use population
   defaults shown plainly on the card ("1 bowl - 150g") until I10 personalizes.
 - meal_type from the clock; Drona line from a template.
 - Deliberate exclusions: no decide, no reranker (~400ms/item + 429 risk), no
