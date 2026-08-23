@@ -880,10 +880,27 @@ const WEB_SEARCH_TOOL = {
   max_uses: 2,
 };
 
-// Terminal tool for the HEDGED web lookup: a compact side-call that races the
-// decide call for items the catalog could not resolve. The decide model
-// estimates those items immediately; if this lookup lands label data within
-// the grace window, the estimate lines are upgraded server-side.
+// Terminal tool for the web label lookup: read the official label and report
+// per-100 macros, nothing else.
+//
+// The hedge this was built for is GONE. Two designs have shipped and been
+// removed here, and the history is worth keeping because Super will face the
+// same choice:
+//   1. 501a614 raced this lookup against decide with a 4s grace window and
+//      upgraded estimate lines SERVER-SIDE, before the card ever rendered.
+//      Dropped for being SILENT: the user never learned a lookup happened or
+//      that their numbers had been swapped.
+//   2. abebc86 replaced it with a visible two-phase refine - phase 1 returns a
+//      fast card marked with weak lines, the client fires phase 2, numbers get
+//      swapped in AFTER the user is already reading them. Being removed by I15
+//      for the opposite sin: it mutates a review card while Add is live, so a
+//      user can tap Add on 180 kcal and log 240.
+// The lesson is not "visible vs silent", it is WHEN: upgrade before render and
+// the card is stable, upgrade after and it is not. Super does the lookup inside
+// resolve (before decide, before render) AND narrates it with progress events
+// plus a verified badge, which is the only combination neither design had.
+//
+// Today this has exactly one caller: researchPrevious, the user-challenge path.
 const WEB_LOOKUP_TOOL = {
   name: "report_labels",
   description:
@@ -1038,9 +1055,6 @@ async function runWebLookup(
   return null;
 }
 
-// Upgrade estimate lines with label data the hedge brought back in time.
-// Grams stay the model's (portioning already went through the guardrails);
-// only the per-gram nutrition is replaced.
 // ── Prompt ──────────────────────────────────────────────────────────────────
 
 const HOUR_TO_MEAL: Array<[number, number, MealType]> = [

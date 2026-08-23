@@ -180,8 +180,18 @@ Gate: Lane A parity on simple cases; reroutes silent; TTFT numbers recorded.
 - 7a precise_cache migration: write-through after verification, read
   short-circuit before web. REVOKE-first grants (Supabase default-grant
   lesson); anon NOT granted.
-- 7b Per-item web search in the resolve fan-out (shaped by the Phase 1 I16
-  archaeology); code cross-check + verified badge; Sonnet per-item decide
+- 7b Per-item web search in the resolve fan-out. ARCHAEOLOGY DONE (I16,
+  2026-08-23): two web designs have already shipped and been removed here.
+  501a614 raced the lookup against decide with a 4s grace window and upgraded
+  estimates SERVER-SIDE before render - dropped for being SILENT (the user
+  never knew their numbers were swapped). abebc86 replaced it with the visible
+  two-phase refine that swaps numbers in AFTER render - being removed by I15
+  for mutating a card while Add is live. The axis is not visible-vs-silent, it
+  is WHEN: before render the card is stable, after it is not. Super is the only
+  design that gets both - the lookup sits inside resolve (before decide, before
+  render) and is narrated by progress events plus the verified badge. Do not
+  re-litigate this; both alternatives are already known to fail.
+  Then: code cross-check + verified badge; Sonnet per-item decide
   (reuse 5b machinery, model swap + disagreements in-prompt).
 - 7c Progress events per source; challenge flow reroutes here; credit gate.
 - 7d Cache-to-catalog promotion (user decision 2026-08-23): a NIGHTLY job
