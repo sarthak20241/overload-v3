@@ -34,7 +34,35 @@ Read the gate table before treating a failure as a regression.
 | Date | Pass | Code under test |
 |---|---|---|
 | 2026-08-23 | 76/88 | pre-fix, first baseline ever run |
-| 2026-08-23 | **81/88** | + FatSecret sanitize fix (`38f3b6c`) — **current baseline** |
+| 2026-08-23 | **81/88** | + FatSecret sanitize fix (`38f3b6c`) |
+| 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) — **current baseline** |
+
+> Corpus is **86 cases** from `b112e92` onward: two duplicate cases were removed
+> (see below). The 88-case runs above predate that.
+
+### I17 regression check (no change)
+
+Same 81. Failure sets differ by two cases in each direction, which is the
+documented flakiness, not a regression:
+
+- `audit-challenge-plus-fix` flipped to pass
+- `audit-hindi-doodh` flipped to fail — "doodh" matched Parlē Agro **Smoodh**
+  Chocolate. Ruled out as an I17 effect two ways: `nearWord("doodh","smoodh")`
+  is `false` (2 edits against a budget of 1) and the old prefix rule rejected it
+  too, so `wordsOverlap` never saw the pair; and the case passes on both reruns.
+  The cause is search/rank plus a FatSecret timeout (tier mix `fatsecret` 6 -> 5,
+  consistent with the documented ~4s cold-cache penalty).
+
+### Removed cases (they contradicted their twins)
+
+`qualifier-double-toned-milk` and `qualifier-low-fat-paneer` duplicated the
+`audit-*` cases on identical input text with different bands. The milk one was
+not merely redundant, it was **wrong**: it documented double toned as "~55-60
+kcal/100 ml" (that is toned) and its band `[110,230]` PASSED on Amul Taaza Toned
+at 174 kcal — certifying the exact bug `audit-double-toned-300` exists to catch.
+The surviving cases now carry the FSSAI composition ladder that makes the
+qualifier non-droppable: skimmed <0.5% fat ~35 kcal/100 ml, double toned 1.5%
+~42, toned 3.0% ~58, full cream 6% ~87.
 
 ### What the fix moved
 
