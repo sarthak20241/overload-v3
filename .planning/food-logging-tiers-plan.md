@@ -280,6 +280,41 @@ Also visible in that same trace set, still live and unfixed: 2026-08-22,
 "50g milky mist low fat paneer" -> "Milky Mist Paneer" (FULL fat, 283/100g).
 The I11/I11b acceptable-candidate gate is what closes this. It is Phase 2b.
 
+## Catalog coverage on Indian dishes, measured 2026-08-23
+
+Triggered by paneer-roti, the one eval case that fails EVERY run. Diagnosed:
+the catalog has no "Paneer Bhurji" row at all, so the query lands on Egg Bhurji
+(154 kcal, wrong protein source) or **Bhujia, a deep-fried snack at 609 kcal**.
+Logging a paneer dish as bhujia roughly triples the calories, silently.
+
+Probed 33 common Indian dishes for presence. Coverage is BETTER than the
+FatSecret-Premier framing assumed - 26 of 33 present. Missing 7:
+  bisibelebath, chole bhature, gobi paratha, methi thepla, misal pav,
+  paneer bhurji, sabudana khichdi
+
+So the catalog gap is narrow, and INDB (1,014 Indian recipes) would close it
+cheaply. But the gap is NOT the main problem. The failure MODE is:
+
+  a missing row does not produce an honest estimate, it produces a DIFFERENT
+  FOOD with confident macros
+
+That is the acceptCandidate argument in its strongest form, and it generalises
+past Indian food: word coverage ("paneer" appears nowhere in "Bhujia") would
+reject both candidates and fall through to a labelled estimate. An estimate of
+a paneer dish is roughly right; Bhujia is 3x wrong and wears no chip.
+
+Consequences for the plan:
+- This raises the priority of the Phase 6 acceptCandidate gate: it is not just
+  a Fast-mode component, it is the thing that converts silent-wrong into
+  honestly-uncertain across every mode. Consider pulling the word-coverage
+  check forward into Phase 2b alongside I11, since both are "reject a candidate
+  that does not cover what the user said".
+- It also re-rates INDB: cheap, offline, closes 7 of 7 known misses, no vendor
+  negotiation. Better value per effort than FatSecret Premier for Indian dishes
+  specifically (Premier still matters for branded PACKAGED goods).
+- mcaloo-tikki is the same shape: McAloo Tikki -> McDonald's Cheeseburger.
+  Right brand, wrong product, no chip.
+
 ## Exploration findings (2026-08-22, ongoing)
 
 Living companion: the Drona Parse Explorer artifact (clickable pipeline map +
