@@ -250,6 +250,36 @@ When sales replies: set FATSECRET_REGION=IN (+ others), re-eval India coverage
   (parse_traces has every real query + what was picked).
 - Commonality table refresh cadence (nightly cron vs trigger).
 
+## Production impact check: the zero-macro FatSecret bug (2026-08-23)
+
+Found by CodeRabbit on PR #120, fixed same day. Blast radius measured before
+merging, because a zero-macro line is INVISIBLE to our sanity checks (0 kcal
+against 0 g passes checkAtwater - that is the whole reason it survived).
+
+Queries run against live:
+- meal_entries joined to meals, 45 days, grams > 0 and all four macros 0:
+  **0 rows.** No user ever LOGGED a zero-macro line.
+- parse_traces items, 20 days, same predicate: **0 rows.** No user was ever
+  SHOWN one either.
+- parse_traces with a fatsecret step, 20 days: 6 of 16 traces. In all 6,
+  decide picked catalog/off/estimate. FatSecret never won a pick in prod.
+
+WHY prod escaped: the Basic key serves the US dataset. Every prod trace was an
+Indian food (paneer, roti, dal, chai, rabdi), where FatSecret returns nothing
+competitive and catalog/OFF win on their own merits. The eval caught it because
+boiled-eggs and chicken-200g are US generics where FatSecret's rows outrank
+ours - exactly the queries a US user or Premier-India would produce.
+
+So the bug was not dormant by luck of timing, it was dormant because FatSecret
+was contributing NOTHING. Which is the second finding: the source we did the
+OAuth work for has never once influenced a real parse. Re-measure the
+fatsecret pick rate after Premier lands (P6) - that number is the only proof
+the integration is earning its latency.
+
+Also visible in that same trace set, still live and unfixed: 2026-08-22,
+"50g milky mist low fat paneer" -> "Milky Mist Paneer" (FULL fat, 283/100g).
+The I11/I11b acceptable-candidate gate is what closes this. It is Phase 2b.
+
 ## Exploration findings (2026-08-22, ongoing)
 
 Living companion: the Drona Parse Explorer artifact (clickable pipeline map +
