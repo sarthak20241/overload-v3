@@ -1,4 +1,8 @@
-# Food Logging Tiers (Fast / Balanced / Precise) - Plan
+# Food Logging Tiers (Fast / Smart / Super) - Plan
+
+> EVIDENCE RECORD. The build sequence and the current mode contracts live in
+> .planning/food-logging-consolidated-plan.md. This file holds the
+> measurements, benchmarks and reasoning behind them.
 
 Status: PLANNED (2026-08-21). Extends the shipped parse_meal pipeline
 (supabase/functions/ai-coach/parseMeal.ts). Follows the id-slip retarget +
@@ -42,7 +46,24 @@ into `foods`. Per-lookup caching of individual facts is fine (facts are not
 copyrightable); bulk replication of their DB is not. Same rule that already
 governs the web tier. OFF rows stay `source='off'` (ODbL segregation).
 
-## The three modes (REVISED 2026-08-22, user decision)
+## The three modes (REVISED 2026-08-22)
+
+> SUPERSEDED 2026-08-23 by .planning/food-logging-consolidated-plan.md Step 5,
+> which is the ONE contract for the modes. Kept here as history only. What
+> changed, explicitly, so neither reader is misled:
+>   - Names: this file's older "Balanced"/"Precise" == Smart/Super. Ship
+>     vocabulary is Smart / Fast / Super everywhere (client, server, eval tags).
+>   - Fast: the fused extract+estimate call below is REJECTED. Fast is two
+>     lanes over one shared backend (Lane A zero-LLM naming + parallel estimate
+>     hedge; Lane B streaming NDJSON extract). Fast REROUTES corrections to
+>     Smart and challenges to Super rather than "never escalating".
+>   - Super: the precise cache is a SHORT-CIRCUIT, read BEFORE web, not another
+>     arm of the parallel fan-out; a cache hit must not spend web latency/quota.
+>   - Super's "nothing ships as estimate if any source grounded it" is WRONG as
+>     written and is narrowed by I11/I11b: it applies only when an ACCEPTABLE
+>     (qualifier-honouring) candidate exists. A generic row must never suppress
+>     the estimate for "low fat"/"high protein" queries - that is the bug.
+
 
 Modes are USER-FACING: Smart is the default, Fast is a user choice, Super is
 credit-gated (and powers the challenge flow). Full component diagrams:
@@ -123,8 +144,8 @@ user text
   -> extract
   -> catalog search + history match
        all high-confidence + seen before?  -> FAST (no decide call)
-       else                                -> BALANCED
-            weak line / challenge / new?   -> PRECISE (or phase-2 refine)
+       else                                -> SMART
+            weak line / challenge / new?   -> SUPER
 ```
 
 Confidence per line, not per meal: "2 eggs and a bhakarwadi" logs the eggs

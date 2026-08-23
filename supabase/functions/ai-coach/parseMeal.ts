@@ -1591,6 +1591,19 @@ export function retargetMismatchedIds(
 // to 0: if the row read then fails, there are no model numbers to fall back on
 // and the line would ship as a silent 0 kcal food. The candidate we offered in
 // the first place is the right answer there, and costs no extra query.
+/**
+ * Ephemeral ids have done their job (addressing a candidate for decide and
+ * keying the per-100 recompute). Drop them before the client can try to log one
+ * against meal_entries.food_id, which is a uuid FK into `foods` - an `fs:` id
+ * fails that insert, so the user cannot log the meal they just confirmed.
+ *
+ * This is a helper rather than an inline map because EVERY return path owes it:
+ * the skip-decide path returns early and used to bypass the inline version.
+ */
+export function stripEphemeralIds(items: ParsedItem[]): ParsedItem[] {
+  return items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+}
+
 export async function verifyItems(
   deps: ParseMealDeps,
   items: ParsedItem[],
@@ -1720,7 +1733,13 @@ function sanitizeItems(raw: unknown): ParsedItem[] {
       const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
       return Math.min(Math.max(n, 0), max);
     };
-    const source = o.source === "catalog" || o.source === "off" || o.source === "web" || o.source === "estimate"
+    // "fatsecret" MUST be listed: it is in the decide schema's source enum, and
+    // verifyItems keys the row-recompute branch off it. Dropping it here rewrote
+    // every FatSecret pick to "estimate", which then took verifyItems' estimate
+    // branch - and because the schema tells the model to omit macros whenever a
+    // food_id is set (fs: ids included), those lines shipped as silent zeros.
+    const source = o.source === "catalog" || o.source === "off" || o.source === "fatsecret" ||
+        o.source === "web" || o.source === "estimate"
       ? o.source
       : "estimate";
     items.push({
@@ -2585,10 +2604,10 @@ export async function runParseMeal(
   }
   if (skipMode === "on" && codeFill && !codeFill.blockedBy) {
     T.decide_ms = 0;
-    const filled = flagPrepMismatch(
+    const filled = stripEphemeralIds(flagPrepMismatch(
       checkAtwater(reconcileQuantity(await verifyItems(deps, codeFill.items, candidatePer100), servingsForItems(resolved))),
       prepForItems(resolved),
-    );
+    ));
     steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
     return {
       parsed: {
@@ -2709,10 +2728,9 @@ export async function runParseMeal(
       },
     });
   }
-  // Ephemeral ids have done their job (addressing a candidate for decide and
-  // keying the per-100 recompute). Drop them before the client can try to log
-  // one against meal_entries.food_id, which is a uuid FK into `foods`.
-  items = items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+  // See stripEphemeralIds: every path that returns items to the client must
+  // strip them, not just this one.
+  items = stripEphemeralIds(items);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",

@@ -24,9 +24,32 @@ guardrail parallelization (measured 20 microseconds, a no-op); I5 = P3.
 1. Modes are USER-FACING: Smart default, Fast a choice, Super credit-gated.
 2. ONE SSE transport + ONE event vocabulary for all three modes:
    item (row appears, shimmer macros) / fill (macros land, chips) /
-   progress (source status lines) / end (totals + Drona line, seals card).
+   progress (source status lines) / drona (coach line) / end (totals, seals).
    The progressive card is built ONCE and must tolerate out-of-order fills;
    totals recompute per fill until end seals them.
+   SSE LIFECYCLE CONTRACT (settled 2026-08-23; the client cannot be written
+   without it, and "out-of-order fills" + "never mutates after render" only
+   coexist because of these rules):
+   - Every event carries item_id: a STABLE server-assigned id minted when the
+     item is EXTRACTED (Lane A: input index; Lane B: line ordinal). Not the
+     food name, which changes when a row is picked; not food_id, which is null
+     until then.
+   - Every per-item event carries a monotonic rev. A fill whose rev is <= the
+     rendered rev is DROPPED. That makes reordered and duplicated fills safe
+     without the client keeping history.
+   - At most ONE applied fill per item. "Never mutates after render" means:
+     after end, nothing changes. Before end an item goes shimmer -> filled
+     exactly once, which is filling, not mutating.
+   - The Drona line is its OWN event and must arrive before or with end. If it
+     is not ready when the pipeline finishes, end ships the template line and
+     any late async line is DISCARDED - it never rewrites a sealed card. This
+     is the I15 rule applied to our own stream.
+   - end carries the authoritative totals and final item list; the client
+     reconciles to it. Add stays DISABLED until end, so a user can never tap
+     Add on numbers still in flight (the exact I15 complaint).
+   - Streams are single-use: a dropped connection re-requests the parse rather
+     than resuming, so "replay" only ever means duplicate events inside one
+     stream.
 3. Fast = two lanes over ONE shared backend (search -> code pick -> fill).
    - Lane A (zero-LLM naming): grammar (qty+unit+food) or user-staple match.
      HEDGE: a small Haiku estimate call fires in PARALLEL with every Lane A
@@ -188,7 +211,7 @@ exercised on device; Fast toggle hidden/disabled gracefully on old servers.
   from edit history; population defaults until n>=3 edits; spoons stay fixed.
 
 ## Testing infrastructure (cross-phase)
-- Eval harness gains a mode parameter; new tags fast-* / super-*;
+- Eval harness gains a mode parameter; new tags `fast-*` / `super-*`;
   BASELINE.md updated at every phase gate.
 - TTFT is measured on the CLIENT (send -> first item event) and reported into
   the trace on Add; server stage timings already in steps.
