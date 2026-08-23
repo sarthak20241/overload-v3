@@ -88,13 +88,71 @@ In order:
   async/template. The actual per-item parallel decide flip can ride with Step 5
   (it IS Fast/Smart latency work).
 
-### Step 5. The modes (P4, P5)
-- P4 Fast: mode param + toggle UI + persisted pref. Fused extract+estimate
-  call, catalog+OFF only (1.5s budget), code pick, template line. p50 ~2.7s.
-- P5 Super: web search INSIDE the resolve fan-out, 2-source 10% cross-check
-  badge, Sonnet decide with disagreements in-prompt, precise cache
-  write-through, challenge flow reroutes here, credit gate. p50 <= 12s.
-- Smart is what Steps 1-4 already made the default pipeline.
+### Step 5. The modes (DESIGN LOCKED 2026-08-23; supersedes the P4/P5
+sketches in the tiers plan, including the fused extract+estimate call, which
+is REJECTED: estimates fatten the extract output, output tokens are the
+latency, and forced tool calls do not stream)
+
+Transport first: ONE SSE stream out of the edge function; client consumes via
+expo/fetch (SDK 53, verify on device day one); the card renders progressively
+(item event = row appears with shimmer, fill event = macros land, end event =
+totals + Drona line). Smart and Super reuse the same transport once it exists.
+
+FAST (targets: Lane A card ~0.5s; Lane B first row < 1s, complete ~2.5-3s)
+Two lanes, ONE shared backend (search -> code pick -> code fill). The lanes
+differ only in who NAMES the items.
+- Lane A (instant, zero-LLM naming): a grammar (qty + unit + food words) or a
+  user-staple match names the items; straight to search.
+  HEDGE (user decision 2026-08-23): a small Haiku estimate call fires in
+  PARALLEL with every Lane A search so an estimate is always ready. Search
+  grounds the item -> estimate discarded. Search misses or is vetoed ->
+  estimate fills at ~1.5s with the estimate chip. Rationale: our DBs will
+  never carry everything; the wasted call costs a fraction of a paisa.
+- Lane B (streaming): Haiku extract WITHOUT forced tool use (forced tool does
+  not stream, measured); output is NDJSON, one item per line. Each completed
+  line is used three ways at once: paints the card row, becomes the search
+  query, holds qty/unit for gram conversion. Each item's search fires the
+  moment its line closes; items never wait for each other. Ungrounded items
+  are filled by one estimate call, chipped.
+- Code pick = the codeFillItems machinery (P3): top-ranked candidate in 0102
+  order (word match + user history + staples + popularity), vetoed by
+  variantClash and unhonouredGrade (veto with no survivor => ungrounded =>
+  estimate). Unit tables convert: mass direct, volume x density, piece via
+  serving anchors, spoons fixed. Household units (bowl/katori) use population
+  defaults shown plainly on the card ("1 bowl - 150g") until I10 personalizes.
+- meal_type from the clock; Drona line from a template.
+- Deliberate exclusions: no decide, no reranker (~400ms/item + 429 risk), no
+  FatSecret (~4s cold cache), no web. CORRECTIONS AND CHALLENGES REROUTE
+  (corrections -> Smart, challenge -> Super); Fast is first-shot logging only.
+  Malformed/blocked stream falls back to Smart silently.
+
+SMART: the current pipeline, unchanged. It receives the Step 1-4 quality work,
+the P3 skip-decide flip, and I15. Gets the streaming card shell for free after
+M1 (rows appear when decide returns; perceived speed up, zero pipeline change).
+
+SUPER (credit-gated, p50 ~8-12s):
+extract -> ALL parallel: catalog + OFF + FatSecret + per-ITEM web search +
+precise cache -> rerank -> code cross-check (2+ independent sources within
+10% = verified badge) -> Sonnet decide with disagreements in-prompt, card
+names the winning label -> guardrails -> cache write-through.
+- Web queries are per item ("amul double toned milk nutrition per 100g"),
+  never per meal.
+- Cache hit skips that item's web call: the second user of any food gets
+  Super accuracy at Smart speed.
+- DECIDED: web fires ALWAYS in parallel, not only on source disagreement.
+  The accuracy mode does not skip its accuracy step; credits cover the cost.
+- Streams progress events ("checking the label for milky mist paneer") so the
+  wait feels alive. The challenge flow lands here.
+- Prereq homework (I16): recover why the old pre-card web race was removed.
+
+Build order within Step 5:
+- M1 Transport: SSE out, expo/fetch in, progressive card UI. THE risk item.
+- M2 Fast Lane A + hedge.
+- M3 Fast Lane B streaming extract.
+- M4 Fast hardening: fallbacks, estimate path, eval cases, on-device TTFT.
+- M5 Super: cache table, per-item web, cross-check, Sonnet, badge, credit gate.
+- M6 Mode toggle UI + routing (Fast fail-silent to Smart, corrections to
+  Smart, challenge to Super) + persisted pref.
 
 ### Step 6. Features on top
 - I8 full-day logging (meal type per item end to end; gate audit-multi-meal-day).
