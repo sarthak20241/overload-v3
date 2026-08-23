@@ -466,7 +466,7 @@ export interface ParsedMealItem {
   fiber_g: number | null;
   // 'manual' = the user corrected this line in the review card before adding
   // it, so the numbers are theirs and nothing should recompute over them.
-  source: 'catalog' | 'off' | 'web' | 'estimate' | 'manual';
+  source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
 }
@@ -505,7 +505,15 @@ function toParsedItem(i: any): ParsedMealItem {
     grams: num(i.grams),
     kcal: num(i.kcal), protein_g: num(i.protein_g), carb_g: num(i.carb_g), fat_g: num(i.fat_g),
     fiber_g: i.fiber_g == null ? null : num(i.fiber_g),
-    source: i.source === 'catalog' || i.source === 'off' || i.source === 'web' || i.source === 'manual' ? i.source : 'estimate',
+    // 'fatsecret' MUST be listed. Leaving it out coerced every FatSecret-backed
+    // line to 'estimate', so the card labelled a real sourced row "Drona's
+    // estimate" - undersells a number that came off a label. Same missing-enum
+    // shape as the server's sanitizeItems bug; a new source has to be added in
+    // BOTH whitelists or it silently degrades.
+    source: i.source === 'catalog' || i.source === 'off' || i.source === 'fatsecret' ||
+        i.source === 'web' || i.source === 'manual'
+      ? i.source
+      : 'estimate',
     assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
     confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
   };

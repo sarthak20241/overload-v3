@@ -6,7 +6,7 @@
 // (which curated row it picks, exact grams for "1 plate") and tight where
 // the math must be right (explicit amounts like "50g" or "500 ml").
 
-export type Tier = "catalog" | "off" | "web" | "estimate" | "manual";
+export type Tier = "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
 
 export interface ItemExpectation {
   // Case-insensitive substring that must appear in some logged item's name.
@@ -551,6 +551,332 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 1,
       items: [{ nameIncludes: "tea", kcalBetween: [0, 15] }],
+    },
+  },
+  // ── Product qualifiers must survive extraction (regression, 2026-08-22) ────
+  // The extract step used to compress names to 1-3 words and "drop filler
+  // adjectives", which stripped the words that identify WHICH product: "milky
+  // mist low fat paneer" was searched as "paneer" and silently logged FULL FAT
+  // (283 kcal/100g against the real 190). Ranking cannot fix this, the wrong
+  // query never returns the right row. These cases guard the fix.
+  {
+    id: "qualifier-skimmed-not-toned",
+    text: "200 ml amul skimmed milk",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", gramsBetween: [200, 200], kcalBetween: [50, 110] }],
+    },
+  },
+  {
+    id: "qualifier-high-protein-paneer",
+    text: "35g milky mist high protein paneer",
+    hour: 10,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "paneer", gramsBetween: [35, 35] }],
+    },
+  },
+
+  // ── Whole egg must beat its neighbours (the 2026-08-20 yolk mislog) ───────
+  {
+    id: "eggs-whole-not-yolk",
+    text: "2 whole eggs",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "egg",
+        // Yolk is 347 kcal/100g and white is 43: both sit outside this band,
+        // so a wrong part fails loudly instead of looking plausible.
+        nameExcludes: ["yolk", "white", "duck", "quail", "turkey"],
+        kcalBetween: [120, 200], proteinBetween: [10, 16],
+      }],
+    },
+  },
+
+  // ── Bare units display the amount they logged (fixed 2026-08-22) ──────────
+  {
+    id: "bare-ml-quantity",
+    text: "250ml toned milk",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", gramsBetween: [250, 250], kcalBetween: [90, 180] }],
+    },
+  },
+
+  // ── Real inputs mined from parse_traces ──────────────────────────────────
+  {
+    id: "log-mixed-units-bowl",
+    text: "2 rotis and a bowl of dal",
+    hour: 13,
+    expect: { minItems: 2, maxItems: 2, mealType: "lunch" },
+  },
+  {
+    id: "log-branded-us-bar",
+    text: "2 whole eggs and a quest protein bar",
+    hour: 9,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "egg", nameExcludes: ["yolk", "white"] },
+        { nameIncludes: "protein bar", proteinBetween: [15, 25] },
+      ],
+    },
+  },
+  {
+    id: "log-scoop-whey",
+    text: "250ml toned milk and 1 scoop whey protein",
+    hour: 17,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "milk", gramsBetween: [250, 250] },
+        { nameIncludes: "whey", proteinBetween: [18, 30] },
+      ],
+    },
+  },
+  {
+    id: "log-freeform-multi-meal",
+    // Observed DECLINED once and parsed 4 items another time. It is food, so a
+    // decline is a bug; this pins the non-decline.
+    text: "In the morning i ate Yogabar kesar pista oats with milk double toned and in snacks i had 24 gm peanuts",
+    hour: 11,
+    expect: { declined: false, minItems: 2 },
+  },
+  {
+    id: "log-typo-tolerant",
+    text: "2 whle eggs and a quest protien bar",
+    hour: 9,
+    expect: { minItems: 2, maxItems: 2, items: [{ nameIncludes: "egg", nameExcludes: ["yolk"] }] },
+  },
+  {
+    id: "log-oats-and-milk-500",
+    text: "kesar pista oats yogabar 70g and 500 ml double toned milk",
+    hour: 8,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "oats", gramsBetween: [70, 70] },
+        { nameIncludes: "milk", gramsBetween: [500, 500], kcalBetween: [180, 380] },
+      ],
+    },
+  },
+  {
+    id: "log-biscuits-and-chai",
+    text: "2 good day biscuits and chai half cup",
+    hour: 17,
+    expect: { minItems: 2, maxItems: 2 },
+  },
+  {
+    id: "log-question-declines",
+    text: "Are you sure about the calories",
+    hour: 14,
+    expect: { declined: true },
+  },
+
+  // ── Audit-derived cases (2026-08-22 prompt/schema audit) ─────────────────
+  // Each case asserts DESIRED behavior. Ones tagged [I6*]/[I8] are expected to
+  // FAIL until that improvement lands; they are the gate for it, not noise.
+
+  // Qualifier survival (the low-fat-paneer class; fixed 2026-08-21, keep guarded).
+  {
+    id: "audit-low-fat-paneer",
+    text: "50g milky mist low fat paneer",
+    hour: 9,
+    expect: {
+      minItems: 1, maxItems: 1,
+      // Milky Mist High Protein Low Fat Paneer is 190 kcal/100 g, so 50 g is
+      // ~95. Full-fat paneer is 265-283/100 g, landing 132-142 - which is what
+      // ships today when the "low fat" qualifier is dropped. I11/I11b gate.
+      // (Merged with the former qualifier-low-fat-paneer, which asserted the
+      // same fact through a looser band.)
+      items: [{ nameIncludes: "paneer", gramsBetween: [50, 50], kcalBetween: [80, 120] }],
+    },
+  },
+  {
+    id: "audit-double-toned-300",
+    text: "amul double toned milk 300ml",
+    hour: 8,
+    expect: {
+      minItems: 1, maxItems: 1,
+      // FSSAI fixes these by composition, which is exactly why the qualifier is
+      // not droppable: skimmed <0.5% fat ~35 kcal/100 ml, DOUBLE TONED 1.5%
+      // ~42, toned 3.0% ~58, full cream 6% ~87. So 300 ml is ~126, and Amul
+      // Taaza Toned (the row that wins today) lands 174. I11/I11b gate.
+      // (Replaced the former qualifier-double-toned-milk, whose band [110,230]
+      // and "~55-60 kcal/100ml" comment described TONED milk - it PASSED on the
+      // wrong product and would have certified this bug as correct.)
+      items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [90, 140] }],
+    },
+  },
+  {
+    id: "audit-roti-medium-size",
+    text: "roti medium size",
+    hour: 13,
+    // Size words belong in unit, not name; must not derail the roti match.
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "roti" }] },
+  },
+
+  // [I6a] Deletion by text. Impossible today (nets restore, qty clamp).
+  {
+    id: "audit-delete-by-text",
+    text: "100g paneer and 50g tofu",
+    hour: 13,
+    followUp: "remove the tofu",
+    expectCorrection: true,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer" }] },
+  },
+  // [I6b] Challenge + fix must keep the fix.
+  {
+    id: "audit-challenge-plus-fix",
+    text: "150g paneer",
+    hour: 13,
+    followUp: "that seems high, make it 100g",
+    expectCorrection: true,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer", gramsBetween: [100, 100] }] },
+  },
+  // [I6c] Correction mixed with addition.
+  {
+    id: "audit-correction-plus-addition",
+    text: "2 roti and dal",
+    hour: 13,
+    followUp: "make the roti 3 and add a dosa",
+    expectCorrection: true,
+    expect: {
+      minItems: 3, maxItems: 3,
+      items: [
+        { nameIncludes: "roti", gramsBetween: [105, 230] },
+        { nameIncludes: "dal" },
+        { nameIncludes: "dosa" },
+      ],
+    },
+  },
+  // [I8] Full-day logging (user-requested FEATURE: one message, several meals).
+  {
+    id: "audit-multi-meal-day",
+    text: "breakfast was 2 eggs, lunch was dal chawal",
+    hour: 20,
+    expect: { minItems: 2, items: [{ nameIncludes: "egg" }] },
+  },
+  // [I6e] Mentioned food is not eaten food.
+  {
+    id: "audit-asked-not-eaten",
+    text: "should I eat a protein bar after my workout?",
+    hour: 18,
+    expect: { declined: true },
+  },
+  {
+    id: "audit-skipped-meal",
+    text: "skipped breakfast today",
+    hour: 11,
+    expect: { declined: true },
+  },
+  {
+    id: "audit-craving",
+    text: "craving pizza right now",
+    hour: 16,
+    expect: { declined: true },
+  },
+
+  // Ambiguities from the same audit.
+  {
+    id: "audit-no-sugar-tea",
+    text: "1 cup milk tea",
+    hour: 17,
+    followUp: "no sugar in the tea",
+    expectCorrection: true,
+    // Unsugared milk tea for a cup: the sugared row (~70-110) must not survive.
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "tea", kcalBetween: [10, 75] }] },
+  },
+  {
+    id: "audit-hindi-doodh",
+    text: "1 glass doodh and 2 roti",
+    hour: 8,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [{ nameIncludes: "milk", nameIncludesAny: ["doodh"] }, { nameIncludes: "roti" }],
+    },
+  },
+  {
+    id: "audit-range-quantity",
+    text: "2-3 rotis with sabzi",
+    hour: 13,
+    expect: { minItems: 2, items: [{ nameIncludes: "roti", gramsBetween: [80, 215] }] },
+  },
+  {
+    id: "audit-half-glass",
+    text: "half glass milk",
+    hour: 21,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "milk", gramsBetween: [90, 160] }] },
+  },
+  {
+    id: "audit-compound-amount",
+    text: "half packet (35g) maggi",
+    hour: 17,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "maggi", gramsBetween: [35, 35] }] },
+  },
+  {
+    id: "audit-brand-typo",
+    text: "milkymist paneer 50g",
+    hour: 9,
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "paneer", gramsBetween: [50, 50] }] },
+  },
+
+  // ── Candidate acceptability (I11) ────────────────────────────────────────
+  // Droppable qualifiers: the generic row IS correct, must NOT become estimate.
+  {
+    id: "accept-brand-on-commodity",
+    text: "200ml amul toned milk",
+    hour: 8,
+    // Toned milk is grade-standardized: a generic Toned Milk row is right.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", tiers: ["catalog", "off", "fatsecret"],
+                gramsBetween: [200, 200], kcalBetween: [90, 145] }],
+    },
+  },
+  {
+    id: "accept-provenance-words",
+    text: "100g fresh homemade curd",
+    hour: 13,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludesAny: ["curd", "dahi", "yogurt"], nameIncludes: "curd",
+                tiers: ["catalog", "off", "fatsecret"] }],
+    },
+  },
+  // Non-droppable qualifiers: a row without them is NOT acceptable.
+  {
+    id: "accept-grade-double-toned",
+    text: "500ml double toned milk",
+    hour: 8,
+    // Double toned ~1.5% fat (~42 kcal/100ml). A Toned row (58) reads ~38% high.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "milk", gramsBetween: [500, 500], kcalBetween: [150, 240] }],
+    },
+  },
+  {
+    id: "accept-brand-on-formulated",
+    text: "1 quest protein bar",
+    hour: 17,
+    // Generic "protein bar" averages over 180-250 kcal products: not acceptable.
+    // Either the real Quest row, or an estimate - never a generic bar row.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "bar", kcalBetween: [170, 230], proteinBetween: [17, 24] }],
+    },
+  },
+  {
+    id: "accept-dish-not-ingredient",
+    text: "1 katori paneer butter masala",
+    hour: 20,
+    // The gravy, oil and cream are most of the calories: plain Paneer is wrong.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "paneer", nameExcludes: ["milky mist"], kcalBetween: [200, 500] }],
     },
   },
 ];

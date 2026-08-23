@@ -75,6 +75,7 @@ const r0 = (n: number) => Math.round(n);
 function provenance(source: ParsedMealItem['source']): string | null {
   switch (source) {
     case 'off':
+    case 'fatsecret':
     case 'web': return 'from label';
     case 'estimate': return "Drona's estimate";
     case 'manual': return 'edited';

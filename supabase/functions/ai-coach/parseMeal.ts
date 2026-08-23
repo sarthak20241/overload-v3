@@ -1,8 +1,10 @@
 // parse_meal mode: free-text food logging ("oats yogabar 50g and milk 500 ml")
 // parsed into catalog-grounded meal entries. Kept separate from index.ts and
-// runtime-agnostic (no Deno/jsr imports, dependencies injected) so the eval
-// harness in scripts/parse-meal-eval/ can drive the exact production pipeline
-// from Node against real catalog data.
+// runtime-agnostic (dependencies injected; no Deno globals, no jsr:/https:
+// imports) so the eval harness in scripts/parse-meal-eval/ can drive the exact
+// production pipeline from Node against real catalog data. Relative imports of
+// pure-TS siblings are fine - both Deno and tsx resolve them - and the
+// injected-deps rule is what actually keeps this file portable.
 //
 // Architecture: extract -> resolve -> decide.
 //   1. EXTRACT  one fast model call, no tools: segment the text into items
@@ -22,9 +24,22 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
+import { nearWord } from "./textMatch.ts";
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+
+/** Prefix for candidate ids that name NO row in `foods`. FatSecret rows cannot
+ *  be persisted (their terms allow serving a request, not replicating the DB),
+ *  but decide selects candidates BY id, so they still need to be addressable.
+ *  These ids are resolved from the in-memory candidate map and stripped before
+ *  anything reaches meal_entries, whose food_id is a real uuid FK. */
+export const EPHEMERAL_ID_PREFIX = "fs:";
+
+export function isEphemeralId(id: string | null): boolean {
+  return !!id && id.startsWith(EPHEMERAL_ID_PREFIX);
+}
 
 export interface ServingOption {
   label: string;
@@ -45,7 +60,10 @@ export interface CandidateFood {
   fat_g: number;
   fiber_g: number | null;
   servings: ServingOption[];
-  source: "catalog" | "off";
+  // 'fatsecret' rows are NOT persisted (their terms allow serving a request,
+  // not replicating the DB), so those candidates carry food_id null and their
+  // per-100 numbers travel with them. See fatsecret.ts.
+  source: "catalog" | "off" | "fatsecret";
 }
 
 export interface ParsedItem {
@@ -61,7 +79,7 @@ export interface ParsedItem {
   fiber_g: number | null;
   // 'manual' never originates here: it comes back from the client when the user
   // corrected a line in the review card, and must round-trip intact.
-  source: "catalog" | "off" | "web" | "estimate" | "manual";
+  source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
 }
@@ -264,6 +282,231 @@ export function reconcileExtracted(
   return missing.length > 0 ? [...items, ...missing] : items;
 }
 
+// ── P3: code fill (skip the decide call when we are sure) ───────────────────
+//
+// decide is the single most expensive step in a parse (2.2s of a 7.8s meal,
+// measured 2026-08-22). For "100g paneer" or "2 eggs" it adds nothing a
+// deterministic function cannot do: the reranked top candidate IS the answer
+// and the quantity is unambiguous. This gate decides when that is true.
+//
+// WHY topScore AND NOT margin. The obvious gate is "the winner beat the
+// runner-up by a lot". Real traffic says otherwise: margins are tiny (0.016
+// and 0.012 on the first live parse) precisely BECAUSE the top candidates are
+// near-duplicates of the same food ("Egg, whole, raw" vs "Egg (Whole)"), where
+// picking either is correct. A small margin there is harmless. What actually
+// signals "we found the right food" is the absolute relevance of the winner,
+// which was 0.83 and 0.93 on that same parse.
+const SKIP_DECIDE_MIN_TOP_SCORE = 0.75;
+
+/** Units we can convert without asking a model. */
+const MASS_UNITS = new Set(["g", "gram", "grams", "gm", "gms", "ml", "millilitre", "milliliter"]);
+
+/** Grams for one unit of what the user said, or null when it needs judgment. */
+function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
+  const u = unit.trim().toLowerCase();
+  if (MASS_UNITS.has(u)) return { grams: 1, label: cand.base_unit === "ml" ? "ml" : "g" };
+  // A serving anchor whose label mentions the user's word ("1 large" for
+  // "large", "1 scoop (30 g)" for "scoop").
+  if (u) {
+    const hit = cand.servings.find((sv) => sv.grams > 0 && sv.label.toLowerCase().includes(u));
+    if (hit) return { grams: hit.grams, label: hit.label };
+  }
+  // A bare count ("2 eggs", "1 bar") resolves against the row's own default.
+  if (!u || u === "serving" || u === "servings" || u === "piece" || u === "pieces") {
+    const def = cand.servings.find((sv) => sv.is_default && sv.grams > 0) ??
+      cand.servings.find((sv) => sv.grams > 0);
+    if (def) return { grams: def.grams, label: def.label };
+  }
+  return null;
+}
+
+export interface CodeFillOutcome {
+  items: ParsedItem[];
+  /** Why the gate refused, for the trace. Empty when it filled everything. */
+  blockedBy: string | null;
+}
+
+/**
+ * Build the meal from resolved candidates with NO model call, or refuse.
+ *
+ * All-or-nothing on purpose: decide emits the whole meal in one shot, so a
+ * per-item mix would mean merging two sources of truth for one card. A mixed
+ * meal ("2 eggs and a bhakarwadi") still pays for decide; splitting that is a
+ * follow-up, not a v1 risk worth taking.
+ */
+export function codeFillItems(
+  resolved: ResolvedItem[],
+  candidatePer100: Map<string, Per100>,
+): CodeFillOutcome {
+  if (resolved.length === 0) return { items: [], blockedBy: "no items" };
+  const out: ParsedItem[] = [];
+  for (const r of resolved) {
+    const top = r.candidates[0];
+    if (!top || !top.food_id) return { items: [], blockedBy: `ungrounded: ${r.name}` };
+    const per = candidatePer100.get(top.food_id);
+    if (!per) return { items: [], blockedBy: `no per-100: ${r.name}` };
+    const score = r.rerankTopScore;
+    if (score === undefined) return { items: [], blockedBy: `no rerank score: ${r.name}` };
+    if (score < SKIP_DECIDE_MIN_TOP_SCORE) {
+      return { items: [], blockedBy: `weak match ${score.toFixed(2)}: ${r.name}` };
+    }
+    const per1 = gramsPerUnit(r.unit, top);
+    if (!per1) return { items: [], blockedBy: `unresolvable unit "${r.unit}": ${r.name}` };
+    const qty = r.quantity > 0 ? r.quantity : 1;
+    const grams = round1(per1.grams * qty);
+    if (!(grams > 0)) return { items: [], blockedBy: `zero grams: ${r.name}` };
+    const f = grams / 100;
+    out.push({
+      food_id: top.food_id,
+      // The USER'S phrase, not top.name. verifyItems overwrites this with the
+      // row's real name for display, but first it runs variantClash and
+      // unhonouredGrade against it - and those compare what was SAID to what
+      // the row IS. Filling in the row's own name made both guards diff a
+      // string against itself, so they always returned null and the entire
+      // wrong-variant defence (the low-fat-paneer / egg-yolk class) was dead on
+      // this path. The rerank topScore gate does not cover it: a reranker
+      // happily scores "Milky Mist Paneer" over 0.75 for "low fat paneer",
+      // since two of three words match. prep is included because prep states
+      // ("roasted", "boiled") are themselves a variant group.
+      food_name: [r.prep, r.name].filter(Boolean).join(" ").trim() || top.name,
+      quantity: qty,
+      serving_label: per1.label,
+      grams,
+      // verifyItems recomputes these from the row anyway; filling them here
+      // keeps the shape honest if a downstream guard reads them first.
+      kcal: round1(per.kcal * f),
+      protein_g: round1(per.protein_g * f),
+      carb_g: round1(per.carb_g * f),
+      fat_g: round1(per.fat_g * f),
+      fiber_g: per.fiber_g === null ? null : round1(per.fiber_g * f),
+      source: top.source,
+      assumption: null,
+      confidence: "high",
+    });
+  }
+  return { items: out, blockedBy: null };
+}
+
+/** Per-100 basis for every candidate we showed the model, so a failed row read
+ *  falls back to the numbers we already had rather than to zero. */
+function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
+  const byFood = new Map<string, Per100>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, {
+          kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
+          name: c.name,
+        });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** Serving options for every candidate we offered, so the display quantity can
+ *  be reconciled against the logged grams (see reconcileQuantity). */
+function servingsForItems(resolved: ResolvedItem[]): Map<string, ServingOption[]> {
+  const byFood = new Map<string, ServingOption[]>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.servings.length > 0 && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, c.servings);
+      }
+    }
+  }
+  return byFood;
+}
+
+/** What the user asked for, per matched row. Each resolved item's prep intent
+ *  (from its prep field and its own name) maps to every candidate food_id it
+ *  could resolve to, paired with that candidate's real row name. */
+function prepForItems(
+  resolved: ResolvedItem[],
+): Map<string, { userIntent: PrepState; rowName: string }> {
+  const byFood = new Map<string, { userIntent: PrepState; rowName: string }>();
+  for (const r of resolved) {
+    const userIntent = prepStateOf(`${r.prep ?? ""} ${r.name}`);
+    if (!userIntent) continue;
+    for (const c of r.candidates) {
+      if (c.food_id && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, { userIntent, rowName: c.name });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** Coach line without a model call, keyed on what the meal actually is. */
+export function templateDronaLine(items: ParsedItem[]): string {
+  const protein = Math.round(items.reduce((a, it) => a + (it.protein_g || 0), 0));
+  const kcal = Math.round(items.reduce((a, it) => a + (it.kcal || 0), 0));
+  if (protein >= 30) return `${protein}g protein in there. That is how you build.`;
+  if (protein >= 15) return `${protein}g protein logged. Solid, keep stacking.`;
+  if (kcal >= 400) return `${kcal} calories, light on protein. Add a protein hit next.`;
+  return "Logged. Keep the protein coming.";
+}
+
+/**
+ * Keep the coach sentence honest about numbers.
+ *
+ * decide writes drona_line itself, so it can state a macro it worked out in its
+ * head rather than the one the row produced. Seen live 2026-08-23: a card
+ * reading "Boiled Egg 231 kcal, 19g P" carried the line "Three eggs, 37.5 grams
+ * protein" - the model had assumed 12.5 g per egg. The numbers were right and
+ * the sentence beside them was wrong, which is worse than saying nothing.
+ *
+ * The pipeline's rule is that a number the user sees comes from a source row,
+ * never from model arithmetic. That rule stopped at the macros; this extends it
+ * to the sentence.
+ *
+ * DELIBERATELY LENIENT. The prompt invites the line to reference the day, so a
+ * figure is accepted if it is close to ANY number the model was legitimately
+ * given: this meal, the day so far, the day after this meal, the target, or
+ * what is left of the target. Only a figure matching none of those is a
+ * fabrication, and then we fall back to the template line rather than ship a
+ * self-contradicting card. Numbers not attached to a macro word (egg counts,
+ * quantities) are ignored entirely.
+ */
+export function groundDronaLine(
+  line: string,
+  items: ParsedItem[],
+  today?: { kcal: number; protein_g: number } | null,
+  targets?: { protein_target_g?: number | null; daily_calorie_target?: number | null } | null,
+): string {
+  const mealProtein = items.reduce((a, it) => a + (it.protein_g || 0), 0);
+  const mealKcal = items.reduce((a, it) => a + (it.kcal || 0), 0);
+
+  const allowed = (meal: number, soFar: number | null, target: number | null): number[] => {
+    const out = [meal];
+    if (soFar !== null) out.push(soFar, soFar + meal);
+    if (target !== null) {
+      out.push(target);
+      out.push(Math.max(0, target - (soFar ?? 0) - meal));
+      out.push(Math.max(0, target - (soFar ?? 0)));
+    }
+    return out;
+  };
+  const proteinOk = allowed(mealProtein, today?.protein_g ?? null, targets?.protein_target_g ?? null);
+  const kcalOk = allowed(mealKcal, today?.kcal ?? null, targets?.daily_calorie_target ?? null);
+
+  // 10% band, with a floor so small numbers are not rejected on rounding alone.
+  const near = (claim: number, ok: number[], floor: number) =>
+    ok.some((v) => Math.abs(claim - v) <= Math.max(floor, v * 0.1));
+
+  const claims: Array<[RegExp, number[], number]> = [
+    [/(\d+(?:\.\d+)?)\s*(?:g|gs|grams?)?\s*(?:of\s+)?protein/gi, proteinOk, 3],
+    [/(\d+(?:\.\d+)?)\s*(?:kcal|calories|cals?)\b/gi, kcalOk, 25],
+  ];
+  for (const [re, ok, floor] of claims) {
+    for (const m of line.matchAll(re)) {
+      const claim = Number(m[1]);
+      if (Number.isFinite(claim) && !near(claim, ok, floor)) return templateDronaLine(items);
+    }
+  }
+  return line;
+}
+
 /** A rough, clearly-flagged line for a food decide dropped. Uses the top
  *  resolved candidate's per-100 where we have it, and keeps food_id null so it
  *  reads (and refines) as the estimate it is. */
@@ -330,14 +573,32 @@ export interface ParseMealDeps {
   maxTokens: number;
   timeoutMs: number;
   webSearchEnabled: boolean;
+  /** P3 skip-decide. 'off' always calls decide; 'shadow' calls decide but also
+   *  computes the code fill and records whether they agree; 'on' skips decide
+   *  when the gate passes. Default off: this removes the model from the
+   *  decision, so it earns its way in on shadow-mode agreement data. */
+  skipDecideMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
   searchFoods(query: string): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
   // Returns the new (or pre-existing) food id, or null on failure/dry-run.
   backfillOffFood(food: OffProduct): Promise<string | null>;
+  // Tier 2b: FatSecret lookup. Optional - absent when no credentials are
+  // configured, which is how the source stays behind a flag.
+  searchFatSecret?(query: string): Promise<CandidateFood[]>;
+  // Cross-encoder rerank over the merged candidate docs. Optional - absent
+  // when unconfigured; the merge order stands. See rerank.ts.
+  rerankCandidates?(query: string, docs: string[]): Promise<{
+    order: number[];
+    margin: number;
+    topScore: number;
+  } | null>;
   // Tier 1/2 verification: per-100 macros for a food row, for the
   // server-side recompute. Null when the row can't be read.
   getFoodPer100(foodId: string): Promise<{
+    // The row's own name. Carried so a line's LABEL can be made to agree with
+    // the macros we compute from that same row (see verifyItems).
+    name: string;
     base_unit: string;
     kcal: number;
     protein_g: number;
@@ -554,10 +815,22 @@ const EXTRACT_TOOL = {
             name: {
               type: "string",
               description:
-                'The food\'s COMMON name in 1-3 words, spelling corrected: "roasted edamame", ' +
-                'not "2 tblspn roasted edameme"; "almonds", not "almonds raw whole". Keep a ' +
-                "prep word only when it names a different food (roasted vs plain); drop " +
-                "filler adjectives (raw, whole, fresh, homemade). No brand, no quantity.",
+                'The food\'s COMMON name, spelling corrected: "roasted edamame", not ' +
+                '"2 tblspn roasted edameme". No brand, no quantity, no size word.\n' +
+                "KEEP every word that changes WHICH PRODUCT it is, even if that makes the " +
+                "name longer. These are the product, not decoration:\n" +
+                '  fat/grade: "low fat", "full fat", "full cream", "double toned", "toned", ' +
+                '"skimmed", "semi skimmed"\n' +
+                '  protein/sugar claims: "high protein", "zero sugar", "no added sugar"\n' +
+                '  part or variant: "yolk", "white", "whole", "brown", "wholewheat"\n' +
+                '  prep when it names a different food: "roasted" vs plain, "boiled" vs raw\n' +
+                'So "milky mist low fat paneer" -> "low fat paneer" (NOT "paneer"), and ' +
+                '"amul double toned milk" -> "double toned milk" (NOT "milk"). Dropping one ' +
+                "of these words searches for a DIFFERENT food and silently logs the wrong " +
+                "macros.\n" +
+                "DROP only words that leave the product unchanged: fresh, homemade, plain " +
+                "(when no roasted/salted variant is meant), and size words (small, medium, " +
+                "large) which belong in unit.",
             },
             brand: { type: ["string", "null"], description: "Brand if the text names one." },
             quantity: { type: "number", description: "How many of unit, e.g. 2 for '2 rotis'. 1 if unstated." },
@@ -605,7 +878,8 @@ const LOG_MEAL_TOOL = {
             food_id: {
               type: ["string", "null"],
               description:
-                "The id of the chosen candidate from search_foods / lookup_packaged_food. " +
+                "The id of the chosen candidate from search_foods / lookup_packaged_food / " +
+                "lookup_fatsecret, copied EXACTLY as given (FatSecret ids look like 'fs:12345'). " +
                 "null ONLY for web-sourced or estimated items.",
             },
             food_name: { type: "string", description: "Display name for the log." },
@@ -632,9 +906,10 @@ const LOG_MEAL_TOOL = {
             fiber_g: { type: ["number", "null"], description: "TOTAL fiber grams. Omit when food_id is set." },
             source: {
               type: "string",
-              enum: ["catalog", "off", "web", "estimate"],
+              enum: ["catalog", "off", "fatsecret", "web", "estimate"],
               description:
                 "catalog = matched via search_foods. off = matched via lookup_packaged_food. " +
+                "fatsecret = matched via lookup_fatsecret (its ids start with 'fs:'). " +
                 "web = numbers read from a web_search result (cite the label site in assumption). " +
                 "estimate = your own knowledge, last resort.",
             },
@@ -676,10 +951,27 @@ const WEB_SEARCH_TOOL = {
   max_uses: 2,
 };
 
-// Terminal tool for the HEDGED web lookup: a compact side-call that races the
-// decide call for items the catalog could not resolve. The decide model
-// estimates those items immediately; if this lookup lands label data within
-// the grace window, the estimate lines are upgraded server-side.
+// Terminal tool for the web label lookup: read the official label and report
+// per-100 macros, nothing else.
+//
+// The hedge this was built for is GONE. Two designs have shipped and been
+// removed here, and the history is worth keeping because Super will face the
+// same choice:
+//   1. 501a614 raced this lookup against decide with a 4s grace window and
+//      upgraded estimate lines SERVER-SIDE, before the card ever rendered.
+//      Dropped for being SILENT: the user never learned a lookup happened or
+//      that their numbers had been swapped.
+//   2. abebc86 replaced it with a visible two-phase refine - phase 1 returns a
+//      fast card marked with weak lines, the client fires phase 2, numbers get
+//      swapped in AFTER the user is already reading them. Being removed by I15
+//      for the opposite sin: it mutates a review card while Add is live, so a
+//      user can tap Add on 180 kcal and log 240.
+// The lesson is not "visible vs silent", it is WHEN: upgrade before render and
+// the card is stable, upgrade after and it is not. Super does the lookup inside
+// resolve (before decide, before render) AND narrates it with progress events
+// plus a verified badge, which is the only combination neither design had.
+//
+// Today this has exactly one caller: researchPrevious, the user-challenge path.
 const WEB_LOOKUP_TOOL = {
   name: "report_labels",
   description:
@@ -737,6 +1029,36 @@ interface WebLabel {
  * the shorter one, so a modifier ("roasted edamame" vs "edamame") still
  * matches while two different foods that merely share an ingredient do not.
  */
+/**
+ * Read a quantity the model emitted, tolerating a numeric STRING.
+ *
+ * The schema says `type: "number"`, but a tool schema is advisory: the model
+ * does sometimes send "250" instead of 250. The old check was
+ * `typeof o.quantity === "number"` with a fallback of 1, so a quoted number
+ * did not fail loudly - it silently became ONE. "250ml milk" logged as 1 ml.
+ *
+ * WHY NOT STRICT TOOL USE (I7): strict is real and does enforce the type, but
+ * it requires every property in `required`, so the model must emit all eight
+ * extract fields on every call. Measured on Haiku 4.5 over 5 real inputs, twice:
+ * output tokens +96% (649 -> 1270) and +572 ms per extract call. Extract is the
+ * first thing on the critical path and Fast targets a sub-second first row, so
+ * that trade is backwards - it buys a guarantee this function already provides
+ * for free. Strict also cannot express our nullable enum
+ * (`type: ["string","null"]` + an enum containing null is rejected outright),
+ * so adopting it would mean reshaping the schema too.
+ *
+ * Rejects anything that is not a finite positive number after coercion, and a
+ * blank string, which Number() would happily read as 0.
+ */
+export function coerceQuantity(v: unknown): number {
+  const n = typeof v === "number"
+    ? v
+    : typeof v === "string" && v.trim() !== ""
+    ? Number(v.trim())
+    : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 10000) : 1;
+}
+
 export function wordsOverlap(a: string, b: string): boolean {
   // Three characters, not four: "tea", "dal" and "egg" are whole foods, and
   // dropping them collapses "milk tea" to "milk", which then matches every
@@ -745,18 +1067,11 @@ export function wordsOverlap(a: string, b: string): boolean {
   const aw = words(a), bw = words(b);
   if (aw.length === 0 || bw.length === 0) return false;
   const [short, long] = aw.length <= bw.length ? [aw, bw] : [bw, aw];
-  // "eggs" and "egg" are one food; "egg" and "eggplant" are not.
-  const singular = (w: string) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w);
-  const near = (p: string, q: string) => {
-    const x = singular(p), y = singular(q);
-    if (x === y) return true;
-    // The prefix rule exists to absorb typos in longer words ("edameme" vs
-    // "edamame"). On a short word a prefix is a DIFFERENT food - dal/dalia,
-    // egg/eggplant - so those must match outright.
-    if (x.length < 5 || y.length < 5) return false;
-    return x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4));
-  };
-  return short.every((x) => long.some((y) => near(x, y)));
+  // Word-level typo tolerance lives in nearWord (textMatch.ts): proportional
+  // Damerau distance, replacing a 4-char shared-prefix rule that merged rival
+  // brands (bikano/bikaji, creatine/creatinine) while still missing the
+  // commonest Indian food typo (panner/paneer).
+  return short.every((x) => long.some((y) => nearWord(x, y)));
 }
 
 const WEB_LOOKUP_MAX_TURNS = 4;
@@ -834,9 +1149,6 @@ async function runWebLookup(
   return null;
 }
 
-// Upgrade estimate lines with label data the hedge brought back in time.
-// Grams stay the model's (portioning already went through the guardrails);
-// only the per-gram nutrition is replaced.
 // ── Prompt ──────────────────────────────────────────────────────────────────
 
 const HOUR_TO_MEAL: Array<[number, number, MealType]> = [
@@ -1016,6 +1328,9 @@ export interface ExtractedItem {
 
 interface ResolvedItem extends ExtractedItem {
   candidates: CandidateFood[];
+  /** Absolute relevance of the top candidate after rerank. The P3 skip-decide
+   *  gate keys on this; absent when rerank did not run. */
+  rerankTopScore?: number;
 }
 
 // A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
@@ -1082,15 +1397,37 @@ async function resolveOneItem(
   // and sanity-check whatever it picks. Catalog still leads the merged list
   // (a curated row with real servings should outrank a raw label), and items
   // resolve in parallel, so the meal pays roughly one OFF latency, not N.
+  // A multi-word name has TWO plausible identities, and the ladder above only
+  // explores one of them. It drops LEADING words first, which is right for
+  // "roasted edamame" (prep prefix) and wrong for "paneer bhurji", where the
+  // head noun IS the food and the tail is the style: the full query matches
+  // nothing (the 0079 search requires every word), so it falls to "bhurji"
+  // alone and returns Egg Bhurji. Running BOTH ends and merging lets rerank
+  // decide which reading the user meant. Catalog search is ~30ms, so the
+  // second query is far cheaper than the wrong food.
+  const multiWord = words.length > 1;
   const runCatalog = async (): Promise<CandidateFood[]> => {
-    let found: CandidateFood[] = [];
+    const merged: CandidateFood[] = [];
+    const seenKeys = new Set<string>();
+    let successes = 0;
     for (const q of queries.slice(0, 4)) {
-      if (found.length > 0) break;
+      if (successes >= (multiWord ? 2 : 1)) break;
       toolCalls.push("search_foods");
+      let found: CandidateFood[] = [];
       try {
         found = (await deps.searchFoods(q)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
+      }
+      if (found.length > 0) {
+        successes++;
+        for (const c of found) {
+          const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            merged.push(c);
+          }
+        }
       }
       steps.push({
         iter: 1,
@@ -1099,7 +1436,7 @@ async function resolveOneItem(
         result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
       });
     }
-    return found;
+    return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
@@ -1139,12 +1476,36 @@ async function resolveOneItem(
     return found;
   };
 
-  const [catalogCands, offCands] = await Promise.all([runCatalog(), runOff()]);
-  // Catalog first, then OFF rows the catalog set did not already carry. Dedupe
-  // by food_id, falling back to a normalised name for OFF rows not yet backfilled.
+  const runFatSecret = async (): Promise<CandidateFood[]> => {
+    if (!deps.searchFatSecret) return [];
+    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    toolCalls.push("lookup_fatsecret");
+    let found: CandidateFood[] = [];
+    try {
+      found = await deps.searchFatSecret(q);
+    } catch (e) {
+      deps.log?.(`[parse_meal] FatSecret resolve threw for "${q}": ${String(e).slice(0, 120)}`);
+    }
+    steps.push({
+      iter: 1,
+      tool: "lookup_fatsecret",
+      input: { query: q },
+      result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
+    });
+    return found;
+  };
+
+  const [catalogCands, offCands, fsCands] = await Promise.all([
+    runCatalog(),
+    runOff(),
+    runFatSecret(),
+  ]);
+  // Catalog first (a curated row with real servings should outrank a raw
+  // label), then OFF, then FatSecret. Dedupe by food_id, falling back to a
+  // normalised name for rows with no id of their own.
   const seenKey = new Set<string>();
   const candidates: CandidateFood[] = [];
-  for (const c of [...catalogCands, ...offCands]) {
+  for (const c of [...catalogCands, ...offCands, ...fsCands]) {
     const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
     if (seenKey.has(key)) continue;
     seenKey.add(key);
@@ -1164,8 +1525,37 @@ async function resolveOneItem(
     deps.log?.(`[parse_meal] dropped ${dropped} implausible candidate(s) for "${item.name}"`);
     steps.push({ iter: 1, tool: "implausible_filtered", input: { item: item.name, dropped } });
   }
-  const usable = sane.length > 0 ? sane : candidates;
-  return { ...item, candidates: usable.map(synthesizeVolumeAnchors) };
+  let usable = sane.length > 0 ? sane : candidates;
+  let rerankTopScore: number | undefined;
+
+  // Rerank: the user's own phrase against each candidate, best first. This is
+  // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
+  // the sources returned. Fail-open: on any miss the merge order stands.
+  if (deps.rerankCandidates && usable.length > 1) {
+    const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
+    const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
+    const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
+    if (rr) {
+      usable = rr.order.map((idx) => usable[idx]).filter(Boolean);
+      rerankTopScore = rr.topScore;
+      steps.push({
+        iter: 1,
+        tool: "rerank",
+        input: { item: item.name },
+        // margin recorded for P3: a wide margin is what will let Smart skip
+        // the decide call for this item.
+        result: {
+          top: usable.slice(0, 3).map((c) => c.name),
+          margin: Math.round(rr.margin * 1000) / 1000,
+          top_score: Math.round(rr.topScore * 1000) / 1000,
+        },
+      });
+    }
+  }
+
+  // decide reads every candidate we pass; past ~6 the list is distractors.
+  usable = usable.slice(0, 6);
+  return { ...item, candidates: usable.map(synthesizeVolumeAnchors), rerankTopScore };
 }
 
 function round1(n: number): number {
@@ -1178,7 +1568,149 @@ function scrubDashes(s: string): string {
   return s.replace(/\s*[—–]\s*/g, ", ").replace(/\s{2,}/g, " ").trim();
 }
 
-type Per100 = { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+/** `name` is here so the CANDIDATE-fallback branch of verifyItems can run the
+ *  same name/row agreement checks the row-read branch does. FatSecret rows are
+ *  never persisted, so their ids are ephemeral and getFoodPer100 is skipped for
+ *  them - without a name on the fallback, every fatsecret pick bypassed
+ *  variantClash and unhonouredGrade entirely. */
+type Per100 = {
+  kcal: number;
+  protein_g: number;
+  carb_g: number;
+  fat_g: number;
+  fiber_g: number | null;
+  name?: string;
+};
+
+// ── Name/row agreement ──────────────────────────────────────────────────────
+// decide hands back a food_id AND a display name for the same line. They can
+// disagree, and when they do the macros follow the id while the user reads the
+// name, so a slipped id is invisible: the reported case logged pure YOLK
+// macros (347 kcal, 31 g fat per 100 g) under the label "Eggs, chicken, whole,
+// raw", 2.6x the real figure for the whole eggs the user actually ate. Two
+// guards: repoint the id when the model's own words name a different row it
+// was shown, then display the row's real name either way.
+
+/** Order- and punctuation-insensitive, singular-folded token key.
+ *  "Eggs, chicken, whole, raw" and "raw whole chicken egg" share a key. */
+function nameKey(s: string): string {
+  return s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w))
+    .sort().join(" ");
+}
+
+/** Whether `outer` contains every (singular-folded) word of `inner`. */
+function coversAllWords(outer: string, inner: string): boolean {
+  const fold = (s: string) =>
+    s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+      .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w));
+  const have = new Set(fold(outer));
+  const want = fold(inner);
+  return want.length > 0 && want.every((w) => have.has(w));
+}
+
+/** Mutually exclusive variants that move macros a lot. Only these: a blanket
+ *  "the names differ" test fires on every harmless shortening ("Chicken
+ *  breast" for "Chicken, breast, meat only, roasted") and a chip the user
+ *  learns to ignore is worse than no chip. */
+const VARIANT_GROUPS: string[][] = [
+  ["whole", "yolk", "white"],  // egg part: 143 vs 347 vs 52 kcal per 100 g
+  ["raw", "boiled", "fried", "poached", "scrambled", "roasted", "grilled", "dried"],
+  // Fat/protein grade. PHRASES, not words: "double toned" and "toned" are
+  // different milks, and "low fat" is two words. Matched longest-first against
+  // the whole name so "double toned" never reads as "toned". This group is why
+  // a 50 g "low fat paneer" request cannot silently log full-fat paneer (190
+  // vs 283 kcal per 100 g), which is exactly what shipped on 2026-08-22.
+  ["double toned", "low fat", "full cream", "full fat", "semi skimmed", "skimmed", "toned"],
+  ["high protein", "regular"],
+];
+
+/** The GRADE groups (fat level, protein claim). Unlike an egg part or a prep
+ *  word, a grade the user asked for and the row does not mention is a real
+ *  problem: "low fat paneer" matched to a plain "Milky Mist Paneer" row logs
+ *  283 kcal/100g against the product's real 190, and nothing else in the chain
+ *  notices, because no term CONTRADICTS, the row is simply silent. */
+const GRADE_GROUPS = VARIANT_GROUPS.slice(2);
+
+/** What the row is vs what the model called it, when the two contradict each
+ *  other inside one group. null when they agree, or when either says nothing. */
+export function variantClash(
+  said: string,
+  rowName: string,
+): { said: string; row: string } | null {
+  const norm = (s: string) => ` ${s.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+  const a = norm(said), b = norm(rowName);
+  for (const group of VARIANT_GROUPS) {
+    // Longest first: "double toned" must win over "toned" inside the same name.
+    const ordered = [...group].sort((x, y) => y.length - x.length);
+    const inSaid = ordered.find((g) => a.includes(` ${g} `));
+    const inRow = ordered.find((g) => b.includes(` ${g} `));
+    if (inSaid && inRow && inSaid !== inRow) return { said: inSaid, row: inRow };
+  }
+  return null;
+}
+
+/** A GRADE the user asked for that the matched row does not claim at all, or
+ *  null. Silence is the failure mode variantClash cannot see: no term
+ *  contradicts, so the wrong-grade row ships looking confident. */
+export function unhonouredGrade(said: string, rowName: string): string | null {
+  const norm = (s: string) => ` ${s.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+  const a = norm(said), b = norm(rowName);
+  for (const group of GRADE_GROUPS) {
+    const ordered = [...group].sort((x, y) => y.length - x.length);
+    const inSaid = ordered.find((g) => a.includes(` ${g} `));
+    if (!inSaid) continue;
+    const rowHasAny = ordered.some((g) => b.includes(` ${g} `));
+    if (!rowHasAny) return inSaid;
+  }
+  return null;
+}
+
+/** Repoint a line whose food_id contradicts its own name.
+ *
+ *  Deliberately narrow: it moves the id only when another candidate FROM THE
+ *  SAME SEARCH carries a name the model wrote out token-for-token. That is a
+ *  slip rather than a judgement call, so acting on it is safe. Anything looser
+ *  would overrule deliberate picks, where the model shortens a branded row's
+ *  name or names a row no search returned. Everything it cannot fix is still
+ *  made visible downstream by the row-name display + variant chip. */
+export function retargetMismatchedIds(
+  items: ParsedItem[],
+  resolved: ResolvedItem[],
+  log?: (msg: string) => void,
+): ParsedItem[] {
+  if (resolved.length === 0) return items;
+  return items.map((item) => {
+    // fatsecret included: it is a real candidate source, so a decide slip onto
+    // the wrong fs: id is the same fixable mistake as a catalog slip. Excluding
+    // it left the newest source as the only one with no id repair, downgrading
+    // a correctable slip into a mere warning chip.
+    if (
+      !item.food_id ||
+      (item.source !== "catalog" && item.source !== "off" && item.source !== "fatsecret")
+    ) return item;
+    // The candidate set this line was actually chosen from.
+    const group = resolved.find((r) => r.candidates.some((c) => c.food_id === item.food_id));
+    if (!group) return item;
+    const chosen = group.candidates.find((c) => c.food_id === item.food_id);
+    const key = nameKey(item.food_name);
+    if (!key || (chosen && nameKey(chosen.name) === key)) return item;
+    // A chosen row that CONTAINS every word of the stated name is the model
+    // shortening a label it meant ("Toned milk" for "Amul taaza Toned Milk"),
+    // not slipping. Only a name the chosen row contradicts is evidence of a
+    // slip, so this is what keeps the rule off deliberate branded picks.
+    if (chosen && coversAllWords(chosen.name, item.food_name)) return item;
+    const exact = group.candidates.find(
+      (c) => c.food_id && c.food_id !== item.food_id && nameKey(c.name) === key,
+    );
+    if (!exact) return item;
+    log?.(
+      `[parse_meal] id/name slip: "${item.food_name}" pointed at ` +
+      `"${chosen?.name ?? item.food_id}", repointed to the row it names`,
+    );
+    return { ...item, food_id: exact.food_id, source: exact.source };
+  });
+}
 
 // The receipts step: for items the model matched to a real food row, recompute
 // line macros from the row's per-100 values so catalog-backed numbers are
@@ -1190,15 +1722,98 @@ type Per100 = { kcal: number; protein_g: number; carb_g: number; fat_g: number; 
 // to 0: if the row read then fails, there are no model numbers to fall back on
 // and the line would ship as a silent 0 kcal food. The candidate we offered in
 // the first place is the right answer there, and costs no extra query.
+/**
+ * Ephemeral ids have done their job (addressing a candidate for decide and
+ * keying the per-100 recompute). Drop them before the client can try to log one
+ * against meal_entries.food_id, which is a uuid FK into `foods` - an `fs:` id
+ * fails that insert, so the user cannot log the meal they just confirmed.
+ *
+ * This is a helper rather than an inline map because EVERY return path owes it:
+ * the skip-decide path returns early and used to bypass the inline version.
+ */
+export function stripEphemeralIds(items: ParsedItem[]): ParsedItem[] {
+  return items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+}
+
+/**
+ * Reconcile a line's displayed name against the row its macros came from, and
+ * chip it when the two disagree.
+ *
+ * Shared by both verifyItems branches on purpose. It used to live only in the
+ * row-read branch, so any line whose per-100 came from the CANDIDATE fallback -
+ * which is every FatSecret pick, since their ids are ephemeral and the row read
+ * is skipped - silently bypassed both guards. FatSecret exists to fix the
+ * low-fat-paneer class of bug, so it of all sources must be checked.
+ */
+function applyNameAgreement(
+  deps: ParseMealDeps,
+  said: string,
+  rowName: string,
+  scaled: ParsedItem,
+): ParsedItem {
+  const row = rowName.trim();
+  if (!row) return scaled;
+  const named = { ...scaled, food_name: row };
+  const clash = variantClash(said, row);
+  if (clash) {
+    // retargetMismatchedIds could not fix this one, so say it out loud
+    // rather than let a confident-looking line carry the wrong variant.
+    deps.log?.(`[parse_meal] variant mismatch: model said "${said}", row is "${row}"`);
+    return {
+      ...named,
+      confidence: "low",
+      assumption: appendAssumption(named, `I logged the ${clash.row} one, not the ${clash.said}`),
+    };
+  }
+  const missingGrade = unhonouredGrade(said, row);
+  if (missingGrade) {
+    // We have no row for the grade they asked for (usually a coverage gap,
+    // e.g. an India-only low fat SKU). Say so instead of shipping the plain
+    // row's macros as if they were the product's.
+    deps.log?.(`[parse_meal] grade not honoured: asked "${missingGrade}", row is "${row}"`);
+    return {
+      ...named,
+      confidence: "low",
+      assumption: appendAssumption(
+        named,
+        `I could not find a ${missingGrade} row for this, so these are the regular numbers`,
+      ),
+    };
+  }
+  return named;
+}
+
 export async function verifyItems(
   deps: ParseMealDeps,
   items: ParsedItem[],
   fallback?: Map<string, Per100>,
 ): Promise<ParsedItem[]> {
   return await Promise.all(items.map(async (item) => {
-    if (item.source !== "catalog" && item.source !== "off") return item;
+    if (item.source !== "catalog" && item.source !== "off" && item.source !== "fatsecret") {
+      // An estimate carries the model's OWN numbers, so an all-zero line means
+      // it omitted them (the decide schema says to omit only when a food_id is
+      // set, and it sometimes applies that to the wrong line). NOTHING
+      // downstream catches this: 0 kcal against 0 macros is internally
+      // consistent, so checkAtwater passes it and "Chicken Breast 200g" ships
+      // reading 0 kcal / 0 g protein, which is worse than a rough guess
+      // because it silently drags the day's totals down.
+      const zeroed = item.grams > 0 &&
+        !item.kcal && !item.protein_g && !item.carb_g && !item.fat_g;
+      if (!zeroed) return item;
+      deps.log?.(`[parse_meal] estimate line came back with no numbers: "${item.food_name}"`);
+      return {
+        ...item,
+        confidence: "low",
+        assumption: appendAssumption(item, "I could not put numbers on this one, tap to set them"),
+      };
+    }
     const usable = item.food_id && Number.isFinite(item.grams) && item.grams > 0;
-    const per100 = usable ? await deps.getFoodPer100(item.food_id!) : null;
+    // An ephemeral id names no row, so skip the read and let the candidate map
+    // below supply the basis. The macros are still recomputed in CODE from a
+    // real per-100 panel, never taken from model arithmetic.
+    const per100 = usable && !isEphemeralId(item.food_id)
+      ? await deps.getFoodPer100(item.food_id!)
+      : null;
     // A catalog/OFF claim we cannot check is not a catalog/OFF number. Fall
     // back to the candidate's own per-100 basis; failing that, call the line
     // what it is - an estimate - rather than let the UI present an unverified
@@ -1219,7 +1834,10 @@ export async function verifyItems(
         };
       }
       const g = item.grams / 100;
-      return {
+      // Same name/row agreement the row-read branch gets. This is the branch
+      // every FatSecret pick takes (ephemeral id => no row read), so skipping
+      // it here left the newest source as the only one with no variant guard.
+      return applyNameAgreement(deps, item.food_name, (alt.name ?? "").trim(), {
         ...item,
         kcal: round1(alt.kcal * g),
         protein_g: round1(alt.protein_g * g),
@@ -1227,17 +1845,19 @@ export async function verifyItems(
         fat_g: round1(alt.fat_g * g),
         fiber_g: alt.fiber_g === null ? item.fiber_g : round1(alt.fiber_g * g),
         confidence: "medium" as const,
-      };
+      });
     }
     const f = item.grams / 100;
-    const scaled = {
+    // Label and numbers now come from the SAME row, so they cannot disagree.
+    // The model's own wording is kept only when the row has no usable name.
+    const scaled = applyNameAgreement(deps, item.food_name, (per100.name ?? "").trim(), {
       ...item,
       kcal: round1(per100.kcal * f),
       protein_g: round1(per100.protein_g * f),
       carb_g: round1(per100.carb_g * f),
       fat_g: round1(per100.fat_g * f),
       fiber_g: per100.fiber_g === null ? item.fiber_g : round1(per100.fiber_g * f),
-    };
+    });
     // Last line of defence. Deliberately understated: we mark the line low
     // confidence (so the UI can show it as unverified) but do NOT editorialise
     // on the card. Volunteering doubt about our own numbers on every borderline
@@ -1264,7 +1884,13 @@ function sanitizeItems(raw: unknown): ParsedItem[] {
       const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
       return Math.min(Math.max(n, 0), max);
     };
-    const source = o.source === "catalog" || o.source === "off" || o.source === "web" || o.source === "estimate"
+    // "fatsecret" MUST be listed: it is in the decide schema's source enum, and
+    // verifyItems keys the row-recompute branch off it. Dropping it here rewrote
+    // every FatSecret pick to "estimate", which then took verifyItems' estimate
+    // branch - and because the schema tells the model to omit macros whenever a
+    // food_id is set (fs: ids included), those lines shipped as silent zeros.
+    const source = o.source === "catalog" || o.source === "off" || o.source === "fatsecret" ||
+        o.source === "web" || o.source === "estimate"
       ? o.source
       : "estimate";
     items.push({
@@ -1477,7 +2103,24 @@ export function reconcileQuantity(
   servingsByFood: Map<string, ServingOption[]>,
 ): ParsedItem[] {
   return items.map((item) => {
-    if (!item.food_id || !(item.grams > 0)) return item;
+    if (!(item.grams > 0)) return item;
+    // A bare unit label ("g", "ml") IS the amount: there is no serving size to
+    // divide by, so the displayed quantity must equal the logged grams. Without
+    // this the card prints decide's own quantity verbatim, which is how "250ml
+    // toned milk" shipped reading "100 x ml" while its macros were right for
+    // 250 (observed on device 2026-08-22). The anchor path below cannot catch
+    // it: a bare unit never matches a serving label, so it returned untouched.
+    //
+    // This branch runs for EVERY source, before the food_id gate below. It is
+    // pure display arithmetic and needs no row: an ESTIMATE line has a quantity
+    // and a label just like a catalog one, and gating it on food_id left
+    // exactly the same "100 x ml" caption on every ungrounded line.
+    if (MASS_UNITS.has(item.serving_label.trim().toLowerCase())) {
+      const q = Math.round(item.grams * 100) / 100;
+      return q > 0 && Math.abs(q - item.quantity) > 0.05 ? { ...item, quantity: q } : item;
+    }
+    // The serving-anchor path below DOES need a row to look anchors up on.
+    if (!item.food_id) return item;
     const servings = servingsByFood.get(item.food_id);
     if (!servings || servings.length === 0) return item;
     const match = servings.find((s) => s.label.toLowerCase() === item.serving_label.toLowerCase());
@@ -1918,9 +2561,7 @@ export async function runParseMeal(
         // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
         // so "500 ml milk" or "250 g chicken" would be silently truncated. The
         // bound only exists to stop absurd input reaching the model.
-        quantity: typeof o.quantity === "number" && Number.isFinite(o.quantity) && o.quantity > 0
-          ? Math.min(o.quantity, 10000)
-          : 1,
+        quantity: coerceQuantity(o.quantity),
         unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
         correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()
@@ -2092,6 +2733,53 @@ export async function runParseMeal(
   // deliberate, user-visible SECOND phase (runWebRefine) that the client fires
   // for items this phase left weak. Phase 1 stays fast and always returns a
   // usable meal immediately; the web only ever improves it afterwards.
+  //
+  // P3: when every item reranked strongly and its quantity converts without
+  // judgment, the code fill IS the answer and this whole call is skipped.
+  const candidatePer100 = per100ForItems(resolved);
+  const skipMode = deps.skipDecideMode ?? "off";
+  const codeFill = (skipMode !== "off" && !correctsPrevious)
+    ? codeFillItems(resolved, candidatePer100)
+    : null;
+  if (codeFill) {
+    steps.push({
+      iter: 2,
+      tool: "code_fill",
+      input: { mode: skipMode },
+      result: codeFill.blockedBy
+        ? { filled: false, blocked_by: codeFill.blockedBy }
+        : { filled: true, items: codeFill.items.map((it) => `${it.food_name} ${it.grams}g`) },
+    });
+  }
+  if (skipMode === "on" && codeFill && !codeFill.blockedBy) {
+    T.decide_ms = 0;
+    // clampVolumetricGrams included so this path runs the SAME guardrail chain
+    // as the decide path. codeFillItems derives grams from real serving anchors
+    // rather than free-form model output, so it should rarely bite - but "should
+    // rarely" is not a reason for two paths to have different defences.
+    const filled = stripEphemeralIds(flagPrepMismatch(
+      checkAtwater(reconcileQuantity(
+        await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+        servingsForItems(resolved),
+      )),
+      prepForItems(resolved),
+    ));
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
+    return {
+      parsed: {
+        meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+        items: filled,
+        drona_line: templateDronaLine(filled),
+        corrects_previous: false,
+      },
+      declined: null,
+      web_refine: null,
+      usage,
+      tool_calls: toolCalls,
+      steps,
+      iterations: anthropicCalls,
+    };
+  }
   const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
     user_text: input.text.trim().slice(0, 500),
@@ -2139,19 +2827,14 @@ export async function runParseMeal(
     input: { item_count: Array.isArray(raw.items) ? raw.items.length : 0 },
   });
 
-  // Per-100 basis for every candidate we showed the model, so a failed row
-  // read falls back to the numbers we already had rather than to zero.
-  const candidatePer100 = new Map<string, Per100>();
-  for (const r of resolved) {
-    for (const c of r.candidates) {
-      if (c.food_id && !candidatePer100.has(c.food_id)) {
-        candidatePer100.set(c.food_id, {
-          kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
-        });
-      }
-    }
-  }
-  let items = await verifyItems(deps, clampVolumetricGrams(sanitizeItems(raw.items)), candidatePer100);
+  // Fix a slipped food_id BEFORE the macro recompute, so the numbers are
+  // computed from the row the user actually meant.
+  const picked = retargetMismatchedIds(
+    clampVolumetricGrams(sanitizeItems(raw.items)),
+    resolved,
+    deps.log,
+  );
+  let items = await verifyItems(deps, picked, candidatePer100);
   if (correctsPrevious) {
     // Enforce the correction contract on every line the user did not re-target:
     // still present (1), and if it was hand-edited, its provenance and numbers
@@ -2164,32 +2847,61 @@ export async function runParseMeal(
     items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
-  // Serving options for every candidate we offered, so the display quantity can
-  // be reconciled against the logged grams (see reconcileQuantity).
-  const servingsByFood = new Map<string, ServingOption[]>();
-  for (const r of resolved) {
-    for (const c of r.candidates) {
-      if (c.food_id && c.servings.length > 0 && !servingsByFood.has(c.food_id)) {
-        servingsByFood.set(c.food_id, c.servings);
-      }
-    }
-  }
+  items = flagPrepMismatch(
+    checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
+    prepForItems(resolved),
+  );
 
-  // What the user asked for, per matched row. Each resolved item's prep intent
-  // (from its prep field and its own name) maps to every candidate food_id it
-  // could resolve to, paired with that candidate's real row name.
-  const prepByFoodId = new Map<string, { userIntent: PrepState; rowName: string }>();
-  for (const r of resolved) {
-    const userIntent = prepStateOf(`${r.prep ?? ""} ${r.name}`);
-    if (!userIntent) continue;
-    for (const c of r.candidates) {
-      if (c.food_id && !prepByFoodId.has(c.food_id)) {
-        prepByFoodId.set(c.food_id, { userIntent, rowName: c.name });
-      }
-    }
+  // Shadow mode: decide already produced the real answer above. Compare what
+  // the code fill WOULD have shipped, so the decision to skip decide is made on
+  // measured agreement over real traffic rather than on how sure the gate feels.
+  if (skipMode === "shadow" && codeFill && !codeFill.blockedBy) {
+    // Compare LIKE WITH LIKE. `items` has already been through verifyItems,
+    // reconcileQuantity, checkAtwater and flagPrepMismatch; comparing raw
+    // codeFillItems output against that measured the guardrails as if they were
+    // a disagreement, skewing the very number that gates flipping this on.
+    // Costs one extra verifyItems pass while shadow is enabled, which is the
+    // price of a metric worth trusting - and it means the guards themselves
+    // (including the variant checks) are exercised on this path before we rely
+    // on them.
+    const codeItems = stripEphemeralIds(flagPrepMismatch(
+      checkAtwater(reconcileQuantity(
+        await verifyItems(deps, codeFill.items, candidatePer100),
+        servingsForItems(resolved),
+      )),
+      prepForItems(resolved),
+    ));
+    const sameShape = codeItems.length === items.length;
+    // STRICT: identical row and amount.
+    const sameRow = sameShape && codeItems.every((cf, i) =>
+      cf.food_id === items[i].food_id &&
+      Math.abs(cf.grams - items[i].grams) <= Math.max(1, items[i].grams * 0.05)
+    );
+    // WHAT THE USER SEES: two different rows for the same food ("Whey Protein"
+    // vs "100% Whey Protein") are not a defect if the numbers land in the same
+    // place. Strict row equality would veto the skip over distinctions nobody
+    // can perceive, so the decision to flip this on is judged on the macros.
+    const sum = (xs: ParsedItem[], k: "kcal" | "protein_g") =>
+      xs.reduce((a, it) => a + (it[k] || 0), 0);
+    const near = (a: number, b: number, floor: number) =>
+      Math.abs(a - b) <= Math.max(floor, Math.max(a, b) * 0.1);
+    const sameMacros = sameShape &&
+      near(sum(codeItems, "kcal"), sum(items, "kcal"), 20) &&
+      near(sum(codeItems, "protein_g"), sum(items, "protein_g"), 3);
+    steps.push({
+      iter: 8,
+      tool: "code_fill_shadow",
+      input: { same_row: sameRow, same_macros: sameMacros },
+      result: sameRow ? { agree: true } : {
+        code: codeItems.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
+        decide: items.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
+        same_macros: sameMacros,
+      },
+    });
   }
-
-  items = flagPrepMismatch(checkAtwater(reconcileQuantity(items, servingsByFood)), prepByFoodId);
+  // See stripEphemeralIds: every path that returns items to the client must
+  // strip them, not just this one.
+  items = stripEphemeralIds(items);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
@@ -2200,8 +2912,16 @@ export async function runParseMeal(
     raw.meal_type === "dinner" || raw.meal_type === "snack"
       ? raw.meal_type
       : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
+  // Grounded against the FINAL items (stripEphemeralIds ran above), so a
+  // sentence quoting a macro the model invented cannot survive next to the
+  // numbers that contradict it.
   const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
-    ? scrubDashes(raw.drona_line).slice(0, 200)
+    ? groundDronaLine(
+      scrubDashes(raw.drona_line).slice(0, 200),
+      items,
+      input.todayTotals,
+      input.targets,
+    )
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 
