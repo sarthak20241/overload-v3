@@ -352,6 +352,29 @@ improvement log). Open items surfaced by walking the code with the user:
   exists anywhere. Keep the principle (never volunteer doubt on every meal, it
   teaches distrust); add a small affordance on LOW-CONFIDENCE lines only, which
   already carry a chip, or one-time empty-state coaching.
+- I15 (ux, USER DECISION, next after I2): kill post-card web refine; web
+  search belongs to Super only. Today an ungrounded line ships as an estimate
+  and the client fires refineMeal in the BACKGROUND, swapping numbers into the
+  card after the user is already reading it - and while Add is live, so a user
+  can tap Add on 180 kcal and log 240. A review step whose contents mutate is
+  not a review step. Remove: kickWebRefine (nutrition.tsx), the web_refine
+  response field, refineMeal, the "checking trusted sources online" card state.
+  HONEST COST: Smart gets worse at unknown foods (a bhakarwadi stays a labelled
+  estimate instead of sometimes upgrading to a real label). Accepted: it makes
+  the modes mean something rather than blurring them. Rejected middle option:
+  hold the card until the lookup lands (~5s) - that just turns Smart into Super.
+  Ship I14 with or before this: once the automatic path is gone, the manual
+  challenge path is the ONLY recovery route, so its discoverability matters more.
+
+- NOT AN IMPROVEMENT (measured, closed 2026-08-23): parallelising the guardrail
+  chain, by guard or by item. Benchmarked at 20 MICROSECONDS for a 12-item meal
+  through 5 synchronous guards = 0.0003% of a 6s parse. The work is pure CPU
+  (string compares, multiplication), so Promise.all over it adds overhead and
+  runs SLOWER on a single-threaded runtime. Three guards are list-scoped by
+  nature (keepUncoveredPrevious, reconcileExtracted, preserveManual) and cannot
+  be split per item. The one guard doing real I/O, verifyItems, ALREADY runs
+  Promise.all across items. All latency is decide 3300ms / resolve 1600ms /
+  extract 1200ms - see I12.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
