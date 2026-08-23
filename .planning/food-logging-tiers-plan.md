@@ -384,6 +384,19 @@ improvement log). Open items surfaced by walking the code with the user:
   estimates BEFORE the card renders. That never mutated a card under the user's
   eyes (I15's exact complaint) and was presumably dropped for latency. Dig up
   why before building Super's web integration.
+- I17 (quality, PROPOSED, user question): wordsOverlap typo-tolerance merges
+  RIVAL BRANDS. Two words of 5+ chars sharing a 4-letter prefix count as the
+  same word (the rule that absorbs "edameme"/"edamame"). Verified:
+  "Bikano Bhakarwadi" MATCHES "Bikaji Bhakarwadi" - two real, different Indian
+  snack companies, and the "Bika-" cluster is common because they are all from
+  Bikaner. On the web path you say Bikaji, get Bikano macros under your own
+  name, evidenced only by a quiet source note. FIX: never apply prefix
+  tolerance to a BRAND token; brands match exactly or not at all.
+  Preserve these verified-correct behaviours: same brand + different product
+  rejects (Haldiram Bhakarwadi vs Bhujia; Amul Toned vs Amul Gold); different
+  brand + same product rejects when a brand was named; sub-brands still match
+  (Amul Toned Milk vs Amul Taaza Toned Milk); no brand named => any brand
+  matches (intended - nothing to honour).
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
