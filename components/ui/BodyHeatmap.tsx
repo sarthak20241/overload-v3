@@ -21,7 +21,7 @@ import { useTheme } from '@/hooks/useTheme';
  * A group may cover several slugs (Back is three), and every slug in the list
  * gets that group's intensity so the whole region lights together.
  */
-const GROUP_SLUGS: Record<string, Slug[]> = {
+export const GROUP_SLUGS: Record<string, Slug[]> = {
   Chest: ['chest'],
   Back: ['upper-back', 'lower-back', 'trapezius'],
   Shoulders: ['deltoids'],
@@ -45,7 +45,7 @@ const MAPPED_GROUPS = Object.keys(GROUP_SLUGS);
  * charcoal on our white card. Passing `styles.fill` — the only thing with
  * higher priority — is what actually puts the silhouette on our palette.
  */
-const ALL_SLUGS: Slug[] = [
+export const ALL_SLUGS: Slug[] = [
   'abs', 'adductors', 'ankles', 'biceps', 'calves', 'chest', 'deltoids',
   'feet', 'forearm', 'gluteal', 'hair', 'hamstring', 'hands', 'head',
   'knees', 'lower-back', 'neck', 'obliques', 'quadriceps', 'tibialis',
@@ -60,7 +60,7 @@ const ALL_SLUGS: Slug[] = [
  * reads as an ordered scale in greyscale and for colour-blind readers.
  */
 const RAMP_LIGHT = ['#e8f0c0', '#cde383', '#a3c62b', '#6d9900'];
-const RAMP_DARK = ['#3c4a1a', '#688210', '#9bc500', '#c8ff00'];
+export const RAMP_DARK = ['#3c4a1a', '#688210', '#9bc500', '#c8ff00'];
 
 const STEPS = 4;
 
@@ -71,7 +71,7 @@ export interface BodyHeatmapEntry {
 }
 
 /** Sets per muscle group → that group's colour on the ramp. */
-function buildScale(counts: Record<string, number>, ramp: string[]): Record<string, string> {
+export function buildScale(counts: Record<string, number>, ramp: string[]): Record<string, string> {
   const mapped: Record<string, number> = {};
   for (const g of MAPPED_GROUPS) {
     if (counts[g]) mapped[g] = counts[g];
@@ -87,6 +87,22 @@ function buildScale(counts: Record<string, number>, ramp: string[]): Record<stri
     scale[group] = ramp[step - 1];
   }
   return scale;
+}
+
+export function buildBodyData(
+  counts: Record<string, number>,
+  ramp: string[],
+  untrained: string,
+): ExtendedBodyPart[] {
+  const scale = buildScale(counts, ramp);
+  const litFill: Partial<Record<Slug, string>> = {};
+  for (const [group, color] of Object.entries(scale)) {
+    for (const slug of GROUP_SLUGS[group] || []) litFill[slug] = color;
+  }
+  return ALL_SLUGS.map((slug) => ({
+    slug,
+    styles: { fill: litFill[slug] ?? untrained },
+  }));
 }
 
 interface Props {
@@ -108,17 +124,7 @@ export function BodyHeatmap({ counts, gender, width, legendLimit = 6 }: Props) {
 
   const scale = useMemo(() => buildScale(counts, ramp), [counts, ramp]);
 
-  /** Explicit fill for every slug — see ALL_SLUGS for why none can be omitted. */
-  const data = useMemo<ExtendedBodyPart[]>(() => {
-    const litFill: Partial<Record<Slug, string>> = {};
-    for (const [group, color] of Object.entries(scale)) {
-      for (const slug of GROUP_SLUGS[group] || []) litFill[slug] = color;
-    }
-    return ALL_SLUGS.map((slug) => ({
-      slug,
-      styles: { fill: litFill[slug] ?? untrained },
-    }));
-  }, [scale, untrained]);
+  const data = useMemo(() => buildBodyData(counts, ramp, untrained), [counts, ramp, untrained]);
 
   /** Busiest muscles first, coloured to match their fill on the body. */
   const legend = useMemo<BodyHeatmapEntry[]>(() => {

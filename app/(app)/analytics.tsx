@@ -23,6 +23,9 @@ import { setBestValue, isWeightPrimary, formatPrimaryValue, type DisplaySet } fr
 import { getGuestWorkoutsDetailed, getGuestProfile } from '@/lib/guestStore';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { BodyHeatmap } from '@/components/ui/BodyHeatmap';
+import { ShareSheet } from '@/components/share/ShareSheet';
+import { BodyShareCard } from '@/components/share/BodyShareCard';
+import { isShareAvailable } from '@/lib/share/captureAndShare';
 import { NutritionTrendsCard } from '@/components/diet/NutritionTrendsCard';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -1147,6 +1150,7 @@ export default function AnalyticsScreen() {
   // Picks the body silhouette in the distribution card. Null just means "not
   // known yet" and falls back to the male drawing — never blocks the card.
   const [profileGender, setProfileGender] = useState<string | null>(null);
+  const [shareBodyOpen, setShareBodyOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     const apply = (list: WorkoutRaw[]) => {
@@ -1625,6 +1629,16 @@ export default function AnalyticsScreen() {
                     <Feather name="activity" size={14} color={Colors.stat.muscles} />
                     <Text style={[styles.trendTitle, { color: C.foreground }]}>Body Distribution</Text>
                   </View>
+                  {isShareAvailable() && (
+                    <TouchableOpacity
+                      onPress={() => setShareBodyOpen(true)}
+                      hitSlop={12}
+                      accessibilityRole="button"
+                      accessibilityLabel="Share body distribution"
+                    >
+                      <Feather name="share" size={14} color={C.textMuted} />
+                    </TouchableOpacity>
+                  )}
                 </View>
                 <BodyHeatmap counts={muscleCounts} gender={profileGender} width={bigChartWidth} />
               </View>
@@ -1788,6 +1802,17 @@ export default function AnalyticsScreen() {
         icon="activity"
         initial={bodyFatLog.length > 0 ? String(bodyFatLog[bodyFatLog.length - 1].bodyFat) : ''}
         onSave={addBodyFat}
+      />
+      <ShareSheet
+        visible={shareBodyOpen}
+        onClose={() => setShareBodyOpen(false)}
+        card={
+          <BodyShareCard
+            counts={muscleCounts}
+            gender={profileGender}
+            windowLabel="Last 6 months"
+          />
+        }
       />
     </SafeAreaView>
   );

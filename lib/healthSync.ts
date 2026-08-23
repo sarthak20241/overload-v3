@@ -19,6 +19,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { dailyMetricDef, type DailyMetricType, type MetricSource } from './dailyMetrics';
 import type { HealthHub } from './healthSources';
@@ -115,15 +116,31 @@ function shiftDaysISO(iso: string, deltaDays: number): string {
  * iOS HealthKit module on Android (or vice versa) would pull in a native module
  * that doesn't exist on that platform. This is the ONLY place that branches on
  * platform, so the rest of the pipeline stays platform-agnostic.
+ *
+ * Two guards keep a host without the native module (Expo Go, and any future
+ * host lacking it) at "no health hub" instead of a boot-time error. Expo Go is
+ * checked FIRST and never reaches the require: the nitro HealthKit module
+ * throws on import there, and Metro's dev module guard redboxes that throw
+ * before any try/catch of ours can see it. The try/catch is the backstop for
+ * every other host that cannot load the module.
  */
 export function getHealthAdapter(): HealthAdapter | null {
+  if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) return null;
   if (Platform.OS === 'ios') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require('./health/healthkitAdapter').healthkitAdapter as HealthAdapter;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      return require('./health/healthkitAdapter').healthkitAdapter as HealthAdapter;
+    } catch {
+      return null;
+    }
   }
   if (Platform.OS === 'android') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require('./health/healthConnectAdapter').healthConnectAdapter as HealthAdapter;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      return require('./health/healthConnectAdapter').healthConnectAdapter as HealthAdapter;
+    } catch {
+      return null;
+    }
   }
   return null;
 }

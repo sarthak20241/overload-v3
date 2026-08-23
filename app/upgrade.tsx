@@ -75,7 +75,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
-import { resetCoachAccessCache } from '@/hooks/useCoachAccess';
+import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
 import {
   requestNotificationPermission,
   scheduleTrialReminder,
@@ -272,7 +272,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(true);
       const flipped = await waitForTierFlip();
-      resetCoachAccessCache();
+      invalidateCoachAccess();
       if (flipped) {
         // Honor the reminder screen's promise ONLY when the purchase
         // actually carries a trial. Selecting Annual is not enough — an
@@ -322,7 +322,7 @@ export default function UpgradeScreen() {
       const hasActive = Object.values(info.entitlements?.active ?? {}).some((e) => e.isActive);
       if (hasActive) {
         const flipped = await waitForTierFlip();
-        resetCoachAccessCache();
+        invalidateCoachAccess();
         if (flipped) {
           toast.success('Restored. Welcome back.');
           finish();

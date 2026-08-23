@@ -2031,8 +2031,14 @@ async function handleAnonOnboardingPlan(args: {
     return respond({ error: "rate_limited", reason: row?.reason ?? "unknown" }, 429);
   }
 
-  // Catalog grounding from the seeded exercises table.
-  const { data: exRows } = await admin.from("exercises").select("name").order("name");
+  // Catalog grounding from the seeded exercises table. Global rows only
+  // (created_by IS NULL) — user-created custom exercises must never leak into
+  // an anonymous prompt.
+  const { data: exRows } = await admin
+    .from("exercises")
+    .select("name")
+    .is("created_by", null)
+    .order("name");
   const catalog = (exRows ?? []).map((r: { name: string }) => r.name).filter(Boolean);
 
   const message = buildAnonIntakeMessage(intake as AnonIntake, catalog);

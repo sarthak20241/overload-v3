@@ -56,6 +56,9 @@ import { metricTypeOf, metricTypeDef } from '@/lib/exercises';
 import { setVolumeKg } from '@/lib/sets';
 import type { ExerciseDef, MetricAxis } from '@/lib/exercises';
 import { ExercisePickerSheet, type CustomExerciseDetails } from '@/components/routines/ExercisePickerSheet';
+import { ShareSheet } from '@/components/share/ShareSheet';
+import { RecapShareCard } from '@/components/share/RecapShareCard';
+import { isShareAvailable } from '@/lib/share/captureAndShare';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { buildWorkoutCoachContext, type WorkoutCoachContext } from '@/lib/workoutCoach';
@@ -186,6 +189,22 @@ interface RoutineSyncOffer {
   added: RoutineSyncAdd[];
   /** mode 'guest': full replacement routine_exercises for the guest store. */
   guestExercises: any[] | null;
+}
+
+/**
+ * Everything the recap share card needs, snapshotted at save time. The active
+ * workout is cleared the moment we finish, so the card can't read from it.
+ */
+interface WorkoutRecap {
+  name: string;
+  startedAt: string;
+  durationSeconds: number;
+  totalVolumeKg: number;
+  setCount: number;
+  exerciseCount: number;
+  counts: Record<string, number>;
+  /** Drives which body silhouette the card draws; null falls back to male. */
+  gender: string | null;
 }
 
 // Human copy for the routine sync prompt — reads like a coach suggestion, not
@@ -341,6 +360,11 @@ export default function ActiveWorkoutScreen() {
   // list deviated from it. Non-null renders the "Update Routine?" alert;
   // navigation to history is deferred until the user answers.
   const [routineSync, setRoutineSync] = useState<RoutineSyncOffer | null>(null);
+  // Recap of the session we just saved, shown as a share card before we leave
+  // for history. Built while the active workout is still populated (finishWorkout
+  // clears it), parked in a ref so the routine-sync answer can pick it up after.
+  const pendingRecapRef = useRef<WorkoutRecap | null>(null);
+  const [shareRecap, setShareRecap] = useState<WorkoutRecap | null>(null);
 
   // Keep the screen awake during a workout when the user has opted in. Tied to
   // this screen's lifetime: activates on mount (or when the pref flips on) and
@@ -2337,17 +2361,38 @@ export default function ActiveWorkoutScreen() {
       });
   };
 
+  /**
+   * Last step of finishing: show the recap card, or go straight to history when
+   * there's nothing to show (sharing unsupported, or the recap never got built
+   * because the save threw). Every exit from the finish flow goes through here.
+   */
+  const leaveAfterFinish = useCallback(() => {
+    const recap = pendingRecapRef.current;
+    if (recap && isShareAvailable()) {
+      setShareRecap(recap);
+      return;
+    }
+    pendingRecapRef.current = null;
+    router.replace('/(app)/history');
+  }, [router]);
+
+  const dismissShareRecap = useCallback(() => {
+    setShareRecap(null);
+    pendingRecapRef.current = null;
+    router.replace('/(app)/history');
+  }, [router]);
+
   const confirmRoutineSync = () => {
     const offer = routineSync;
     if (!offer) return;
     setRoutineSync(null);
-    router.replace('/(app)/history');
+    leaveAfterFinish();
     runRoutineSync(offer);
   };
 
   const declineRoutineSync = () => {
     setRoutineSync(null);
-    router.replace('/(app)/history');
+    leaveAfterFinish();
   };
 
   // Save from the finish sheet (all workouts — routine and blank).
@@ -2422,6 +2467,32 @@ export default function ActiveWorkoutScreen() {
       const parsedStartMs = opts?.startedAtIso ? Date.parse(opts.startedAtIso) : NaN;
       const startedAtMs = Number.isNaN(parsedStartMs) ? null : parsedStartMs;
 
+      // Snapshot the recap now, while exercises is still the live session —
+      // finishWorkout() below empties it. Muscle counts mirror the analytics
+      // heatmap: completed sets per muscle group, warmups included (they're
+      // work the body did, even though they don't count toward volume).
+      const savedExercises = exercises.filter(keepInSavedWorkout);
+      const recapCounts: Record<string, number> = {};
+      savedExercises.forEach((e) => {
+        const group = e.exercise.muscle_group;
+        if (!group) return;
+        const done = e.sets.filter(s => s.completed).length;
+        if (done > 0) recapCounts[group] = (recapCounts[group] || 0) + done;
+      });
+      pendingRecapRef.current = {
+        name: workoutName,
+        startedAt: startedAtMs != null
+          ? new Date(startedAtMs).toISOString()
+          : new Date(Date.now() - workout.elapsed * 1000).toISOString(),
+        durationSeconds: workout.elapsed,
+        totalVolumeKg: vol,
+        setCount: allCompleted.length,
+        exerciseCount: savedExercises.length,
+        counts: recapCounts,
+        gender: readCache<{ profile: { gender?: string | null } | null }>('profile', user?.id)
+          ?.profile?.gender ?? null,
+      };
+
       if (isGuestSession) {
         addGuestWorkout({
           id: `guest-w-${Date.now()}`,
@@ -2465,7 +2536,7 @@ export default function ActiveWorkoutScreen() {
           setRoutineSync(guestOffer);
           return;
         }
-        router.replace('/(app)/history');
+        leaveAfterFinish();
         return;
       }
 
@@ -2560,8 +2631,9 @@ export default function ActiveWorkoutScreen() {
         setRoutineSync(syncOffer);
         return;
       }
-      router.replace('/(app)/history');
+      leaveAfterFinish();
     } catch (err: any) {
+      pendingRecapRef.current = null;
       setShowErrorAlert(err?.message || 'Failed to save workout');
       toast.hide();
     } finally {
@@ -3927,6 +3999,27 @@ export default function ActiveWorkoutScreen() {
         ]}
         onClose={declineRoutineSync}
       />
+
+      {/* Last beat of finishing: the session's recap as a shareable card. Closing
+          it (share or dismiss) is what actually lands the user on history. */}
+      {shareRecap && (
+        <ShareSheet
+          visible={!!shareRecap}
+          onClose={dismissShareRecap}
+          card={
+            <RecapShareCard
+              name={shareRecap.name}
+              startedAt={shareRecap.startedAt}
+              durationSeconds={shareRecap.durationSeconds}
+              totalVolumeKg={shareRecap.totalVolumeKg}
+              setCount={shareRecap.setCount}
+              exerciseCount={shareRecap.exerciseCount}
+              counts={shareRecap.counts}
+              gender={shareRecap.gender}
+            />
+          }
+        />
+      )}
 
       <ThemedAlert
         visible={!!showErrorAlert}
