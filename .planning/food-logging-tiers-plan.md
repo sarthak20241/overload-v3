@@ -150,7 +150,7 @@ The egg/name/self-heal fixes + FatSecret source are DEPLOYED but uncommitted
 (the coach-retrieval drift mistake, again). Commit on this branch, PR to main.
 Verify: git clean, PR open, next parse trace shows lookup_fatsecret firing.
 
-### P1. Ranking layer (zero latency)  [DONE 2026-08-22: migration 0102 live, 'eggs' ranks whole chicken egg 1st, 32ms]
+### P1. Ranking layer (zero latency)  [DONE 2026-08-22: migration 0103 live (renumbered from 0102 at merge; main took 0102), 'eggs' ranks whole chicken egg 1st, 32ms]
 Migration: foods.rank_boost column + curated staple boosts (whole chicken egg,
 cow milks, common dals...) + rewrite search_foods_ranked_with_servings to score
 trigram + rank_boost + global popularity (distinct users >= 2, log-scaled) +
@@ -330,7 +330,7 @@ improvement log). Open items surfaced by walking the code with the user:
     => The win is NOT a longer window, it is FILTERING the one-off tail.
   - PMC8746681 (7-day records): habitual variety reliability r=0.84 at 3 days,
     r=0.98 at 7 days. Reliability saturates well before 14d.
-  => Require >= 2 occurrences in the window (same threshold 0102 already uses
+  => Require >= 2 occurrences in the window (same threshold 0103 already uses
      for search ranking): drops ~half the vocabulary for free, since a one-off
      can never be predicted again.
   => Keep 14d rather than 7d so WEEKLY-cadence foods (Sunday biryani, weekend
@@ -342,7 +342,7 @@ improvement log). Open items surfaced by walking the code with the user:
   LATENCY: 10.4ms on existing idx_meals_user_logged_at, inside the Promise.all
   already concurrent with extract => none added; ~200 input tokens do not move
   decide latency (output-token bound at ~7.4ms/tok).
-  Complements 0102 (boosts 2+-logged foods in SEARCH ranking - different stage:
+  Complements 0103 (boosts 2+-logged foods in SEARCH ranking - different stage:
   which rows surface, vs which candidate decide picks).
 - I14 (ux, PROPOSED, user question): the challenge path is undiscoverable.
   Ungrounded items already trigger an AUTOMATIC web refine with a visible

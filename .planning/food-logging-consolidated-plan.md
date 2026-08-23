@@ -9,7 +9,7 @@ and the test gates. The evidence record stays in food-logging-tiers-plan.md
 SHIPPED + DEPLOYED on branch claude/eggs-amul-milk-macros-c94f42 (pushed, NOT
 merged to main):
 - P0 guardrail fixes (id retarget, row-name display, variant chips, both
-  caption bugs), P1 ranking layer (migration 0102 live), P2 Voyage reranker,
+  caption bugs), P1 ranking layer (migration 0103 live (renumbered from 0102 at merge; main took 0102)), P2 Voyage reranker,
   FatSecret source (OAuth 1.0, Basic/US), OFF self-heal.
 - P3 code-fill built, in SHADOW (PARSE_SKIP_DECIDE=shadow), n=2 so far.
 
@@ -40,7 +40,7 @@ guardrail parallelization (measured 20 microseconds, a no-op); I5 = P3.
    - REJECTED: the old fused extract+estimate call (estimates fatten output;
      output tokens ARE the latency; forced tools do not stream).
 4. acceptCandidate(userWords, row): ONE shared pure gate used by Lane A,
-   Lane B, and the P3 skip-decide path. Walks top ~5 candidates in 0102
+   Lane B, and the P3 skip-decide path. Walks top ~5 candidates in 0103
    order; accept only if ALL pass: (1) word coverage with I17 proportional
    typo tolerance, (2) no variantClash, (3) no unhonouredGrade,
    (4) similarity floor OR user-history row, (5) per-100 plausibility.
