@@ -63,7 +63,24 @@ guardrail parallelization (measured 20 microseconds, a no-op); I5 = P3.
    - REJECTED: the old fused extract+estimate call (estimates fatten output;
      output tokens ARE the latency; forced tools do not stream).
 4. acceptCandidate(userWords, row): ONE shared pure gate used by Lane A,
-   Lane B, and the P3 skip-decide path. Walks top ~5 candidates in 0103
+   Lane B, and the P3 skip-decide path.
+   DESIGN CONSTRAINTS found while diagnosing paneer-roti (2026-08-23):
+   - It compares the EXTRACTED name, not the user's raw text. Extract already
+     normalises regional terms (its system prompt corrects spelling and maps
+     chai -> milk tea), and audit-hindi-doodh passes today because extract
+     turns "doodh" into "milk". So the synonym burden is much smaller than a
+     raw-text gate would carry - but it is not zero, and a small synonym
+     safety net (doodh/dahi/chawal) belongs in the gate, per the I11b
+     droppable list.
+   - Word coverage is the check that catches the WORST failures, because a
+     missing catalog row does not degrade to an estimate, it degrades to a
+     DIFFERENT FOOD: "paneer bhurji" -> Bhujia, a fried snack at 609 kcal.
+     "paneer" appears nowhere in "Bhujia", so coverage rejects it and the line
+     falls to a labelled estimate that is roughly right.
+   - Therefore coverage is NOT merely a Fast-mode component. PROPOSED: pull the
+     word-coverage half forward into Phase 2b next to I11, since both rules say
+     the same thing - reject a candidate that does not cover what the user
+     said. Awaiting user decision. Walks top ~5 candidates in 0103
    order; accept only if ALL pass: (1) word coverage with I17 proportional
    typo tolerance, (2) no variantClash, (3) no unhonouredGrade,
    (4) similarity floor OR user-history row, (5) per-100 plausibility.
