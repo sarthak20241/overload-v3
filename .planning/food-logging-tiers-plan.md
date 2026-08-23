@@ -375,6 +375,15 @@ improvement log). Open items surfaced by walking the code with the user:
   be split per item. The one guard doing real I/O, verifyItems, ALREADY runs
   Promise.all across items. All latency is decide 3300ms / resolve 1600ms /
   extract 1200ms - see I12.
+- I16 (code health, HOUSEKEEPING): stale comments describe a removed "hedged
+  web lookup". WEB_LOOKUP_TOOL still claims to be the terminal tool for a
+  lookup that "races the decide call" and upgrades estimates "within the grace
+  window"; ~line 1037 has an orphaned comment for a deleted function.
+  runWebLookup has exactly ONE caller today (researchPrevious). Delete/rewrite.
+  RELEVANT TO I15: a third design was tried - web racing decide, upgrading
+  estimates BEFORE the card renders. That never mutated a card under the user's
+  eyes (I15's exact complaint) and was presumably dropped for latency. Dig up
+  why before building Super's web integration.
 - Eval corpus: 16 audit-derived cases landed in scripts/parse-meal-eval/cases.ts
   (audit-*) plus 5 acceptability cases (accept-*). I6*/I8/I11-tagged ones are
   EXPECTED to fail until fixed; they are the gates. Full corpus now 88 cases.
