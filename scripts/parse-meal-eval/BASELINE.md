@@ -35,7 +35,8 @@ Read the gate table before treating a failure as a regression.
 |---|---|---|
 | 2026-08-23 | 76/88 | pre-fix, first baseline ever run |
 | 2026-08-23 | **81/88** | + FatSecret sanitize fix (`38f3b6c`) |
-| 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) — **current baseline** |
+| 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) |
+| 2026-08-23 | **80/86** | + I16 comments, I7 `coerceQuantity` — **current baseline**, Phase 1 complete |
 
 > Corpus is **86 cases** from `b112e92` onward: two duplicate cases were removed
 > (see below). The 88-case runs above predate that.
@@ -87,7 +88,41 @@ total tokens: 509221
 OFF lookups:  113 (dry run)
 ```
 
-### The 7 failures
+### Phase 1 result: 80/86 (93.0%, vs 92.0% at the 81/88 baseline)
+
+```
+tier mix:     {"catalog":71,"fatsecret":4,"estimate":11}
+avg latency:  6266ms
+```
+
+Six failures, and **five are gates**. Only `paneer-roti` is real; `mcaloo-tikki`
+passed this run (it is one of the flaky ones). `accept-grade-double-toned`
+appears here for the first time because the contradictory `qualifier-*` case
+that used to mask it is gone — the gate is doing its job.
+
+| Case | Kind | Owner |
+|---|---|---|
+| `audit-low-fat-paneer` | GATE | Phase 2b (I11) |
+| `audit-double-toned-300` | GATE | Phase 2b (I11) |
+| `accept-grade-double-toned` | GATE | Phase 2b (I11) |
+| `audit-delete-by-text` | GATE | Phase 2a (I6) |
+| `audit-multi-meal-day` | GATE | Phase 9 (I8) |
+| `paneer-roti` | **REAL** | see below |
+
+### Why `paneer-roti` fails every single run
+
+Not ranking. **There is no Paneer Bhurji row in the catalog**, so the query
+lands on `Bhujia` — a deep-fried snack at 609 kcal — and a paneer dish is
+logged at roughly 3x its calories, confidently and with no chip.
+
+Probed 33 common Indian dishes: 26 present, 7 missing (`paneer bhurji`,
+`chole bhature`, `misal pav`, `gobi paratha`, `methi thepla`,
+`sabudana khichdi`, `bisibelebath`). The gap is narrow; the failure MODE is the
+finding — a missing row degrades to a *different food*, not to an estimate.
+That is the `acceptCandidate` word-coverage argument, and why pulling it
+forward into Phase 2b is proposed.
+
+### The original 7 failures (81/88 run, kept for history)
 
 Five are gates. Two are real.
 
