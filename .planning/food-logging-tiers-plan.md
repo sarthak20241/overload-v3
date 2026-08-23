@@ -392,12 +392,25 @@ improvement log). Open items surfaced by walking the code with the user:
       creatine/creatinine (supplement vs metabolic waste product)
     FALSE NEGATIVE: panner/paneer - the commonest Indian food typo - MISSED,
       because "pann" and "pane" do not share 4 letters
-  First fix proposed (exempt brand tokens) was rejected by the user: it breaks
-  legitimate brand typos (britania/britannia, haldiram/haldirams). Correct fix
-  is neither extreme: edit distance <= 1 for words of 5+ chars scores 7/8;
-  Damerau-Levenshtein (transposition = 1 edit) scores 8/8 by also catching
-  musclebalze/muscleblaze. Strictly better on both dimensions. Cheap - short
-  words, few candidates.
+  Fix v1 (exempt brand tokens) REJECTED by user: breaks legitimate brand typos.
+  Fix v2 (flat Damerau <= 1) scores 11/11 but user wanted more slack.
+  SETTLED FIX: PROPORTIONAL tolerance - Damerau-Levenshtein distance divided by
+  the shorter word's length, allow <= ~0.2. Also scores 11/11, and is MORE
+  generous than a flat 1 exactly where generosity is safe:
+    optimumnutriton / optimumnutrition (16 chars) -> 3 chars of slack, matches
+    panner / paneer (6 chars)                     -> 1 char of slack, matches
+    bikano / bikaji  = 2 wrong of 6 = 33%         -> rejected
+    creatine / creatinine = 2 of 8 = 25%          -> rejected
+  Flat thresholds measured for comparison: <=1 scores 11/11, <=2 scores 9/11
+  (re-admits BOTH bikaji and creatinine - 2 is exactly their distance),
+  <=3 scores 8/11. Short words strict, long words loose, which is correct: a
+  2-char error in a 6-letter word is usually a different word; the same error
+  in a 16-letter brand is obviously a slip.
+  WHY FALSE POSITIVES ARE THE DANGEROUS DIRECTION: wordsOverlap answers "is
+  this thing already here?". In keepUncoveredPrevious and reconcileExtracted a
+  wrong YES means a food the user named is judged already-present and is
+  therefore NOT restored - it silently vanishes from the card. A wrong NO just
+  restores a line. So looseness costs data; strictness costs nothing there.
   Verified-correct behaviours to preserve: same brand + different product
   rejects; different brand + same product rejects when a brand was named;
   sub-brands match (Amul Toned Milk vs Amul Taaza Toned Milk); no brand named
