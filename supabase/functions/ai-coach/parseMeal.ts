@@ -447,6 +447,66 @@ export function templateDronaLine(items: ParsedItem[]): string {
   return "Logged. Keep the protein coming.";
 }
 
+/**
+ * Keep the coach sentence honest about numbers.
+ *
+ * decide writes drona_line itself, so it can state a macro it worked out in its
+ * head rather than the one the row produced. Seen live 2026-08-23: a card
+ * reading "Boiled Egg 231 kcal, 19g P" carried the line "Three eggs, 37.5 grams
+ * protein" - the model had assumed 12.5 g per egg. The numbers were right and
+ * the sentence beside them was wrong, which is worse than saying nothing.
+ *
+ * The pipeline's rule is that a number the user sees comes from a source row,
+ * never from model arithmetic. That rule stopped at the macros; this extends it
+ * to the sentence.
+ *
+ * DELIBERATELY LENIENT. The prompt invites the line to reference the day, so a
+ * figure is accepted if it is close to ANY number the model was legitimately
+ * given: this meal, the day so far, the day after this meal, the target, or
+ * what is left of the target. Only a figure matching none of those is a
+ * fabrication, and then we fall back to the template line rather than ship a
+ * self-contradicting card. Numbers not attached to a macro word (egg counts,
+ * quantities) are ignored entirely.
+ */
+export function groundDronaLine(
+  line: string,
+  items: ParsedItem[],
+  today?: { kcal: number; protein_g: number } | null,
+  targets?: { protein_target_g?: number | null; daily_calorie_target?: number | null } | null,
+): string {
+  const mealProtein = items.reduce((a, it) => a + (it.protein_g || 0), 0);
+  const mealKcal = items.reduce((a, it) => a + (it.kcal || 0), 0);
+
+  const allowed = (meal: number, soFar: number | null, target: number | null): number[] => {
+    const out = [meal];
+    if (soFar !== null) out.push(soFar, soFar + meal);
+    if (target !== null) {
+      out.push(target);
+      out.push(Math.max(0, target - (soFar ?? 0) - meal));
+      out.push(Math.max(0, target - (soFar ?? 0)));
+    }
+    return out;
+  };
+  const proteinOk = allowed(mealProtein, today?.protein_g ?? null, targets?.protein_target_g ?? null);
+  const kcalOk = allowed(mealKcal, today?.kcal ?? null, targets?.daily_calorie_target ?? null);
+
+  // 10% band, with a floor so small numbers are not rejected on rounding alone.
+  const near = (claim: number, ok: number[], floor: number) =>
+    ok.some((v) => Math.abs(claim - v) <= Math.max(floor, v * 0.1));
+
+  const claims: Array<[RegExp, number[], number]> = [
+    [/(\d+(?:\.\d+)?)\s*(?:g|gs|grams?)?\s*(?:of\s+)?protein/gi, proteinOk, 3],
+    [/(\d+(?:\.\d+)?)\s*(?:kcal|calories|cals?)\b/gi, kcalOk, 25],
+  ];
+  for (const [re, ok, floor] of claims) {
+    for (const m of line.matchAll(re)) {
+      const claim = Number(m[1]);
+      if (Number.isFinite(claim) && !near(claim, ok, floor)) return templateDronaLine(items);
+    }
+  }
+  return line;
+}
+
 /** A rough, clearly-flagged line for a food decide dropped. Uses the top
  *  resolved candidate's per-100 where we have it, and keeps food_id null so it
  *  reads (and refines) as the estimate it is. */
@@ -2852,8 +2912,16 @@ export async function runParseMeal(
     raw.meal_type === "dinner" || raw.meal_type === "snack"
       ? raw.meal_type
       : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
+  // Grounded against the FINAL items (stripEphemeralIds ran above), so a
+  // sentence quoting a macro the model invented cannot survive next to the
+  // numbers that contradict it.
   const dronaLine = typeof raw.drona_line === "string" && raw.drona_line.trim()
-    ? scrubDashes(raw.drona_line).slice(0, 200)
+    ? groundDronaLine(
+      scrubDashes(raw.drona_line).slice(0, 200),
+      items,
+      input.todayTotals,
+      input.targets,
+    )
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 

@@ -46,3 +46,6 @@ deno.lock
 # One-off data migration workspace (contains user data dumps)
 migration/
 graphify-out/
+
+# local env backups (never commit: these carry live API keys)
+.env.local.bak-*
