@@ -958,6 +958,36 @@ interface WebLabel {
  * the shorter one, so a modifier ("roasted edamame" vs "edamame") still
  * matches while two different foods that merely share an ingredient do not.
  */
+/**
+ * Read a quantity the model emitted, tolerating a numeric STRING.
+ *
+ * The schema says `type: "number"`, but a tool schema is advisory: the model
+ * does sometimes send "250" instead of 250. The old check was
+ * `typeof o.quantity === "number"` with a fallback of 1, so a quoted number
+ * did not fail loudly - it silently became ONE. "250ml milk" logged as 1 ml.
+ *
+ * WHY NOT STRICT TOOL USE (I7): strict is real and does enforce the type, but
+ * it requires every property in `required`, so the model must emit all eight
+ * extract fields on every call. Measured on Haiku 4.5 over 5 real inputs, twice:
+ * output tokens +96% (649 -> 1270) and +572 ms per extract call. Extract is the
+ * first thing on the critical path and Fast targets a sub-second first row, so
+ * that trade is backwards - it buys a guarantee this function already provides
+ * for free. Strict also cannot express our nullable enum
+ * (`type: ["string","null"]` + an enum containing null is rejected outright),
+ * so adopting it would mean reshaping the schema too.
+ *
+ * Rejects anything that is not a finite positive number after coercion, and a
+ * blank string, which Number() would happily read as 0.
+ */
+export function coerceQuantity(v: unknown): number {
+  const n = typeof v === "number"
+    ? v
+    : typeof v === "string" && v.trim() !== ""
+    ? Number(v.trim())
+    : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 10000) : 1;
+}
+
 export function wordsOverlap(a: string, b: string): boolean {
   // Three characters, not four: "tea", "dal" and "egg" are whole foods, and
   // dropping them collapses "milk tea" to "milk", which then matches every
@@ -2428,9 +2458,7 @@ export async function runParseMeal(
         // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
         // so "500 ml milk" or "250 g chicken" would be silently truncated. The
         // bound only exists to stop absurd input reaching the model.
-        quantity: typeof o.quantity === "number" && Number.isFinite(o.quantity) && o.quantity > 0
-          ? Math.min(o.quantity, 10000)
-          : 1,
+        quantity: coerceQuantity(o.quantity),
         unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
         correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()

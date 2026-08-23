@@ -301,10 +301,29 @@ improvement log). Open items surfaced by walking the code with the user:
   deletion by text is impossible (nets restore + qty clamp), challenge+fix
   drops the fix, correction+addition undefined, multi-meal collapses to one
   section, mentioned food logs as eaten. Delete needs a contract change.
-- I7 (quality, PROPOSED): strict tool use on extract. Schema is advisory
-  today; proven trap: quantity emitted as string "250" sanitizes to 1, so
-  "250ml milk" becomes 1 ml. strict:true + additionalProperties:false +
-  full required lists kills the class. Verify Haiku 4.5 support first.
+- I7 (quality, RESOLVED 2026-08-23 - fixed in CODE, strict REJECTED on cost):
+  the trap was real: quantity emitted as the string "250" failed a
+  `typeof === "number"` check and fell through to 1, so "250ml milk" logged as
+  1 ml, silently.
+  MEASURED on Haiku 4.5 before deciding, 5 real inputs, run twice:
+    - `strict` inside input_schema is SILENTLY IGNORED. A garbage value
+      (`strict: "GARBAGE"`) is accepted with no error. Same class of dead code
+      as the prompt-cache markers (I4). The real field is `strict: true` at the
+      TOP LEVEL of the tool, which does validate ("additionalProperties must be
+      explicitly set to false").
+    - Strict cannot express our nullable enum: `type: ["string","null"]` with
+      an enum containing null is rejected outright ("Enum value 'breakfast'
+      does not match declared type"). meal_type_from_text would need reshaping
+      to a sentinel string.
+    - COST: strict requires every property in `required`, so the model emits
+      all 8 extract fields every call. Output tokens 649 -> 1270 (+96%) and
+      +572 ms per extract call. Latency IS output tokens (7.4 ms/tok), and
+      extract is first on the critical path while Fast targets a sub-second
+      first row. The trade is backwards.
+  SHIPPED INSTEAD: coerceQuantity(), which reads a numeric string and keeps the
+  1 fallback only for genuine junk. Same guarantee, zero tokens, zero latency,
+  and unit-tested (blank string must NOT become 0 via Number("")).
+  Revisit strict only if a bug appears that CODE cannot catch.
 - I8 (product FEATURE, user decision 2026-08-22): full-day logging. One message
   ("breakfast was 2 eggs, lunch was dal chawal") logs every named meal to its
   own section. Needs meal type PER ITEM (extract schema + decide + card +

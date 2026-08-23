@@ -106,8 +106,11 @@ Build:
 - I16: delete stale hedged-web-lookup comments; ARCHAEOLOGY: recover why the
   pre-card web race was removed, write the finding into the tiers plan
   (it shapes Phase 7).
-- I7: strict tool use on extract (verify Haiku 4.5 support first; kills the
-  string-"250"-sanitizes-to-1 class).
+- I7: DONE, but NOT via strict. Measured strict on Haiku 4.5: +96% extract
+  output tokens and +572ms per call, it silently no-ops when placed inside
+  input_schema, and it cannot express our nullable enum. Shipped
+  coerceQuantity() instead - same guarantee, no latency. Full numbers in the
+  tiers plan.
 Test: 11-pair unit table for I17; strict-mode schema round-trip; full-suite
 eval no-regression.
 Deploy: edge deploy; watch parse_traces for one day.
