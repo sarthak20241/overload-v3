@@ -1,4 +1,4 @@
--- 0103: food_log_stats must be readable by anon too.
+-- 0104: food_log_stats must be readable by anon too.
 --
 -- 0102 granted SELECT only to `authenticated`, but search_foods_ranked joins
 -- this table and runs for ANON callers as well (the guest food picker, and the

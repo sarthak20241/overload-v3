@@ -358,7 +358,17 @@ export function codeFillItems(
     const f = grams / 100;
     out.push({
       food_id: top.food_id,
-      food_name: top.name,
+      // The USER'S phrase, not top.name. verifyItems overwrites this with the
+      // row's real name for display, but first it runs variantClash and
+      // unhonouredGrade against it - and those compare what was SAID to what
+      // the row IS. Filling in the row's own name made both guards diff a
+      // string against itself, so they always returned null and the entire
+      // wrong-variant defence (the low-fat-paneer / egg-yolk class) was dead on
+      // this path. The rerank topScore gate does not cover it: a reranker
+      // happily scores "Milky Mist Paneer" over 0.75 for "low fat paneer",
+      // since two of three words match. prep is included because prep states
+      // ("roasted", "boiled") are themselves a variant group.
+      food_name: [r.prep, r.name].filter(Boolean).join(" ").trim() || top.name,
       quantity: qty,
       serving_label: per1.label,
       grams,
@@ -386,6 +396,7 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
       if (c.food_id && !byFood.has(c.food_id)) {
         byFood.set(c.food_id, {
           kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
+          name: c.name,
         });
       }
     }
@@ -996,18 +1007,11 @@ export function wordsOverlap(a: string, b: string): boolean {
   const aw = words(a), bw = words(b);
   if (aw.length === 0 || bw.length === 0) return false;
   const [short, long] = aw.length <= bw.length ? [aw, bw] : [bw, aw];
-  // "eggs" and "egg" are one food; "egg" and "eggplant" are not.
-  const singular = (w: string) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w);
-  const near = (p: string, q: string) => {
-    const x = singular(p), y = singular(q);
-    if (x === y) return true;
-    // The prefix rule exists to absorb typos in longer words ("edameme" vs
-    // "edamame"). On a short word a prefix is a DIFFERENT food - dal/dalia,
-    // egg/eggplant - so those must match outright.
-    if (x.length < 5 || y.length < 5) return false;
-    return x.startsWith(y.slice(0, 4)) || y.startsWith(x.slice(0, 4));
-  };
-  return short.every((x) => long.some((y) => near(x, y)));
+  // Word-level typo tolerance lives in nearWord (textMatch.ts): proportional
+  // Damerau distance, replacing a 4-char shared-prefix rule that merged rival
+  // brands (bikano/bikaji, creatine/creatinine) while still missing the
+  // commonest Indian food typo (panner/paneer).
+  return short.every((x) => long.some((y) => nearWord(x, y)));
 }
 
 const WEB_LOOKUP_MAX_TURNS = 4;
@@ -1504,7 +1508,19 @@ function scrubDashes(s: string): string {
   return s.replace(/\s*[—–]\s*/g, ", ").replace(/\s{2,}/g, " ").trim();
 }
 
-type Per100 = { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+/** `name` is here so the CANDIDATE-fallback branch of verifyItems can run the
+ *  same name/row agreement checks the row-read branch does. FatSecret rows are
+ *  never persisted, so their ids are ephemeral and getFoodPer100 is skipped for
+ *  them - without a name on the fallback, every fatsecret pick bypassed
+ *  variantClash and unhonouredGrade entirely. */
+type Per100 = {
+  kcal: number;
+  protein_g: number;
+  carb_g: number;
+  fat_g: number;
+  fiber_g: number | null;
+  name?: string;
+};
 
 // ── Name/row agreement ──────────────────────────────────────────────────────
 // decide hands back a food_id AND a display name for the same line. They can
@@ -1605,7 +1621,14 @@ export function retargetMismatchedIds(
 ): ParsedItem[] {
   if (resolved.length === 0) return items;
   return items.map((item) => {
-    if (!item.food_id || (item.source !== "catalog" && item.source !== "off")) return item;
+    // fatsecret included: it is a real candidate source, so a decide slip onto
+    // the wrong fs: id is the same fixable mistake as a catalog slip. Excluding
+    // it left the newest source as the only one with no id repair, downgrading
+    // a correctable slip into a mere warning chip.
+    if (
+      !item.food_id ||
+      (item.source !== "catalog" && item.source !== "off" && item.source !== "fatsecret")
+    ) return item;
     // The candidate set this line was actually chosen from.
     const group = resolved.find((r) => r.candidates.some((c) => c.food_id === item.food_id));
     if (!group) return item;
@@ -1650,6 +1673,54 @@ export function retargetMismatchedIds(
  */
 export function stripEphemeralIds(items: ParsedItem[]): ParsedItem[] {
   return items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+}
+
+/**
+ * Reconcile a line's displayed name against the row its macros came from, and
+ * chip it when the two disagree.
+ *
+ * Shared by both verifyItems branches on purpose. It used to live only in the
+ * row-read branch, so any line whose per-100 came from the CANDIDATE fallback -
+ * which is every FatSecret pick, since their ids are ephemeral and the row read
+ * is skipped - silently bypassed both guards. FatSecret exists to fix the
+ * low-fat-paneer class of bug, so it of all sources must be checked.
+ */
+function applyNameAgreement(
+  deps: ParseMealDeps,
+  said: string,
+  rowName: string,
+  scaled: ParsedItem,
+): ParsedItem {
+  const row = rowName.trim();
+  if (!row) return scaled;
+  const named = { ...scaled, food_name: row };
+  const clash = variantClash(said, row);
+  if (clash) {
+    // retargetMismatchedIds could not fix this one, so say it out loud
+    // rather than let a confident-looking line carry the wrong variant.
+    deps.log?.(`[parse_meal] variant mismatch: model said "${said}", row is "${row}"`);
+    return {
+      ...named,
+      confidence: "low",
+      assumption: appendAssumption(named, `I logged the ${clash.row} one, not the ${clash.said}`),
+    };
+  }
+  const missingGrade = unhonouredGrade(said, row);
+  if (missingGrade) {
+    // We have no row for the grade they asked for (usually a coverage gap,
+    // e.g. an India-only low fat SKU). Say so instead of shipping the plain
+    // row's macros as if they were the product's.
+    deps.log?.(`[parse_meal] grade not honoured: asked "${missingGrade}", row is "${row}"`);
+    return {
+      ...named,
+      confidence: "low",
+      assumption: appendAssumption(
+        named,
+        `I could not find a ${missingGrade} row for this, so these are the regular numbers`,
+      ),
+    };
+  }
+  return named;
 }
 
 export async function verifyItems(
@@ -1703,7 +1774,10 @@ export async function verifyItems(
         };
       }
       const g = item.grams / 100;
-      return {
+      // Same name/row agreement the row-read branch gets. This is the branch
+      // every FatSecret pick takes (ephemeral id => no row read), so skipping
+      // it here left the newest source as the only one with no variant guard.
+      return applyNameAgreement(deps, item.food_name, (alt.name ?? "").trim(), {
         ...item,
         kcal: round1(alt.kcal * g),
         protein_g: round1(alt.protein_g * g),
@@ -1711,50 +1785,19 @@ export async function verifyItems(
         fat_g: round1(alt.fat_g * g),
         fiber_g: alt.fiber_g === null ? item.fiber_g : round1(alt.fiber_g * g),
         confidence: "medium" as const,
-      };
+      });
     }
     const f = item.grams / 100;
     // Label and numbers now come from the SAME row, so they cannot disagree.
     // The model's own wording is kept only when the row has no usable name.
-    const rowName = (per100.name ?? "").trim();
-    const clash = rowName ? variantClash(item.food_name, rowName) : null;
-    const missingGrade = rowName && !clash ? unhonouredGrade(item.food_name, rowName) : null;
-    let scaled: ParsedItem = {
+    const scaled = applyNameAgreement(deps, item.food_name, (per100.name ?? "").trim(), {
       ...item,
-      food_name: rowName || item.food_name,
       kcal: round1(per100.kcal * f),
       protein_g: round1(per100.protein_g * f),
       carb_g: round1(per100.carb_g * f),
       fat_g: round1(per100.fat_g * f),
       fiber_g: per100.fiber_g === null ? item.fiber_g : round1(per100.fiber_g * f),
-    };
-    if (clash) {
-      // retargetMismatchedIds could not fix this one, so say it out loud
-      // rather than let a confident-looking line carry the wrong variant.
-      deps.log?.(
-        `[parse_meal] variant mismatch: model said "${item.food_name}", row is "${rowName}"`,
-      );
-      scaled = {
-        ...scaled,
-        confidence: "low",
-        assumption: appendAssumption(scaled, `I logged the ${clash.row} one, not the ${clash.said}`),
-      };
-    } else if (missingGrade) {
-      // We have no row for the grade they asked for (usually a coverage gap,
-      // e.g. an India-only low fat SKU). Say so instead of shipping the plain
-      // row's macros as if they were the product's.
-      deps.log?.(
-        `[parse_meal] grade not honoured: asked "${missingGrade}", row is "${rowName}"`,
-      );
-      scaled = {
-        ...scaled,
-        confidence: "low",
-        assumption: appendAssumption(
-          scaled,
-          `I could not find a ${missingGrade} row for this, so these are the regular numbers`,
-        ),
-      };
-    }
+    });
     // Last line of defence. Deliberately understated: we mark the line low
     // confidence (so the UI can show it as unverified) but do NOT editorialise
     // on the card. Volunteering doubt about our own numbers on every borderline
@@ -2650,8 +2693,15 @@ export async function runParseMeal(
   }
   if (skipMode === "on" && codeFill && !codeFill.blockedBy) {
     T.decide_ms = 0;
+    // clampVolumetricGrams included so this path runs the SAME guardrail chain
+    // as the decide path. codeFillItems derives grams from real serving anchors
+    // rather than free-form model output, so it should rarely bite - but "should
+    // rarely" is not a reason for two paths to have different defences.
     const filled = stripEphemeralIds(flagPrepMismatch(
-      checkAtwater(reconcileQuantity(await verifyItems(deps, codeFill.items, candidatePer100), servingsForItems(resolved))),
+      checkAtwater(reconcileQuantity(
+        await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+        servingsForItems(resolved),
+      )),
       prepForItems(resolved),
     ));
     steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
@@ -2746,9 +2796,24 @@ export async function runParseMeal(
   // the code fill WOULD have shipped, so the decision to skip decide is made on
   // measured agreement over real traffic rather than on how sure the gate feels.
   if (skipMode === "shadow" && codeFill && !codeFill.blockedBy) {
-    const sameShape = codeFill.items.length === items.length;
+    // Compare LIKE WITH LIKE. `items` has already been through verifyItems,
+    // reconcileQuantity, checkAtwater and flagPrepMismatch; comparing raw
+    // codeFillItems output against that measured the guardrails as if they were
+    // a disagreement, skewing the very number that gates flipping this on.
+    // Costs one extra verifyItems pass while shadow is enabled, which is the
+    // price of a metric worth trusting - and it means the guards themselves
+    // (including the variant checks) are exercised on this path before we rely
+    // on them.
+    const codeItems = stripEphemeralIds(flagPrepMismatch(
+      checkAtwater(reconcileQuantity(
+        await verifyItems(deps, codeFill.items, candidatePer100),
+        servingsForItems(resolved),
+      )),
+      prepForItems(resolved),
+    ));
+    const sameShape = codeItems.length === items.length;
     // STRICT: identical row and amount.
-    const sameRow = sameShape && codeFill.items.every((cf, i) =>
+    const sameRow = sameShape && codeItems.every((cf, i) =>
       cf.food_id === items[i].food_id &&
       Math.abs(cf.grams - items[i].grams) <= Math.max(1, items[i].grams * 0.05)
     );
@@ -2761,14 +2826,14 @@ export async function runParseMeal(
     const near = (a: number, b: number, floor: number) =>
       Math.abs(a - b) <= Math.max(floor, Math.max(a, b) * 0.1);
     const sameMacros = sameShape &&
-      near(sum(codeFill.items, "kcal"), sum(items, "kcal"), 20) &&
-      near(sum(codeFill.items, "protein_g"), sum(items, "protein_g"), 3);
+      near(sum(codeItems, "kcal"), sum(items, "kcal"), 20) &&
+      near(sum(codeItems, "protein_g"), sum(items, "protein_g"), 3);
     steps.push({
       iter: 8,
       tool: "code_fill_shadow",
       input: { same_row: sameRow, same_macros: sameMacros },
       result: sameRow ? { agree: true } : {
-        code: codeFill.items.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
+        code: codeItems.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
         decide: items.map((it) => `${it.food_name} ${it.grams}g ${Math.round(it.kcal)}kcal`),
         same_macros: sameMacros,
       },

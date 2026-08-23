@@ -1,4 +1,4 @@
--- 0102: food search ranking layer (P1 of the food-logging tiers plan).
+-- 0103: food search ranking layer (P1 of the food-logging tiers plan).
 --
 -- WHY. search_foods_ranked broke ties inside a text-match tier by LENGTH(name),
 -- so for "eggs" the shorter "Eggs, duck, whole, raw" outranked "Eggs, chicken,
