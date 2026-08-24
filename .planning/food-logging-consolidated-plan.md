@@ -132,6 +132,40 @@ Test: 11-pair unit table for I17; strict-mode schema round-trip; full-suite
 eval no-regression.
 Deploy: edge deploy; watch parse_traces for one day.
 
+### Phase 2 STATUS 2026-08-24: 2a, 2b, 2c, 2d DONE and deployed. 2e SKIPPED.
+
+All four verified on the eval AND on-device against production (ai-coach v108).
+Order was changed deliberately: I11 (2b) went first, ahead of I6, because it
+had three failing gates and a live user-reported bug rather than edge cases.
+
+  2b I11/I11b  graded products resolve correctly. The routing code was only
+               half of it - the real cause was a MISLABELED catalog row
+               ('Toned Milk' at 48 kcal / 1.6 g fat is double-toned
+               composition under a toned name) plus four grades with no row at
+               all. Migration 0106 seeds the FSSAI ladder. PROD: "50g milky
+               mist low fat paneer and amul double toned milk 300ml" ->
+               Low Fat Paneer 95 + Double Toned Milk 141.3, both catalog, both
+               high confidence. That closes the 2026-08-20 report.
+  2a I6        deletion by text (was IMPOSSIBLE to express - the no-drop guard
+               resurrected every removal) and challenge-carries-fix. PROD:
+               "Remove the tofu" -> tofu actually goes.
+  2c I13       staples by frequency with 7d decay, count + median amount.
+               DEVIATION, documented: 14d stays the default but widens to 30d
+               under 5 staples, because our most active account logs 8 meals in
+               14 days and the >= 2 filter returned nothing. NOT device-verified
+               (that history is on the DEV Clerk account; the sim runs PROD).
+  2d I1        corrections re-resolve only what changed. PROD trace shows
+               correction_scope {changed:1, untouched:1} and the untouched
+               line's macros byte-identical across the correction.
+
+  2e I3        SKIPPED, deliberately. It is prompt REORGANISATION with a
+               behaviour-neutral requirement - no user-visible gain, real
+               regression risk, and the suite is flaky enough that proving
+               neutrality costs several runs. The content it would tidy has
+               just changed substantially (I6 + I11b both edited the prompts),
+               so doing it now would also mean redoing it later. Revisit when
+               the prompts are stable and someone can watch the eval.
+
 ### Phase 2. Extract & decide quality (prompt work, each change eval-gated)
 In order, one deploy per sub-step:
 - 2a I6 extract holes: deletion contract, challenge+fix, correction+addition,
