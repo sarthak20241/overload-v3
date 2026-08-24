@@ -1008,7 +1008,11 @@ const WEB_LOOKUP_TOOL = {
             },
             source_note: {
               type: ["string", "null"],
-              description: 'Short source for the user, e.g. "per the Britannia label". No URLs.',
+              description:
+                'Short source for the user. For a packaged food name the label ("per the ' +
+                'Britannia label"). For a DISH say what it represents ("typical restaurant ' +
+                'preparation"), so the user can tell a measured panel from a typical value. ' +
+                "No URLs.",
             },
           },
           required: ["for_item", "found"],
@@ -1094,11 +1098,27 @@ async function runWebLookup(
   onCall: () => void,
 ): Promise<Map<string, WebLabel> | null> {
   const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
+  // TWO SHAPES, because a label-only lookup is useless on exactly the foods the
+  // catalog misses most. Measured 2026-08-23: 7 of 33 common Indian dishes have
+  // no catalog row, and a dish has no brand, no official panel and no label
+  // listing - so the old prompt searched for a label that cannot exist and
+  // correctly reported nothing. A user tapping Double-check on "chole bhature"
+  // got a dead end (verified: web_search_requests 1, found 0).
   const system =
-    "You look up nutrition labels for foods a fitness app could not find in its catalog. " +
-    'For EACH item, run ONE web search for the official label ("<brand> <product> nutrition facts per 100g"), ' +
-    "read numbers only from the brand's own site or a reputable label listing, then call report_labels " +
-    "exactly once with per-100 macros for everything you found. Speed matters: no extra searches, no prose.";
+    "You look up nutrition numbers for foods a fitness app could not find in its catalog. " +
+    "For EACH item, run ONE web search, then call report_labels exactly once with per-100 " +
+    "macros for everything you found. Two kinds of food, and you must tell them apart:\n" +
+    'PACKAGED OR BRANDED (a product with a wrapper): search the official label ' +
+    '("<brand> <product> nutrition facts per 100g") and read numbers ONLY from the ' +
+    "brand's own site or a reputable label listing. source_note names the label.\n" +
+    "A DISH (cooked food with no wrapper: chole bhature, paneer bhurji, misal pav, a " +
+    "restaurant plate): there is no label and you must not wait for one. Search a " +
+    "reputable nutrition source for a TYPICAL preparation and report that, with " +
+    'source_note saying so plainly, e.g. "typical restaurant preparation". ' +
+    "Prefer nutrition databases and published analyses over a random blog.\n" +
+    "Report nothing for an item only when you genuinely found nothing usable. Never " +
+    "invent numbers, and never average wildly disagreeing sources - pick the most " +
+    "credible one. Speed matters: no extra searches, no prose.";
   const conversation: AnthropicMsg[] = [{
     role: "user",
     content: JSON.stringify(items.map((i) => ({ name: i.name, ...(i.brand ? { brand: i.brand } : {}) }))),
