@@ -797,12 +797,22 @@ const EXTRACT_TOOL = {
           "FALSE when the user is naming NEW food to add (\"and a dosa\", \"also 2 roti\") or " +
           "logging an unrelated meal. Only ever true when a previous meal was given.",
       },
+      removed_food_names: {
+        type: ["array", "null"],
+        items: { type: "string" },
+        description:
+          "Lines of the previous meal the user asked to REMOVE, copied EXACTLY as given " +
+          '("remove the tofu", "drop the milk", "I did not have the rice", "scratch the dosa"). ' +
+          "Leave them OUT of items as well. null or empty when nothing was removed. " +
+          "Only ever set when a previous meal was given.",
+      },
       items: {
         type: "array",
         description:
           "One entry per distinct food/drink. When corrects_previous is true, list the " +
           "corrected version of EVERY line of the previous meal (unchanged ones included), " +
-          "so the result replaces it wholesale.",
+          "so the result replaces it wholesale. A line named in removed_food_names is the " +
+          "one exception: leave it out entirely.",
         items: {
           type: "object",
           properties: {
@@ -1174,6 +1184,8 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
 - CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
+- QUESTION THAT ALSO STATES THE FIX ("that seems high, make it 100g", "is that right? it was a small one"): set corrects_previous TRUE and list the corrected items as well. The user told you the answer; do not just agree with them and change nothing.
+- REMOVAL ("remove the tofu", "drop the milk", "I did not have the rice", "scratch the dosa"): put the line's name in removed_food_names, copied as the previous meal spells it, and LEAVE IT OUT of items. Set corrects_previous true. Listing it in items keeps it in the log, which is the opposite of what was asked.
 - ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance.
 When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
@@ -2628,6 +2640,29 @@ export async function runParseMeal(
       .map((i) => i.correctsFoodName?.trim().toLowerCase())
       .filter((n): n is string => !!n),
   );
+  // I6a: deletion by text used to be IMPOSSIBLE to express. "remove the tofu"
+  // left the line out of items, and keepUncoveredPrevious - whose job is to stop
+  // decide silently dropping food - dutifully put it back. The user's only way
+  // to delete was the card's own X button.
+  //
+  // No new suppression mechanism needed: a removed line is the same shape as a
+  // re-targeted one, in that the guard must not resurrect it. Feeding removals
+  // into replacedNames reuses that path exactly.
+  const removedNames: string[] = Array.isArray(ext.removed_food_names)
+    ? (ext.removed_food_names as unknown[])
+      .filter((n): n is string => typeof n === "string" && n.trim() !== "")
+      .map((n) => n.trim().toLowerCase())
+    : [];
+  if (hasPrevious) {
+    for (const n of removedNames) {
+      replacedNames.add(n);
+      // The model copies the name it was shown, but it does paraphrase; match
+      // the previous line the user actually meant so a near-miss still deletes.
+      for (const p of prevItems) {
+        if (wordsOverlap(n, p.food_name)) replacedNames.add(p.food_name.toLowerCase());
+      }
+    }
+  }
   const mealFromText: MealType | null =
     ext.meal_type_from_text === "breakfast" || ext.meal_type_from_text === "lunch" ||
     ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
@@ -2699,7 +2734,13 @@ export async function runParseMeal(
   // A question about the meal on screen is answered with its real provenance,
   // never brushed off as chatter. The client keeps the card and shows this as
   // a notice, so challenging a number costs the user nothing.
-  if (hasPrevious && ext.asks_about_previous === true) {
+  // I6b: a challenge that also states the fix must APPLY the fix. "that seems
+  // high, make it 100g" is both a question and an instruction, and answering the
+  // question while discarding the instruction leaves the user's correction on
+  // the floor - they have to say it twice. A pure question carries no items and
+  // no correction flag, so those two conditions separate the cases cleanly.
+  const challengeCarriesFix = correctsPrevious || extItems.length > 0 || removedNames.length > 0;
+  if (hasPrevious && ext.asks_about_previous === true && !challengeCarriesFix) {
     const answer = await answerAboutPrevious(deps, prevItems, deps.webSearchEnabled).catch(() => "");
     if (answer) {
       steps.push({ iter: 1, tool: "answer_about_previous", input: { items: prevItems.length } });
