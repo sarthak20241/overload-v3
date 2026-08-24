@@ -358,12 +358,6 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     useTxt: { fontSize: FontSize.sm, color: C.background, fontWeight: FontWeight.semibold },
     noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
 
-    refining: {
-      flexDirection: 'row', alignItems: 'center', gap: 8,
-      paddingVertical: Spacing.xs, marginBottom: Spacing.xs,
-    },
-    refiningTxt: { flex: 1, fontSize: FontSize.xs, lineHeight: 16, color: C.textSecondary },
-
     item: { paddingVertical: Spacing.xs },
     itemPressed: { opacity: 0.6 },
     itemDivider: { borderTopWidth: 1, borderTopColor: C.borderSubtle, marginTop: Spacing.xs, paddingTop: Spacing.sm },

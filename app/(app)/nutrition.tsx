@@ -261,6 +261,12 @@ export default function NutritionScreen() {
     if (f.status !== 'review' || !supabase) return;
     const item = f.meal.items[i];
     if (!item) return;
+    // Captured for the staleness checks below. The lookup takes 5-9s, which is
+    // plenty of time for the user to discard this card, start a new parse, edit
+    // this line, or remove a different one.
+    const raw = f.raw;
+    const key = (it: ParsedMealItem) => `${it.food_name.toLowerCase()}|${it.grams}`;
+    const originalKey = key(item);
     setCheckingIndex(i);
     try {
       const res = await parseMeal(supabase, {
@@ -276,8 +282,19 @@ export default function NutritionScreen() {
         turns: turnsRef.current.slice(),
       });
       setFlow((cur) => {
-        // The user may have edited, removed or added a line while this ran.
+        // STALENESS GUARDS. The old automatic refine had these and the first
+        // version of this handler dropped them, which rebuilt the very race I15
+        // exists to remove - just started by a button instead of a timer.
         if (cur.status !== 'review') return cur;
+        // Different meal entirely: the user discarded and parsed something else
+        // while this was in flight.
+        if (cur.raw !== raw) return cur;
+        // The line we asked about must still BE that line. Keyed on name AND
+        // grams, not name alone, so two same-named entries of different sizes
+        // (a 75 g chai and a 150 g chai) cannot cross-apply, and so an edit the
+        // user made mid-flight is never silently overwritten.
+        const atIndex = cur.meal.items[i];
+        if (!atIndex || key(atIndex) !== originalKey) return cur;
         if (res.kind === 'declined') {
           // Either nothing trustworthy was found, or the web disagreed enough
           // that the server offered its answer instead of applying it.
@@ -293,9 +310,13 @@ export default function NutritionScreen() {
           // every previous item, so taking its whole item list would rewrite
           // lines the user never asked about - which is precisely the mutation
           // I15 exists to stop, just triggered by a button instead of a timer.
-          const found = res.meal.items.find(
-            (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
-          ) ?? (res.meal.items.length === 1 ? res.meal.items[0] : null);
+          // Prefer the exact name+grams match; fall back to name only, and to
+          // the sole item when the lookup returned just one.
+          const found = res.meal.items.find((r) => key(r) === originalKey)
+            ?? res.meal.items.find(
+              (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
+            )
+            ?? (res.meal.items.length === 1 ? res.meal.items[0] : null);
           if (!found) return { ...cur, notice: 'I could not improve that one.' };
           const items = cur.meal.items.map((it, idx) => (idx === i ? found : it));
           return { ...cur, meal: { ...cur.meal, items }, notice: res.meal.drona_line };
@@ -504,10 +525,12 @@ export default function NutritionScreen() {
                   : f
               ))}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
-              onEditItem={flow.status === 'review' ? onEditItem : undefined}
+              // Frozen while a check is in flight: editing or removing a line
+              // mid-lookup shifts indices and races the write below.
+              onEditItem={flow.status === 'review' && checkingIndex === null ? onEditItem : undefined}
               checkingIndex={checkingIndex}
               onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
-              onRemoveItem={flow.status === 'review' ? onRemoveItem : undefined}
+              onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
