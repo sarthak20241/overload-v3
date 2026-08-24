@@ -37,7 +37,44 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-23 | **81/88** | + FatSecret sanitize fix (`38f3b6c`) |
 | 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) |
 | 2026-08-23 | 80/86 | + I16 comments, I7 `coerceQuantity` — Phase 1 complete |
-| 2026-08-24 | **81/86** | + I11 grade routing + migration 0106 milk ladder — **current baseline** |
+| 2026-08-24 | 81/86 | + I11 grade routing + migration 0106 milk ladder |
+| 2026-08-24 | **85/86** | + I6 deletion-by-text and challenge-carries-fix — **current baseline** |
+
+### I6 (Phase 2a): both gates green, verified in production
+
+```
+100g paneer and 50g tofu   ->  Paneer 265 + Tofu 74
+Remove the tofu            ->  Paneer 265           (tofu used to come back)
+that seems high, make it 100g -> Paneer at 100 g    (fix used to be discarded)
+```
+
+The single remaining failure, `chole-bhature`, is flaky in a way unrelated to
+this change: three runs gave three answers (a spurious Starbucks line, a clean
+pass, then the whole meal collapsed into one "Lentils" row). It is one of the
+7 common Indian dishes measured as absent from the catalog on 2026-08-23, so
+with no row to land on the model improvises afresh each run. INDB ingest is
+the fix; no prompt will make an absent row exist.
+
+### Ranking sanity after 0106 (no regression)
+
+Adding four graded milk rows plus Low Fat Paneer could have pulled plain
+queries toward a graded row. It did not:
+
+```
+search_foods_ranked('paneer')          -> Paneer 265 first, Low Fat Paneer 3rd
+search_foods_ranked('double toned milk')-> Double Toned Milk 47.1
+search_foods_ranked('full cream milk') -> Full Cream Milk 87.6, then real
+                                          brands at 89 and 87 (cross-validates
+                                          the FSSAI derivation)
+```
+
+### Testing gotcha worth remembering
+
+A device test typed while an UNLOGGED card is still on screen is not a clean
+test. The client sends that card as `previous_items`, extract can read the new
+text as a correction of it, and the results merge (a 2-item meal came back with
+4 items). Reload the app between cases, or the trace will look like a ranking
+regression that is not there.
 
 ### I11 (Phase 2b): the three grade gates went green, and grounded
 
