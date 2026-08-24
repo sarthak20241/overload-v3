@@ -39,7 +39,26 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-23 | 80/86 | + I16 comments, I7 `coerceQuantity` — Phase 1 complete |
 | 2026-08-24 | 81/86 | + I11 grade routing + migration 0106 milk ladder |
 | 2026-08-24 | 85/86 | + I6 deletion-by-text and challenge-carries-fix |
-| 2026-08-24 | **86/86** | + I13 frequency-ranked staples — **current baseline** |
+| 2026-08-24 | 86/86 | + I13 frequency-ranked staples |
+| 2026-08-24 | **83/86** | + I1 changed-only correction resolve — **current baseline** |
+
+### I1: the number went DOWN and that is not a regression
+
+Every correction case passed, which is the check that matters here:
+refine-samosa-small, refine-quantity, followup-adds-not-corrects,
+audit-delete-by-text, audit-challenge-plus-fix, audit-correction-plus-addition.
+
+The three failures - paneer-roti, marie-gold, mcaloo-tikki - are all
+catalog-coverage cases, and all three PASS on rerun. This is the flakiness this
+file warns about in its opening section: comparing one full-suite total to
+another is exactly the mistake, and 86 -> 83 measures the dice, not the change.
+
+Two of them came back better than they used to be, from the I11b taxonomy
+rather than from I1:
+```
+mcaloo-tikki  McDonald's Cheeseburger -> "McAloo Tikki burger" (labelled estimate)
+paneer-roti   Bhujia 609 kcal         -> Matar Paneer 166
+```
 
 ### 86/86 is a clean run, NOT a claim that nothing is left
 

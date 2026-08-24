@@ -1739,6 +1739,49 @@ export function gradeNotStocked(name: string, candidates: CandidateFood[]): stri
   return null;
 }
 
+/**
+ * Lines a correction did NOT touch (I1).
+ *
+ * The extract contract asks for the corrected version of EVERY previous line,
+ * unchanged ones included, so a correction re-resolves and re-decides the whole
+ * meal. Search and rerank are not deterministic across calls, so a line the
+ * user never mentioned can come back pointing at a DIFFERENT row: say "make the
+ * roti 3" and your dal can quietly change underneath you. Nothing surfaces it,
+ * because the correction card legitimately shows every line as new.
+ *
+ * Matching one of these means we can leave the line out of resolve entirely and
+ * let the previous version through untouched, which is both faster and, more to
+ * the point, stable.
+ *
+ * DELIBERATELY STRICT, because the two errors are not symmetrical. Treating a
+ * changed line as unchanged silently discards the user's edit; treating an
+ * unchanged line as changed just costs a re-resolve. So this demands the same
+ * name AND the same amount AND the same unit, and gives up on anything it
+ * cannot line up exactly.
+ */
+export function unchangedInCorrection(
+  item: ExtractedItem,
+  previous: PreviousItem[],
+): PreviousItem | null {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const unit = (x: string) => norm(x).replace(/s$/, "");
+  // A RE-TARGET is a change, however tidy it looks. "actually paneer not tofu"
+  // keeps the amount and the unit and points corrects_food_name at the old
+  // line, so keying off that field alone reads it as untouched and throws the
+  // swap away. The item's OWN name has to be the one already on the card.
+  if (item.correctsFoodName && norm(item.correctsFoodName) !== norm(item.name)) return null;
+  const target = norm(item.name);
+  for (const p of previous) {
+    if (norm(p.food_name) !== target) continue;
+    // A prep word the previous line never carried IS a change ("make the egg boiled").
+    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) return null;
+    const sameQty = Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001;
+    const sameUnit = unit(item.unit || "serving") === unit(p.serving_label || "serving");
+    return sameQty && sameUnit ? p : null;
+  }
+  return null;
+}
+
 /** Repoint a line whose food_id contradicts its own name.
  *
  *  Deliberately narrow: it moves the id only when another candidate FROM THE
@@ -2823,9 +2866,34 @@ export async function runParseMeal(
   }
 
   // ── Stage 2: resolve, all items in parallel ───────────────────────────────
+  // I1: on a correction, resolve only what actually CHANGED. An untouched line
+  // re-resolved is an untouched line at risk: search and rerank are not
+  // deterministic, so "make the roti 3" could quietly repoint the dal. The
+  // previous version is restored verbatim by keepUncoveredPrevious below.
+  let toResolve = extItems;
+  if (correctsPrevious && prevItems.length > 0) {
+    const passthrough = new Map<number, PreviousItem>();
+    extItems.forEach((it, i) => {
+      const same = unchangedInCorrection(it, prevItems);
+      if (same) passthrough.set(i, same);
+    });
+    // If EVERYTHING looks unchanged we have almost certainly misread the turn,
+    // so resolve normally rather than hand back an identical meal.
+    if (passthrough.size > 0 && passthrough.size < extItems.length) {
+      // A passed-through line must not also be marked replaced, or the restore
+      // guard reads it as deliberately dropped and the line disappears.
+      for (const p of passthrough.values()) replacedNames.delete(p.food_name.toLowerCase());
+      toResolve = extItems.filter((_, i) => !passthrough.has(i));
+      steps.push({
+        iter: 1,
+        tool: "correction_scope",
+        input: { changed: toResolve.length, untouched: passthrough.size },
+      });
+    }
+  }
   const tResolve0 = Date.now();
   const resolved = await Promise.all(
-    extItems.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
+    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
