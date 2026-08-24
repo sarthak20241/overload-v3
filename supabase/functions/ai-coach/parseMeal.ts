@@ -1270,6 +1270,9 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE standard serving (use the household defaults above) and note it in assumption, e.g. "Took that as one katori, 150 g." If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
 - An item with no candidates is NEVER dropped: estimate the macros from your own knowledge (source "estimate"), note it in assumption, and log it. A branded snack you recognize (Haldiram's bhujia, Epigamia yogurt, etc.) always gets logged with an estimate, never skipped.
 - You MUST finish by calling log_meal exactly once, covering every extracted item. Never write the parsed meal, macros, or a follow-up question as assistant text.
+- USE THE USER'S OWN STAPLES when the text is VAGUE. The context lists what this person actually eats, with how many times and their usual amount. If they say "milk" and the list shows "Toned Milk (7 times, usually 200 ml)", log THEIR toned milk at THEIR 200 ml. Do not fall back to a generic or whole-fat default and then tell them their history says otherwise: they told you what they eat by eating it. Same for the amount, prefer their usual over a standard serving.
+  This applies ONLY when the user was vague. If they NAME a version ("whole milk", "full cream"), that wins over history every time - they are telling you today is different, and a staple must never overrule an explicit word.
+  NEVER write an assumption claiming the user said something they did not say. If their staple is not among the candidates, log the closest candidate honestly and say the staple was not available - do not invent "you said whole milk today" to justify the row you picked.
 - drona_line reacts to the meal against the day so far (see context): protein lands first, praise effort, nudge gaps. One sentence, max ~15 words.
 </behavior>
 
@@ -1415,6 +1418,9 @@ async function resolveOneItem(
   item: ExtractedItem,
   steps: ParseStep[],
   toolCalls: string[],
+  /** Lower-cased names of foods this user logs repeatedly (I13). Used ONLY to
+   *  stop the reranker discarding them; see the promotion below. */
+  stapleNames?: Set<string>,
 ): Promise<ResolvedItem> {
   // Query ladder: full name, brand-qualified, then progressively fewer words
   // (the 0079 search requires EVERY word to match, so an over-specified name
@@ -1592,6 +1598,33 @@ async function resolveOneItem(
           margin: Math.round(rr.margin * 1000) / 1000,
           top_score: Math.round(rr.topScore * 1000) / 1000,
         },
+      });
+    }
+  }
+
+  // I13 + 0107: the RERANKER UNDOES PERSONALISATION, so put it back.
+  //
+  // Measured 2026-08-24 on a user with 7 Toned Milk logs in 14 days. Migration
+  // 0107 correctly returned "Toned Milk" as the #1 candidate for the query
+  // "milk". The reranker then reordered to Milk-whole / Milk-whole-UHT /
+  // Milk-sheeps-raw and dropped Toned Milk out of the top 3 entirely, because
+  // it scores the bare word "milk" against candidate NAMES and has no idea what
+  // this person drinks every morning.
+  //
+  // Habit is not a semantic question. The reranker's job is telling "2 whole
+  // eggs" from "Eggs, chicken, yolk, raw"; it is not equipped to overrule a food
+  // the user has logged repeatedly. So a staple keeps its place at the head and
+  // the reranker orders everything below it.
+  if (stapleNames && stapleNames.size > 0 && usable.length > 1) {
+    const isStaple = (c: CandidateFood) => stapleNames.has(c.name.trim().toLowerCase());
+    const mine = usable.filter(isStaple);
+    if (mine.length > 0 && mine.length < usable.length) {
+      usable = [...mine, ...usable.filter((c) => !isStaple(c))];
+      steps.push({
+        iter: 1,
+        tool: "staple_promoted",
+        input: { item: item.name },
+        result: { top: usable.slice(0, 3).map((c) => c.name) },
       });
     }
   }
@@ -2882,8 +2915,15 @@ export async function runParseMeal(
     }
   }
   const tResolve0 = Date.now();
+  // Only foods with a repeat count are staples; the recency fallback list has
+  // no `times` and must not be treated as habit.
+  const stapleNames = new Set(
+    (input.recentFoods ?? [])
+      .filter((r) => (r.times ?? 0) >= 2)
+      .map((r) => r.food_name.trim().toLowerCase()),
+  );
   const resolved = await Promise.all(
-    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
+    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames)),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
