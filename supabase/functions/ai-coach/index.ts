@@ -10,7 +10,6 @@ import {
   type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
-  runWebRefine,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import { voyageRerank } from "./rerank.ts";
@@ -1528,8 +1527,7 @@ function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): 
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
-/** The dependency bundle parseMeal.ts runs against. Shared by the full parse
- *  and the phase-2 web refine so both hit the same catalog/OFF/model wiring. */
+/** The dependency bundle parseMeal.ts runs against. */
 function makeParseDeps(
   userClient: SupabaseClient,
   admin: SupabaseClient,
@@ -1610,16 +1608,8 @@ async function handleParseMealRequest(args: {
   const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
   PARSE_ISOLATE_REQUESTS++;
 
-  // Phase 2 (the web refine) is fired automatically by the client after a
-  // phase-1 miss - it carries previous_items, not text, so it skips the
-  // non-empty-text check. It still goes through the rate limiter: nothing
-  // proves a phase-1 call preceded it, so an unlimited refine endpoint would be
-  // a direct-call abuse vector (each runs up to 4 real web-search turns). It
-  // shares the parse bucket - a small extra draw on the ~15% of logs that miss,
-  // in exchange for a hard cap on cost.
-  const isRefine = body.refine_web === true;
   const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!text && !isRefine) {
+  if (!text) {
     trace.status = "bad_request";
     trace.error_message = "parse_meal requires non-empty text";
     return respond({ error: trace.error_message }, 400);
@@ -1659,8 +1649,7 @@ async function handleParseMealRequest(args: {
   // Own bucket, same sliding-window mechanics as the coach limiter. Now
   // routed through the atomic try_reserve_parse_meal_slot RPC (migration
   // 0089) so a concurrent burst can't bypass the free-tier cap of 3 parses
-  // per rolling 24h. Refine calls share this bucket (see isRefine above),
-  // so a direct-called refine still costs one slot.
+  // per rolling 24h.
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
   const { data: parseSlotData, error: parseSlotErr } = await userClient
     .rpc("try_reserve_parse_meal_slot", { p_cap: parseCap });
@@ -1755,46 +1744,6 @@ async function handleParseMealRequest(args: {
       }];
     })
     : [];
-
-  // ── Phase 2: the deliberate web refine ────────────────────────────────────
-  // The client fires this after phase 1 returned web_refine, passing the weak
-  // lines back as previous_items. No extract, no decide, no context - just the
-  // web lookup over those lines. Returns the improved lines to swap in, or null
-  // when the web found nothing better (client keeps the estimate it showed).
-  if (body.refine_web === true) {
-    const usage = {
-      input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0, web_search_requests: 0,
-    };
-    const accumulate = (data: { usage?: Record<string, number> }) => {
-      const u = data.usage ?? {};
-      usage.input_tokens += u.input_tokens ?? 0;
-      usage.output_tokens += u.output_tokens ?? 0;
-      usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
-      usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
-      usage.web_search_requests += (u as { server_tool_use?: { web_search_requests?: number } })
-        .server_tool_use?.web_search_requests ?? 0;
-    };
-    let refined: { items: unknown[]; note: string } | null = null;
-    try {
-      refined = await runWebRefine(makeParseDeps(userClient, admin, userId), previousItems, accumulate, () => {});
-    } catch (e) {
-      console.log("[parse_meal] web refine threw:", String(e).slice(0, 160));
-    }
-    trace.status = "success";
-    trace.tool_calls = ["web_refine"];
-    void logTokenUsage(admin, {
-      pipeline: "parse_meal",
-      provider: "anthropic",
-      model: PARSE_MEAL_MODEL,
-      input_tokens: usage.input_tokens,
-      output_tokens: usage.output_tokens,
-      latency_ms: Date.now() - startedAtMs,
-      status: "success",
-      metadata: { user_id: userId, mode: "parse_meal_refine", web_search_requests: usage.web_search_requests },
-    });
-    return respond({ refined: refined ?? null, usage }, 200);
-  }
 
   // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
   // it here WITHOUT awaiting so the queries run concurrently with the extract
@@ -1927,7 +1876,6 @@ async function handleParseMealRequest(args: {
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
         // Weak lines the client can offer to improve with a visible web search.
-        web_refine: result.web_refine ?? null,
         usage: result.usage,
         tool_calls: result.tool_calls,
       },

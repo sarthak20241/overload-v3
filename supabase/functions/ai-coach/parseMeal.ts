@@ -110,12 +110,6 @@ export interface ParseMealResult {
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
-  /** Names of lines we could not ground in any source (source "estimate") that
-   *  a deliberate web search could improve. When set, the client shows the meal
-   *  immediately, displays a "searching the web for better numbers" indicator,
-   *  and fires a second refine request. null when nothing needs it. A merely
-   *  guardrail-flagged line is NOT here - see isRefinable. */
-  web_refine?: { items: string[] } | null;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -1091,7 +1085,8 @@ const WEB_LOOKUP_MAX_TURNS = 4;
 const WEB_LOOKUP_TIMEOUT_MS = 20000;
 
 // A bounded mini-loop over server web_search: pause turns resume, and the
-// final turn forces report_labels. Used by researchPrevious / runWebRefine.
+// final turn forces report_labels. Used by researchPrevious (the user
+// challenge path); the automatic refine that also used it is gone, see I15.
 async function runWebLookup(
   deps: ParseMealDeps,
   items: ExtractedItem[],
@@ -2439,31 +2434,6 @@ async function researchPrevious(
   };
 }
 
-/**
- * Phase 2 of the deliberate web search. The client fires this AFTER phase 1
- * returned a usable meal, for the specific lines phase 1 marked weak. It web-
- * looks-them-up, runs the same guardrails over the result, and hands back the
- * improved lines for the client to swap in - reusing researchPrevious, the
- * exact machinery the user-challenge path uses, so the two stay in step.
- *
- * Returns null when the web found nothing better; the client then just keeps
- * the estimate it already showed.
- */
-export async function runWebRefine(
-  deps: ParseMealDeps,
-  weakItems: PreviousItem[],
-  onUsage: (data: any) => void,
-  onCall: () => void,
-): Promise<{ items: ParsedItem[]; note: string } | null> {
-  if (!deps.webSearchEnabled || weakItems.length === 0) return null;
-  const researched = await researchPrevious(deps, weakItems, onUsage, onCall).catch(() => null);
-  if (!researched) return null;
-  // Same guardrails phase 1 applies. A web label is flag-only under Atwater
-  // (checkAtwater skips rewriting "web"), so a real panel is never overwritten.
-  const items = flagPrepMismatch(checkAtwater(researched.items));
-  return { items, note: researched.note };
-}
-
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
  *  against a food's real serving labels. Exact first, then substring both
  *  ways so "small" finds "1 small/individual". */
@@ -2900,7 +2870,7 @@ export async function runParseMeal(
 
   // ── Stage 3: decide ───────────────────────────────────────────────────────
   // One forced log_meal call. NO web lookup here any more: web search is a
-  // deliberate, user-visible SECOND phase (runWebRefine) that the client fires
+  // USER-INITIATED lookup only (the challenge path), never an automatic one
   // for items this phase left weak. Phase 1 stays fast and always returns a
   // usable meal immediately; the web only ever improves it afterwards.
   //
@@ -2943,7 +2913,6 @@ export async function runParseMeal(
         corrects_previous: false,
       },
       declined: null,
-      web_refine: null,
       usage,
       tool_calls: toolCalls,
       steps,
@@ -3102,20 +3071,10 @@ export async function runParseMeal(
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 
-  // Lines we could not ground in any source - the honest "couldn't find a
-  // match" case - that the client offers to look up online (phase 2). A line
-  // a guardrail merely FLAGGED (matched but low confidence) is not here: we
-  // did find something, so "couldn't find it" would be a lie. Those are left
-  // to the user-challenge path, which re-searches on what the user describes.
-  const webRefine = deps.webSearchEnabled
-    ? items.filter((it) => isRefinable(it)).map((it) => it.food_name)
-    : [];
-
-  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_refine: webRefine.length } });
+  steps.push({ iter: 9, tool: "__timing", input: { ...T } });
   return {
     parsed: { meal_type: mealType, items, drona_line: dronaLine, corrects_previous: correctsPrevious },
     declined: null,
-    web_refine: webRefine.length > 0 ? { items: webRefine } : null,
     usage,
     tool_calls: toolCalls,
     steps,
@@ -3123,12 +3082,4 @@ export async function runParseMeal(
   };
 }
 
-/** A line the automatic web search should try to ground: one we could not
- *  match to any catalog/OFF source, so it shipped as a bare estimate. A line
- *  we DID match (even one a guardrail flagged low-confidence) is not here -
- *  claiming "couldn't find it" would be false; the user challenges those. The
- *  user's own numbers and an already-fetched web label are never touched. */
-export function isRefinable(it: ParsedItem): boolean {
-  return it.source === "estimate";
-}
 

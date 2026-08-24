@@ -31,7 +31,7 @@ import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, refineMeal, logParsedMeal,
+  parseMeal, logParsedMeal,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -60,10 +60,6 @@ type ParseFlow =
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
-      // Names of lines we could not match to any source and are looking up
-      // online right now (phase 2). Drives the "searching the web" indicator;
-      // cleared when the refine returns and its numbers are swapped in.
-      refining?: string[] | null;
     }
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
@@ -224,7 +220,6 @@ export default function NutritionScreen() {
           meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
           mealType: keptMealType ?? res.meal.meal_type,
           mealTypePicked: prevReview?.mealTypePicked,
-          refining: res.webRefine ?? null,
         }
       : {
           status: 'review',
@@ -232,51 +227,62 @@ export default function NutritionScreen() {
           meal: res.meal,
           mealType: keptMealType ?? res.meal.meal_type,
           mealTypePicked: prevReview?.mealTypePicked,
-          refining: res.webRefine ?? null,
         };
     setFlow(reviewFlow);
-    // Phase 2: the meal is on screen already; now go look the unmatched lines
-    // up online and swap in anything better. Fire-and-forget - a failed or
-    // empty refine just leaves the estimate in place.
-    if (res.webRefine && res.webRefine.length > 0) {
-      void kickWebRefine(reviewFlow.raw, res.meal.items, res.webRefine);
-    }
-  }, [supabase]);
-
-  /** Look the unmatched (estimate) lines up online and swap in what comes back.
-   *  Guards on the raw text so a result that lands after the user has moved on
-   *  to a different parse is dropped instead of clobbering the new one. */
-  const kickWebRefine = useCallback(async (raw: string, items: ParsedMealItem[], weakNames: string[]) => {
-    const weakSet = new Set(weakNames.map((n) => n.toLowerCase()));
-    const weakItems = items.filter((it) => weakSet.has(it.food_name.toLowerCase()));
-    if (weakItems.length === 0) return;
-    const refined = await refineMeal(supabase, weakItems);
-    setFlow((f) => {
-      if (f.status !== 'review' || f.raw !== raw) return f; // user moved on
-      if (!refined) return { ...f, refining: null }; // nothing better found
-      // Key on name AND grams, not name alone: two same-named estimates of
-      // different sizes ("chai" 75g and 150g) must not collapse to one entry
-      // and cross-apply. refineMeal preserves grams, so an untouched line still
-      // matches; an edited one (grams or source changed) no longer does.
-      const key = (it: { food_name: string; grams: number }) => `${it.food_name.toLowerCase()}|${it.grams}`;
-      const byKey = new Map(refined.items.map((r) => [key(r), r]));
-      const merged = f.meal.items.map((it) => {
-        // Only swap a line that is STILL the estimate we sent to refine. The
-        // card invites the user to edit it while the lookup runs; if they did,
-        // it is now 'manual' (or otherwise changed) and their numbers must win.
-        // Same guarantee preserveManual gives corrections, applied client-side.
-        if (it.source !== 'estimate') return it;
-        return byKey.get(key(it)) ?? it;
-      });
-      return { ...f, meal: { ...f.meal, items: merged }, refining: null };
-    });
+    // I15: NOTHING fires after this point. The card the user is reading is the
+    // card they will log. The automatic web refine that used to run here swapped
+    // numbers in while Add was already live, so a user could tap Add on 180 kcal
+    // and log 240 - a review step whose contents change is not a review step.
+    // Web lookups are now user-initiated only (the challenge button on a
+    // low-confidence line) and belong to Super mode.
   }, [supabase]);
 
   /** Index of the pending line being corrected (null = editor closed). Edits
    *  are pure client state: nothing is written until Add, so a correction just
    *  patches the reviewed meal in place. */
   const [editIndex, setEditIndex] = useState<number | null>(null);
+  /** Index of the line a user-initiated web check is running on (I14). */
+  const [checkingIndex, setCheckingIndex] = useState<number | null>(null);
   const onEditItem = useCallback((i: number) => setEditIndex(i), []);
+
+  /** I14: the user asked us to double-check ONE line.
+   *
+   *  Deliberately NOT runParse: that flips the flow to 'analysing', which drops
+   *  the card off screen. The whole point here is that the meal stays put and
+   *  only the line being checked shows activity.
+   *
+   *  It sends the same thing typing a challenge would send, so it lands on the
+   *  existing researchPrevious path and comes back as a proposal with the
+   *  "use these / keep mine" choice already built. The button is the
+   *  discoverability fix; the machinery underneath is unchanged.
+   */
+  const onCheckItem = useCallback(async (i: number) => {
+    const f = flowRef.current;
+    if (f.status !== 'review' || !supabase) return;
+    const item = f.meal.items[i];
+    if (!item) return;
+    setCheckingIndex(i);
+    try {
+      const res = await parseMeal(supabase, {
+        text: `is the ${item.food_name} number right?`,
+        mealHint: f.mealType,
+        previous: { text: f.raw, items: f.meal.items },
+        turns: turnsRef.current.slice(),
+      });
+      setFlow((cur) => {
+        // The user may have edited, removed or added a line while this ran.
+        if (cur.status !== 'review') return cur;
+        if (res.kind === 'declined') {
+          return { ...cur, notice: res.message, proposal: res.proposal ?? null };
+        }
+        // Anything else means the turn was read as a new meal, which it is not.
+        // Leave the card exactly as the user left it rather than replacing it.
+        return cur;
+      });
+    } finally {
+      setCheckingIndex(null);
+    }
+  }, [supabase]);
   const onRemoveItem = useCallback((i: number) => {
     setFlow((f): ParseFlow => {
       if (f.status !== 'review') return f;
@@ -468,7 +474,6 @@ export default function NutritionScreen() {
               }
               onMealTypeChange={onMealTypeChange}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
-              refiningItems={flow.status === 'review' ? flow.refining ?? null : null}
               proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
               onAcceptProposal={() => setFlow((f) => (
                 f.status === 'review' && f.proposal
@@ -477,6 +482,8 @@ export default function NutritionScreen() {
               ))}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
               onEditItem={flow.status === 'review' ? onEditItem : undefined}
+              checkingIndex={checkingIndex}
+              onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
               onRemoveItem={flow.status === 'review' ? onRemoveItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
