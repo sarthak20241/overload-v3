@@ -36,7 +36,32 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-23 | 76/88 | pre-fix, first baseline ever run |
 | 2026-08-23 | **81/88** | + FatSecret sanitize fix (`38f3b6c`) |
 | 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) |
-| 2026-08-23 | **80/86** | + I16 comments, I7 `coerceQuantity` — **current baseline**, Phase 1 complete |
+| 2026-08-23 | 80/86 | + I16 comments, I7 `coerceQuantity` — Phase 1 complete |
+| 2026-08-24 | **81/86** | + I11 grade routing + migration 0106 milk ladder — **current baseline** |
+
+### I11 (Phase 2b): the three grade gates went green, and grounded
+
+They do not merely stop being wrong; they resolve from the CATALOG at the
+right numbers rather than falling back to estimates:
+
+```
+audit-low-fat-paneer       Milky Mist Paneer 141 kcal -> Low Fat Paneer 95
+audit-double-toned-300     Amul Taaza Toned 174       -> Double Toned Milk 141
+accept-grade-double-toned                             -> Double Toned Milk 236
+```
+
+Verified in PRODUCTION on device, the original 2026-08-20 report:
+`50g milky mist low fat paneer and amul double toned milk 300ml` ->
+Low Fat Paneer 95 [catalog, high] + Double Toned Milk 141.3 [catalog, high].
+
+The fix that mattered was migration 0106, not the routing code. The catalog
+carried ONE graded milk row and it was mislabeled ('Toned Milk' at 48 kcal /
+1.6 g fat is double-toned composition under a toned name), so routing could
+only reach an estimate - and the model priced double toned at 47 kcal/100 ml
+in one case and 76 in another. 0106 seeds the FSSAI ladder instead.
+
+`audit-no-sugar-tea` failed once in that run and passes on both reruns
+(grounds to Chai / Milk Tea 67.5). Flaky, per this file's own rule.
 
 > Corpus is **86 cases** from `b112e92` onward: two duplicate cases were removed
 > (see below). The 88-case runs above predate that.
