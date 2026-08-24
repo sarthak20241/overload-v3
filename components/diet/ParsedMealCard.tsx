@@ -83,17 +83,25 @@ const r0 = (n: number) => Math.round(n);
  * offering to re-check a confident line on every meal teaches the user to
  * trust none of the numbers, which is worse than being occasionally wrong.
  *
- * Two shapes qualify. An ESTIMATE is a line we could not ground at all. A
- * low-confidence line is one we did match but a guardrail flagged - "I logged
- * the toned one, not the double toned". The second case has never had any
- * recovery path, even before I15 removed the automatic one.
+ * Three shapes qualify, and the third is why this is not just a confidence
+ * check. An ESTIMATE is a line we could not ground at all. A LOW-confidence
+ * line is one a guardrail demoted. And a line carrying an ASSUMPTION is one
+ * that says out loud it guessed - "I logged the toned one, not the double
+ * toned" - which can still be high confidence. That last case is the one with
+ * no recovery path at all, even before I15 removed the automatic one, so
+ * leaving it out would miss the users this feature exists for.
+ *
+ * Note MEDIUM is deliberately not enough on its own: verifyItems marks every
+ * FatSecret line medium because the row read is skipped for ephemeral ids, so
+ * treating medium as doubt would put a button on ordinary, correct lines and
+ * teach people to distrust all of them.
  *
  * A line the user typed themselves (manual) is never questioned: their numbers
  * are the answer, not a guess to be improved on.
  */
 function uncertain(it: ParsedMealItem): boolean {
   if (it.source === 'manual') return false;
-  return it.source === 'estimate' || it.confidence === 'low';
+  return it.source === 'estimate' || it.confidence === 'low' || !!it.assumption;
 }
 
 function provenance(source: ParsedMealItem['source']): string | null {
