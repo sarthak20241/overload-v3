@@ -134,6 +134,9 @@ export interface RecentFoodContext {
   food_name: string;
   quantity: number;
   serving_unit: string;
+  /** How many times in the window. Absent on the recency fallback (a new user
+   *  with too little history to rank by frequency). */
+  times?: number;
 }
 
 /** A line from the meal still under review on the client, sent back with a
@@ -1194,10 +1197,18 @@ const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
+  // I13: frequency first, with the count and the USUAL amount. "last: 1 serving"
+  // said nothing about whether this was a staple or a one-off someone tried
+  // once, and the list was ordered by recency, so a single unusual dinner
+  // outranked the milk they drink daily.
   const recents = input.recentFoods.length > 0
     ? input.recentFoods
       .slice(0, 20)
-      .map((r) => `- ${r.food_name} (last: ${r.quantity} ${r.serving_unit})`)
+      .map((r) =>
+        r.times && r.times > 1
+          ? `- ${r.food_name} (${r.times} times, usually ${r.quantity} ${r.serving_unit})`
+          : `- ${r.food_name} (last: ${r.quantity} ${r.serving_unit})`
+      )
       .join("\n")
     : "(none yet)";
 

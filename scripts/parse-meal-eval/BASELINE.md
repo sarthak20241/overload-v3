@@ -38,7 +38,16 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) |
 | 2026-08-23 | 80/86 | + I16 comments, I7 `coerceQuantity` — Phase 1 complete |
 | 2026-08-24 | 81/86 | + I11 grade routing + migration 0106 milk ladder |
-| 2026-08-24 | **85/86** | + I6 deletion-by-text and challenge-carries-fix — **current baseline** |
+| 2026-08-24 | 85/86 | + I6 deletion-by-text and challenge-carries-fix |
+| 2026-08-24 | **86/86** | + I13 frequency-ranked staples — **current baseline** |
+
+### 86/86 is a clean run, NOT a claim that nothing is left
+
+`chole-bhature` passed here and failed 2 of the 3 runs before it, giving a
+different answer each time. Nothing about I13 fixed it; the dish still has no
+catalog row and the model improvises. Read this row as "no regressions", not
+as "the corpus is solved". The honest state of that case is in the I6 section
+above.
 
 ### I6 (Phase 2a): both gates green, verified in production
 

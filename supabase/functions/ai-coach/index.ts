@@ -1378,32 +1378,138 @@ async function searchCatalogWithServings(
 // Recents give the prompt this user's staples ("milk" => their toned milk).
 // meal_entries has no timestamps of its own, so walk recent meals and
 // flatten, deduping by lowercased name.
+/**
+ * The user's STAPLES, ranked by how often they eat a thing (I13).
+ *
+ * Was pure recency - last 25 meals, dedupe, take 20 - so one unusual dinner
+ * outranked the milk they drink every morning, and every line said "last: 1
+ * serving", which tells decide nothing about what is normal for this person.
+ *
+ * WINDOW 14 DAYS, FILTER >= 2 OCCURRENCES. Settled from published data, not
+ * from our own logs (we have one meaningful logger, who cannot settle it):
+ * Wang et al., PMC12340925, n=21,006 adults over 14 days, found diets are far
+ * LESS repetitive than intuition suggests - ~50 unique items by day 14, with
+ * cumulative diversity still climbing. But only ~4 of those ~51 items were
+ * eaten on 7+ days, and about HALF appeared exactly once. So the core
+ * repertoire is tiny and the tail is enormous and never repeats: the win is
+ * not a longer window, it is dropping the one-off tail, which a >= 2 filter
+ * does for free (a food eaten once can never be predicted again). 14 days
+ * rather than 7 so weekly-cadence foods - the Sunday biryani - can reach 2
+ * occurrences at all.
+ *
+ * Ranked by occurrences with a ~7-day half-life, so a staple they have moved
+ * on from fades instead of sitting at the top forever. The amount shown is the
+ * MEDIAN, not the last, because one 500 ml outlier should not redefine what
+ * their usual glass is.
+ *
+ * 14 days is the DEFAULT, not a hard rule. It was settled from a study of
+ * active daily loggers, and an intermittent user breaks that assumption: our
+ * own most active account logged 8 meals in the last 14 days, so a >= 2 filter
+ * over that window returns NOTHING and the whole feature silently degrades to
+ * the old recency list. So: try 14 days, and only if that yields fewer than 5
+ * staples widen to 30. The decay still does the real work of keeping the list
+ * current, which is why widening is safe - an old staple sinks on its own
+ * rather than needing a hard cutoff to exclude it.
+ *
+ * New users fall back to plain recency: with < 2 occurrences of anything even
+ * at 30 days, a frequency list would be empty, and an empty list is worse than
+ * a rough one.
+ */
+const STAPLES_MIN_DAYS = 14;
+const STAPLES_WIDE_DAYS = 30;
+const STAPLES_ENOUGH = 5;
+
 async function fetchRecentFoods(userClient: SupabaseClient): Promise<RecentFoodContext[]> {
-  const sinceIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const first = await staplesWithin(userClient, STAPLES_MIN_DAYS);
+  if (first.staples.length >= STAPLES_ENOUGH) return first.staples.slice(0, 20);
+  const wide = await staplesWithin(userClient, STAPLES_WIDE_DAYS);
+  if (wide.staples.length > 0) return wide.staples.slice(0, 20);
+  // Nothing repeats even at 30 days: a genuinely new or very varied user.
+  return wide.recencyFallback.slice(0, 20);
+}
+
+async function staplesWithin(
+  userClient: SupabaseClient,
+  days: number,
+): Promise<{ staples: RecentFoodContext[]; recencyFallback: RecentFoodContext[] }> {
+  const now = Date.now();
+  const sinceIso = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await userClient
     .from("meals")
     .select("logged_at, meal_entries(food_name, quantity, serving_unit)")
     .gte("logged_at", sinceIso)
     .order("logged_at", { ascending: false })
-    .limit(25);
-  if (error || !Array.isArray(data)) return [];
-  const seen = new Set<string>();
-  const out: RecentFoodContext[] = [];
+    .limit(200);
+  if (error || !Array.isArray(data)) return { staples: [], recencyFallback: [] };
+
+  interface Agg {
+    name: string;
+    times: number;
+    score: number;
+    amounts: number[];
+    units: Map<string, number>;
+    firstSeenRank: number;
+  }
+  const byName = new Map<string, Agg>();
+  let rank = 0;
+
   for (const meal of data as Array<Record<string, unknown>>) {
+    const loggedAt = typeof meal.logged_at === "string" ? Date.parse(meal.logged_at) : NaN;
+    const ageDays = Number.isFinite(loggedAt) ? (now - loggedAt) / 86_400_000 : 14;
+    // ~7-day half-life.
+    const weight = Math.pow(0.5, Math.max(0, ageDays) / 7);
     const entries = Array.isArray(meal.meal_entries) ? meal.meal_entries : [];
     for (const e of entries as Array<Record<string, unknown>>) {
       const name = typeof e.food_name === "string" ? e.food_name.trim() : "";
-      if (!name || seen.has(name.toLowerCase())) continue;
-      seen.add(name.toLowerCase());
-      out.push({
-        food_name: name,
-        quantity: Number(e.quantity ?? 1) || 1,
-        serving_unit: typeof e.serving_unit === "string" ? e.serving_unit : "g",
-      });
-      if (out.length >= 20) return out;
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const unit = typeof e.serving_unit === "string" && e.serving_unit ? e.serving_unit : "g";
+      const qty = Number(e.quantity ?? 1) || 1;
+      const agg = byName.get(key);
+      if (agg) {
+        agg.times += 1;
+        agg.score += weight;
+        agg.amounts.push(qty);
+        agg.units.set(unit, (agg.units.get(unit) ?? 0) + 1);
+      } else {
+        byName.set(key, {
+          name,
+          times: 1,
+          score: weight,
+          amounts: [qty],
+          units: new Map([[unit, 1]]),
+          firstSeenRank: rank++,
+        });
+      }
     }
   }
-  return out;
+  if (byName.size === 0) return { staples: [], recencyFallback: [] };
+
+  const median = (xs: number[]): number => {
+    const a = [...xs].sort((x, y) => x - y);
+    const mid = a.length >> 1;
+    const m = a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+    return Math.round(m * 100) / 100;
+  };
+  const commonestUnit = (u: Map<string, number>): string => {
+    let best = "g", n = -1;
+    for (const [unit, count] of u) if (count > n) [best, n] = [unit, count];
+    return best;
+  };
+
+  const all = [...byName.values()];
+  const shape = (a: Agg): RecentFoodContext => ({
+    food_name: a.name,
+    quantity: median(a.amounts),
+    serving_unit: commonestUnit(a.units),
+    ...(a.times >= 2 ? { times: a.times } : {}),
+  });
+  return {
+    staples: all.filter((a) => a.times >= 2).sort((x, y) => y.score - x.score).map(shape),
+    // Old recency order preserved (firstSeenRank follows the descending
+    // logged_at scan) so a new user is no worse off than before.
+    recencyFallback: [...all].sort((x, y) => x.firstSeenRank - y.firstSeenRank).map(shape),
+  };
 }
 
 // Full agent-flow observability for parse_meal: one parse_traces row per request
