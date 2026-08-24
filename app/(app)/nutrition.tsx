@@ -279,10 +279,27 @@ export default function NutritionScreen() {
         // The user may have edited, removed or added a line while this ran.
         if (cur.status !== 'review') return cur;
         if (res.kind === 'declined') {
+          // Either nothing trustworthy was found, or the web disagreed enough
+          // that the server offered its answer instead of applying it.
           return { ...cur, notice: res.message, proposal: res.proposal ?? null };
         }
-        // Anything else means the turn was read as a new meal, which it is not.
-        // Leave the card exactly as the user left it rather than replacing it.
+        if (res.kind === 'parsed') {
+          // The server returns a parsed meal when the web AGREED closely enough
+          // that swapping is not a material change; a real disagreement comes
+          // back as a proposal above. So applying here is the server's call,
+          // not a silent overwrite of something the user would dispute.
+          //
+          // But apply it to the TAPPED LINE ONLY. researchPrevious looks up
+          // every previous item, so taking its whole item list would rewrite
+          // lines the user never asked about - which is precisely the mutation
+          // I15 exists to stop, just triggered by a button instead of a timer.
+          const found = res.meal.items.find(
+            (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
+          ) ?? (res.meal.items.length === 1 ? res.meal.items[0] : null);
+          if (!found) return { ...cur, notice: 'I could not improve that one.' };
+          const items = cur.meal.items.map((it, idx) => (idx === i ? found : it));
+          return { ...cur, meal: { ...cur.meal, items }, notice: res.meal.drona_line };
+        }
         return cur;
       });
     } finally {
