@@ -1206,6 +1206,11 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - Choose the candidate that IS the food, not one merely similar. For generic Indian foods prefer the curated staples (Roti, Toor Dal, Curd, Toned Milk) over obscure branded rows. For a plain whole food ("chicken breast", "rice", "milk") prefer the plain/cooked/generic row over processed, fat-free, dried, deli, or flavored variants unless the user named that variant.
 - Respect the item's prep state: never log a roasted/dried/fried item against a cooked/boiled candidate (2-3x density difference). If only a wrong-state candidate exists, estimate instead.
 - Indian beverage defaults: unqualified "tea" or "chai" means MILK tea (the Chai / Milk Tea row, ~45 kcal/100 ml), and unqualified "coffee" means milk coffee. Herbal, black, green, or lemon tea ONLY when the user says so; picking a 1-2 kcal plain-tea row for unqualified "tea" is wrong. Any such default is never confidence high; name it in assumption.
+- ACCEPTABLE means: eating the candidate instead of what the user described would move the macros less than ~10%. Judge the WORDS THE USER USED, not how similar the names look.
+  DROP these words and match the row anyway, they do not change the food: brand on a food fixed by standard or nature (toned milk is 3% fat by regulation, so Amul = Mother Dairy; likewise curd, plain paneer, ghee, oil, atta, rice, dal, eggs); marketing words (fresh, farm, pure, natural, homemade, packet, tetra pack); regional synonyms (doodh = milk, dahi = curd, chawal = rice).
+  NEVER drop these, they ARE the product: fat grade (low fat, full fat, full cream, toned, double toned, skimmed); protein or sugar claims (high protein, zero sugar, no added sugar, diet); part or variant (yolk, white, whole, brown, wholewheat, maida); prep state (raw, boiled, roasted, fried, dried - 2-3x density); brand on a FORMULATED product, where the recipe IS the product (protein bars and powders, biscuits, cereals, sauces, ready meals, flavoured yogurt); a DISH reduced to an ingredient (paneer butter masala is not Paneer).
+  The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
+- grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -1662,6 +1667,51 @@ export function unhonouredGrade(said: string, rowName: string): string | null {
     if (!inSaid) continue;
     const rowHasAny = ordered.some((g) => b.includes(` ${g} `));
     if (!rowHasAny) return inSaid;
+  }
+  return null;
+}
+
+/**
+ * The grade the user asked for that NO candidate stocks (I11), or null.
+ *
+ * unhonouredGrade already catches this, but only at verify time, once decide
+ * has committed: the line ships with the generic row's macros and a chip
+ * apologising for them. By then the damage is done, because the chip does not
+ * change the numbers that land in the log.
+ *
+ * Asking the same question BEFORE decide lets it estimate instead. An estimate
+ * of "low fat paneer" lands near the real 190 kcal/100 g; the plain Milky Mist
+ * Paneer row it would otherwise take is 283, so the estimate is the more
+ * accurate answer even though it is the less confident-looking one. Same for
+ * "double toned milk" (42 vs the 58 of the toned row that wins today).
+ *
+ * Only GRADE_GROUPS, deliberately: fat level and protein claims move macros a
+ * long way and are fixed by standard. Prep state and egg part are handled by
+ * variantClash, which can see a contradiction rather than a silence.
+ */
+export function gradeNotStocked(name: string, candidates: CandidateFood[]): string | null {
+  if (candidates.length === 0) return null;
+  const norm = (x: string) => ` ${x.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+  // Longest first, so "double toned" is never read as "toned".
+  const longestIn = (group: string[], text: string): string | null =>
+    [...group].sort((a, b) => b.length - a.length).find((g) => text.includes(` ${g} `)) ?? null;
+
+  const said = norm(name);
+  for (const group of GRADE_GROUPS) {
+    const want = longestIn(group, said);
+    if (!want) continue;
+    // EQUALITY, not mere presence. Two different misses have to be caught and
+    // unhonouredGrade only sees one of them:
+    //   silence      - "low fat paneer" vs "Milky Mist Paneer" (no grade at all)
+    //   contradiction- "double toned milk" vs "Amul Taaza Toned Milk", where the
+    //                  row does carry A grade, just the wrong one. variantClash
+    //                  spots that later, but only to apologise on the card; by
+    //                  then the toned row's 58 kcal/100 ml is already the number
+    //                  being logged for a 42 kcal product.
+    // Comparing the row's OWN longest term to the user's catches both, and in
+    // both directions ("toned" asked, "double toned" row is also a miss).
+    if (candidates.some((c) => longestIn(group, norm(c.name)) === want)) continue;
+    return want;
   }
   return null;
 }
@@ -2790,6 +2840,13 @@ export async function runParseMeal(
       quantity: r.quantity,
       unit: r.unit,
       ...(r.prep ? { prep: r.prep } : {}),
+      // I11: computed in CODE, not left for the model to notice. When the user
+      // named a grade and not one candidate stocks it, say so plainly here so
+      // decide estimates instead of dressing a generic row as a match.
+      ...((() => {
+        const g = gradeNotStocked(r.name, r.candidates);
+        return g ? { grade_not_stocked: g } : {};
+      })()),
       // Top 4 candidates: the ranked search already puts the right row first;
       // extra candidates only inflate decide-call input tokens (latency).
       candidates: r.candidates.slice(0, 4).map(candidatePayload),
