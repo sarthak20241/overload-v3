@@ -488,7 +488,14 @@ export type ParseMealResult =
   // `proposal` carries researched numbers that materially disagree with what is
   // on screen (usually a different product variant). The user chooses; applying
   // is local, so it costs nothing.
-  | { kind: 'declined'; message: string; proposal?: { items: ParsedMealItem[]; note: string } | null }
+  // `cleared` means the user emptied the meal by removing its last line. It is
+  // the one decline the card must NOT survive.
+  | {
+    kind: 'declined';
+    message: string;
+    proposal?: { items: ParsedMealItem[]; note: string } | null;
+    cleared?: boolean;
+  }
   | { kind: 'error'; message: string };
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
@@ -599,7 +606,12 @@ export async function parseMeal(
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
       ? { items: (p.items as any[]).map(toParsedItem), note: String(p.note ?? 'Use these numbers') }
       : null;
-    return { kind: 'declined', message: String(data.declined.message), proposal };
+    return {
+      kind: 'declined',
+      message: String(data.declined.message),
+      proposal,
+      cleared: data.declined.cleared === true,
+    };
   }
   const parsed = data?.parsed;
   if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) {

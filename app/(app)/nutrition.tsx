@@ -190,6 +190,13 @@ export default function NutritionScreen() {
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
       pushTurn('drona', res.message);
+      // The user removed the last line, so there is no card left to protect.
+      // Keeping it would show the line they just deleted under a message saying
+      // it is gone. Matches what the X button already does at the last item.
+      if (res.cleared) {
+        setFlow({ status: 'idle' });
+        return;
+      }
       if (prevReview) {
         setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
         return;

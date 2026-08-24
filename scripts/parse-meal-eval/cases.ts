@@ -676,6 +676,20 @@ export const CASES: EvalCase[] = [
     expect: { declined: true },
   },
 
+  // [I6a] Removing the ONLY line. Flagged in review of PR #121: the existing
+  // delete case removes one of TWO items, so the empty-result path was never
+  // exercised. extract correctly returns no items here, which used to hit the
+  // generic "that did not look like food" decline - shown next to the line the
+  // user had just deleted, because a decline keeps the card.
+  {
+    id: "audit-delete-only-item",
+    text: "50g tofu",
+    hour: 13,
+    followUp: "remove the tofu",
+    expectCorrection: true,
+    expect: { declined: true },
+  },
+
   // ── Audit-derived cases (2026-08-22 prompt/schema audit) ─────────────────
   // Each case asserts DESIRED behavior. Ones tagged [I6*]/[I8] are expected to
   // FAIL until that improvement lands; they are the gate for it, not noise.

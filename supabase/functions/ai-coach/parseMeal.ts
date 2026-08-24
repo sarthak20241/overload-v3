@@ -104,7 +104,12 @@ export interface ParseMealResult {
     corrects_previous?: boolean;
   } | null;
   // Set when the model declined (non-food input) instead of logging.
-  declined: { message: string } | null;
+  //
+  // `cleared` marks the ONE decline that is not a refusal: the user removed the
+  // last remaining line, so there is nothing left to log. The client must drop
+  // the card rather than keep it, which is what it does for every other decline
+  // (a decline normally means unlogged work would be lost).
+  declined: { message: string; cleared?: boolean } | null;
   /** A researched alternative the user should CHOOSE, not receive silently.
    *  Set when a web lookup materially disagrees with what is on screen -
    *  usually a different variant of the same product. The client offers it as
@@ -2631,9 +2636,9 @@ export async function runParseMeal(
     usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
     usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
   };
-  const declineResult = (message: string): ParseMealResult => ({
+  const declineResult = (message: string, cleared?: boolean): ParseMealResult => ({
     parsed: null,
-    declined: { message },
+    declined: cleared ? { message, cleared } : { message },
     usage,
     tool_calls: toolCalls,
     steps,
@@ -2832,6 +2837,16 @@ export async function runParseMeal(
         iterations: anthropicCalls,
       };
     }
+  }
+
+  // I6a edge case: the user removed the ONLY line. extract correctly returns no
+  // items, and the generic empty check below would call that non-food and tell
+  // them to say what they ate - next to the line they just deleted, because a
+  // decline keeps the card. Removing the last line by TEXT should behave like
+  // removing it with the X button, which already clears the card.
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+    const what = removedNames.length === 1 ? removedNames[0] : "those";
+    return declineResult(`Removed ${what}. Nothing left on this one.`, true);
   }
 
   if (ext.declined === true || extItems.length === 0) {
