@@ -328,6 +328,11 @@ export default function NutritionScreen() {
           const items = cur.meal.items.map((it, idx) => (idx === i ? found : it));
           return { ...cur, meal: { ...cur.meal, items }, notice: res.meal.drona_line };
         }
+        if (res.kind === 'error') {
+          // Fire-and-forget still owes the user a word. Without this the
+          // spinner just vanishes and the tap looks like it did nothing.
+          return { ...cur, notice: 'Could not reach the web just now. Your numbers are unchanged.' };
+        }
         return cur;
       });
     } finally {

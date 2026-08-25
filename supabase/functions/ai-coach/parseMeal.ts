@@ -803,10 +803,11 @@ const EXTRACT_TOOL = {
         type: ["array", "null"],
         items: { type: "string" },
         description:
-          "Lines of the previous meal the user asked to REMOVE, copied EXACTLY as given " +
-          '("remove the tofu", "drop the milk", "I did not have the rice", "scratch the dosa"). ' +
-          "Leave them OUT of items as well. null or empty when nothing was removed. " +
-          "Only ever set when a previous meal was given.",
+          "Foods the user asked to REMOVE from the previous meal. Give the FOOD NAME as the " +
+          'previous meal spells it, NOT the whole sentence: for "remove the tofu" send "Tofu", ' +
+          'for "I did not have the rice" send "Rice". If the previous line is more specific ' +
+          '("Toned Milk") send that. Leave them OUT of items as well. null or empty when ' +
+          "nothing was removed. Only ever set when a previous meal was given.",
       },
       items: {
         type: "array",
@@ -1843,6 +1844,37 @@ export function unchangedInCorrection(
   return null;
 }
 
+/**
+ * Does a removal phrase name this line? (I6a)
+ *
+ * Directional on purpose. wordsOverlap asks "are these the same food", which
+ * needs the SHORTER side fully covered - and that is the wrong question here.
+ * "remove the milk" against "Toned Milk" makes the ROW the shorter side, so it
+ * demanded a match for "toned" inside the user's phrase, found none, and
+ * reported no match. The line then looked accidentally dropped and
+ * keepUncoveredPrevious put it back: the exact resurrection I6a exists to stop.
+ * Migration 0106 made this common by adding multi-word graded names.
+ *
+ * So: strip the command words, then ask only that what REMAINS appears in the
+ * row's name. "milk" is inside "toned milk"; the row may be more specific than
+ * the user bothered to be, which is the normal case.
+ */
+const REMOVAL_FILLER = new Set([
+  "remove", "delete", "drop", "scratch", "cancel", "undo", "take", "off", "out",
+  "the", "that", "this", "those", "these", "a", "an", "my", "i", "did", "not",
+  "have", "had", "no", "from", "it", "one", "and", "please", "just",
+]);
+
+export function removalNames(phrase: string, rowName: string): boolean {
+  const words = (x: string) =>
+    x.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
+  const needle = words(phrase).filter((w) => !REMOVAL_FILLER.has(w));
+  if (needle.length === 0) return false;
+  const hay = words(rowName);
+  if (hay.length === 0) return false;
+  return needle.every((n) => hay.some((h) => nearWord(n, h)));
+}
+
 /** Repoint a line whose food_id contradicts its own name.
  *
  *  Deliberately narrow: it moves the id only when another candidate FROM THE
@@ -2754,7 +2786,7 @@ export async function runParseMeal(
     extItems = extItems.filter((it) => {
       const n = it.name.trim().toLowerCase();
       if (removedSet.has(n)) return false;
-      return !removedNames.some((r) => wordsOverlap(r, it.name));
+      return !removedNames.some((r) => removalNames(r, it.name));
     });
     if (extItems.length !== before) {
       deps.log?.(`[parse_meal] dropped ${before - extItems.length} item(s) the model removed then relisted`);
@@ -2766,7 +2798,7 @@ export async function runParseMeal(
       // The model copies the name it was shown, but it does paraphrase; match
       // the previous line the user actually meant so a near-miss still deletes.
       for (const p of prevItems) {
-        if (wordsOverlap(n, p.food_name)) replacedNames.add(p.food_name.toLowerCase());
+        if (removalNames(n, p.food_name)) replacedNames.add(p.food_name.toLowerCase());
       }
     }
   }
