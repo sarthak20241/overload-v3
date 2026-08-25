@@ -17,7 +17,7 @@
  * phase's training directive). Fully theme-aware, coach-voice copy.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -27,6 +27,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   loadActiveProgram,
+  endActiveProgram,
   daysBetweenISO,
   todayLocalISO,
   type ActiveProgram,
@@ -81,6 +82,7 @@ export default function GoalPlanScreen() {
   // (same one as the Routines tab and the dashboard today card) so the user
   // sees the session and chooses to start, instead of starting on tap.
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
+  const [ending, setEnding] = useState(false);
 
   const openRoutinePreview = useCallback(async (routineId: string) => {
     if (!supabase) return;
@@ -128,6 +130,35 @@ export default function GoalPlanScreen() {
     setBuildPhaseId(ph.id);
     setCoachOpen(true);
   }, []);
+
+  // Stop following the program. Confirmed, because it cannot be undone from
+  // here: the user rebuilds with Drona if they change their mind. Targets are
+  // left exactly where they are, so nothing about today's food changes.
+  const confirmEnd = useCallback(() => {
+    Alert.alert(
+      'End this program?',
+      'Your daily goal stays exactly where it is now. Drona stops changing it, and the plan moves to your history.',
+      [
+        { text: 'Keep it', style: 'cancel' },
+        {
+          text: 'End program',
+          style: 'destructive',
+          onPress: async () => {
+            if (!supabase || !clerkId || ending) return;
+            setEnding(true);
+            try {
+              await endActiveProgram(supabase, clerkId);
+              await load();
+            } catch {
+              Alert.alert('That did not go through', 'Check your connection and try again.');
+            } finally {
+              setEnding(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [supabase, clerkId, ending, load]);
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
 
@@ -483,6 +514,20 @@ export default function GoalPlanScreen() {
             <Feather name="message-circle" size={14} color={C.mutedFg} />
             <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>Adjust with Drona</Text>
           </Pressable>
+
+          {/* The way out. Without this a user who stops following the plan has
+              no exit: every phase boundary rewrites their goal again. */}
+          <Pressable
+            onPress={confirmEnd}
+            disabled={ending}
+            style={[styles.endBtn, { opacity: ending ? 0.5 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel="End this program"
+          >
+            <Text style={[styles.endBtnText, { color: C.dangerText }]}>
+              {ending ? 'Ending...' : 'End this program'}
+            </Text>
+          </Pressable>
         </ScrollView>
       )}
 
@@ -605,4 +650,9 @@ const styles = StyleSheet.create({
 
   secondaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: Radius.lg, paddingVertical: 12 },
   secondaryBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+
+  // Quiet on purpose: an exit that is findable, not one that competes with
+  // "Adjust with Drona" for the tap.
+  endBtn: { alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.md, marginTop: Spacing.xs },
+  endBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 });

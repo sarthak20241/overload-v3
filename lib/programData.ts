@@ -561,6 +561,25 @@ export async function loadActiveProgram(
 }
 
 /**
+ * Stop following the active program. Archives it (same status saveProgram gives
+ * a superseded program), which takes it out of loadActiveProgram and therefore
+ * out of reconcileActiveProgram, so nothing rewrites the user's targets at the
+ * next phase boundary. The four user_profiles targets are deliberately LEFT AS
+ * THEY ARE: the user keeps whatever they are eating to today and owns it from
+ * here. Returns true when a program was actually ended.
+ */
+export async function endActiveProgram(supabase: Supa, clerkId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('coach_programs')
+    .update({ status: 'archived', updated_at: new Date().toISOString() })
+    .eq('user_id', clerkId)
+    .eq('status', 'active')
+    .select('id');
+  if (error) throw error;
+  return (data?.length ?? 0) > 0;
+}
+
+/**
  * Advance the machine-read targets to the current phase IF a phase boundary was
  * crossed since the last apply. Boundary-only + today-forward: within a phase we
  * never rewrite (so a manual target edit in Nutrition survives); we never touch
