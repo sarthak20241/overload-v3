@@ -18,6 +18,7 @@ import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -118,7 +119,8 @@ async function findOrCreateMeal(
  *  instantly from what the dashboard already loaded (no 5s cold re-fetch), then
  *  revalidates silently. Only today is cached (past days cold-load); keyed by user
  *  + day so it never bleeds across accounts or midnight. */
-let _navCache: { key: string; byMeal: Record<MealType, LoggedEntry[]> } | null = null;
+interface DayCache { key: string; byMeal: Record<MealType, LoggedEntry[]> }
+let _navCache: DayCache | null = null;
 
 /** Grouped entries + totals for a single calendar day (dayIso = YYYY-MM-DD). */
 export function useDayNutrition(dayIso: string): DayData {
@@ -127,7 +129,12 @@ export function useDayNutrition(dayIso: string): DayData {
   const isToday = dayIso === ymd(new Date());
   const key = `${user?.id ?? 'anon'}:${dayIso}`;
   // Instant-paint cache is today-only (the dashboard preloads it); past days load fresh.
-  const seed = isToday && _navCache && _navCache.key === key ? _navCache.byMeal : null;
+  // In-memory nav cache first, then the on-disk read cache, so a cold start
+  // paints today's real totals instead of an empty ring that fills in later.
+  const diskSeed = isToday ? readCache<DayCache>('dayNutrition', user?.id) : null;
+  const seed = isToday && _navCache && _navCache.key === key
+    ? _navCache.byMeal
+    : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   const [loading, setLoading] = useState(!seed);
   const [tick, setTick] = useState(0);
@@ -136,6 +143,17 @@ export function useDayNutrition(dayIso: string): DayData {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (isToday) {
+        // Hydration may not have finished by first render; re-seed once it has.
+        await hydrateCache(user?.id);
+        if (cancelled) return;
+        const disk = readCache<DayCache>('dayNutrition', user?.id);
+        if (disk && disk.key === key && !_navCache) {
+          _navCache = disk;
+          setByMeal(disk.byMeal);
+          setLoading(false);
+        }
+      }
       if (!supabase) { setLoading(false); return; }
       const cached = isToday && _navCache && _navCache.key === key;
       // Only show the loading state on a true cold load; a same-key cache means we
@@ -148,7 +166,10 @@ export function useDayNutrition(dayIso: string): DayData {
       if (cancelled) return;
       if (!meals || meals.length === 0) {
         const empty = emptyByMeal();
-        if (isToday) _navCache = { key, byMeal: empty };
+        if (isToday) {
+          _navCache = { key, byMeal: empty };
+          writeCache<DayCache>('dayNutrition', user?.id, _navCache);
+        }
         setByMeal(empty); setLoading(false); return;
       }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
@@ -169,7 +190,10 @@ export function useDayNutrition(dayIso: string): DayData {
           carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
         });
       }
-      if (isToday) _navCache = { key, byMeal: grouped };
+      if (isToday) {
+        _navCache = { key, byMeal: grouped };
+        writeCache<DayCache>('dayNutrition', user?.id, _navCache);
+      }
       setByMeal(grouped);
       setLoading(false);
     })();
@@ -735,8 +759,53 @@ export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promi
 export interface NutritionTargets { kcal: number; protein: number; carb: number; fat: number }
 export const DEFAULT_TARGETS: NutritionTargets = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
 
+// Macros carry the calories, so a new calorie goal has to move them with it.
+// We keep the user's ENERGY SPLIT (the share of the day's kcal from each macro)
+// and re-derive grams for the new total, rather than leaving stale grams that
+// still add up to the old goal. Shared by the goal sheet and by the coach
+// program sync, so both write a consistent set.
+export const KCAL_PER_G = { protein: 4, carb: 4, fat: 9 } as const;
+
+export interface EnergySplit { p: number; c: number; f: number }
+
+/** Share of total energy from each macro. Falls back to the default split when
+ *  the grams are all zero (nothing to take a ratio of). */
+export function energySplit(t: { protein: number; carb: number; fat: number }): EnergySplit {
+  const p = t.protein * KCAL_PER_G.protein;
+  const c = t.carb * KCAL_PER_G.carb;
+  const f = t.fat * KCAL_PER_G.fat;
+  const total = p + c + f;
+  if (!(total > 0)) {
+    const dp = DEFAULT_TARGETS.protein * KCAL_PER_G.protein;
+    const dc = DEFAULT_TARGETS.carb * KCAL_PER_G.carb;
+    const df = DEFAULT_TARGETS.fat * KCAL_PER_G.fat;
+    const dt = dp + dc + df;
+    return { p: dp / dt, c: dc / dt, f: df / dt };
+  }
+  return { p: p / total, c: c / total, f: f / total };
+}
+
+/** Grams that hold `split` and add up to `kcal`. Protein and fat round first;
+ *  carbs take the leftover so the three land on the goal, not near it. */
+export function macrosForKcal(kcal: number, split: EnergySplit): { protein: number; carb: number; fat: number } {
+  const protein = Math.max(0, Math.round((kcal * split.p) / KCAL_PER_G.protein));
+  const fat = Math.max(0, Math.round((kcal * split.f) / KCAL_PER_G.fat));
+  const carb = Math.max(
+    0,
+    Math.round((kcal - protein * KCAL_PER_G.protein - fat * KCAL_PER_G.fat) / KCAL_PER_G.carb),
+  );
+  return { protein, carb, fat };
+}
+
+/** Calories the three gram targets actually add up to. */
+export function macroKcal(t: { protein: number; carb: number; fat: number }): number {
+  return t.protein * KCAL_PER_G.protein + t.carb * KCAL_PER_G.carb + t.fat * KCAL_PER_G.fat;
+}
+
 /** Read the user's daily targets. isCustom = they've set at least one real goal
  *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
+interface CachedTargets { targets: NutritionTargets; isCustom: boolean }
+
 export function useNutritionTargets(): {
   targets: NutritionTargets; isCustom: boolean; reload: () => void;
   apply: (t: NutritionTargets) => void;
@@ -744,17 +813,30 @@ export function useNutritionTargets(): {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const clerkId = user?.id ?? null;
-  const [targets, setTargets] = useState<NutritionTargets>(DEFAULT_TARGETS);
-  const [isCustom, setIsCustom] = useState(false);
+  // Seed from the read cache so a cold start paints the user's real goal, not
+  // the 2000 kcal default that then snaps to (say) 1600 once the fetch lands.
+  const cachedSeed = readCache<CachedTargets>('nutritionTargets', clerkId);
+  const [targets, setTargets] = useState<NutritionTargets>(cachedSeed?.targets ?? DEFAULT_TARGETS);
+  const [isCustom, setIsCustom] = useState(cachedSeed?.isCustom ?? false);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
-  const apply = useCallback((t: NutritionTargets) => { setTargets(t); setIsCustom(true); }, []);
+  const apply = useCallback((t: NutritionTargets) => {
+    setTargets(t); setIsCustom(true);
+    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true });
+  }, [clerkId]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // The synchronous seed above misses when the cache hasn't hydrated from
+      // disk yet (first render after launch), so re-read once it has.
+      await hydrateCache(clerkId);
+      if (cancelled) return;
+      const cached = readCache<CachedTargets>('nutritionTargets', clerkId);
+      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); }
+
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
       const { data } = clerkId
@@ -763,16 +845,18 @@ export function useNutritionTargets(): {
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
-      setTargets({
+      const next: NutritionTargets = {
         kcal: pick(d.daily_calorie_target, DEFAULT_TARGETS.kcal),
         protein: pick(d.protein_target_g, DEFAULT_TARGETS.protein),
         carb: pick(d.carb_target_g, DEFAULT_TARGETS.carb),
         fat: pick(d.fat_target_g, DEFAULT_TARGETS.fat),
-      });
-      setIsCustom(
+      };
+      const nextIsCustom =
         d.daily_calorie_target != null || d.protein_target_g != null ||
-        d.carb_target_g != null || d.fat_target_g != null,
-      );
+        d.carb_target_g != null || d.fat_target_g != null;
+      setTargets(next);
+      setIsCustom(nextIsCustom);
+      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom });
     })();
     return () => { cancelled = true; };
   }, [supabase, clerkId, tick]);

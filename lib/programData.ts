@@ -16,6 +16,7 @@
  * boundary. Tables live in migration 0096_coach_programs.sql.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { energySplit, macrosForKcal, DEFAULT_TARGETS } from '@/lib/dietData';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -244,6 +245,31 @@ export async function applyPhaseTargets(
   if (diet.fat_g != null) payload.fat_target_g = diet.fat_g;
   // Nothing to set (a phase with no diet) → skip the round trip.
   if (Object.keys(payload).length === 1) return;
+
+  // A phase that moves calories but omits a macro used to leave that macro at
+  // its old gram value, so the four targets no longer added up (a cut to 1300
+  // kcal keeping 365 g of carbs). Fill the omitted ones by holding the user's
+  // current split at the new calorie total.
+  if (diet.calories != null && (diet.protein_g == null || diet.carb_g == null || diet.fat_g == null)) {
+    const { data: cur } = await supabase
+      .from('user_profiles')
+      .select('protein_target_g, carb_target_g, fat_target_g')
+      .eq('clerk_user_id', clerkId)
+      .maybeSingle();
+    const c = (cur ?? {}) as Record<string, unknown>;
+    const g = (v: unknown, def: number) => (v == null ? def : Number(v));
+    const scaled = macrosForKcal(diet.calories, energySplit({
+      protein: g(c.protein_target_g, DEFAULT_TARGETS.protein),
+      carb: g(c.carb_target_g, DEFAULT_TARGETS.carb),
+      fat: g(c.fat_target_g, DEFAULT_TARGETS.fat),
+    }));
+    // Re-clamp: the scaled grams are derived, so they get the same bounds as
+    // anything the coach sends.
+    const bounded = clampDiet({ protein_g: scaled.protein, carb_g: scaled.carb, fat_g: scaled.fat });
+    if (diet.protein_g == null) payload.protein_target_g = bounded.protein_g;
+    if (diet.carb_g == null) payload.carb_target_g = bounded.carb_g;
+    if (diet.fat_g == null) payload.fat_target_g = bounded.fat_g;
+  }
   const { error } = await supabase
     .from('user_profiles')
     .upsert(payload, { onConflict: 'clerk_user_id' });

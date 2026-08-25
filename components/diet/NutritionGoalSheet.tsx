@@ -7,7 +7,7 @@
  * user_profiles (the ai-coach parse_meal fn reads the same values for Drona's
  * day-aware line). Portal sheet, matching EntryEditSheet / SetTypeSheet.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, ScrollView, Pressable, TouchableOpacity, StyleSheet, BackHandler, Keyboard, Platform, useWindowDimensions } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,7 +17,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
-import { saveNutritionTargets, type NutritionTargets } from '@/lib/dietData';
+import {
+  saveNutritionTargets, energySplit, macrosForKcal, macroKcal,
+  type NutritionTargets, type EnergySplit,
+} from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 
@@ -48,6 +51,9 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     kcal: '', protein: '', carb: '', fat: '',
   });
   const [busy, setBusy] = useState(false);
+  // The split the calorie field scales against. Seeded from the saved goal and
+  // re-read whenever the user edits a macro by hand, so their own ratio sticks.
+  const splitRef = useRef<EnergySplit>(energySplit(initial));
 
   const { mounted, slideStyle } = useSheetSlide(open);
   const [kbHeight, setKbHeight] = useState(0);
@@ -61,23 +67,70 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     return () => { showSub.remove(); hideSub.remove(); };
   }, [open]);
 
+  // Seed the form once per open. Keying this on `initial` too would let a
+  // background target refresh (the hook refetches on focus) overwrite whatever
+  // the user is halfway through typing.
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
   useEffect(() => {
-    if (open) {
-      setVals({
-        kcal: String(Math.round(initial.kcal)),
-        protein: String(Math.round(initial.protein)),
-        carb: String(Math.round(initial.carb)),
-        fat: String(Math.round(initial.fat)),
-      });
-      setBusy(false);
-    }
-  }, [open, initial]);
+    if (!open) return;
+    const t = initialRef.current;
+    setVals({
+      kcal: String(Math.round(t.kcal)),
+      protein: String(Math.round(t.protein)),
+      carb: String(Math.round(t.carb)),
+      fat: String(Math.round(t.fat)),
+    });
+    splitRef.current = energySplit(t);
+    setBusy(false);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
     return () => sub.remove();
   }, [open, onClose]);
+
+  // Editing calories re-derives the macros at the same split; editing a macro
+  // re-reads the split so the next calorie change respects it.
+  const onChangeField = (key: keyof NutritionTargets, raw: string) => {
+    const txt = raw.replace(/[^0-9]/g, '').slice(0, 5);
+    if (key === 'kcal') {
+      const n = parseInt(txt, 10);
+      setVals((v) => {
+        // Ignore half-typed numbers below the floor ("1" on the way to "1600");
+        // scaling those would round the macros to junk.
+        if (!Number.isFinite(n) || n < FIELDS[0].min) return { ...v, kcal: txt };
+        const m = macrosForKcal(Math.min(n, FIELDS[0].max), splitRef.current);
+        return { kcal: txt, protein: String(m.protein), carb: String(m.carb), fat: String(m.fat) };
+      });
+      return;
+    }
+    setVals((v) => {
+      const next = { ...v, [key]: txt };
+      splitRef.current = energySplit({
+        protein: parseInt(next.protein, 10) || 0,
+        carb: parseInt(next.carb, 10) || 0,
+        fat: parseInt(next.fat, 10) || 0,
+      });
+      return next;
+    });
+  };
+
+  // Live read-out so the split is visible, and so a hand-edited macro that no
+  // longer matches the calorie goal says so instead of hiding.
+  const parsed = {
+    protein: parseInt(vals.protein, 10) || 0,
+    carb: parseInt(vals.carb, 10) || 0,
+    fat: parseInt(vals.fat, 10) || 0,
+  };
+  const sumKcal = macroKcal(parsed);
+  const goalKcal = parseInt(vals.kcal, 10);
+  const drift = Number.isFinite(goalKcal) ? sumKcal - goalKcal : 0;
+  const onGoal = Math.abs(drift) <= 5;
+  const driftNote = onGoal
+    ? 'That matches your goal.'
+    : `That is ${Math.abs(drift)} ${drift > 0 ? 'over' : 'under'} your goal.`;
 
   if (!mounted) return <Portal>{null}</Portal>;
 
@@ -147,7 +200,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
                 <TextInput
                   style={[s.input, { color: C.foreground, backgroundColor: C.muted }]}
                   value={vals[f.key]}
-                  onChangeText={(t) => setVals((v) => ({ ...v, [f.key]: t.replace(/[^0-9]/g, '').slice(0, 5) }))}
+                  onChangeText={(t) => onChangeField(f.key, t)}
                   keyboardType="number-pad"
                   returnKeyType="done"
                   selectTextOnFocus
@@ -157,6 +210,12 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
                 <Text style={[s.unit, { color: C.textMuted }]}>{f.unit}</Text>
               </View>
             ))}
+
+            <View style={[s.summary, { borderColor: C.borderSubtle }]}>
+              <Text style={[s.summaryTxt, { color: onGoal ? C.mutedFg : C.macro.calories }]}>
+                {`Macros add up to ${sumKcal} kcal. ${driftNote}`}
+              </Text>
+            </View>
           </ScrollView>
 
           <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
@@ -185,6 +244,9 @@ const s = StyleSheet.create({
     fontSize: FontSize.base, fontWeight: FontWeight.semibold, textAlign: 'right', fontVariant: ['tabular-nums'],
   },
   unit: { fontSize: FontSize.sm, width: 28 },
+
+  summary: { paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
+  summaryTxt: { fontSize: FontSize.sm, lineHeight: 18 },
 
   saveBtn: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary, borderRadius: Radius.md, paddingVertical: 14, marginTop: Spacing.lg },
   saveTxt: { fontSize: FontSize.base, color: Colors.primaryFg, fontWeight: FontWeight.bold },
