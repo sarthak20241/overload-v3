@@ -73,3 +73,34 @@ Deno.test("a re-target uses corrects_food_name and is NOT unchanged", () => {
   const item = ext({ name: "Paneer", quantity: 50, unit: "g", correctsFoodName: "Tofu" });
   assertEquals(unchangedInCorrection(item, [tofu]), null);
 });
+
+Deno.test("a duplicate name does not hide the matching line", () => {
+  // Two chai entries differing only in size. The 150 g one is SECOND, so a scan
+  // that stops at the first same-named line would call an unchanged line
+  // changed. Flagged in review of PR #121.
+  const chaiSmall = prev("Chai / Milk Tea", 75, "ml");
+  const chaiBig = prev("Chai / Milk Tea", 150, "ml");
+  assertEquals(
+    unchangedInCorrection(
+      ext({ name: "Chai / Milk Tea", quantity: 150, unit: "ml" }),
+      [chaiSmall, chaiBig],
+    )?.quantity,
+    150,
+  );
+  // And the first one is still found when IT is the match.
+  assertEquals(
+    unchangedInCorrection(
+      ext({ name: "Chai / Milk Tea", quantity: 75, unit: "ml" }),
+      [chaiSmall, chaiBig],
+    )?.quantity,
+    75,
+  );
+  // A size matching neither is still a change.
+  assertEquals(
+    unchangedInCorrection(
+      ext({ name: "Chai / Milk Tea", quantity: 200, unit: "ml" }),
+      [chaiSmall, chaiBig],
+    ),
+    null,
+  );
+});

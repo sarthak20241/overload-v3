@@ -1824,13 +1824,21 @@ export function unchangedInCorrection(
   // swap away. The item's OWN name has to be the one already on the card.
   if (item.correctsFoodName && norm(item.correctsFoodName) !== norm(item.name)) return null;
   const target = norm(item.name);
+  // Scan ALL same-named lines, do not stop at the first. A meal can hold two
+  // entries sharing a name and differing only in size - the "chai 75 g / chai
+  // 150 g" case this file calls out elsewhere - and returning on the first one
+  // would report a genuinely unchanged line as changed whenever the matching
+  // duplicate is not first in the array. That is the safe direction (an extra
+  // re-resolve, not lost data), but a re-resolve is exactly the
+  // nondeterministic repoint I1 exists to avoid, so do not accept it needlessly.
   for (const p of previous) {
     if (norm(p.food_name) !== target) continue;
-    // A prep word the previous line never carried IS a change ("make the egg boiled").
-    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) return null;
+    // A prep word the previous line never carried IS a change ("make the egg
+    // boiled"). Keep scanning: another same-named line may carry it.
+    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) continue;
     const sameQty = Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001;
     const sameUnit = unit(item.unit || "serving") === unit(p.serving_label || "serving");
-    return sameQty && sameUnit ? p : null;
+    if (sameQty && sameUnit) return p;
   }
   return null;
 }
@@ -2692,7 +2700,7 @@ export async function runParseMeal(
   const extractBlock = ((extractRes.data.content ?? []) as Array<Record<string, any>>)
     .find((b) => b.type === "tool_use" && b.name === "extract_meal");
   const ext = (extractBlock?.input ?? {}) as Record<string, unknown>;
-  const extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
+  let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
     .slice(0, 12)
     .flatMap((r: unknown): ExtractedItem[] => {
       if (!r || typeof r !== "object") return [];
@@ -2735,6 +2743,23 @@ export async function runParseMeal(
       .filter((n): n is string => typeof n === "string" && n.trim() !== "")
       .map((n) => n.trim().toLowerCase())
     : [];
+  // Removal is ENFORCED here, not merely requested. The schema tells the model
+  // to leave a removed line out of items, but a prompt instruction is not
+  // something to trust per turn - which is precisely why keepUncoveredPrevious
+  // and preserveManual exist. If the model names a line as removed and then
+  // lists it anyway, the user's delete would silently do nothing.
+  if (hasPrevious && removedNames.length > 0) {
+    const removedSet = new Set(removedNames);
+    const before = extItems.length;
+    extItems = extItems.filter((it) => {
+      const n = it.name.trim().toLowerCase();
+      if (removedSet.has(n)) return false;
+      return !removedNames.some((r) => wordsOverlap(r, it.name));
+    });
+    if (extItems.length !== before) {
+      deps.log?.(`[parse_meal] dropped ${before - extItems.length} item(s) the model removed then relisted`);
+    }
+  }
   if (hasPrevious) {
     for (const n of removedNames) {
       replacedNames.add(n);
