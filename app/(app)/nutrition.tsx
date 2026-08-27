@@ -179,6 +179,10 @@ export default function NutritionScreen() {
     // switch to 'analysing' (which drops the reviewed meal from flow).
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
     const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
+    // Leaving the review this check belonged to. Without this the stale index
+    // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
+    // an unrelated line until the abandoned 5-9s lookup finally settles.
+    setCheckingIndex(null);
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
@@ -336,7 +340,10 @@ export default function NutritionScreen() {
         return cur;
       });
     } finally {
-      setCheckingIndex(null);
+      // Only clear if this check is still the one running. A newer parse or a
+      // dismiss has already reset it, and a late finally would otherwise stomp
+      // a check the user started since.
+      setCheckingIndex((curr) => (curr === i ? null : curr));
     }
   }, [supabase]);
   const onRemoveItem = useCallback((i: number) => {
@@ -396,7 +403,10 @@ export default function NutritionScreen() {
     }
   }, [flow, runParse]);
 
-  const onDismiss = useCallback(() => setFlow({ status: 'idle' }), []);
+  const onDismiss = useCallback(() => {
+    setCheckingIndex(null);
+    setFlow({ status: 'idle' });
+  }, []);
 
   const eaten = { kcal: totals.kcal, protein: totals.protein_g, carb: totals.carb_g, fat: totals.fat_g };
   // One story, one narrator: Drona's line must agree with the ring. Placeholder

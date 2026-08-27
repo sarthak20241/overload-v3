@@ -1875,6 +1875,34 @@ export function removalNames(phrase: string, rowName: string): boolean {
   return needle.every((n) => hay.some((h) => nearWord(n, h)));
 }
 
+/**
+ * Which previous line does a removal phrase actually name? (I6a)
+ *
+ * removalNames answers "could this phrase refer to this row", which is too
+ * loose to act on when several rows could answer yes. "remove the milk" against
+ * a meal holding BOTH "Milk" and "Chai / Milk Tea" matches both, and treating
+ * every match as removed deletes a drink the user never mentioned - then, if it
+ * was the only other line, trips the empty-meal path and wipes the card.
+ *
+ * So pick ONE: the candidate carrying the fewest words the phrase did not ask
+ * for. "Milk" adds nothing beyond "milk"; "Chai / Milk Tea" adds two. Ties go
+ * to the first, and no candidate returns null rather than guessing.
+ */
+export function bestRemovalTarget(phrase: string, previous: PreviousItem[]): PreviousItem | null {
+  const words = (x: string) => x.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
+  let best: PreviousItem | null = null;
+  let bestExtra = Infinity;
+  for (const p of previous) {
+    if (!removalNames(phrase, p.food_name)) continue;
+    const extra = words(p.food_name).length;
+    if (extra < bestExtra) {
+      best = p;
+      bestExtra = extra;
+    }
+  }
+  return best;
+}
+
 /** Repoint a line whose food_id contradicts its own name.
  *
  *  Deliberately narrow: it moves the id only when another candidate FROM THE
@@ -2780,26 +2808,32 @@ export async function runParseMeal(
   // something to trust per turn - which is precisely why keepUncoveredPrevious
   // and preserveManual exist. If the model names a line as removed and then
   // lists it anyway, the user's delete would silently do nothing.
-  if (hasPrevious && removedNames.length > 0) {
-    const removedSet = new Set(removedNames);
-    const before = extItems.length;
-    extItems = extItems.filter((it) => {
-      const n = it.name.trim().toLowerCase();
-      if (removedSet.has(n)) return false;
-      return !removedNames.some((r) => removalNames(r, it.name));
-    });
-    if (extItems.length !== before) {
-      deps.log?.(`[parse_meal] dropped ${before - extItems.length} item(s) the model removed then relisted`);
-    }
-  }
+  // Resolve each removal phrase to the ONE previous line it names, then act only
+  // on that line. Acting on every loose match deletes food the user never
+  // mentioned: "remove the milk" would take "Chai / Milk Tea" with it.
+  const removedTargets = new Set<string>();
   if (hasPrevious) {
     for (const n of removedNames) {
       replacedNames.add(n);
-      // The model copies the name it was shown, but it does paraphrase; match
-      // the previous line the user actually meant so a near-miss still deletes.
-      for (const p of prevItems) {
-        if (removalNames(n, p.food_name)) replacedNames.add(p.food_name.toLowerCase());
+      const target = bestRemovalTarget(n, prevItems);
+      if (target) {
+        const key = target.food_name.trim().toLowerCase();
+        replacedNames.add(key);
+        removedTargets.add(key);
       }
+    }
+  }
+  // Enforce the removal in CODE. The schema asks the model to leave a removed
+  // line out of items, and a per-turn instruction is not something to trust -
+  // which is why keepUncoveredPrevious and preserveManual exist at all. Matched
+  // by exact name against the RESOLVED target, not by the loose phrase: the
+  // correction contract has the model relist lines verbatim, so an exact match
+  // is enough, and anything looser risks deleting a line nobody asked about.
+  if (removedTargets.size > 0) {
+    const before = extItems.length;
+    extItems = extItems.filter((it) => !removedTargets.has(it.name.trim().toLowerCase()));
+    if (extItems.length !== before) {
+      deps.log?.(`[parse_meal] dropped ${before - extItems.length} item(s) the model removed then relisted`);
     }
   }
   const mealFromText: MealType | null =
