@@ -299,7 +299,15 @@ export default function NutritionScreen() {
         // explains the provenance and then offers to search). Device-tested:
         // "is the X number right?" came back "Want me to look up the label
         // online?", asking the user to confirm something they had just done.
-        text: `yes, look up the label for ${item.food_name} online and check these numbers`,
+        // Food names are NOT ours: OFF is crowd-sourced and FatSecret rows come
+        // from a third party, so a name is untrusted text being interpolated
+        // into a model prompt. Strip newlines and control characters and cap the
+        // length so a crafted product name cannot append instructions of its
+        // own. Low severity - the lookup is bounded and its output is a
+        // schema-constrained macro panel - but the guard costs nothing.
+        text: `yes, look up the label for ${
+          item.food_name.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
+        } online and check these numbers`,
         mealHint: f.mealType,
         previous: { text: f.raw, items: f.meal.items },
         turns: turnsRef.current.slice(),

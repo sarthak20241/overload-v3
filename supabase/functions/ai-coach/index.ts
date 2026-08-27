@@ -1419,27 +1419,48 @@ const STAPLES_WIDE_DAYS = 30;
 const STAPLES_ENOUGH = 5;
 
 async function fetchRecentFoods(userClient: SupabaseClient): Promise<RecentFoodContext[]> {
-  const first = await staplesWithin(userClient, STAPLES_MIN_DAYS);
-  if (first.staples.length >= STAPLES_ENOUGH) return first.staples.slice(0, 20);
-  const wide = await staplesWithin(userClient, STAPLES_WIDE_DAYS);
+  // ONE scan, windowed in code. Fetching 14 days and then fetching 30 on a
+  // shortfall meant two meal_entries scans on every parse by any user with a
+  // thin fortnight - which is most of them, and it is on the critical path.
+  // The 30-day rows are a superset, so the 14-day answer is just a filter over
+  // what we already have.
+  const meals = await mealsWithin(userClient, STAPLES_WIDE_DAYS);
+  if (meals.length === 0) return [];
+  const cutoff = Date.now() - STAPLES_MIN_DAYS * 24 * 60 * 60 * 1000;
+  const recent = meals.filter((m) => m.at >= cutoff);
+
+  const near = staplesFrom(recent);
+  if (near.staples.length >= STAPLES_ENOUGH) return near.staples.slice(0, 20);
+  const wide = staplesFrom(meals);
   if (wide.staples.length > 0) return wide.staples.slice(0, 20);
   // Nothing repeats even at 30 days: a genuinely new or very varied user.
   return wide.recencyFallback.slice(0, 20);
 }
 
-async function staplesWithin(
-  userClient: SupabaseClient,
-  days: number,
-): Promise<{ staples: RecentFoodContext[]; recencyFallback: RecentFoodContext[] }> {
-  const now = Date.now();
-  const sinceIso = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+interface MealRow {
+  at: number;
+  entries: Array<Record<string, unknown>>;
+}
+
+async function mealsWithin(userClient: SupabaseClient, days: number): Promise<MealRow[]> {
+  const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await userClient
     .from("meals")
     .select("logged_at, meal_entries(food_name, quantity, serving_unit)")
     .gte("logged_at", sinceIso)
     .order("logged_at", { ascending: false })
     .limit(200);
-  if (error || !Array.isArray(data)) return { staples: [], recencyFallback: [] };
+  if (error || !Array.isArray(data)) return [];
+  return (data as Array<Record<string, unknown>>).map((m) => ({
+    at: typeof m.logged_at === "string" ? Date.parse(m.logged_at) : NaN,
+    entries: Array.isArray(m.meal_entries) ? m.meal_entries as Array<Record<string, unknown>> : [],
+  }));
+}
+
+function staplesFrom(
+  meals: MealRow[],
+): { staples: RecentFoodContext[]; recencyFallback: RecentFoodContext[] } {
+  const now = Date.now();
 
   interface Agg {
     name: string;
@@ -1452,13 +1473,11 @@ async function staplesWithin(
   const byName = new Map<string, Agg>();
   let rank = 0;
 
-  for (const meal of data as Array<Record<string, unknown>>) {
-    const loggedAt = typeof meal.logged_at === "string" ? Date.parse(meal.logged_at) : NaN;
-    const ageDays = Number.isFinite(loggedAt) ? (now - loggedAt) / 86_400_000 : 14;
+  for (const meal of meals) {
+    const ageDays = Number.isFinite(meal.at) ? (now - meal.at) / 86_400_000 : 14;
     // ~7-day half-life.
     const weight = Math.pow(0.5, Math.max(0, ageDays) / 7);
-    const entries = Array.isArray(meal.meal_entries) ? meal.meal_entries : [];
-    for (const e of entries as Array<Record<string, unknown>>) {
+    for (const e of meal.entries) {
       const name = typeof e.food_name === "string" ? e.food_name.trim() : "";
       if (!name) continue;
       const key = name.toLowerCase();
