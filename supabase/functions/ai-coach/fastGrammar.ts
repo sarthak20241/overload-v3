@@ -84,7 +84,21 @@ const ALL_UNIT_WORDS = new Set([
  *  tail, a time. Their presence means the message says more than a food name,
  *  so Lane A refuses it rather than folding the clause into the name
  *  ("8gm peanuts for snacks" became a food called "peanuts for snacks"). */
-const CLAUSE_STARTERS = new Set(["for", "from", "after", "before", "in", "at", "during"]);
+const CLAUSE_STARTERS = new Set([
+  "for", "from", "after", "before", "in", "at", "during",
+  // "1 tsp ghee ON MY roti" is two foods, and without this the grammar read it
+  // as one food called "ghee on my roti" and silently lost the roti.
+  "on", "my", "over", "inside",
+]);
+
+/** Words that describe PROVENANCE, not the product. The I11b taxonomy calls
+ *  these droppable: they do not change what the food is. Extract removes them;
+ *  Lane A must too, or "100g fresh homemade curd" searches for that whole
+ *  phrase, misses the plain Curd row, and falls back to an estimate. */
+const PROVENANCE_WORDS = new Set([
+  "fresh", "homemade", "home", "made", "pure", "natural", "organic", "farm",
+  "packet", "packaged", "tetra", "pack", "plain", "regular", "normal",
+]);
 
 /**
  * A name is only a name if it is plain words. Anything else means the grammar
@@ -95,6 +109,10 @@ function cleanName(words: string[]): string | null {
   let kept = [...words];
   while (kept.length > 0 && LEADING_CONNECTIVES.has(kept[0])) kept = kept.slice(1);
   kept = kept.filter((w) => !NOISE.has(w));
+  // Drop provenance words, but never ALL the words: "homemade" alone is not a
+  // food, and refusing is better than searching for nothing.
+  const withoutProvenance = kept.filter((w) => !PROVENANCE_WORDS.has(w));
+  if (withoutProvenance.length > 0) kept = withoutProvenance;
   if (kept.length === 0 || kept.length > 4) return null;
   // A digit inside the name means an amount the grammar failed to consume:
   // "paneer 100g", "rasmalai 2pc", "good day biscuits 2".
@@ -167,10 +185,21 @@ function parsePart(raw: string): GrammarItem | null {
     const name = cleanName(takePrep(m6[2].split(" ")));
     return name ? { name, quantity: 1, unit: m6[1].replace(/s$/, ""), prep } : null;
   }
-  // SHAPE 7  "a banana" / bare "curd"
-  const rest = takePrep(ARTICLES.has(w[0]) ? w.slice(1) : w);
-  const name = cleanName(rest);
-  return name ? { name, quantity: 1, unit: "serving", prep } : null;
+  // SHAPE 7  "a banana" - an ARTICLE is the amount signal.
+  if (ARTICLES.has(w[0])) {
+    const name = cleanName(takePrep(w.slice(1)));
+    return name ? { name, quantity: 1, unit: "serving", prep } : null;
+  }
+  // NO BARE-PHRASE SHAPE, deliberately, and this is the hardest limit here.
+  // A grammar cannot tell a food from a sentence. Accepting any 1-4 words as a
+  // name logged "feeling tired today man" as Man Fuel High Protein Health Shake
+  // and "craving pizza right now" as 700 kcal of pizza - both caught by the
+  // eval's decline cases, both of which Lane B declines correctly.
+  // Telling those apart needs the CATALOG, not more word rules: the real test
+  // is whether a candidate covers the words the user said. Until Lane A runs
+  // that acceptance gate itself, a phrase with no amount signal goes to Lane B,
+  // which has a model that can decline.
+  return null;
 }
 
 export function parseFastGrammar(text: string): GrammarItem[] | null {
@@ -187,7 +216,10 @@ export function parseFastGrammar(text: string): GrammarItem[] | null {
   // letters at all is not food.
   if (!/[a-z]/.test(t)) return null;
 
-  const parts = t.split(/\s+and\s+|\s*,\s*|\s*\+\s*|\s+with\s+/).map((p) => p.trim()).filter(Boolean);
+  // NOT "with": it joins a dish to its parts ("protein shake with 500ml milk
+  // and 1 scoop whey" is ONE shake, not three items) rather than separating
+  // two foods.
+  const parts = t.split(/\s+and\s+|\s*,\s*|\s*\+\s*/).map((p) => p.trim()).filter(Boolean);
   if (parts.length === 0 || parts.length > 6) return null;
 
   const out: GrammarItem[] = [];

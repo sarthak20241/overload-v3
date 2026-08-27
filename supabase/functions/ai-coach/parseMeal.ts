@@ -25,6 +25,7 @@
 // so catalog-backed numbers are never model-invented.
 
 import { nearWord } from "./textMatch.ts";
+import { parseFastGrammar } from "./fastGrammar.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -580,6 +581,10 @@ export interface ParseMealDeps {
    *  when the gate passes. Default off: this removes the model from the
    *  decision, so it earns its way in on shadow-mode agreement data. */
   skipDecideMode?: "off" | "shadow" | "on";
+  /** Fast Lane A: name the items in CODE and skip the extract call entirely.
+   *  Shadow records what the grammar WOULD have produced without acting on it,
+   *  so its agreement with extract can be measured on real traffic first. */
+  fastGrammarMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
   searchFoods(query: string): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
@@ -2719,8 +2724,30 @@ export async function runParseMeal(
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
+  // ── Lane A: can CODE name these items? ────────────────────────────────────
+  // Only on a first-shot log. With a card on screen the turn may be a
+  // correction, a removal, a question or an addition, and all of those need the
+  // model to read intent - "And a dosa" parses cleanly as one dosa but MEANS
+  // add it to what is already there.
+  const grammarMode = deps.fastGrammarMode ?? "off";
+  const laneA = (!hasPrevious && grammarMode !== "off")
+    ? parseFastGrammar(input.text)
+    : null;
+  if (laneA) {
+    steps.push({
+      iter: 0,
+      tool: "lane_a_grammar",
+      input: { mode: grammarMode, items: laneA.length },
+      result: { named: laneA.map((i) => `${i.quantity} ${i.unit} ${i.prep ?? ""} ${i.name}`.trim()) },
+    });
+  }
+
   const tExtract0 = Date.now();
-  const extractRes = await callAnthropicOnce(deps, {
+  // THE POINT of Lane A: when it is on and it matched, the extract call does
+  // not happen at all. That is the ~1.2s the sub-second budget needs back.
+  const extractRes = (laneA && grammarMode === "on")
+    ? null
+    : await callAnthropicOnce(deps, {
     model: deps.model,
     max_tokens: 700,
     // The correction rules only matter when a meal is on screen, so they stay
@@ -2750,16 +2777,37 @@ export async function runParseMeal(
         : input.text.trim().slice(0, 500),
     }],
   });
-  if (!extractRes.ok) {
+  if (extractRes && !extractRes.ok) {
     throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
   }
-  anthropicCalls++;
-  accumulate(extractRes.data);
-  toolCalls.push("extract_meal");
+  if (extractRes) {
+    anthropicCalls++;
+    accumulate(extractRes.data);
+    toolCalls.push("extract_meal");
+  }
 
-  const extractBlock = ((extractRes.data.content ?? []) as Array<Record<string, any>>)
-    .find((b) => b.type === "tool_use" && b.name === "extract_meal");
-  const ext = (extractBlock?.input ?? {}) as Record<string, unknown>;
+  const extractBlock = extractRes
+    ? ((extractRes.data.content ?? []) as Array<Record<string, any>>)
+      .find((b) => b.type === "tool_use" && b.name === "extract_meal")
+    : undefined;
+  // When the extract call was skipped, the grammar's own items ARE the extract
+  // result. Every flag defaults false: the grammar refuses corrections,
+  // removals and questions outright, so none of them can be true here.
+  const ext: Record<string, unknown> = extractBlock?.input ?? (
+    laneA && grammarMode === "on"
+      ? {
+        declined: false,
+        items: laneA.map((i) => ({
+          name: i.name,
+          brand: null,
+          quantity: i.quantity,
+          unit: i.unit,
+          prep: i.prep,
+          corrects_food_name: null,
+        })),
+      }
+      : {}
+  );
   let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
     .slice(0, 12)
     .flatMap((r: unknown): ExtractedItem[] => {
@@ -2781,6 +2829,31 @@ export async function runParseMeal(
           : null,
       }];
     });
+  // Shadow: did the grammar name the same foods the model did? Recorded, never
+  // acted on, so flipping to "on" is a decision made from real traffic rather
+  // than from how confident the grammar feels. Names are compared through
+  // wordsOverlap because extract deliberately corrects spelling ("panner" ->
+  // "paneer") and canonicalises ("chai" -> "milk tea"), so an exact match would
+  // report disagreement where the two actually agree.
+  if (laneA && grammarMode === "shadow" && extractRes) {
+    const sameCount = laneA.length === extItems.length;
+    const sameNames = sameCount &&
+      laneA.every((g, i) => wordsOverlap(g.name, extItems[i].name));
+    const sameAmounts = sameCount && laneA.every((g, i) =>
+      Math.abs(g.quantity - extItems[i].quantity) < 0.01 &&
+      g.unit.replace(/s$/, "") === extItems[i].unit.toLowerCase().replace(/s$/, "")
+    );
+    steps.push({
+      iter: 0,
+      tool: "lane_a_shadow",
+      input: { same_count: sameCount, same_names: sameNames, same_amounts: sameAmounts },
+      result: (sameNames && sameAmounts) ? { agree: true } : {
+        grammar: laneA.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
+        extract: extItems.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
+      },
+    });
+  }
+
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Previous lines the user explicitly re-targeted. These are deliberately
