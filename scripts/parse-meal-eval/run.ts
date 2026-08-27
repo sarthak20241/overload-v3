@@ -309,6 +309,7 @@ async function main() {
 
   for (const c of cases) {
     const started = Date.now();
+    let lastSteps: import("../../supabase/functions/ai-coach/parseMeal").ParseStep[] | null = null;
     try {
       const baseInput = {
         localHour: c.hour ?? null,
@@ -322,6 +323,7 @@ async function main() {
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
       };
       let result = await runParseMeal(deps, { ...baseInput, text: c.text });
+      lastSteps = result.steps;
       // Follow-up cases: replay the first parse as the meal on screen, then
       // score the follow-up — exactly what the client sends.
       if (c.followUp) {
@@ -338,6 +340,7 @@ async function main() {
           previousText: c.text,
           previousItems: prev,
         });
+        lastSteps = result.steps;
       }
       const failures = scoreCase(c, result);
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
@@ -364,6 +367,13 @@ async function main() {
     }
     const last = outcomes[outcomes.length - 1];
     console.log(`${last.pass ? "PASS" : "FAIL"}  ${c.id.padEnd(24)} ${last.ms}ms  [${last.tiers.join(",")}]`);
+    if (!last.pass && env("DEBUG_STEPS") === "1" && lastSteps) {
+      for (const st of lastSteps) {
+        if (["fast_fill", "search_foods", "lane_a_grammar"].includes(String(st.tool))) {
+          console.log(`      # ${st.tool} ${JSON.stringify(st.input)} -> ${JSON.stringify(st.result ?? null)}`);
+        }
+      }
+    }
     if (!last.pass) for (const f of last.failures) console.log(`      - ${f}`);
     if (last.summary) console.log(`      ${last.summary}`);
     // Be gentle with the API and OFF.

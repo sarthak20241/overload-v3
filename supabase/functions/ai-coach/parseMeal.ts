@@ -1782,8 +1782,15 @@ export function variantClash(
     // Longest first: "double toned" must win over "toned" inside the same name.
     const ordered = [...group].sort((x, y) => y.length - x.length);
     const inSaid = ordered.find((g) => a.includes(` ${g} `));
+    if (!inSaid) continue;
+    // A row can legitimately list SEVERAL terms of one group: USDA writes
+    // "Egg, whole, boiled or poached". If the user's own term is among them
+    // there is no contradiction - comparing against whichever term happens to
+    // be longest called boiled-vs-poached a clash and rejected the exact row
+    // the user wanted.
+    if (b.includes(` ${inSaid} `)) continue;
     const inRow = ordered.find((g) => b.includes(` ${g} `));
-    if (inSaid && inRow && inSaid !== inRow) return { said: inSaid, row: inRow };
+    if (inRow) return { said: inSaid, row: inRow };
   }
   return null;
 }
@@ -3191,9 +3198,26 @@ export async function runParseMeal(
   if (fastMode) {
     const guards = { variantClash, unhonouredGrade, implausiblePer100 };
     const fastItems: ParsedItem[] = resolved.map((r) => {
-      const said = [r.prep, r.name].filter(Boolean).join(" ");
+      // Do not double the prep: extract often bakes it into the name already
+      // ("boiled egg" + prep "boiled"), and the trace showed the gate judging
+      // "boiled boiled egg", which skews both coverage and the guards.
+      const said = (r.prep && !r.name.toLowerCase().includes(r.prep.toLowerCase()))
+        ? `${r.prep} ${r.name}`
+        : r.name;
       const pick = firstAcceptable(said, r.candidates, guards);
       const per1 = pick ? gramsPerUnit(r.unit, pick.cand) : null;
+      // Per-item verdict in the trace. Fast has no decide output to read, so
+      // without this a wrong line is undiagnosable after the fact.
+      steps.push({
+        iter: 2,
+        tool: "fast_fill",
+        input: { item: said, unit: r.unit, candidates: r.candidates.length },
+        result: {
+          picked: pick ? pick.cand.name : null,
+          unit_resolved: !!per1,
+          used: pick && per1 ? "catalog" : (r.est ? "estimate" : "fallback"),
+        },
+      });
       if (pick && per1) {
         const qty = r.quantity > 0 ? r.quantity : 1;
         const grams = round1(per1.grams * qty);
@@ -3216,6 +3240,31 @@ export async function runParseMeal(
           confidence: "high" as const,
         };
       }
+      // An ACCEPTED row whose unit would not resolve (tbsp on a row with no
+      // spoon anchor, katori on a USDA row) used to discard the row entirely
+      // and fall to a pure estimate. Half of that estimate is unnecessary: the
+      // row's per-100 is measured, only the PORTION is a guess. So use the
+      // row's density with the model's gram estimate - roasted edamame gets
+      // its real 38 g protein per 100 instead of the model's 11.
+      if (pick && !per1 && r.est && r.est.total_g > 0) {
+        const grams = round1(Math.min(r.est.total_g, 5000));
+        const f = grams / 100;
+        return {
+          food_id: pick.cand.food_id,
+          food_name: said,
+          quantity: r.quantity > 0 ? r.quantity : 1,
+          serving_label: r.unit,
+          grams,
+          kcal: round1(pick.cand.kcal * f),
+          protein_g: round1(pick.cand.protein_g * f),
+          carb_g: round1(pick.cand.carb_g * f),
+          fat_g: round1(pick.cand.fat_g * f),
+          fiber_g: pick.cand.fiber_g === null ? null : round1(pick.cand.fiber_g * f),
+          source: pick.cand.source,
+          assumption: `Took that as about ${Math.round(grams)} g`,
+          confidence: "medium" as const,
+        };
+      }
       if (r.est) {
         // The model's own numbers, sanity-checked before anyone sees them.
         // Atwater first: when stated kcal and macros disagree by more than 30%
@@ -3232,7 +3281,10 @@ export async function runParseMeal(
           const f = total_g / 100;
           return {
             food_id: null,
-            food_name: r.name,
+            // Brand included: an estimate has no row name to display, so this
+            // IS the display, and "multigrain bar" for a Yogabar loses the
+            // product identity the user typed.
+            food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
             quantity: r.quantity > 0 ? r.quantity : 1,
             serving_label: r.unit,
             grams: round1(total_g),

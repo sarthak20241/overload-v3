@@ -94,3 +94,13 @@ Deno.test("REJECTS a form change hiding behind full coverage", () => {
   // But saying the form word yourself is fine.
   assertEquals(ok("milk powder", row("Amul Sagar Skimmed Milk Powder", { kcal: 714 })), true);
 });
+
+Deno.test("a row listing several preps is not a clash, but a row-only part is", () => {
+  // USDA writes "Egg, whole, boiled or poached". Comparing the user's "boiled"
+  // against whichever listed term was longest rejected the right row - and the
+  // gate then accepted the YOLK row instead, the original 347-vs-143 incident.
+  assertEquals(ok("boiled egg", row("Egg, whole, boiled or poached")), true);
+  assertEquals(why("boiled egg", row("Eggs, chicken, yolk, boiled", { kcal: 347 })), "form-mismatch");
+  // Asking for yolk still gets yolk.
+  assertEquals(ok("egg yolk", row("Eggs, chicken, yolk, boiled", { kcal: 347 })), true);
+});

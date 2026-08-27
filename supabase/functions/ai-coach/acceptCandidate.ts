@@ -68,6 +68,12 @@ const FORM_WORDS = new Set([
   "powder", "powdered", "dried", "dehydrated", "condensed", "evaporated",
   "concentrate", "syrup", "mix", "instant", "frozen", "canned", "pickled",
   "jam", "juice", "squash", "cordial", "chips", "crisps",
+  // A PART is the same blindness as a form: the user who says "egg" means the
+  // whole egg, and a yolk-only row is 347 kcal against 143 - the original
+  // incident this whole guard family exists for. variantClash cannot catch it
+  // because the user's side is silent. "yolk" only: "white" would also reject
+  // white rice and white bread, where white IS the default food.
+  "yolk",
 ]);
 
 function contentWords(s: string): string[] {
@@ -149,8 +155,21 @@ export function firstAcceptable(
   candidates: CandidateFood[],
   guards: Parameters<typeof acceptCandidate>[2],
 ): { cand: CandidateFood; index: number } | null {
+  // Among the rows that pass, prefer the one carrying the FEWEST words the
+  // user did not say. Fast has no reranker, so search order alone chose
+  // "Free range hard boiled eggs" (90 g default) over "Egg, whole, boiled"
+  // (50 g) for "3 boiled eggs" - 270 g of egg. Every extra unexplained word is
+  // specificity the user never asked for, and the row closest to their phrase
+  // is the safest read. Ties keep search order, which still carries the
+  // history and popularity boosts.
+  const saidWords = contentWords(said);
+  let best: { cand: CandidateFood; index: number; extra: number } | null = null;
   for (let i = 0; i < candidates.length; i++) {
-    if (acceptCandidate(said, candidates[i], guards).ok) return { cand: candidates[i], index: i };
+    if (!acceptCandidate(said, candidates[i], guards).ok) continue;
+    const extra = contentWords(`${candidates[i].name} ${candidates[i].brand ?? ""}`)
+      .filter((w) => !saidWords.some((u) => nearWord(u, w))).length;
+    if (!best || extra < best.extra) best = { cand: candidates[i], index: i, extra };
+    if (best.extra === 0) break;
   }
-  return null;
+  return best ? { cand: best.cand, index: best.index } : null;
 }
