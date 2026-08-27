@@ -109,10 +109,10 @@ function cleanName(words: string[]): string | null {
   let kept = [...words];
   while (kept.length > 0 && LEADING_CONNECTIVES.has(kept[0])) kept = kept.slice(1);
   kept = kept.filter((w) => !NOISE.has(w));
-  // Drop provenance words, but never ALL the words: "homemade" alone is not a
-  // food, and refusing is better than searching for nothing.
-  const withoutProvenance = kept.filter((w) => !PROVENANCE_WORDS.has(w));
-  if (withoutProvenance.length > 0) kept = withoutProvenance;
+  // Drop provenance words. If that leaves NOTHING, the message named no food at
+  // all ("100g homemade") and refusing beats searching for a describing word.
+  kept = kept.filter((w) => !PROVENANCE_WORDS.has(w));
+  if (kept.length === 0) return null;
   if (kept.length === 0 || kept.length > 4) return null;
   // A digit inside the name means an amount the grammar failed to consume:
   // "paneer 100g", "rasmalai 2pc", "good day biscuits 2".
