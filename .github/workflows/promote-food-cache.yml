@@ -13,6 +13,8 @@ name: Promote Food Cache
 #   - physically possible: within the per-100 bounds, and kcal that follow from the
 #     row's own macros. With no usage bar these are the only gate, so they run here
 #     rather than being left to whatever reads the row back.
+#   - named like a food, not like a log line. "200g paneer" is fine on one person's
+#     card and permanent in a catalog everyone searches.
 #   - not already covered by a catalog row (a second "Paneer" splits the ranking)
 #
 # Never runs inline with a parse. A promotion is a write to the shared catalog, and

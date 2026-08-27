@@ -7,6 +7,7 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  badDisplayName,
   type CatalogRow,
   findDuplicate,
   isSameFood,
@@ -187,6 +188,48 @@ Deno.test("a near-zero food is not failed by a percentage", () => {
     NOW,
   );
   assertEquals(d.action, "promote");
+});
+
+// ── the name guard, the other half of "fully automatic" ────────────────────
+
+Deno.test("a real food name is published unchanged", () => {
+  assertEquals(badDisplayName("Milky Mist Low Fat Paneer"), null);
+  assertEquals(promotionDecision(cand(), [], NOW).action, "promote");
+});
+
+Deno.test("the failure this prevents: a log line becoming a permanent catalog row", () => {
+  // "200g paneer" is a fine thing to call an item on one person's card. As a
+  // catalog row it is forever, it is what every future search ranks against, and
+  // nothing downstream questions it.
+  assertEquals(badDisplayName("200g paneer") === null, false);
+  const d = promotionDecision(cand({ display_name: "200g paneer" }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "bad-name");
+});
+
+Deno.test("a unit word means the amount was folded into the name", () => {
+  // The exact string fastGrammar refuses to parse, for the same reason.
+  assertEquals(badDisplayName("tea half cup") === null, false);
+  const d = promotionDecision(cand({ display_name: "tea half cup" }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "bad-name");
+});
+
+Deno.test("a sentence is not a food name", () => {
+  const nine = "grilled chicken breast with rice and salad on the side";
+  assertEquals(badDisplayName(nine) === null, false);
+  const d = promotionDecision(cand({ display_name: nine }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "bad-name");
+});
+
+Deno.test("a name too long to be a name is refused even at six words", () => {
+  // Six words of forty characters each is still a description.
+  assertEquals(badDisplayName("Supercalifragilistic Expialidocious Chocolatey Peanutbutter Crunchbar Deluxe") === null, false);
+});
+
+Deno.test("a spelled-out amount is refused", () => {
+  assertEquals(badDisplayName("two rotis") === null, false);
 });
 
 // ── dedup ──────────────────────────────────────────────────────────────────
