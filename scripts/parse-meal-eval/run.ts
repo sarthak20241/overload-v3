@@ -158,6 +158,9 @@ const deps: ParseMealDeps = {
   maxTokens: 1600,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
+  // FAST_GRAMMAR=on runs Lane A for real, so the eval can prove the code-named
+  // path produces the same meals as the model-named one.
+  fastGrammarMode: (env("FAST_GRAMMAR") || "off") as "off" | "shadow" | "on",
   searchFoods: searchCatalogWithServings,
   backfillOffFood: async () => {
     // DRY RUN: never write to prod from the eval. The model still receives

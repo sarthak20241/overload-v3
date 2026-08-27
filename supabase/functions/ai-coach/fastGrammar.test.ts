@@ -30,7 +30,17 @@ Deno.test("counted nouns and articles", () => {
   assertEquals(one("2 eggs").quantity, 2);
   assertEquals(one("a samosa"), { name: "samosa", quantity: 1, unit: "serving", prep: null });
   assertEquals(one("a bowl of dal"), { name: "dal", quantity: 1, unit: "bowl", prep: null });
-  assertEquals(one("chole salad").name, "chole salad");
+});
+
+Deno.test("REFUSES a bare phrase, because grammar cannot tell food from chatter", () => {
+  // This is the hardest limit of Lane A and it cost real regressions to find.
+  // Accepting any 1-4 words as a name logged these, both caught by the eval:
+  assertEquals(parseFastGrammar("feeling tired today man"), null);  // -> Man Fuel Protein Shake
+  assertEquals(parseFastGrammar("craving pizza right now"), null);  // -> 700 kcal of pizza
+  // The cost is real: these ARE foods and now go to Lane B instead.
+  assertEquals(parseFastGrammar("chole salad"), null);
+  assertEquals(parseFastGrammar("dosa and curry"), null);
+  // Telling them apart needs the catalog, not more word rules.
 });
 
 Deno.test("prep words survive into the name's query", () => {
@@ -40,10 +50,12 @@ Deno.test("prep words survive into the name's query", () => {
 });
 
 Deno.test("splits on connectives without leaking them", () => {
-  // "Ram papad, and bhel puri" produced a food called "and bhel puri".
-  const g = parseFastGrammar("Ram papad, and bhel puri")!;
-  assertEquals(g.map((i) => i.name), ["ram papad", "bhel puri"]);
   assertEquals(parseFastGrammar("100g paneer and 50g tofu")!.length, 2);
+  assertEquals(parseFastGrammar("1 katori dal and 2 roti")!.length, 2);
+  // A connective must never survive into a name: "Ram papad, and bhel puri"
+  // once produced a food called "and bhel puri". Both parts are bare now, so
+  // the whole message is refused, but the leading-connective strip still runs.
+  assertEquals(parseFastGrammar("2 eggs, and 1 katori dal")!.map((i) => i.name), ["eggs", "dal"]);
 });
 
 Deno.test("REFUSES a metrics log", () => {
@@ -78,4 +90,23 @@ Deno.test("REFUSES corrections, removals and questions", () => {
 
 Deno.test("REFUSES a whole-day dump", () => {
   assertEquals(parseFastGrammar("Breakfast: eggs\nLunch: dal chawal"), null);
+});
+
+Deno.test("REFUSES 'with', which joins a dish to its parts", () => {
+  // "protein shake with 500ml milk and 1 scoop whey" is ONE shake. Splitting on
+  // "with" made it three items and broke the shake-two-items eval case.
+  const g = parseFastGrammar("protein shake with 500ml milk and 1 scoop whey");
+  assertEquals(g, null);
+});
+
+Deno.test("REFUSES a preposition clause, and drops provenance words", () => {
+  // "1 tsp ghee ON MY roti" is two foods; the grammar once read it as one food
+  // called "ghee on my roti" and silently lost the roti.
+  assertEquals(parseFastGrammar("1 tsp ghee on my roti"), null);
+  // "fresh"/"homemade" describe provenance, not the product (I11b calls them
+  // droppable). Keeping them searched for the whole phrase and missed the
+  // plain Curd row.
+  assertEquals(parseFastGrammar("100g fresh homemade curd")![0].name, "curd");
+  // But never drop ALL the words - "homemade" alone is not a food.
+  assertEquals(parseFastGrammar("100g homemade"), null);
 });
