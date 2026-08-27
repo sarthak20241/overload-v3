@@ -138,7 +138,11 @@ export function ParsedMealCard({
   const selected: MealType = mealType ?? meal?.meal_type ?? 'snack';
   // Collapsing is only offered on `review`. The other three states are already
   // short and transient, and hiding a decline or an error would just lose it.
-  const collapsible = state === 'review' && !!meal && !!onToggleMinimize;
+  // Not while work is in flight either: collapsing would hide the "Adding..."
+  // or checking status and leave Discard as the one live control on the strip,
+  // which is the same race onEditItem/onRemoveItem are already frozen for.
+  const collapsible = state === 'review' && !!meal && !!onToggleMinimize
+    && !adding && !busyChecking;
   const isCollapsed = collapsible && !!minimized;
 
   if (isCollapsed && meal) {
@@ -147,25 +151,33 @@ export function ParsedMealCard({
     const summary = `${n} ${n === 1 ? 'item' : 'items'} · ${kcal} kcal → ${mealLabel(selected)}`;
     return (
       <Animated.View entering={FadeIn.duration(160)} style={[s.card, s.cardCollapsed]}>
-        <Pressable
-          onPress={onToggleMinimize}
-          style={s.collapsedRow}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: false }}
-          accessibilityLabel={`Waiting to be added: ${summary}`}
-          accessibilityHint="Opens the parsed meal again"
-        >
-          <DronaMark size={16} />
-          <Text style={s.collapsedTxt} numberOfLines={1}>{summary}</Text>
-          <Feather name="chevron-up" size={15} color={C.textMuted} />
+        {/* Expand and Discard are SIBLINGS, not nested. A Pressable inside an
+            accessible Pressable can be collapsed into the outer button by
+            VoiceOver / TalkBack, leaving Discard unreachable. */}
+        <View style={s.collapsedRow}>
           <Pressable
-            onPress={(e) => { e.stopPropagation(); onDismiss?.(); }}
-            hitSlop={8}
-            accessibilityLabel="Discard"
+            onPress={onToggleMinimize}
+            style={s.collapsedMain}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: false }}
+            accessibilityLabel={`Waiting to be added: ${summary}`}
+            accessibilityHint="Opens the parsed meal again"
           >
-            <Feather name="x" size={14} color={C.textMuted} />
+            <DronaMark size={16} />
+            <Text style={s.collapsedTxt} numberOfLines={1}>{summary}</Text>
+            <Feather name="chevron-up" size={15} color={C.textMuted} />
           </Pressable>
-        </Pressable>
+          {!!onDismiss && (
+            <Pressable
+              onPress={onDismiss}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Discard"
+            >
+              <Feather name="x" size={14} color={C.textMuted} />
+            </Pressable>
+          )}
+        </View>
       </Animated.View>
     );
   }
@@ -412,6 +424,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     // handle rather than an empty card.
     cardCollapsed: { paddingVertical: 10, paddingHorizontal: Spacing.md },
     collapsedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    // Takes the row so tapping anywhere but the X expands.
+    collapsedMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
     collapsedTxt: {
       flex: 1, fontSize: FontSize.sm, color: C.foreground,
       fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'],
