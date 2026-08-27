@@ -7,7 +7,7 @@
  * user_profiles (the ai-coach parse_meal fn reads the same values for Drona's
  * day-aware line). Portal sheet, matching EntryEditSheet / SetTypeSheet.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, ScrollView, Pressable, TouchableOpacity, StyleSheet, BackHandler, Keyboard, Platform, useWindowDimensions } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,7 +17,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
-import { saveNutritionTargets, type NutritionTargets } from '@/lib/dietData';
+import {
+  saveNutritionTargets, energySplit, macrosForKcal, macroKcal,
+  type NutritionTargets, type EnergySplit,
+} from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 
@@ -48,6 +51,9 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     kcal: '', protein: '', carb: '', fat: '',
   });
   const [busy, setBusy] = useState(false);
+  // The split the calorie field scales against. Seeded from the saved goal and
+  // re-read whenever the user edits a macro by hand, so their own ratio sticks.
+  const splitRef = useRef<EnergySplit>(energySplit(initial));
 
   const { mounted, slideStyle } = useSheetSlide(open);
   const [kbHeight, setKbHeight] = useState(0);
@@ -61,16 +67,23 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     return () => { showSub.remove(); hideSub.remove(); };
   }, [open]);
 
+  // Seed the form on the closed -> open edge only. Re-seeding whenever `initial`
+  // changes would let a background target refresh (the hook refetches on focus)
+  // overwrite whatever the user is halfway through typing, so we gate on the
+  // transition rather than dropping `initial` out of the dependency list.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpen.current) {
       setVals({
         kcal: String(Math.round(initial.kcal)),
         protein: String(Math.round(initial.protein)),
         carb: String(Math.round(initial.carb)),
         fat: String(Math.round(initial.fat)),
       });
+      splitRef.current = energySplit(initial);
       setBusy(false);
     }
+    wasOpen.current = open;
   }, [open, initial]);
 
   useEffect(() => {
@@ -78,6 +91,52 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
     return () => sub.remove();
   }, [open, onClose]);
+
+  // Editing calories re-derives the macros at the same split; editing a macro
+  // re-reads the split so the next calorie change respects it.
+  //
+  // The next state is computed here rather than inside a setVals updater: React
+  // may replay or discard an updater, and a discarded one that had written
+  // splitRef would leave the split describing values that never committed.
+  // Updaters stay pure; the ref is written from the handler, which runs once.
+  const onChangeField = (key: keyof NutritionTargets, raw: string) => {
+    const txt = raw.replace(/[^0-9]/g, '').slice(0, 5);
+    if (key === 'kcal') {
+      const n = parseInt(txt, 10);
+      // Ignore half-typed numbers below the floor ("1" on the way to "1600");
+      // scaling those would round the macros to junk. onSave re-derives from the
+      // clamped value, so a number left out of range still saves consistently.
+      if (!Number.isFinite(n) || n < FIELDS[0].min) {
+        setVals({ ...vals, kcal: txt });
+        return;
+      }
+      const m = macrosForKcal(Math.min(n, FIELDS[0].max), splitRef.current);
+      setVals({ kcal: txt, protein: String(m.protein), carb: String(m.carb), fat: String(m.fat) });
+      return;
+    }
+    const next = { ...vals, [key]: txt };
+    splitRef.current = energySplit({
+      protein: parseInt(next.protein, 10) || 0,
+      carb: parseInt(next.carb, 10) || 0,
+      fat: parseInt(next.fat, 10) || 0,
+    });
+    setVals(next);
+  };
+
+  // Live read-out so the split is visible, and so a hand-edited macro that no
+  // longer matches the calorie goal says so instead of hiding.
+  const parsed = {
+    protein: parseInt(vals.protein, 10) || 0,
+    carb: parseInt(vals.carb, 10) || 0,
+    fat: parseInt(vals.fat, 10) || 0,
+  };
+  const sumKcal = macroKcal(parsed);
+  const goalKcal = parseInt(vals.kcal, 10);
+  const drift = Number.isFinite(goalKcal) ? sumKcal - goalKcal : 0;
+  const onGoal = Math.abs(drift) <= 5;
+  const driftNote = onGoal
+    ? 'That matches your goal.'
+    : `That is ${Math.abs(drift)} ${drift > 0 ? 'over' : 'under'} your goal.`;
 
   if (!mounted) return <Portal>{null}</Portal>;
 
@@ -93,12 +152,24 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
       if (!Number.isFinite(n)) return fallback;
       return Math.min(Math.max(n, f.min), f.max);
     };
+    const kcal = clamp(vals.kcal, FIELDS[0], initial.kcal);
     const next: NutritionTargets = {
-      kcal: clamp(vals.kcal, FIELDS[0], initial.kcal),
+      kcal,
       protein: clamp(vals.protein, FIELDS[1], initial.protein),
       carb: clamp(vals.carb, FIELDS[2], initial.carb),
       fat: clamp(vals.fat, FIELDS[3], initial.fat),
     };
+    // A calorie value the field never rescaled against (blank, or outside
+    // 800..8000) would otherwise save the CLAMPED number next to macros still
+    // sized for the old goal: typing 700 over a 2200 goal saved 800 kcal with
+    // ~2200 kcal of macros. Re-derive at the split whenever what we are about
+    // to persist is not what the user typed.
+    if (kcal !== parseInt(vals.kcal, 10)) {
+      const m = macrosForKcal(kcal, splitRef.current);
+      next.protein = m.protein;
+      next.carb = m.carb;
+      next.fat = m.fat;
+    }
     const { error } = await saveNutritionTargets(supabase, clerkId, next);
     setBusy(false);
     if (error) { haptics.warning(); return; }
@@ -147,7 +218,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
                 <TextInput
                   style={[s.input, { color: C.foreground, backgroundColor: C.muted }]}
                   value={vals[f.key]}
-                  onChangeText={(t) => setVals((v) => ({ ...v, [f.key]: t.replace(/[^0-9]/g, '').slice(0, 5) }))}
+                  onChangeText={(t) => onChangeField(f.key, t)}
                   keyboardType="number-pad"
                   returnKeyType="done"
                   selectTextOnFocus
@@ -157,6 +228,12 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
                 <Text style={[s.unit, { color: C.textMuted }]}>{f.unit}</Text>
               </View>
             ))}
+
+            <View style={[s.summary, { borderColor: C.borderSubtle }]}>
+              <Text style={[s.summaryTxt, { color: onGoal ? C.mutedFg : C.macro.calories }]}>
+                {`Macros add up to ${sumKcal} kcal. ${driftNote}`}
+              </Text>
+            </View>
           </ScrollView>
 
           <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
@@ -185,6 +262,9 @@ const s = StyleSheet.create({
     fontSize: FontSize.base, fontWeight: FontWeight.semibold, textAlign: 'right', fontVariant: ['tabular-nums'],
   },
   unit: { fontSize: FontSize.sm, width: 28 },
+
+  summary: { paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
+  summaryTxt: { fontSize: FontSize.sm, lineHeight: 18 },
 
   saveBtn: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary, borderRadius: Radius.md, paddingVertical: 14, marginTop: Spacing.lg },
   saveTxt: { fontSize: FontSize.base, color: Colors.primaryFg, fontWeight: FontWeight.bold },
