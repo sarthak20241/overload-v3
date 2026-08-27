@@ -544,7 +544,7 @@ export default function NutritionScreen() {
                     {e.food_name} <Text style={s.serving}>· {e.quantity !== 1 ? `${e.quantity} × ` : ''}{e.serving_unit}</Text>
                   </Text>
                   <View style={s.macros}>
-                    <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
+                    <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
                     <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
                     <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
                     <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>

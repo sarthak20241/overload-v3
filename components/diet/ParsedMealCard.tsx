@@ -260,7 +260,7 @@ export function ParsedMealCard({
                   )}
                 </View>
                 <View style={s.macros}>
-                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)}</Text>
+                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} cal</Text>
                   <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
                   <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
                   <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>

@@ -387,7 +387,7 @@ export default function MealBuilderScreen() {
               <Pressable style={{ flex: 1 }} onPress={() => editItem(it, i)}>
                 <Text style={s.itemName} numberOfLines={1}>{it.food_name}<Text style={s.itemServ}>{'  '}{round(it.quantity * 10) / 10} × {it.serving_label}</Text></Text>
                 <View style={s.itemMacros}>
-                  <Text style={[s.macro, { color: C.foreground }]}>{round(it.kcal)}</Text>
+                  <Text style={[s.macro, { color: C.foreground }]}>{round(it.kcal)} cal</Text>
                   <Text style={[s.macro, { color: C.macro.protein }]}>{round(it.protein_g)} P</Text>
                   <Text style={[s.macro, { color: C.macro.carbs }]}>{round(it.carb_g)} C</Text>
                   <Text style={[s.macro, { color: C.macro.fat }]}>{round(it.fat_g)} F</Text>
