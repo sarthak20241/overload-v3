@@ -16,7 +16,7 @@
  * boundary. Tables live in migration 0096_coach_programs.sql.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { energySplit, macrosForKcal, DEFAULT_TARGETS } from '@/lib/dietData';
+import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -248,8 +248,10 @@ export async function applyPhaseTargets(
 
   // A phase that moves calories but omits a macro used to leave that macro at
   // its old gram value, so the four targets no longer added up (a cut to 1300
-  // kcal keeping 365 g of carbs). Fill the omitted ones by holding the user's
-  // current split at the new calorie total.
+  // kcal keeping 365 g of carbs). Fill only the omitted ones, from the calories
+  // this phase's OWN explicit macros leave over: deriving them from the old
+  // profile split instead would ignore the protein this same call is writing
+  // and land right back on four numbers that disagree.
   if (diet.calories != null && (diet.protein_g == null || diet.carb_g == null || diet.fat_g == null)) {
     const { data: cur, error: curErr } = await supabase
       .from('user_profiles')
@@ -262,14 +264,18 @@ export async function applyPhaseTargets(
     if (curErr) throw curErr;
     const c = (cur ?? {}) as Record<string, unknown>;
     const g = (v: unknown, def: number) => (v == null ? def : Number(v));
-    const scaled = macrosForKcal(diet.calories, energySplit({
-      protein: g(c.protein_target_g, DEFAULT_TARGETS.protein),
-      carb: g(c.carb_target_g, DEFAULT_TARGETS.carb),
-      fat: g(c.fat_target_g, DEFAULT_TARGETS.fat),
-    }));
-    // Re-clamp: the scaled grams are derived, so they get the same bounds as
+    const filled = fillMissingMacros(
+      diet.calories,
+      { protein: diet.protein_g ?? null, carb: diet.carb_g ?? null, fat: diet.fat_g ?? null },
+      {
+        protein: g(c.protein_target_g, DEFAULT_TARGETS.protein),
+        carb: g(c.carb_target_g, DEFAULT_TARGETS.carb),
+        fat: g(c.fat_target_g, DEFAULT_TARGETS.fat),
+      },
+    );
+    // Re-clamp: the filled grams are derived, so they get the same bounds as
     // anything the coach sends.
-    const bounded = clampDiet({ protein_g: scaled.protein, carb_g: scaled.carb, fat_g: scaled.fat });
+    const bounded = clampDiet({ protein_g: filled.protein, carb_g: filled.carb, fat_g: filled.fat });
     if (diet.protein_g == null) payload.protein_target_g = bounded.protein_g;
     if (diet.carb_g == null) payload.carb_target_g = bounded.carb_g;
     if (diet.fat_g == null) payload.fat_target_g = bounded.fat_g;

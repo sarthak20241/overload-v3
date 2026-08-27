@@ -148,7 +148,10 @@ export function useDayNutrition(dayIso: string): DayData {
         await hydrateCache(user?.id);
         if (cancelled) return;
         const disk = readCache<DayCache>('dayNutrition', user?.id);
-        if (disk && disk.key === key && !_navCache) {
+        // Key-aware on BOTH sides: _navCache is a module global that survives an
+        // account switch, so `!_navCache` alone would let a previous user's
+        // entry block this user's disk restore.
+        if (disk && disk.key === key && (!_navCache || _navCache.key !== key)) {
           _navCache = disk;
           setByMeal(disk.byMeal);
           setLoading(false);
@@ -808,6 +811,58 @@ export function macrosForKcal(kcal: number, split: EnergySplit): { protein: numb
 /** Calories the three gram targets actually add up to. */
 export function macroKcal(t: { protein: number; carb: number; fat: number }): number {
   return t.protein * KCAL_PER_G.protein + t.carb * KCAL_PER_G.carb + t.fat * KCAL_PER_G.fat;
+}
+
+/**
+ * Fill in only the macros a caller left out, so all four targets add up to
+ * `kcal`. Whatever the caller specified is kept EXACTLY; the omitted ones share
+ * the calories left over, in the same proportion they had to each other before.
+ *
+ * This is the partial case `macrosForKcal` cannot express. A coach phase that
+ * says "1300 kcal, keep protein at 100" must not have its 100 g overwritten,
+ * and must not have carbs and fat derived from a split that still counts the
+ * old protein: that lands back on four numbers that do not add up.
+ */
+export function fillMissingMacros(
+  kcal: number,
+  given: { protein?: number | null; carb?: number | null; fat?: number | null },
+  current: { protein: number; carb: number; fat: number },
+): { protein: number; carb: number; fat: number } {
+  const KEYS = ['protein', 'carb', 'fat'] as const;
+  const out = {
+    protein: given.protein ?? current.protein,
+    carb: given.carb ?? current.carb,
+    fat: given.fat ?? current.fat,
+  };
+  const missing = KEYS.filter((k) => given[k] == null);
+  if (missing.length === 0) return out;
+
+  const fixedKcal = KEYS
+    .filter((k) => given[k] != null)
+    .reduce((sum, k) => sum + (given[k] as number) * KCAL_PER_G[k], 0);
+  // A phase whose explicit macros already exceed its calorie target leaves
+  // nothing to share out; zero beats a negative gram target.
+  const remaining = Math.max(0, kcal - fixedKcal);
+
+  const raw = missing.map((k) => current[k] * KCAL_PER_G[k]);
+  const rawTotal = raw.reduce((a, b) => a + b, 0);
+  const weights = rawTotal > 0 ? raw : missing.map((k) => DEFAULT_TARGETS[k] * KCAL_PER_G[k]);
+  const wTotal = weights.reduce((a, b) => a + b, 0);
+  const share = wTotal > 0 ? weights.map((w) => w / wTotal) : missing.map(() => 1 / missing.length);
+
+  // The last omitted macro takes whatever is left rather than its own rounded
+  // share, so the four land ON the target instead of near it.
+  let used = 0;
+  missing.forEach((k, i) => {
+    if (i < missing.length - 1) {
+      const grams = Math.max(0, Math.round((remaining * share[i]) / KCAL_PER_G[k]));
+      out[k] = grams;
+      used += grams * KCAL_PER_G[k];
+    } else {
+      out[k] = Math.max(0, Math.round((remaining - used) / KCAL_PER_G[k]));
+    }
+  });
+  return out;
 }
 
 interface CachedTargets { targets: NutritionTargets; isCustom: boolean }
