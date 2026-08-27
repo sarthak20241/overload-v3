@@ -406,10 +406,21 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
     const key = (e.food_name ?? '').toLowerCase().trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const grams = num(e.grams_logged);
     const qty = num(e.quantity) || 1;
-    const per100 = grams > 0 ? 100 / grams : 0; // entry snapshot -> per-100 basis
-    const unitGrams = qty > 0 ? grams / qty : grams; // grams of one serving_unit
+    const loggedGrams = num(e.grams_logged);
+    // A parsed entry often has NO gram weight: Drona knew a scoop of whey was
+    // 130 kcal without knowing what it weighed, so grams_logged is null. The
+    // old `grams > 0 ? 100 / grams : 0` turned that into a per-100 basis of
+    // ZERO, which multiplied every macro to nothing. The row then read
+    // "0 cal · 0g P", and re-logging it from Recent wrote those zeros into a
+    // real diary entry, so the bug laundered itself into the user's day.
+    //
+    // With no mass to scale by, treat one serving_unit as the 100-unit basis.
+    // The per-UNIT macros are preserved exactly, which is all this list feeds:
+    // the picker re-logs by serving, not by weight.
+    const unitGrams = loggedGrams > 0 && qty > 0 ? loggedGrams / qty : 100;
+    const totalGrams = unitGrams * qty;
+    const per100 = totalGrams > 0 ? 100 / totalGrams : 0;
     out.push({
       id: e.food_id ?? null,
       name: e.food_name,
@@ -419,7 +430,10 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
       carb_g: num(e.carb_g) * per100, fat_g: num(e.fat_g) * per100,
       fiber_g: num(e.fiber_g) * per100, sugar_g: num(e.sugar_g) * per100,
       sat_fat_g: num(e.sat_fat_g) * per100, sodium_mg: num(e.sodium_mg) * per100,
-      servings: unitGrams > 0 ? [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }] : [],
+      // Always carries a serving now: unitGrams falls back to 100 rather than 0,
+      // so a weightless entry keeps its own label ("scoop") instead of dropping
+      // to the generic "100 g" the empty-list fallback produced.
+      servings: [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }],
     });
     if (out.length >= limit) break;
   }
