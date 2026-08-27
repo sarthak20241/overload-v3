@@ -26,6 +26,7 @@ export type RejectReason =
   | "uncovered-word"
   | "variant-clash"
   | "grade-not-honoured"
+  | "form-mismatch"
   | "implausible";
 
 export interface AcceptResult {
@@ -54,6 +55,20 @@ const SYNONYMS: Record<string, string[]> = {
   chai: ["tea"],
   anda: ["egg", "eggs"],
 };
+
+/**
+ * Words that change the physical FORM of a food. The coverage rule lets a row
+ * say more than the user did, because catalogs are precise where people are
+ * loose - but "more" must never include one of these. Found live on the fast
+ * path: "200 ml amul skimmed milk" accepted "Amul Sagar Skimmed Milk POWDER",
+ * 714 kcal/100g against milk's ~35. Every user word was covered; the row's
+ * extra word was doing all the damage.
+ */
+const FORM_WORDS = new Set([
+  "powder", "powdered", "dried", "dehydrated", "condensed", "evaporated",
+  "concentrate", "syrup", "mix", "instant", "frozen", "canned", "pickled",
+  "jam", "juice", "squash", "cordial", "chips", "crisps",
+]);
 
 function contentWords(s: string): string[] {
   return s
@@ -105,6 +120,13 @@ export function acceptCandidate(
 
   const grade = guards.unhonouredGrade(said, row);
   if (grade) return { ok: false, reason: "grade-not-honoured", detail: grade };
+
+  // A form word the ROW carries and the user did not say is a different food,
+  // not a more precise one. Symmetric with variantClash in spirit, but here
+  // the user's side is silent, so contradiction checks cannot see it.
+  const saidWords = new Set(contentWords(said));
+  const rowForm = contentWords(row).find((w) => FORM_WORDS.has(w) && !saidWords.has(w));
+  if (rowForm) return { ok: false, reason: "form-mismatch", detail: rowForm };
 
   if (!coversUserWords(said, row, cand.brand)) {
     const missing = contentWords(said).find((n) => !coversUserWords(n, row, cand.brand));

@@ -94,6 +94,9 @@ const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "fals
 // Fast Lane A. Shadow by default: measure the grammar against extract on real
 // traffic before letting it replace the call.
 const PARSE_FAST_GRAMMAR = (Deno.env.get("PARSE_FAST_GRAMMAR") ?? "shadow") as "off" | "shadow" | "on";
+// Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
+// server never routes anyone to fast on its own.
+const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
 // users get metered AI instead of none: 3 chat messages and 3 meal parses
@@ -1796,6 +1799,10 @@ async function handleParseMealRequest(args: {
         text,
         localHour,
         mealHint,
+        // Client-chosen, server-killable. PARSE_FAST_MODE=off ignores the
+        // client entirely, so a bad Fast rollout dies with one env change and
+        // no app release.
+        mode: (body.mode === "fast" && PARSE_FAST_MODE !== "off") ? "fast" : null,
         // Placeholders; the real values are awaited from contextPromise inside
         // runParseMeal (after extract), so these queries overlap extraction.
         recentFoods: [],

@@ -85,3 +85,12 @@ Deno.test("coversUserWords is directional", () => {
   assertEquals(coversUserWords("milk", "Toned Milk"), true);   // row more specific: fine
   assertEquals(coversUserWords("toned milk", "Milk"), false);  // row less specific: not fine
 });
+
+Deno.test("REJECTS a form change hiding behind full coverage", () => {
+  // Found live on the fast path: every user word covered, and the row's EXTRA
+  // word was doing all the damage - powder is 714 kcal where milk is ~35.
+  assertEquals(why("amul skimmed milk", row("Amul Sagar Skimmed Milk Powder", { kcal: 714 })), "form-mismatch");
+  assertEquals(why("banana", row("Banana chips", { kcal: 519 })), "form-mismatch");
+  // But saying the form word yourself is fine.
+  assertEquals(ok("milk powder", row("Amul Sagar Skimmed Milk Powder", { kcal: 714 })), true);
+});

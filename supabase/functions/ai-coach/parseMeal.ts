@@ -26,6 +26,7 @@
 
 import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
+import { firstAcceptable } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -547,6 +548,10 @@ export interface ParseMealInput {
   text: string;
   localHour: number | null;
   mealHint: MealType | null;
+  /** "fast": one model call names AND estimates, catalog resolve, code fill,
+   *  no decide. Honoured only on a first-shot log; with a meal on screen the
+   *  turn may be a correction and falls through to the full pipeline. */
+  mode?: "fast" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
@@ -1218,6 +1223,45 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
 - ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance.
 When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
+/**
+ * Fast mode's naming call, which also carries the model's own numbers.
+ *
+ * Measured 2026-08-27: requiring these fields costs +658ms and roughly doubles
+ * output tokens, so ONLY fast pays it - Smart keeps the lean tool and lets
+ * decide handle the fallback. The win is that a separate estimate call cannot
+ * start until the names exist, i.e. a full extra round trip (~1.2s); fused is
+ * about half that, and the estimate is already in hand when the accept gate
+ * rejects a row.
+ *
+ * The per-100 contract is IN THE FIELD NAMES, not just the descriptions. The
+ * first probe asked for "per-100g kcal" in prose and got back
+ * {est_grams: 450, est_kcal: 350} for a plate of chole bhature - 350 is
+ * neither a credible total nor per-100, the model had conflated the two.
+ * A name like est_per100_kcal is much harder to misread.
+ */
+const FAST_EXTRACT_TOOL = (() => {
+  const t = JSON.parse(JSON.stringify(EXTRACT_TOOL));
+  const item = t.input_schema.properties.items.items;
+  Object.assign(item.properties, {
+    est_per100_kcal: {
+      type: "number",
+      description: "Your best kcal PER 100 g (or 100 ml) of this food. PER 100, never the total for the amount eaten.",
+    },
+    est_per100_protein_g: { type: "number", description: "Protein grams PER 100 g." },
+    est_per100_carb_g: { type: "number", description: "Carb grams PER 100 g." },
+    est_per100_fat_g: { type: "number", description: "Fat grams PER 100 g." },
+    est_total_g: {
+      type: "number",
+      description: 'TOTAL grams (or ml) the stated amount comes to: "1 plate chole bhature" is ~400, "2 rotis" ~80.',
+    },
+  });
+  item.required = [
+    ...item.required,
+    "est_per100_kcal", "est_per100_protein_g", "est_per100_carb_g", "est_per100_fat_g", "est_total_g",
+  ];
+  return t;
+})();
+
 const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
@@ -1381,6 +1425,10 @@ export interface ExtractedItem {
   /** When this entry corrects a line of the meal under review, that line's
    *  food_name verbatim — the handle we re-target it by. */
   correctsFoodName?: string | null;
+  /** Fast mode only: the model's own per-100 numbers, produced in the SAME
+   *  call that named the food. Null when any field was missing or negative -
+   *  a partial estimate is not an estimate. */
+  est?: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number } | null;
 }
 
 interface ResolvedItem extends ExtractedItem {
@@ -1432,6 +1480,9 @@ async function resolveOneItem(
   /** Lower-cased names of foods this user logs repeatedly (I13). Used ONLY to
    *  stop the reranker discarding them; see the promotion below. */
   stapleNames?: Set<string>,
+  /** Fast mode: skip FatSecret (~4s cold cache) and the reranker (~400ms +
+   *  429 risk). The accept gate does the judging instead. */
+  lean = false,
 ): Promise<ResolvedItem> {
   // Query ladder: full name, brand-qualified, then progressively fewer words
   // (the 0079 search requires EVERY word to match, so an over-specified name
@@ -1537,7 +1588,7 @@ async function resolveOneItem(
   };
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
-    if (!deps.searchFatSecret) return [];
+    if (lean || !deps.searchFatSecret) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
@@ -1591,7 +1642,7 @@ async function resolveOneItem(
   // Rerank: the user's own phrase against each candidate, best first. This is
   // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
   // the sources returned. Fail-open: on any miss the merge order stands.
-  if (deps.rerankCandidates && usable.length > 1) {
+  if (!lean && deps.rerankCandidates && usable.length > 1) {
     const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
     const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
     const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
@@ -2721,6 +2772,10 @@ export async function runParseMeal(
   // ── Stage 1: extract ──────────────────────────────────────────────────────
   const prevItems = input.previousItems ?? [];
   const hasPrevious = prevItems.length > 0;
+  // Fast only ever handles a first-shot log. With a card on screen the turn may
+  // be a correction, removal, question or addition, and those need the full
+  // pipeline; silently degrading them to fast would eat the user's intent.
+  const fastMode = input.mode === "fast" && !hasPrevious;
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -2753,7 +2808,7 @@ export async function runParseMeal(
     // The correction rules only matter when a meal is on screen, so they stay
     // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
     system: cacheableSystem(hasPrevious ? EXTRACT_SYSTEM + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM),
-    tools: withToolCache([EXTRACT_TOOL]),
+    tools: withToolCache([fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL]),
     tool_choice: { type: "tool", name: "extract_meal" },
     messages: [{
       role: "user",
@@ -2827,6 +2882,16 @@ export async function runParseMeal(
         correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()
           ? o.corrects_food_name.trim().slice(0, 120)
           : null,
+        // All five or nothing: a partial estimate is not an estimate, and a
+        // missing field silently read as 0 is how zero-kcal lines shipped once
+        // before.
+        est: (() => {
+          const nums = ["est_per100_kcal", "est_per100_protein_g", "est_per100_carb_g", "est_per100_fat_g", "est_total_g"]
+            .map((k) => o[k]);
+          if (!nums.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)) return null;
+          const [kcal, protein_g, carb_g, fat_g, total_g] = nums as number[];
+          return total_g > 0 ? { kcal, protein_g, carb_g, fat_g, total_g: Math.min(total_g, 5000) } : null;
+        })(),
       }];
     });
   // Shadow: did the grammar name the same foods the model did? Recorded, never
@@ -3102,7 +3167,7 @@ export async function runParseMeal(
       .map((r) => r.food_name.trim().toLowerCase()),
   );
   const resolved = await Promise.all(
-    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames)),
+    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
@@ -3116,6 +3181,104 @@ export async function runParseMeal(
   // P3: when every item reranked strongly and its quantity converts without
   // judgment, the code fill IS the answer and this whole call is skipped.
   const candidatePer100 = per100ForItems(resolved);
+
+  // ── FAST MODE: no decide call, ever ───────────────────────────────────────
+  // The pick decide makes in Smart is made here by the accept gate, which
+  // DEFAULTS TO NO: a row that does not cover the user's words falls through to
+  // the estimate the naming call already produced. Near-but-uncertain beats
+  // precise-about-the-wrong-food, and the estimate is free at this point - it
+  // rode in on the extract call.
+  if (fastMode) {
+    const guards = { variantClash, unhonouredGrade, implausiblePer100 };
+    const fastItems: ParsedItem[] = resolved.map((r) => {
+      const said = [r.prep, r.name].filter(Boolean).join(" ");
+      const pick = firstAcceptable(said, r.candidates, guards);
+      const per1 = pick ? gramsPerUnit(r.unit, pick.cand) : null;
+      if (pick && per1) {
+        const qty = r.quantity > 0 ? r.quantity : 1;
+        const grams = round1(per1.grams * qty);
+        const f = grams / 100;
+        return {
+          food_id: pick.cand.food_id,
+          // The user's phrase, not the row's name: verifyItems runs the
+          // name/row agreement on it, then displays the row's real name.
+          food_name: said,
+          quantity: qty,
+          serving_label: per1.label,
+          grams,
+          kcal: round1(pick.cand.kcal * f),
+          protein_g: round1(pick.cand.protein_g * f),
+          carb_g: round1(pick.cand.carb_g * f),
+          fat_g: round1(pick.cand.fat_g * f),
+          fiber_g: pick.cand.fiber_g === null ? null : round1(pick.cand.fiber_g * f),
+          source: pick.cand.source,
+          assumption: null,
+          confidence: "high" as const,
+        };
+      }
+      if (r.est) {
+        // The model's own numbers, sanity-checked before anyone sees them.
+        // Atwater first: when stated kcal and macros disagree by more than 30%
+        // (the shipped checkAtwater tolerance) the macros win - three
+        // constrained numbers against one free one, and the probe caught the
+        // model conflating a total with per-100 exactly once already.
+        const { protein_g, carb_g, fat_g, total_g } = r.est;
+        const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
+        const kcal = (atwater > 0 && Math.abs(r.est.kcal - atwater) > 0.3 * Math.max(r.est.kcal, atwater))
+          ? atwater
+          : r.est.kcal;
+        const bad = implausiblePer100({ kcal, protein_g, carb_g, fat_g });
+        if (!bad) {
+          const f = total_g / 100;
+          return {
+            food_id: null,
+            food_name: r.name,
+            quantity: r.quantity > 0 ? r.quantity : 1,
+            serving_label: r.unit,
+            grams: round1(total_g),
+            kcal: round1(kcal * f),
+            protein_g: round1(protein_g * f),
+            carb_g: round1(carb_g * f),
+            fat_g: round1(fat_g * f),
+            fiber_g: null,
+            source: "estimate" as const,
+            assumption: pick
+              ? "Close matches did not quite fit, so these are estimated"
+              : "No close match in the catalog, so these are estimated",
+            confidence: "medium" as const,
+          };
+        }
+        deps.log?.(`[parse_meal] fast estimate failed physics for "${r.name}": ${bad}`);
+      }
+      // No acceptable row AND no usable estimate: the existing best-effort
+      // fallback, visibly low-confidence rather than silently dropped.
+      return fallbackFromResolved(r, candidatePer100);
+    });
+
+    const items = stripEphemeralIds(flagPrepMismatch(
+      checkAtwater(reconcileQuantity(
+        await verifyItems(deps, fastItems, candidatePer100),
+        servingsForItems(resolved),
+      )),
+      prepForItems(resolved),
+    ));
+    T.decide_ms = 0;
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, fast: true } });
+    return {
+      parsed: {
+        meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+        items,
+        drona_line: templateDronaLine(items),
+        corrects_previous: false,
+      },
+      declined: null,
+      usage,
+      tool_calls: toolCalls,
+      steps,
+      iterations: anthropicCalls,
+    };
+  }
+
   const skipMode = deps.skipDecideMode ?? "off";
   const codeFill = (skipMode !== "off" && !correctsPrevious)
     ? codeFillItems(resolved, candidatePer100)

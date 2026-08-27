@@ -161,6 +161,7 @@ const deps: ParseMealDeps = {
   // FAST_GRAMMAR=on runs Lane A for real, so the eval can prove the code-named
   // path produces the same meals as the model-named one.
   fastGrammarMode: (env("FAST_GRAMMAR") || "off") as "off" | "shadow" | "on",
+
   searchFoods: searchCatalogWithServings,
   backfillOffFood: async () => {
     // DRY RUN: never write to prod from the eval. The model still receives
@@ -312,6 +313,10 @@ async function main() {
       const baseInput = {
         localHour: c.hour ?? null,
         mealHint: null,
+        // FAST_MODE=on runs every case through the no-decide fast path, so the
+        // whole corpus doubles as fast's accuracy eval. Follow-ups carry
+        // previousItems, so runParseMeal ignores the mode there by design.
+        mode: (env("FAST_MODE") === "on" ? "fast" : null) as "fast" | null,
         recentFoods: [],
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
