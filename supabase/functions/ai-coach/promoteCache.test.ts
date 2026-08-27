@@ -1,0 +1,219 @@
+// Run with: deno test supabase/functions/ai-coach/promoteCache.test.ts
+//
+// Promotion writes to the shared catalog with nobody watching. Every test here
+// names the row we must never publish, because a bad promoted row is worse than a
+// missing one: search cannot tell it from a curated row, and the meal it wrecks
+// does not fall back to an estimate, it ships a confident wrong number.
+
+import { assertEquals } from "jsr:@std/assert@1";
+import {
+  type CatalogRow,
+  findDuplicate,
+  isSameFood,
+  type PromotionCandidate,
+  promotionDecision,
+} from "./promoteCache.ts";
+import type { SourceReading } from "./preciseCache.ts";
+
+const NOW = new Date("2026-08-27T00:00:00Z");
+const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+const off = (kcal: number): SourceReading => ({
+  source: "off",
+  per_100: { kcal, protein_g: 18, carb_g: 2, fat_g: 12 },
+});
+const web = (kcal: number, ref: string): SourceReading => ({
+  source: "web",
+  ref,
+  per_100: { kcal, protein_g: 18, carb_g: 2, fat_g: 12 },
+});
+
+const cand = (over: Partial<PromotionCandidate> = {}): PromotionCandidate => ({
+  id: "cache-1",
+  cache_key: "milky mist|milky mist low fat paneer",
+  display_name: "Milky Mist Low Fat Paneer",
+  brand: "Milky Mist",
+  base_unit: "g",
+  kcal: 190,
+  protein_g: 18,
+  carb_g: 2,
+  fat_g: 12,
+  fiber_g: 0,
+  servings: [{ label: "100 g", grams: 100 }],
+  evidence: [off(190), web(196, "https://milkymist.com/low-fat-paneer")],
+  verified: true,
+  last_verified_at: daysAgo(3),
+  promoted_food_id: null,
+  log_count: 3,
+  user_count: 2,
+  ...over,
+});
+
+const row = (over: Partial<CatalogRow> = {}): CatalogRow => ({
+  id: "food-1",
+  name: "Paneer",
+  brand: null,
+  kcal: 283,
+  protein_g: 18,
+  carb_g: 2,
+  fat_g: 22,
+  source: "curated",
+  last_verified_at: null,
+  ...over,
+});
+
+// ── the happy path ─────────────────────────────────────────────────────────
+
+Deno.test("the canonical case: a verified, used, un-catalogued food is promoted", () => {
+  const d = promotionDecision(cand(), [], NOW);
+  assertEquals(d.action, "promote");
+  if (d.action === "promote") assertEquals(d.agreeing, ["off", "web:milkymist.com"]);
+});
+
+// ── the verification bar, re-derived ───────────────────────────────────────
+
+Deno.test("the failure this prevents: a stale `verified` flag publishing itself", () => {
+  // verified:true, evidence that does not support it. The bar is re-derived from
+  // the readings, so a flag written by since-changed code cannot promote a row.
+  const d = promotionDecision(cand({ verified: true, evidence: [off(190)] }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "unverified");
+});
+
+Deno.test("FatSecret-only evidence never reaches the catalog", () => {
+  // Their terms allow serving a request, not replicating the database. A promoted
+  // row is a copy, so this is the line that keeps us on the right side of it.
+  const d = promotionDecision(
+    cand({
+      evidence: [
+        { source: "fatsecret", per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 } },
+        { source: "fatsecret", per_100: { kcal: 192, protein_g: 18, carb_g: 2, fat_g: 12 } },
+      ],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "unverified");
+});
+
+Deno.test("an OFF row derived from FatSecret does not make a second source", () => {
+  const d = promotionDecision(
+    cand({
+      evidence: [
+        { source: "fatsecret", per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 } },
+        { source: "off", derived_from: "fatsecret", per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 } },
+      ],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+});
+
+// ── expiry ─────────────────────────────────────────────────────────────────
+
+Deno.test("an expired row is not published, however well evidenced", () => {
+  // We do not publish to everyone a number we would no longer serve to one person.
+  const d = promotionDecision(cand({ last_verified_at: daysAgo(120) }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "expired");
+});
+
+// ── usage ──────────────────────────────────────────────────────────────────
+
+Deno.test("one person looking a food up once does not grow the catalog", () => {
+  const d = promotionDecision(cand({ log_count: 1, user_count: 1 }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "insufficient-usage");
+});
+
+Deno.test("either half of the usage bar is enough on its own", () => {
+  assertEquals(promotionDecision(cand({ log_count: 2, user_count: 1 }), [], NOW).action, "promote");
+  assertEquals(promotionDecision(cand({ log_count: 1, user_count: 2 }), [], NOW).action, "promote");
+});
+
+// ── dedup ──────────────────────────────────────────────────────────────────
+
+Deno.test("the failure this prevents: a second paneer that splits the ranking", () => {
+  // Two rows for one food halve each other's popularity and history signals, so
+  // neither wins its own search. Link to the existing row, write nothing.
+  const existing = row({ id: "food-paneer", name: "Paneer", kcal: 265 });
+  const d = promotionDecision(
+    cand({
+      display_name: "paneer",
+      brand: null,
+      kcal: 265,
+      evidence: [off(265), web(258, "https://usda.gov/paneer")],
+    }),
+    [existing],
+    NOW,
+  );
+  assertEquals(d.action, "link");
+  if (d.action === "link") assertEquals(d.food_id, "food-paneer");
+});
+
+Deno.test("a grade the catalog is missing is NOT a duplicate", () => {
+  // This is the whole point of Super: plain "Paneer" at 283 does not cover
+  // "Milky Mist Low Fat Paneer" at 190, and collapsing them re-creates the exact
+  // bug that started this workstream.
+  assertEquals(isSameFood("Milky Mist Low Fat Paneer", "Milky Mist", row()), false);
+  assertEquals(promotionDecision(cand(), [row()], NOW).action, "promote");
+});
+
+Deno.test("a typo in one of the names still counts as the same food", () => {
+  assertEquals(isSameFood("Panner Tikka", null, row({ name: "Paneer Tikka" })), true);
+});
+
+Deno.test("brand words count toward identity from either column", () => {
+  // The cache carries the brand separately, the catalog often folds it into the
+  // name. Same food either way.
+  assertEquals(
+    isSameFood("Low Fat Paneer", "Milky Mist", row({ name: "Milky Mist Low Fat Paneer" })),
+    true,
+  );
+});
+
+Deno.test("the failure this prevents: an unattended job rewriting a curated row", () => {
+  // Same name, materially different energy. Publishing ours splits the ranking;
+  // overwriting theirs lets two web pages silently edit curated data. Neither.
+  const conflicting = row({ name: "Milky Mist Low Fat Paneer", brand: "Milky Mist", kcal: 283 });
+  const d = promotionDecision(cand(), [conflicting], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "catalog-conflict");
+});
+
+Deno.test("a duplicate is found even when a distractor sits first in the list", () => {
+  const m = findDuplicate(
+    { display_name: "Milky Mist Low Fat Paneer", brand: null, kcal: 190 },
+    [row({ id: "bhujia", name: "Bhujia", kcal: 609 }), row({ id: "mm", name: "Milky Mist Low Fat Paneer", kcal: 190 })],
+  );
+  assertEquals(m?.row.id, "mm");
+  assertEquals(m?.conflict, false);
+});
+
+// ── self-heal on rows we already published ─────────────────────────────────
+
+Deno.test("re-verified evidence updates the row we published", () => {
+  const published = row({ id: "food-1", name: "Milky Mist Low Fat Paneer", brand: "Milky Mist", kcal: 190, source: "web_verified", last_verified_at: daysAgo(200) });
+  const d = promotionDecision(
+    cand({ promoted_food_id: "food-1", kcal: 205, evidence: [off(205), web(203, "https://milkymist.com/x")] }),
+    [published],
+    NOW,
+  );
+  assertEquals(d.action, "refresh");
+  if (d.action === "refresh") assertEquals(d.food_id, "food-1");
+});
+
+Deno.test("an unchanged row is not rewritten every night", () => {
+  const published = row({ id: "food-1", kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12, source: "web_verified", last_verified_at: daysAgo(200) });
+  const d = promotionDecision(cand({ promoted_food_id: "food-1" }), [published], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "already-current");
+});
+
+Deno.test("a row someone deleted is not silently re-inserted", () => {
+  const d = promotionDecision(cand({ promoted_food_id: "food-gone" }), [], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "promoted-row-missing");
+});
