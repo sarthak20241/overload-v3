@@ -143,6 +143,16 @@ export default function FoodSearchScreen() {
     const res = await parseMeal(supabase, { text: q, mealHint: meal });
     setAiBusy(false);
     if (res.kind === 'declined') { setAiError(res.message); haptics.warning(); return; }
+    // Same paywall as the diet screen: the free tier's daily logs ran out, so
+    // open the upgrade screen instead of an error line blaming the app.
+    if (res.kind === 'cap') {
+      haptics.warning();
+      setAiError(res.limit != null
+        ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
+        : 'That is your free logs for today. Pro logs as much as you eat.');
+      router.push({ pathname: '/upgrade', params: { context: 'cap_parse' } });
+      return;
+    }
     if (res.kind === 'error') { setAiError(res.message); haptics.warning(); return; }
     if (!res.meal.items.length) { setAiError('Drona could not pin that one down. Try a fuller name.'); haptics.warning(); return; }
     haptics.success();

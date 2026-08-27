@@ -17,7 +17,7 @@ import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import {
   type MealType, type FoodDef, type FoodServing,
@@ -531,7 +531,10 @@ export type ParseMealResult =
     proposal?: { items: ParsedMealItem[]; note: string } | null;
     cleared?: boolean;
   }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  // The free tier's daily logs ran out. Not a failure: the card says so and the
+  // paywall opens, instead of the app blaming itself for the user's plan.
+  | { kind: 'cap'; used?: number; limit?: number };
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
  *  parsed path and the researched-proposal path so both stay in step. */
@@ -630,7 +633,13 @@ export async function parseMeal(
     // Never hand the raw edge-function error to the card — it carries HTTP
     // statuses and provider error bodies. The helper pulls the real reason off
     // error.context for the log and returns user-safe copy.
-    if (res.error) return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
+    if (res.error) {
+      // A 402 is the paywall, not a breakage. Checked BEFORE the message
+      // helper, which buckets every non-2xx into "something broke on my end".
+      const cap = await coachInvokeCapSignal(res.error);
+      if (cap?.kind === 'cap') return { kind: 'cap', used: cap.used, limit: cap.limit };
+      return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
+    }
     data = res.data;
   } catch (e) {
     return { kind: 'error', message: 'No connection. Type it again when you are back online.' };

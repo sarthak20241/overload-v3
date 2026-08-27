@@ -213,6 +213,20 @@ export default function NutritionScreen() {
       setFlow({ status: 'declined', raw: t, message: res.message });
       return;
     }
+    // The free tier's daily logs ran out. This is a paywall, not a breakage:
+    // routing it through the error path told users "Something broke on my end"
+    // and hid the upgrade entirely. Say what actually happened, keep their text
+    // so nothing is lost, and open the same paywall the coach chat opens.
+    if (res.kind === 'cap') {
+      const capLine = res.limit != null
+        ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
+        : 'That is your free logs for today. Pro logs as much as you eat.';
+      pushTurn('drona', capLine);
+      if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
+      else setFlow({ status: 'declined', raw: t, message: capLine });
+      router.push({ pathname: '/upgrade', params: { context: 'cap_parse' } });
+      return;
+    }
     if (res.kind === 'error') {
       // Clear any standing proposal: it answered the previous message, and
       // leaving it up would attach "use these numbers" to an error the user
