@@ -33,6 +33,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import type { ParsedMeal, ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
+import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 export type ParseCardState = 'analysing' | 'review' | 'declined' | 'error';
@@ -279,7 +280,7 @@ export function ParsedMealCard({
                 <View style={s.itemHead}>
                   <Text style={s.itemName} numberOfLines={1}>
                     {it.food_name}
-                    <Text style={s.serving}>{'  '}{it.quantity !== 1 ? `${it.quantity} × ` : ''}{it.serving_label}</Text>
+                    <Text style={s.serving}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text>
                   </Text>
                   {prov && <Text style={s.provChip}>{prov}</Text>}
                   {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}

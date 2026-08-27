@@ -38,6 +38,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
+import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -548,7 +549,7 @@ export default function NutritionScreen() {
               {entries.map((e) => (
                 <Pressable key={e.id} style={s.entry} onPress={() => setEditEntry(e)}>
                   <Text style={s.entryName}>
-                    {e.food_name} <Text style={s.serving}>· {e.quantity !== 1 ? `${e.quantity} × ` : ''}{e.serving_unit}</Text>
+                    {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
                   </Text>
                   <View style={s.macros}>
                     <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
