@@ -12,7 +12,7 @@
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -123,6 +123,13 @@ export default function NutritionScreen() {
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
+  const { height: winH } = useWindowDimensions();
+  // Cap the parse card so a long meal never runs past the top of the screen
+  // (the card is pinned above the input, outside the day scroll — the lines
+  // scroll INSIDE it instead). ~60% of the screen keyboard-closed; with the
+  // keyboard up, whatever fits above it (96 ≈ input bar + gap). The 260 floor
+  // keeps the card usable on small phones and always fits above any keyboard.
+  const cardMaxHeight = Math.max(260, Math.min(winH * 0.6, winH - kbHeight - insets.top - 96));
 
   // AI food logging (Drona parse). Signed-in only; guests keep the picker.
   // Parse -> review card (nothing logged yet) -> the user picks the section and
@@ -574,6 +581,7 @@ export default function NutritionScreen() {
             <ParsedMealCard
               state={flow.status as ParseCardState}
               rawText={flow.raw}
+              maxHeight={cardMaxHeight}
               meal={flow.status === 'review' ? flow.meal : null}
               mealType={flow.status === 'review' ? flow.mealType : undefined}
               adding={adding}

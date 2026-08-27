@@ -23,7 +23,7 @@
  * sourced/estimated lines say where they came from.
  */
 import React, { useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -49,6 +49,11 @@ const mealLabel = (m: MealType) => MEAL_OPTIONS.find((o) => o.value === m)?.labe
 interface Props {
   state: ParseCardState;
   rawText: string;
+  /** Height cap for the whole card. Long meals used to grow past the top of
+   *  the screen (the card is pinned above the input, outside any scroll), so
+   *  the item list scrolls inside this cap while the totals row and the
+   *  section/actions footer stay pinned and always reachable. */
+  maxHeight?: number;
   meal?: ParsedMeal | null;
   mealType?: MealType;                       // currently selected section (review)
   message?: string | null;
@@ -127,7 +132,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
+  state, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
   onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
   minimized, onToggleMinimize,
@@ -144,6 +149,11 @@ export function ParsedMealCard({
   const collapsible = state === 'review' && !!meal && !!onToggleMinimize
     && !adding && !busyChecking;
   const isCollapsed = collapsible && !!minimized;
+  const items = state === 'review' && meal ? meal.items : [];
+  const sum = items.reduce(
+    (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g }),
+    { kcal: 0, p: 0, c: 0, f: 0 },
+  );
 
   if (isCollapsed && meal) {
     const kcal = r0(meal.items.reduce((sum, it) => sum + it.kcal, 0));
@@ -183,7 +193,7 @@ export function ParsedMealCard({
   }
 
   return (
-    <Animated.View entering={FadeIn.duration(160)} style={s.card}>
+    <Animated.View entering={FadeIn.duration(160)} style={[s.card, maxHeight != null && { maxHeight }]}>
       {(!!rawText || collapsible) && (
         <View style={s.rawRow}>
           {!!rawText && <Text style={[s.raw, s.rawGrow]} numberOfLines={2}>{rawText}</Text>}
@@ -205,7 +215,7 @@ export function ParsedMealCard({
       {state === 'analysing' && <Analysing C={C} />}
 
       {state === 'review' && meal && (
-        <View>
+        <View style={s.reviewBody}>
           {/* Drona answering a question about these lines. The meal stays. */}
           {!!notice && (
             <View style={s.notice}>
@@ -230,6 +240,31 @@ export function ParsedMealCard({
               )}
             </View>
           )}
+
+          {/* Meal totals, pinned above the scrolling lines: the whole-meal
+              read stays visible however long the list is. Single-line meals
+              skip it — the line IS the total. */}
+          {items.length > 1 && (
+            <View style={s.totals}>
+              <Text style={[s.totalNum, { color: C.foreground }]}>{r0(sum.kcal)}</Text>
+              <Text style={[s.totalNum, { color: C.macro.protein }]}>{r0(sum.p)}g P</Text>
+              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{r0(sum.c)}g C</Text>
+              <Text style={[s.totalNum, { color: C.macro.fat }]}>{r0(sum.f)}g F</Text>
+              <Text style={s.totalCount}>{items.length} items</Text>
+            </View>
+          )}
+
+          {/* Only the lines scroll; totals above and section/actions below
+              stay pinned. Dragging the list also drops the keyboard, which
+              buys back the space it was taking. */}
+          <ScrollView
+            style={s.itemsScroll}
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator
+            persistentScrollbar
+          >
           {meal.items.map((it, i) => {
             const prov = provenance(it.source);
             return (
@@ -298,6 +333,7 @@ export function ParsedMealCard({
               </Pressable>
             );
           })}
+          </ScrollView>
 
           {/* Section selector — the user decides where this meal goes. */}
           <View style={s.sectionRow}>
@@ -317,7 +353,9 @@ export function ParsedMealCard({
           </View>
 
           {meal.drona_line ? (
-            <View style={s.dronaRow}>
+            // flex:0 override: dronaRow's shared flex:1 (basis 0) would collapse
+            // this row to nothing once the card sits at its maxHeight cap.
+            <View style={[s.dronaRow, { flex: 0 }]}>
               <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
               <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
             </View>
@@ -430,6 +468,18 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       flex: 1, fontSize: FontSize.sm, color: C.foreground,
       fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'],
     },
+
+    // flexShrink on the body + the scroll is what makes the maxHeight cap
+    // squeeze the LIST rather than push the footer off the card.
+    reviewBody: { flexShrink: 1 },
+    itemsScroll: { flexGrow: 0, flexShrink: 1 },
+
+    totals: {
+      flexDirection: 'row', alignItems: 'baseline', gap: Spacing.md,
+      paddingBottom: Spacing.sm, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+    },
+    totalNum: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
+    totalCount: { marginLeft: 'auto', fontSize: FontSize.xs, color: C.textMuted },
 
     notice: {
       backgroundColor: C.primarySubtle, borderRadius: Radius.md,
