@@ -197,6 +197,37 @@ Build:
 Test: on-device, the card never mutates after render; affordance renders on
 low-confidence lines only; meal_type parity on traces.
 
+### Phase 4 M1 RESULT 2026-08-27: STREAMING WORKS, END TO END, ON DEVICE
+
+The risk is retired. Measured with a throwaway probe (supabase/functions/
+sse-probe + app/sse-probe.tsx, both deletable once M2 lands) rather than
+assumed.
+
+SERVER. A Supabase edge function streams and nothing in the edge runtime or the
+CDN in front of it buffers. Ten events sent 400ms apart arrived 400ms apart:
+  cold isolate  first byte 1.75s
+  warm          first byte 0.46-0.86s, gaps 0.35-0.47s
+
+CLIENT. expo/fetch on iOS hands chunks over as they arrive; res.body is a real
+ReadableStream and the reader yields per chunk:
+  status 200 @ 333-471ms, first event @ 359-483ms, gaps 377-435ms
+
+CALIBRATION THAT CHANGES THE PLAN. The transport floor is ~350-480ms warm from
+India, because execution is pinned to us-east-1 (deliberate: it removes several
+internal round trips at the cost of one cross-ocean user hop). So:
+  Fast Lane A (no LLM)      ~0.5s transport + search/fill  -> sub-second is real
+  Fast Lane B (Haiku first) ~0.5s + ~1.2s extract          -> first row ~1.6-1.7s
+The "first row under 1 second" target holds for Lane A and does NOT hold for
+Lane B. Either state that honestly, or route more inputs into Lane A.
+
+ONE THING RULED OUT. The first run showed the final `end` event arriving 1718ms
+after the previous one while every other gap was ~400ms. It did NOT reproduce
+(397ms on the next run): cold-start noise on the first request after a deploy,
+not a flush-on-close problem. Recorded because it would otherwise look like a
+reason to redesign how `end` seals the card, and it is not.
+
+STILL UNTESTED: Android. iOS is proven; the plan's own gate says both.
+
 ### Phase 4. Transport (the risk phase)
 Build: SSE streaming out of the edge function BEHIND a client-declared flag
 (old clients keep the JSON response; version-skew rule); expo/fetch streaming
