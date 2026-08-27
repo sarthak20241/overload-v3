@@ -182,7 +182,7 @@ export default function NutritionScreen() {
     // Leaving the review this check belonged to. Without this the stale index
     // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
     // an unrelated line until the abandoned 5-9s lookup finally settles.
-    setCheckingIndex(null);
+    setChecking(null);
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
@@ -253,7 +253,18 @@ export default function NutritionScreen() {
    *  patches the reviewed meal in place. */
   const [editIndex, setEditIndex] = useState<number | null>(null);
   /** Index of the line a user-initiated web check is running on (I14). */
-  const [checkingIndex, setCheckingIndex] = useState<number | null>(null);
+  /** The double-check in flight, or null.
+   *
+   *  Identified by a unique TOKEN, not by row index and not by the card's text.
+   *  An index alone cannot say which card it belongs to: check row 0, discard,
+   *  check row 0 of the next card, and the abandoned request's cleanup sees
+   *  0 === 0 and unfreezes the live card's buttons mid-lookup - reopening the
+   *  live-Add race I15 closed. Adding the raw text narrows that but does not
+   *  shut it: log the same thing twice and both cards share a `raw`. A counter
+   *  cannot collide with anything. */
+  const [checking, setChecking] = useState<{ token: number; index: number } | null>(null);
+  const checkTokenRef = useRef(0);
+  const checkingIndex = checking?.index ?? null;
   const onEditItem = useCallback((i: number) => setEditIndex(i), []);
 
   /** I14: the user asked us to double-check ONE line.
@@ -278,7 +289,8 @@ export default function NutritionScreen() {
     const raw = f.raw;
     const key = (it: ParsedMealItem) => `${it.food_name.toLowerCase()}|${it.grams}`;
     const originalKey = key(item);
-    setCheckingIndex(i);
+    const token = ++checkTokenRef.current;
+    setChecking({ token, index: i });
     try {
       const res = await parseMeal(supabase, {
         // Phrased as ACCEPTING a lookup, not as asking a question. Tapping the
@@ -340,10 +352,9 @@ export default function NutritionScreen() {
         return cur;
       });
     } finally {
-      // Only clear if this check is still the one running. A newer parse or a
-      // dismiss has already reset it, and a late finally would otherwise stomp
-      // a check the user started since.
-      setCheckingIndex((curr) => (curr === i ? null : curr));
+      // Clear only if THIS check is still the one running. Anything newer owns
+      // the state now and an abandoned request must not touch it.
+      setChecking((curr) => (curr?.token === token ? null : curr));
     }
   }, [supabase]);
   const onRemoveItem = useCallback((i: number) => {
@@ -404,7 +415,7 @@ export default function NutritionScreen() {
   }, [flow, runParse]);
 
   const onDismiss = useCallback(() => {
-    setCheckingIndex(null);
+    setChecking(null);
     setFlow({ status: 'idle' });
   }, []);
 
@@ -550,7 +561,7 @@ export default function NutritionScreen() {
               // Frozen while a check is in flight: editing or removing a line
               // mid-lookup shifts indices and races the write below.
               onEditItem={flow.status === 'review' && checkingIndex === null ? onEditItem : undefined}
-              checkingIndex={checkingIndex}
+              checkingIndex={flow.status === 'review' ? checkingIndex : null}
               onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
               onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
               saved={flow.status === 'review' && savedReview}
