@@ -226,7 +226,27 @@ after the previous one while every other gap was ~400ms. It did NOT reproduce
 not a flush-on-close problem. Recorded because it would otherwise look like a
 reason to redesign how `end` seals the card, and it is not.
 
-STILL UNTESTED: Android. iOS is proven; the plan's own gate says both.
+ANDROID: PROVEN TOO (2026-08-27), so the both-platforms gate is met.
+Worth having run rather than reasoned about: SSE is only a protocol, but
+expo/fetch is a native module with SEPARATE implementations (Swift/NSURLSession
+on iOS, Kotlin/OkHttp on Android) and either could have buffered the body.
+Android's pumpResponseBodyStream emits per chunk, and the device agrees:
+  server sends  400ms apart
+  iOS receives  377-435ms apart
+  Android       246-455ms apart
+Run on a STANDALONE SDK-54 app in Expo Go: the real app needs native modules
+Expo Go lacks, and an Android dev build is a long gradle cycle for one
+question. Pinning to 54 mattered - the scaffold defaults to SDK 57, and proving
+streaming there would have proven nothing about what we ship. Ignore Android's
+6.5s to first byte: emulator plus Expo Go overhead, not a device number. The
+GAPS are the evidence.
+
+CLIENT-CODE HAZARD found in the native source, true on BOTH platforms: chunks
+are buffered into a sink until the JS side starts reading, and only emitted
+once it does. So take getReader() IMMEDIATELY after the fetch resolves. Any
+await in between and early chunks pile up and land in a lump - which would look
+exactly like the transport buffering, and send the next person chasing the
+wrong thing.
 
 ### Phase 4. Transport (the risk phase)
 Build: SSE streaming out of the edge function BEHIND a client-declared flag
