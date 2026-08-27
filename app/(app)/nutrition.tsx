@@ -31,7 +31,7 @@ import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, refineMeal, logParsedMeal,
+  parseMeal, logParsedMeal,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -60,10 +60,6 @@ type ParseFlow =
       // Researched numbers that disagree with what is shown, offered as a
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
-      // Names of lines we could not match to any source and are looking up
-      // online right now (phase 2). Drives the "searching the web" indicator;
-      // cleared when the refine returns and its numbers are swapped in.
-      refining?: string[] | null;
     }
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
@@ -183,6 +179,10 @@ export default function NutritionScreen() {
     // switch to 'analysing' (which drops the reviewed meal from flow).
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
     const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
+    // Leaving the review this check belonged to. Without this the stale index
+    // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
+    // an unrelated line until the abandoned 5-9s lookup finally settles.
+    setChecking(null);
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
@@ -194,6 +194,13 @@ export default function NutritionScreen() {
     // retype. Keep the card and show the reply as a notice on it.
     if (res.kind === 'declined') {
       pushTurn('drona', res.message);
+      // The user removed the last line, so there is no card left to protect.
+      // Keeping it would show the line they just deleted under a message saying
+      // it is gone. Matches what the X button already does at the last item.
+      if (res.cleared) {
+        setFlow({ status: 'idle' });
+        return;
+      }
       if (prevReview) {
         setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
         return;
@@ -224,7 +231,6 @@ export default function NutritionScreen() {
           meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
           mealType: keptMealType ?? res.meal.meal_type,
           mealTypePicked: prevReview?.mealTypePicked,
-          refining: res.webRefine ?? null,
         }
       : {
           status: 'review',
@@ -232,51 +238,133 @@ export default function NutritionScreen() {
           meal: res.meal,
           mealType: keptMealType ?? res.meal.meal_type,
           mealTypePicked: prevReview?.mealTypePicked,
-          refining: res.webRefine ?? null,
         };
     setFlow(reviewFlow);
-    // Phase 2: the meal is on screen already; now go look the unmatched lines
-    // up online and swap in anything better. Fire-and-forget - a failed or
-    // empty refine just leaves the estimate in place.
-    if (res.webRefine && res.webRefine.length > 0) {
-      void kickWebRefine(reviewFlow.raw, res.meal.items, res.webRefine);
-    }
-  }, [supabase]);
-
-  /** Look the unmatched (estimate) lines up online and swap in what comes back.
-   *  Guards on the raw text so a result that lands after the user has moved on
-   *  to a different parse is dropped instead of clobbering the new one. */
-  const kickWebRefine = useCallback(async (raw: string, items: ParsedMealItem[], weakNames: string[]) => {
-    const weakSet = new Set(weakNames.map((n) => n.toLowerCase()));
-    const weakItems = items.filter((it) => weakSet.has(it.food_name.toLowerCase()));
-    if (weakItems.length === 0) return;
-    const refined = await refineMeal(supabase, weakItems);
-    setFlow((f) => {
-      if (f.status !== 'review' || f.raw !== raw) return f; // user moved on
-      if (!refined) return { ...f, refining: null }; // nothing better found
-      // Key on name AND grams, not name alone: two same-named estimates of
-      // different sizes ("chai" 75g and 150g) must not collapse to one entry
-      // and cross-apply. refineMeal preserves grams, so an untouched line still
-      // matches; an edited one (grams or source changed) no longer does.
-      const key = (it: { food_name: string; grams: number }) => `${it.food_name.toLowerCase()}|${it.grams}`;
-      const byKey = new Map(refined.items.map((r) => [key(r), r]));
-      const merged = f.meal.items.map((it) => {
-        // Only swap a line that is STILL the estimate we sent to refine. The
-        // card invites the user to edit it while the lookup runs; if they did,
-        // it is now 'manual' (or otherwise changed) and their numbers must win.
-        // Same guarantee preserveManual gives corrections, applied client-side.
-        if (it.source !== 'estimate') return it;
-        return byKey.get(key(it)) ?? it;
-      });
-      return { ...f, meal: { ...f.meal, items: merged }, refining: null };
-    });
+    // I15: NOTHING fires after this point. The card the user is reading is the
+    // card they will log. The automatic web refine that used to run here swapped
+    // numbers in while Add was already live, so a user could tap Add on 180 kcal
+    // and log 240 - a review step whose contents change is not a review step.
+    // Web lookups are now user-initiated only (the challenge button on a
+    // low-confidence line) and belong to Super mode.
   }, [supabase]);
 
   /** Index of the pending line being corrected (null = editor closed). Edits
    *  are pure client state: nothing is written until Add, so a correction just
    *  patches the reviewed meal in place. */
   const [editIndex, setEditIndex] = useState<number | null>(null);
+  /** Index of the line a user-initiated web check is running on (I14). */
+  /** The double-check in flight, or null.
+   *
+   *  Identified by a unique TOKEN, not by row index and not by the card's text.
+   *  An index alone cannot say which card it belongs to: check row 0, discard,
+   *  check row 0 of the next card, and the abandoned request's cleanup sees
+   *  0 === 0 and unfreezes the live card's buttons mid-lookup - reopening the
+   *  live-Add race I15 closed. Adding the raw text narrows that but does not
+   *  shut it: log the same thing twice and both cards share a `raw`. A counter
+   *  cannot collide with anything. */
+  const [checking, setChecking] = useState<{ token: number; index: number } | null>(null);
+  const checkTokenRef = useRef(0);
+  const checkingIndex = checking?.index ?? null;
   const onEditItem = useCallback((i: number) => setEditIndex(i), []);
+
+  /** I14: the user asked us to double-check ONE line.
+   *
+   *  Deliberately NOT runParse: that flips the flow to 'analysing', which drops
+   *  the card off screen. The whole point here is that the meal stays put and
+   *  only the line being checked shows activity.
+   *
+   *  It sends the same thing typing a challenge would send, so it lands on the
+   *  existing researchPrevious path and comes back as a proposal with the
+   *  "use these / keep mine" choice already built. The button is the
+   *  discoverability fix; the machinery underneath is unchanged.
+   */
+  const onCheckItem = useCallback(async (i: number) => {
+    const f = flowRef.current;
+    if (f.status !== 'review' || !supabase) return;
+    const item = f.meal.items[i];
+    if (!item) return;
+    // Captured for the staleness checks below. The lookup takes 5-9s, which is
+    // plenty of time for the user to discard this card, start a new parse, edit
+    // this line, or remove a different one.
+    const raw = f.raw;
+    const key = (it: ParsedMealItem) => `${it.food_name.toLowerCase()}|${it.grams}`;
+    const originalKey = key(item);
+    const token = ++checkTokenRef.current;
+    setChecking({ token, index: i });
+    try {
+      const res = await parseMeal(supabase, {
+        // Phrased as ACCEPTING a lookup, not as asking a question. Tapping the
+        // button IS the request, so the turn must land on requests_research
+        // (which actually searches) rather than asks_about_previous (which
+        // explains the provenance and then offers to search). Device-tested:
+        // "is the X number right?" came back "Want me to look up the label
+        // online?", asking the user to confirm something they had just done.
+        // Food names are NOT ours: OFF is crowd-sourced and FatSecret rows come
+        // from a third party, so a name is untrusted text being interpolated
+        // into a model prompt. Strip newlines and control characters and cap the
+        // length so a crafted product name cannot append instructions of its
+        // own. Low severity - the lookup is bounded and its output is a
+        // schema-constrained macro panel - but the guard costs nothing.
+        text: `yes, look up the label for ${
+          item.food_name.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
+        } online and check these numbers`,
+        mealHint: f.mealType,
+        previous: { text: f.raw, items: f.meal.items },
+        turns: turnsRef.current.slice(),
+      });
+      setFlow((cur) => {
+        // STALENESS GUARDS. The old automatic refine had these and the first
+        // version of this handler dropped them, which rebuilt the very race I15
+        // exists to remove - just started by a button instead of a timer.
+        if (cur.status !== 'review') return cur;
+        // Different meal entirely: the user discarded and parsed something else
+        // while this was in flight.
+        if (cur.raw !== raw) return cur;
+        // The line we asked about must still BE that line. Keyed on name AND
+        // grams, not name alone, so two same-named entries of different sizes
+        // (a 75 g chai and a 150 g chai) cannot cross-apply, and so an edit the
+        // user made mid-flight is never silently overwritten.
+        const atIndex = cur.meal.items[i];
+        if (!atIndex || key(atIndex) !== originalKey) return cur;
+        if (res.kind === 'declined') {
+          // Either nothing trustworthy was found, or the web disagreed enough
+          // that the server offered its answer instead of applying it.
+          return { ...cur, notice: res.message, proposal: res.proposal ?? null };
+        }
+        if (res.kind === 'parsed') {
+          // The server returns a parsed meal when the web AGREED closely enough
+          // that swapping is not a material change; a real disagreement comes
+          // back as a proposal above. So applying here is the server's call,
+          // not a silent overwrite of something the user would dispute.
+          //
+          // But apply it to the TAPPED LINE ONLY. researchPrevious looks up
+          // every previous item, so taking its whole item list would rewrite
+          // lines the user never asked about - which is precisely the mutation
+          // I15 exists to stop, just triggered by a button instead of a timer.
+          // Prefer the exact name+grams match; fall back to name only, and to
+          // the sole item when the lookup returned just one.
+          const found = res.meal.items.find((r) => key(r) === originalKey)
+            ?? res.meal.items.find(
+              (r) => r.food_name.toLowerCase() === item.food_name.toLowerCase(),
+            )
+            ?? (res.meal.items.length === 1 ? res.meal.items[0] : null);
+          if (!found) return { ...cur, notice: 'I could not improve that one.' };
+          const items = cur.meal.items.map((it, idx) => (idx === i ? found : it));
+          return { ...cur, meal: { ...cur.meal, items }, notice: res.meal.drona_line };
+        }
+        if (res.kind === 'error') {
+          // Fire-and-forget still owes the user a word. Without this the
+          // spinner just vanishes and the tap looks like it did nothing.
+          return { ...cur, notice: 'Could not reach the web just now. Your numbers are unchanged.' };
+        }
+        return cur;
+      });
+    } finally {
+      // Clear only if THIS check is still the one running. Anything newer owns
+      // the state now and an abandoned request must not touch it.
+      setChecking((curr) => (curr?.token === token ? null : curr));
+    }
+  }, [supabase]);
   const onRemoveItem = useCallback((i: number) => {
     setFlow((f): ParseFlow => {
       if (f.status !== 'review') return f;
@@ -334,7 +422,10 @@ export default function NutritionScreen() {
     }
   }, [flow, runParse]);
 
-  const onDismiss = useCallback(() => setFlow({ status: 'idle' }), []);
+  const onDismiss = useCallback(() => {
+    setChecking(null);
+    setFlow({ status: 'idle' });
+  }, []);
 
   const eaten = { kcal: totals.kcal, protein: totals.protein_g, carb: totals.carb_g, fat: totals.fat_g };
   // One story, one narrator: Drona's line must agree with the ring. Placeholder
@@ -468,7 +559,6 @@ export default function NutritionScreen() {
               }
               onMealTypeChange={onMealTypeChange}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
-              refiningItems={flow.status === 'review' ? flow.refining ?? null : null}
               proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
               onAcceptProposal={() => setFlow((f) => (
                 f.status === 'review' && f.proposal
@@ -476,8 +566,12 @@ export default function NutritionScreen() {
                   : f
               ))}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
-              onEditItem={flow.status === 'review' ? onEditItem : undefined}
-              onRemoveItem={flow.status === 'review' ? onRemoveItem : undefined}
+              // Frozen while a check is in flight: editing or removing a line
+              // mid-lookup shifts indices and races the write below.
+              onEditItem={flow.status === 'review' && checkingIndex === null ? onEditItem : undefined}
+              checkingIndex={flow.status === 'review' ? checkingIndex : null}
+              onCheckItem={flow.status === 'review' ? onCheckItem : undefined}
+              onRemoveItem={flow.status === 'review' && checkingIndex === null ? onRemoveItem : undefined}
               saved={flow.status === 'review' && savedReview}
               onAdd={flow.status === 'review' ? onAdd : undefined}
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}

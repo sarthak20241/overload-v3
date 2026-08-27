@@ -676,6 +676,20 @@ export const CASES: EvalCase[] = [
     expect: { declined: true },
   },
 
+  // [I6a] Removing the ONLY line. Flagged in review of PR #121: the existing
+  // delete case removes one of TWO items, so the empty-result path was never
+  // exercised. extract correctly returns no items here, which used to hit the
+  // generic "that did not look like food" decline - shown next to the line the
+  // user had just deleted, because a decline keeps the card.
+  {
+    id: "audit-delete-only-item",
+    text: "50g tofu",
+    hour: 13,
+    followUp: "remove the tofu",
+    expectCorrection: true,
+    expect: { declined: true },
+  },
+
   // ── Audit-derived cases (2026-08-22 prompt/schema audit) ─────────────────
   // Each case asserts DESIRED behavior. Ones tagged [I6*]/[I8] are expected to
   // FAIL until that improvement lands; they are the gate for it, not noise.
@@ -702,13 +716,18 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 1, maxItems: 1,
       // FSSAI fixes these by composition, which is exactly why the qualifier is
-      // not droppable: skimmed <0.5% fat ~35 kcal/100 ml, DOUBLE TONED 1.5%
-      // ~42, toned 3.0% ~58, full cream 6% ~87. So 300 ml is ~126, and Amul
-      // Taaza Toned (the row that wins today) lands 174. I11/I11b gate.
+      // not droppable. Derived from the standard's fat/SNF and checked against
+      // Atwater and real labels (migration 0106 seeds exactly these rows):
+      //   skimmed 0.5% -> 38.5   double toned 1.5% -> 47.1
+      //   toned 3.0%   -> 58.6   full cream 6.0%   -> 87.6  kcal/100 ml
+      // So 300 ml double toned is ~141. An earlier version of this comment said
+      // "~42" and set the band to [90,140]; that figure was wrong and the band
+      // excluded the correct answer by one kcal. Amul Taaza Toned, the row that
+      // used to win, lands 174. I11/I11b gate.
       // (Replaced the former qualifier-double-toned-milk, whose band [110,230]
       // and "~55-60 kcal/100ml" comment described TONED milk - it PASSED on the
       // wrong product and would have certified this bug as correct.)
-      items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [90, 140] }],
+      items: [{ nameIncludes: "milk", gramsBetween: [300, 300], kcalBetween: [125, 155] }],
     },
   },
   {

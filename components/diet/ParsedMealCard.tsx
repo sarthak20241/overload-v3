@@ -51,9 +51,13 @@ interface Props {
   /** A reply that is not a meal (Drona answering a question about these lines,
    *  or a failed follow-up) shown ON the card so the meal survives. */
   notice?: string | null;
-  /** Names of lines we could not match and are looking up online right now.
-   *  When non-empty, a "searching the web" indicator shows above the items. */
-  refiningItems?: string[] | null;
+  /** I14: index of the line the user asked us to double-check, or null. That
+   *  line's button becomes a spinner and Add is disabled while it runs, so the
+   *  numbers cannot change under a tap the way the old automatic refine allowed. */
+  checkingIndex?: number | null;
+  /** Ask the web about one line. Only offered on lines we already admit doubt
+   *  about; a confident meal shows nothing. */
+  onCheckItem?: (index: number) => void;
   /** Label for a researched alternative the user can accept in one tap. */
   proposalLabel?: string | null;
   onAcceptProposal?: () => void;
@@ -72,6 +76,34 @@ const r0 = (n: number) => Math.round(n);
 
 /** Provenance label for a line. Catalog matches are trusted and stay unmarked;
  *  anything sourced or guessed says so, so numbers always carry receipts. */
+/**
+ * Lines the card is allowed to offer a double-check on (I14).
+ *
+ * Only where we ALREADY admit doubt, which is the whole discipline here:
+ * offering to re-check a confident line on every meal teaches the user to
+ * trust none of the numbers, which is worse than being occasionally wrong.
+ *
+ * Three shapes qualify, and the third is why this is not just a confidence
+ * check. An ESTIMATE is a line we could not ground at all. A LOW-confidence
+ * line is one a guardrail demoted. And a line carrying an ASSUMPTION is one
+ * that says out loud it guessed - "I logged the toned one, not the double
+ * toned" - which can still be high confidence. That last case is the one with
+ * no recovery path at all, even before I15 removed the automatic one, so
+ * leaving it out would miss the users this feature exists for.
+ *
+ * Note MEDIUM is deliberately not enough on its own: verifyItems marks every
+ * FatSecret line medium because the row read is skipped for ephemeral ids, so
+ * treating medium as doubt would put a button on ordinary, correct lines and
+ * teach people to distrust all of them.
+ *
+ * A line the user typed themselves (manual) is never questioned: their numbers
+ * are the answer, not a guess to be improved on.
+ */
+function uncertain(it: ParsedMealItem): boolean {
+  if (it.source === 'manual') return false;
+  return it.source === 'estimate' || it.confidence === 'low' || !!it.assumption;
+}
+
 function provenance(source: ParsedMealItem['source']): string | null {
   switch (source) {
     case 'off':
@@ -84,9 +116,11 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, rawText, meal, mealType, message, adding, saved, notice, refiningItems, proposalLabel,
+  state, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
+  checkingIndex, onCheckItem,
   onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
 }: Props) {
+  const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
   const { C } = useTheme();
   const s = makeStyles(C);
   const selected: MealType = mealType ?? meal?.meal_type ?? 'snack';
@@ -121,14 +155,6 @@ export function ParsedMealCard({
                   </Pressable>
                 </View>
               )}
-            </View>
-          )}
-          {!!refiningItems && refiningItems.length > 0 && (
-            <View style={s.refining}>
-              <ActivityIndicator size="small" color={C.textSecondary} />
-              <Text style={s.refiningTxt} numberOfLines={2}>
-                Couldn't find {refiningItems.join(', ')} in our catalog — checking trusted sources online…
-              </Text>
             </View>
           )}
           {meal.items.map((it, i) => {
@@ -167,6 +193,35 @@ export function ParsedMealCard({
                   <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
                 </View>
                 {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
+                {/* I14. Deliberately a BUTTON, not a tappable sentence: nobody
+                    knows to tap prose, and the row itself already opens the
+                    editor, so a tap inside it would be ambiguous. Its own hit
+                    area, its own label, and it turns into the progress
+                    indicator in place rather than moving the card around. */}
+                {onCheckItem && uncertain(it) && (
+                  <Pressable
+                    onPress={(e) => { e.stopPropagation(); onCheckItem(i); }}
+                    disabled={checkingIndex !== null && checkingIndex !== undefined}
+                    hitSlop={8}
+                    style={s.checkBtn}
+                    accessibilityLabel={`Double-check ${it.food_name} online`}
+                    accessibilityHint="Looks this food up on the web and offers the numbers it finds"
+                  >
+                    {checkingIndex === i
+                      ? (
+                        <>
+                          <ActivityIndicator size="small" color={C.textSecondary} />
+                          <Text style={s.checkTxt}>Checking…</Text>
+                        </>
+                      )
+                      : (
+                        <>
+                          <Feather name="search" size={11} color={C.textSecondary} />
+                          <Text style={s.checkTxt}>Double-check</Text>
+                        </>
+                      )}
+                  </Pressable>
+                )}
               </Pressable>
             );
           })}
@@ -211,8 +266,11 @@ export function ParsedMealCard({
             </Pressable>
             <Pressable
               onPress={onAdd}
-              disabled={adding}
-              style={[s.addBtn, { opacity: adding ? 0.5 : 1 }]}
+              // Also disabled while a double-check runs. Letting Add stay live
+              // during a lookup would rebuild the exact race I15 removed: tap
+              // Add, numbers change, log something you never saw.
+              disabled={adding || busyChecking}
+              style={[s.addBtn, { opacity: adding || busyChecking ? 0.5 : 1 }]}
             >
               <Feather name="plus" size={14} color={C.background} />
               <Text style={s.addTxt}>{adding ? 'Adding...' : `Add to ${mealLabel(selected)}`}</Text>
@@ -300,12 +358,6 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     useTxt: { fontSize: FontSize.sm, color: C.background, fontWeight: FontWeight.semibold },
     noticeTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
 
-    refining: {
-      flexDirection: 'row', alignItems: 'center', gap: 8,
-      paddingVertical: Spacing.xs, marginBottom: Spacing.xs,
-    },
-    refiningTxt: { flex: 1, fontSize: FontSize.xs, lineHeight: 16, color: C.textSecondary },
-
     item: { paddingVertical: Spacing.xs },
     itemPressed: { opacity: 0.6 },
     itemDivider: { borderTopWidth: 1, borderTopColor: C.borderSubtle, marginTop: Spacing.xs, paddingTop: Spacing.sm },
@@ -319,6 +371,15 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     macros: { flexDirection: 'row', gap: Spacing.md, marginTop: 5 },
     macroNum: { fontSize: 11, fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'] },
     assumption: { fontSize: FontSize.sm, color: C.textDim, fontStyle: 'italic', marginTop: 4 },
+    // Reads as a control, not as text: bordered pill, its own hit area, and it
+    // sits left-aligned under the line it belongs to so the ownership is
+    // obvious. alignSelf keeps it from stretching across the row.
+    checkBtn: {
+      flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
+      marginTop: 6, paddingVertical: 4, paddingHorizontal: 8,
+      borderRadius: Radius.full, borderWidth: 1, borderColor: C.borderSubtle,
+    },
+    checkTxt: { fontSize: FontSize.xs, color: C.textSecondary, fontWeight: '600' },
 
     sectionRow: {
       flexDirection: 'row', gap: 6, marginTop: Spacing.md,

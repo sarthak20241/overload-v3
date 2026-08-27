@@ -10,7 +10,6 @@ import {
   type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
-  runWebRefine,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import { voyageRerank } from "./rerank.ts";
@@ -1378,32 +1377,157 @@ async function searchCatalogWithServings(
 // Recents give the prompt this user's staples ("milk" => their toned milk).
 // meal_entries has no timestamps of its own, so walk recent meals and
 // flatten, deduping by lowercased name.
+/**
+ * The user's STAPLES, ranked by how often they eat a thing (I13).
+ *
+ * Was pure recency - last 25 meals, dedupe, take 20 - so one unusual dinner
+ * outranked the milk they drink every morning, and every line said "last: 1
+ * serving", which tells decide nothing about what is normal for this person.
+ *
+ * WINDOW 14 DAYS, FILTER >= 2 OCCURRENCES. Settled from published data, not
+ * from our own logs (we have one meaningful logger, who cannot settle it):
+ * Wang et al., PMC12340925, n=21,006 adults over 14 days, found diets are far
+ * LESS repetitive than intuition suggests - ~50 unique items by day 14, with
+ * cumulative diversity still climbing. But only ~4 of those ~51 items were
+ * eaten on 7+ days, and about HALF appeared exactly once. So the core
+ * repertoire is tiny and the tail is enormous and never repeats: the win is
+ * not a longer window, it is dropping the one-off tail, which a >= 2 filter
+ * does for free (a food eaten once can never be predicted again). 14 days
+ * rather than 7 so weekly-cadence foods - the Sunday biryani - can reach 2
+ * occurrences at all.
+ *
+ * Ranked by occurrences with a ~7-day half-life, so a staple they have moved
+ * on from fades instead of sitting at the top forever. The amount shown is the
+ * MEDIAN, not the last, because one 500 ml outlier should not redefine what
+ * their usual glass is.
+ *
+ * 14 days is the DEFAULT, not a hard rule. It was settled from a study of
+ * active daily loggers, and an intermittent user breaks that assumption: our
+ * own most active account logged 8 meals in the last 14 days, so a >= 2 filter
+ * over that window returns NOTHING and the whole feature silently degrades to
+ * the old recency list. So: try 14 days, and only if that yields fewer than 5
+ * staples widen to 30. The decay still does the real work of keeping the list
+ * current, which is why widening is safe - an old staple sinks on its own
+ * rather than needing a hard cutoff to exclude it.
+ *
+ * New users fall back to plain recency: with < 2 occurrences of anything even
+ * at 30 days, a frequency list would be empty, and an empty list is worse than
+ * a rough one.
+ */
+const STAPLES_MIN_DAYS = 14;
+const STAPLES_WIDE_DAYS = 30;
+const STAPLES_ENOUGH = 5;
+
 async function fetchRecentFoods(userClient: SupabaseClient): Promise<RecentFoodContext[]> {
-  const sinceIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  // ONE scan, windowed in code. Fetching 14 days and then fetching 30 on a
+  // shortfall meant two meal_entries scans on every parse by any user with a
+  // thin fortnight - which is most of them, and it is on the critical path.
+  // The 30-day rows are a superset, so the 14-day answer is just a filter over
+  // what we already have.
+  const meals = await mealsWithin(userClient, STAPLES_WIDE_DAYS);
+  if (meals.length === 0) return [];
+  const cutoff = Date.now() - STAPLES_MIN_DAYS * 24 * 60 * 60 * 1000;
+  const recent = meals.filter((m) => m.at >= cutoff);
+
+  const near = staplesFrom(recent);
+  if (near.staples.length >= STAPLES_ENOUGH) return near.staples.slice(0, 20);
+  const wide = staplesFrom(meals);
+  if (wide.staples.length > 0) return wide.staples.slice(0, 20);
+  // Nothing repeats even at 30 days: a genuinely new or very varied user.
+  return wide.recencyFallback.slice(0, 20);
+}
+
+interface MealRow {
+  at: number;
+  entries: Array<Record<string, unknown>>;
+}
+
+async function mealsWithin(userClient: SupabaseClient, days: number): Promise<MealRow[]> {
+  const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await userClient
     .from("meals")
     .select("logged_at, meal_entries(food_name, quantity, serving_unit)")
     .gte("logged_at", sinceIso)
     .order("logged_at", { ascending: false })
-    .limit(25);
+    .limit(200);
   if (error || !Array.isArray(data)) return [];
-  const seen = new Set<string>();
-  const out: RecentFoodContext[] = [];
-  for (const meal of data as Array<Record<string, unknown>>) {
-    const entries = Array.isArray(meal.meal_entries) ? meal.meal_entries : [];
-    for (const e of entries as Array<Record<string, unknown>>) {
+  return (data as Array<Record<string, unknown>>).map((m) => ({
+    at: typeof m.logged_at === "string" ? Date.parse(m.logged_at) : NaN,
+    entries: Array.isArray(m.meal_entries) ? m.meal_entries as Array<Record<string, unknown>> : [],
+  }));
+}
+
+function staplesFrom(
+  meals: MealRow[],
+): { staples: RecentFoodContext[]; recencyFallback: RecentFoodContext[] } {
+  const now = Date.now();
+
+  interface Agg {
+    name: string;
+    times: number;
+    score: number;
+    amounts: number[];
+    units: Map<string, number>;
+    firstSeenRank: number;
+  }
+  const byName = new Map<string, Agg>();
+  let rank = 0;
+
+  for (const meal of meals) {
+    const ageDays = Number.isFinite(meal.at) ? (now - meal.at) / 86_400_000 : 14;
+    // ~7-day half-life.
+    const weight = Math.pow(0.5, Math.max(0, ageDays) / 7);
+    for (const e of meal.entries) {
       const name = typeof e.food_name === "string" ? e.food_name.trim() : "";
-      if (!name || seen.has(name.toLowerCase())) continue;
-      seen.add(name.toLowerCase());
-      out.push({
-        food_name: name,
-        quantity: Number(e.quantity ?? 1) || 1,
-        serving_unit: typeof e.serving_unit === "string" ? e.serving_unit : "g",
-      });
-      if (out.length >= 20) return out;
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const unit = typeof e.serving_unit === "string" && e.serving_unit ? e.serving_unit : "g";
+      const qty = Number(e.quantity ?? 1) || 1;
+      const agg = byName.get(key);
+      if (agg) {
+        agg.times += 1;
+        agg.score += weight;
+        agg.amounts.push(qty);
+        agg.units.set(unit, (agg.units.get(unit) ?? 0) + 1);
+      } else {
+        byName.set(key, {
+          name,
+          times: 1,
+          score: weight,
+          amounts: [qty],
+          units: new Map([[unit, 1]]),
+          firstSeenRank: rank++,
+        });
+      }
     }
   }
-  return out;
+  if (byName.size === 0) return { staples: [], recencyFallback: [] };
+
+  const median = (xs: number[]): number => {
+    const a = [...xs].sort((x, y) => x - y);
+    const mid = a.length >> 1;
+    const m = a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+    return Math.round(m * 100) / 100;
+  };
+  const commonestUnit = (u: Map<string, number>): string => {
+    let best = "g", n = -1;
+    for (const [unit, count] of u) if (count > n) [best, n] = [unit, count];
+    return best;
+  };
+
+  const all = [...byName.values()];
+  const shape = (a: Agg): RecentFoodContext => ({
+    food_name: a.name,
+    quantity: median(a.amounts),
+    serving_unit: commonestUnit(a.units),
+    ...(a.times >= 2 ? { times: a.times } : {}),
+  });
+  return {
+    staples: all.filter((a) => a.times >= 2).sort((x, y) => y.score - x.score).map(shape),
+    // Old recency order preserved (firstSeenRank follows the descending
+    // logged_at scan) so a new user is no worse off than before.
+    recencyFallback: [...all].sort((x, y) => x.firstSeenRank - y.firstSeenRank).map(shape),
+  };
 }
 
 // Full agent-flow observability for parse_meal: one parse_traces row per request
@@ -1422,8 +1546,7 @@ function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): 
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
 
-/** The dependency bundle parseMeal.ts runs against. Shared by the full parse
- *  and the phase-2 web refine so both hit the same catalog/OFF/model wiring. */
+/** The dependency bundle parseMeal.ts runs against. */
 function makeParseDeps(
   userClient: SupabaseClient,
   admin: SupabaseClient,
@@ -1504,16 +1627,8 @@ async function handleParseMealRequest(args: {
   const { admin, userClient, trace, userId, startedAtMs, body, respond } = args;
   PARSE_ISOLATE_REQUESTS++;
 
-  // Phase 2 (the web refine) is fired automatically by the client after a
-  // phase-1 miss - it carries previous_items, not text, so it skips the
-  // non-empty-text check. It still goes through the rate limiter: nothing
-  // proves a phase-1 call preceded it, so an unlimited refine endpoint would be
-  // a direct-call abuse vector (each runs up to 4 real web-search turns). It
-  // shares the parse bucket - a small extra draw on the ~15% of logs that miss,
-  // in exchange for a hard cap on cost.
-  const isRefine = body.refine_web === true;
   const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!text && !isRefine) {
+  if (!text) {
     trace.status = "bad_request";
     trace.error_message = "parse_meal requires non-empty text";
     return respond({ error: trace.error_message }, 400);
@@ -1553,8 +1668,7 @@ async function handleParseMealRequest(args: {
   // Own bucket, same sliding-window mechanics as the coach limiter. Now
   // routed through the atomic try_reserve_parse_meal_slot RPC (migration
   // 0089) so a concurrent burst can't bypass the free-tier cap of 3 parses
-  // per rolling 24h. Refine calls share this bucket (see isRefine above),
-  // so a direct-called refine still costs one slot.
+  // per rolling 24h.
   const sinceIso = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
   const { data: parseSlotData, error: parseSlotErr } = await userClient
     .rpc("try_reserve_parse_meal_slot", { p_cap: parseCap });
@@ -1649,46 +1763,6 @@ async function handleParseMealRequest(args: {
       }];
     })
     : [];
-
-  // ── Phase 2: the deliberate web refine ────────────────────────────────────
-  // The client fires this after phase 1 returned web_refine, passing the weak
-  // lines back as previous_items. No extract, no decide, no context - just the
-  // web lookup over those lines. Returns the improved lines to swap in, or null
-  // when the web found nothing better (client keeps the estimate it showed).
-  if (body.refine_web === true) {
-    const usage = {
-      input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0, web_search_requests: 0,
-    };
-    const accumulate = (data: { usage?: Record<string, number> }) => {
-      const u = data.usage ?? {};
-      usage.input_tokens += u.input_tokens ?? 0;
-      usage.output_tokens += u.output_tokens ?? 0;
-      usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
-      usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
-      usage.web_search_requests += (u as { server_tool_use?: { web_search_requests?: number } })
-        .server_tool_use?.web_search_requests ?? 0;
-    };
-    let refined: { items: unknown[]; note: string } | null = null;
-    try {
-      refined = await runWebRefine(makeParseDeps(userClient, admin, userId), previousItems, accumulate, () => {});
-    } catch (e) {
-      console.log("[parse_meal] web refine threw:", String(e).slice(0, 160));
-    }
-    trace.status = "success";
-    trace.tool_calls = ["web_refine"];
-    void logTokenUsage(admin, {
-      pipeline: "parse_meal",
-      provider: "anthropic",
-      model: PARSE_MEAL_MODEL,
-      input_tokens: usage.input_tokens,
-      output_tokens: usage.output_tokens,
-      latency_ms: Date.now() - startedAtMs,
-      status: "success",
-      metadata: { user_id: userId, mode: "parse_meal_refine", web_search_requests: usage.web_search_requests },
-    });
-    return respond({ refined: refined ?? null, usage }, 200);
-  }
 
   // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
   // it here WITHOUT awaiting so the queries run concurrently with the extract
@@ -1820,8 +1894,6 @@ async function handleParseMealRequest(args: {
         declined: result.declined,
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
-        // Weak lines the client can offer to improve with a visible web search.
-        web_refine: result.web_refine ?? null,
         usage: result.usage,
         tool_calls: result.tool_calls,
       },

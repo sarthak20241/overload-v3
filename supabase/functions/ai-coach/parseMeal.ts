@@ -104,18 +104,17 @@ export interface ParseMealResult {
     corrects_previous?: boolean;
   } | null;
   // Set when the model declined (non-food input) instead of logging.
-  declined: { message: string } | null;
+  //
+  // `cleared` marks the ONE decline that is not a refusal: the user removed the
+  // last remaining line, so there is nothing left to log. The client must drop
+  // the card rather than keep it, which is what it does for every other decline
+  // (a decline normally means unlogged work would be lost).
+  declined: { message: string; cleared?: boolean } | null;
   /** A researched alternative the user should CHOOSE, not receive silently.
    *  Set when a web lookup materially disagrees with what is on screen -
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
-  /** Names of lines we could not ground in any source (source "estimate") that
-   *  a deliberate web search could improve. When set, the client shows the meal
-   *  immediately, displays a "searching the web for better numbers" indicator,
-   *  and fires a second refine request. null when nothing needs it. A merely
-   *  guardrail-flagged line is NOT here - see isRefinable. */
-  web_refine?: { items: string[] } | null;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -134,6 +133,9 @@ export interface RecentFoodContext {
   food_name: string;
   quantity: number;
   serving_unit: string;
+  /** How many times in the window. Absent on the recency fallback (a new user
+   *  with too little history to rank by frequency). */
+  times?: number;
 }
 
 /** A line from the meal still under review on the client, sent back with a
@@ -797,12 +799,23 @@ const EXTRACT_TOOL = {
           "FALSE when the user is naming NEW food to add (\"and a dosa\", \"also 2 roti\") or " +
           "logging an unrelated meal. Only ever true when a previous meal was given.",
       },
+      removed_food_names: {
+        type: ["array", "null"],
+        items: { type: "string" },
+        description:
+          "Foods the user asked to REMOVE from the previous meal. Give the FOOD NAME as the " +
+          'previous meal spells it, NOT the whole sentence: for "remove the tofu" send "Tofu", ' +
+          'for "I did not have the rice" send "Rice". If the previous line is more specific ' +
+          '("Toned Milk") send that. Leave them OUT of items as well. null or empty when ' +
+          "nothing was removed. Only ever set when a previous meal was given.",
+      },
       items: {
         type: "array",
         description:
           "One entry per distinct food/drink. When corrects_previous is true, list the " +
           "corrected version of EVERY line of the previous meal (unchanged ones included), " +
-          "so the result replaces it wholesale.",
+          "so the result replaces it wholesale. A line named in removed_food_names is the " +
+          "one exception: leave it out entirely.",
         items: {
           type: "object",
           properties: {
@@ -1001,7 +1014,11 @@ const WEB_LOOKUP_TOOL = {
             },
             source_note: {
               type: ["string", "null"],
-              description: 'Short source for the user, e.g. "per the Britannia label". No URLs.',
+              description:
+                'Short source for the user. For a packaged food name the label ("per the ' +
+                'Britannia label"). For a DISH say what it represents ("typical restaurant ' +
+                'preparation"), so the user can tell a measured panel from a typical value. ' +
+                "No URLs.",
             },
           },
           required: ["for_item", "found"],
@@ -1078,7 +1095,8 @@ const WEB_LOOKUP_MAX_TURNS = 4;
 const WEB_LOOKUP_TIMEOUT_MS = 20000;
 
 // A bounded mini-loop over server web_search: pause turns resume, and the
-// final turn forces report_labels. Used by researchPrevious / runWebRefine.
+// final turn forces report_labels. Used by researchPrevious (the user
+// challenge path); the automatic refine that also used it is gone, see I15.
 async function runWebLookup(
   deps: ParseMealDeps,
   items: ExtractedItem[],
@@ -1086,11 +1104,27 @@ async function runWebLookup(
   onCall: () => void,
 ): Promise<Map<string, WebLabel> | null> {
   const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
+  // TWO SHAPES, because a label-only lookup is useless on exactly the foods the
+  // catalog misses most. Measured 2026-08-23: 7 of 33 common Indian dishes have
+  // no catalog row, and a dish has no brand, no official panel and no label
+  // listing - so the old prompt searched for a label that cannot exist and
+  // correctly reported nothing. A user tapping Double-check on "chole bhature"
+  // got a dead end (verified: web_search_requests 1, found 0).
   const system =
-    "You look up nutrition labels for foods a fitness app could not find in its catalog. " +
-    'For EACH item, run ONE web search for the official label ("<brand> <product> nutrition facts per 100g"), ' +
-    "read numbers only from the brand's own site or a reputable label listing, then call report_labels " +
-    "exactly once with per-100 macros for everything you found. Speed matters: no extra searches, no prose.";
+    "You look up nutrition numbers for foods a fitness app could not find in its catalog. " +
+    "For EACH item, run ONE web search, then call report_labels exactly once with per-100 " +
+    "macros for everything you found. Two kinds of food, and you must tell them apart:\n" +
+    'PACKAGED OR BRANDED (a product with a wrapper): search the official label ' +
+    '("<brand> <product> nutrition facts per 100g") and read numbers ONLY from the ' +
+    "brand's own site or a reputable label listing. source_note names the label.\n" +
+    "A DISH (cooked food with no wrapper: chole bhature, paneer bhurji, misal pav, a " +
+    "restaurant plate): there is no label and you must not wait for one. Search a " +
+    "reputable nutrition source for a TYPICAL preparation and report that, with " +
+    'source_note saying so plainly, e.g. "typical restaurant preparation". ' +
+    "Prefer nutrition databases and published analyses over a random blog.\n" +
+    "Report nothing for an item only when you genuinely found nothing usable. Never " +
+    "invent numbers, and never average wildly disagreeing sources - pick the most " +
+    "credible one. Speed matters: no extra searches, no prose.";
   const conversation: AnthropicMsg[] = [{
     role: "user",
     content: JSON.stringify(items.map((i) => ({ name: i.name, ...(i.brand ? { brand: i.brand } : {}) }))),
@@ -1174,6 +1208,8 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
 - CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
+- QUESTION THAT ALSO STATES THE FIX ("that seems high, make it 100g", "is that right? it was a small one"): set corrects_previous TRUE and list the corrected items as well. The user told you the answer; do not just agree with them and change nothing.
+- REMOVAL ("remove the tofu", "drop the milk", "I did not have the rice", "scratch the dosa"): put the line's name in removed_food_names, copied as the previous meal spells it, and LEAVE IT OUT of items. Set corrects_previous true. Listing it in items keeps it in the log, which is the opposite of what was asked.
 - ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance.
 When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
@@ -1182,10 +1218,18 @@ const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
 
+  // I13: frequency first, with the count and the USUAL amount. "last: 1 serving"
+  // said nothing about whether this was a staple or a one-off someone tried
+  // once, and the list was ordered by recency, so a single unusual dinner
+  // outranked the milk they drink daily.
   const recents = input.recentFoods.length > 0
     ? input.recentFoods
       .slice(0, 20)
-      .map((r) => `- ${r.food_name} (last: ${r.quantity} ${r.serving_unit})`)
+      .map((r) =>
+        r.times && r.times > 1
+          ? `- ${r.food_name} (${r.times} times, usually ${r.quantity} ${r.serving_unit})`
+          : `- ${r.food_name} (last: ${r.quantity} ${r.serving_unit})`
+      )
       .join("\n")
     : "(none yet)";
 
@@ -1206,6 +1250,11 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - Choose the candidate that IS the food, not one merely similar. For generic Indian foods prefer the curated staples (Roti, Toor Dal, Curd, Toned Milk) over obscure branded rows. For a plain whole food ("chicken breast", "rice", "milk") prefer the plain/cooked/generic row over processed, fat-free, dried, deli, or flavored variants unless the user named that variant.
 - Respect the item's prep state: never log a roasted/dried/fried item against a cooked/boiled candidate (2-3x density difference). If only a wrong-state candidate exists, estimate instead.
 - Indian beverage defaults: unqualified "tea" or "chai" means MILK tea (the Chai / Milk Tea row, ~45 kcal/100 ml), and unqualified "coffee" means milk coffee. Herbal, black, green, or lemon tea ONLY when the user says so; picking a 1-2 kcal plain-tea row for unqualified "tea" is wrong. Any such default is never confidence high; name it in assumption.
+- ACCEPTABLE means: eating the candidate instead of what the user described would move the macros less than ~10%. Judge the WORDS THE USER USED, not how similar the names look.
+  DROP these words and match the row anyway, they do not change the food: brand on a food fixed by standard or nature (toned milk is 3% fat by regulation, so Amul = Mother Dairy; likewise curd, plain paneer, ghee, oil, atta, rice, dal, eggs); marketing words (fresh, farm, pure, natural, homemade, packet, tetra pack); regional synonyms (doodh = milk, dahi = curd, chawal = rice).
+  NEVER drop these, they ARE the product: fat grade (low fat, full fat, full cream, toned, double toned, skimmed); protein or sugar claims (high protein, zero sugar, no added sugar, diet); part or variant (yolk, white, whole, brown, wholewheat, maida); prep state (raw, boiled, roasted, fried, dried - 2-3x density); brand on a FORMULATED product, where the recipe IS the product (protein bars and powders, biscuits, cereals, sauces, ready meals, flavoured yogurt); a DISH reduced to an ingredient (paneer butter masala is not Paneer).
+  The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
+- grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -1227,6 +1276,9 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
 - NEVER ask the user a question. This is a one-shot logger, not a chat: the user gets no chance to reply. If an amount is missing, assume ONE standard serving (use the household defaults above) and note it in assumption, e.g. "Took that as one katori, 150 g." If a brand/variant is ambiguous, pick the most common one and say so. Estimate and log; do not stall for clarification.
 - An item with no candidates is NEVER dropped: estimate the macros from your own knowledge (source "estimate"), note it in assumption, and log it. A branded snack you recognize (Haldiram's bhujia, Epigamia yogurt, etc.) always gets logged with an estimate, never skipped.
 - You MUST finish by calling log_meal exactly once, covering every extracted item. Never write the parsed meal, macros, or a follow-up question as assistant text.
+- USE THE USER'S OWN STAPLES when the text is VAGUE. The context lists what this person actually eats, with how many times and their usual amount. If they say "milk" and the list shows "Toned Milk (7 times, usually 200 ml)", log THEIR toned milk at THEIR 200 ml. Do not fall back to a generic or whole-fat default and then tell them their history says otherwise: they told you what they eat by eating it. Same for the amount, prefer their usual over a standard serving.
+  This applies ONLY when the user was vague. If they NAME a version ("whole milk", "full cream"), that wins over history every time - they are telling you today is different, and a staple must never overrule an explicit word.
+  NEVER write an assumption claiming the user said something they did not say. If their staple is not among the candidates, log the closest candidate honestly and say the staple was not available - do not invent "you said whole milk today" to justify the row you picked.
 - drona_line reacts to the meal against the day so far (see context): protein lands first, praise effort, nudge gaps. One sentence, max ~15 words.
 </behavior>
 
@@ -1372,6 +1424,9 @@ async function resolveOneItem(
   item: ExtractedItem,
   steps: ParseStep[],
   toolCalls: string[],
+  /** Lower-cased names of foods this user logs repeatedly (I13). Used ONLY to
+   *  stop the reranker discarding them; see the promotion below. */
+  stapleNames?: Set<string>,
 ): Promise<ResolvedItem> {
   // Query ladder: full name, brand-qualified, then progressively fewer words
   // (the 0079 search requires EVERY word to match, so an over-specified name
@@ -1553,6 +1608,33 @@ async function resolveOneItem(
     }
   }
 
+  // I13 + 0107: the RERANKER UNDOES PERSONALISATION, so put it back.
+  //
+  // Measured 2026-08-24 on a user with 7 Toned Milk logs in 14 days. Migration
+  // 0107 correctly returned "Toned Milk" as the #1 candidate for the query
+  // "milk". The reranker then reordered to Milk-whole / Milk-whole-UHT /
+  // Milk-sheeps-raw and dropped Toned Milk out of the top 3 entirely, because
+  // it scores the bare word "milk" against candidate NAMES and has no idea what
+  // this person drinks every morning.
+  //
+  // Habit is not a semantic question. The reranker's job is telling "2 whole
+  // eggs" from "Eggs, chicken, yolk, raw"; it is not equipped to overrule a food
+  // the user has logged repeatedly. So a staple keeps its place at the head and
+  // the reranker orders everything below it.
+  if (stapleNames && stapleNames.size > 0 && usable.length > 1) {
+    const isStaple = (c: CandidateFood) => stapleNames.has(c.name.trim().toLowerCase());
+    const mine = usable.filter(isStaple);
+    if (mine.length > 0 && mine.length < usable.length) {
+      usable = [...mine, ...usable.filter((c) => !isStaple(c))];
+      steps.push({
+        iter: 1,
+        tool: "staple_promoted",
+        input: { item: item.name },
+        result: { top: usable.slice(0, 3).map((c) => c.name) },
+      });
+    }
+  }
+
   // decide reads every candidate we pass; past ~6 the list is distractors.
   usable = usable.slice(0, 6);
   return { ...item, candidates: usable.map(synthesizeVolumeAnchors), rerankTopScore };
@@ -1664,6 +1746,161 @@ export function unhonouredGrade(said: string, rowName: string): string | null {
     if (!rowHasAny) return inSaid;
   }
   return null;
+}
+
+/**
+ * The grade the user asked for that NO candidate stocks (I11), or null.
+ *
+ * unhonouredGrade already catches this, but only at verify time, once decide
+ * has committed: the line ships with the generic row's macros and a chip
+ * apologising for them. By then the damage is done, because the chip does not
+ * change the numbers that land in the log.
+ *
+ * Asking the same question BEFORE decide lets it estimate instead. An estimate
+ * of "low fat paneer" lands near the real 190 kcal/100 g; the plain Milky Mist
+ * Paneer row it would otherwise take is 283, so the estimate is the more
+ * accurate answer even though it is the less confident-looking one. Same for
+ * "double toned milk" (42 vs the 58 of the toned row that wins today).
+ *
+ * Only GRADE_GROUPS, deliberately: fat level and protein claims move macros a
+ * long way and are fixed by standard. Prep state and egg part are handled by
+ * variantClash, which can see a contradiction rather than a silence.
+ */
+export function gradeNotStocked(name: string, candidates: CandidateFood[]): string | null {
+  if (candidates.length === 0) return null;
+  const norm = (x: string) => ` ${x.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+  // Longest first, so "double toned" is never read as "toned".
+  const longestIn = (group: string[], text: string): string | null =>
+    [...group].sort((a, b) => b.length - a.length).find((g) => text.includes(` ${g} `)) ?? null;
+
+  const said = norm(name);
+  for (const group of GRADE_GROUPS) {
+    const want = longestIn(group, said);
+    if (!want) continue;
+    // EQUALITY, not mere presence. Two different misses have to be caught and
+    // unhonouredGrade only sees one of them:
+    //   silence      - "low fat paneer" vs "Milky Mist Paneer" (no grade at all)
+    //   contradiction- "double toned milk" vs "Amul Taaza Toned Milk", where the
+    //                  row does carry A grade, just the wrong one. variantClash
+    //                  spots that later, but only to apologise on the card; by
+    //                  then the toned row's 58 kcal/100 ml is already the number
+    //                  being logged for a 42 kcal product.
+    // Comparing the row's OWN longest term to the user's catches both, and in
+    // both directions ("toned" asked, "double toned" row is also a miss).
+    if (candidates.some((c) => longestIn(group, norm(c.name)) === want)) continue;
+    return want;
+  }
+  return null;
+}
+
+/**
+ * Lines a correction did NOT touch (I1).
+ *
+ * The extract contract asks for the corrected version of EVERY previous line,
+ * unchanged ones included, so a correction re-resolves and re-decides the whole
+ * meal. Search and rerank are not deterministic across calls, so a line the
+ * user never mentioned can come back pointing at a DIFFERENT row: say "make the
+ * roti 3" and your dal can quietly change underneath you. Nothing surfaces it,
+ * because the correction card legitimately shows every line as new.
+ *
+ * Matching one of these means we can leave the line out of resolve entirely and
+ * let the previous version through untouched, which is both faster and, more to
+ * the point, stable.
+ *
+ * DELIBERATELY STRICT, because the two errors are not symmetrical. Treating a
+ * changed line as unchanged silently discards the user's edit; treating an
+ * unchanged line as changed just costs a re-resolve. So this demands the same
+ * name AND the same amount AND the same unit, and gives up on anything it
+ * cannot line up exactly.
+ */
+export function unchangedInCorrection(
+  item: ExtractedItem,
+  previous: PreviousItem[],
+): PreviousItem | null {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const unit = (x: string) => norm(x).replace(/s$/, "");
+  // A RE-TARGET is a change, however tidy it looks. "actually paneer not tofu"
+  // keeps the amount and the unit and points corrects_food_name at the old
+  // line, so keying off that field alone reads it as untouched and throws the
+  // swap away. The item's OWN name has to be the one already on the card.
+  if (item.correctsFoodName && norm(item.correctsFoodName) !== norm(item.name)) return null;
+  const target = norm(item.name);
+  // Scan ALL same-named lines, do not stop at the first. A meal can hold two
+  // entries sharing a name and differing only in size - the "chai 75 g / chai
+  // 150 g" case this file calls out elsewhere - and returning on the first one
+  // would report a genuinely unchanged line as changed whenever the matching
+  // duplicate is not first in the array. That is the safe direction (an extra
+  // re-resolve, not lost data), but a re-resolve is exactly the
+  // nondeterministic repoint I1 exists to avoid, so do not accept it needlessly.
+  for (const p of previous) {
+    if (norm(p.food_name) !== target) continue;
+    // A prep word the previous line never carried IS a change ("make the egg
+    // boiled"). Keep scanning: another same-named line may carry it.
+    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) continue;
+    const sameQty = Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001;
+    const sameUnit = unit(item.unit || "serving") === unit(p.serving_label || "serving");
+    if (sameQty && sameUnit) return p;
+  }
+  return null;
+}
+
+/**
+ * Does a removal phrase name this line? (I6a)
+ *
+ * Directional on purpose. wordsOverlap asks "are these the same food", which
+ * needs the SHORTER side fully covered - and that is the wrong question here.
+ * "remove the milk" against "Toned Milk" makes the ROW the shorter side, so it
+ * demanded a match for "toned" inside the user's phrase, found none, and
+ * reported no match. The line then looked accidentally dropped and
+ * keepUncoveredPrevious put it back: the exact resurrection I6a exists to stop.
+ * Migration 0106 made this common by adding multi-word graded names.
+ *
+ * So: strip the command words, then ask only that what REMAINS appears in the
+ * row's name. "milk" is inside "toned milk"; the row may be more specific than
+ * the user bothered to be, which is the normal case.
+ */
+const REMOVAL_FILLER = new Set([
+  "remove", "delete", "drop", "scratch", "cancel", "undo", "take", "off", "out",
+  "the", "that", "this", "those", "these", "a", "an", "my", "i", "did", "not",
+  "have", "had", "no", "from", "it", "one", "and", "please", "just",
+]);
+
+export function removalNames(phrase: string, rowName: string): boolean {
+  const words = (x: string) =>
+    x.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
+  const needle = words(phrase).filter((w) => !REMOVAL_FILLER.has(w));
+  if (needle.length === 0) return false;
+  const hay = words(rowName);
+  if (hay.length === 0) return false;
+  return needle.every((n) => hay.some((h) => nearWord(n, h)));
+}
+
+/**
+ * Which previous line does a removal phrase actually name? (I6a)
+ *
+ * removalNames answers "could this phrase refer to this row", which is too
+ * loose to act on when several rows could answer yes. "remove the milk" against
+ * a meal holding BOTH "Milk" and "Chai / Milk Tea" matches both, and treating
+ * every match as removed deletes a drink the user never mentioned - then, if it
+ * was the only other line, trips the empty-meal path and wipes the card.
+ *
+ * So pick ONE: the candidate carrying the fewest words the phrase did not ask
+ * for. "Milk" adds nothing beyond "milk"; "Chai / Milk Tea" adds two. Ties go
+ * to the first, and no candidate returns null rather than guessing.
+ */
+export function bestRemovalTarget(phrase: string, previous: PreviousItem[]): PreviousItem | null {
+  const words = (x: string) => x.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
+  let best: PreviousItem | null = null;
+  let bestExtra = Infinity;
+  for (const p of previous) {
+    if (!removalNames(phrase, p.food_name)) continue;
+    const extra = words(p.food_name).length;
+    if (extra < bestExtra) {
+      best = p;
+      bestExtra = extra;
+    }
+  }
+  return best;
 }
 
 /** Repoint a line whose food_id contradicts its own name.
@@ -2323,31 +2560,6 @@ async function researchPrevious(
   };
 }
 
-/**
- * Phase 2 of the deliberate web search. The client fires this AFTER phase 1
- * returned a usable meal, for the specific lines phase 1 marked weak. It web-
- * looks-them-up, runs the same guardrails over the result, and hands back the
- * improved lines for the client to swap in - reusing researchPrevious, the
- * exact machinery the user-challenge path uses, so the two stay in step.
- *
- * Returns null when the web found nothing better; the client then just keeps
- * the estimate it already showed.
- */
-export async function runWebRefine(
-  deps: ParseMealDeps,
-  weakItems: PreviousItem[],
-  onUsage: (data: any) => void,
-  onCall: () => void,
-): Promise<{ items: ParsedItem[]; note: string } | null> {
-  if (!deps.webSearchEnabled || weakItems.length === 0) return null;
-  const researched = await researchPrevious(deps, weakItems, onUsage, onCall).catch(() => null);
-  if (!researched) return null;
-  // Same guardrails phase 1 applies. A web label is flag-only under Atwater
-  // (checkAtwater skips rewriting "web"), so a real panel is never overwritten.
-  const items = flagPrepMismatch(checkAtwater(researched.items));
-  return { items, note: researched.note };
-}
-
 /** Match a user's phrasing of an amount ("small", "1 medium", "2 pieces")
  *  against a food's real serving labels. Exact first, then substring both
  *  ways so "small" finds "1 small/individual". */
@@ -2492,9 +2704,9 @@ export async function runParseMeal(
     usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
     usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
   };
-  const declineResult = (message: string): ParseMealResult => ({
+  const declineResult = (message: string, cleared?: boolean): ParseMealResult => ({
     parsed: null,
-    declined: { message },
+    declined: cleared ? { message, cleared } : { message },
     usage,
     tool_calls: toolCalls,
     steps,
@@ -2548,7 +2760,7 @@ export async function runParseMeal(
   const extractBlock = ((extractRes.data.content ?? []) as Array<Record<string, any>>)
     .find((b) => b.type === "tool_use" && b.name === "extract_meal");
   const ext = (extractBlock?.input ?? {}) as Record<string, unknown>;
-  const extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
+  let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
     .slice(0, 12)
     .flatMap((r: unknown): ExtractedItem[] => {
       if (!r || typeof r !== "object") return [];
@@ -2578,6 +2790,52 @@ export async function runParseMeal(
       .map((i) => i.correctsFoodName?.trim().toLowerCase())
       .filter((n): n is string => !!n),
   );
+  // I6a: deletion by text used to be IMPOSSIBLE to express. "remove the tofu"
+  // left the line out of items, and keepUncoveredPrevious - whose job is to stop
+  // decide silently dropping food - dutifully put it back. The user's only way
+  // to delete was the card's own X button.
+  //
+  // No new suppression mechanism needed: a removed line is the same shape as a
+  // re-targeted one, in that the guard must not resurrect it. Feeding removals
+  // into replacedNames reuses that path exactly.
+  const removedNames: string[] = Array.isArray(ext.removed_food_names)
+    ? (ext.removed_food_names as unknown[])
+      .filter((n): n is string => typeof n === "string" && n.trim() !== "")
+      .map((n) => n.trim().toLowerCase())
+    : [];
+  // Removal is ENFORCED here, not merely requested. The schema tells the model
+  // to leave a removed line out of items, but a prompt instruction is not
+  // something to trust per turn - which is precisely why keepUncoveredPrevious
+  // and preserveManual exist. If the model names a line as removed and then
+  // lists it anyway, the user's delete would silently do nothing.
+  // Resolve each removal phrase to the ONE previous line it names, then act only
+  // on that line. Acting on every loose match deletes food the user never
+  // mentioned: "remove the milk" would take "Chai / Milk Tea" with it.
+  const removedTargets = new Set<string>();
+  if (hasPrevious) {
+    for (const n of removedNames) {
+      replacedNames.add(n);
+      const target = bestRemovalTarget(n, prevItems);
+      if (target) {
+        const key = target.food_name.trim().toLowerCase();
+        replacedNames.add(key);
+        removedTargets.add(key);
+      }
+    }
+  }
+  // Enforce the removal in CODE. The schema asks the model to leave a removed
+  // line out of items, and a per-turn instruction is not something to trust -
+  // which is why keepUncoveredPrevious and preserveManual exist at all. Matched
+  // by exact name against the RESOLVED target, not by the loose phrase: the
+  // correction contract has the model relist lines verbatim, so an exact match
+  // is enough, and anything looser risks deleting a line nobody asked about.
+  if (removedTargets.size > 0) {
+    const before = extItems.length;
+    extItems = extItems.filter((it) => !removedTargets.has(it.name.trim().toLowerCase()));
+    if (extItems.length !== before) {
+      deps.log?.(`[parse_meal] dropped ${before - extItems.length} item(s) the model removed then relisted`);
+    }
+  }
   const mealFromText: MealType | null =
     ext.meal_type_from_text === "breakfast" || ext.meal_type_from_text === "lunch" ||
     ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
@@ -2649,7 +2907,13 @@ export async function runParseMeal(
   // A question about the meal on screen is answered with its real provenance,
   // never brushed off as chatter. The client keeps the card and shows this as
   // a notice, so challenging a number costs the user nothing.
-  if (hasPrevious && ext.asks_about_previous === true) {
+  // I6b: a challenge that also states the fix must APPLY the fix. "that seems
+  // high, make it 100g" is both a question and an instruction, and answering the
+  // question while discarding the instruction leaves the user's correction on
+  // the floor - they have to say it twice. A pure question carries no items and
+  // no correction flag, so those two conditions separate the cases cleanly.
+  const challengeCarriesFix = correctsPrevious || extItems.length > 0 || removedNames.length > 0;
+  if (hasPrevious && ext.asks_about_previous === true && !challengeCarriesFix) {
     const answer = await answerAboutPrevious(deps, prevItems, deps.webSearchEnabled).catch(() => "");
     if (answer) {
       steps.push({ iter: 1, tool: "answer_about_previous", input: { items: prevItems.length } });
@@ -2664,6 +2928,16 @@ export async function runParseMeal(
         iterations: anthropicCalls,
       };
     }
+  }
+
+  // I6a edge case: the user removed the ONLY line. extract correctly returns no
+  // items, and the generic empty check below would call that non-food and tell
+  // them to say what they ate - next to the line they just deleted, because a
+  // decline keeps the card. Removing the last line by TEXT should behave like
+  // removing it with the X button, which already clears the card.
+  if (hasPrevious && extItems.length === 0 && removedNames.length > 0) {
+    const what = removedNames.length === 1 ? removedNames[0] : "those";
+    return declineResult(`Removed ${what}. Nothing left on this one.`, true);
   }
 
   if (ext.declined === true || extItems.length === 0) {
@@ -2721,16 +2995,48 @@ export async function runParseMeal(
   }
 
   // ── Stage 2: resolve, all items in parallel ───────────────────────────────
+  // I1: on a correction, resolve only what actually CHANGED. An untouched line
+  // re-resolved is an untouched line at risk: search and rerank are not
+  // deterministic, so "make the roti 3" could quietly repoint the dal. The
+  // previous version is restored verbatim by keepUncoveredPrevious below.
+  let toResolve = extItems;
+  if (correctsPrevious && prevItems.length > 0) {
+    const passthrough = new Map<number, PreviousItem>();
+    extItems.forEach((it, i) => {
+      const same = unchangedInCorrection(it, prevItems);
+      if (same) passthrough.set(i, same);
+    });
+    // If EVERYTHING looks unchanged we have almost certainly misread the turn,
+    // so resolve normally rather than hand back an identical meal.
+    if (passthrough.size > 0 && passthrough.size < extItems.length) {
+      // A passed-through line must not also be marked replaced, or the restore
+      // guard reads it as deliberately dropped and the line disappears.
+      for (const p of passthrough.values()) replacedNames.delete(p.food_name.toLowerCase());
+      toResolve = extItems.filter((_, i) => !passthrough.has(i));
+      steps.push({
+        iter: 1,
+        tool: "correction_scope",
+        input: { changed: toResolve.length, untouched: passthrough.size },
+      });
+    }
+  }
   const tResolve0 = Date.now();
+  // Only foods with a repeat count are staples; the recency fallback list has
+  // no `times` and must not be treated as habit.
+  const stapleNames = new Set(
+    (input.recentFoods ?? [])
+      .filter((r) => (r.times ?? 0) >= 2)
+      .map((r) => r.food_name.trim().toLowerCase()),
+  );
   const resolved = await Promise.all(
-    extItems.map((item) => resolveOneItem(deps, item, steps, toolCalls)),
+    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames)),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
 
   // ── Stage 3: decide ───────────────────────────────────────────────────────
   // One forced log_meal call. NO web lookup here any more: web search is a
-  // deliberate, user-visible SECOND phase (runWebRefine) that the client fires
+  // USER-INITIATED lookup only (the challenge path), never an automatic one
   // for items this phase left weak. Phase 1 stays fast and always returns a
   // usable meal immediately; the web only ever improves it afterwards.
   //
@@ -2773,7 +3079,6 @@ export async function runParseMeal(
         corrects_previous: false,
       },
       declined: null,
-      web_refine: null,
       usage,
       tool_calls: toolCalls,
       steps,
@@ -2790,6 +3095,13 @@ export async function runParseMeal(
       quantity: r.quantity,
       unit: r.unit,
       ...(r.prep ? { prep: r.prep } : {}),
+      // I11: computed in CODE, not left for the model to notice. When the user
+      // named a grade and not one candidate stocks it, say so plainly here so
+      // decide estimates instead of dressing a generic row as a match.
+      ...((() => {
+        const g = gradeNotStocked(r.name, r.candidates);
+        return g ? { grade_not_stocked: g } : {};
+      })()),
       // Top 4 candidates: the ranked search already puts the right row first;
       // extra candidates only inflate decide-call input tokens (latency).
       candidates: r.candidates.slice(0, 4).map(candidatePayload),
@@ -2925,20 +3237,10 @@ export async function runParseMeal(
     : "Logged. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 
-  // Lines we could not ground in any source - the honest "couldn't find a
-  // match" case - that the client offers to look up online (phase 2). A line
-  // a guardrail merely FLAGGED (matched but low confidence) is not here: we
-  // did find something, so "couldn't find it" would be a lie. Those are left
-  // to the user-challenge path, which re-searches on what the user describes.
-  const webRefine = deps.webSearchEnabled
-    ? items.filter((it) => isRefinable(it)).map((it) => it.food_name)
-    : [];
-
-  steps.push({ iter: 9, tool: "__timing", input: { ...T, web_refine: webRefine.length } });
+  steps.push({ iter: 9, tool: "__timing", input: { ...T } });
   return {
     parsed: { meal_type: mealType, items, drona_line: dronaLine, corrects_previous: correctsPrevious },
     declined: null,
-    web_refine: webRefine.length > 0 ? { items: webRefine } : null,
     usage,
     tool_calls: toolCalls,
     steps,
@@ -2946,12 +3248,4 @@ export async function runParseMeal(
   };
 }
 
-/** A line the automatic web search should try to ground: one we could not
- *  match to any catalog/OFF source, so it shipped as a bare estimate. A line
- *  we DID match (even one a guardrail flagged low-confidence) is not here -
- *  claiming "couldn't find it" would be false; the user challenges those. The
- *  user's own numbers and an already-fetched web label are never touched. */
-export function isRefinable(it: ParsedItem): boolean {
-  return it.source === "estimate";
-}
 

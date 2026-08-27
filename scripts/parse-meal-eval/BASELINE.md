@@ -36,7 +36,97 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-23 | 76/88 | pre-fix, first baseline ever run |
 | 2026-08-23 | **81/88** | + FatSecret sanitize fix (`38f3b6c`) |
 | 2026-08-23 | 81/88 | + I17 proportional typo matcher (`b112e92`) |
-| 2026-08-23 | **80/86** | + I16 comments, I7 `coerceQuantity` — **current baseline**, Phase 1 complete |
+| 2026-08-23 | 80/86 | + I16 comments, I7 `coerceQuantity` — Phase 1 complete |
+| 2026-08-24 | 81/86 | + I11 grade routing + migration 0106 milk ladder |
+| 2026-08-24 | 85/86 | + I6 deletion-by-text and challenge-carries-fix |
+| 2026-08-24 | 86/86 | + I13 frequency-ranked staples |
+| 2026-08-24 | **83/86** | + I1 changed-only correction resolve — **current baseline** |
+
+### I1: the number went DOWN and that is not a regression
+
+Every correction case passed, which is the check that matters here:
+refine-samosa-small, refine-quantity, followup-adds-not-corrects,
+audit-delete-by-text, audit-challenge-plus-fix, audit-correction-plus-addition.
+
+The three failures - paneer-roti, marie-gold, mcaloo-tikki - are all
+catalog-coverage cases, and all three PASS on rerun. This is the flakiness this
+file warns about in its opening section: comparing one full-suite total to
+another is exactly the mistake, and 86 -> 83 measures the dice, not the change.
+
+Two of them came back better than they used to be, from the I11b taxonomy
+rather than from I1:
+```
+mcaloo-tikki  McDonald's Cheeseburger -> "McAloo Tikki burger" (labelled estimate)
+paneer-roti   Bhujia 609 kcal         -> Matar Paneer 166
+```
+
+### 86/86 is a clean run, NOT a claim that nothing is left
+
+`chole-bhature` passed here and failed 2 of the 3 runs before it, giving a
+different answer each time. Nothing about I13 fixed it; the dish still has no
+catalog row and the model improvises. Read this row as "no regressions", not
+as "the corpus is solved". The honest state of that case is in the I6 section
+above.
+
+### I6 (Phase 2a): both gates green, verified in production
+
+```
+100g paneer and 50g tofu   ->  Paneer 265 + Tofu 74
+Remove the tofu            ->  Paneer 265           (tofu used to come back)
+that seems high, make it 100g -> Paneer at 100 g    (fix used to be discarded)
+```
+
+The single remaining failure, `chole-bhature`, is flaky in a way unrelated to
+this change: three runs gave three answers (a spurious Starbucks line, a clean
+pass, then the whole meal collapsed into one "Lentils" row). It is one of the
+7 common Indian dishes measured as absent from the catalog on 2026-08-23, so
+with no row to land on the model improvises afresh each run. INDB ingest is
+the fix; no prompt will make an absent row exist.
+
+### Ranking sanity after 0106 (no regression)
+
+Adding four graded milk rows plus Low Fat Paneer could have pulled plain
+queries toward a graded row. It did not:
+
+```
+search_foods_ranked('paneer')          -> Paneer 265 first, Low Fat Paneer 3rd
+search_foods_ranked('double toned milk')-> Double Toned Milk 47.1
+search_foods_ranked('full cream milk') -> Full Cream Milk 87.6, then real
+                                          brands at 89 and 87 (cross-validates
+                                          the FSSAI derivation)
+```
+
+### Testing gotcha worth remembering
+
+A device test typed while an UNLOGGED card is still on screen is not a clean
+test. The client sends that card as `previous_items`, extract can read the new
+text as a correction of it, and the results merge (a 2-item meal came back with
+4 items). Reload the app between cases, or the trace will look like a ranking
+regression that is not there.
+
+### I11 (Phase 2b): the three grade gates went green, and grounded
+
+They do not merely stop being wrong; they resolve from the CATALOG at the
+right numbers rather than falling back to estimates:
+
+```
+audit-low-fat-paneer       Milky Mist Paneer 141 kcal -> Low Fat Paneer 95
+audit-double-toned-300     Amul Taaza Toned 174       -> Double Toned Milk 141
+accept-grade-double-toned                             -> Double Toned Milk 236
+```
+
+Verified in PRODUCTION on device, the original 2026-08-20 report:
+`50g milky mist low fat paneer and amul double toned milk 300ml` ->
+Low Fat Paneer 95 [catalog, high] + Double Toned Milk 141.3 [catalog, high].
+
+The fix that mattered was migration 0106, not the routing code. The catalog
+carried ONE graded milk row and it was mislabeled ('Toned Milk' at 48 kcal /
+1.6 g fat is double-toned composition under a toned name), so routing could
+only reach an estimate - and the model priced double toned at 47 kcal/100 ml
+in one case and 76 in another. 0106 seeds the FSSAI ladder instead.
+
+`audit-no-sugar-tea` failed once in that run and passes on both reruns
+(grounds to Chai / Milk Tea 67.5). Flaky, per this file's own rule.
 
 > Corpus is **86 cases** from `b112e92` onward: two duplicate cases were removed
 > (see below). The 88-case runs above predate that.
