@@ -11,6 +11,13 @@
  *   declined  — non-food input: Drona's redirect line + dismiss.
  *   error     — parse/transport failure: message + Retry.
  *
+ * A review card is tall and sits in an absolutely-positioned wrapper over the
+ * day list, so it hides the very entries a user wants to check against before
+ * confirming. It can be COLLAPSED to a one-line summary that keeps the parse
+ * alive while giving the screen back: nothing is written and nothing is thrown
+ * away, so browsing the day is no longer a choice between the card and the
+ * screen behind it.
+ *
  * The user picks the section and confirms; only then do the entries land in that
  * meal section underneath. Numbers carry receipts: catalog lines are silent,
  * sourced/estimated lines say where they came from.
@@ -70,6 +77,10 @@ interface Props {
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
   onDismiss?: () => void;
+  /** Collapsed to the summary line. Owned by the screen so a fresh parse can
+   *  reopen it: a new meal the user has not seen yet must never arrive hidden. */
+  minimized?: boolean;
+  onToggleMinimize?: () => void;
 }
 
 const r0 = (n: number) => Math.round(n);
@@ -119,15 +130,65 @@ export function ParsedMealCard({
   state, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
   onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
+  minimized, onToggleMinimize,
 }: Props) {
   const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
   const { C } = useTheme();
   const s = makeStyles(C);
   const selected: MealType = mealType ?? meal?.meal_type ?? 'snack';
+  // Collapsing is only offered on `review`. The other three states are already
+  // short and transient, and hiding a decline or an error would just lose it.
+  const collapsible = state === 'review' && !!meal && !!onToggleMinimize;
+  const isCollapsed = collapsible && !!minimized;
+
+  if (isCollapsed && meal) {
+    const kcal = r0(meal.items.reduce((sum, it) => sum + it.kcal, 0));
+    const n = meal.items.length;
+    const summary = `${n} ${n === 1 ? 'item' : 'items'} · ${kcal} kcal → ${mealLabel(selected)}`;
+    return (
+      <Animated.View entering={FadeIn.duration(160)} style={[s.card, s.cardCollapsed]}>
+        <Pressable
+          onPress={onToggleMinimize}
+          style={s.collapsedRow}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: false }}
+          accessibilityLabel={`Waiting to be added: ${summary}`}
+          accessibilityHint="Opens the parsed meal again"
+        >
+          <DronaMark size={16} />
+          <Text style={s.collapsedTxt} numberOfLines={1}>{summary}</Text>
+          <Feather name="chevron-up" size={15} color={C.textMuted} />
+          <Pressable
+            onPress={(e) => { e.stopPropagation(); onDismiss?.(); }}
+            hitSlop={8}
+            accessibilityLabel="Discard"
+          >
+            <Feather name="x" size={14} color={C.textMuted} />
+          </Pressable>
+        </Pressable>
+      </Animated.View>
+    );
+  }
 
   return (
     <Animated.View entering={FadeIn.duration(160)} style={s.card}>
-      {!!rawText && <Text style={s.raw} numberOfLines={2}>{rawText}</Text>}
+      {(!!rawText || collapsible) && (
+        <View style={s.rawRow}>
+          {!!rawText && <Text style={[s.raw, s.rawGrow]} numberOfLines={2}>{rawText}</Text>}
+          {collapsible && (
+            <Pressable
+              onPress={onToggleMinimize}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: true }}
+              accessibilityLabel="Minimize"
+              accessibilityHint="Keeps this meal waiting while you browse the day"
+            >
+              <Feather name="chevron-down" size={15} color={C.textMuted} />
+            </Pressable>
+          )}
+        </View>
+      )}
 
       {state === 'analysing' && <Analysing C={C} />}
 
@@ -342,6 +403,19 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card,
     },
     raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
+    // The chevron sits on the first line of the raw text, not below it, so
+    // minimizing costs the card no extra height while it is open.
+    rawRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
+    rawGrow: { flex: 1 },
+
+    // Collapsed: tighter padding than the open card so the strip reads as a
+    // handle rather than an empty card.
+    cardCollapsed: { paddingVertical: 10, paddingHorizontal: Spacing.md },
+    collapsedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    collapsedTxt: {
+      flex: 1, fontSize: FontSize.sm, color: C.foreground,
+      fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'],
+    },
 
     notice: {
       backgroundColor: C.primarySubtle, borderRadius: Radius.md,

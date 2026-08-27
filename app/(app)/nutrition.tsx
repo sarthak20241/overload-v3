@@ -150,6 +150,10 @@ export default function NutritionScreen() {
   // Saved meals: save a parse for later; log a saved one in a tap.
   const [saveItems, setSaveItems] = useState<ParsedMealItem[] | null>(null);
   const [savedReview, setSavedReview] = useState(false); // current parse was saved
+  // Collapsed state for the parse card. Held here, not in the card, so a fresh
+  // parse can force it open: a meal the user has not seen yet must never
+  // arrive already hidden behind a summary line.
+  const [cardMinimized, setCardMinimized] = useState(false);
   const [savedListOpen, setSavedListOpen] = useState(false);
   const nowMeal = mealForNow();
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
@@ -174,6 +178,7 @@ export default function NutritionScreen() {
     const t = raw.trim();
     if (!t || !supabase) return;
     setSavedReview(false);
+    setCardMinimized(false);
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
@@ -408,6 +413,9 @@ export default function NutritionScreen() {
       return;
     }
     reload();
+    // Reset here too: Undo puts the card back in review, and it should come
+    // back open rather than as a summary line the user has to expand.
+    setCardMinimized(false);
     setFlow({ status: 'idle' });
   }, [flow, supabase, adding, reload, viewDate]);
 
@@ -424,6 +432,7 @@ export default function NutritionScreen() {
 
   const onDismiss = useCallback(() => {
     setChecking(null);
+    setCardMinimized(false);
     setFlow({ status: 'idle' });
   }, []);
 
@@ -577,6 +586,8 @@ export default function NutritionScreen() {
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
               onRetry={flow.status === 'error' ? onRetry : undefined}
               onDismiss={onDismiss}
+              minimized={cardMinimized}
+              onToggleMinimize={() => setCardMinimized((v) => !v)}
             />
           </View>
         )}
