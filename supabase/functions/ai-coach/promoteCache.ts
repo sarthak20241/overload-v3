@@ -19,11 +19,20 @@
  *      of the two (their terms allow serving a request, not replicating their DB),
  *      and neither can our own catalog, which is what the lookup was checking.
  *   2. FRESH. We do not publish facts we would no longer serve ourselves.
- *   3. ACTUALLY EATEN. Logged twice, or by two people. One person looking a food up
- *      once is not evidence that the catalog is missing anything.
+ *   3. PHYSICALLY POSSIBLE. The per-100 basis has to describe a food that could
+ *      exist, and its calories have to roughly follow from its own macros.
  *   4. NOT ALREADY THERE. Checked before any write. A second "Paneer" row does not
  *      add coverage, it splits the ranking signals between two rows so neither wins
  *      its own search, which is worse than not promoting at all.
+ *
+ * THERE IS NO USAGE BAR (user decision 2026-08-27). An earlier draft required a
+ * food to have been logged twice, or by two people, before it could be promoted.
+ * It is gone: label-derived data that two independent sources agree on is accurate
+ * enough to publish on its own, and waiting for a second person to eat the same
+ * branded product mostly just kept the catalog thin. The consequence is that the
+ * physics checks are now the ONLY gate standing between a verified lookup and the
+ * shared catalog, which is why they run here rather than being left to the parse
+ * pipeline that will read these rows back.
  *
  * This module is pure. All of it is decisions about rows already in memory; the
  * fetching and writing live in tools/promote-food-cache/run.ts, so the rules can be
@@ -31,6 +40,10 @@
  */
 
 import { nearWord } from "./textMatch.ts";
+// implausiblePer100 is imported rather than re-stated so the physical ceilings have
+// one definition. parseMeal.ts deliberately carries no runtime-specific imports (it
+// is driven from Node by the eval harness), so this costs nothing at load.
+import { implausiblePer100 } from "./parseMeal.ts";
 import {
   isFresh,
   meetsVerificationBar,
@@ -39,9 +52,16 @@ import {
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
 
-/** Logged twice, or by two different people. Either clears the usage bar. */
-export const PROMOTION_MIN_LOGS = 2;
-export const PROMOTION_MIN_USERS = 2;
+/** How far kcal may sit from 4P + 4C + 9F and still be a real label.
+ *  Same 30% as checkAtwater in parseMeal.ts, and generous for the same measured
+ *  reason: printed panels legitimately break strict Atwater through fiber netting,
+ *  sugar alcohols, alcohol and rounding. This is a physics floor for catching a row
+ *  whose numbers contradict each other, not a precision test. */
+export const ATWATER_TOLERANCE = 0.3;
+
+/** Below this, a percentage says nothing: black coffee is a couple of kcal either
+ *  way and every one of them is 100% of the other. */
+const ATWATER_MIN_KCAL = 20;
 
 /** How far a catalog row's energy may sit from ours before "same name" stops
  *  meaning "same food". Same number as the verification bar on purpose: one
@@ -75,8 +95,6 @@ export interface PromotionCandidate {
   last_verified_at: string;
   /** Set once this row has been promoted or matched to an existing catalog row. */
   promoted_food_id: string | null;
-  log_count: number;
-  user_count: number;
 }
 
 /** An existing catalog row, as the dedup check needs to see it. */
@@ -95,7 +113,7 @@ export interface CatalogRow {
 export type SkipReason =
   | "expired"
   | "unverified"
-  | "insufficient-usage"
+  | "implausible"
   | "catalog-conflict"
   | "already-current"
   | "promoted-row-missing";
@@ -160,6 +178,33 @@ export function findDuplicate(
   return null;
 }
 
+/**
+ * Why these numbers cannot describe a real food, or null if they could.
+ *
+ * Two questions, both about physics rather than taste. Is the per-100 basis
+ * possible at all (more calories than pure fat, macros that outweigh the food)?
+ * And do the calories follow from the macros the same row states? A label that
+ * disagrees with itself past 30% is not a label convention, it is a row where
+ * someone read the wrong column, and it is the failure a catalog row propagates
+ * furthest: every future search finds it and nothing downstream questions it.
+ *
+ * The parse pipeline only FLAGS an Atwater break on label-derived lines, and that
+ * is right for one meal in front of one person who can see the chip. Publishing to
+ * everyone has no one reading a chip, so here it rejects.
+ */
+export function failsPhysics(per100: Per100): string | null {
+  const bad = implausiblePer100(per100);
+  if (bad) return bad;
+  const atwater = 4 * per100.protein_g + 4 * per100.carb_g + 9 * per100.fat_g;
+  if (atwater < ATWATER_MIN_KCAL && per100.kcal < ATWATER_MIN_KCAL) return null;
+  const ref = Math.max(per100.kcal, atwater);
+  if (ref <= 0) return null;
+  if (Math.abs(per100.kcal - atwater) / ref > ATWATER_TOLERANCE) {
+    return `${Math.round(per100.kcal)} kcal per 100 does not follow from its macros (${Math.round(atwater)})`;
+  }
+  return null;
+}
+
 /** Have these macros moved enough since we published them to be worth a rewrite? */
 export function macrosMoved(published: Per100, current: Per100): boolean {
   const moved = (a: number, b: number) => Math.abs(a - b) > Math.max(Math.abs(b) * 0.02, 0.5);
@@ -174,11 +219,11 @@ export function macrosMoved(published: Per100, current: Per100): boolean {
 /**
  * What should the nightly job do with this cache row?
  *
- * Order is chosen so the recorded reason is the most useful one. Freshness and the
- * verification bar come first because a row failing either is not a promotion
- * candidate at all, whatever the catalog holds. Dedup runs before any decision to
- * write, which is what "dedup first" means: nothing reaches `foods` without having
- * been checked against what is already in `foods`.
+ * Order is chosen so the recorded reason is the most useful one. Freshness, the
+ * verification bar and the physics checks come first because a row failing any of
+ * them is not a promotion candidate at all, whatever the catalog holds. Dedup runs
+ * before any decision to write, which is what "dedup first" means: nothing reaches
+ * `foods` without having been checked against what is already in `foods`.
  */
 export function promotionDecision(
   cand: PromotionCandidate,
@@ -201,8 +246,9 @@ export function promotionDecision(
     };
   }
 
-  if (cand.log_count < PROMOTION_MIN_LOGS && cand.user_count < PROMOTION_MIN_USERS) {
-    return { action: "skip", reason: "insufficient-usage" };
+  const physics = failsPhysics(cand);
+  if (physics) {
+    return { action: "skip", reason: "implausible", detail: physics };
   }
 
   // Already published: this is the self-heal path, not a promotion.

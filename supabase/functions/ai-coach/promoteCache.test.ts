@@ -44,8 +44,6 @@ const cand = (over: Partial<PromotionCandidate> = {}): PromotionCandidate => ({
   verified: true,
   last_verified_at: daysAgo(3),
   promoted_food_id: null,
-  log_count: 3,
-  user_count: 2,
   ...over,
 });
 
@@ -64,7 +62,7 @@ const row = (over: Partial<CatalogRow> = {}): CatalogRow => ({
 
 // ── the happy path ─────────────────────────────────────────────────────────
 
-Deno.test("the canonical case: a verified, used, un-catalogued food is promoted", () => {
+Deno.test("the canonical case: a verified, un-catalogued food is promoted", () => {
   const d = promotionDecision(cand(), [], NOW);
   assertEquals(d.action, "promote");
   if (d.action === "promote") assertEquals(d.agreeing, ["off", "web:milkymist.com"]);
@@ -97,18 +95,21 @@ Deno.test("FatSecret-only evidence never reaches the catalog", () => {
   if (d.action === "skip") assertEquals(d.reason, "unverified");
 });
 
-Deno.test("an OFF row derived from FatSecret does not make a second source", () => {
+Deno.test("FatSecret evidence does not poison the independent sources beside it", () => {
+  // OFF counts in full (user decision 2026-08-27), so OFF plus one web host still
+  // clears the bar on a food FatSecret also happened to answer for.
   const d = promotionDecision(
     cand({
       evidence: [
         { source: "fatsecret", per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 } },
-        { source: "off", derived_from: "fatsecret", per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 } },
+        { source: "off", derived_from: "fatsecret", per_100: { kcal: 188, protein_g: 18, carb_g: 2, fat_g: 12 } },
+        web(195, "https://milkymist.com/low-fat-paneer"),
       ],
     }),
     [],
     NOW,
   );
-  assertEquals(d.action, "skip");
+  assertEquals(d.action, "promote");
 });
 
 // ── expiry ─────────────────────────────────────────────────────────────────
@@ -120,17 +121,72 @@ Deno.test("an expired row is not published, however well evidenced", () => {
   if (d.action === "skip") assertEquals(d.reason, "expired");
 });
 
-// ── usage ──────────────────────────────────────────────────────────────────
+// ── physics, the only gate left once the usage bar was dropped ─────────────
 
-Deno.test("one person looking a food up once does not grow the catalog", () => {
-  const d = promotionDecision(cand({ log_count: 1, user_count: 1 }), [], NOW);
-  assertEquals(d.action, "skip");
-  if (d.action === "skip") assertEquals(d.reason, "insufficient-usage");
+Deno.test("nobody has to eat it first", () => {
+  // The usage bar is gone (user decision 2026-08-27). A food nobody has logged
+  // still promotes on evidence alone, and this test is what will fail if someone
+  // reintroduces a "logged N times" requirement without saying so.
+  assertEquals(promotionDecision(cand(), [], NOW).action, "promote");
 });
 
-Deno.test("either half of the usage bar is enough on its own", () => {
-  assertEquals(promotionDecision(cand({ log_count: 2, user_count: 1 }), [], NOW).action, "promote");
-  assertEquals(promotionDecision(cand({ log_count: 1, user_count: 2 }), [], NOW).action, "promote");
+Deno.test("the failure this prevents: kcal that contradict the row's own macros", () => {
+  // 18P + 2C + 12F is 188 kcal of food. A row claiming 400 has had a column
+  // misread somewhere, and a catalog row propagates that to everyone forever.
+  const d = promotionDecision(
+    cand({ kcal: 400, evidence: [off(400), web(398, "https://example.com/x")] }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "implausible");
+});
+
+Deno.test("a real label that breaks strict Atwater is still publishable", () => {
+  // Fiber netting, sugar alcohols, alcohol and rounding all move a printed panel
+  // off 4/4/9. The 30% tolerance is the measured one from checkAtwater; tightening
+  // it here would reject genuine products.
+  const d = promotionDecision(
+    // 240 stated against 188 from 4/4/9: 22% out, inside the tolerance and typical
+    // of a high-fiber or sugar-alcohol panel.
+    cand({ kcal: 240, evidence: [off(240), web(246, "https://milkymist.com/x")] }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "promote");
+});
+
+Deno.test("macros that outweigh the food never reach the catalog", () => {
+  const d = promotionDecision(
+    cand({
+      kcal: 500,
+      protein_g: 60,
+      carb_g: 60,
+      fat_g: 20,
+      evidence: [off(500), web(505, "https://example.com/y")],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "implausible");
+});
+
+Deno.test("a near-zero food is not failed by a percentage", () => {
+  // Black coffee: 1 kcal stated, 0 from macros. Every difference is 100% of
+  // something tiny, and the row is fine.
+  const d = promotionDecision(
+    cand({
+      kcal: 1,
+      protein_g: 0.1,
+      carb_g: 0,
+      fat_g: 0,
+      evidence: [off(1), web(2, "https://example.com/coffee")],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "promote");
 });
 
 // ── dedup ──────────────────────────────────────────────────────────────────

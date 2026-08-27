@@ -52,11 +52,9 @@
 --   grant anon select IN THE SAME MIGRATION. The failure mode is not an error the
 --   user sees, it is search returning zero rows and every meal falling to model
 --   estimates.
--- precise_cache_logs additionally holds clerk_user_id, so it is per-user data and
--- would need RLS rather than a grant if a client ever had to read it.
 --
--- RLS is enabled on both tables with NO policies. service_role bypasses RLS, so
--- this costs nothing and means a future accidental grant still denies rows.
+-- RLS is enabled with NO policies. service_role bypasses RLS, so this costs nothing
+-- and means a future accidental grant still denies rows.
 --
 -- Purely additive. NOT APPLIED to live: apply via Supabase MCP after review
 -- (project convention: never `db push`), then run the verification queries at the
@@ -132,37 +130,15 @@ create index if not exists idx_precise_cache_promotable
   on public.precise_cache (last_verified_at)
   where promoted_food_id is null;
 
--- ── 3. precise_cache_logs: did anyone actually eat this? ────────────────────
--- The promotion bar needs "logged >= 2 times or by >= 2 users", and a cache-served
--- item has no food_id yet, so meal_entries cannot answer it. One row per
--- (food, user) gives both numbers without storing a row per meal: count(*) is
--- users, sum(times) is logs.
---
--- WIRING POINT (not done here on purpose): the Add path calls
--- record_precise_cache_log(cache_key, clerk_user_id) when a user logs an item that
--- came from the cache. Until that call exists, no row ever clears the usage bar,
--- which is the safe direction to be wrong in.
+-- ── 3. Grants (revoke first, see the header) ────────────────────────────────
 
-create table if not exists public.precise_cache_logs (
-  cache_id        uuid not null references public.precise_cache(id) on delete cascade,
-  clerk_user_id   text not null,
-  times           integer not null default 1,
-  first_logged_at timestamptz not null default now(),
-  last_logged_at  timestamptz not null default now(),
-  primary key (cache_id, clerk_user_id)
-);
+revoke all on public.precise_cache from anon, authenticated;
 
--- ── 4. Grants (revoke first, see the header) ────────────────────────────────
-
-revoke all on public.precise_cache      from anon, authenticated;
-revoke all on public.precise_cache_logs from anon, authenticated;
-
-alter table public.precise_cache      enable row level security;
-alter table public.precise_cache_logs enable row level security;
+alter table public.precise_cache enable row level security;
 -- No policies, on purpose. service_role bypasses RLS; everyone else is denied
 -- twice over.
 
--- ── 5. Read path: stale rows are unreachable ───────────────────────────────
+-- ── 4. Read path: stale rows are unreachable ───────────────────────────────
 -- Callers go through this rather than selecting the table, so "expired means look
 -- it up again" is a property of the schema instead of a rule someone has to
 -- remember. The interval is duplicated in preciseCache.ts as
@@ -187,45 +163,15 @@ $$;
 revoke execute on function public.precise_cache_get(text) from public, anon, authenticated;
 grant  execute on function public.precise_cache_get(text) to service_role;
 
--- ── 6. Usage recording ──────────────────────────────────────────────────────
--- Definer so the counter write does not depend on the caller's grants, same
--- pattern as bump_food_log_stats (0103). It only ever bumps a counter, and it
--- takes the user id as an argument because the edge function calls it as
--- service_role, where auth.jwt() is empty.
-
-create or replace function public.record_precise_cache_log(p_cache_key text, p_clerk_user_id text)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_id uuid;
-begin
-  if p_cache_key is null or p_clerk_user_id is null then
-    return;
-  end if;
-  select id into v_id from public.precise_cache where cache_key = p_cache_key;
-  if v_id is null then
-    return;
-  end if;
-  insert into public.precise_cache_logs (cache_id, clerk_user_id)
-  values (v_id, p_clerk_user_id)
-  on conflict (cache_id, clerk_user_id) do update
-    set times = precise_cache_logs.times + 1,
-        last_logged_at = now();
-end;
-$$;
-
-revoke execute on function public.record_precise_cache_log(text, text) from public, anon, authenticated;
-grant  execute on function public.record_precise_cache_log(text, text) to service_role;
-
--- ── 7. Promotion candidates (7d) ────────────────────────────────────────────
--- The nightly job reads this instead of assembling the join itself. It filters on
--- freshness only: the verification bar, the usage bar and the catalog dedup are
--- all decided in promoteCache.ts, where they are unit tested and where the
+-- ── 5. Promotion candidates (7d) ────────────────────────────────────────────
+-- The nightly job reads this instead of assembling the query itself. It filters on
+-- freshness only: the verification bar, the physics checks and the catalog dedup
+-- are all decided in promoteCache.ts, where they are unit tested and where the
 -- evidence can actually be reasoned about. Rows already promoted still come back
 -- so the job can refresh a catalog row whose evidence has been re-verified.
+--
+-- There is no usage filter (user decision 2026-08-27). Promotion turns on evidence
+-- and physics, not on how many people have eaten the food.
 
 create or replace view public.precise_cache_promotable as
 select
@@ -244,19 +190,12 @@ select
   c.verified,
   c.source_note,
   c.promoted_food_id,
-  c.last_verified_at,
-  coalesce(u.log_count, 0)  as log_count,
-  coalesce(u.user_count, 0) as user_count
+  c.last_verified_at
 from public.precise_cache c
-left join (
-  select cache_id, sum(times)::int as log_count, count(*)::int as user_count
-  from public.precise_cache_logs
-  group by cache_id
-) u on u.cache_id = c.id
 where c.last_verified_at > now() - interval '90 days';
 
 -- A view runs as its owner and so bypasses RLS on precise_cache. Revoke first for
--- the same reason as the tables: PostgREST would otherwise expose it.
+-- the same reason as the table: PostgREST would otherwise expose it.
 revoke all on public.precise_cache_promotable from anon, authenticated;
 grant select on public.precise_cache_promotable to service_role;
 
@@ -267,7 +206,7 @@ commit;
 -- Expect service_role rows only, and nothing for anon or authenticated:
 --   select table_name, grantee, privilege_type
 --   from information_schema.role_table_grants
---   where table_name in ('precise_cache','precise_cache_logs','precise_cache_promotable')
+--   where table_name in ('precise_cache','precise_cache_promotable')
 --     and grantee in ('anon','authenticated','service_role')
 --   order by table_name, grantee;
 --
@@ -278,7 +217,7 @@ commit;
 --   cross join lateral aclexplode(p.proacl) a
 --   join pg_roles r on r.oid = a.grantee
 --   where n.nspname = 'public'
---     and p.proname in ('precise_cache_get','record_precise_cache_log')
+--     and p.proname = 'precise_cache_get'
 --     and a.privilege_type = 'EXECUTE';
 --
 -- Expect 0 rows (an expired row must be unreachable, not just unpreferred):

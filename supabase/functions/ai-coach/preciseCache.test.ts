@@ -86,10 +86,12 @@ Deno.test("FatSecret can never be one of the two sources", () => {
   assertEquals(independenceKey(reading("fatsecret", 190)), null);
 });
 
-Deno.test("the failure this prevents: FatSecret laundered through OFF", () => {
-  // An OFF row imported from a FatSecret export agreeing with FatSecret is one
-  // reading, not two. Independence follows the origin, not the messenger.
-  assertEquals(independenceKey(reading("off", 190, { derived_from: "fatsecret" })), null);
+Deno.test("OFF is a full independent source, whatever origin it declares", () => {
+  // User decision 2026-08-27. An earlier rule discounted OFF rows that named a
+  // FatSecret origin; derived_from is now recorded and ignored, and this test is
+  // what stops it quietly coming back.
+  assertEquals(independenceKey(reading("off", 190, { derived_from: "fatsecret" })), "off");
+  assertEquals(independenceKey(reading("off", 190)), "off");
 });
 
 Deno.test("our own catalog cannot confirm itself", () => {
@@ -133,6 +135,18 @@ Deno.test("agreement is with the value we kept, not between any two readings", (
     reading("web", 290, { ref: "https://example.com/x" }),
   ]);
   assertEquals(r.verified, false);
+});
+
+Deno.test("OFF plus one web host clears the bar even next to FatSecret evidence", () => {
+  // The licensing rule removes FatSecret from the count; it does not poison the
+  // readings around it.
+  const r = meetsVerificationBar(190, [
+    reading("fatsecret", 190),
+    reading("off", 188, { derived_from: "fatsecret" }),
+    reading("web", 195, { ref: "https://milkymist.com/paneer" }),
+  ]);
+  assertEquals(r.verified, true);
+  assertEquals(r.agreeing, ["off", "web:milkymist.com"]);
 });
 
 Deno.test("a FatSecret-only row is never verified however many readings it has", () => {

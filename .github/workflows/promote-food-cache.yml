@@ -10,7 +10,9 @@ name: Promote Food Cache
 #     from the stored evidence. FatSecret never counts: their terms allow serving a
 #     request, not replicating their database, and a promoted row is a copy.
 #   - evidence still fresh (90 day TTL)
-#   - logged >= 2 times, or by >= 2 users
+#   - physically possible: within the per-100 bounds, and kcal that follow from the
+#     row's own macros. With no usage bar these are the only gate, so they run here
+#     rather than being left to whatever reads the row back.
 #   - not already covered by a catalog row (a second "Paneer" splits the ranking)
 #
 # Never runs inline with a parse. A promotion is a write to the shared catalog, and

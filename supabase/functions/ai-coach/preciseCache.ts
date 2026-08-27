@@ -17,17 +17,21 @@
  *   matters is whichever one a future caller forgets to go through.
  *
  *   INDEPENDENCE. "Two sources agreed" is worth nothing when both sources are the
- *   same source. An OFF row copied out of a FatSecret export agreeing with
- *   FatSecret is one reading, not two, and treating it as two is how a single
- *   mislabelled product becomes a verified fact. Independence follows where a
- *   number ORIGINATED, not who handed it to us.
+ *   same source. Three pages on one site are one reading however many times they
+ *   repeat the number, so web readings are counted by HOST. Our own catalog does
+ *   not count either: the lookup exists to check that row, and letting it vouch
+ *   for itself makes every wrong row self-confirming.
+ *   OFF is a full independent source (user decision 2026-08-27). We had discounted
+ *   OFF rows that declare a FatSecret origin; that rule is gone, and the numbers we
+ *   see from OFF stand on their own.
  *
  * LEGAL, and it is not a detail. FatSecret's terms allow using their data to serve
  * a user's request; they do not allow replicating their database (see fatsecret.ts).
  * Caching the facts we needed for one lookup is the former. So FatSecret readings
  * may sit in `evidence` and may inform a decide call, but they can never be one of
  * the independent sources that make a row verified, which is what makes a row
- * eligible to be copied into our own catalog by the nightly promotion job.
+ * eligible to be copied into our own catalog by the nightly promotion job. That
+ * exclusion is a licensing line, not a quality judgement, and it does not move.
  *
  * WIRING, deliberately not done here (Phase 7b owns the resolve fan-out):
  *   read   rpc('precise_cache_get', { p_key: cacheKey(name, brand) }) before the
@@ -36,9 +40,6 @@
  *   write  upsert precise_cache on cache_key after a lookup, storing the readings
  *          and meetsVerificationBar()'s verdict. A re-verification must set
  *          last_verified_at = now(), or the row ages out on its first sighting.
- *   usage  rpc('record_precise_cache_log', { p_cache_key, p_clerk_user_id }) when a
- *          cache-served item is actually added to a meal. Nothing is ever promoted
- *          to the catalog until that call exists.
  */
 
 /** Per 100 base units (g or ml), the same basis as the foods table. */
@@ -59,8 +60,10 @@ export interface SourceReading {
   /** URL or product ref. For web readings the HOST is the identity: three pages
    *  on one site are one source, however many of them agree. */
   ref?: string | null;
-  /** Set when a source is republishing someone else's numbers, e.g. an OFF row
-   *  imported from a FatSecret export. Independence follows the origin. */
+  /** Where a source says it got its numbers, when it says. NOTHING READS THIS
+   *  today: OFF counts as independent whatever it declares (user decision
+   *  2026-08-27). Kept on the shape so resolvers can record provenance now and we
+   *  are not re-plumbing evidence the day it starts mattering. */
   derived_from?: EvidenceProvider | null;
   per_100: Per100;
 }
@@ -143,9 +146,12 @@ export function isFresh(lastVerifiedAt: string | Date, now: Date = new Date()): 
  * that only FatSecret vouches for is a row we must not copy into our catalog.
  * 'catalog' is excluded too: our own rows are what the web lookup is being used to
  * check, so counting them would let a row confirm itself.
+ *
+ * Identity is the SOURCE WE READ, not any origin it declares. derived_from is
+ * recorded and ignored.
  */
 export function independenceKey(r: SourceReading): string | null {
-  const origin = r.derived_from ?? r.source;
+  const origin = r.source;
   if (origin === "fatsecret" || origin === "catalog") return null;
   if (origin === "off") return "off";
   // Web readings are identified by host: one site is one source no matter how
