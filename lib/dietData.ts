@@ -546,9 +546,10 @@ export type ParseMealResult =
     cleared?: boolean;
   }
   | { kind: 'error'; message: string }
-  // The free tier's daily logs ran out. Not a failure: the card says so and the
-  // paywall opens, instead of the app blaming itself for the user's plan.
-  | { kind: 'cap'; used?: number; limit?: number };
+  // A 402 the paywall answers, not an error. `scope` says WHICH wall was hit:
+  // 'free' is the daily allowance spent, 'pro' is a Pro-only feature. Both open
+  // /upgrade, on different copy, instead of the app blaming itself.
+  | { kind: 'cap'; scope: 'free' | 'pro'; used?: number; limit?: number };
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
  *  parsed path and the researched-proposal path so both stay in step. */
@@ -651,7 +652,10 @@ export async function parseMeal(
       // A 402 is the paywall, not a breakage. Checked BEFORE the message
       // helper, which buckets every non-2xx into "something broke on my end".
       const cap = await coachInvokeCapSignal(res.error);
-      if (cap?.kind === 'cap') return { kind: 'cap', used: cap.used, limit: cap.limit };
+      // Both kinds are paywalls. Handling only 'cap' would let a pro_required
+      // 402 fall through to the generic "something broke" line, which is the
+      // exact bug this branch exists to fix.
+      if (cap) return { kind: 'cap', scope: cap.kind === 'pro' ? 'pro' : 'free', used: cap.used, limit: cap.limit };
       return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
     }
     data = res.data;

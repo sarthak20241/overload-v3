@@ -147,10 +147,15 @@ export default function FoodSearchScreen() {
     // open the upgrade screen instead of an error line blaming the app.
     if (res.kind === 'cap') {
       haptics.warning();
-      setAiError(res.limit != null
-        ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
-        : 'That is your free logs for today. Pro logs as much as you eat.');
-      router.push({ pathname: '/upgrade', params: { context: 'cap_parse' } });
+      setAiError(res.scope === 'pro'
+        ? 'That one is Overload Pro. Your logging stays free.'
+        : res.limit != null
+          ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
+          : 'That is your free logs for today. Pro logs as much as you eat.');
+      router.push({
+        pathname: '/upgrade',
+        params: { context: res.scope === 'pro' ? 'pro_feature' : 'cap_parse' },
+      });
       return;
     }
     if (res.kind === 'error') { setAiError(res.message); haptics.warning(); return; }

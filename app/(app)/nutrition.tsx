@@ -226,13 +226,18 @@ export default function NutritionScreen() {
     // and hid the upgrade entirely. Say what actually happened, keep their text
     // so nothing is lost, and open the same paywall the coach chat opens.
     if (res.kind === 'cap') {
-      const capLine = res.limit != null
-        ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
-        : 'That is your free logs for today. Pro logs as much as you eat.';
+      const capLine = res.scope === 'pro'
+        ? 'That one is Overload Pro. Your logging stays free.'
+        : res.limit != null
+          ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
+          : 'That is your free logs for today. Pro logs as much as you eat.';
       pushTurn('drona', capLine);
       if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
       else setFlow({ status: 'declined', raw: t, message: capLine });
-      router.push({ pathname: '/upgrade', params: { context: 'cap_parse' } });
+      router.push({
+        pathname: '/upgrade',
+        params: { context: res.scope === 'pro' ? 'pro_feature' : 'cap_parse' },
+      });
       return;
     }
     if (res.kind === 'error') {
