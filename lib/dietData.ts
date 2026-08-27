@@ -160,10 +160,15 @@ export function useDayNutrition(dayIso: string): DayData {
       // already painted real numbers, so revalidate silently (no zeros flash).
       if (!cached) setLoading(true);
       const { start, end } = dayRange(dateFromYmd(dayIso));
-      const { data: meals } = await supabase
+      const { data: meals, error: mealsErr } = await supabase
         .from('meals').select('id, meal_type')
         .gte('logged_at', start).lte('logged_at', end);
       if (cancelled) return;
+      // A FAILED query also lands here with data null. Treating that as "no
+      // meals logged" would blank the day AND persist those zeros to the day
+      // cache, so an offline blip would keep painting an empty ring after the
+      // network came back. Keep what we have and stop.
+      if (mealsErr) { setLoading(false); return; }
       if (!meals || meals.length === 0) {
         const empty = emptyByMeal();
         if (isToday) {
@@ -173,12 +178,15 @@ export function useDayNutrition(dayIso: string): DayData {
         setByMeal(empty); setLoading(false); return;
       }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
-      const { data: entries } = await supabase
+      const { data: entries, error: entriesErr } = await supabase
         .from('meal_entries')
         .select('id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g')
         .in('meal_id', meals.map((m: any) => m.id))
         .order('position');
       if (cancelled) return;
+      // Same reasoning: meals exist, so an entries failure must not be cached
+      // as a day with meals but no food in them.
+      if (entriesErr) { setLoading(false); return; }
       const grouped = emptyByMeal();
       for (const e of entries ?? []) {
         const mt = typeOf.get((e as any).meal_id) ?? 'snack';
@@ -802,10 +810,10 @@ export function macroKcal(t: { protein: number; carb: number; fat: number }): nu
   return t.protein * KCAL_PER_G.protein + t.carb * KCAL_PER_G.carb + t.fat * KCAL_PER_G.fat;
 }
 
-/** Read the user's daily targets. isCustom = they've set at least one real goal
- *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
 interface CachedTargets { targets: NutritionTargets; isCustom: boolean }
 
+/** Read the user's daily targets. isCustom = they've set at least one real goal
+ *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
 export function useNutritionTargets(): {
   targets: NutritionTargets; isCustom: boolean; reload: () => void;
   apply: (t: NutritionTargets) => void;

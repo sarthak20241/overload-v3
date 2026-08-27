@@ -251,11 +251,15 @@ export async function applyPhaseTargets(
   // kcal keeping 365 g of carbs). Fill the omitted ones by holding the user's
   // current split at the new calorie total.
   if (diet.calories != null && (diet.protein_g == null || diet.carb_g == null || diet.fat_g == null)) {
-    const { data: cur } = await supabase
+    const { data: cur, error: curErr } = await supabase
       .from('user_profiles')
       .select('protein_target_g, carb_target_g, fat_target_g')
       .eq('clerk_user_id', clerkId)
       .maybeSingle();
+    // A failed read also returns data null. Falling through to DEFAULT_TARGETS
+    // there would silently reshape a real user's macros to the stock split, so
+    // only the genuine no-row case gets the defaults.
+    if (curErr) throw curErr;
     const c = (cur ?? {}) as Record<string, unknown>;
     const g = (v: unknown, def: number) => (v == null ? def : Number(v));
     const scaled = macrosForKcal(diet.calories, energySplit({

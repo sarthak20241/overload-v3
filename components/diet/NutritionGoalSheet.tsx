@@ -67,23 +67,24 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     return () => { showSub.remove(); hideSub.remove(); };
   }, [open]);
 
-  // Seed the form once per open. Keying this on `initial` too would let a
-  // background target refresh (the hook refetches on focus) overwrite whatever
-  // the user is halfway through typing.
-  const initialRef = useRef(initial);
-  initialRef.current = initial;
+  // Seed the form on the closed -> open edge only. Re-seeding whenever `initial`
+  // changes would let a background target refresh (the hook refetches on focus)
+  // overwrite whatever the user is halfway through typing, so we gate on the
+  // transition rather than dropping `initial` out of the dependency list.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    const t = initialRef.current;
-    setVals({
-      kcal: String(Math.round(t.kcal)),
-      protein: String(Math.round(t.protein)),
-      carb: String(Math.round(t.carb)),
-      fat: String(Math.round(t.fat)),
-    });
-    splitRef.current = energySplit(t);
-    setBusy(false);
-  }, [open]);
+    if (open && !wasOpen.current) {
+      setVals({
+        kcal: String(Math.round(initial.kcal)),
+        protein: String(Math.round(initial.protein)),
+        carb: String(Math.round(initial.carb)),
+        fat: String(Math.round(initial.fat)),
+      });
+      splitRef.current = energySplit(initial);
+      setBusy(false);
+    }
+    wasOpen.current = open;
+  }, [open, initial]);
 
   useEffect(() => {
     if (!open) return;
@@ -93,28 +94,33 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
 
   // Editing calories re-derives the macros at the same split; editing a macro
   // re-reads the split so the next calorie change respects it.
+  //
+  // The next state is computed here rather than inside a setVals updater: React
+  // may replay or discard an updater, and a discarded one that had written
+  // splitRef would leave the split describing values that never committed.
+  // Updaters stay pure; the ref is written from the handler, which runs once.
   const onChangeField = (key: keyof NutritionTargets, raw: string) => {
     const txt = raw.replace(/[^0-9]/g, '').slice(0, 5);
     if (key === 'kcal') {
       const n = parseInt(txt, 10);
-      setVals((v) => {
-        // Ignore half-typed numbers below the floor ("1" on the way to "1600");
-        // scaling those would round the macros to junk.
-        if (!Number.isFinite(n) || n < FIELDS[0].min) return { ...v, kcal: txt };
-        const m = macrosForKcal(Math.min(n, FIELDS[0].max), splitRef.current);
-        return { kcal: txt, protein: String(m.protein), carb: String(m.carb), fat: String(m.fat) };
-      });
+      // Ignore half-typed numbers below the floor ("1" on the way to "1600");
+      // scaling those would round the macros to junk. onSave re-derives from the
+      // clamped value, so a number left out of range still saves consistently.
+      if (!Number.isFinite(n) || n < FIELDS[0].min) {
+        setVals({ ...vals, kcal: txt });
+        return;
+      }
+      const m = macrosForKcal(Math.min(n, FIELDS[0].max), splitRef.current);
+      setVals({ kcal: txt, protein: String(m.protein), carb: String(m.carb), fat: String(m.fat) });
       return;
     }
-    setVals((v) => {
-      const next = { ...v, [key]: txt };
-      splitRef.current = energySplit({
-        protein: parseInt(next.protein, 10) || 0,
-        carb: parseInt(next.carb, 10) || 0,
-        fat: parseInt(next.fat, 10) || 0,
-      });
-      return next;
+    const next = { ...vals, [key]: txt };
+    splitRef.current = energySplit({
+      protein: parseInt(next.protein, 10) || 0,
+      carb: parseInt(next.carb, 10) || 0,
+      fat: parseInt(next.fat, 10) || 0,
     });
+    setVals(next);
   };
 
   // Live read-out so the split is visible, and so a hand-edited macro that no
@@ -146,12 +152,24 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
       if (!Number.isFinite(n)) return fallback;
       return Math.min(Math.max(n, f.min), f.max);
     };
+    const kcal = clamp(vals.kcal, FIELDS[0], initial.kcal);
     const next: NutritionTargets = {
-      kcal: clamp(vals.kcal, FIELDS[0], initial.kcal),
+      kcal,
       protein: clamp(vals.protein, FIELDS[1], initial.protein),
       carb: clamp(vals.carb, FIELDS[2], initial.carb),
       fat: clamp(vals.fat, FIELDS[3], initial.fat),
     };
+    // A calorie value the field never rescaled against (blank, or outside
+    // 800..8000) would otherwise save the CLAMPED number next to macros still
+    // sized for the old goal: typing 700 over a 2200 goal saved 800 kcal with
+    // ~2200 kcal of macros. Re-derive at the split whenever what we are about
+    // to persist is not what the user typed.
+    if (kcal !== parseInt(vals.kcal, 10)) {
+      const m = macrosForKcal(kcal, splitRef.current);
+      next.protein = m.protein;
+      next.carb = m.carb;
+      next.fat = m.fat;
+    }
     const { error } = await saveNutritionTargets(supabase, clerkId, next);
     setBusy(false);
     if (error) { haptics.warning(); return; }
