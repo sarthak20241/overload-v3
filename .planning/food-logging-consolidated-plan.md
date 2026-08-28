@@ -257,6 +257,28 @@ on iOS AND Android dev clients. Then: mid-stream disconnect -> client falls
 back to buffered-complete; event replay/idempotence; old-client compat.
 Gate: stream verified on device, both platforms, with fallback proven.
 
+#### Phase 4 M3 RESULT 2026-08-28: THE GATE WAS DEAD, AND THE EVAL COULD NOT SEE IT
+The card render works (verified on device: 2 catalog rows, 143 + 122 kcal, high
+confidence). Getting there exposed the bigger finding.
+
+`handleParseMealRequest` read the speed tier off `body.mode`, which is the
+DISPATCH value and is already "parse_meal" by the time that code runs. So
+`body.mode === "fast"` could never be true: Fast mode and SSE streaming were
+both unreachable from the app for their entire build. On device every request
+silently took the standard pipeline (~9s, zero `items` frames).
+
+The eval could not catch it: `scripts/parse-meal-eval/run.ts` calls
+`runParseMeal` DIRECTLY and never crosses the HTTP boundary. 84/87 @ 3807ms was
+true of the pipeline and said nothing about whether the app could reach it.
+
+Fixed: the tier rides on its own `body.speed` field. Standing rule for the rest
+of this plan - **a green eval is not evidence that a request-shape gate works.**
+Anything read off the request body needs one check that actually crosses HTTP.
+
+Also, the simulator's synthetic keyboard drops roughly half the characters and
+can background the app, so it cannot drive the nutrition input. `app/sse-probe.tsx`
+fires the real streaming call on one tap instead; delete it when Phase 4 signs off.
+
 ### Phase 5. Smart progressive
 - 5a Stage-boundary events, ZERO pipeline change: item events when extract
   returns (~1.3s), fill events when decide returns, end after guardrails.
