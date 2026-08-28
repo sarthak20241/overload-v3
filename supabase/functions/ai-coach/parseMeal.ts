@@ -3195,6 +3195,27 @@ export async function runParseMeal(
       .filter((r) => (r.times ?? 0) >= 2)
       .map((r) => r.food_name.trim().toLowerCase()),
   );
+  // FAST MODE: paint the rows BEFORE the resolve, not after it.
+  //
+  // The names and the model's own per-100 numbers both came back on the extract
+  // call, so this is the moment they are known. Emitting after the resolve (as
+  // this used to) left only the accept gate to overlap: measured on device,
+  // rows landed at 7371ms of a 7628ms parse, so the user waited the full time
+  // and then saw everything at once. The resolve is the slow part - catalog,
+  // OFF, FatSecret, and OFF's 503 retries - and it is exactly what the
+  // shimmering number is meant to cover.
+  if (fastMode) {
+    deps.onProgress?.({
+      kind: "items",
+      items: toResolve.map((r) => ({
+        name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        quantity: r.quantity,
+        unit: r.unit,
+        est_kcal: r.est ? round1(r.est.kcal * (r.est.total_g / 100)) : null,
+      })),
+    });
+  }
+
   const resolved = await Promise.all(
     toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
   );
@@ -3218,16 +3239,9 @@ export async function runParseMeal(
   // precise-about-the-wrong-food, and the estimate is free at this point - it
   // rode in on the extract call.
   if (fastMode) {
-    // The names are known now; the numbers are ~300ms away. Paint the rows.
-    deps.onProgress?.({
-      kind: "items",
-      items: resolved.map((r) => ({
-        name: r.brand ? `${r.brand} ${r.name}` : r.name,
-        quantity: r.quantity,
-        unit: r.unit,
-        est_kcal: r.est ? round1(r.est.kcal * (r.est.total_g / 100)) : null,
-      })),
-    });
+    // The rows were already painted above, before the resolve. One `items`
+    // event per parse: a second one here would renumber rows the card has
+    // already keyed and animated.
     const guards = { variantClash, unhonouredGrade, implausiblePer100 };
     const fastItems: ParsedItem[] = resolved.map((r) => {
       // Do not double the prep: extract often bakes it into the name already
