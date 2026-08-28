@@ -615,19 +615,16 @@ export async function parseMealStreaming(
     if (!token) return parseMeal(supabase, args);
 
     // Region pin, matching what supabase-js sends for FunctionRegion.UsEast1:
-    // the x-region header below AND this query parameter.
-    //
-    // NOT WORKING YET. The non-streaming parseMeal reaches us-east-1 (its
-    // traces say so), but every streamed parse still reports ap-south-1 with
-    // both of these set. Left in place because it is what supabase-js does and
-    // it costs nothing, but do not read it as fixed - the cause is unknown and
-    // it may simply not matter. Check `region` in the trace before trusting it.
+    // the x-region header below AND this query parameter. VERIFIED working
+    // (curl shows x-sb-edge-region flip to us-east-1 with either one, and the
+    // device trace agrees: pre_parse 1290->442ms, verifyItems 255->30ms).
+    // An earlier round concluded "the pin does not work" - that test ran on a
+    // stale bundle from a dead Metro watcher, not on this code.
     const res = await expoFetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/ai-coach?forceFunctionRegion=us-east-1`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
-        // See the note on the URL above: set, but not yet observed to work.
         'x-region': 'us-east-1',
       },
       body: JSON.stringify({

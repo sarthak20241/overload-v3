@@ -66,7 +66,10 @@ export default function SseProbe() {
         style={{ backgroundColor: running ? '#333' : '#c8ff00', padding: 14, borderRadius: 10 }}
       >
         <Text style={{ textAlign: 'center', fontWeight: '700', color: running ? '#888' : '#000' }}>
-          {running ? 'streaming…' : `RUN "${PHRASE}"`}
+          {/* v3 marker: three Metros share this simulator, and one stale-bundle
+              round already produced a false "region pin does not work". The
+              label is the proof of which bundle is live. */}
+          {running ? 'streaming…' : `RUN v3 "${PHRASE}"`}
         </Text>
       </Pressable>
 
