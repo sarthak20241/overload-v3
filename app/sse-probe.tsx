@@ -17,7 +17,10 @@ import { ParsedMealCard, type StreamingRow } from '@/components/diet/ParsedMealC
 import { parseMealStreaming, type ParsedMeal, type StreamedItem } from '@/lib/dietData';
 import { supabase } from '@/lib/supabase';
 
-const PHRASE = '2 eggs 1 banana';
+// Branded on purpose: OFF is a PACKAGED-food database, so a plain "egg" or
+// "banana" usually returns nothing and never exercises the backfill path that
+// dominates resolve time. Named products do.
+const PHRASE = '2 oreo biscuits and 1 amul cheese slice';
 
 export default function SseProbe() {
   const [lines, setLines] = useState<string[]>([]);

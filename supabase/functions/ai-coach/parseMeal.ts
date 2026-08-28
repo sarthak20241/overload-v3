@@ -1606,10 +1606,17 @@ async function resolveOneItem(
       // Backfill so the candidate carries a real food_id (verify needs it) and
       // the NEXT user's catalog search finds it at tier 1 - the catalog is
       // meant to compound with use.
-      for (const p of products) {
-        const foodId = await deps.backfillOffFood(p);
+      //
+      // CONCURRENTLY. These were awaited one at a time, so a query returning
+      // three products paid three sequential cross-region writes INSIDE the
+      // user's parse. OFF_TIMEOUT_MS caps the search but not this loop, which
+      // is why resolve swung between 1.3s (OFF found nothing) and 4.6s (OFF
+      // found three). The writes are independent rows; nothing here reads back
+      // what another one wrote.
+      const ids = await Promise.all(products.map((p) => deps.backfillOffFood(p)));
+      products.forEach((p, i) => {
         found.push({
-          food_id: foodId,
+          food_id: ids[i],
           name: p.name,
           brand: p.brand,
           base_unit: p.base_unit,
@@ -1621,7 +1628,7 @@ async function resolveOneItem(
           servings: p.serving ? [p.serving] : [],
           source: "off",
         });
-      }
+      });
     } catch (e) {
       deps.log?.(`[parse_meal] OFF resolve threw for "${q}": ${String(e).slice(0, 120)}`);
     }
