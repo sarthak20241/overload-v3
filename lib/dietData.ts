@@ -610,6 +610,10 @@ export async function parseMealStreaming(
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         mode: 'parse_meal',
+        // `mode` dispatches the handler; `speed` picks the tier inside it. They
+        // are separate fields on purpose - folding the tier into `mode` is what
+        // made streaming unreachable, since `mode` is always 'parse_meal' here.
+        speed: 'fast',
         stream: true,
         text,
         local_hour: now.getHours(),

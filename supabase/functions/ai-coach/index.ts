@@ -1796,7 +1796,13 @@ async function handleParseMealRequest(args: {
   // untouched, so an older app build keeps working exactly as before. Only a
   // client that asks for it, and only in fast mode where there is a gap worth
   // filling, gets the event stream.
-  const wantsStream = body.stream === true && body.mode === "fast" && PARSE_FAST_MODE !== "off";
+  // The speed tier rides on its OWN field. `body.mode` is the dispatch value and
+  // is already "parse_meal" by the time we are here, so reading the tier off it
+  // was a gate that could never open: Fast and streaming were both unreachable
+  // from the app, and the eval never caught it because it calls runParseMeal
+  // directly and never crosses this HTTP boundary.
+  const wantsFast = body.speed === "fast" && PARSE_FAST_MODE !== "off";
+  const wantsStream = body.stream === true && wantsFast;
 
   if (wantsStream) {
     const enc = new TextEncoder();
@@ -1880,7 +1886,7 @@ async function handleParseMealRequest(args: {
         // Client-chosen, server-killable. PARSE_FAST_MODE=off ignores the
         // client entirely, so a bad Fast rollout dies with one env change and
         // no app release.
-        mode: (body.mode === "fast" && PARSE_FAST_MODE !== "off") ? "fast" : null,
+        mode: wantsFast ? "fast" : null,
         // Placeholders; the real values are awaited from contextPromise inside
         // runParseMeal (after extract), so these queries overlap extraction.
         recentFoods: [],

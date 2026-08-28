@@ -1,56 +1,55 @@
-// THROWAWAY. Phase 4 M1 risk probe, client half.
+// THROWAWAY. Phase 4 device check, no keyboard required.
 //
-// The server half is proven: a Supabase edge function streams, and event gaps
-// survive the CDN (measured 0.40s gaps, warm first byte 0.46-0.86s). What is
-// NOT proven is whether expo/fetch on a real device hands chunks over as they
-// arrive, or quietly buffers the whole body and resolves once. The entire
-// progressive-card design rests on the answer, so it gets measured before
-// anything is built on it.
+// M1 proved the transport (expo/fetch hands SSE chunks over as they arrive).
+// What this proves now is the whole M3 chain on a real device:
+//   parse_meal SSE -> parseMealStreaming -> StreamedItem rows
+//   -> ParsedMealCard state 'streaming' -> SettlingRow shimmer
+//   -> final review card.
 //
-// Delete once the real SSE transport lands.
-import { fetch as expoFetch } from 'expo/fetch';
+// The nutrition screen's own input cannot be driven by the simulator's
+// synthetic keyboard (it drops characters), so the same call is fired from a
+// single button here with a fixed phrase.
+//
+// Delete once Phase 4 is signed off.
 import { useCallback, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
+import { ParsedMealCard, type StreamingRow } from '@/components/diet/ParsedMealCard';
+import { parseMealStreaming, type ParsedMeal, type StreamedItem } from '@/lib/dietData';
+import { supabase } from '@/lib/supabase';
 
-const URL = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/sse-probe`;
-const ANON = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
+const PHRASE = '2 eggs 1 banana';
 
 export default function SseProbe() {
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [rows, setRows] = useState<StreamingRow[] | null>(null);
+  const [meal, setMeal] = useState<ParsedMeal | null>(null);
 
   const run = useCallback(async () => {
     setLines([]);
+    setRows(null);
+    setMeal(null);
     setRunning(true);
     const t0 = Date.now();
     const log = (s: string) => setLines((p) => [...p, s]);
     try {
-      const res = await expoFetch(URL, { headers: { Authorization: `Bearer ${ANON}` } });
-      log(`status ${res.status} @ ${Date.now() - t0}ms`);
-      const body = res.body;
-      if (!body) { log('NO BODY STREAM — buffered'); return; }
-      const reader = body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      let last = Date.now();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const chunk = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const data = chunk.split('\n').find((l) => l.startsWith('data:'));
-          if (!data) continue;
-          const now = Date.now();
-          log(`+${String(now - t0).padStart(5)}ms  (gap ${String(now - last).padStart(4)}ms)  ${data.slice(5).trim()}`);
-          last = now;
-        }
+      const res = await parseMealStreaming(
+        supabase,
+        { text: PHRASE, mealHint: 'breakfast', turns: [] },
+        (items: StreamedItem[]) => {
+          setRows(items);
+          log(`+${Date.now() - t0}ms rows=${items.length} ${items.map((i) => `${i.name}:${i.est_kcal ?? '~'}`).join(' | ')}`);
+        },
+      );
+      log(`+${Date.now() - t0}ms FINAL kind=${res.kind}`);
+      if (res.kind === 'parsed') {
+        setMeal(res.meal);
+        log(res.meal.items.map((i) => `${i.food_name} ${i.kcal}kcal [${i.source}] ${i.confidence}`).join('\n'));
+      } else {
+        log(JSON.stringify(res).slice(0, 300));
       }
-      log(`DONE @ ${Date.now() - t0}ms`);
     } catch (e) {
-      log(`ERROR ${String(e).slice(0, 120)}`);
+      log(`ERROR ${String(e).slice(0, 200)}`);
     } finally {
       setRunning(false);
     }
@@ -64,9 +63,20 @@ export default function SseProbe() {
         style={{ backgroundColor: running ? '#333' : '#c8ff00', padding: 14, borderRadius: 10 }}
       >
         <Text style={{ textAlign: 'center', fontWeight: '700', color: running ? '#888' : '#000' }}>
-          {running ? 'streaming…' : 'RUN SSE PROBE'}
+          {running ? 'streaming…' : `RUN "${PHRASE}"`}
         </Text>
       </Pressable>
+
+      <View style={{ marginTop: 14 }}>
+        <ParsedMealCard
+          state={meal ? 'review' : running ? (rows ? 'streaming' : 'analysing') : 'analysing'}
+          streamingRows={rows}
+          rawText={PHRASE}
+          meal={meal}
+          mealType="breakfast"
+        />
+      </View>
+
       <ScrollView style={{ marginTop: 14 }}>
         {lines.map((l, i) => (
           <Text key={i} style={{ color: '#0f0', fontFamily: 'Menlo', fontSize: 11, marginBottom: 3 }}>
