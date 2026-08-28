@@ -275,6 +275,29 @@ Fixed: the tier rides on its own `body.speed` field. Standing rule for the rest
 of this plan - **a green eval is not evidence that a request-shape gate works.**
 Anything read off the request body needs one check that actually crosses HTTP.
 
+Two more bugs sat behind that one, each individually silent:
+
+2. `parseMealStreaming` read the JWT from `supabase.auth.getSession()`. Clerk
+   owns the session and nothing is ever written to Supabase auth, so that read
+   returned null for a signed-in user and every stream bailed to the JSON path
+   on its first line. The fallback IS the old behaviour, so it looked like the
+   server just never streamed. Now reads `getSupabaseAccessToken()`.
+3. The `items` event was emitted AFTER the resolve, leaving only the accept
+   gate to overlap: rows at 7371ms of a 7628ms parse. Names and the model's
+   per-100 estimates both arrive on the extract call, so the emit moved ahead
+   of the resolve - which is the slow part, and exactly what the shimmer is for.
+
+Pattern worth naming: all three failed by falling back to something that works.
+Nothing errored, nothing logged, and the card looked correct every time. The
+only tell was a latency that matched the pipeline the code claimed not to be
+running. **When a fast path is optional, measure whether it ran - do not infer
+it from a correct-looking result.**
+
+DEVICE RESULT (warm, "2 eggs 1 banana", prod): rows 3551ms, final 5115ms, so
+1.6s of shimmer; both rows catalog/high. Standard was 7.5-9s. Rows at 3.5s is
+still above the 1.2s target - that is the extract call's own latency and is a
+separate piece of work, not a transport problem.
+
 Also, the simulator's synthetic keyboard drops roughly half the characters and
 can background the app, so it cannot drive the nutrition input. `app/sse-probe.tsx`
 fires the real streaming call on one tap instead; delete it when Phase 4 signs off.
