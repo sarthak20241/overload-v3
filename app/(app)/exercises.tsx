@@ -590,10 +590,15 @@ export default function ExerciseLibraryScreen() {
                   keyboardShouldPersistTaps="handled"
                 >
                   {/* Uncontrolled + autocorrect off, same reasoning as the
-                      custom-exercise field in ExercisePickerSheet. Safe because
-                      openEdit seeds editName before editTarget mounts this. */}
+                      custom-exercise field in ExercisePickerSheet. Keyed on the
+                      row being edited because useSheetSlide holds `mounted` true
+                      through the ~200ms slide-out: closing and reopening on a
+                      different exercise inside that window would not remount
+                      this input, so defaultValue would not reapply and the field
+                      would still show the previous exercise's name. */}
                   <Text style={[styles.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
+                    key={editTarget?.id ?? 'none'}
                     defaultValue={editName}
                     onChangeText={setEditName}
                     autoCorrect={false}

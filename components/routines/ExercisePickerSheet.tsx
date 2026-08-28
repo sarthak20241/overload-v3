@@ -294,6 +294,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       setShowCustom(false);
       setShowTypePicker(false);
       setCustomName('');
+      // The search box is uncontrolled, and useSheetSlide keeps `mounted` true
+      // through the ~200ms slide-out. Reopening inside that window never
+      // remounts it, so defaultValue would not reapply and the box would still
+      // show the old query while `search` is ''. Clear the native text too.
+      // (customName needs no equivalent: its form unmounts with showCustom.)
+      searchInputRef.current?.clear();
       Keyboard.dismiss();
     }
   }, [visible]);
@@ -592,7 +598,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>SETS</Text>
                       <TextInput
-                        defaultValue={customSets}
+                        value={customSets}
                         onChangeText={setCustomSets}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -601,7 +607,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REST (S)</Text>
                       <TextInput
-                        defaultValue={customRest}
+                        value={customRest}
                         onChangeText={setCustomRest}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -614,7 +620,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REPS MIN</Text>
                       <TextInput
-                        defaultValue={customRepsMin}
+                        value={customRepsMin}
                         onChangeText={setCustomRepsMin}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -623,7 +629,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REPS MAX</Text>
                       <TextInput
-                        defaultValue={customRepsMax}
+                        value={customRepsMax}
                         onChangeText={setCustomRepsMax}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
