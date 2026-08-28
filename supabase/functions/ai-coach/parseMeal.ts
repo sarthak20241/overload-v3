@@ -1279,6 +1279,16 @@ When in doubt between correction and addition, prefer addition: adding a wrong i
 const FAST_EXTRACT_TOOL = (() => {
   const t = JSON.parse(JSON.stringify(EXTRACT_TOOL));
   const item = t.input_schema.properties.items.items;
+
+  // Fast mode only ever runs when there is NO previous meal (see `fastMode`
+  // below), and every one of these fields is documented as "only ever true when
+  // a previous meal was given". Leaving them in the schema asks Haiku to
+  // consider, and often emit, five fields whose answer is fixed. Latency here is
+  // output tokens, so a field the model cannot need is pure delay.
+  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names"]) {
+    delete t.input_schema.properties[dead];
+  }
+  delete item.properties.corrects_food_name;
   Object.assign(item.properties, {
     est_per100_kcal: {
       type: "number",
