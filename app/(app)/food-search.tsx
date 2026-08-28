@@ -22,7 +22,8 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal,
-  listSavedMeals, logSavedMeal, parseMeal, type PickerFood, type SavedMeal, type ParsedMealItem,
+  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext,
+  type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
@@ -147,15 +148,8 @@ export default function FoodSearchScreen() {
     // open the upgrade screen instead of an error line blaming the app.
     if (res.kind === 'cap') {
       haptics.warning();
-      setAiError(res.scope === 'pro'
-        ? 'That one is Overload Pro. Your logging stays free.'
-        : res.limit != null
-          ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
-          : 'That is your free logs for today. Pro logs as much as you eat.');
-      router.push({
-        pathname: '/upgrade',
-        params: { context: res.scope === 'pro' ? 'pro_feature' : 'cap_parse' },
-      });
+      setAiError(capNotice(res));
+      router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
     }
     if (res.kind === 'error') { setAiError(res.message); haptics.warning(); return; }

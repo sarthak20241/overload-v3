@@ -31,7 +31,7 @@ import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal,
+  parseMeal, logParsedMeal, capNotice, capUpgradeContext,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -233,18 +233,11 @@ export default function NutritionScreen() {
     // and hid the upgrade entirely. Say what actually happened, keep their text
     // so nothing is lost, and open the same paywall the coach chat opens.
     if (res.kind === 'cap') {
-      const capLine = res.scope === 'pro'
-        ? 'That one is Overload Pro. Your logging stays free.'
-        : res.limit != null
-          ? `That is your ${res.limit} free logs for today. Pro logs as much as you eat.`
-          : 'That is your free logs for today. Pro logs as much as you eat.';
+      const capLine = capNotice(res);
       pushTurn('drona', capLine);
       if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
       else setFlow({ status: 'declined', raw: t, message: capLine });
-      router.push({
-        pathname: '/upgrade',
-        params: { context: res.scope === 'pro' ? 'pro_feature' : 'cap_parse' },
-      });
+      router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
     }
     if (res.kind === 'error') {
@@ -351,6 +344,21 @@ export default function NutritionScreen() {
         previous: { text: f.raw, items: f.meal.items },
         turns: turnsRef.current.slice(),
       });
+      // The daily allowance covers this lookup too, so a cap here has to say so
+      // and open the paywall. Handled BEFORE setFlow: routing is a side effect
+      // and a state updater may be replayed or discarded, so it cannot live in
+      // one. Falling through to the updater's `return cur` was silent — the
+      // spinner just cleared and the tap looked like it did nothing.
+      if (res.kind === 'cap') {
+        const capLine = capNotice(res);
+        setFlow((cur) => (
+          cur.status === 'review' && cur.raw === raw
+            ? { ...cur, notice: capLine, proposal: null }
+            : cur
+        ));
+        router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
+        return;
+      }
       setFlow((cur) => {
         // STALENESS GUARDS. The old automatic refine had these and the first
         // version of this handler dropped them, which rebuilt the very race I15

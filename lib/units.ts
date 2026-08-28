@@ -42,3 +42,17 @@ export function massToGrams(qty: number, unit: string): number {
 export function volumeToMl(qty: number, unit: string): number {
   return qty * (VOLUME_UNITS[unit] ?? NaN);
 }
+
+/**
+ * Is this unit one the converters already understand?
+ *
+ * resolveBaseAmount matches a food's OWN servings before falling back to these
+ * tables, so anything that synthesises a serving must not hand it a label like
+ * "g" or "cup": that shadows the real conversion and silently rescales the
+ * portion. Exported so the check lives in one place instead of being spelled
+ * out at each call site.
+ */
+export function isMeasurementUnit(unit: string): boolean {
+  const u = unit.trim().toLowerCase();
+  return u in MASS_UNITS || u in VOLUME_UNITS;
+}

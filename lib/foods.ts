@@ -20,7 +20,7 @@
  * by us, so no licensing taint. See .planning/diet-tracking-plan.md.
  */
 
-import { MASS_UNITS, VOLUME_UNITS, massToGrams, volumeToMl } from './units';
+import { MASS_UNITS, VOLUME_UNITS, massToGrams, volumeToMl, isMeasurementUnit } from './units';
 
 // ── Enums (mirror the DB CHECK constraints in migrations 0046 + 0065) ────────
 
@@ -232,7 +232,7 @@ export function resolveBaseAmount(food: FoodDef, unit: string, quantity: number)
  */
 export function formatServing(quantity: number, unit: string): string {
   const qty = Math.round(quantity * 10) / 10;
-  const measurement = unit in MASS_UNITS || unit in VOLUME_UNITS;
+  const measurement = isMeasurementUnit(unit);
   if (measurement) return `${qty} ${unit}`;
   return qty === 1 ? unit : `${qty} × ${unit}`;
 }

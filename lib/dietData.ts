@@ -18,6 +18,7 @@ import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
+import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import {
   type MealType, type FoodDef, type FoodServing,
@@ -430,10 +431,16 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
       carb_g: num(e.carb_g) * per100, fat_g: num(e.fat_g) * per100,
       fiber_g: num(e.fiber_g) * per100, sugar_g: num(e.sugar_g) * per100,
       sat_fat_g: num(e.sat_fat_g) * per100, sodium_mg: num(e.sodium_mg) * per100,
-      // Always carries a serving now: unitGrams falls back to 100 rather than 0,
-      // so a weightless entry keeps its own label ("scoop") instead of dropping
-      // to the generic "100 g" the empty-list fallback produced.
-      servings: [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }],
+      // A weightless entry keeps its own label ("scoop", "bowl") instead of
+      // dropping to the generic "100 g". But NOT when that label is itself a
+      // measurement unit: resolveBaseAmount matches a food's own servings
+      // BEFORE the mass/volume tables, so a synthetic {label:'g', grams:100}
+      // makes "1 g" resolve to 100 g. The weighed branch above is immune by
+      // accident (grams/qty is already the right per-unit conversion); this
+      // 100 fallback is not, so measurement labels keep the real converter.
+      servings: isMeasurementUnit(e.serving_unit ?? '')
+        ? []
+        : [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }],
     });
     if (out.length >= limit) break;
   }
@@ -550,6 +557,20 @@ export type ParseMealResult =
   // 'free' is the daily allowance spent, 'pro' is a Pro-only feature. Both open
   // /upgrade, on different copy, instead of the app blaming itself.
   | { kind: 'cap'; scope: 'free' | 'pro'; used?: number; limit?: number };
+
+/** Drona's line for a cap result. Shared so every parse call site says the same
+ *  thing: this copy was written three times and a fourth site would drift. */
+export function capNotice(cap: { scope: 'free' | 'pro'; limit?: number }): string {
+  if (cap.scope === 'pro') return 'That one is Overload Pro. Your logging stays free.';
+  return cap.limit != null
+    ? `That is your ${cap.limit} free logs for today. Pro logs as much as you eat.`
+    : 'That is your free logs for today. Pro logs as much as you eat.';
+}
+
+/** Which paywall a cap result opens. */
+export function capUpgradeContext(cap: { scope: 'free' | 'pro' }): 'pro_feature' | 'cap_parse' {
+  return cap.scope === 'pro' ? 'pro_feature' : 'cap_parse';
+}
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
  *  parsed path and the researched-proposal path so both stay in step. */
