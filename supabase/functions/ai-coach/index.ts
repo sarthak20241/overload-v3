@@ -1847,7 +1847,23 @@ async function handleParseMealRequest(args: {
             outcome: result.parsed ? "meal" : "declined",
             message: result.declined?.message ?? null,
             iterations: result.iterations,
-            steps: result.steps,
+            // The streaming path never recorded edge timing, so everything
+            // outside extract/resolve was invisible and got lumped together as
+            // unexplained latency. pre_parse_ms is auth + the rate-limit write
+            // before the parse starts; run_parse_ms brackets the parse itself,
+            // so latency - pre - run is what the response and trace cost.
+            steps: [...result.steps, {
+              iter: 9,
+              tool: "__edge_timing",
+              input: {
+                pre_parse_ms: preParseMs,
+                run_parse_ms: Date.now() - runParse0,
+                cold_isolate: PARSE_ISOLATE_REQUESTS <= 1,
+                region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
+                  Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
+                streamed: true,
+              },
+            }],
             items: result.parsed?.items ?? null,
             input_tokens: result.usage.input_tokens,
             output_tokens: result.usage.output_tokens,
