@@ -476,6 +476,9 @@ export default function ExerciseLibraryScreen() {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
+          // Otherwise the first pill tap while the search keyboard is up only
+          // dismisses the keyboard and the filter never applies.
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingHorizontal: Spacing.xl, gap: 6, paddingBottom: 8 }}
         >
           <TouchableOpacity

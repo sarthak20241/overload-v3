@@ -678,9 +678,18 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                 </View>
 
                 {/* Muscle group filter pills */}
+                {/* A ScrollView defaults to flexShrink: 1, so once the keyboard
+                    shrinks the sheet this row collapsed to a sliver and the
+                    filters became unusable mid-search. Pin it to its content
+                    height and let the exercise list absorb the squeeze. */}
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
+                  // Same reason as the list below: without this the first tap on
+                  // a pill mid-search is swallowed dismissing the keyboard, so
+                  // the filter never applies.
+                  keyboardShouldPersistTaps="handled"
+                  style={s.filterPillScroll}
                   contentContainerStyle={{ paddingHorizontal: Spacing.xl, gap: 6, paddingBottom: 8 }}
                 >
                   <TouchableOpacity
@@ -833,6 +842,7 @@ const s = StyleSheet.create({
   searchWrap: { marginBottom: 10 },
   searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: Radius.lg, paddingHorizontal: 12, paddingVertical: 10 },
   searchInput: { flex: 1, fontSize: FontSize.base, padding: 0 },
+  filterPillScroll: { flexGrow: 0, flexShrink: 0 },
   filterPill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: Radius.full, borderWidth: 1 },
   filterPillText: { fontSize: 11, fontWeight: FontWeight.semibold },
   exerciseRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1 },
