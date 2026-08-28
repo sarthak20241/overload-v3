@@ -44,13 +44,14 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'snack', label: 'Snacks' },
 ];
 
-// The range updateEntryQuantity will actually PERSIST. These were stepper-only
-// bounds with QTY_MAX at 999, but the writer clamps to 0.25..50, so a typed
-// 999 previewed 999 servings of macros and then silently stored 50 — the sheet
-// promising something the database would not keep. Same range now drives the
-// steppers, the typed field, and the preview, so what you see is what is saved.
-const QTY_MIN = 0.25;
-const QTY_MAX = 50;
+// The range updateEntryQuantity will actually PERSIST, so the sheet cannot
+// promise a number the write would quietly change. The steppers keep their own
+// floor: they should not walk you below a quarter serving, but a TYPED amount
+// is the user telling us the portion, and every create path already accepts
+// any positive quantity.
+const QTY_STEP_MIN = 0.25;   // steppers only
+const QTY_TYPED_MIN = 0.01;  // smallest the writer keeps
+const QTY_MAX = 999;         // matches updateEntryQuantity's cap
 
 /** Digits with at most ONE decimal point. A plain [^0-9.] strip let "1.2.3"
  *  through, which parseFloat quietly reads as 1.2. */
@@ -119,7 +120,7 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
   // rather than the raw typed number, so the preview cannot promise macros the
   // write is about to clamp away. Zero stays zero: an empty field means "no
   // change", not "a quarter serving".
-  const qtySave = qtyNum > 0 ? Math.min(Math.max(qtyNum, QTY_MIN), QTY_MAX) : 0;
+  const qtySave = qtyNum > 0 ? Math.min(Math.max(qtyNum, QTY_TYPED_MIN), QTY_MAX) : 0;
 
   // Live macro preview scales from the snapshot by the quantity ratio.
   const ratio = qtySave / (e.quantity > 0 ? e.quantity : 1);
@@ -136,7 +137,7 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
   const step = (dir: 1 | -1) => {
     haptics.selection();
     const next = Math.round((qtyNum + dir * 0.5) * 100) / 100;
-    setQty(fmtQty(Math.min(Math.max(next, QTY_MIN), QTY_MAX)));
+    setQty(fmtQty(Math.min(Math.max(next, QTY_STEP_MIN), QTY_MAX)));
   };
 
   const onSave = async () => {

@@ -1172,7 +1172,13 @@ export async function updateEntryQuantity(
   entry: LoggedEntry,
   newQuantity: number,
 ): Promise<{ error?: string }> {
-  const q1 = Math.min(Math.max(newQuantity, 0.25), 50);
+  // Cap only. Every CREATE path (the picker, a parse, a saved meal) writes an
+  // unbounded quantity and the column has no CHECK, so clamping the EDIT path
+  // to 50 made portions you could log but could not adjust: editing a 200 x
+  // entry silently rewrote it to 50. The floor is an epsilon, not a quarter,
+  // for the same reason — 0.1 of something is a real portion, and rounding it
+  // up to 0.25 without saying so is the bug this pair used to have.
+  const q1 = Math.min(Math.max(newQuantity, 0.01), 999);
   const q0 = entry.quantity > 0 ? entry.quantity : 1;
   const f = q1 / q0;
   const patch: Record<string, number> = {
