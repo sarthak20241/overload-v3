@@ -575,12 +575,34 @@ export interface ParseMealInput {
 
 // Injected by index.ts (production) or the eval harness (dry run). Keeping
 // this structural (no supabase-js types) is what makes the module portable.
+/**
+ * Progress the client can render before the meal is finished (Phase 4).
+ *
+ * Deliberately only TWO events, and neither is "almost done". Measured on
+ * device: names land ~1.2s in, macros ~1.5s. The gap worth filling is the one
+ * where we know WHAT the user ate but not yet the numbers - so `items` paints
+ * the rows and `fill` settles them. Anything finer would be motion without
+ * information.
+ *
+ * The estimate rides along on `items` because the fused naming call already
+ * produced it: the shimmer can animate toward a real figure rather than
+ * spinning at nothing, and if the catalog then agrees within ~10% it barely
+ * moves. A number that approaches something true is honest; one that approaches
+ * nothing is decoration.
+ */
+export type ParseProgress =
+  | { kind: "items"; items: Array<{ name: string; quantity: number; unit: string; est_kcal: number | null }> }
+  | { kind: "fill"; items: ParsedItem[]; meal_type: MealType; drona_line: string };
+
 export interface ParseMealDeps {
   anthropicApiKey: string;
   model: string;
   maxTokens: number;
   timeoutMs: number;
   webSearchEnabled: boolean;
+  /** Called as soon as each stage has something worth showing. Absent for
+   *  non-streaming callers, which is every caller today. */
+  onProgress?(p: ParseProgress): void;
   /** P3 skip-decide. 'off' always calls decide; 'shadow' calls decide but also
    *  computes the code fill and records whether they agree; 'on' skips decide
    *  when the gate passes. Default off: this removes the model from the
@@ -3196,6 +3218,16 @@ export async function runParseMeal(
   // precise-about-the-wrong-food, and the estimate is free at this point - it
   // rode in on the extract call.
   if (fastMode) {
+    // The names are known now; the numbers are ~300ms away. Paint the rows.
+    deps.onProgress?.({
+      kind: "items",
+      items: resolved.map((r) => ({
+        name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        quantity: r.quantity,
+        unit: r.unit,
+        est_kcal: r.est ? round1(r.est.kcal * (r.est.total_g / 100)) : null,
+      })),
+    });
     const guards = { variantClash, unhonouredGrade, implausiblePer100 };
     const fastItems: ParsedItem[] = resolved.map((r) => {
       // Do not double the prep: extract often bakes it into the name already
@@ -3316,11 +3348,14 @@ export async function runParseMeal(
     ));
     T.decide_ms = 0;
     steps.push({ iter: 9, tool: "__timing", input: { ...T, fast: true } });
+    const fastMeal = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    const fastLine = templateDronaLine(items);
+    deps.onProgress?.({ kind: "fill", items, meal_type: fastMeal, drona_line: fastLine });
     return {
       parsed: {
-        meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+        meal_type: fastMeal,
         items,
-        drona_line: templateDronaLine(items),
+        drona_line: fastLine,
         corrects_previous: false,
       },
       declined: null,

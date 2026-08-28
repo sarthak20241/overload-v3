@@ -1792,6 +1792,84 @@ async function handleParseMealRequest(args: {
   const preParseMs = Date.now() - startedAtMs;
   const runParse0 = Date.now();
 
+  // STREAMING is opt-in per request and additive: the JSON response below is
+  // untouched, so an older app build keeps working exactly as before. Only a
+  // client that asks for it, and only in fast mode where there is a gap worth
+  // filling, gets the event stream.
+  const wantsStream = body.stream === true && body.mode === "fast" && PARSE_FAST_MODE !== "off";
+
+  if (wantsStream) {
+    const enc = new TextEncoder();
+    const deps = makeParseDeps(userClient, admin, userId);
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (event: string, data: unknown) => {
+          try {
+            controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            // The client hung up mid-parse. Not an error worth failing the
+            // parse over: the trace below still records what happened.
+          }
+        };
+        try {
+          const result = await runParseMeal(
+            { ...deps, onProgress: (p) => send(p.kind, p) },
+            {
+              text,
+              localHour,
+              mealHint,
+              mode: "fast",
+              recentFoods: [],
+              todayTotals: null,
+              targets: null,
+              contextPromise,
+              previousText: previousText ?? null,
+              previousItems,
+              recentTurns,
+            },
+          );
+          send("end", {
+            parsed: result.parsed,
+            declined: result.declined,
+            proposal: result.proposal ?? null,
+          });
+          void recordParseTrace(admin, {
+            user_id: userId,
+            input_text: text.slice(0, 500),
+            meal_hint: mealHint,
+            model: PARSE_MEAL_MODEL,
+            outcome: result.parsed ? "meal" : "declined",
+            message: result.declined?.message ?? null,
+            iterations: result.iterations,
+            steps: result.steps,
+            items: result.parsed?.items ?? null,
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            web_search_requests: result.usage.web_search_requests,
+            latency_ms: Date.now() - startedAtMs,
+          });
+        } catch (e) {
+          // The client has already been given a 200 and possibly some rows, so
+          // the failure has to arrive as an event; there is no status code left
+          // to change. The client treats this exactly like a failed request.
+          send("error", { message: String(e).slice(0, 200) });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        ...CORS_HEADERS,
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        // Proxies buffer by default, which would collapse the whole point.
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
   try {
     const result = await runParseMeal(
       makeParseDeps(userClient, admin, userId),
