@@ -294,6 +294,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       setShowCustom(false);
       setShowTypePicker(false);
       setCustomName('');
+      // The search box is uncontrolled, and useSheetSlide keeps `mounted` true
+      // through the ~200ms slide-out. Reopening inside that window never
+      // remounts it, so defaultValue would not reapply and the box would still
+      // show the old query while `search` is ''. Clear the native text too.
+      // (customName needs no equivalent: its form unmounts with showCustom.)
+      searchInputRef.current?.clear();
       Keyboard.dismiss();
     }
   }, [visible]);
@@ -502,11 +508,23 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {/* Name */}
+                  {/* Uncontrolled (defaultValue) on purpose — don't "fix" it back
+                      to value. This sheet renders through <Portal>, which syncs
+                      its children in a passive effect, so a controlled value can
+                      reach the native input a frame or two late and let RN revert
+                      characters typed in between. Safe here because the form
+                      remounts on every open (openCustomForm seeds state before
+                      setShowCustom), so defaultValue always starts fresh. */}
                   <Text style={[s.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
-                    value={customName}
+                    defaultValue={customName}
                     onChangeText={setCustomName}
+                    // Exercise names are gym jargon ("Pendlay", "Zercher", "JM
+                    // Press") that iOS autocorrect rewrites into dictionary
+                    // words, and its replace-on-space swallows the space itself.
+                    autoCorrect={false}
+                    spellCheck={false}
+                    autoCapitalize="words"
                     placeholder="e.g. Cable Crossover"
                     placeholderTextColor={C.textMuted}
                     style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -640,14 +658,19 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <Feather name="search" size={14} color={C.textMuted} />
                     <TextInput
                       ref={searchInputRef}
-                      value={search}
+                      defaultValue={search}
                       onChangeText={setSearch}
+                      autoCorrect={false}
+                      spellCheck={false}
+                      autoCapitalize="none"
                       placeholder="Search exercises..."
                       placeholderTextColor={C.textMuted}
                       style={[s.searchInput, { color: C.foreground }]}
                     />
+                    {/* Uncontrolled input: clearing state alone won't clear the
+                        native text, so clear the input imperatively too. */}
                     {search.length > 0 && (
-                      <TouchableOpacity onPress={() => setSearch('')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
+                      <TouchableOpacity onPress={() => { setSearch(''); searchInputRef.current?.clear(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
                         <Feather name="x" size={14} color={C.textMuted} />
                       </TouchableOpacity>
                     )}

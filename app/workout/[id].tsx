@@ -346,6 +346,12 @@ export default function ActiveWorkoutScreen() {
   // Lets the user set the title, backdate the start, add notes, see a summary,
   // review with Coach, and (blank workouts only) save the session as a routine.
   const [showFinishSheet, setShowFinishSheet] = useState(false);
+  // Bumped on every open. The sheet's text inputs are uncontrolled and
+  // useSheetSlide holds `mounted` true through the ~200ms slide-out, so
+  // reopening inside that window would not remount them and their defaultValue
+  // would not reapply — the fields would still show the last open's text.
+  // Keying them on this forces the fresh mount that defaultValue relies on.
+  const [finishOpenId, setFinishOpenId] = useState(0);
   const [finishName, setFinishName] = useState('');
   // Workout-level reflection, written only at finish (saved to workouts.notes,
   // shown in history). Local to the sheet — there is no mid-session session
@@ -1992,6 +1998,7 @@ export default function ActiveWorkoutScreen() {
     setFinishNotes('');
     setSaveAsRoutine(false);
     setRoutineNameInput('');
+    setFinishOpenId(n => n + 1);
     setShowFinishSheet(true);
   };
 
@@ -3821,10 +3828,18 @@ export default function ActiveWorkoutScreen() {
 
                 {/* Workout name — pre-filled suggestion, selectTextOnFocus so
                     replacing it is a single tap + type */}
+                {/* Uncontrolled + autocorrect off, same reasoning as the
+                    custom-exercise field in ExercisePickerSheet; the per-second
+                    `elapsed` re-render gives this sheet the most to lose. Safe
+                    because prefill runs before setShowFinishSheet mounts it. */}
                 <Text style={[styles.formLabel, { color: C.textDim }]}>WORKOUT NAME</Text>
                 <TextInput
-                  value={finishName}
+                  key={`name-${finishOpenId}`}
+                  defaultValue={finishName}
                   onChangeText={setFinishName}
+                  autoCorrect={false}
+                  spellCheck={false}
+                  autoCapitalize="words"
                   placeholder="e.g. Push Day"
                   placeholderTextColor={C.textMuted}
                   selectTextOnFocus
@@ -3836,7 +3851,8 @@ export default function ActiveWorkoutScreen() {
                     to workouts.notes and shown in history. */}
                 <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>NOTES (OPTIONAL)</Text>
                 <TextInput
-                  value={finishNotes}
+                  key={`notes-${finishOpenId}`}
+                  defaultValue={finishNotes}
                   onChangeText={setFinishNotes}
                   placeholder="How did it go?"
                   placeholderTextColor={C.textMuted}
@@ -3889,8 +3905,12 @@ export default function ActiveWorkoutScreen() {
                   <Animated.View entering={FadeIn.duration(200)}>
                     <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>ROUTINE NAME</Text>
                     <TextInput
-                      value={routineNameInput}
+                      key={`routine-${finishOpenId}`}
+                      defaultValue={routineNameInput}
                       onChangeText={setRoutineNameInput}
+                      autoCorrect={false}
+                      spellCheck={false}
+                      autoCapitalize="words"
                       placeholder={finishName.trim() || 'Routine name'}
                       placeholderTextColor={C.textMuted}
                       selectTextOnFocus
