@@ -550,22 +550,29 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
   const p = top?.food_id ? candidatePer100.get(top.food_id) : undefined;
   const unit = r.unit.trim().toLowerCase();
   const qty = r.quantity > 0 ? r.quantity : 1;
+  // MASS_UNITS, not a hand-written subset. The old inline list missed "gm",
+  // "gms", "millilitre" and "milliliter", so "2 gm" fell through to the count
+  // branch and was read as two PIECES.
+  const portions = top?.servings.filter((s) => s.grams > 0 && !isBareMassLabel(s.label)) ?? [];
+  const sv = portions.find((s) => s.is_default) ?? portions[0];
   let grams: number;
-  if (unit === "g" || unit === "ml" || unit === "gram" || unit === "grams") {
+  if (MASS_UNITS.has(unit)) {
     grams = qty;
+  } else if (sv) {
+    // A REAL portion serving beats the model's estimate: "1 cookie (11 g)" is
+    // measured, est.total_g is free text. Order matters and this is the order.
+    grams = sv.grams * qty;
   } else if (r.est && r.est.total_g > 0) {
-    // The model's own gram estimate for the whole line, when the naming call
-    // produced one. It already accounts for the count ("2 biscuits" -> ~22 g),
-    // so it must NOT be multiplied again.
+    // No portion anchor on the row, so the model's own gram estimate for the
+    // line. It ALREADY accounts for the count ("2 biscuits" -> ~22 g), so it
+    // must not be multiplied again. Capped like every other free-text gram.
     grams = Math.min(r.est.total_g, 5000);
   } else {
-    // Same trap gramsPerUnit guards: a "100 g" serving states a MASS, and
-    // multiplying it by a piece count logged 2 Oreos as 200 g. Skip bare mass
-    // labels so a real portion is picked when the row has one, and fall back to
-    // ONE 100 g basis rather than one per piece when it does not.
-    const portions = top?.servings.filter((s) => s.grams > 0 && !isBareMassLabel(s.label)) ?? [];
-    const sv = portions.find((s) => s.is_default) ?? portions[0];
-    grams = sv ? sv.grams * qty : 100;
+    // Nothing measured and nothing estimated. The row's only serving is a bare
+    // mass label ("100 g"), which states a MASS and not a portion - multiplying
+    // it by a piece count is exactly how 2 Oreos logged as 200 g. Take ONE
+    // basis and let the low confidence say the rest.
+    grams = 100;
   }
   const f = grams / 100;
   return {
@@ -1581,7 +1588,13 @@ async function resolveOneItem(
   // Brand-qualified FIRST. The loop below stops at the first query that
   // returns anything, so leading with the generic name lets a generic row
   // win for a branded item whose own row exists and is never searched for.
-  if (item.brand) push(`${item.brand} ${item.name}`);
+  // Only prefix the brand when the name does not already carry it. The model
+  // reports brand "Oreo" AND name "Oreo biscuits" for "2 oreo biscuits", which
+  // built the query "Oreo Oreo biscuits" - a wasted ~500ms search for a string
+  // no row contains, and it pushes a real query off the 4-deep ladder.
+  const nameHasBrand = !!item.brand &&
+    item.name.toLowerCase().includes(item.brand.toLowerCase());
+  if (item.brand && !nameHasBrand) push(`${item.brand} ${item.name}`);
   push(item.name);
   const words = item.name.split(/\s+/).filter(Boolean);
   // Drop LEADING words before trailing ones. Prep state is written as a

@@ -148,9 +148,33 @@ Deno.test("fallback: a real per-piece serving still multiplies by the count", ()
   assertEquals(it.grams, 22);
 });
 
+Deno.test("fallback: a MEASURED portion beats the model's free-text estimate", () => {
+  // Review note on PR #127: est.total_g must not outrank a real catalog
+  // serving. 2 x 11 g of measured cookie, not the model's 40 g guess.
+  const it = fallbackFromResolved(
+    resolved({
+      candidates: [row([
+        { label: "100 g", grams: 100, is_default: true },
+        { label: "1 cookie (11 g)", grams: 11 },
+      ])],
+      est: { kcal: 483, protein_g: 4.8, carb_g: 71, fat_g: 20, total_g: 40 },
+    }),
+    per100Map(),
+  );
+  assertEquals(it.grams, 22);
+});
+
 Deno.test("fallback: a genuine mass input is untouched", () => {
   const it = fallbackFromResolved(resolved({ unit: "g", quantity: 200 }), per100Map());
   assertEquals(it.grams, 200);
+});
+
+Deno.test("fallback: every MASS_UNITS spelling counts as a mass, not a count", () => {
+  // Review note on PR #127: the old inline check listed only g/ml/gram/grams,
+  // so "2 gm" was read as two PIECES and multiplied by the 100 g basis.
+  for (const u of ["g", "gm", "gms", "gram", "grams", "ml", "millilitre", "milliliter"]) {
+    assertEquals(fallbackFromResolved(resolved({ unit: u, quantity: 200 }), per100Map()).grams, 200, u);
+  }
 });
 
 Deno.test("fallback: an absurd model estimate is capped, not trusted", () => {
