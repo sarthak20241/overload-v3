@@ -303,22 +303,54 @@ export function reconcileExtracted(
 const SKIP_DECIDE_MIN_TOP_SCORE = 0.75;
 
 /** Units we can convert without asking a model. */
-const MASS_UNITS = new Set(["g", "gram", "grams", "gm", "gms", "ml", "millilitre", "milliliter"]);
+const MASS_UNITS = new Set([
+  "g", "gram", "grams", "gm", "gms",
+  "ml", "millilitre", "milliliter", "millilitres", "milliliters",
+]);
+
+/** Every metric amount in a label - "100 g", "100g", "(11 g)" - built from
+ *  MASS_UNITS so the two can never drift apart. Longest spelling first, so
+ *  "gram" is not half-eaten by "g". */
+const MASS_AMOUNT_RE = new RegExp(
+  `\\d+(?:\\.\\d+)?\\s*(?:${[...MASS_UNITS].sort((a, b) => b.length - a.length).join("|")})\\b`,
+  "gi",
+);
+
+/** Words that name no PIECE. "serving" is the very unit we are trying to
+ *  resolve, so a label built only from these plus a metric amount tells us
+ *  nothing the user's own word did not. */
+const GENERIC_PORTION_WORDS = new Set([
+  "serving", "servings", "portion", "portions", "per", "of", "approx", "about", "1", "one",
+]);
 
 /**
- * A serving label that is nothing but a metric amount: "100 g", "100g",
- * "per 100 ml", "30 g".
+ * True for a serving that states a BASIS, not a portion.
  *
- * Such a label states a MASS, not a portion, so it can never answer "how much
- * is ONE of these?". Every candidate source injects one: the catalog carries a
- * per-100 basis row, OFF's product serving is often just the pack weight, and
+ * Two shapes, and neither can answer "how much is ONE of these?":
+ *   - a bare metric amount:      "100 g", "100g", "per 100 ml", "30 g"
+ *   - the per-100 basis dressed  "1 serving (100 g)", "per serving - 100 g"
+ *     up as a generic serving
+ *
+ * Every candidate source injects one. The catalog carries a per-100 basis row,
  * FatSecret v4 adds an explicit "100 g" serving (serving_id 0) to branded foods
- * on purpose (see fatsecret.ts). That is why this is a shape test on the label
- * rather than a check for grams === 100.
+ * on purpose (see fatsecret.ts), and OFF passes contributor free text straight
+ * through as the label, which is where the dressed-up shape comes from.
+ *
+ * The first shape is a pure text test, so "30 g" is caught as readily as
+ * "100 g". The second is gated on exactly 100 g, because a named amount that is
+ * NOT the per-100 basis is a real pack portion: "1 serving (30 g)" on a protein
+ * bar means one bar, and refusing it would lose a measured weight.
  */
-export function isBareMassLabel(label: string): boolean {
-  return /^(?:per\s+)?\d+(?:\.\d+)?\s*(?:g|gm|gms|gram|grams|ml|millilitre|milliliter|millilitres|milliliters)$/i
-    .test(label.trim());
+export function isBasisServing(sv: ServingOption): boolean {
+  const words = sv.label.toLowerCase()
+    .replace(MASS_AMOUNT_RE, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  // Nothing survived the amount: the label WAS the amount.
+  if (words.length === 0) return true;
+  return sv.grams === 100 && words.every((w) => GENERIC_PORTION_WORDS.has(w));
 }
 
 /** Grams for one unit of what the user said, or null when it needs judgment. */
@@ -327,8 +359,16 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   if (MASS_UNITS.has(u)) return { grams: 1, label: cand.base_unit === "ml" ? "ml" : "g" };
   // A serving anchor whose label mentions the user's word ("1 large" for
   // "large", "1 scoop (30 g)" for "scoop").
+  //
+  // A BASIS serving can never be that anchor, even when the words line up. The
+  // user's count word is often "serving" (the grammar emits it for every
+  // counted noun, see fastGrammar SHAPE 5), and "1 serving (100 g)" contains
+  // it - so without this the per-100 basis matched here and the whole
+  // piece-count guard below was bypassed.
   if (u) {
-    const hit = cand.servings.find((sv) => sv.grams > 0 && sv.label.toLowerCase().includes(u));
+    const hit = cand.servings.find((sv) =>
+      sv.grams > 0 && !isBasisServing(sv) && sv.label.toLowerCase().includes(u)
+    );
     if (hit) return { grams: hit.grams, label: hit.label };
   }
   // A bare count ("2 eggs", "1 bar", "2 oreo biscuits" - the grammar and the
@@ -348,7 +388,7 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   // Filtering rather than rejecting also fixes the ordering: a row carrying
   // both "1 cookie (11 g)" and a default "100 g" now picks the cookie.
   if (!u || u === "serving" || u === "servings" || u === "piece" || u === "pieces") {
-    const portions = cand.servings.filter((sv) => sv.grams > 0 && !isBareMassLabel(sv.label));
+    const portions = cand.servings.filter((sv) => sv.grams > 0 && !isBasisServing(sv));
     const def = portions.find((sv) => sv.is_default) ?? portions[0];
     if (def) return { grams: def.grams, label: def.label };
   }
@@ -553,7 +593,7 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
   // MASS_UNITS, not a hand-written subset. The old inline list missed "gm",
   // "gms", "millilitre" and "milliliter", so "2 gm" fell through to the count
   // branch and was read as two PIECES.
-  const portions = top?.servings.filter((s) => s.grams > 0 && !isBareMassLabel(s.label)) ?? [];
+  const portions = top?.servings.filter((s) => s.grams > 0 && !isBasisServing(s)) ?? [];
   const sv = portions.find((s) => s.is_default) ?? portions[0];
   let grams: number;
   if (MASS_UNITS.has(unit)) {
@@ -579,7 +619,10 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
     food_id: null,
     food_name: top?.name ?? r.name,
     quantity: qty,
-    serving_label: unit || "serving",
+    // The label that DROVE the gram math, so quantity x serving_label still
+    // reads as grams on the card. Filling the raw user word here printed
+    // "2 x serving" against 22 g derived from "1 cookie (11 g)".
+    serving_label: (!MASS_UNITS.has(unit) && sv) ? sv.label : (unit || "serving"),
     grams: round1(grams),
     kcal: p ? round1(p.kcal * f) : 0,
     protein_g: p ? round1(p.protein_g * f) : 0,

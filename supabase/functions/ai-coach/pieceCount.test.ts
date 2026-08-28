@@ -17,8 +17,9 @@ import {
   type CandidateFood,
   fallbackFromResolved,
   gramsPerUnit,
-  isBareMassLabel,
+  isBasisServing,
   type Per100,
+  type ServingOption,
   type ResolvedItem,
 } from "./parseMeal.ts";
 
@@ -38,13 +39,26 @@ function row(servings: { label: string; grams: number; is_default?: boolean }[])
   };
 }
 
-Deno.test("bare mass labels are recognised, portion labels are not", () => {
-  for (const l of ["100 g", "100g", " 100 G ", "per 100 g", "100 ml", "30 g", "250ml"]) {
-    assertEquals(isBareMassLabel(l), true, l);
+Deno.test("basis servings are recognised, real portions are not", () => {
+  const sv = (label: string, grams: number): ServingOption => ({ label, grams });
+  // Shape 1: the label IS the amount. Caught whatever the number is.
+  for (const l of ["100 g", "100g", " 100 G ", "per 100 g", "100 ml", "30 g", "250ml", "100 gm"]) {
+    assertEquals(isBasisServing(sv(l, 100)), true, l);
   }
+  // Shape 2: the per-100 basis dressed up as a generic serving. Review note on
+  // PR #127 - OFF passes contributor free text straight through as the label,
+  // so this shape is reachable today.
+  for (const l of ["1 serving (100 g)", "serving (100g)", "per serving - 100 g", "1 portion (100 ml)"]) {
+    assertEquals(isBasisServing(sv(l, 100)), true, l);
+  }
+  // A real portion is never a basis, however it is spelled.
   for (const l of ["1 cookie (11 g)", "1 slice", "1 katori", "2 pieces", "1 scoop (30 g)", "packet (55 g)"]) {
-    assertEquals(isBareMassLabel(l), false, l);
+    assertEquals(isBasisServing(sv(l, 11)), false, l);
   }
+  // A NAMED amount that is not the per-100 basis is a real pack portion, so
+  // the generic-wrapper rule must not swallow it.
+  assertEquals(isBasisServing(sv("1 serving (30 g)", 30)), false);
+  assertEquals(isBasisServing(sv("2 biscuits (22 g)", 22)), false);
 });
 
 Deno.test("a piece count against a 100 g-only row refuses instead of multiplying", () => {
@@ -183,4 +197,31 @@ Deno.test("fallback: an absurd model estimate is capped, not trusted", () => {
     per100Map(),
   );
   assertEquals(it.grams, 5000);
+});
+
+Deno.test("fallback: the displayed label is the one that drove the grams", () => {
+  // Review note on PR #127: the card printed "2 x serving" against grams
+  // derived from "1 cookie (11 g)", so quantity x serving_label did not read
+  // back as grams.
+  const it = fallbackFromResolved(
+    resolved({ candidates: [row([{ label: "1 cookie (11 g)", grams: 11, is_default: true }])] }),
+    per100Map(),
+  );
+  assertEquals(it.serving_label, "1 cookie (11 g)");
+  assertEquals(it.quantity, 2);
+  assertEquals(it.grams, 22);
+  // A mass input keeps the user's own unit, not a serving label.
+  assertEquals(fallbackFromResolved(resolved({ unit: "g", quantity: 200 }), per100Map()).serving_label, "g");
+});
+
+Deno.test("a dressed-up 100 g basis does not resolve a piece count either", () => {
+  // The regression the review flagged: "1 serving (100 g)" used to look like a
+  // real portion, so "2 oreo biscuits" was back to 200 g on that row.
+  const dressed = row([{ label: "1 serving (100 g)", grams: 100, is_default: true }]);
+  assertEquals(gramsPerUnit("serving", dressed), null);
+  assertEquals(gramsPerUnit("", dressed), null);
+  assertEquals(
+    fallbackFromResolved(resolved({ candidates: [dressed] }), per100Map()).grams,
+    100,
+  );
 });
