@@ -351,12 +351,23 @@ export default function NutritionScreen() {
       // spinner just cleared and the tap looked like it did nothing.
       if (res.kind === 'cap') {
         const capLine = capNotice(res);
+        // The state update is guarded; the NAVIGATION has to be guarded by the
+        // same test. A check the user abandoned (they discarded the card, or
+        // parsed something else) must not interrupt what they are doing now by
+        // throwing the paywall over it. flowRef is the committed flow, so this
+        // reads the same state the updater would, without a side effect inside
+        // an updater.
+        const stillCurrent = flowRef.current.status === 'review'
+          && flowRef.current.raw === raw
+          && checkTokenRef.current === token;
         setFlow((cur) => (
           cur.status === 'review' && cur.raw === raw
             ? { ...cur, notice: capLine, proposal: null }
             : cur
         ));
-        router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
+        if (stillCurrent) {
+          router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
+        }
         return;
       }
       setFlow((cur) => {

@@ -54,5 +54,11 @@ export function volumeToMl(qty: number, unit: string): number {
  */
 export function isMeasurementUnit(unit: string): boolean {
   const u = unit.trim().toLowerCase();
-  return u in MASS_UNITS || u in VOLUME_UNITS;
+  // OWN keys only. `in` walks the prototype chain, so "constructor",
+  // "toString" and friends would answer true and be treated as units: a food
+  // served in "constructor" would lose its named serving and render as a
+  // measurement. Absurd as a food unit, but these labels come from
+  // crowd-sourced catalogues and AI parses, so they are not ours to trust.
+  const own = (o: Record<string, number>) => Object.prototype.hasOwnProperty.call(o, u);
+  return own(MASS_UNITS) || own(VOLUME_UNITS);
 }
