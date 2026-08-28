@@ -305,8 +305,24 @@ const SKIP_DECIDE_MIN_TOP_SCORE = 0.75;
 /** Units we can convert without asking a model. */
 const MASS_UNITS = new Set(["g", "gram", "grams", "gm", "gms", "ml", "millilitre", "milliliter"]);
 
+/**
+ * A serving label that is nothing but a metric amount: "100 g", "100g",
+ * "per 100 ml", "30 g".
+ *
+ * Such a label states a MASS, not a portion, so it can never answer "how much
+ * is ONE of these?". Every candidate source injects one: the catalog carries a
+ * per-100 basis row, OFF's product serving is often just the pack weight, and
+ * FatSecret v4 adds an explicit "100 g" serving (serving_id 0) to branded foods
+ * on purpose (see fatsecret.ts). That is why this is a shape test on the label
+ * rather than a check for grams === 100.
+ */
+export function isBareMassLabel(label: string): boolean {
+  return /^(?:per\s+)?\d+(?:\.\d+)?\s*(?:g|gm|gms|gram|grams|ml|millilitre|milliliter|millilitres|milliliters)$/i
+    .test(label.trim());
+}
+
 /** Grams for one unit of what the user said, or null when it needs judgment. */
-function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
+export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
   const u = unit.trim().toLowerCase();
   if (MASS_UNITS.has(u)) return { grams: 1, label: cand.base_unit === "ml" ? "ml" : "g" };
   // A serving anchor whose label mentions the user's word ("1 large" for
@@ -315,10 +331,25 @@ function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label
     const hit = cand.servings.find((sv) => sv.grams > 0 && sv.label.toLowerCase().includes(u));
     if (hit) return { grams: hit.grams, label: hit.label };
   }
-  // A bare count ("2 eggs", "1 bar") resolves against the row's own default.
+  // A bare count ("2 eggs", "1 bar", "2 oreo biscuits" - the grammar and the
+  // extract call both emit "serving" for a counted noun) resolves against the
+  // row's own default, but ONLY against a serving that describes one PIECE.
+  //
+  // Multiplying a bare mass label by the count is the I-class bug reproduced in
+  // production on 2026-08-28: "2 oreo biscuits and 1 amul cheese slice" logged
+  // 200 g / 966 kcal and 100 g / 316 kcal against a true ~22 g / ~105 kcal and
+  // ~20 g / ~63 kcal, because both rows carry "100 g" and nothing else. Smart
+  // never hits this - buildDecideSystemPrompt spells the household weights out
+  // ("2 biscuits is ~15-20 g, never 90") - and Fast skips decide entirely, so
+  // the refusal here IS Fast's version of that knowledge: the caller drops to
+  // the model's own est_total_g, which the fused extract call already returned
+  // for exactly this reason.
+  //
+  // Filtering rather than rejecting also fixes the ordering: a row carrying
+  // both "1 cookie (11 g)" and a default "100 g" now picks the cookie.
   if (!u || u === "serving" || u === "servings" || u === "piece" || u === "pieces") {
-    const def = cand.servings.find((sv) => sv.is_default && sv.grams > 0) ??
-      cand.servings.find((sv) => sv.grams > 0);
+    const portions = cand.servings.filter((sv) => sv.grams > 0 && !isBareMassLabel(sv.label));
+    const def = portions.find((sv) => sv.is_default) ?? portions[0];
     if (def) return { grams: def.grams, label: def.label };
   }
   return null;
@@ -514,7 +545,7 @@ export function groundDronaLine(
 /** A rough, clearly-flagged line for a food decide dropped. Uses the top
  *  resolved candidate's per-100 where we have it, and keeps food_id null so it
  *  reads (and refines) as the estimate it is. */
-function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per100>): ParsedItem {
+export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per100>): ParsedItem {
   const top = r.candidates[0];
   const p = top?.food_id ? candidatePer100.get(top.food_id) : undefined;
   const unit = r.unit.trim().toLowerCase();
@@ -522,9 +553,19 @@ function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per1
   let grams: number;
   if (unit === "g" || unit === "ml" || unit === "gram" || unit === "grams") {
     grams = qty;
+  } else if (r.est && r.est.total_g > 0) {
+    // The model's own gram estimate for the whole line, when the naming call
+    // produced one. It already accounts for the count ("2 biscuits" -> ~22 g),
+    // so it must NOT be multiplied again.
+    grams = Math.min(r.est.total_g, 5000);
   } else {
-    const sv = top?.servings.find((s) => s.is_default) ?? top?.servings[0];
-    grams = (sv && sv.grams > 0 ? sv.grams : 100) * qty;
+    // Same trap gramsPerUnit guards: a "100 g" serving states a MASS, and
+    // multiplying it by a piece count logged 2 Oreos as 200 g. Skip bare mass
+    // labels so a real portion is picked when the row has one, and fall back to
+    // ONE 100 g basis rather than one per piece when it does not.
+    const portions = top?.servings.filter((s) => s.grams > 0 && !isBareMassLabel(s.label)) ?? [];
+    const sv = portions.find((s) => s.is_default) ?? portions[0];
+    grams = sv ? sv.grams * qty : 100;
   }
   const f = grams / 100;
   return {
@@ -1478,7 +1519,7 @@ export interface ExtractedItem {
   est?: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number } | null;
 }
 
-interface ResolvedItem extends ExtractedItem {
+export interface ResolvedItem extends ExtractedItem {
   candidates: CandidateFood[];
   /** Absolute relevance of the top candidate after rerank. The P3 skip-decide
    *  gate keys on this; absent when rerank did not run. */
@@ -1572,11 +1613,17 @@ async function resolveOneItem(
       if (successes >= (multiWord ? 2 : 1)) break;
       toolCalls.push("search_foods");
       let found: CandidateFood[] = [];
+      // The ladder is serial and can run four queries deep, so its cost is the
+      // SUM of these, not one search. The "~30ms" in the note above was never
+      // re-measured against production; record it per query so the claim can be
+      // checked instead of believed.
+      const tq0 = Date.now();
       try {
         found = (await deps.searchFoods(q)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
       }
+      const queryMs = Date.now() - tq0;
       if (found.length > 0) {
         successes++;
         for (const c of found) {
@@ -1590,7 +1637,7 @@ async function resolveOneItem(
       steps.push({
         iter: 1,
         tool: "search_foods",
-        input: { query: q },
+        input: { query: q, ms: queryMs },
         result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
       });
     }
@@ -1775,7 +1822,7 @@ function scrubDashes(s: string): string {
  *  never persisted, so their ids are ephemeral and getFoodPer100 is skipped for
  *  them - without a name on the fallback, every fatsecret pick bypassed
  *  variantClash and unhonouredGrade entirely. */
-type Per100 = {
+export type Per100 = {
   kcal: number;
   protein_g: number;
   carb_g: number;
@@ -3402,13 +3449,19 @@ export async function runParseMeal(
       return fallbackFromResolved(r, candidatePer100);
     });
 
+    // verifyItems re-reads the chosen food rows, so it is a DB round trip that
+    // was sitting outside every timer: extract_ms + resolve_ms never added up
+    // to latency_ms and the gap was being blamed on plumbing.
+    const tVerify0 = Date.now();
+    const verified = await verifyItems(deps, fastItems, candidatePer100);
+    T.verify_ms = Date.now() - tVerify0;
+
+    const tPost0 = Date.now();
     const items = stripEphemeralIds(flagPrepMismatch(
-      checkAtwater(reconcileQuantity(
-        await verifyItems(deps, fastItems, candidatePer100),
-        servingsForItems(resolved),
-      )),
+      checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
       prepForItems(resolved),
     ));
+    T.post_ms = Date.now() - tPost0;
     T.decide_ms = 0;
     steps.push({ iter: 9, tool: "__timing", input: { ...T, fast: true } });
     const fastMeal = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
