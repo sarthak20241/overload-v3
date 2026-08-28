@@ -1597,6 +1597,16 @@ async function resolveOneItem(
     return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
+    // Fast mode is catalog + the model's own estimate, nothing else. OFF sits
+    // in the same Promise.all as the catalog search, so its latency IS the
+    // resolve time whenever it is the slowest leg - and it was: 1.3s when it
+    // returned nothing against 3.4-4.6s when it returned products to back-fill.
+    // What it bought for that was thin. On "banana" it offered "Yogurt Bnine
+    // BANANA" and "Banana chips", which the accept gate then threw away.
+    // A packaged-food database earns its place in Smart, where there is time to
+    // rerank it and a model to judge it. Here the honest fallback is the
+    // estimate, which already rode in on the naming call for free.
+    if (lean) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
