@@ -449,17 +449,19 @@ export default function NutritionScreen() {
           <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
             <Feather name="chevron-left" size={22} color={C.foreground} />
           </Pressable>
-          <View style={s.dayNav}>
-            <Pressable onPress={() => stepDay(-1)} hitSlop={8} style={s.dayArrow} accessibilityLabel="Previous day">
-              <Feather name="chevron-left" size={18} color={C.textSecondary} />
-            </Pressable>
-            <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6} style={s.dayLabelBtn} accessibilityLabel="Pick a day">
-              <Text style={s.title}>{dayLabel(viewDate)}</Text>
-              <Feather name="calendar" size={13} color={C.textMuted} />
-            </Pressable>
-            <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
-              <Feather name="chevron-right" size={18} color={C.textSecondary} />
-            </Pressable>
+          <View style={s.dayNavWrap} pointerEvents="box-none">
+            <View style={s.dayNav}>
+              <Pressable onPress={() => stepDay(-1)} hitSlop={8} style={s.dayArrow} accessibilityLabel="Previous day">
+                <Feather name="chevron-left" size={18} color={C.textSecondary} />
+              </Pressable>
+              <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6} style={s.dayLabelBtn} accessibilityLabel="Pick a day">
+                <Text style={s.title}>{dayLabel(viewDate)}</Text>
+                <Feather name="calendar" size={13} color={C.textMuted} />
+              </Pressable>
+              <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
+                <Feather name="chevron-right" size={18} color={C.textSecondary} />
+              </Pressable>
+            </View>
           </View>
           <View style={{ flex: 1 }} />
           <Pressable onPress={() => setSavedListOpen(true)} hitSlop={10} style={s.headerBtn} accessibilityLabel="Saved meals">
@@ -672,6 +674,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, height: 44 },
     back: { width: 32, height: 32, justifyContent: 'center', marginLeft: -8 },
     headerBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+    dayNavWrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
     dayNav: { flexDirection: 'row', alignItems: 'center', gap: 2 },
     dayArrow: { width: 28, height: 32, alignItems: 'center', justifyContent: 'center' },
     dayLabelBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 2, minWidth: 92, justifyContent: 'center' },
