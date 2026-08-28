@@ -40,7 +40,47 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-24 | 81/86 | + I11 grade routing + migration 0106 milk ladder |
 | 2026-08-24 | 85/86 | + I6 deletion-by-text and challenge-carries-fix |
 | 2026-08-24 | 86/86 | + I13 frequency-ranked staples |
-| 2026-08-24 | **83/86** | + I1 changed-only correction resolve — **current baseline** |
+| 2026-08-24 | 83/86 | + I1 changed-only correction resolve |
+| 2026-08-28 | **84/87** | **FAST MODE** (`FAST_MODE=on`) — one fused call, no decide |
+
+### Fast mode measures as accurate as the full pipeline, and much cheaper
+
+Run `FAST_MODE=on npx tsx scripts/parse-meal-eval/run.ts` to score the whole
+corpus through the no-decide path. Follow-up cases carry previousItems, so
+runParseMeal ignores the mode for those by design - fast is first-shot only.
+
+```
+                 standard          fast
+accuracy         83/86             84/87
+avg latency      ~6500ms           3807ms      (-41%)
+tokens/run       ~540k             243k        (-55%)
+tier mix         catalog 73        catalog 72, estimate 12
+```
+
+Same accuracy, no decide call. The estimate share roughly doubles, which is the
+DESIGN working rather than a regression: the accept gate refuses a row that does
+not cover the user's words, and the fused naming call has already produced an
+estimate to fall back on.
+
+Remaining fast failures are known and not fast-specific: `chole-bhature`
+(composite dish the model splits differently run to run), `audit-multi-meal-day`
+and `audit-range-quantity` (both I8 gates, expected to fail until multi-meal
+lands).
+
+### DEBUG_STEPS=1 prints the pick for a failing case
+
+Fast has no decide output to read, so a wrong line is undiagnosable without it.
+`DEBUG_STEPS=1 FAST_MODE=on ONLY=<case> npx tsx ...` prints each `search_foods`
+and `fast_fill` step. Five real bugs were found this way in one smoke run; all
+five had been invisible.
+
+### A run that starves mid-way is not a result
+
+2026-08-28: a standard run scored 70/87 and I nearly recorded it as a
+regression. 9 cases had died instantly with `anthropic_400: credit balance is
+too low` and 4 more timed out while the API was refusing. Check the failure
+BODIES before believing a drop - `grep -oE "threw: [^\"]{0,60}"` over the log
+separates a real regression from an infrastructure one in one command.
 
 ### I1: the number went DOWN and that is not a regression
 
