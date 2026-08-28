@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
 import { fetch as expoFetch } from 'expo/fetch';
-import { useSupabaseClient } from '@/lib/supabase';
+import { useSupabaseClient, getSupabaseAccessToken } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage } from '@/lib/coachErrors';
 import {
@@ -601,8 +601,10 @@ export async function parseMealStreaming(
   const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   try {
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess?.session?.access_token;
+    // Clerk owns the session; nothing is ever written to Supabase auth, so
+    // `supabase.auth.getSession()` returns null for a signed-in user and every
+    // stream fell back to the JSON path below without a trace.
+    const token = await getSupabaseAccessToken();
     if (!token) return parseMeal(supabase, args);
 
     const res = await expoFetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/ai-coach`, {
