@@ -569,10 +569,17 @@ export interface StreamedItem {
   quantity: number;
   unit: string;
   /** The model's own guess for the whole line, from the naming call. The
-   *  shimmering number animates toward THIS, so it approaches something true
+   *  shimmering numbers animate toward THESE, so they approach something true
    *  rather than spinning at nothing. Null when the model gave no usable
-   *  estimate, in which case the row shimmers without a target. */
+   *  estimate, in which case the row shimmers without a target.
+   *
+   *  All four move together. A row that settles a calorie count while its
+   *  macros sit blank reads as broken, and showing the same four fields the
+   *  final row shows is what stops the card resizing when the catalog answers. */
   est_kcal: number | null;
+  est_protein_g: number | null;
+  est_carb_g: number | null;
+  est_fat_g: number | null;
 }
 
 /**
@@ -649,11 +656,15 @@ export async function parseMealStreaming(
         try { payload = JSON.parse(raw); } catch { continue; }
         sawAny = true;
         if (ev === 'items' && Array.isArray(payload.items)) {
+          const num = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v : null);
           onItems(payload.items.map((i: any) => ({
             name: String(i.name ?? ''),
             quantity: Number(i.quantity) || 1,
             unit: String(i.unit ?? 'serving'),
-            est_kcal: typeof i.est_kcal === 'number' ? i.est_kcal : null,
+            est_kcal: num(i.est_kcal),
+            est_protein_g: num(i.est_protein_g),
+            est_carb_g: num(i.est_carb_g),
+            est_fat_g: num(i.est_fat_g),
           })));
         } else if (ev === 'end') {
           final = toParseResult(payload);

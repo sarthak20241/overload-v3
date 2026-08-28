@@ -35,9 +35,14 @@ export interface StreamingRow {
   name: string;
   quantity: number;
   unit: string;
-  /** The model's own guess for this line. The counter animates toward it, so
-   *  it approaches something true rather than spinning at nothing. */
+  /** The model's own guess for this line. The counters animate toward these, so
+   *  they approach something true rather than spinning at nothing. All four
+   *  together: the streaming row shows the same four numbers the settled row
+   *  will, so nothing appears, moves or resizes when the catalog answers. */
   est_kcal: number | null;
+  est_protein_g: number | null;
+  est_carb_g: number | null;
+  est_fat_g: number | null;
 }
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
@@ -207,7 +212,7 @@ export function ParsedMealCard({
                   )}
                 </View>
                 <View style={s.macros}>
-                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)}</Text>
+                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} kcal</Text>
                   <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
                   <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
                   <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
@@ -353,24 +358,14 @@ function SettlingRow(
     first: boolean;
   },
 ) {
-  const [shown, setShown] = useState(0);
-  const target = row.est_kcal ?? 0;
-
-  useEffect(() => {
-    if (target <= 0) return;
-    // Ease out: fast at first, slowing as it nears the estimate, so it reads as
-    // converging rather than counting.
-    let raf: number;
-    let v = 0;
-    const step = () => {
-      v += (target - v) * 0.18;
-      setShown(v);
-      if (Math.abs(target - v) > 1) raf = requestAnimationFrame(step);
-      else setShown(target);
-    };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
-  }, [target]);
+  const kcal = useSettling(row.est_kcal);
+  const p = useSettling(row.est_protein_g);
+  const c = useSettling(row.est_carb_g);
+  const f = useSettling(row.est_fat_g);
+  // Macros are small numbers, so one decimal would jitter every frame while a
+  // calorie count reads fine as a whole number. Both settle to the same shape
+  // the review row uses.
+  const known = row.est_kcal !== null;
 
   return (
     <View style={[s.item, !first && s.itemDivider]}>
@@ -382,12 +377,51 @@ function SettlingRow(
           </Text>
         </Text>
       </View>
-      <Text style={[s.macros, { color: C.textMuted }]}>
-        {target > 0 ? `${Math.round(shown)}` : '···'}
-        <Text style={s.serving}>{'  '}working it out</Text>
-      </Text>
+      {/* Same four fields, same order, same units as the settled row above, so
+          the only thing that changes when the catalog answers is the numbers -
+          nothing appears, moves or resizes under the user's eyes. Dimmed
+          throughout to say "not final yet" without a second layout. */}
+      <View style={s.macros}>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>
+          {known ? `${Math.round(kcal)} kcal` : '··· kcal'}
+        </Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{known ? `${Math.round(p)}g P` : '···g P'}</Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{known ? `${Math.round(c)}g C` : '···g C'}</Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{known ? `${Math.round(f)}g F` : '···g F'}</Text>
+      </View>
+      <Text style={s.serving}>working it out</Text>
     </View>
   );
+}
+
+/**
+ * Eases a counter from 0 toward `target`: fast at first, slowing as it nears,
+ * so it reads as converging on an answer rather than counting up to one.
+ *
+ * Returns 0 for a null target — the caller renders "···" in that case instead,
+ * since a number easing toward nothing is a lie about how much we know.
+ */
+function useSettling(target: number | null): number {
+  const [shown, setShown] = useState(0);
+  const to = target ?? 0;
+
+  useEffect(() => {
+    if (to <= 0) { setShown(0); return; }
+    let raf: number;
+    let v = 0;
+    const step = () => {
+      v += (to - v) * 0.18;
+      setShown(v);
+      // Macros can be small (0-2g), so a fixed 1-unit stop would never settle
+      // proportionally. Stop within half a unit or 1% of the target.
+      if (Math.abs(to - v) > Math.max(0.5, to * 0.01)) raf = requestAnimationFrame(step);
+      else setShown(to);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [to]);
+
+  return shown;
 }
 
 function Analysing({ C }: { C: ReturnType<typeof useTheme>['C'] }) {

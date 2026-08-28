@@ -590,8 +590,23 @@ export interface ParseMealInput {
  * moves. A number that approaches something true is honest; one that approaches
  * nothing is decoration.
  */
+/** The model's own numbers for a whole line, from the naming call. All four
+ *  travel together: a row that shimmers a calorie count but blanks its macros
+ *  reads as broken, and the card has to reserve the same space it will need
+ *  once the catalog answers or the row jumps when it settles. Null on every
+ *  field when the model gave no usable estimate. */
+export interface ProgressItem {
+  name: string;
+  quantity: number;
+  unit: string;
+  est_kcal: number | null;
+  est_protein_g: number | null;
+  est_carb_g: number | null;
+  est_fat_g: number | null;
+}
+
 export type ParseProgress =
-  | { kind: "items"; items: Array<{ name: string; quantity: number; unit: string; est_kcal: number | null }> }
+  | { kind: "items"; items: ProgressItem[] }
   | { kind: "fill"; items: ParsedItem[]; meal_type: MealType; drona_line: string };
 
 export interface ParseMealDeps {
@@ -3207,12 +3222,19 @@ export async function runParseMeal(
   if (fastMode) {
     deps.onProgress?.({
       kind: "items",
-      items: toResolve.map((r) => ({
-        name: r.brand ? `${r.brand} ${r.name}` : r.name,
-        quantity: r.quantity,
-        unit: r.unit,
-        est_kcal: r.est ? round1(r.est.kcal * (r.est.total_g / 100)) : null,
-      })),
+      items: toResolve.map((r) => {
+        // est is per 100g; the row shows the whole line.
+        const line = r.est ? r.est.total_g / 100 : 0;
+        return {
+          name: r.brand ? `${r.brand} ${r.name}` : r.name,
+          quantity: r.quantity,
+          unit: r.unit,
+          est_kcal: r.est ? round1(r.est.kcal * line) : null,
+          est_protein_g: r.est ? round1(r.est.protein_g * line) : null,
+          est_carb_g: r.est ? round1(r.est.carb_g * line) : null,
+          est_fat_g: r.est ? round1(r.est.fat_g * line) : null,
+        };
+      }),
     });
   }
 

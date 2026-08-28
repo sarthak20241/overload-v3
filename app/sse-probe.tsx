@@ -38,7 +38,7 @@ export default function SseProbe() {
         { text: PHRASE, mealHint: 'breakfast', turns: [] },
         (items: StreamedItem[]) => {
           setRows(items);
-          log(`+${Date.now() - t0}ms rows=${items.length} ${items.map((i) => `${i.name}:${i.est_kcal ?? '~'}`).join(' | ')}`);
+          log(`+${Date.now() - t0}ms rows=${items.length} ${items.map((i) => `${i.name} ${i.est_kcal ?? '~'}kcal ${i.est_protein_g ?? '~'}P ${i.est_carb_g ?? '~'}C ${i.est_fat_g ?? '~'}F`).join(' | ')}`);
         },
       );
       log(`+${Date.now() - t0}ms FINAL kind=${res.kind}`);
