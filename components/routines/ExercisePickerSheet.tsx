@@ -502,11 +502,23 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {/* Name */}
+                  {/* Uncontrolled (defaultValue) on purpose — don't "fix" it back
+                      to value. This sheet renders through <Portal>, which syncs
+                      its children in a passive effect, so a controlled value can
+                      reach the native input a frame or two late and let RN revert
+                      characters typed in between. Safe here because the form
+                      remounts on every open (openCustomForm seeds state before
+                      setShowCustom), so defaultValue always starts fresh. */}
                   <Text style={[s.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
-                    value={customName}
+                    defaultValue={customName}
                     onChangeText={setCustomName}
+                    // Exercise names are gym jargon ("Pendlay", "Zercher", "JM
+                    // Press") that iOS autocorrect rewrites into dictionary
+                    // words, and its replace-on-space swallows the space itself.
+                    autoCorrect={false}
+                    spellCheck={false}
+                    autoCapitalize="words"
                     placeholder="e.g. Cable Crossover"
                     placeholderTextColor={C.textMuted}
                     style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -580,7 +592,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>SETS</Text>
                       <TextInput
-                        value={customSets}
+                        defaultValue={customSets}
                         onChangeText={setCustomSets}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -589,7 +601,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REST (S)</Text>
                       <TextInput
-                        value={customRest}
+                        defaultValue={customRest}
                         onChangeText={setCustomRest}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -602,7 +614,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REPS MIN</Text>
                       <TextInput
-                        value={customRepsMin}
+                        defaultValue={customRepsMin}
                         onChangeText={setCustomRepsMin}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -611,7 +623,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <View style={{ flex: 1 }}>
                       <Text style={[s.formLabel, { color: C.textDim }]}>REPS MAX</Text>
                       <TextInput
-                        value={customRepsMax}
+                        defaultValue={customRepsMax}
                         onChangeText={setCustomRepsMax}
                         keyboardType="number-pad"
                         style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -640,14 +652,19 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <Feather name="search" size={14} color={C.textMuted} />
                     <TextInput
                       ref={searchInputRef}
-                      value={search}
+                      defaultValue={search}
                       onChangeText={setSearch}
+                      autoCorrect={false}
+                      spellCheck={false}
+                      autoCapitalize="none"
                       placeholder="Search exercises..."
                       placeholderTextColor={C.textMuted}
                       style={[s.searchInput, { color: C.foreground }]}
                     />
+                    {/* Uncontrolled input: clearing state alone won't clear the
+                        native text, so clear the input imperatively too. */}
                     {search.length > 0 && (
-                      <TouchableOpacity onPress={() => setSearch('')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
+                      <TouchableOpacity onPress={() => { setSearch(''); searchInputRef.current?.clear(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
                         <Feather name="x" size={14} color={C.textMuted} />
                       </TouchableOpacity>
                     )}

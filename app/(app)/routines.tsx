@@ -1079,9 +1079,16 @@ function RoutineEditorSheet({
             <View style={styles.pinnedFields}>
               <View>
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Routine Name</Text>
+                {/* Uncontrolled + autocorrect off, same reasoning as the
+                    custom-exercise field in ExercisePickerSheet. Seed from the
+                    prop, NOT `name` — the prefill effect runs one render after
+                    this mounts, so `name` is still '' when editing a routine. */}
                 <TextInput
-                  value={name}
+                  defaultValue={editingRoutine?.name ?? ''}
                   onChangeText={(v) => { setName(v); if (errorMsg) setErrorMsg(''); }}
+                  autoCorrect={false}
+                  spellCheck={false}
+                  autoCapitalize="words"
                   placeholder="e.g. Push Day A"
                   placeholderTextColor={C.textMuted}
                   style={[styles.sheetInput, { backgroundColor: C.muted, borderColor: C.border, color: C.foreground }]}
@@ -1091,7 +1098,7 @@ function RoutineEditorSheet({
               <View>
                 <Text style={[styles.editorLabel, { color: C.textMuted }]}>Description (optional)</Text>
                 <TextInput
-                  value={description}
+                  defaultValue={editingRoutine?.description ?? ''}
                   onChangeText={setDescription}
                   placeholder="Brief description..."
                   placeholderTextColor={C.textMuted}

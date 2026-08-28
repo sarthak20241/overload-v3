@@ -3821,10 +3821,17 @@ export default function ActiveWorkoutScreen() {
 
                 {/* Workout name — pre-filled suggestion, selectTextOnFocus so
                     replacing it is a single tap + type */}
+                {/* Uncontrolled + autocorrect off, same reasoning as the
+                    custom-exercise field in ExercisePickerSheet; the per-second
+                    `elapsed` re-render gives this sheet the most to lose. Safe
+                    because prefill runs before setShowFinishSheet mounts it. */}
                 <Text style={[styles.formLabel, { color: C.textDim }]}>WORKOUT NAME</Text>
                 <TextInput
-                  value={finishName}
+                  defaultValue={finishName}
                   onChangeText={setFinishName}
+                  autoCorrect={false}
+                  spellCheck={false}
+                  autoCapitalize="words"
                   placeholder="e.g. Push Day"
                   placeholderTextColor={C.textMuted}
                   selectTextOnFocus
@@ -3836,7 +3843,7 @@ export default function ActiveWorkoutScreen() {
                     to workouts.notes and shown in history. */}
                 <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>NOTES (OPTIONAL)</Text>
                 <TextInput
-                  value={finishNotes}
+                  defaultValue={finishNotes}
                   onChangeText={setFinishNotes}
                   placeholder="How did it go?"
                   placeholderTextColor={C.textMuted}
@@ -3889,8 +3896,11 @@ export default function ActiveWorkoutScreen() {
                   <Animated.View entering={FadeIn.duration(200)}>
                     <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>ROUTINE NAME</Text>
                     <TextInput
-                      value={routineNameInput}
+                      defaultValue={routineNameInput}
                       onChangeText={setRoutineNameInput}
+                      autoCorrect={false}
+                      spellCheck={false}
+                      autoCapitalize="words"
                       placeholder={finishName.trim() || 'Routine name'}
                       placeholderTextColor={C.textMuted}
                       selectTextOnFocus

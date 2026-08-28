@@ -589,10 +589,16 @@ export default function ExerciseLibraryScreen() {
                   contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.lg }}
                   keyboardShouldPersistTaps="handled"
                 >
+                  {/* Uncontrolled + autocorrect off, same reasoning as the
+                      custom-exercise field in ExercisePickerSheet. Safe because
+                      openEdit seeds editName before editTarget mounts this. */}
                   <Text style={[styles.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
-                    value={editName}
+                    defaultValue={editName}
                     onChangeText={setEditName}
+                    autoCorrect={false}
+                    spellCheck={false}
+                    autoCapitalize="words"
                     placeholderTextColor={C.textMuted}
                     style={[styles.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
                   />
