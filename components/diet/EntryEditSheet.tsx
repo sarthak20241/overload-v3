@@ -44,11 +44,22 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'snack', label: 'Snacks' },
 ];
 
-// Stepper bounds only. The typed field takes any positive amount ("2.65"
-// servings of a 100 g serving is a real portion); the steppers just can't
-// walk the value below a quarter serving or into absurd territory.
+// The range updateEntryQuantity will actually PERSIST. These were stepper-only
+// bounds with QTY_MAX at 999, but the writer clamps to 0.25..50, so a typed
+// 999 previewed 999 servings of macros and then silently stored 50 — the sheet
+// promising something the database would not keep. Same range now drives the
+// steppers, the typed field, and the preview, so what you see is what is saved.
 const QTY_MIN = 0.25;
-const QTY_MAX = 999;
+const QTY_MAX = 50;
+
+/** Digits with at most ONE decimal point. A plain [^0-9.] strip let "1.2.3"
+ *  through, which parseFloat quietly reads as 1.2. */
+const sanitizeQty = (raw: string) => {
+  const cleaned = raw.replace(/[^0-9.]/g, '');
+  const first = cleaned.indexOf('.');
+  if (first === -1) return cleaned.slice(0, 6);
+  return (cleaned.slice(0, first + 1) + cleaned.slice(first + 1).replace(/\./g, '')).slice(0, 6);
+};
 const fmtQty = (q: number) => (Number.isInteger(q) ? String(q) : q.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
 const r0 = (n: number) => Math.round(n);
 
@@ -104,9 +115,14 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
   if (!mounted || !e) return <Portal>{null}</Portal>;
 
   const qtyNum = Math.max(parseFloat(qty) || 0, 0);
+  // What updateEntryQuantity will actually STORE. Everything below reads this
+  // rather than the raw typed number, so the preview cannot promise macros the
+  // write is about to clamp away. Zero stays zero: an empty field means "no
+  // change", not "a quarter serving".
+  const qtySave = qtyNum > 0 ? Math.min(Math.max(qtyNum, QTY_MIN), QTY_MAX) : 0;
 
   // Live macro preview scales from the snapshot by the quantity ratio.
-  const ratio = qtyNum / (e.quantity > 0 ? e.quantity : 1);
+  const ratio = qtySave / (e.quantity > 0 ? e.quantity : 1);
   const preview = {
     kcal: r0(e.kcal * ratio),
     protein: r0(e.protein_g * ratio),
@@ -115,7 +131,7 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
   };
   // An empty/zero field is "not a change", so Save reads Done and just closes
   // rather than writing a zeroed entry (delete is its own explicit button).
-  const dirty = qtyNum > 0 && (qtyNum !== e.quantity || section !== e.meal_type);
+  const dirty = qtySave > 0 && (qtySave !== e.quantity || section !== e.meal_type);
 
   const step = (dir: 1 | -1) => {
     haptics.selection();
@@ -127,8 +143,8 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
     if (!supabase || busy || !dirty) { onClose(); return; }
     setBusy(true);
     haptics.selection();
-    if (qtyNum !== e.quantity) {
-      const { error } = await updateEntryQuantity(supabase, e, qtyNum);
+    if (qtySave !== e.quantity) {
+      const { error } = await updateEntryQuantity(supabase, e, qtySave);
       if (error) { setBusy(false); haptics.warning(); return; }
     }
     if (section !== e.meal_type) {
@@ -188,7 +204,7 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
               </TouchableOpacity>
               <TextInput
                 value={qty}
-                onChangeText={(t) => setQty(t.replace(/[^0-9.]/g, '').slice(0, 6))}
+                onChangeText={(t) => setQty(sanitizeQty(t))}
                 keyboardType="decimal-pad"
                 selectTextOnFocus
                 style={[s.qtyInput, { color: C.foreground, borderColor: C.border }]}
