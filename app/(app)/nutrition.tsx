@@ -31,8 +31,8 @@ import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal,
-  type ParsedMeal, type LoggedEntry, type ParsedMealItem,
+  parseMeal, parseMealStreaming, logParsedMeal,
+  type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -46,6 +46,9 @@ import { DronaMark } from '@/components/coach/DronaMark';
 type ParseFlow =
   | { status: 'idle' }
   | { status: 'analysing'; raw: string }
+  // Names are known, numbers are ~300ms out. Only fast mode reaches this, and
+  // only on a first-shot log.
+  | { status: 'streaming'; raw: string; rows: StreamedItem[] }
   // `notice` carries a reply that is NOT a new meal (an answer to a question,
   // or a parse failure) while the reviewed meal stays on screen. Asking
   // "is that right?" must never throw away work the user hasn't added yet.
@@ -186,9 +189,19 @@ export default function NutritionScreen() {
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
-    const res = await parseMeal(supabase, {
-      text: t, mealHint: mealForNow(), previous: pending, turns,
-    });
+    const args = { text: t, mealHint: mealForNow(), previous: pending, turns };
+    // Streaming is only worth it on a first-shot log: a correction needs the
+    // full pipeline anyway, and parseMealStreaming falls back on its own, but
+    // not opening the stream saves the wasted round trip.
+    const res = pending
+      ? await parseMeal(supabase, args)
+      : await parseMealStreaming(supabase, args, (rows) => {
+        // Guard on the raw text: a stream that resolves after the user has
+        // moved on must not repaint the card they are now looking at.
+        setFlow((cur) =>
+          cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows } : cur
+        );
+      });
     // A reply that is not a meal (an answer, or a failure) must NOT discard a
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
@@ -531,6 +544,7 @@ export default function NutritionScreen() {
           <View style={{ marginBottom: Spacing.sm }}>
             <ParsedMealCard
               state={flow.status as ParseCardState}
+              streamingRows={flow.status === 'streaming' ? flow.rows : null}
               rawText={flow.raw}
               meal={flow.status === 'review' ? flow.meal : null}
               mealType={flow.status === 'review' ? flow.mealType : undefined}
