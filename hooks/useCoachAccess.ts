@@ -80,6 +80,9 @@ export interface UseCoachAccessReturn {
 }
 
 const UNKNOWN: CoachAccess = { state: 'unknown' };
+// Signed-out is a real, knowable answer — not a failed lookup. Kept as a
+// frozen module constant so every guest render returns the same object.
+const SIGNED_OUT: CoachAccess = { state: 'unauthenticated' };
 
 // Module-scope cache, keyed to the auth session it was fetched for. Because
 // AICoachModal keeps this hook mounted even while hidden, an un-keyed global
@@ -244,14 +247,50 @@ export function useCoachAccess(): UseCoachAccessReturn {
   supabaseRef.current = supabase;
 
   // Identify the current auth session so the cache can't leak across users.
-  const { user } = useClerkUser();
+  const { user, isLoaded: authLoaded, isSignedIn } = useClerkUser();
   const userId = user?.id ?? null;
 
+  // A guest can never resolve access over the wire: useSupabaseClient's fetch
+  // wrapper THROWS when Clerk has no token rather than sending the request
+  // unauthenticated, so `get_coach_access_status` rejects and normalize() never
+  // runs. The RPC's documented { state: 'unauthenticated' } reply is therefore
+  // unreachable from a signed-out app, and the failure used to land in the same
+  // bucket as a real outage — every guest tapping Coach Drona got
+  // "Couldn't reach Coach Drona / check your network" instead of "Sign in".
+  // Answer locally: signed out IS the answer, not a fetch we have to make.
+  const signedOut = authLoaded && !isSignedIn;
+
   const cacheForUser = cachedAccess?.userId === userId ? cachedAccess.access : null;
-  const [access, setAccess] = useState<CoachAccess>(cacheForUser ?? UNKNOWN);
-  const [loading, setLoading] = useState<boolean>(cacheForUser === null);
+  const [access, setAccess] = useState<CoachAccess>(
+    signedOut ? SIGNED_OUT : cacheForUser ?? UNKNOWN,
+  );
+  const [loading, setLoading] = useState<boolean>(!signedOut && cacheForUser === null);
 
   useEffect(() => {
+    if (signedOut) {
+      // Drop whoever was signed in before. This early return replaces the
+      // `cachedAccess = null` below, which used to run on every auth change —
+      // without it a sign-out leaves the previous user's entitlement in the
+      // module cache, and signing back in as that same user short-circuits
+      // straight onto it with no RPC. A trial that expired while they were
+      // signed out would keep rendering as 'trialing' for the rest of the
+      // foreground session (nothing calls invalidateCoachAccess on sign-out,
+      // and AICoachModal never unmounts).
+      cachedAccess = null;
+      // SIGNED_OUT itself is deliberately NOT written to the cache: it is
+      // derived from Clerk and free to recompute, and storing it would let a
+      // signed-out answer be handed to the next mount after a sign-in that
+      // Clerk hasn't reported yet.
+      setAccess(SIGNED_OUT);
+      setLoading(false);
+      return;
+    }
+    if (!authLoaded) {
+      // Clerk hasn't settled. Hold the spinner rather than guessing — guessing
+      // "unauthenticated" here would flash a sign-in card at a signed-in user.
+      setLoading(true);
+      return;
+    }
     if (cachedAccess?.userId === userId) {
       // Cache populated for THIS user by a previous mount — short-circuit.
       setAccess(cachedAccess.access);
@@ -290,12 +329,16 @@ export function useCoachAccess(): UseCoachAccessReturn {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]); // Refire when the authenticated user changes.
+  }, [userId, authLoaded, signedOut]); // Refire on auth change AND on sign-in/out.
 
   // Re-read whenever anything calls invalidateCoachAccess(). This is what makes
   // a purchase visible on a screen that is already mounted — the effect above
   // only reruns on an auth change, and AICoachModal never unmounts.
   useEffect(() => {
+    // A guest has nothing to re-read: every fetch would throw at the token
+    // check and resolve null. Skipping also keeps the foreground listener from
+    // firing a guaranteed-failing RPC each time the app comes back.
+    if (signedOut || !authLoaded) return;
     let cancelled = false;
     const unsubscribe = subscribeToCoachAccess(() => {
       void (async () => {
@@ -307,7 +350,7 @@ export function useCoachAccess(): UseCoachAccessReturn {
       cancelled = true;
       unsubscribe();
     };
-  }, [userId]);
+  }, [userId, authLoaded, signedOut]);
 
   const refresh = useCallback(async (): Promise<void> => {
     // Manual invalidation. Used after starting a trial, after a purchase
@@ -321,10 +364,22 @@ export function useCoachAccess(): UseCoachAccessReturn {
     // only fetch (they never notify), so there is no feedback loop, and the
     // await below joins the fetch the notify just started rather than adding
     // a second RPC.
+    //
+    // The guest check comes FIRST, before the invalidation. A guest is answered
+    // locally, not over the wire — otherwise the sign-in card's own refresh
+    // path would fail and could be misread as an outage all over again — and
+    // since nothing is fetched there is nothing to invalidate. AICoachModal
+    // calls refresh() every time the sheet opens, so leaving the bump above
+    // this return made every guest open of Coach Drona churn the generation
+    // counter and notify every listener for no reason.
+    if (signedOut) {
+      setAccess(SIGNED_OUT);
+      return;
+    }
     invalidateCoachAccess();
     const next = await fetchCoachAccess(supabaseRef.current, userId);
     if (next) setAccess(next);
-  }, [userId]);
+  }, [userId, signedOut]);
 
   return { access, loading, refresh };
 }
