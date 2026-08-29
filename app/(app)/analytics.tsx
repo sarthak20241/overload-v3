@@ -217,6 +217,19 @@ function ExerciseDropdown({
     return () => sub.remove();
   }, [open]);
 
+  // `anchor` is measured once, at open. If the window resizes underneath it
+  // (Android split-screen, a foldable unfolding, a resizable desktop window)
+  // the stored rect is stale and the list would float away from its button.
+  // The app is portrait-locked, so rotation can't cause this, but resize can.
+  // Close rather than re-measure: the button may have moved or been laid out
+  // off-screen entirely, and reopening re-measures for free.
+  useEffect(() => {
+    if (open) setOpen(false);
+    // Intentionally keyed on the window size alone. Including `open` would
+    // slam it shut on the same render that opened it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [winW, winH]);
+
   // Flip above the button when there isn't room below it.
   const gap = 4;
   const spaceBelow = anchor ? winH - insets.bottom - (anchor.y + anchor.h) - gap : 0;
