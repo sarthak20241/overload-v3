@@ -175,4 +175,15 @@ export interface DashboardStats {
 
 export type MuscleGroup =
   | 'Chest' | 'Back' | 'Shoulders' | 'Biceps' | 'Triceps'
-  | 'Quads' | 'Hamstrings' | 'Glutes' | 'Calves' | 'Core' | 'Full Body';
+  | 'Quads' | 'Hamstrings' | 'Glutes' | 'Calves' | 'Core' | 'Full Body'
+  // Finer heads a custom exercise can be tagged with (MUSCLE_GROUP_REFINEMENTS).
+  | 'Lats' | 'Upper Back' | 'Lower Back' | 'Traps'
+  | 'Front Delts' | 'Side Delts' | 'Rear Delts'
+  | 'Upper Chest' | 'Mid Chest' | 'Lower Chest'
+  | 'Biceps Long Head' | 'Biceps Short Head' | 'Brachialis'
+  | 'Triceps Long Head' | 'Triceps Lateral Head' | 'Triceps Medial Head'
+  | 'Forearms' | 'Wrist Flexors' | 'Wrist Extensors' | 'Brachioradialis' | 'Grip'
+  | 'Abs' | 'Lower Abs' | 'Obliques'
+  | 'Outer Quads' | 'Inner Quads' | 'Hip Flexors' | 'Adductors'
+  | 'Glute Max' | 'Glute Medius'
+  | 'Gastrocnemius' | 'Soleus' | 'Tibialis' | 'Neck';

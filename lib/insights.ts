@@ -93,8 +93,21 @@ export interface DetectInsightsInput {
 // major muscle; 10–20 the working range; past ~22 returns diminish for most
 // trainees. Smaller muscles get lower floors. These are mainstream landmarks,
 // not gospel — phrased as "looks low / consider" in copy, never as absolutes.
-const MAJOR_MUSCLES = new Set(['Chest', 'Back', 'Quads', 'Hamstrings', 'Shoulders', 'Glutes']);
-const MINOR_MUSCLES = new Set(['Biceps', 'Triceps', 'Calves', 'Core']);
+// The finer region heads (Lats, Rear Delts, Forearms...) are here too, so
+// someone who tags at that level still gets the volume tip. Nothing fires for
+// a muscle they have not trained in 28 days, so listing them nags no one.
+// The micro-heads (Triceps Long Head, Soleus, Grip...) are deliberately
+// ABSENT: a weekly set floor makes no sense for one head of one muscle, and a
+// "Triceps Medial Head volume looks low" tip would be pure noise.
+const MAJOR_MUSCLES = new Set([
+  'Chest', 'Back', 'Quads', 'Hamstrings', 'Shoulders', 'Glutes',
+  'Lats', 'Upper Back',
+]);
+const MINOR_MUSCLES = new Set([
+  'Biceps', 'Triceps', 'Calves', 'Core',
+  'Lower Back', 'Traps', 'Front Delts', 'Side Delts', 'Rear Delts',
+  'Forearms', 'Abs', 'Obliques', 'Adductors', 'Neck',
+]);
 const FLOOR_MAJOR = 10;
 const FLOOR_MINOR = 6;
 
