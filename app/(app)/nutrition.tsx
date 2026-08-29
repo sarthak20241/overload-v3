@@ -772,7 +772,10 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     weekDay: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 4 },
     weekDayName: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: C.textMuted, letterSpacing: LetterSpacing.eyebrow },
     weekDayRing: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-    weekDayNum: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+    // overflow:'hidden' is load-bearing on Android: without it the selected day's
+    // background paints as a square even though borderRadius is set. iOS rounds
+    // it either way. Verified on a Pixel emulator.
+    weekDayNum: { width: 26, height: 26, borderRadius: 13, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     weekDayNumSelected: { backgroundColor: C.foreground },
     weekDayNumTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: C.textSecondary, fontVariant: ['tabular-nums'] },
     weekDayNumTxtSelected: { color: C.background, fontWeight: FontWeight.bold },
