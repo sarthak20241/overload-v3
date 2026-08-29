@@ -222,7 +222,7 @@ function ExerciseDropdown({
   const spaceBelow = anchor ? winH - insets.bottom - (anchor.y + anchor.h) - gap : 0;
   const spaceAbove = anchor ? anchor.y - insets.top - gap : 0;
   const dropUp = anchor != null && spaceBelow < 160 && spaceAbove > spaceBelow;
-  const listMaxH = Math.min(280, Math.max(120, dropUp ? spaceAbove : spaceBelow));
+  const listMaxH = Math.min(280, Math.max(0, dropUp ? spaceAbove : spaceBelow));
 
   return (
     // The ref lives on the wrapper View, not the TouchableOpacity: only a host
@@ -1724,7 +1724,7 @@ export default function AnalyticsScreen() {
                   )}
                 </View>
 
-                <View style={{ marginTop: Spacing.md, marginBottom: Spacing.md, zIndex: 100 }}>
+                <View style={{ marginTop: Spacing.md, marginBottom: Spacing.md }}>
                   <ExerciseDropdown
                     exercises={allExerciseNames}
                     selected={selectedExercise}
@@ -1989,7 +1989,7 @@ const styles = StyleSheet.create({
   showHistoryText: { fontSize: 10, fontWeight: FontWeight.semibold },
 
   // Exercise Progress
-  dropdownWrap: { position: 'relative', zIndex: 100 },
+  dropdownWrap: { position: 'relative' },
   dropdownBtn: {
     flexDirection: 'row',
     alignItems: 'center',
