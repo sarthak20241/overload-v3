@@ -27,10 +27,8 @@ import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { saveLocalCustomExercise, type CachedExercise } from '@/lib/exerciseResolve';
 import { useExerciseNotes } from '@/hooks/useExerciseNotes';
+import { MuscleGroupPicker } from '@/components/exercises/MuscleGroupPicker';
 
-// Custom exercises can be tagged beyond the library's lifting groups — the
-// routine editor's old custom drawer offered these, so keep parity.
-const CUSTOM_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Cardio', 'Other'] as const;
 
 // Generous ceiling on per-exercise set targets (10x10 GVT still fits).
 const MAX_CUSTOM_SETS = 20;
@@ -532,26 +530,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
 
                   {/* Muscle Group */}
                   <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
-                  <View style={s.chipRow}>
-                    {CUSTOM_MUSCLE_GROUPS.map(mg => {
-                      const active = customMuscle === mg;
-                      return (
-                        <TouchableOpacity
-                          key={mg}
-                          onPress={() => setCustomMuscle(mg)}
-                          style={[
-                            s.chip,
-                            {
-                              backgroundColor: active ? Colors.primary : C.muted,
-                              borderColor: active ? Colors.primary : C.border,
-                            },
-                          ]}
-                        >
-                          <Text style={[s.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mg}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  <MuscleGroupPicker value={customMuscle} onChange={setCustomMuscle} />
 
                   {/* Category */}
                   <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>CATEGORY</Text>

@@ -88,10 +88,73 @@ export interface ExerciseDef {
   image_urls?: string[];
 }
 
+/**
+ * The ten umbrella groups every seeded catalog exercise uses. Kept as-is: they
+ * are the filter chips on the exercise screens and the values ~800 catalog rows
+ * (and every existing user_volume_stats row) already carry.
+ */
 export const MUSCLE_GROUPS = [
   'Chest', 'Back', 'Shoulders', 'Quads', 'Hamstrings',
   'Glutes', 'Biceps', 'Triceps', 'Calves', 'Core',
 ] as const;
+
+/**
+ * The primary picks in the create/edit custom exercise form: the ten classic
+ * groups, Forearms (its own region — it has its own sub-muscles), and the two
+ * non-lifting buckets. This is the whole list a casual user ever sees — one
+ * tap on "Back" and they are done. Ordered so the arm picks sit together.
+ */
+export const CUSTOM_MUSCLE_GROUPS = [
+  'Chest', 'Back', 'Shoulders', 'Biceps', 'Triceps', 'Forearms',
+  'Core', 'Quads', 'Hamstrings', 'Glutes', 'Calves',
+  'Cardio', 'Other',
+] as const;
+
+/**
+ * Optional finer heads, revealed only AFTER the matching primary is picked
+ * (progressive disclosure — the form never shows the full vocabulary at
+ * once). Selecting "Back" offers Lats/Upper Back/Lower Back/Traps
+ * underneath; ignoring the row keeps plain "Back".
+ *
+ * Naming: gym-speak over anatomy-textbook, and heads that would be ambiguous
+ * on their own carry their parent's name ("Triceps Long Head", not "Long
+ * Head") because the stored value shows by itself in Analytics legends and
+ * workout headers. The picker strips the parent prefix on the chip label, so
+ * the refine row still reads Long Head / Lateral Head / Medial Head.
+ *
+ * A head may hang off several primaries (Adductors under any leg pick) so it
+ * is reachable from wherever the user starts. Every value here is mapped in
+ * `GROUP_SLUGS` (components/ui/BodyHeatmap) so it lights the right region on
+ * the body picture in Analytics and on the post-workout share card.
+ *
+ * `muscle_group` is free text in Postgres (no check constraint), so adding a
+ * head needs no migration.
+ */
+export const MUSCLE_GROUP_REFINEMENTS: Record<string, readonly string[]> = {
+  Chest: ['Upper Chest', 'Mid Chest', 'Lower Chest'],
+  Back: ['Lats', 'Upper Back', 'Lower Back', 'Traps'],
+  Shoulders: ['Front Delts', 'Side Delts', 'Rear Delts', 'Neck'],
+  Biceps: ['Biceps Long Head', 'Biceps Short Head', 'Brachialis'],
+  Triceps: ['Triceps Long Head', 'Triceps Lateral Head', 'Triceps Medial Head'],
+  Forearms: ['Wrist Flexors', 'Wrist Extensors', 'Brachioradialis', 'Grip'],
+  Core: ['Abs', 'Lower Abs', 'Obliques'],
+  Quads: ['Outer Quads', 'Inner Quads', 'Hip Flexors', 'Adductors'],
+  Hamstrings: ['Adductors'],
+  Glutes: ['Glute Max', 'Glute Medius', 'Adductors'],
+  Calves: ['Gastrocnemius', 'Soleus', 'Tibialis'],
+};
+
+/** Every value the picker can produce — primaries plus all refinement heads. */
+export const ALL_MUSCLE_GROUPS: string[] = [
+  ...new Set([...CUSTOM_MUSCLE_GROUPS, ...Object.values(MUSCLE_GROUP_REFINEMENTS).flat()]),
+];
+
+/** The primary whose refine row contains `head` (first match), else undefined. */
+export function muscleParentOf(head: string): string | undefined {
+  return Object.keys(MUSCLE_GROUP_REFINEMENTS).find(
+    (parent) => MUSCLE_GROUP_REFINEMENTS[parent].includes(head),
+  );
+}
 
 export const CATEGORIES = [
   'Barbell', 'Dumbbell', 'Cable', 'Machine', 'Bodyweight', 'Other',

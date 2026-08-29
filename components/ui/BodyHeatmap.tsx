@@ -17,24 +17,74 @@ import { Colors, Spacing, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 
 /**
- * Our 11 `muscle_group` values mapped onto the library's anatomical slugs.
+ * Every `muscle_group` value mapped onto the library's anatomical slugs.
+ *
  * A group may cover several slugs (Back is three), and every slug in the list
- * gets that group's intensity so the whole region lights together.
+ * gets that group's sets, so the whole region lights together. Groups overlap
+ * on purpose: "Back" and "Lats" both reach `upper-back`, and the three delt
+ * heads all reach `deltoids` because the silhouette draws one shoulder. Where
+ * they overlap the slug carries the SUM, so logging front + side + rear delts
+ * separately lights the shoulder as hot as one "Shoulders" tag of the same
+ * total would.
+ *
+ * Keep this in step with `CUSTOM_MUSCLE_GROUPS` + `MUSCLE_GROUP_REFINEMENTS`
+ * in lib/exercises — a group missing here just stays grey on the body and in
+ * the legend.
  */
 export const GROUP_SLUGS: Record<string, Slug[]> = {
+  // Chest — one asset region, so the upper/mid/lower splits all land on it.
   Chest: ['chest'],
+  'Upper Chest': ['chest'],
+  'Mid Chest': ['chest'],
+  'Lower Chest': ['chest'],
+  // Back
   Back: ['upper-back', 'lower-back', 'trapezius'],
+  Lats: ['upper-back'],
+  'Upper Back': ['upper-back', 'trapezius'],
+  'Lower Back': ['lower-back'],
+  Traps: ['trapezius'],
+  // Shoulders — the asset has a single `deltoids` region, so all three heads
+  // land on it rather than being silently dropped.
   Shoulders: ['deltoids'],
-  Quads: ['quadriceps'],
-  Hamstrings: ['hamstring'],
+  'Front Delts': ['deltoids'],
+  'Side Delts': ['deltoids'],
+  'Rear Delts': ['deltoids'],
+  // Arms — per-head splits share their muscle's single asset region.
   Biceps: ['biceps'],
+  'Biceps Long Head': ['biceps'],
+  'Biceps Short Head': ['biceps'],
+  Brachialis: ['biceps'],
   Triceps: ['triceps'],
-  Calves: ['calves'],
+  'Triceps Long Head': ['triceps'],
+  'Triceps Lateral Head': ['triceps'],
+  'Triceps Medial Head': ['triceps'],
+  Forearms: ['forearm'],
+  'Wrist Flexors': ['forearm'],
+  'Wrist Extensors': ['forearm'],
+  Brachioradialis: ['forearm'],
+  Grip: ['forearm'],
+  // Core
   Core: ['abs', 'obliques'],
+  Abs: ['abs'],
+  'Lower Abs': ['abs'],
+  Obliques: ['obliques'],
+  // Legs
+  Quads: ['quadriceps'],
+  'Outer Quads': ['quadriceps'],
+  'Inner Quads': ['quadriceps'],
+  'Hip Flexors': ['quadriceps'],
+  Hamstrings: ['hamstring'],
   Glutes: ['gluteal'],
+  'Glute Max': ['gluteal'],
+  'Glute Medius': ['gluteal'],
+  Adductors: ['adductors'],
+  Calves: ['calves'],
+  Gastrocnemius: ['calves'],
+  Soleus: ['calves'],
+  Tibialis: ['tibialis'],
+  // Other
+  Neck: ['neck'],
 };
-
-const MAPPED_GROUPS = Object.keys(GROUP_SLUGS);
 
 /**
  * Every slug the library draws, including the ones no exercise maps to.
@@ -70,21 +120,49 @@ export interface BodyHeatmapEntry {
   color: string;
 }
 
-/** Sets per muscle group → that group's colour on the ramp. */
-export function buildScale(counts: Record<string, number>, ramp: string[]): Record<string, string> {
-  const mapped: Record<string, number> = {};
-  for (const g of MAPPED_GROUPS) {
-    if (counts[g]) mapped[g] = counts[g];
+/**
+ * Sets per muscle group → sets per anatomical slug.
+ *
+ * Shading is decided per slug, not per group, because groups overlap now
+ * (Lats and Back both reach `upper-back`). Summing is what makes the picture
+ * honest: whether someone logs "Shoulders 12" or "Front/Side/Rear Delts 4
+ * each", the deltoid region ends up at the same 12.
+ */
+function slugTotals(counts: Record<string, number>): Partial<Record<Slug, number>> {
+  const totals: Partial<Record<Slug, number>> = {};
+  for (const [group, value] of Object.entries(counts)) {
+    if (!value || value <= 0) continue;
+    for (const slug of GROUP_SLUGS[group] || []) {
+      totals[slug] = (totals[slug] || 0) + value;
+    }
   }
+  return totals;
+}
 
-  const max = Math.max(0, ...Object.values(mapped));
+/** Position a value on the ramp, relative to the busiest slug in the window. */
+function stepColor(value: number, max: number, ramp: string[]): string {
+  const step = Math.min(STEPS, Math.max(1, Math.ceil((value / max) * STEPS)));
+  return ramp[step - 1];
+}
+
+/**
+ * Muscle group → its legend colour.
+ *
+ * A group takes the colour of the busiest slug it lights, so the legend dot
+ * always matches a shade the reader can find on the body.
+ */
+export function buildScale(counts: Record<string, number>, ramp: string[]): Record<string, string> {
+  const totals = slugTotals(counts);
+  const max = Math.max(0, ...Object.values(totals));
   const scale: Record<string, string> = {};
   if (max <= 0) return scale;
 
-  for (const [group, value] of Object.entries(mapped)) {
-    if (value <= 0) continue;
-    const step = Math.min(STEPS, Math.max(1, Math.ceil((value / max) * STEPS)));
-    scale[group] = ramp[step - 1];
+  for (const [group, value] of Object.entries(counts)) {
+    const slugs = GROUP_SLUGS[group];
+    if (!slugs || !value || value <= 0) continue;
+    const busiest = Math.max(...slugs.map((s) => totals[s] || 0));
+    if (busiest <= 0) continue;
+    scale[group] = stepColor(busiest, max, ramp);
   }
   return scale;
 }
@@ -94,15 +172,15 @@ export function buildBodyData(
   ramp: string[],
   untrained: string,
 ): ExtendedBodyPart[] {
-  const scale = buildScale(counts, ramp);
-  const litFill: Partial<Record<Slug, string>> = {};
-  for (const [group, color] of Object.entries(scale)) {
-    for (const slug of GROUP_SLUGS[group] || []) litFill[slug] = color;
-  }
-  return ALL_SLUGS.map((slug) => ({
-    slug,
-    styles: { fill: litFill[slug] ?? untrained },
-  }));
+  const totals = slugTotals(counts);
+  const max = Math.max(0, ...Object.values(totals));
+  return ALL_SLUGS.map((slug) => {
+    const value = totals[slug] || 0;
+    return {
+      slug,
+      styles: { fill: max > 0 && value > 0 ? stepColor(value, max, ramp) : untrained },
+    };
+  });
 }
 
 interface Props {
