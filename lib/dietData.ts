@@ -17,7 +17,8 @@ import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
+import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import {
   type MealType, type FoodDef, type FoodServing,
@@ -425,10 +426,21 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
     const key = (e.food_name ?? '').toLowerCase().trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const grams = num(e.grams_logged);
     const qty = num(e.quantity) || 1;
-    const per100 = grams > 0 ? 100 / grams : 0; // entry snapshot -> per-100 basis
-    const unitGrams = qty > 0 ? grams / qty : grams; // grams of one serving_unit
+    const loggedGrams = num(e.grams_logged);
+    // A parsed entry often has NO gram weight: Drona knew a scoop of whey was
+    // 130 kcal without knowing what it weighed, so grams_logged is null. The
+    // old `grams > 0 ? 100 / grams : 0` turned that into a per-100 basis of
+    // ZERO, which multiplied every macro to nothing. The row then read
+    // "0 cal · 0g P", and re-logging it from Recent wrote those zeros into a
+    // real diary entry, so the bug laundered itself into the user's day.
+    //
+    // With no mass to scale by, treat one serving_unit as the 100-unit basis.
+    // The per-UNIT macros are preserved exactly, which is all this list feeds:
+    // the picker re-logs by serving, not by weight.
+    const unitGrams = loggedGrams > 0 && qty > 0 ? loggedGrams / qty : 100;
+    const totalGrams = unitGrams * qty;
+    const per100 = totalGrams > 0 ? 100 / totalGrams : 0;
     out.push({
       id: e.food_id ?? null,
       name: e.food_name,
@@ -438,7 +450,16 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
       carb_g: num(e.carb_g) * per100, fat_g: num(e.fat_g) * per100,
       fiber_g: num(e.fiber_g) * per100, sugar_g: num(e.sugar_g) * per100,
       sat_fat_g: num(e.sat_fat_g) * per100, sodium_mg: num(e.sodium_mg) * per100,
-      servings: unitGrams > 0 ? [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }] : [],
+      // A weightless entry keeps its own label ("scoop", "bowl") instead of
+      // dropping to the generic "100 g". But NOT when that label is itself a
+      // measurement unit: resolveBaseAmount matches a food's own servings
+      // BEFORE the mass/volume tables, so a synthetic {label:'g', grams:100}
+      // makes "1 g" resolve to 100 g. The weighed branch above is immune by
+      // accident (grams/qty is already the right per-unit conversion); this
+      // 100 fallback is not, so measurement labels keep the real converter.
+      servings: isMeasurementUnit(e.serving_unit ?? '')
+        ? []
+        : [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }],
     });
     if (out.length >= limit) break;
   }
@@ -550,7 +571,25 @@ export type ParseMealResult =
     proposal?: { items: ParsedMealItem[]; note: string } | null;
     cleared?: boolean;
   }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  // A 402 the paywall answers, not an error. `scope` says WHICH wall was hit:
+  // 'free' is the daily allowance spent, 'pro' is a Pro-only feature. Both open
+  // /upgrade, on different copy, instead of the app blaming itself.
+  | { kind: 'cap'; scope: 'free' | 'pro'; used?: number; limit?: number };
+
+/** Drona's line for a cap result. Shared so every parse call site says the same
+ *  thing: this copy was written three times and a fourth site would drift. */
+export function capNotice(cap: { scope: 'free' | 'pro'; limit?: number }): string {
+  if (cap.scope === 'pro') return 'That one is Overload Pro. Your logging stays free.';
+  return cap.limit != null
+    ? `That is your ${cap.limit} free logs for today. Pro logs as much as you eat.`
+    : 'That is your free logs for today. Pro logs as much as you eat.';
+}
+
+/** Which paywall a cap result opens. */
+export function capUpgradeContext(cap: { scope: 'free' | 'pro' }): 'pro_feature' | 'cap_parse' {
+  return cap.scope === 'pro' ? 'pro_feature' : 'cap_parse';
+}
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
  *  parsed path and the researched-proposal path so both stay in step. */
@@ -649,7 +688,16 @@ export async function parseMeal(
     // Never hand the raw edge-function error to the card — it carries HTTP
     // statuses and provider error bodies. The helper pulls the real reason off
     // error.context for the log and returns user-safe copy.
-    if (res.error) return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
+    if (res.error) {
+      // A 402 is the paywall, not a breakage. Checked BEFORE the message
+      // helper, which buckets every non-2xx into "something broke on my end".
+      const cap = await coachInvokeCapSignal(res.error);
+      // Both kinds are paywalls. Handling only 'cap' would let a pro_required
+      // 402 fall through to the generic "something broke" line, which is the
+      // exact bug this branch exists to fix.
+      if (cap) return { kind: 'cap', scope: cap.kind === 'pro' ? 'pro' : 'free', used: cap.used, limit: cap.limit };
+      return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
+    }
     data = res.data;
   } catch (e) {
     return { kind: 'error', message: 'No connection. Type it again when you are back online.' };
@@ -1164,7 +1212,13 @@ export async function updateEntryQuantity(
   entry: LoggedEntry,
   newQuantity: number,
 ): Promise<{ error?: string }> {
-  const q1 = Math.min(Math.max(newQuantity, 0.25), 50);
+  // Cap only. Every CREATE path (the picker, a parse, a saved meal) writes an
+  // unbounded quantity and the column has no CHECK, so clamping the EDIT path
+  // to 50 made portions you could log but could not adjust: editing a 200 x
+  // entry silently rewrote it to 50. The floor is an epsilon, not a quarter,
+  // for the same reason — 0.1 of something is a real portion, and rounding it
+  // up to 0.25 without saying so is the bug this pair used to have.
+  const q1 = Math.min(Math.max(newQuantity, 0.01), 999);
   const q0 = entry.quantity > 0 ? entry.quantity : 1;
   const f = q1 / q0;
   const patch: Record<string, number> = {

@@ -2,7 +2,8 @@
  * EntryEditSheet — tap a logged entry on the nutrition day view to open this.
  *
  * Three fix-it affordances in one sheet (P2):
- *   - rescale the quantity (a stepper; macros scale live from the snapshot)
+ *   - rescale the quantity (type an exact number OR nudge with the steppers;
+ *     macros scale live from the snapshot)
  *   - move it to another meal section (Breakfast/Lunch/Dinner/Snacks chips)
  *   - delete it
  *
@@ -11,15 +12,23 @@
  * row: macros are linear in amount, so quantity x ratio is exact. Portal sheet,
  * matching SetTypeSheet / WorkoutSettingsSheet (renders flush on Android
  * edge-to-edge).
+ *
+ * The slide is useSheetSlide (a transform we own), NOT entering/exiting layout
+ * animations: those pin the native frame, which silently drops the
+ * marginBottom keyboard lift the quantity input needs (see hooks/useSheetSlide).
  */
 import { useEffect, useState } from 'react';
-import { View, Text, Pressable, TouchableOpacity, StyleSheet, BackHandler } from 'react-native';
-import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
+import {
+  View, Text, TextInput, Pressable, TouchableOpacity, StyleSheet,
+  BackHandler, Keyboard, Platform,
+} from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
+import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import {
   deleteMealEntry, updateEntryQuantity, moveEntry,
@@ -35,8 +44,23 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'snack', label: 'Snacks' },
 ];
 
-const QTY_MIN = 0.25;
-const QTY_MAX = 50;
+// The range updateEntryQuantity will actually PERSIST, so the sheet cannot
+// promise a number the write would quietly change. The steppers keep their own
+// floor: they should not walk you below a quarter serving, but a TYPED amount
+// is the user telling us the portion, and every create path already accepts
+// any positive quantity.
+const QTY_STEP_MIN = 0.25;   // steppers only
+const QTY_TYPED_MIN = 0.01;  // smallest the writer keeps
+const QTY_MAX = 999;         // matches updateEntryQuantity's cap
+
+/** Digits with at most ONE decimal point. A plain [^0-9.] strip let "1.2.3"
+ *  through, which parseFloat quietly reads as 1.2. */
+const sanitizeQty = (raw: string) => {
+  const cleaned = raw.replace(/[^0-9.]/g, '');
+  const first = cleaned.indexOf('.');
+  if (first === -1) return cleaned.slice(0, 6);
+  return (cleaned.slice(0, first + 1) + cleaned.slice(first + 1).replace(/\./g, '')).slice(0, 6);
+};
 const fmtQty = (q: number) => (Number.isInteger(q) ? String(q) : q.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
 const r0 = (n: number) => Math.round(n);
 
@@ -51,51 +75,81 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
   const insets = useSafeAreaInsets();
   const supabase = useSupabaseClient();
 
-  const [qty, setQty] = useState(1);
+  const open = !!entry;
+  const { mounted, slideStyle } = useSheetSlide(open);
+  const [kbHeight, setKbHeight] = useState(0);
+  // Kept past close so the sheet still has content while it slides out.
+  const [held, setHeld] = useState<LoggedEntry | null>(null);
+
+  // Quantity is a STRING so the user can type exact amounts ("2.65") without
+  // the field fighting intermediate states like "2." — same as food-detail.
+  const [qty, setQty] = useState('1');
   const [section, setSection] = useState<MealType>('snack');
   const [busy, setBusy] = useState(false);
 
   // Re-seed local state each time a new entry opens the sheet.
   useEffect(() => {
-    if (entry) { setQty(entry.quantity > 0 ? entry.quantity : 1); setSection(entry.meal_type); setBusy(false); }
+    if (entry) {
+      setHeld(entry);
+      setQty(fmtQty(entry.quantity > 0 ? entry.quantity : 1));
+      setSection(entry.meal_type);
+      setBusy(false);
+    }
   }, [entry]);
 
   useEffect(() => {
-    if (!entry) return;
+    if (!open) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
     return () => sub.remove();
-  }, [entry, onClose]);
+  }, [open, onClose]);
 
-  if (!entry) return <Portal>{null}</Portal>;
+  const e = entry ?? held;
+  if (!mounted || !e) return <Portal>{null}</Portal>;
+
+  const qtyNum = Math.max(parseFloat(qty) || 0, 0);
+  // What updateEntryQuantity will actually STORE. Everything below reads this
+  // rather than the raw typed number, so the preview cannot promise macros the
+  // write is about to clamp away. Zero stays zero: an empty field means "no
+  // change", not "a quarter serving".
+  const qtySave = qtyNum > 0 ? Math.min(Math.max(qtyNum, QTY_TYPED_MIN), QTY_MAX) : 0;
 
   // Live macro preview scales from the snapshot by the quantity ratio.
-  const ratio = qty / (entry.quantity > 0 ? entry.quantity : 1);
+  const ratio = qtySave / (e.quantity > 0 ? e.quantity : 1);
   const preview = {
-    kcal: r0(entry.kcal * ratio),
-    protein: r0(entry.protein_g * ratio),
-    carb: r0(entry.carb_g * ratio),
-    fat: r0(entry.fat_g * ratio),
+    kcal: r0(e.kcal * ratio),
+    protein: r0(e.protein_g * ratio),
+    carb: r0(e.carb_g * ratio),
+    fat: r0(e.fat_g * ratio),
   };
-  const dirty = qty !== entry.quantity || section !== entry.meal_type;
+  // An empty/zero field is "not a change", so Save reads Done and just closes
+  // rather than writing a zeroed entry (delete is its own explicit button).
+  const dirty = qtySave > 0 && (qtySave !== e.quantity || section !== e.meal_type);
 
   const step = (dir: 1 | -1) => {
     haptics.selection();
-    setQty((q) => {
-      const next = Math.round((q + dir * 0.5) * 100) / 100;
-      return Math.min(Math.max(next, QTY_MIN), QTY_MAX);
-    });
+    const next = Math.round((qtyNum + dir * 0.5) * 100) / 100;
+    setQty(fmtQty(Math.min(Math.max(next, QTY_STEP_MIN), QTY_MAX)));
   };
 
   const onSave = async () => {
     if (!supabase || busy || !dirty) { onClose(); return; }
     setBusy(true);
     haptics.selection();
-    if (qty !== entry.quantity) {
-      const { error } = await updateEntryQuantity(supabase, entry, qty);
+    if (qtySave !== e.quantity) {
+      const { error } = await updateEntryQuantity(supabase, e, qtySave);
       if (error) { setBusy(false); haptics.warning(); return; }
     }
-    if (section !== entry.meal_type) {
-      const { error } = await moveEntry(supabase, entry, section);
+    if (section !== e.meal_type) {
+      const { error } = await moveEntry(supabase, e, section);
       if (error) { setBusy(false); haptics.warning(); return; }
     }
     onSaved();
@@ -105,89 +159,107 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
     if (!supabase || busy) return;
     setBusy(true);
     haptics.warning();
-    const { error } = await deleteMealEntry(supabase, entry);
+    const { error } = await deleteMealEntry(supabase, e);
     if (error) { setBusy(false); haptics.warning(); return; }
     onSaved();
   };
 
   return (
     <Portal>
-      <Pressable style={[s.backdrop, { backgroundColor: C.overlay }]} onPress={onClose}>
+      <View style={s.fill} pointerEvents={open ? 'auto' : 'none'}>
+        {open && (
+          <Pressable
+            style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+            onPress={onClose}
+            accessibilityLabel="Close"
+          />
+        )}
         <Animated.View
-          entering={SlideInDown.duration(320).easing(Easing.out(Easing.cubic))}
-          exiting={SlideOutDown.duration(180)}
-          style={[s.sheet, { backgroundColor: C.elevated, paddingBottom: insets.bottom + Spacing.md }]}
+          style={[
+            s.sheet, slideStyle,
+            {
+              backgroundColor: C.elevated,
+              paddingBottom: kbHeight > 0 ? Spacing.md : insets.bottom + Spacing.md,
+              marginBottom: kbHeight,
+            },
+          ]}
         >
-          <Pressable style={{ flexShrink: 1 }}>
-            <View style={[s.handle, { backgroundColor: C.handle }]} />
+          <View style={[s.handle, { backgroundColor: C.handle }]} />
 
-            <View style={s.header}>
-              <View style={{ flex: 1 }}>
-                <Text style={[s.title, { color: C.foreground }]} numberOfLines={1}>{entry.food_name}</Text>
-                <Text style={[s.subtitle, { color: C.mutedFg }]}>{entry.serving_unit}</Text>
-              </View>
-              <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
-                <Feather name="x" size={15} color={C.foreground} />
+          <View style={s.header}>
+            <View style={{ flex: 1 }}>
+              <Text style={[s.title, { color: C.foreground }]} numberOfLines={1}>{e.food_name}</Text>
+              <Text style={[s.subtitle, { color: C.mutedFg }]}>{e.serving_unit}</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
+              <Feather name="x" size={15} color={C.foreground} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Quantity: exact typed value, steppers for quick nudges, live preview */}
+          <View style={s.qtyRow}>
+            <Text style={[s.qtyLabel, { color: C.textSecondary }]}>Quantity</Text>
+            <View style={s.stepper}>
+              <TouchableOpacity onPress={() => step(-1)} style={[s.stepBtn, { backgroundColor: C.muted }]} accessibilityLabel="Decrease quantity">
+                <Feather name="minus" size={16} color={C.foreground} />
+              </TouchableOpacity>
+              <TextInput
+                value={qty}
+                onChangeText={(t) => setQty(sanitizeQty(t))}
+                keyboardType="decimal-pad"
+                selectTextOnFocus
+                style={[s.qtyInput, { color: C.foreground, borderColor: C.border }]}
+                accessibilityLabel="Quantity"
+                accessibilityHint="Type the exact number of servings"
+              />
+              <TouchableOpacity onPress={() => step(1)} style={[s.stepBtn, { backgroundColor: C.muted }]} accessibilityLabel="Increase quantity">
+                <Feather name="plus" size={16} color={C.foreground} />
               </TouchableOpacity>
             </View>
+          </View>
 
-            {/* Quantity stepper + live macro preview */}
-            <View style={s.qtyRow}>
-              <Text style={[s.qtyLabel, { color: C.textSecondary }]}>Quantity</Text>
-              <View style={s.stepper}>
-                <TouchableOpacity onPress={() => step(-1)} style={[s.stepBtn, { backgroundColor: C.muted }]} accessibilityLabel="Decrease quantity">
-                  <Feather name="minus" size={16} color={C.foreground} />
-                </TouchableOpacity>
-                <Text style={[s.qtyVal, { color: C.foreground }]}>{fmtQty(qty)}</Text>
-                <TouchableOpacity onPress={() => step(1)} style={[s.stepBtn, { backgroundColor: C.muted }]} accessibilityLabel="Increase quantity">
-                  <Feather name="plus" size={16} color={C.foreground} />
-                </TouchableOpacity>
-              </View>
-            </View>
+          <View style={[s.preview, { borderColor: C.borderSubtle }]}>
+            <Text style={[s.macroBig, { color: C.foreground }]}>{preview.kcal}<Text style={[s.macroUnit, { color: C.textMuted }]}> kcal</Text></Text>
+            <View style={{ flex: 1 }} />
+            <Text style={[s.macroNum, { color: C.macro.protein }]}>{preview.protein}g P</Text>
+            <Text style={[s.macroNum, { color: C.macro.carbs }]}>{preview.carb}g C</Text>
+            <Text style={[s.macroNum, { color: C.macro.fat }]}>{preview.fat}g F</Text>
+          </View>
 
-            <View style={[s.preview, { borderColor: C.borderSubtle }]}>
-              <Text style={[s.macroBig, { color: C.foreground }]}>{preview.kcal}<Text style={[s.macroUnit, { color: C.textMuted }]}> kcal</Text></Text>
-              <View style={{ flex: 1 }} />
-              <Text style={[s.macroNum, { color: C.macro.protein }]}>{preview.protein}g P</Text>
-              <Text style={[s.macroNum, { color: C.macro.carbs }]}>{preview.carb}g C</Text>
-              <Text style={[s.macroNum, { color: C.macro.fat }]}>{preview.fat}g F</Text>
-            </View>
+          {/* Move section */}
+          <Text style={[s.sectionLabel, { color: C.textMuted }]}>Section</Text>
+          <View style={s.chips}>
+            {MEAL_OPTIONS.map((o) => {
+              const on = o.value === section;
+              return (
+                <Pressable
+                  key={o.value}
+                  onPress={() => { haptics.selection(); setSection(o.value); }}
+                  style={[s.chip, { borderColor: on ? C.accentText : C.border, backgroundColor: on ? C.accentText : 'transparent' }]}
+                >
+                  <Text style={[s.chipTxt, { color: on ? C.background : C.textSecondary }]}>{o.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
-            {/* Move section */}
-            <Text style={[s.sectionLabel, { color: C.textMuted }]}>Section</Text>
-            <View style={s.chips}>
-              {MEAL_OPTIONS.map((o) => {
-                const on = o.value === section;
-                return (
-                  <Pressable
-                    key={o.value}
-                    onPress={() => { haptics.selection(); setSection(o.value); }}
-                    style={[s.chip, { borderColor: on ? C.accentText : C.border, backgroundColor: on ? C.accentText : 'transparent' }]}
-                  >
-                    <Text style={[s.chipTxt, { color: on ? C.background : C.textSecondary }]}>{o.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            {/* Actions */}
-            <View style={s.actions}>
-              <TouchableOpacity onPress={onDelete} disabled={busy} style={[s.deleteBtn, { backgroundColor: Colors.dangerBg }]} accessibilityLabel="Delete entry">
-                <Feather name="trash-2" size={16} color={Colors.danger} />
-              </TouchableOpacity>
-              <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
-                <Text style={s.saveTxt}>{busy ? 'Saving...' : dirty ? 'Save' : 'Done'}</Text>
-              </Pressable>
-            </View>
-          </Pressable>
+          {/* Actions */}
+          <View style={s.actions}>
+            <TouchableOpacity onPress={onDelete} disabled={busy} style={[s.deleteBtn, { backgroundColor: Colors.dangerBg }]} accessibilityLabel="Delete entry">
+              <Feather name="trash-2" size={16} color={Colors.danger} />
+            </TouchableOpacity>
+            <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
+              <Text style={s.saveTxt}>{busy ? 'Saving...' : dirty ? 'Save' : 'Done'}</Text>
+            </Pressable>
+          </View>
         </Animated.View>
-      </Pressable>
+      </View>
     </Portal>
   );
 }
 
 const s = StyleSheet.create({
-  backdrop: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
+  fill: { flex: 1, justifyContent: 'flex-end' },
   sheet: { borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.md },
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.lg },
@@ -199,7 +271,10 @@ const s = StyleSheet.create({
   qtyLabel: { fontSize: FontSize.base, fontWeight: FontWeight.medium },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   stepBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  qtyVal: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, minWidth: 44, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  qtyInput: {
+    width: 72, height: 40, borderWidth: 1, borderRadius: Radius.md, textAlign: 'center',
+    fontSize: FontSize.lg, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'],
+  },
 
   preview: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.md, marginTop: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.xs, borderTopWidth: 1 },
   macroBig: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },

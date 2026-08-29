@@ -42,3 +42,23 @@ export function massToGrams(qty: number, unit: string): number {
 export function volumeToMl(qty: number, unit: string): number {
   return qty * (VOLUME_UNITS[unit] ?? NaN);
 }
+
+/**
+ * Is this unit one the converters already understand?
+ *
+ * resolveBaseAmount matches a food's OWN servings before falling back to these
+ * tables, so anything that synthesises a serving must not hand it a label like
+ * "g" or "cup": that shadows the real conversion and silently rescales the
+ * portion. Exported so the check lives in one place instead of being spelled
+ * out at each call site.
+ */
+export function isMeasurementUnit(unit: string): boolean {
+  const u = unit.trim().toLowerCase();
+  // OWN keys only. `in` walks the prototype chain, so "constructor",
+  // "toString" and friends would answer true and be treated as units: a food
+  // served in "constructor" would lose its named serving and render as a
+  // measurement. Absurd as a food unit, but these labels come from
+  // crowd-sourced catalogues and AI parses, so they are not ours to trust.
+  const own = (o: Record<string, number>) => Object.prototype.hasOwnProperty.call(o, u);
+  return own(MASS_UNITS) || own(VOLUME_UNITS);
+}

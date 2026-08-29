@@ -12,7 +12,7 @@
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, TextInput, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -32,13 +32,15 @@ import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import Svg, { Circle } from 'react-native-svg';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal, loadNutritionRange, dateFromYmd,
+  parseMeal, logParsedMeal, capNotice, capUpgradeContext,
+  loadNutritionRange, dateFromYmd,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
+import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -132,6 +134,20 @@ export default function NutritionScreen() {
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
+  const { height: winH } = useWindowDimensions();
+  // Cap the parse card so a long meal never runs past the top of the screen
+  // (the card is pinned above the input, outside the day scroll — the lines
+  // scroll INSIDE it instead). ~60% of the screen keyboard-closed; with the
+  // keyboard up, whatever fits above it (96 ≈ input bar + gap).
+  //
+  // The 260 floor is keyboard-CLOSED only. Applied with the keyboard up it
+  // stops being a floor and becomes an overflow: on a compact phone the space
+  // above the keyboard can be under 260, and forcing 260 there pushes the
+  // card's own header (and its minimize control) off the top of the screen.
+  const availAboveKb = winH - kbHeight - insets.top - 96;
+  const cardMaxHeight = kbHeight > 0
+    ? Math.max(0, Math.min(winH * 0.6, availAboveKb))
+    : Math.max(260, Math.min(winH * 0.6, availAboveKb));
 
   // AI food logging (Drona parse). Signed-in only; guests keep the picker.
   // Parse -> review card (nothing logged yet) -> the user picks the section and
@@ -159,6 +175,10 @@ export default function NutritionScreen() {
   // Saved meals: save a parse for later; log a saved one in a tap.
   const [saveItems, setSaveItems] = useState<ParsedMealItem[] | null>(null);
   const [savedReview, setSavedReview] = useState(false); // current parse was saved
+  // Collapsed state for the parse card. Held here, not in the card, so a fresh
+  // parse can force it open: a meal the user has not seen yet must never
+  // arrive already hidden behind a summary line.
+  const [cardMinimized, setCardMinimized] = useState(false);
   const [savedListOpen, setSavedListOpen] = useState(false);
   const nowMeal = mealForNow();
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
@@ -215,6 +235,7 @@ export default function NutritionScreen() {
     const t = raw.trim();
     if (!t || !supabase) return;
     setSavedReview(false);
+    setCardMinimized(false);
     // A meal still under review is context for the next line: "make it a small
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
@@ -247,6 +268,18 @@ export default function NutritionScreen() {
         return;
       }
       setFlow({ status: 'declined', raw: t, message: res.message });
+      return;
+    }
+    // The free tier's daily logs ran out. This is a paywall, not a breakage:
+    // routing it through the error path told users "Something broke on my end"
+    // and hid the upgrade entirely. Say what actually happened, keep their text
+    // so nothing is lost, and open the same paywall the coach chat opens.
+    if (res.kind === 'cap') {
+      const capLine = capNotice(res);
+      pushTurn('drona', capLine);
+      if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
+      else setFlow({ status: 'declined', raw: t, message: capLine });
+      router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
       return;
     }
     if (res.kind === 'error') {
@@ -353,6 +386,32 @@ export default function NutritionScreen() {
         previous: { text: f.raw, items: f.meal.items },
         turns: turnsRef.current.slice(),
       });
+      // The daily allowance covers this lookup too, so a cap here has to say so
+      // and open the paywall. Handled BEFORE setFlow: routing is a side effect
+      // and a state updater may be replayed or discarded, so it cannot live in
+      // one. Falling through to the updater's `return cur` was silent — the
+      // spinner just cleared and the tap looked like it did nothing.
+      if (res.kind === 'cap') {
+        const capLine = capNotice(res);
+        // The state update is guarded; the NAVIGATION has to be guarded by the
+        // same test. A check the user abandoned (they discarded the card, or
+        // parsed something else) must not interrupt what they are doing now by
+        // throwing the paywall over it. flowRef is the committed flow, so this
+        // reads the same state the updater would, without a side effect inside
+        // an updater.
+        const stillCurrent = flowRef.current.status === 'review'
+          && flowRef.current.raw === raw
+          && checkTokenRef.current === token;
+        setFlow((cur) => (
+          cur.status === 'review' && cur.raw === raw
+            ? { ...cur, notice: capLine, proposal: null }
+            : cur
+        ));
+        if (stillCurrent) {
+          router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
+        }
+        return;
+      }
       setFlow((cur) => {
         // STALENESS GUARDS. The old automatic refine had these and the first
         // version of this handler dropped them, which rebuilt the very race I15
@@ -449,6 +508,9 @@ export default function NutritionScreen() {
       return;
     }
     reload();
+    // Reset here too: Undo puts the card back in review, and it should come
+    // back open rather than as a summary line the user has to expand.
+    setCardMinimized(false);
     setFlow({ status: 'idle' });
   }, [flow, supabase, adding, reload, viewDate]);
 
@@ -465,6 +527,7 @@ export default function NutritionScreen() {
 
   const onDismiss = useCallback(() => {
     setChecking(null);
+    setCardMinimized(false);
     setFlow({ status: 'idle' });
   }, []);
 
@@ -606,10 +669,10 @@ export default function NutritionScreen() {
               {entries.map((e) => (
                 <Pressable key={e.id} style={s.entry} onPress={() => setEditEntry(e)}>
                   <Text style={s.entryName}>
-                    {e.food_name} <Text style={s.serving}>· {e.quantity !== 1 ? `${e.quantity} × ` : ''}{e.serving_unit}</Text>
+                    {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
                   </Text>
                   <View style={s.macros}>
-                    <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)}</Text>
+                    <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
                     <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
                     <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
                     <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
@@ -639,6 +702,7 @@ export default function NutritionScreen() {
             <ParsedMealCard
               state={flow.status as ParseCardState}
               rawText={flow.raw}
+              maxHeight={cardMaxHeight}
               meal={flow.status === 'review' ? flow.meal : null}
               mealType={flow.status === 'review' ? flow.mealType : undefined}
               adding={adding}
@@ -665,6 +729,8 @@ export default function NutritionScreen() {
               onSave={flow.status === 'review' ? () => setSaveItems(flow.meal.items) : undefined}
               onRetry={flow.status === 'error' ? onRetry : undefined}
               onDismiss={onDismiss}
+              minimized={cardMinimized}
+              onToggleMinimize={() => setCardMinimized((v) => !v)}
             />
           </View>
         )}
