@@ -26,7 +26,7 @@
 
 import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
-import { firstAcceptable } from "./acceptCandidate.ts";
+import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -1401,7 +1401,7 @@ const FAST_EXTRACT_TOOL = (() => {
     est_per100_fat_g: { type: "number", description: "Fat grams PER 100 g." },
     est_total_g: {
       type: "number",
-      description: 'TOTAL grams (or ml) the stated amount comes to: "1 plate chole bhature" is ~400, "2 rotis" ~80.',
+      description: 'TOTAL grams (or ml) for the WHOLE line, THE COUNT INCLUDED: "1 plate chole bhature" ~400, "2 rotis" ~80, "2 biscuits" ~15, "5 almonds" ~6. Multiply one piece by the count; never answer with one piece, and never with a whole packet.',
     },
   });
   item.required = [
@@ -1411,7 +1411,50 @@ const FAST_EXTRACT_TOOL = (() => {
   return t;
 })();
 
-const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
+
+/** Smart only. There, nutrition is decide's job, and asking for it here would
+ *  buy output tokens for numbers the second call overwrites anyway. In FAST
+ *  there IS no second call, so this sentence must not be sent: it told the
+ *  model not to do the exact thing FAST_EXTRACT_TOOL makes required. */
+const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition.`;
+
+/** Both modes. quantity and unit mirror what the user SAID, in fast as much as
+ *  in smart: converting a stated count to grams is est_total_g's job, not this
+ *  one's, and inventing an amount nobody typed is still wrong either way. */
+const EXTRACT_SHARED_RULES =
+  ` Do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+
+/**
+ * Fast only: the estimating half of the job, which Smart does in decide.
+ *
+ * Measured on the eval corpus in FAST_MODE before this existed: "2 good day
+ * biscuits" came back 40 g and "britannia marie gold 4 biscuits" ALSO came back
+ * 40 g. The count was not reaching the grams at all - the model answered "some
+ * biscuits", roughly a packet, for both. On device "2 oreo biscuits" gave 56 g
+ * against a true ~22 g.
+ *
+ * The piece weights are the ones buildDecideSystemPrompt already carries. They
+ * were never wrong; they simply lived in the prompt for a call fast never
+ * makes.
+ */
+const FAST_EXTRACT_RULES = `
+
+FAST MODE. This is the ONLY model call in the parse. There is no second pass to correct your numbers, so the est_ fields ARE the answer.
+
+- est_per100_kcal / _protein_g / _carb_g / _fat_g: your own best per-100 knowledge for that food. Required. Give them.
+- est_total_g: grams for the WHOLE line, THE COUNT INCLUDED. Multiply one piece by the count. "2 biscuits" means two biscuits' worth, never one, and never a packet.
+- The est_ fields are IN ADDITION to quantity and unit, never instead of them. An amount the user STATED still goes in quantity: "100g soya chunks" stays quantity 100 unit "g" (and est_total_g 100); "35g paneer" stays quantity 35 unit "g". Moving a stated amount into est_total_g and leaving quantity 1 logs one gram of food.
+- A COUNT IS NOT A PORTION. "2 biscuits" and "4 biscuits" must give DIFFERENT totals. Answering the same "a serving of biscuits" number for both is the single commonest error here.
+- Piece weights, when the food gives you nothing better. Biscuits are NOT one weight: a thin tea biscuit (Marie, Parle-G, Nice) is ~5 g, a cream or cookie one (Good Day, Oreo, Bourbon, Hide & Seek) is ~7-11 g. Also 1 cheese slice ~20 g, 1 slice bread ~30 g, 1 egg ~50 g, 1 roti ~40 g, 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g. So "4 marie biscuits" is ~20 g and never 44; "2 oreo biscuits" is ~22 g and never 56; "5 almonds" is ~6 g and never 25.
+- Household amounts when the user names one: 1 katori ~150 g cooked, 1 bowl ~250 g, 1 glass ~250 ml, 1 cup ~200 ml, 1 scoop whey ~32 g, 1 plate chole bhature ~400 g.`;
+
+/** Smart's prompt, unchanged in meaning: head + the no-nutrition rule + shared. */
+const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
+
+/** Fast's prompt: the same segmentation job, minus the sentence that forbade
+ *  nutrition, plus the estimating rules decide would otherwise have carried. */
+const FAST_EXTRACT_SYSTEM = EXTRACT_SYSTEM_HEAD + EXTRACT_SHARED_RULES + FAST_EXTRACT_RULES;
 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
@@ -3003,7 +3046,15 @@ export async function runParseMeal(
     max_tokens: 700,
     // The correction rules only matter when a meal is on screen, so they stay
     // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
-    system: cacheableSystem(hasPrevious ? EXTRACT_SYSTEM + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM),
+    // fastMode is defined as mode === "fast" && !hasPrevious, so these three
+    // branches are exclusive by construction.
+    system: cacheableSystem(
+      fastMode
+        ? FAST_EXTRACT_SYSTEM
+        : hasPrevious
+        ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
+        : EXTRACT_SYSTEM_SMART,
+    ),
     tools: withToolCache([fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL]),
     tool_choice: { type: "tool", name: "extract_meal" },
     messages: [{
@@ -3425,12 +3476,33 @@ export async function runParseMeal(
     // already keyed and animated.
     const guards = { variantClash, unhonouredGrade, implausiblePer100 };
     const fastItems: ParsedItem[] = resolved.map((r) => {
-      // Do not double the prep: extract often bakes it into the name already
-      // ("boiled egg" + prep "boiled"), and the trace showed the gate judging
-      // "boiled boiled egg", which skews both coverage and the guards.
-      const said = (r.prep && !r.name.toLowerCase().includes(r.prep.toLowerCase()))
-        ? `${r.prep} ${r.name}`
-        : r.name;
+      // What the user actually named: prep + BRAND + name.
+      //
+      // The brand was missing, and its absence inverted the gate. Extract
+      // reports brand "Amul" and name "cheese slice" separately, so `said` was
+      // just "cheese slice" - the word "amul" was never required of a
+      // candidate, and worse, firstAcceptable then counted it AGAINST the right
+      // row. Measured on device: "Amul Cheese Slice A" carries two words the
+      // user "did not say" (amul, a) while "Cheese, provolone, sliced" carries
+      // one (provolone), so provolone won 2 of 5 runs. A row was beating the
+      // correct one precisely by NOT being the brand that was asked for.
+      //
+      // With the brand in `said`, coverage now REJECTS provolone outright
+      // (nothing in it covers "amul") rather than merely ranking it lower.
+      //
+      // Both joins guard against doubling, as the prep one already did: extract
+      // often bakes the qualifier into the name too ("boiled egg" + prep
+      // "boiled", "Oreo biscuits" + brand "Oreo"), and the trace showed the gate
+      // judging "boiled boiled egg", which skews coverage and the guards.
+      const withPrefix = (prefix: string | null | undefined, base: string) =>
+        prefix && !base.toLowerCase().includes(prefix.toLowerCase())
+          ? `${prefix} ${base}`
+          : base;
+      // The brand is only required when it IS the product. On a commodity fixed
+      // by standard (Amul vs Mother Dairy toned milk) requiring it would lock
+      // the generic row out of every branded phrase.
+      const brandWord = brandIsIdentity(r.brand, r.name) ? r.brand : null;
+      const said = withPrefix(r.prep, withPrefix(brandWord, r.name));
       const pick = firstAcceptable(said, r.candidates, guards);
       const per1 = pick ? gramsPerUnit(r.unit, pick.cand) : null;
       // Per-item verdict in the trace. Fast has no decide output to read, so

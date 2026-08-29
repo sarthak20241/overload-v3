@@ -337,7 +337,32 @@ export const CASES: EvalCase[] = [
     id: "marie-gold",
     text: "britannia marie gold 4 biscuits",
     hour: 16,
-    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "marie" }] },
+    // The count has to reach the grams. This case asserted only the NAME, so
+    // it passed at 40 g (10 g a biscuit) while Fast was reading "4 biscuits"
+    // as one lump. A Marie Gold is ~4.7 g, so four are ~19 g; the ceiling here
+    // is 8 g a biscuit, already generous against the decide prompt's own
+    // "1 small packaged biscuit ~5-10 g".
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "marie", gramsBetween: [12, 32] }],
+    },
+  },
+  {
+    // The 2026-08-28 production trace, verbatim. Both rows carry only a "100 g"
+    // basis serving, so this is the exact input that logged 200 g / 966 kcal
+    // and 100 g / 316 kcal. The conversion guard fixed the multiplication; this
+    // case guards the number the model itself now has to supply.
+    // One Oreo is ~11 g, so two are ~22 g; an Amul slice is ~20 g.
+    id: "oreo-and-cheese-slice",
+    text: "2 oreo biscuits and 1 amul cheese slice",
+    hour: 9,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "oreo", gramsBetween: [14, 34], kcalBetween: [60, 170] },
+        { nameIncludes: "cheese", gramsBetween: [12, 30], kcalBetween: [40, 110] },
+      ],
+    },
   },
   {
     id: "amul-kool",
@@ -501,7 +526,14 @@ export const CASES: EvalCase[] = [
       minItems: 2, maxItems: 2,
       items: [
         { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130], kcalBetween: [20, 80] },
-        { nameIncludes: "good day", nameIncludesAny: ["goodday", "biscuit", "cookie"], kcalBetween: [50, 250] },
+        // 2 biscuits, so the grams must show TWO. The old ceiling of 250 kcal
+        // and no gram bound let a 40 g lump through (20 g a biscuit).
+        {
+          nameIncludes: "good day",
+          nameIncludesAny: ["goodday", "biscuit", "cookie"],
+          gramsBetween: [8, 24],
+          kcalBetween: [40, 130],
+        },
       ],
     },
   },
@@ -667,7 +699,14 @@ export const CASES: EvalCase[] = [
     id: "log-biscuits-and-chai",
     text: "2 good day biscuits and chai half cup",
     hour: 17,
-    expect: { minItems: 2, maxItems: 2 },
+    // Asserted only that two items came back, so a 40 g biscuit lump passed.
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "biscuit", nameIncludesAny: ["good day", "goodday", "cookie"], gramsBetween: [8, 24] },
+        { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130] },
+      ],
+    },
   },
   {
     id: "log-question-declines",

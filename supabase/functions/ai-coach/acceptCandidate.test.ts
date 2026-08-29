@@ -5,7 +5,7 @@
 // because "near but uncertain" beats "precise about the wrong food".
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { acceptCandidate, coversUserWords, firstAcceptable } from "./acceptCandidate.ts";
+import { acceptCandidate, brandIsIdentity, coversUserWords, firstAcceptable } from "./acceptCandidate.ts";
 import { implausiblePer100, unhonouredGrade, variantClash, type CandidateFood } from "./parseMeal.ts";
 
 const guards = { variantClash, unhonouredGrade, implausiblePer100 };
@@ -103,4 +103,45 @@ Deno.test("a row listing several preps is not a clash, but a row-only part is", 
   assertEquals(why("boiled egg", row("Eggs, chicken, yolk, boiled", { kcal: 347 })), "form-mismatch");
   // Asking for yolk still gets yolk.
   assertEquals(ok("egg yolk", row("Eggs, chicken, yolk, boiled", { kcal: 347 })), true);
+});
+
+
+Deno.test("a branded row must not lose to one that simply omits the brand", () => {
+  // Shipped on device: "1 amul cheese slice" logged as Cheese, provolone.
+  // Extract splits brand from name, and the caller was building `said` from the
+  // name alone, so "amul" was never required - and firstAcceptable then counted
+  // the brand AGAINST the right row as an unexplained word (amul, a = 2) while
+  // provolone carried only one (provolone = 1). The wrong row won BECAUSE it
+  // was not the brand asked for.
+  const cands = [
+    row("Amul Cheese Slice A", { brand: "Amul", kcal: 316 }),
+    row("Cheese, provolone, sliced", { kcal: 357 }),
+  ];
+  // Name only - the old behaviour. Provolone is accepted and preferred.
+  assertEquals(ok("cheese slice", cands[1]), true);
+  assertEquals(firstAcceptable("cheese slice", cands, guards)?.cand.name, "Cheese, provolone, sliced");
+
+  // Brand included, as the caller now builds it. Provolone no longer covers.
+  assertEquals(why("Amul cheese slice", cands[1]), "uncovered-word");
+  assertEquals(firstAcceptable("Amul cheese slice", cands, guards)?.cand.name, "Amul Cheese Slice A");
+});
+
+Deno.test("brandIsIdentity: required for a recipe, droppable for a commodity", () => {
+  // Fixed by standard or nature - Amul and Mother Dairy are the same food.
+  assertEquals(brandIsIdentity("Amul", "toned milk"), false);
+  assertEquals(brandIsIdentity("Amul", "ghee"), false);
+  assertEquals(brandIsIdentity("Mother Dairy", "curd"), false);
+  // Formulated - the recipe IS the product.
+  assertEquals(brandIsIdentity("Amul", "cheese slice"), true);
+  assertEquals(brandIsIdentity("Oreo", "biscuits"), true);
+  assertEquals(brandIsIdentity("Quest", "protein bar"), true);
+  // No brand named: nothing to require.
+  assertEquals(brandIsIdentity(null, "cheese slice"), false);
+});
+
+Deno.test("a commodity brand does not lock out the generic row", () => {
+  // The regression the brand fix could have caused: requiring "amul" here would
+  // mean "Amul toned milk" never matches the curated Toned Milk row.
+  assertEquals(brandIsIdentity("Amul", "toned milk"), false);
+  assertEquals(ok("toned milk", row("Toned Milk", { kcal: 58 })), true);
 });

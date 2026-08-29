@@ -76,6 +76,44 @@ const FORM_WORDS = new Set([
   "yolk",
 ]);
 
+/**
+ * Foods whose composition is fixed by standard or by nature, so the BRAND does
+ * not change what the food is: Amul toned milk and Mother Dairy toned milk are
+ * the same 3%-fat liquid by regulation.
+ *
+ * Deliberately short, and deliberately NOT "anything dairy". A cheese slice is
+ * processed cheese - a recipe, not a commodity - which is exactly the case that
+ * sent "1 amul cheese slice" to Cheese, provolone. Biscuits, protein powders,
+ * cereals, sauces, ready meals and flavoured yoghurts are formulated too: for
+ * those the brand IS the product and must be covered.
+ */
+const COMMODITY_FOODS = new Set([
+  "milk", "curd", "dahi", "yoghurt", "yogurt", "paneer", "ghee", "butter",
+  "oil", "atta", "flour", "rice", "dal", "egg", "eggs", "sugar", "salt",
+  "water", "honey", "wheat",
+]);
+
+/**
+ * Should the brand the user named be REQUIRED of a candidate row?
+ *
+ * Yes for a formulated product, no for a commodity. Getting this wrong is
+ * costly in both directions: require it on milk and "Amul toned milk" can never
+ * match the generic Toned Milk row; drop it on a cheese slice and a provolone
+ * row wins because it carries fewer unexplained words than the Amul one.
+ *
+ * A grade or form word in the name ("low fat", "skimmed", "powder") does not
+ * make the food formulated - those are the other guards' business - so they are
+ * not consulted here.
+ */
+export function brandIsIdentity(brand: string | null | undefined, name: string): boolean {
+  if (!brand) return false;
+  const words = contentWords(name);
+  // Commodity only when the food word itself is one. "milk powder" is a
+  // commodity milk; "milk chocolate" is not, and its extra word is caught by
+  // the form check rather than here.
+  return !words.some((w) => COMMODITY_FOODS.has(w));
+}
+
 function contentWords(s: string): string[] {
   return s
     .toLowerCase()
