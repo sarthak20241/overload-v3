@@ -32,7 +32,7 @@ import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import Svg, { Circle } from 'react-native-svg';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal, loadNutritionRange,
+  parseMeal, logParsedMeal, loadNutritionRange, dateFromYmd,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -175,15 +175,21 @@ export default function NutritionScreen() {
   // visible week changes; a log/edit on the viewed day is patched in from the
   // totals we already hold, so one day's change never re-queries all seven.
   const [weekKcal, setWeekKcal] = useState<Record<string, number>>({});
+  // The viewed day's live total, mirrored into a ref so the range fetch below can
+  // re-apply it at commit time. A fetch in flight when food is logged would
+  // otherwise resolve with pre-log rows and clobber the fresh ring.
+  const livePatch = useRef<{ day: string; kcal: number } | null>(null);
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [y, m, d] = weekStartIso.split('-').map(Number);
-      const rows = await loadNutritionRange(supabase, new Date(y, m - 1, d), 7);
+      const rows = await loadNutritionRange(supabase, dateFromYmd(weekStartIso), 7);
       if (!alive) return;
       const map: Record<string, number> = {};
       for (const r of rows) map[r.dayIso] = r.kcal;
-      setWeekKcal(map);
+      setWeekKcal(() => {
+        const p = livePatch.current;
+        return p ? { ...map, [p.day]: p.kcal } : map;
+      });
     })();
     return () => { alive = false; };
   }, [supabase, weekStartIso]);
@@ -191,6 +197,7 @@ export default function NutritionScreen() {
   // before the refetch lands, so keying on viewIso would stamp the previous
   // day's kcal onto the newly selected day's ring until the fetch resolved.
   useEffect(() => {
+    livePatch.current = { day: totalsDayIso, kcal: totals.kcal };
     setWeekKcal((prev) => (
       prev[totalsDayIso] === totals.kcal ? prev : { ...prev, [totalsDayIso]: totals.kcal }
     ));
