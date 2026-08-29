@@ -29,9 +29,10 @@ import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
+import Svg, { Circle } from 'react-native-svg';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal,
+  parseMeal, logParsedMeal, loadNutritionRange, dateFromYmd,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -118,8 +119,16 @@ export default function NutritionScreen() {
   const [viewDate, setViewDate] = useState<Date>(() => new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const viewIso = ymd(viewDate);
-  const isToday = viewIso === ymd(new Date());
-  const { byMeal, totals, reload } = useDayNutrition(viewIso);
+  const todayIso = ymd(new Date());
+  const isToday = viewIso === todayIso;
+  // The strip shows the Sunday-start calendar week containing viewDate, so the
+  // columns (S M T W T F S) never shuffle — only the highlight moves. Jumping
+  // to another week via the calendar swaps the whole row in place.
+  const weekStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - viewDate.getDay());
+  const weekStartIso = ymd(weekStart);
+  const weekDays = Array.from({ length: 7 }, (_, i) =>
+    new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+  const { byMeal, totals, totalsDayIso, reload } = useDayNutrition(viewIso);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
@@ -161,6 +170,38 @@ export default function NutritionScreen() {
   // pushes food-search, silently reverting a past-day log back to today.
   useEffect(() => { setLogDate(viewDate); }, [viewDate]);
   useFocusEffect(useCallback(() => { setLogDate(viewDate); }, [viewDate]));
+
+  // kcal per day for the strip's rings. The network fetch runs only when the
+  // visible week changes; a log/edit on the viewed day is patched in from the
+  // totals we already hold, so one day's change never re-queries all seven.
+  const [weekKcal, setWeekKcal] = useState<Record<string, number>>({});
+  // The viewed day's live total, mirrored into a ref so the range fetch below can
+  // re-apply it at commit time. A fetch in flight when food is logged would
+  // otherwise resolve with pre-log rows and clobber the fresh ring.
+  const livePatch = useRef<{ day: string; kcal: number } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const rows = await loadNutritionRange(supabase, dateFromYmd(weekStartIso), 7);
+      if (!alive) return;
+      const map: Record<string, number> = {};
+      for (const r of rows) map[r.dayIso] = r.kcal;
+      setWeekKcal(() => {
+        const p = livePatch.current;
+        return p ? { ...map, [p.day]: p.kcal } : map;
+      });
+    })();
+    return () => { alive = false; };
+  }, [supabase, weekStartIso]);
+  // Keyed on totalsDayIso, NOT viewIso: on a day switch viewIso updates a render
+  // before the refetch lands, so keying on viewIso would stamp the previous
+  // day's kcal onto the newly selected day's ring until the fetch resolved.
+  useEffect(() => {
+    livePatch.current = { day: totalsDayIso, kcal: totals.kcal };
+    setWeekKcal((prev) => (
+      prev[totalsDayIso] === totals.kcal ? prev : { ...prev, [totalsDayIso]: totals.kcal }
+    ));
+  }, [totalsDayIso, totals.kcal]);
 
   // Step the diary a day back/forward; never past today.
   const stepDay = useCallback((delta: number) => {
@@ -449,17 +490,19 @@ export default function NutritionScreen() {
           <Pressable onPress={() => router.back()} hitSlop={12} style={s.back}>
             <Feather name="chevron-left" size={22} color={C.foreground} />
           </Pressable>
-          <View style={s.dayNav}>
-            <Pressable onPress={() => stepDay(-1)} hitSlop={8} style={s.dayArrow} accessibilityLabel="Previous day">
-              <Feather name="chevron-left" size={18} color={C.textSecondary} />
-            </Pressable>
-            <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6} style={s.dayLabelBtn} accessibilityLabel="Pick a day">
-              <Text style={s.title}>{dayLabel(viewDate)}</Text>
-              <Feather name="calendar" size={13} color={C.textMuted} />
-            </Pressable>
-            <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
-              <Feather name="chevron-right" size={18} color={C.textSecondary} />
-            </Pressable>
+          <View style={s.dayNavWrap} pointerEvents="box-none">
+            <View style={s.dayNav}>
+              <Pressable onPress={() => stepDay(-1)} hitSlop={8} style={s.dayArrow} accessibilityLabel="Previous day">
+                <Feather name="chevron-left" size={18} color={C.textSecondary} />
+              </Pressable>
+              <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6} style={s.dayLabelBtn} accessibilityLabel="Pick a day">
+                <Text style={s.title}>{dayLabel(viewDate)}</Text>
+                <Feather name="calendar" size={13} color={C.textMuted} />
+              </Pressable>
+              <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
+                <Feather name="chevron-right" size={18} color={C.textSecondary} />
+              </Pressable>
+            </View>
           </View>
           <View style={{ flex: 1 }} />
           <Pressable onPress={() => setSavedListOpen(true)} hitSlop={10} style={s.headerBtn} accessibilityLabel="Saved meals">
@@ -473,6 +516,51 @@ export default function NutritionScreen() {
           )}
         </View>
 
+        {/* Week strip — the calendar week around the viewed day; tap a bubble to
+            jump straight there. Each day wears a thin ring showing how much of
+            the calorie goal was eaten that day. Future days are dimmed/locked. */}
+        <View style={s.weekStrip}>
+          {weekDays.map((d) => {
+            const iso = ymd(d);
+            const selected = iso === viewIso;
+            const future = iso > todayIso;
+            const pct = Math.min((weekKcal[iso] ?? 0) / (targets.kcal || 1), 1);
+            const R = 16, CIRC = 2 * Math.PI * R;
+            return (
+              <Pressable
+                key={iso}
+                onPress={() => setViewDate(d)}
+                disabled={future}
+                style={[s.weekDay, future && { opacity: 0.35 }]}
+                accessibilityLabel={`Go to ${dayLabel(d)}`}
+              >
+                <Text style={[s.weekDayName, selected && { color: C.foreground }]}>
+                  {d.toLocaleDateString(undefined, { weekday: 'narrow' })}
+                </Text>
+                <View style={s.weekDayRing}>
+                  <Svg width={36} height={36} style={StyleSheet.absoluteFill}>
+                    <Circle cx={18} cy={18} r={R} stroke={C.borderSubtle} strokeWidth={2} fill="none" />
+                    {!future && pct > 0 && (
+                      <Circle
+                        cx={18} cy={18} r={R}
+                        stroke={C.macro.calories} strokeWidth={2} fill="none"
+                        strokeLinecap="round"
+                        strokeDasharray={`${pct * CIRC} ${CIRC}`}
+                        transform="rotate(-90 18 18)"
+                      />
+                    )}
+                  </Svg>
+                  <View style={[s.weekDayNum, selected && s.weekDayNumSelected]}>
+                    <Text style={[s.weekDayNumTxt, selected && s.weekDayNumTxtSelected]}>
+                      {d.getDate()}
+                    </Text>
+                  </View>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+
         {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue
             overshoot) and three macro bars carrying target + signed over. */}
         <View style={s.summary}>
@@ -480,17 +568,17 @@ export default function NutritionScreen() {
             <Feather name="sliders" size={12} color={isCustom ? C.textDim : C.accentText} />
             <Text style={[s.goalBtnTxt, { color: isCustom ? C.textDim : C.accentText }]}>{isCustom ? 'Goal' : 'Set goal'}</Text>
           </Pressable>
-          <View style={{ alignItems: 'center' }}>
+          <View style={s.summaryRow}>
             <MacroRing
               value={eaten.kcal} target={targets.kcal} color={C.macro.calories} valueColor={C.macro.calories}
-              display="remaining" overshoot name="Calories" size={132} thickness={13} centerFontSize={32}
-              belowCaption={calCaption(eaten.kcal, targets.kcal)}
+              display="remaining" overshoot name="Calories" size={116} thickness={11} centerFontSize={26}
             />
-          </View>
-          <View style={s.macroRail}>
-            <MacroBar verbose label="Protein" name="Protein" value={eaten.protein} target={targets.protein} color={C.macro.protein} delayMs={0} />
-            <MacroBar verbose label="Carbs" name="Carbs" value={eaten.carb} target={targets.carb} color={C.macro.carbs} delayMs={70} />
-            <MacroBar verbose label="Fat" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} />
+            <View style={s.macroRailSide}>
+              <Text style={s.kcalLine}>{calCaption(eaten.kcal, targets.kcal)}</Text>
+              <MacroBar label="P" name="Protein" value={eaten.protein} target={targets.protein} color={C.macro.protein} delayMs={0} valueMinWidth={52} />
+              <MacroBar label="C" name="Carbs" value={eaten.carb} target={targets.carb} color={C.macro.carbs} delayMs={70} valueMinWidth={52} />
+              <MacroBar label="F" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} valueMinWidth={52} />
+            </View>
           </View>
         </View>
 
@@ -672,6 +760,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.xl, height: 44 },
     back: { width: 32, height: 32, justifyContent: 'center', marginLeft: -8 },
     headerBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+    dayNavWrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
     dayNav: { flexDirection: 'row', alignItems: 'center', gap: 2 },
     dayArrow: { width: 28, height: 32, alignItems: 'center', justifyContent: 'center' },
     dayLabelBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 2, minWidth: 92, justifyContent: 'center' },
@@ -679,10 +768,21 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     streak: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 'auto' },
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
 
+    weekStrip: { flexDirection: 'row', paddingHorizontal: Spacing.xl, marginTop: Spacing.xs, gap: 4 },
+    weekDay: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 4 },
+    weekDayName: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: C.textMuted, letterSpacing: LetterSpacing.eyebrow },
+    weekDayRing: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+    weekDayNum: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+    weekDayNumSelected: { backgroundColor: C.foreground },
+    weekDayNumTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: C.textSecondary, fontVariant: ['tabular-nums'] },
+    weekDayNumTxtSelected: { color: C.background, fontWeight: FontWeight.bold },
+
     summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg, ...Shadow.card },
     goalBtn: { position: 'absolute', top: Spacing.sm, right: Spacing.sm, zIndex: 2, flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 6 },
     goalBtnTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase' },
-    macroRail: { marginTop: Spacing.lg, gap: 11 },
+    summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xxxl, marginTop: 0, paddingVertical: Spacing.xs },
+    macroRailSide: { flex: 1, gap: Spacing.md },
+    kcalLine: { fontSize: FontSize.xs, color: C.textMuted, fontVariant: ['tabular-nums'], marginBottom: 2 },
 
     drona: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     avatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
