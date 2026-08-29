@@ -772,8 +772,10 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     weekDay: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 4 },
     weekDayName: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: C.textMuted, letterSpacing: LetterSpacing.eyebrow },
     weekDayRing: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-    weekDayNum: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
-    weekDayNumSelected: { backgroundColor: C.foreground },
+    weekDayNum: { width: 26, height: 26, borderRadius: 13, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    // borderRadius repeated with the background: Android drops the radius when the
+    // background lands from a later style in the merged array, painting a square.
+    weekDayNumSelected: { backgroundColor: C.foreground, borderRadius: 13 },
     weekDayNumTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: C.textSecondary, fontVariant: ['tabular-nums'] },
     weekDayNumTxtSelected: { color: C.background, fontWeight: FontWeight.bold },
 
