@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
   RefreshControl, BackHandler, Pressable, TextInput, useWindowDimensions,
@@ -184,15 +184,65 @@ function StatMiniCard({
 }
 
 // ─── Exercise Dropdown ────────────────────────────────────────────────────────
+// The open list renders in the root <Portal>, anchored to the button's measured
+// window position — NOT as an absolutely-positioned child of the button. On
+// Android a child drawn outside its parent's bounds gets no touches at all, so
+// the old absolute panel swallowed nothing and every drag went to the page
+// ScrollView underneath (the list looked frozen). In the portal the list is a
+// top-level view, so its own ScrollView owns the gesture.
 function ExerciseDropdown({
   exercises, selected, onSelect,
 }: { exercises: string[]; selected: string; onSelect: (n: string) => void }) {
   const { C } = useTheme();
+  const { height: winH, width: winW } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const btnRef = useRef<View>(null);
+
+  const openList = useCallback(() => {
+    btnRef.current?.measureInWindow((x, y, w, h) => {
+      setAnchor({ x, y, w, h });
+      setOpen(true);
+    });
+  }, []);
+
+  // <Portal> has no onRequestClose, so wire the Android hardware back button.
+  useEffect(() => {
+    if (!open) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setOpen(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [open]);
+
+  // `anchor` is measured once, at open. If the window resizes underneath it
+  // (Android split-screen, a foldable unfolding, a resizable desktop window)
+  // the stored rect is stale and the list would float away from its button.
+  // The app is portrait-locked, so rotation can't cause this, but resize can.
+  // Close rather than re-measure: the button may have moved or been laid out
+  // off-screen entirely, and reopening re-measures for free.
+  useEffect(() => {
+    if (open) setOpen(false);
+    // Intentionally keyed on the window size alone. Including `open` would
+    // slam it shut on the same render that opened it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [winW, winH]);
+
+  // Flip above the button when there isn't room below it.
+  const gap = 4;
+  const spaceBelow = anchor ? winH - insets.bottom - (anchor.y + anchor.h) - gap : 0;
+  const spaceAbove = anchor ? anchor.y - insets.top - gap : 0;
+  const dropUp = anchor != null && spaceBelow < 160 && spaceAbove > spaceBelow;
+  const listMaxH = Math.min(280, Math.max(0, dropUp ? spaceAbove : spaceBelow));
+
   return (
-    <View style={styles.dropdownWrap}>
+    // The ref lives on the wrapper View, not the TouchableOpacity: only a host
+    // view is guaranteed to expose measureInWindow.
+    <View ref={btnRef} style={styles.dropdownWrap} collapsable={false}>
       <TouchableOpacity
-        onPress={() => setOpen((v) => !v)}
+        onPress={() => (open ? setOpen(false) : openList())}
         style={[styles.dropdownBtn, { backgroundColor: C.muted, borderColor: C.border }]}
       >
         <Text style={[styles.dropdownText, { color: C.foreground }]} numberOfLines={1}>
@@ -200,28 +250,54 @@ function ExerciseDropdown({
         </Text>
         <Feather name={open ? 'chevron-up' : 'chevron-down'} size={14} color={C.textMuted} />
       </TouchableOpacity>
-      {open && (
-        <View style={[styles.dropdownList, { backgroundColor: C.elevated, borderColor: C.border }, Shadow.elevated]}>
-          {exercises.length === 0 ? (
-            <Text style={[styles.dropdownEmpty, { color: C.textMuted }]}>No exercises found</Text>
-          ) : (
-            <ScrollView style={{ maxHeight: 200 }}>
-              {exercises.map((ex) => (
-                <TouchableOpacity
-                  key={ex}
-                  onPress={() => { onSelect(ex); setOpen(false); }}
-                  style={[styles.dropdownItem, { borderBottomColor: C.border }, ex === selected && { backgroundColor: C.primarySubtle }]}
-                >
-                  <Text style={[styles.dropdownItemText, { color: ex === selected ? C.accentText : C.foreground, fontWeight: ex === selected ? FontWeight.semibold : FontWeight.regular }]}>
-                    {ex}
-                  </Text>
-                  {ex === selected && <Feather name="check" size={14} color={C.accentText} />}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
-        </View>
-      )}
+
+      <Portal>
+        {open && anchor && (
+          <>
+            {/* Tap-outside backdrop. Transparent, but it must catch the touch
+                so a tap elsewhere closes the list instead of hitting the page. */}
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setOpen(false)}
+            />
+            <View
+              style={[
+                styles.dropdownList,
+                {
+                  backgroundColor: C.elevated,
+                  borderColor: C.border,
+                  left: Math.max(Spacing.md, Math.min(anchor.x, winW - anchor.w - Spacing.md)),
+                  width: anchor.w,
+                  maxHeight: listMaxH,
+                  ...(dropUp
+                    ? { bottom: winH - anchor.y + gap }
+                    : { top: anchor.y + anchor.h + gap }),
+                },
+                Shadow.elevated,
+              ]}
+            >
+              {exercises.length === 0 ? (
+                <Text style={[styles.dropdownEmpty, { color: C.textMuted }]}>No exercises found</Text>
+              ) : (
+                <ScrollView nestedScrollEnabled bounces={false}>
+                  {exercises.map((ex) => (
+                    <TouchableOpacity
+                      key={ex}
+                      onPress={() => { onSelect(ex); setOpen(false); }}
+                      style={[styles.dropdownItem, { borderBottomColor: C.border }, ex === selected && { backgroundColor: C.primarySubtle }]}
+                    >
+                      <Text style={[styles.dropdownItemText, { color: ex === selected ? C.accentText : C.foreground, fontWeight: ex === selected ? FontWeight.semibold : FontWeight.regular }]}>
+                        {ex}
+                      </Text>
+                      {ex === selected && <Feather name="check" size={14} color={C.accentText} />}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          </>
+        )}
+      </Portal>
     </View>
   );
 }
@@ -950,7 +1026,7 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
 
           {dropdownOpen && (
             <View style={[styles.mDropdownPanel, { backgroundColor: C.muted, borderColor: C.borderSubtle }]}>
-              <ScrollView style={{ maxHeight: 240 }} showsVerticalScrollIndicator={false}>
+              <ScrollView style={{ maxHeight: 240 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
                 {MEASUREMENT_GROUPS.map((group) => {
                   const fields = MEASUREMENT_FIELDS.filter((f) => f.group === group && latestValues[f.key]);
                   if (fields.length === 0) return null;
@@ -1661,7 +1737,7 @@ export default function AnalyticsScreen() {
                   )}
                 </View>
 
-                <View style={{ marginTop: Spacing.md, marginBottom: Spacing.md, zIndex: 100 }}>
+                <View style={{ marginTop: Spacing.md, marginBottom: Spacing.md }}>
                   <ExerciseDropdown
                     exercises={allExerciseNames}
                     selected={selectedExercise}
@@ -1926,7 +2002,7 @@ const styles = StyleSheet.create({
   showHistoryText: { fontSize: 10, fontWeight: FontWeight.semibold },
 
   // Exercise Progress
-  dropdownWrap: { position: 'relative', zIndex: 100 },
+  dropdownWrap: { position: 'relative' },
   dropdownBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1938,13 +2014,12 @@ const styles = StyleSheet.create({
   },
   dropdownText: { fontSize: FontSize.sm, flex: 1 },
   dropdownList: {
+    // Positioned by ExerciseDropdown from the button's measured window rect
+    // (top/bottom/left/width are set inline); this holds the look only.
     position: 'absolute',
-    top: 46,
-    left: 0, right: 0,
     borderRadius: Radius.lg,
     borderWidth: 1,
     overflow: 'hidden',
-    zIndex: 200,
   },
   dropdownEmpty: { padding: Spacing.lg, textAlign: 'center', fontSize: FontSize.sm },
   dropdownItem: {
