@@ -42,6 +42,8 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-24 | 86/86 | + I13 frequency-ranked staples |
 | 2026-08-24 | 83/86 | + I1 changed-only correction resolve |
 | 2026-08-28 | **84/87** | **FAST MODE** (`FAST_MODE=on`) — one fused call, no decide |
+| 2026-08-29 | **86/88** | + fast piece counts (count reaches the grams); API/Haiku |
+| 2026-08-29 | **8/10 subset** | + prompt de-overfitted, 3 held-out probes added; both failures are the pack-portion serving bug, not the prompt |
 
 ### Fast mode measures as accurate as the full pipeline, and much cheaper
 
@@ -66,6 +68,47 @@ Remaining fast failures are known and not fast-specific: `chole-bhature`
 (composite dish the model splits differently run to run), `audit-multi-meal-day`
 and `audit-range-quantity` (both I8 gates, expected to fail until multi-meal
 lands).
+
+### Run cases in parallel
+
+`EVAL_CONCURRENCY=6` runs six cases at a time; an ~11 minute serial run finishes
+in ~2. Verdicts print in COMPLETION order, not corpus order, so read the case id
+rather than the position. Per-case latency stays valid, but `avg latency` from a
+parallel run is not comparable to a serial baseline - the cases are competing
+for the same API.
+
+Pair it with `EVAL_VIA_CLI=1` for a correctness sweep on the subscription
+instead of the API key. The CLI shim is NOT the production path: it occasionally
+returns prose instead of JSON, which shows up as `anthropic_502: no JSON in CLI
+reply` on the decline cases. Judge declines from an API run.
+
+### The prompt must not be tuned on this corpus
+
+`FAST_EXTRACT_RULES` once named these cases' own inputs and quoted their
+observed failure values back at the model ("4 marie biscuits is ~20 g and never
+44"). Those cases then passed by recall and measured nothing.
+
+Removing it entirely was measured too, and does NOT work: held out, a shape-only
+prompt sizes nuts correctly (6 cashews at 9 g) but returns 60 g for four thin
+biscuits and 82 g for two cream ones - worse than before the fix, and it fails
+the same way on Monaco, which no prompt has ever named. The model's prior for
+"a biscuit" is roughly a small pack.
+
+So the prompt carries the RULE plus one line of category reference data, and
+`probe-count-monaco` / `probe-count-cashews` / `probe-count-rusk` use foods no
+prompt names. If a prompt edit passes the biscuit cases but fails the probes, it
+taught the answers instead of the rule.
+
+### Known failure: a catalog serving that is a PACK portion
+
+`probe-count-monaco` and `probe-count-rusk` fail today, and not on the prompt.
+OFF's `serving_size` is the manufacturer's suggested serving, which for biscuits
+is several pieces: `Parle Monaco Classic Biscuits` carries `1 serving (14.4 g)`
+(~3 crackers) and `Britannia Marie Gold` carries `1 serving (15 g)` (~3
+biscuits). A piece count then multiplies THAT, so "3 monaco biscuits" logs 43.2
+g. `isBasisServing` cannot catch it: these are real named portions, not a
+per-100 basis in disguise. Fixing it needs the serving's piece count read out of
+the label, or a per-piece anchor preferred over a pack one.
 
 ### DEBUG_STEPS=1 prints the pick for a failing case
 

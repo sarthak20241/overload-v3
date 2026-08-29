@@ -347,6 +347,47 @@ export const CASES: EvalCase[] = [
       items: [{ nameIncludes: "marie", gramsBetween: [12, 32] }],
     },
   },
+  // ── Piece-count PROBES: foods no prompt names ───────────────────────────
+  // The fast prompt deliberately carries no per-food weights (see
+  // FAST_EXTRACT_RULES). These three exist to keep that honest: none of them
+  // appears in any prompt, so they measure whether the model can apply
+  // "find one piece, multiply by the count" to a food it was never handed.
+  // If a future prompt edit passes the biscuit cases but fails these, that
+  // edit taught the answers instead of the rule.
+  {
+    id: "probe-count-monaco",
+    text: "3 monaco biscuits",
+    hour: 17,
+    // A Monaco is ~4.4 g, so three are ~13 g. Ceiling is 8 g a cracker.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "monaco", nameIncludesAny: ["biscuit", "cracker"], gramsBetween: [8, 24] }],
+    },
+  },
+  {
+    id: "probe-count-cashews",
+    text: "6 cashews",
+    hour: 16,
+    // A cashew is ~1.5 g, so six are ~9 g.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "cashew", gramsBetween: [5, 16] }],
+    },
+  },
+  {
+    id: "probe-count-rusk",
+    text: "2 rusk with tea",
+    hour: 8,
+    // A rusk is ~11 g, so two are ~22 g. Paired with tea so the case also
+    // covers a count sitting next to a household measure.
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "rusk", nameIncludesAny: ["toast"], gramsBetween: [12, 34] },
+        { nameIncludes: "chai", nameIncludesAny: ["tea"] },
+      ],
+    },
+  },
   {
     // The 2026-08-28 production trace, verbatim. Both rows carry only a "100 g"
     // basis serving, so this is the exact input that logged 200 g / 966 kcal
