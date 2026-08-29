@@ -103,6 +103,7 @@
         }
       ],
       "./plugins/withoutApsEnvironment",
+      "./plugins/withMedia3Pin",
       [
         "expo-image-picker",
         {
