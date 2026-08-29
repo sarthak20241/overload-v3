@@ -128,7 +128,7 @@ export default function NutritionScreen() {
   const weekStartIso = ymd(weekStart);
   const weekDays = Array.from({ length: 7 }, (_, i) =>
     new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
-  const { byMeal, totals, reload } = useDayNutrition(viewIso);
+  const { byMeal, totals, totalsDayIso, reload } = useDayNutrition(viewIso);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
@@ -187,9 +187,14 @@ export default function NutritionScreen() {
     })();
     return () => { alive = false; };
   }, [supabase, weekStartIso]);
+  // Keyed on totalsDayIso, NOT viewIso: on a day switch viewIso updates a render
+  // before the refetch lands, so keying on viewIso would stamp the previous
+  // day's kcal onto the newly selected day's ring until the fetch resolved.
   useEffect(() => {
-    setWeekKcal((prev) => (prev[viewIso] === totals.kcal ? prev : { ...prev, [viewIso]: totals.kcal }));
-  }, [viewIso, totals.kcal]);
+    setWeekKcal((prev) => (
+      prev[totalsDayIso] === totals.kcal ? prev : { ...prev, [totalsDayIso]: totals.kcal }
+    ));
+  }, [totalsDayIso, totals.kcal]);
 
   // Step the diary a day back/forward; never past today.
   const stepDay = useCallback((delta: number) => {

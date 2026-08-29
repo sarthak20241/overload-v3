@@ -63,6 +63,10 @@ export interface DayTotals { kcal: number; protein_g: number; carb_g: number; fa
 export interface DayData {
   byMeal: Record<MealType, LoggedEntry[]>;
   totals: DayTotals;
+  /** The day `byMeal`/`totals` actually describe. Lags `dayIso` by a render on a
+   *  day switch (state carries the previous day until the refetch lands), so
+   *  callers that mirror totals elsewhere must key off THIS, not their own iso. */
+  totalsDayIso: string;
   loading: boolean;
   reload: () => void;
 }
@@ -136,8 +140,16 @@ export function useDayNutrition(dayIso: string): DayData {
     ? _navCache.byMeal
     : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
+  // The day `byMeal` belongs to. Seeded state is today's; every setByMeal below
+  // is followed by stamping the day it was fetched for.
+  const [totalsDayIso, setTotalsDayIso] = useState<string>(dayIso);
   const [loading, setLoading] = useState(!seed);
   const [tick, setTick] = useState(0);
+  // Every byMeal write goes through here so totalsDayIso can never drift from it.
+  const setByMealForDay = useCallback((next: Record<MealType, LoggedEntry[]>, forDay: string) => {
+    setByMeal(next);
+    setTotalsDayIso(forDay);
+  }, []);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
@@ -153,7 +165,7 @@ export function useDayNutrition(dayIso: string): DayData {
         // entry block this user's disk restore.
         if (disk && disk.key === key && (!_navCache || _navCache.key !== key)) {
           _navCache = disk;
-          setByMeal(disk.byMeal);
+          setByMealForDay(disk.byMeal, dayIso);
           setLoading(false);
         }
       }
@@ -178,7 +190,7 @@ export function useDayNutrition(dayIso: string): DayData {
           _navCache = { key, byMeal: empty };
           writeCache<DayCache>('dayNutrition', user?.id, _navCache);
         }
-        setByMeal(empty); setLoading(false); return;
+        setByMealForDay(empty, dayIso); setLoading(false); return;
       }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
       const { data: entries, error: entriesErr } = await supabase
@@ -205,7 +217,7 @@ export function useDayNutrition(dayIso: string): DayData {
         _navCache = { key, byMeal: grouped };
         writeCache<DayCache>('dayNutrition', user?.id, _navCache);
       }
-      setByMeal(grouped);
+      setByMealForDay(grouped, dayIso);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -232,7 +244,7 @@ export function useDayNutrition(dayIso: string): DayData {
     return t;
   }, [byMeal]);
 
-  return { byMeal, totals, loading, reload };
+  return { byMeal, totals, totalsDayIso, loading, reload };
 }
 
 /** Today's diary — the dashboard + default diet view. Thin wrapper so existing
