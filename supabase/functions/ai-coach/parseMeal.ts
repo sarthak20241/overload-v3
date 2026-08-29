@@ -643,6 +643,11 @@ export interface ParseMealInput {
    *  no decide. Honoured only on a first-shot log; with a meal on screen the
    *  turn may be a correction and falls through to the full pipeline. */
   mode?: "fast" | null;
+  /** EXPERIMENT KNOB (fast mode only): skip the catalog resolve entirely, so
+   *  every line ships the model's own estimate. Exists to measure what the
+   *  catalog step actually costs end to end now that the function runs next to
+   *  the DB; not exposed anywhere in product UI. */
+  noCatalog?: boolean;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
@@ -1662,25 +1667,36 @@ async function resolveOneItem(
   // second query is far cheaper than the wrong food.
   const multiWord = words.length > 1;
   const runCatalog = async (): Promise<CandidateFood[]> => {
-    const merged: CandidateFood[] = [];
-    const seenKeys = new Set<string>();
-    let successes = 0;
-    for (const q of queries.slice(0, 4)) {
-      if (successes >= (multiWord ? 2 : 1)) break;
+    // All ladder queries fire CONCURRENTLY; the ladder's preference order is
+    // applied to the results, not to the waiting. The serial version paid the
+    // SUM of the queries (measured 300-1400ms EACH against production - the
+    // "~30ms" note above was from another region), so a two-success ladder cost
+    // 0.7-2.5s. Concurrent, it costs the slowest single query. The trade is
+    // that we always run all four searches instead of stopping after two
+    // successes - a few extra ~30ms index hits now that the function runs next
+    // to the DB, spent to remove a serial wait.
+    //
+    // Success-counting semantics are unchanged: results merge in ladder order
+    // and only the first N successful queries contribute, so the candidate
+    // list is identical to what the serial loop produced.
+    const ladder = queries.slice(0, 4);
+    const settled = await Promise.all(ladder.map(async (q) => {
       toolCalls.push("search_foods");
-      let found: CandidateFood[] = [];
-      // The ladder is serial and can run four queries deep, so its cost is the
-      // SUM of these, not one search. The "~30ms" in the note above was never
-      // re-measured against production; record it per query so the claim can be
-      // checked instead of believed.
       const tq0 = Date.now();
+      let found: CandidateFood[] = [];
       try {
         found = (await deps.searchFoods(q)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
       }
-      const queryMs = Date.now() - tq0;
-      if (found.length > 0) {
+      return { q, found, ms: Date.now() - tq0 };
+    }));
+    const merged: CandidateFood[] = [];
+    const seenKeys = new Set<string>();
+    let successes = 0;
+    for (const { q, found, ms } of settled) {
+      const counted = successes < (multiWord ? 2 : 1);
+      if (found.length > 0 && counted) {
         successes++;
         for (const c of found) {
           const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
@@ -1693,7 +1709,7 @@ async function resolveOneItem(
       steps.push({
         iter: 1,
         tool: "search_foods",
-        input: { query: q, ms: queryMs },
+        input: { query: q, ms },
         result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
       });
     }
@@ -3368,10 +3384,17 @@ export async function runParseMeal(
     });
   }
 
-  const resolved = await Promise.all(
-    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
-  );
+  // Experiment knob: estimate-only fast mode. No candidates means the accept
+  // gate has nothing to accept, so every line falls through to the model's own
+  // estimate - which is the point: it isolates what the catalog step costs.
+  const skipResolve = fastMode && input.noCatalog === true;
+  const resolved: ResolvedItem[] = skipResolve
+    ? toResolve.map((item) => ({ ...item, candidates: [] }))
+    : await Promise.all(
+      toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
+    );
   T.resolve_ms = Date.now() - tResolve0;
+  if (skipResolve) T.no_catalog = 1;
   const tDecide0 = Date.now();
 
   // ── Stage 3: decide ───────────────────────────────────────────────────────

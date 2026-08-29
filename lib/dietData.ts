@@ -593,7 +593,9 @@ export interface StreamedItem {
  */
 export async function parseMealStreaming(
   supabase: Supa,
-  args: Parameters<typeof parseMeal>[1],
+  // `noCatalog` is the sse-probe's A/B knob (estimate-only vs full fast) and is
+  // not set anywhere in product code.
+  args: Parameters<typeof parseMeal>[1] & { noCatalog?: boolean },
   onItems: (items: StreamedItem[]) => void,
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -634,6 +636,7 @@ export async function parseMealStreaming(
         // made streaming unreachable, since `mode` is always 'parse_meal' here.
         speed: 'fast',
         stream: true,
+        ...(args.noCatalog ? { no_catalog: true } : {}),
         text,
         local_hour: now.getHours(),
         local_date: localDate,

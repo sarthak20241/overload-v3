@@ -1825,6 +1825,9 @@ async function handleParseMealRequest(args: {
               localHour,
               mealHint,
               mode: "fast",
+              // Experiment knob, see ParseMealInput.noCatalog. Client-sent and
+              // harmless: it only ever narrows work, never widens it.
+              noCatalog: body.no_catalog === true,
               recentFoods: [],
               todayTotals: null,
               targets: null,

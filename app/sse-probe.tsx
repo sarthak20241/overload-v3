@@ -33,26 +33,40 @@ export default function SseProbe() {
     setRows(null);
     setMeal(null);
     setRunning(true);
-    const t0 = Date.now();
     const log = (s: string) => setLines((p) => [...p, s]);
-    try {
-      const res = await parseMealStreaming(
-        supabase,
-        { text: PHRASE, mealHint: 'breakfast', turns: [] },
-        (items: StreamedItem[]) => {
-          setRows(items);
-          log(`+${Date.now() - t0}ms rows=${items.length} ${items.map((i) => `${i.name} ${i.est_kcal ?? '~'}kcal ${i.est_protein_g ?? '~'}P ${i.est_carb_g ?? '~'}C ${i.est_fat_g ?? '~'}F`).join(' | ')}`);
-        },
-      );
-      log(`+${Date.now() - t0}ms FINAL kind=${res.kind}`);
-      if (res.kind === 'parsed') {
-        setMeal(res.meal);
-        log(res.meal.items.map((i) => `${i.food_name} ${i.kcal}kcal [${i.source}] ${i.confidence}`).join('\n'));
-      } else {
-        log(JSON.stringify(res).slice(0, 300));
+
+    // A/B: scenario A is estimate-only (no catalog resolve at all), scenario B
+    // is the full fast path. Run back to back on the same warm isolate so the
+    // pair shares network weather; A first so B's searches cannot warm caches
+    // for it.
+    const scenario = async (label: string, noCatalog: boolean) => {
+      const t0 = Date.now();
+      let rowsAt = 0;
+      try {
+        const res = await parseMealStreaming(
+          supabase,
+          { text: PHRASE, mealHint: 'breakfast', turns: [], noCatalog },
+          (items: StreamedItem[]) => {
+            rowsAt = Date.now() - t0;
+            setRows(items);
+          },
+        );
+        const total = Date.now() - t0;
+        if (res.kind === 'parsed') {
+          setMeal(res.meal);
+          log(`${label}: rows +${rowsAt}ms, final +${total}ms`);
+          log(res.meal.items.map((i) => `  ${i.food_name} ${i.kcal}kcal [${i.source}] ${i.confidence}`).join('\n'));
+        } else {
+          log(`${label}: +${total}ms ${JSON.stringify(res).slice(0, 160)}`);
+        }
+      } catch (e) {
+        log(`${label} ERROR ${String(e).slice(0, 160)}`);
       }
-    } catch (e) {
-      log(`ERROR ${String(e).slice(0, 200)}`);
+    };
+
+    try {
+      await scenario('A est-only', true);
+      await scenario('B fast+catalog', false);
     } finally {
       setRunning(false);
     }
@@ -66,10 +80,10 @@ export default function SseProbe() {
         style={{ backgroundColor: running ? '#333' : '#c8ff00', padding: 14, borderRadius: 10 }}
       >
         <Text style={{ textAlign: 'center', fontWeight: '700', color: running ? '#888' : '#000' }}>
-          {/* v3 marker: three Metros share this simulator, and one stale-bundle
-              round already produced a false "region pin does not work". The
-              label is the proof of which bundle is live. */}
-          {running ? 'streaming…' : `RUN v3 "${PHRASE}"`}
+          {/* Version marker: several Metros share this simulator, and one
+              stale-bundle round already produced a false "region pin does not
+              work". The label is the proof of which bundle is live. */}
+          {running ? 'streaming…' : `A/B v4 "${PHRASE}"`}
         </Text>
       </Pressable>
 
