@@ -171,8 +171,9 @@ export default function NutritionScreen() {
   useEffect(() => { setLogDate(viewDate); }, [viewDate]);
   useFocusEffect(useCallback(() => { setLogDate(viewDate); }, [viewDate]));
 
-  // kcal per day for the strip's rings. Re-fetched when the visible week changes
-  // and when the viewed day's totals move (i.e. something was logged/edited).
+  // kcal per day for the strip's rings. The network fetch runs only when the
+  // visible week changes; a log/edit on the viewed day is patched in from the
+  // totals we already hold, so one day's change never re-queries all seven.
   const [weekKcal, setWeekKcal] = useState<Record<string, number>>({});
   useEffect(() => {
     let alive = true;
@@ -185,7 +186,10 @@ export default function NutritionScreen() {
       setWeekKcal(map);
     })();
     return () => { alive = false; };
-  }, [supabase, weekStartIso, totals.kcal]);
+  }, [supabase, weekStartIso]);
+  useEffect(() => {
+    setWeekKcal((prev) => (prev[viewIso] === totals.kcal ? prev : { ...prev, [viewIso]: totals.kcal }));
+  }, [viewIso, totals.kcal]);
 
   // Step the diary a day back/forward; never past today.
   const stepDay = useCallback((delta: number) => {
@@ -764,7 +768,6 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg, ...Shadow.card },
     goalBtn: { position: 'absolute', top: Spacing.sm, right: Spacing.sm, zIndex: 2, flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 6 },
     goalBtnTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase' },
-    macroRail: { marginTop: Spacing.lg, gap: 11 },
     summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xxxl, marginTop: 0, paddingVertical: Spacing.xs },
     macroRailSide: { flex: 1, gap: Spacing.md },
     kcalLine: { fontSize: FontSize.xs, color: C.textMuted, fontVariant: ['tabular-nums'], marginBottom: 2 },
