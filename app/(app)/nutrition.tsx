@@ -29,9 +29,10 @@ import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
+import Svg, { Circle } from 'react-native-svg';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal,
+  parseMeal, logParsedMeal, loadNutritionRange,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -119,6 +120,14 @@ export default function NutritionScreen() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const viewIso = ymd(viewDate);
   const isToday = viewIso === ymd(new Date());
+  // The strip shows the Sunday-start calendar week containing viewDate, so the
+  // columns (S M T W T F S) never shuffle — only the highlight moves. Jumping
+  // to another week via the calendar swaps the whole row in place.
+  const weekStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - viewDate.getDay());
+  const weekStartIso = ymd(weekStart);
+  const weekDays = Array.from({ length: 7 }, (_, i) =>
+    new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+  const todayIso = ymd(new Date());
   const { byMeal, totals, reload } = useDayNutrition(viewIso);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
@@ -161,6 +170,22 @@ export default function NutritionScreen() {
   // pushes food-search, silently reverting a past-day log back to today.
   useEffect(() => { setLogDate(viewDate); }, [viewDate]);
   useFocusEffect(useCallback(() => { setLogDate(viewDate); }, [viewDate]));
+
+  // kcal per day for the strip's rings. Re-fetched when the visible week changes
+  // and when the viewed day's totals move (i.e. something was logged/edited).
+  const [weekKcal, setWeekKcal] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [y, m, d] = weekStartIso.split('-').map(Number);
+      const rows = await loadNutritionRange(supabase, new Date(y, m - 1, d), 7);
+      if (!alive) return;
+      const map: Record<string, number> = {};
+      for (const r of rows) map[r.dayIso] = r.kcal;
+      setWeekKcal(map);
+    })();
+    return () => { alive = false; };
+  }, [supabase, weekStartIso, totals.kcal]);
 
   // Step the diary a day back/forward; never past today.
   const stepDay = useCallback((delta: number) => {
@@ -475,6 +500,51 @@ export default function NutritionScreen() {
           )}
         </View>
 
+        {/* Week strip — the calendar week around the viewed day; tap a bubble to
+            jump straight there. Each day wears a thin ring showing how much of
+            the calorie goal was eaten that day. Future days are dimmed/locked. */}
+        <View style={s.weekStrip}>
+          {weekDays.map((d) => {
+            const iso = ymd(d);
+            const selected = iso === viewIso;
+            const future = iso > todayIso;
+            const pct = Math.min((weekKcal[iso] ?? 0) / (targets.kcal || 1), 1);
+            const R = 16, CIRC = 2 * Math.PI * R;
+            return (
+              <Pressable
+                key={iso}
+                onPress={() => setViewDate(d)}
+                disabled={future}
+                style={[s.weekDay, future && { opacity: 0.35 }]}
+                accessibilityLabel={`Go to ${dayLabel(d)}`}
+              >
+                <Text style={[s.weekDayName, selected && { color: C.foreground }]}>
+                  {d.toLocaleDateString(undefined, { weekday: 'narrow' })}
+                </Text>
+                <View style={s.weekDayRing}>
+                  <Svg width={36} height={36} style={StyleSheet.absoluteFill}>
+                    <Circle cx={18} cy={18} r={R} stroke={C.borderSubtle} strokeWidth={2} fill="none" />
+                    {!future && pct > 0 && (
+                      <Circle
+                        cx={18} cy={18} r={R}
+                        stroke={C.macro.calories} strokeWidth={2} fill="none"
+                        strokeLinecap="round"
+                        strokeDasharray={`${pct * CIRC} ${CIRC}`}
+                        transform="rotate(-90 18 18)"
+                      />
+                    )}
+                  </Svg>
+                  <View style={[s.weekDayNum, selected && s.weekDayNumSelected]}>
+                    <Text style={[s.weekDayNumTxt, selected && s.weekDayNumTxtSelected]}>
+                      {d.getDate()}
+                    </Text>
+                  </View>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+
         {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue
             overshoot) and three macro bars carrying target + signed over. */}
         <View style={s.summary}>
@@ -681,6 +751,15 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     title: { fontSize: FontSize.xl, fontWeight: FontWeight.black, letterSpacing: LetterSpacing.tight, color: C.foreground },
     streak: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 'auto' },
     streakTxt: { fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'], fontWeight: FontWeight.semibold },
+
+    weekStrip: { flexDirection: 'row', paddingHorizontal: Spacing.xl, marginTop: Spacing.xs, gap: 4 },
+    weekDay: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 4 },
+    weekDayName: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: C.textMuted, letterSpacing: LetterSpacing.eyebrow },
+    weekDayRing: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+    weekDayNum: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+    weekDayNumSelected: { backgroundColor: C.foreground },
+    weekDayNumTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: C.textSecondary, fontVariant: ['tabular-nums'] },
+    weekDayNumTxtSelected: { color: C.background, fontWeight: FontWeight.bold },
 
     summary: { marginHorizontal: Spacing.xl, marginTop: Spacing.sm, backgroundColor: C.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.lg, ...Shadow.card },
     goalBtn: { position: 'absolute', top: Spacing.sm, right: Spacing.sm, zIndex: 2, flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 6 },

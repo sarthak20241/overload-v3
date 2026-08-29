@@ -249,6 +249,12 @@ export interface DayNutrition { dayIso: string; kcal: number; protein_g: number;
 export async function loadNutritionHistory(supabase: Supa | null, days = 14): Promise<DayNutrition[]> {
   const today = new Date();
   const startDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
+  return loadNutritionRange(supabase, startDate, days);
+}
+
+/** Per-day macro totals for `days` calendar days starting at `startDate`
+ *  (oldest → newest), zeros for unlogged days. Used by the diary week strip. */
+export async function loadNutritionRange(supabase: Supa | null, startDate: Date, days: number): Promise<DayNutrition[]> {
   // Empty per-day skeleton first, so gaps render as zeros in order.
   const out: DayNutrition[] = [];
   const idx = new Map<string, number>();
@@ -259,8 +265,9 @@ export async function loadNutritionHistory(supabase: Supa | null, days = 14): Pr
     out.push({ dayIso: iso, kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 });
   }
   if (!supabase) return out;
+  const lastDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + (days - 1));
   const { start } = dayRange(startDate);
-  const { end } = dayRange(today);
+  const { end } = dayRange(lastDate);
   const { data: meals } = await supabase
     .from('meals').select('id, logged_at')
     .gte('logged_at', start).lte('logged_at', end);
