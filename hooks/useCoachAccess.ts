@@ -268,9 +268,19 @@ export function useCoachAccess(): UseCoachAccessReturn {
 
   useEffect(() => {
     if (signedOut) {
-      // Not cached at module scope on purpose: this is derived from Clerk, is
-      // free to recompute, and writing it would let a signed-out answer be
-      // handed to the next mount after a sign-in that Clerk hasn't reported yet.
+      // Drop whoever was signed in before. This early return replaces the
+      // `cachedAccess = null` below, which used to run on every auth change —
+      // without it a sign-out leaves the previous user's entitlement in the
+      // module cache, and signing back in as that same user short-circuits
+      // straight onto it with no RPC. A trial that expired while they were
+      // signed out would keep rendering as 'trialing' for the rest of the
+      // foreground session (nothing calls invalidateCoachAccess on sign-out,
+      // and AICoachModal never unmounts).
+      cachedAccess = null;
+      // SIGNED_OUT itself is deliberately NOT written to the cache: it is
+      // derived from Clerk and free to recompute, and storing it would let a
+      // signed-out answer be handed to the next mount after a sign-in that
+      // Clerk hasn't reported yet.
       setAccess(SIGNED_OUT);
       setLoading(false);
       return;
@@ -354,14 +364,19 @@ export function useCoachAccess(): UseCoachAccessReturn {
     // only fetch (they never notify), so there is no feedback loop, and the
     // await below joins the fetch the notify just started rather than adding
     // a second RPC.
-    invalidateCoachAccess();
-    // Retry from a guest is answered locally, not over the wire — otherwise the
-    // sign-in card's own refresh path would fail and could be misread as an
-    // outage all over again.
+    //
+    // The guest check comes FIRST, before the invalidation. A guest is answered
+    // locally, not over the wire — otherwise the sign-in card's own refresh
+    // path would fail and could be misread as an outage all over again — and
+    // since nothing is fetched there is nothing to invalidate. AICoachModal
+    // calls refresh() every time the sheet opens, so leaving the bump above
+    // this return made every guest open of Coach Drona churn the generation
+    // counter and notify every listener for no reason.
     if (signedOut) {
       setAccess(SIGNED_OUT);
       return;
     }
+    invalidateCoachAccess();
     const next = await fetchCoachAccess(supabaseRef.current, userId);
     if (next) setAccess(next);
   }, [userId, signedOut]);
