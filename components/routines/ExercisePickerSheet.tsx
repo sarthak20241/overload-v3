@@ -29,7 +29,6 @@ import { saveLocalCustomExercise, type CachedExercise } from '@/lib/exerciseReso
 import { useExerciseNotes } from '@/hooks/useExerciseNotes';
 import { MuscleGroupPicker } from '@/components/exercises/MuscleGroupPicker';
 
-
 // Generous ceiling on per-exercise set targets (10x10 GVT still fits).
 const MAX_CUSTOM_SETS = 20;
 

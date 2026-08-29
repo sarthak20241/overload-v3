@@ -37,8 +37,9 @@ function familyOf(value: string): string {
 export function MuscleGroupPicker({ value, onChange }: Props) {
   const { C } = useTheme();
 
-  // The open family survives head-hopping (Triceps -> Forearms keeps the
-  // Triceps row open even though Forearms also lives under Biceps).
+  // The open family survives head-hopping between shared heads (Glutes ->
+  // Adductors keeps the Glutes row open even though Adductors also lives
+  // under Quads and Hamstrings, whose row muscleParentOf would pick).
   const [family, setFamily] = useState(() => familyOf(value));
 
   // The edit sheet swaps `value` without remounting us (Portal keeps the

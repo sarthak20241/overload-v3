@@ -45,8 +45,6 @@ import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
 
-// Same extended tag set the picker's custom form offers.
-
 interface DbExercise {
   id: string;
   name: string;
