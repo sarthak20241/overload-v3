@@ -552,17 +552,17 @@ export default function NutritionScreen() {
             <Feather name="sliders" size={12} color={isCustom ? C.textDim : C.accentText} />
             <Text style={[s.goalBtnTxt, { color: isCustom ? C.textDim : C.accentText }]}>{isCustom ? 'Goal' : 'Set goal'}</Text>
           </Pressable>
-          <View style={{ alignItems: 'center' }}>
+          <View style={s.summaryRow}>
             <MacroRing
               value={eaten.kcal} target={targets.kcal} color={C.macro.calories} valueColor={C.macro.calories}
-              display="remaining" overshoot name="Calories" size={132} thickness={13} centerFontSize={32}
-              belowCaption={calCaption(eaten.kcal, targets.kcal)}
+              display="remaining" overshoot name="Calories" size={116} thickness={11} centerFontSize={26}
             />
-          </View>
-          <View style={s.macroRail}>
-            <MacroBar verbose label="Protein" name="Protein" value={eaten.protein} target={targets.protein} color={C.macro.protein} delayMs={0} />
-            <MacroBar verbose label="Carbs" name="Carbs" value={eaten.carb} target={targets.carb} color={C.macro.carbs} delayMs={70} />
-            <MacroBar verbose label="Fat" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} />
+            <View style={s.macroRailSide}>
+              <Text style={s.kcalLine}>{calCaption(eaten.kcal, targets.kcal)}</Text>
+              <MacroBar label="P" name="Protein" value={eaten.protein} target={targets.protein} color={C.macro.protein} delayMs={0} valueMinWidth={52} />
+              <MacroBar label="C" name="Carbs" value={eaten.carb} target={targets.carb} color={C.macro.carbs} delayMs={70} valueMinWidth={52} />
+              <MacroBar label="F" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} valueMinWidth={52} />
+            </View>
           </View>
         </View>
 
@@ -765,6 +765,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     goalBtn: { position: 'absolute', top: Spacing.sm, right: Spacing.sm, zIndex: 2, flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 6 },
     goalBtnTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase' },
     macroRail: { marginTop: Spacing.lg, gap: 11 },
+    summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xxxl, marginTop: 0, paddingVertical: Spacing.xs },
+    macroRailSide: { flex: 1, gap: Spacing.md },
+    kcalLine: { fontSize: FontSize.xs, color: C.textMuted, fontVariant: ['tabular-nums'], marginBottom: 2 },
 
     drona: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     avatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle, alignItems: 'center', justifyContent: 'center', marginTop: 1 },

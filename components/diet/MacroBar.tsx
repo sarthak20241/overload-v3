@@ -26,13 +26,14 @@ interface Props {
   target: number;       // gram goal
   color: string;        // macro hue (pass from C.macro)
   verbose?: boolean;    // diary = true (roomy), dashboard = false (compact)
+  valueMinWidth?: number; // reserved width for the value column (compact default 76)
   animate?: boolean;
   delayMs?: number;     // entrance stagger
 }
 
 const r = (n: number) => Math.round(n);
 
-export function MacroBar({ label, name, value, target, color, verbose = false, animate = true, delayMs = 0 }: Props) {
+export function MacroBar({ label, name, value, target, color, verbose = false, animate = true, delayMs = 0, valueMinWidth }: Props) {
   const { C } = useTheme();
   const reduced = useReducedMotion();
   const [trackW, setTrackW] = useState(0);
@@ -91,7 +92,7 @@ export function MacroBar({ label, name, value, target, color, verbose = false, a
         <Animated.View style={[s.fill, baseStyle, { backgroundColor: color, height: trackH, borderRadius: trackH / 2 }]} />
         {over && <Animated.View style={[s.fill, overStyle, { backgroundColor: overColor, height: trackH, borderRadius: trackH / 2 }]} />}
       </View>
-      <Text style={[verbose ? s.valueVerbose : s.valueCompact]} numberOfLines={1}>
+      <Text style={[verbose ? s.valueVerbose : s.valueCompact, valueMinWidth != null && { minWidth: valueMinWidth }]} numberOfLines={1}>
         <Text style={{ color, fontWeight: FontWeight.bold }}>{r(value)}</Text>
         <Text style={{ color: C.textMuted }}>{verbose ? ` / ${r(target)} g` : `/${r(target)}`}</Text>
         {over && <Text style={{ color, fontWeight: FontWeight.semibold }}>{verbose ? ` · +${r(value - target)} over` : ` +${r(value - target)}`}</Text>}
