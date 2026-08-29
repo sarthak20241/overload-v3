@@ -119,7 +119,8 @@ export default function NutritionScreen() {
   const [viewDate, setViewDate] = useState<Date>(() => new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const viewIso = ymd(viewDate);
-  const isToday = viewIso === ymd(new Date());
+  const todayIso = ymd(new Date());
+  const isToday = viewIso === todayIso;
   // The strip shows the Sunday-start calendar week containing viewDate, so the
   // columns (S M T W T F S) never shuffle — only the highlight moves. Jumping
   // to another week via the calendar swaps the whole row in place.
@@ -127,7 +128,6 @@ export default function NutritionScreen() {
   const weekStartIso = ymd(weekStart);
   const weekDays = Array.from({ length: 7 }, (_, i) =>
     new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
-  const todayIso = ymd(new Date());
   const { byMeal, totals, reload } = useDayNutrition(viewIso);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
