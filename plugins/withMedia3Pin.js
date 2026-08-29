@@ -56,8 +56,15 @@ ${END}`;
 function stripExisting(contents) {
   const from = contents.indexOf(START);
   if (from === -1) return contents;
-  const to = contents.indexOf(END);
-  if (to === -1) return contents;
+  // Search for END *after* START. Scanning from 0 would match a stray END left
+  // by a partial hand-edit of the generated file and splice out the wrong span.
+  const to = contents.indexOf(END, from);
+  if (to === -1) {
+    throw new Error(
+      `withMedia3Pin found "${START}" in android/build.gradle with no matching "${END}"; ` +
+        'refusing to rewrite a half-written block. Delete android/ and prebuild again.'
+    );
+  }
   return contents.slice(0, from) + contents.slice(to + END.length);
 }
 
