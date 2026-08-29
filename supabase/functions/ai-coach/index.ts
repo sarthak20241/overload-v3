@@ -1316,6 +1316,9 @@ async function searchCatalogWithServings(
   admin: SupabaseClient,
   userId: string,
   query: string,
+  /** Trigram only - skip the semantic leg and the Voyage embed call in front
+   *  of it. Fast mode's flag; see ParseMealDeps.searchFoods for the numbers. */
+  lean = false,
 ): Promise<CandidateFood[]> {
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
@@ -1348,13 +1351,21 @@ async function searchCatalogWithServings(
   // time is max(trigram, embed+semantic), not the sum, and the p_floor=0.50 on
   // the RPC keeps semantic from returning junk near-neighbours - so a genuine
   // catalog miss still returns nothing here and falls through to OFF.
+  // Lean uses the LIKE-only RPC (0111): explain(analyze) put the ranked
+  // function's `<%` word-similarity path at ~942ms of pure CPU for 'milk',
+  // against 29ms for the LIKE tiers on the same index. Fast mode's accept gate
+  // re-judges candidates in code anyway, so the fuzzy ranking bought nothing
+  // there. Smart keeps the ranked function - decide reads its ordering.
   const [trigram, semantic] = await Promise.all([
-    userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 })
+    userClient.rpc(
+      lean ? "search_foods_fast_with_servings" : "search_foods_ranked_with_servings",
+      { q: query, lim: 8 },
+    )
       .then((res: { data: unknown; error: { message: string } | null }) => {
         if (res.error) console.log("[parse_meal] trigram search error:", res.error.message);
         return (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>;
       }),
-    embedQuery(query, admin, userId).then(async (vec) => {
+    lean ? Promise.resolve([] as Array<Record<string, unknown>>) : embedQuery(query, admin, userId).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data, error } = await userClient.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -1545,7 +1556,7 @@ function makeParseDeps(
     maxTokens: PARSE_MEAL_MAX_TOKENS,
     timeoutMs: ANTHROPIC_TIMEOUT_MS,
     webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
-    searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
+    searchFoods: (q, lean) => searchCatalogWithServings(userClient, admin, userId, q, lean),
     backfillOffFood: (p) => backfillOffFoodRow(admin, p),
     // Only present when configured, so an unconfigured deploy simply never
     // calls FatSecret and the meal resolves from catalog + OFF as before.
@@ -2249,6 +2260,16 @@ async function handleAnonOnboardingPlan(args: {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS_HEADERS });
+  }
+
+  // Keep-warm ping (pg_cron, every 4 min). Cold isolates were adding 1-2s to
+  // the first parse someone pays for; a scheduled no-op keeps one resident.
+  // Deliberately BEFORE auth and before the admin client: the point is to boot
+  // the isolate, not to do work, and a ping must never touch the DB or logs.
+  if (new URL(req.url).searchParams.get("warm") === "1") {
+    return new Response(JSON.stringify({ ok: true, warm: true }), {
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    });
   }
 
   const startedAtMs = Date.now();

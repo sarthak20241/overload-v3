@@ -724,7 +724,13 @@ export interface ParseMealDeps {
    *  so its agreement with extract can be measured on real traffic first. */
   fastGrammarMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
-  searchFoods(query: string): Promise<CandidateFood[]>;
+  // `lean` = trigram only, skip the semantic leg. The semantic leg embeds the
+  // query via an EXTERNAL Voyage API call first, which is ~1s and rate-limited,
+  // so a ladder of concurrent searches queues there - measured: every query in
+  // a batch reporting near-identical 0.8-1.6s wall times while the co-located
+  // trigram RPC costs ~30ms. Fast mode passes lean=true; synonym-bridging is
+  // decide's concern, and fast has no decide.
+  searchFoods(query: string, lean?: boolean): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
   // Returns the new (or pre-existing) food id, or null on failure/dry-run.
   backfillOffFood(food: OffProduct): Promise<string | null>;
@@ -1685,7 +1691,7 @@ async function resolveOneItem(
       const tq0 = Date.now();
       let found: CandidateFood[] = [];
       try {
-        found = (await deps.searchFoods(q)).slice(0, 6);
+        found = (await deps.searchFoods(q, lean)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
       }
