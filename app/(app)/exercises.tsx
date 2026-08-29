@@ -37,15 +37,13 @@ import { mergeLocalCustoms } from '@/lib/exerciseResolve';
 import { getGuestExercises, updateGuestExercise, removeGuestExercise } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
 import { EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, METRIC_TYPES, metricTypeOf, metricTypeDef, DEFAULT_METRIC_TYPE } from '@/lib/exercises';
+import { MuscleGroupPicker } from '@/components/exercises/MuscleGroupPicker';
 import type { MetricType } from '@/lib/exercises';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useToast } from '@/components/ui/Toast';
-
-// Same extended tag set the picker's custom form offers.
-const CUSTOM_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Cardio', 'Other'] as const;
 
 interface DbExercise {
   id: string;
@@ -612,23 +610,7 @@ export default function ExerciseLibraryScreen() {
                   />
 
                   <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
-                  <View style={styles.chipRow}>
-                    {CUSTOM_MUSCLE_GROUPS.map(mg => {
-                      const active = editMuscle === mg;
-                      return (
-                        <TouchableOpacity
-                          key={mg}
-                          onPress={() => setEditMuscle(mg)}
-                          style={[styles.chip, {
-                            backgroundColor: active ? Colors.primary : C.muted,
-                            borderColor: active ? Colors.primary : C.border,
-                          }]}
-                        >
-                          <Text style={[styles.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mg}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  <MuscleGroupPicker value={editMuscle} onChange={setEditMuscle} />
 
                   <Text style={[styles.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>CATEGORY</Text>
                   <View style={styles.chipRow}>
