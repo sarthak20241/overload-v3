@@ -1401,7 +1401,7 @@ const FAST_EXTRACT_TOOL = (() => {
     est_per100_fat_g: { type: "number", description: "Fat grams PER 100 g." },
     est_total_g: {
       type: "number",
-      description: 'TOTAL grams (or ml) for the WHOLE line, THE COUNT INCLUDED: "1 plate chole bhature" ~400, "2 rotis" ~80, "2 biscuits" ~15, "5 almonds" ~6. Multiply one piece by the count; never answer with one piece, and never with a whole packet.',
+      description: 'TOTAL grams (or ml) for the WHOLE line, with the count already multiplied in: "1 plate chole bhature" is ~400, "2 rotis" ~80. N pieces is N times the weight of one piece, never one piece and never the whole pack.',
     },
   });
   item.required = [
@@ -1434,20 +1434,38 @@ const EXTRACT_SHARED_RULES =
  * biscuits", roughly a packet, for both. On device "2 oreo biscuits" gave 56 g
  * against a true ~22 g.
  *
- * The piece weights are the ones buildDecideSystemPrompt already carries. They
- * were never wrong; they simply lived in the prompt for a call fast never
- * makes.
+ * WHAT BELONGS HERE, AND WHAT DOES NOT.
+ *
+ * An earlier version named the eval's own inputs and quoted its observed
+ * failure values back at the model ("4 marie biscuits is ~20 g and never 44",
+ * "100g soya chunks stays quantity 100"). That is teaching the test: those
+ * cases then pass by recall and stop measuring anything.
+ *
+ * Removing it entirely was measured too, and it does not work. Held out, the
+ * shape-only version ("small pieces are small, multiply by the count") sizes
+ * NUTS correctly - 6 cashews at 9 g, 5 almonds at 6 g - but not biscuits: it
+ * returned 60 g for four thin ones and 82 g for two cream ones, worse than
+ * before any of this. It failed the same way on Monaco, a biscuit no prompt
+ * has ever named, so the gap is real knowledge and not an eval artifact. The
+ * model's prior for "a biscuit" is roughly a small pack.
+ *
+ * So: the RULE is stated generically, and one line of genuine reference data
+ * covers the category the model cannot size. The named brands are India's
+ * best-selling biscuits and already appear in buildDecideSystemPrompt; they
+ * are domain constants, not answers copied off a scoreboard. Monaco, Oreo,
+ * rusks, cashews and dates stay deliberately UNNAMED so the probe cases in
+ * the eval keep testing generalisation rather than recall.
  */
 const FAST_EXTRACT_RULES = `
 
 FAST MODE. This is the ONLY model call in the parse. There is no second pass to correct your numbers, so the est_ fields ARE the answer.
 
 - est_per100_kcal / _protein_g / _carb_g / _fat_g: your own best per-100 knowledge for that food. Required. Give them.
-- est_total_g: grams for the WHOLE line, THE COUNT INCLUDED. Multiply one piece by the count. "2 biscuits" means two biscuits' worth, never one, and never a packet.
-- The est_ fields are IN ADDITION to quantity and unit, never instead of them. An amount the user STATED still goes in quantity: "100g soya chunks" stays quantity 100 unit "g" (and est_total_g 100); "35g paneer" stays quantity 35 unit "g". Moving a stated amount into est_total_g and leaving quantity 1 logs one gram of food.
-- A COUNT IS NOT A PORTION. "2 biscuits" and "4 biscuits" must give DIFFERENT totals. Answering the same "a serving of biscuits" number for both is the single commonest error here.
-- Piece weights, when the food gives you nothing better. Biscuits are NOT one weight: a thin tea biscuit (Marie, Parle-G, Nice) is ~5 g, a cream or cookie one (Good Day, Oreo, Bourbon, Hide & Seek) is ~7-11 g. Also 1 cheese slice ~20 g, 1 slice bread ~30 g, 1 egg ~50 g, 1 roti ~40 g, 1 almond ~1.2 g, 1 cashew ~1.5 g, 1 walnut half ~2 g, 1 peanut ~0.9 g, 1 kimia date ~8 g, 1 medjool date ~24 g. So "4 marie biscuits" is ~20 g and never 44; "2 oreo biscuits" is ~22 g and never 56; "5 almonds" is ~6 g and never 25.
-- Household amounts when the user names one: 1 katori ~150 g cooked, 1 bowl ~250 g, 1 glass ~250 ml, 1 cup ~200 ml, 1 scoop whey ~32 g, 1 plate chole bhature ~400 g.`;
+- est_total_g: grams for the WHOLE line, with the count already multiplied in. Find the weight of ONE, then multiply. N pieces is never the weight of one piece, and never the weight of the pack they came out of.
+- The est_ fields are IN ADDITION to quantity and unit, never instead of them. An amount the user STATED stays in quantity: "250 ml buttermilk" is quantity 250, unit "ml", and est_total_g 250. Moving a stated amount into est_total_g and leaving quantity 1 logs one gram of food.
+- Small pieces are genuinely small. A packaged biscuit, a cracker, a nut, a seed, a date: each is single-digit grams, occasionally low double digits, so a few of them come to tens of grams and not hundreds. Density varies within a category, so weigh the specific item: a thin dry biscuit is lighter than a cream-filled one, a cashew heavier than a peanut, a soft date several times a dried one.
+- Indian packaged biscuits weigh far less than people assume, and the type decides it: a thin glucose or tea biscuit (Marie, Parle-G) is ~4-6 g each, a cream-filled or cookie one (Good Day, Bourbon) is ~7-12 g each. Other small dry baked pieces sit in the same range. Multiply by the count.
+- Household measures, when the user names one instead of a count: 1 katori ~150 g cooked, 1 bowl ~250 g, 1 glass ~250 ml, 1 cup ~200 ml, 1 scoop whey ~32 g, 1 roti ~40 g, 1 egg ~50 g.`;
 
 /** Smart's prompt, unchanged in meaning: head + the no-nutrition rule + shared. */
 const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
@@ -1689,9 +1707,22 @@ async function resolveOneItem(
   // reports brand "Oreo" AND name "Oreo biscuits" for "2 oreo biscuits", which
   // built the query "Oreo Oreo biscuits" - a wasted ~500ms search for a string
   // no row contains, and it pushes a real query off the 4-deep ladder.
-  const nameHasBrand = !!item.brand &&
-    item.name.toLowerCase().includes(item.brand.toLowerCase());
-  if (item.brand && !nameHasBrand) push(`${item.brand} ${item.name}`);
+  const has = (part: string | null | undefined) =>
+    !!part && item.name.toLowerCase().includes(part.toLowerCase());
+  const withPart = (part: string | null | undefined, base: string) =>
+    part && !base.toLowerCase().includes(part.toLowerCase()) ? `${part} ${base}` : base;
+  if (item.brand && !has(item.brand)) push(withPart(item.brand, item.name));
+  // PREP BELONGS IN THE LADDER, and its absence cost a real case. Extract puts
+  // prep in its own field, so "1 cup cooked rice" arrives as name "rice" with
+  // prep "cooked" - a ONE-rung ladder that only ever searched "rice" and came
+  // back with Rice cake, Rice milk, Rice paper. "cooked rice" returns
+  // "Rice, cooked, NFS" as its top row and was never asked for; the gate then
+  // picked Rice cake at 30 g against a real cup of ~175 g.
+  //
+  // This is the mirror of the brand bug in the accept gate: three places
+  // rebuild the user's phrase from {brand, prep, name} and each included a
+  // different subset. They agree now - ladder and gate both consider all three.
+  if (item.prep && !has(item.prep)) push(withPart(item.prep, item.name));
   push(item.name);
   const words = item.name.split(/\s+/).filter(Boolean);
   // Drop LEADING words before trailing ones. Prep state is written as a
