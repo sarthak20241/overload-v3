@@ -385,3 +385,31 @@ exercised on device; Fast toggle hidden/disabled gracefully on old servers.
 - INDB (Anuvaad): confirm license, then batch-ingest as source='indb'.
 - Rerank vendor eval (Voyage vs Cohere) on parse_traces, open since P2.
 - food_log_stats / commonality refresh cadence.
+
+### A/B RESULT 2026-08-29: the catalog is no longer worth trading away
+iPhone 16 Pro Max, prod, warm us-east-1, 5 paired rounds of the same phrase
+("2 oreo biscuits and 1 amul cheese slice"). A = estimate only (no catalog at
+all), B = fast + catalog.
+
+  A  2097 2102 1925 1958 2110   avg 2038ms
+  B  2188 2148 2181 2195 2141   avg 2171ms
+
+The catalog now costs **133ms**, against ~1400ms before the 0111 LIKE-only
+search. Per-query search time fell 478-1413ms -> 51-217ms. Extract is a steady
+~1.7-1.9s and is now ~85% of the whole parse.
+
+So the question that started this - estimate-only vs catalog - is settled the
+boring way: keep the catalog. It buys real rows (Oreo 271 kcal from a catalog
+row vs the model's 134-269 kcal swing across runs) for a rounding error of
+time. Estimate-only stays as a probe knob, not a product mode.
+
+Remaining cost is the model call itself, and splitting it is still the wrong
+move: the region pin already cut extract from ~3.0s to ~1.8s, which is about
+what a split's FIRST call alone was projected to cost.
+
+Caveat on accuracy, unchanged from before: this phrase is a branded snack, the
+model's home turf. The catalog's value shows on curated Indian staples and on
+rows a user accumulates. Also seen in these runs: "amul cheese slice" matched
+"Cheese, provolone, sliced" twice out of five - the LIKE ladder has no synonym
+bridge, so a missing catalog row falls to a wrong-but-plausible one rather than
+to the estimate. Worth a look before Fast ships wide.
