@@ -12,7 +12,10 @@
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions } from 'react-native';
+import {
+  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions,
+  type NativeScrollEvent, type NativeSyntheticEvent,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -135,19 +138,53 @@ export default function NutritionScreen() {
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
   const { height: winH } = useWindowDimensions();
+  // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
+  // coordinates, plus how far that content is currently scrolled. Subtracting
+  // the second from the first is what turns it into a position on screen — the
+  // two only agree while the day sits at its top, and the input bar the card
+  // hangs off is pinned outside the scroll, so a user can absolutely be
+  // scrolled down at a meal section when a parse lands.
+  const [summaryBottom, setSummaryBottom] = useState(0);
+  const [dayScrollY, setDayScrollY] = useState(0);
+  // Quantised: this runs on every scroll frame, and the cap only has to move in
+  // steps a person can see. Returning `prev` unchanged skips the re-render.
+  // Floored at 0: iOS rubber-banding reports a negative offset for the length of
+  // an overscroll bounce, which would push the summary's computed screen position
+  // DOWN past where it is drawn and shrink the card for the duration of the pull.
+  const onDayScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = Math.max(0, Math.round(e.nativeEvent.contentOffset.y / 16) * 16);
+    setDayScrollY((prev) => (prev === y ? prev : y));
+  }, []);
   // Cap the parse card so a long meal never runs past the top of the screen
   // (the card is pinned above the input, outside the day scroll — the lines
-  // scroll INSIDE it instead). ~60% of the screen keyboard-closed; with the
-  // keyboard up, whatever fits above it (96 ≈ input bar + gap).
+  // scroll INSIDE it instead). 96 ≈ the input bar plus its gap.
   //
-  // The 260 floor is keyboard-CLOSED only. Applied with the keyboard up it
-  // stops being a floor and becomes an overflow: on a compact phone the space
-  // above the keyboard can be under 260, and forcing 260 there pushes the
-  // card's own header (and its minimize control) off the top of the screen.
-  const availAboveKb = winH - kbHeight - insets.top - 96;
-  const cardMaxHeight = kbHeight > 0
-    ? Math.max(0, Math.min(winH * 0.6, availAboveKb))
-    : Math.max(260, Math.min(winH * 0.6, availAboveKb));
+  // `hardAvail` is the whole gap between the safe area and the input bar. It is
+  // the ceiling in both states, so the card's own header — and the minimize
+  // control in it — is always on screen.
+  const hardAvail = winH - kbHeight - insets.top - 96;
+
+  // Keyboard UP: take all of it. The keyboard already hides the day, so holding
+  // the card short only buys blank space nobody can read behind — it costs the
+  // user rows of the meal they are still correcting.
+  //
+  // Keyboard DOWN: start below the summary instead, so the ring and the macro
+  // bars the card is about to change stay readable behind it. Two guards on
+  // that: never starve the card below its header + a line + its footer (260),
+  // and never let it run more than ~60% of the screen. Both stay under
+  // `hardAvail`, since a floor is only a floor while it fits.
+  // Where the summary's bottom edge actually sits on screen right now. Once it
+  // has scrolled up past the safe area there is nothing left to protect, and
+  // `Math.max` hands the card the whole gap back.
+  const summaryScreenBottom = summaryBottom - dayScrollY;
+  const belowSummary = summaryBottom > 0
+    ? winH - kbHeight - Math.max(insets.top, summaryScreenBottom + Spacing.md) - 96
+    : hardAvail;
+  const restingHeight = Math.min(
+    Math.min(winH * 0.6, hardAvail),
+    Math.max(Math.min(260, hardAvail), belowSummary),
+  );
+  const cardMaxHeight = Math.max(0, kbHeight > 0 ? hardAvail : restingHeight);
 
   // AI food logging (Drona parse). Signed-in only; guests keep the picker.
   // Parse -> review card (nothing logged yet) -> the user picks the section and
@@ -547,6 +584,8 @@ export default function NutritionScreen() {
         contentContainerStyle={{ paddingTop: insets.top + Spacing.sm, paddingBottom: 150 }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        onScroll={onDayScroll}
+        scrollEventThrottle={16}
       >
         {/* Header — back + a day stepper (‹ Today ›, tap the label for the calendar) */}
         <View style={s.header}>
@@ -626,7 +665,13 @@ export default function NutritionScreen() {
 
         {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue
             overshoot) and three macro bars carrying target + signed over. */}
-        <View style={s.summary}>
+        <View
+          style={s.summary}
+          onLayout={(e) => {
+            const { y, height } = e.nativeEvent.layout;
+            setSummaryBottom(y + height);
+          }}
+        >
           <Pressable onPress={() => setGoalOpen(true)} hitSlop={8} style={s.goalBtn} accessibilityLabel="Edit daily goal">
             <Feather name="sliders" size={12} color={isCustom ? C.textDim : C.accentText} />
             <Text style={[s.goalBtnTxt, { color: isCustom ? C.textDim : C.accentText }]}>{isCustom ? 'Goal' : 'Set goal'}</Text>
