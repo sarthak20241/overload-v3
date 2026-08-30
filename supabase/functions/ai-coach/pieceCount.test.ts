@@ -18,6 +18,7 @@ import {
   fallbackFromResolved,
   gramsPerUnit,
   isBasisServing,
+  namesAPiece,
   type Per100,
   type ServingOption,
   type ResolvedItem,
@@ -223,5 +224,31 @@ Deno.test("a dressed-up 100 g basis does not resolve a piece count either", () =
   assertEquals(
     fallbackFromResolved(resolved({ candidates: [dressed] }), per100Map()).grams,
     100,
+  );
+});
+
+Deno.test("an unnamed portion is not a piece, so a count must not multiply it", () => {
+  // Parle Monaco Classic Biscuits ships "1 serving (14.4 g)" - roughly three
+  // crackers, not one. "3 monaco biscuits" logged 43.2 g against a true ~13 g.
+  // The label never claims to describe one biscuit, so the count has nothing
+  // safe to multiply and the caller drops to the model's est_total_g.
+  assertEquals(namesAPiece({ label: "1 serving (14.4 g)", grams: 14.4, is_default: true }), false);
+  assertEquals(gramsPerUnit("serving", row([
+    { label: "1 serving (14.4 g)", grams: 14.4, is_default: true },
+    { label: "100 g", grams: 100 },
+  ])), null);
+});
+
+Deno.test("a label that NAMES the piece is still multiplied", () => {
+  // The whole point of keeping a per-piece path: these say what one weighs.
+  assertEquals(namesAPiece({ label: "1 cookie (11 g)", grams: 11 }), true);
+  assertEquals(namesAPiece({ label: "1 large", grams: 50 }), true);
+  assertEquals(namesAPiece({ label: "1 slice (20 g)", grams: 20 }), true);
+  assertEquals(
+    gramsPerUnit("serving", row([
+      { label: "1 cookie (11 g)", grams: 11, is_default: true },
+      { label: "100 g", grams: 100 },
+    ]))?.grams,
+    11,
   );
 });

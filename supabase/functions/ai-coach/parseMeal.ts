@@ -353,6 +353,33 @@ export function isBasisServing(sv: ServingOption): boolean {
   return sv.grams === 100 && words.every((w) => GENERIC_PORTION_WORDS.has(w));
 }
 
+/**
+ * Does this serving label name a countable PIECE, rather than a portion?
+ *
+ * "1 serving (14.4 g)" states a portion size and says nothing about how much
+ * ONE of the thing weighs. Treating it as a piece is what logged "3 monaco
+ * biscuits" as 43.2 g: the row's serving is roughly three crackers, and the
+ * count multiplied it again. A Monaco is ~4.4 g, so three are ~13 g.
+ *
+ * "1 cookie (11 g)", "1 large", "1 slice (20 g)" DO name a piece - something
+ * survives once the amount and the generic portion words are stripped - so a
+ * count can safely multiply them.
+ *
+ * Deliberately conservative: an unnamed portion falls through to the model's
+ * est_total_g, which is a labelled estimate. Guessing a piece weight from a
+ * portion is precise about the wrong amount, which is the failure this whole
+ * gate exists to avoid.
+ */
+export function namesAPiece(sv: ServingOption): boolean {
+  const words = sv.label.toLowerCase()
+    .replace(MASS_AMOUNT_RE, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.some((w) => !GENERIC_PORTION_WORDS.has(w));
+}
+
 /** Grams for one unit of what the user said, or null when it needs judgment. */
 export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
   const u = unit.trim().toLowerCase();
@@ -365,7 +392,13 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   // counted noun, see fastGrammar SHAPE 5), and "1 serving (100 g)" contains
   // it - so without this the per-100 basis matched here and the whole
   // piece-count guard below was bypassed.
-  if (u) {
+  //
+  // A GENERIC count word cannot be that anchor either. "serving" is what both
+  // the grammar and extract emit for any counted noun, and it appears inside
+  // "1 serving (14.4 g)" - so matching on it here let an unnamed portion pose
+  // as a piece and skipped the guard below entirely. Generic words fall
+  // through; only a real anchor word ("large", "scoop", "slice") matches.
+  if (u && !GENERIC_PORTION_WORDS.has(u) && u !== "piece" && u !== "pieces") {
     const hit = cand.servings.find((sv) =>
       sv.grams > 0 && !isBasisServing(sv) && sv.label.toLowerCase().includes(u)
     );
@@ -388,7 +421,12 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   // Filtering rather than rejecting also fixes the ordering: a row carrying
   // both "1 cookie (11 g)" and a default "100 g" now picks the cookie.
   if (!u || u === "serving" || u === "servings" || u === "piece" || u === "pieces") {
-    const portions = cand.servings.filter((sv) => sv.grams > 0 && !isBasisServing(sv));
+    // namesAPiece, not merely "not the basis": a row whose only portion is
+    // "1 serving (14.4 g)" cannot say what ONE biscuit weighs, and multiplying
+    // that portion by the count is how "3 monaco biscuits" reached 43.2 g.
+    const portions = cand.servings.filter((sv) =>
+      sv.grams > 0 && !isBasisServing(sv) && namesAPiece(sv)
+    );
     const def = portions.find((sv) => sv.is_default) ?? portions[0];
     if (def) return { grams: def.grams, label: def.label };
   }
@@ -1391,6 +1429,19 @@ const FAST_EXTRACT_TOOL = (() => {
     delete t.input_schema.properties[dead];
   }
   delete item.properties.corrects_food_name;
+
+  // EXTRACT_TOOL's own description ends "Extraction only: no nutrition numbers,
+  // no serving-size guessing beyond what the text says." Correct for smart,
+  // FATAL here: it sits directly on the tool being forced, next to five est_
+  // fields this same builder marks REQUIRED. Splitting EXTRACT_SYSTEM removed
+  // the contradiction from the system prompt and left the louder copy of it
+  // right here, which is why the estimates stayed sloppy after that fix.
+  t.description = "Report every distinct food or drink in the text as a separate item, " +
+    "and for each one give your own best nutrition and weight estimate in the est_ fields. " +
+    "name/quantity/unit stay strictly extraction: they mirror what the text says. " +
+    "The est_ fields are the opposite - they are yours to estimate, they are required, " +
+    "and nothing downstream will correct them.";
+
   Object.assign(item.properties, {
     est_per100_kcal: {
       type: "number",
