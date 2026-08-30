@@ -49,3 +49,11 @@ graphify-out/
 
 # local env backups (never commit: these carry live API keys)
 .env.local.bak-*
+
+# local build output (`eas build --local` .aab/.ipa — hundreds of MB)
+build-out/
+
+# agent skills installed via `npx skills add` (third-party, machine-local)
+.agents/
+.claude/skills/
+skills-lock.json
