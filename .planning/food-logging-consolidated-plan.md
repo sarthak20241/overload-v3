@@ -413,3 +413,45 @@ rows a user accumulates. Also seen in these runs: "amul cheese slice" matched
 "Cheese, provolone, sliced" twice out of five - the LIKE ladder has no synonym
 bridge, so a missing catalog row falls to a wrong-but-plausible one rather than
 to the estimate. Worth a look before Fast ships wide.
+
+### FAST-MODE EVAL 2026-08-30: 86/91, and what the number is worth
+First full fast-mode corpus run (EVAL_VIA_CLI=1 FAST_MODE=on, EVAL_CONCURRENCY=6,
+~11 min against ~70 serial). Log is gitignored; rerun to reproduce.
+
+  baseline before today's two fixes   85/91
+  after                               86/91   (tier mix ~74 catalog / 19 estimate)
+
+Two structural bugs fixed, both found by tracing a single failure rather than by
+reading the score:
+
+1. LADDER MISSING PREP. Extract splits prep into its own field and the ladder
+   only combined brand + name, so "1 cup cooked rice" searched "rice" ALONE and
+   got Rice cake / Rice milk / Rice paper. "cooked rice" returns
+   "Rice, cooked, NFS" as its top row and was never asked for.
+   This is the exact mirror of the accept-gate brand bug fixed the same day:
+   three places rebuild the user's phrase from {brand, prep, name} and each
+   included a different subset. They agree now.
+
+2. A PORTION IS NOT A PIECE. "1 serving (14.4 g)" on Parle Monaco is ~three
+   crackers; the count multiplied it again for 43.2 g. namesAPiece() now asks
+   whether anything survives stripping the amount and the generic portion
+   words - "1 cookie (11 g)" and "1 large" do, "1 serving (14.4 g)" does not.
+   Also fixed the branch above it, which matched ANY label containing the
+   user's unit word: "serving" is what extract emits for every counted noun, so
+   the portion posed as a piece and skipped the guard entirely.
+   No food weights were added anywhere; the rule reads the label the catalog
+   already ships, so an unseen row behaves correctly.
+
+**THE SUITE IS FLAKY AND THE FULL-SUITE NUMBER LIES.** The run straight after
+these fixes read 82/91 - apparently a 3-case regression. Re-running the seven
+changed cases showed FOUR of the five "regressions" passed cleanly, including
+oreo-and-cheese-slice landing 24 g / 115.9 kcal and 20 g / 63.2 kcal against the
+original production bug's 200 g / 966 kcal and 100 g / 316 kcal. Judge a change
+by re-running its changed cases; never by one full-suite delta.
+
+Remaining failures, none about food identity:
+- marie-gold, probe-count-monaco: piece weights still over. Both rows carry only
+  an unnamed portion, so these now ride the model's est_total_g and the estimate
+  is heavy. The next lever is the estimate, not the conversion.
+- probe-count-cashews, edamame-tbsp-regression: flaky, both pass on re-run.
+- log-question-declines: CLI shim artifact, not a pipeline result.
