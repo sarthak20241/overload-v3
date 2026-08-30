@@ -1506,6 +1506,8 @@ Serving size:
 
 All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
 
+For a branded packaged food, work from its printed nutrition label as you remember it - packs state kcal per piece or per 100 g - and derive the total from that, not from a general feel for the category. A pack's own numbers beat instinct: small packaged pieces are usually far lighter and lower-calorie than they feel.
+
 Keep names faithful: correct spelling ("panner" is "paneer"), and keep words that change the food ("low fat", "double toned", "boiled") - dropping them logs a different food.
 
 One item per food the user LISTED. A composite dish is one item ("rajma chawal"), but an add-on named alongside a dish is its own line, never folded in - the user edits and deletes lines one at a time. Never drop an item, never merge two named foods into one.
