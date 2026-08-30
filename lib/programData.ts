@@ -16,6 +16,7 @@
  * boundary. Tables live in migration 0096_coach_programs.sql.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -244,6 +245,41 @@ export async function applyPhaseTargets(
   if (diet.fat_g != null) payload.fat_target_g = diet.fat_g;
   // Nothing to set (a phase with no diet) → skip the round trip.
   if (Object.keys(payload).length === 1) return;
+
+  // A phase that moves calories but omits a macro used to leave that macro at
+  // its old gram value, so the four targets no longer added up (a cut to 1300
+  // kcal keeping 365 g of carbs). Fill only the omitted ones, from the calories
+  // this phase's OWN explicit macros leave over: deriving them from the old
+  // profile split instead would ignore the protein this same call is writing
+  // and land right back on four numbers that disagree.
+  if (diet.calories != null && (diet.protein_g == null || diet.carb_g == null || diet.fat_g == null)) {
+    const { data: cur, error: curErr } = await supabase
+      .from('user_profiles')
+      .select('protein_target_g, carb_target_g, fat_target_g')
+      .eq('clerk_user_id', clerkId)
+      .maybeSingle();
+    // A failed read also returns data null. Falling through to DEFAULT_TARGETS
+    // there would silently reshape a real user's macros to the stock split, so
+    // only the genuine no-row case gets the defaults.
+    if (curErr) throw curErr;
+    const c = (cur ?? {}) as Record<string, unknown>;
+    const g = (v: unknown, def: number) => (v == null ? def : Number(v));
+    const filled = fillMissingMacros(
+      diet.calories,
+      { protein: diet.protein_g ?? null, carb: diet.carb_g ?? null, fat: diet.fat_g ?? null },
+      {
+        protein: g(c.protein_target_g, DEFAULT_TARGETS.protein),
+        carb: g(c.carb_target_g, DEFAULT_TARGETS.carb),
+        fat: g(c.fat_target_g, DEFAULT_TARGETS.fat),
+      },
+    );
+    // Re-clamp: the filled grams are derived, so they get the same bounds as
+    // anything the coach sends.
+    const bounded = clampDiet({ protein_g: filled.protein, carb_g: filled.carb, fat_g: filled.fat });
+    if (diet.protein_g == null) payload.protein_target_g = bounded.protein_g;
+    if (diet.carb_g == null) payload.carb_target_g = bounded.carb_g;
+    if (diet.fat_g == null) payload.fat_target_g = bounded.fat_g;
+  }
   const { error } = await supabase
     .from('user_profiles')
     .upsert(payload, { onConflict: 'clerk_user_id' });
@@ -532,6 +568,25 @@ export async function loadActiveProgram(
     currentPhaseSeq,
     weekInPhase,
   };
+}
+
+/**
+ * Stop following the active program. Archives it (same status saveProgram gives
+ * a superseded program), which takes it out of loadActiveProgram and therefore
+ * out of reconcileActiveProgram, so nothing rewrites the user's targets at the
+ * next phase boundary. The four user_profiles targets are deliberately LEFT AS
+ * THEY ARE: the user keeps whatever they are eating to today and owns it from
+ * here. Returns true when a program was actually ended.
+ */
+export async function endActiveProgram(supabase: Supa, clerkId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('coach_programs')
+    .update({ status: 'archived', updated_at: new Date().toISOString() })
+    .eq('user_id', clerkId)
+    .eq('status', 'active')
+    .select('id');
+  if (error) throw error;
+  return (data?.length ?? 0) > 0;
 }
 
 /**

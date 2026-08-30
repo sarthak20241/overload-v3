@@ -22,7 +22,8 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal,
-  listSavedMeals, logSavedMeal, parseMeal, type PickerFood, type SavedMeal, type ParsedMealItem,
+  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext,
+  type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
 import { haptics } from '@/lib/haptics';
@@ -143,6 +144,14 @@ export default function FoodSearchScreen() {
     const res = await parseMeal(supabase, { text: q, mealHint: meal });
     setAiBusy(false);
     if (res.kind === 'declined') { setAiError(res.message); haptics.warning(); return; }
+    // Same paywall as the diet screen: the free tier's daily logs ran out, so
+    // open the upgrade screen instead of an error line blaming the app.
+    if (res.kind === 'cap') {
+      haptics.warning();
+      setAiError(capNotice(res));
+      router.push({ pathname: '/upgrade', params: { context: capUpgradeContext(res) } });
+      return;
+    }
     if (res.kind === 'error') { setAiError(res.message); haptics.warning(); return; }
     if (!res.meal.items.length) { setAiError('Drona could not pin that one down. Try a fuller name.'); haptics.warning(); return; }
     haptics.success();

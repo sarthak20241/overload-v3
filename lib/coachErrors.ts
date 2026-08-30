@@ -54,6 +54,51 @@ export async function coachInvokeErrorMessage(error: unknown): Promise<string> {
   return coachErrorMessage(detail);
 }
 
+/** A 402 the client should answer with the paywall rather than an error. */
+export interface CoachCapSignal {
+  kind: 'cap' | 'pro';
+  /** Which allowance ran out, when the server names one ('parse', 'chat'). */
+  feature?: string;
+  used?: number;
+  limit?: number;
+}
+
+/**
+ * Read a 402 off a `functions.invoke` error, if that is what it is.
+ *
+ * A 402 is NOT a failure: it is the free tier's allowance running out, and it
+ * must open the upgrade screen rather than a "something broke" line that
+ * blames the app for the user's own plan. Returns null for anything else, so
+ * callers fall through to `coachInvokeErrorMessage` unchanged.
+ *
+ * The body is read off a CLONE. `error.context` is the raw Response and its
+ * body can only be consumed once, so reading it here directly would leave
+ * coachInvokeErrorMessage with nothing to classify for every other status.
+ */
+export async function coachInvokeCapSignal(error: unknown): Promise<CoachCapSignal | null> {
+  const ctx = (error as any)?.context;
+  if (!ctx || ctx.status !== 402) return null;
+  try {
+    const res = typeof ctx.clone === 'function' ? ctx.clone() : ctx;
+    const body = await res.json();
+    if (body?.error === 'free_cap_hit') {
+      return {
+        kind: 'cap',
+        feature: typeof body.feature === 'string' ? body.feature : undefined,
+        used: Number.isFinite(body.parses_today) ? Number(body.parses_today) : undefined,
+        limit: Number.isFinite(body.parse_daily_limit) ? Number(body.parse_daily_limit) : undefined,
+      };
+    }
+    if (body?.error === 'pro_required') {
+      return { kind: 'pro', feature: typeof body.feature === 'string' ? body.feature : undefined };
+    }
+    // drona_access_required is deliberately NOT treated as a paywall: it also
+    // covers a broken or unauthenticated session, and showing someone a
+    // purchase screen because their token expired is worse than a retry line.
+  } catch { /* body already consumed or not JSON — fall through to the message */ }
+  return null;
+}
+
 /**
  * Map any raw failure (string, Error, or unknown) to user-safe coach copy.
  * The raw detail is logged, never returned.

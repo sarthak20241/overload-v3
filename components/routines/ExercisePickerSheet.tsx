@@ -27,10 +27,7 @@ import { addGuestExercise, getGuestExercises } from '@/lib/guestStore';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { saveLocalCustomExercise, type CachedExercise } from '@/lib/exerciseResolve';
 import { useExerciseNotes } from '@/hooks/useExerciseNotes';
-
-// Custom exercises can be tagged beyond the library's lifting groups — the
-// routine editor's old custom drawer offered these, so keep parity.
-const CUSTOM_MUSCLE_GROUPS = [...MUSCLE_GROUPS, 'Cardio', 'Other'] as const;
+import { MuscleGroupPicker } from '@/components/exercises/MuscleGroupPicker';
 
 // Generous ceiling on per-exercise set targets (10x10 GVT still fits).
 const MAX_CUSTOM_SETS = 20;
@@ -294,6 +291,12 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
       setShowCustom(false);
       setShowTypePicker(false);
       setCustomName('');
+      // The search box is uncontrolled, and useSheetSlide keeps `mounted` true
+      // through the ~200ms slide-out. Reopening inside that window never
+      // remounts it, so defaultValue would not reapply and the box would still
+      // show the old query while `search` is ''. Clear the native text too.
+      // (customName needs no equivalent: its form unmounts with showCustom.)
+      searchInputRef.current?.clear();
       Keyboard.dismiss();
     }
   }, [visible]);
@@ -502,11 +505,23 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {/* Name */}
+                  {/* Uncontrolled (defaultValue) on purpose — don't "fix" it back
+                      to value. This sheet renders through <Portal>, which syncs
+                      its children in a passive effect, so a controlled value can
+                      reach the native input a frame or two late and let RN revert
+                      characters typed in between. Safe here because the form
+                      remounts on every open (openCustomForm seeds state before
+                      setShowCustom), so defaultValue always starts fresh. */}
                   <Text style={[s.formLabel, { color: C.textDim }]}>EXERCISE NAME</Text>
                   <TextInput
-                    value={customName}
+                    defaultValue={customName}
                     onChangeText={setCustomName}
+                    // Exercise names are gym jargon ("Pendlay", "Zercher", "JM
+                    // Press") that iOS autocorrect rewrites into dictionary
+                    // words, and its replace-on-space swallows the space itself.
+                    autoCorrect={false}
+                    spellCheck={false}
+                    autoCapitalize="words"
                     placeholder="e.g. Cable Crossover"
                     placeholderTextColor={C.textMuted}
                     style={[s.formInput, { backgroundColor: C.muted, color: C.foreground, borderColor: C.border }]}
@@ -514,26 +529,7 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
 
                   {/* Muscle Group */}
                   <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>MUSCLE GROUP</Text>
-                  <View style={s.chipRow}>
-                    {CUSTOM_MUSCLE_GROUPS.map(mg => {
-                      const active = customMuscle === mg;
-                      return (
-                        <TouchableOpacity
-                          key={mg}
-                          onPress={() => setCustomMuscle(mg)}
-                          style={[
-                            s.chip,
-                            {
-                              backgroundColor: active ? Colors.primary : C.muted,
-                              borderColor: active ? Colors.primary : C.border,
-                            },
-                          ]}
-                        >
-                          <Text style={[s.chipText, { color: active ? Colors.primaryFg : C.textMuted }]}>{mg}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  <MuscleGroupPicker value={customMuscle} onChange={setCustomMuscle} />
 
                   {/* Category */}
                   <Text style={[s.formLabel, { color: C.textDim, marginTop: Spacing.lg }]}>CATEGORY</Text>
@@ -640,14 +636,19 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                     <Feather name="search" size={14} color={C.textMuted} />
                     <TextInput
                       ref={searchInputRef}
-                      value={search}
+                      defaultValue={search}
                       onChangeText={setSearch}
+                      autoCorrect={false}
+                      spellCheck={false}
+                      autoCapitalize="none"
                       placeholder="Search exercises..."
                       placeholderTextColor={C.textMuted}
                       style={[s.searchInput, { color: C.foreground }]}
                     />
+                    {/* Uncontrolled input: clearing state alone won't clear the
+                        native text, so clear the input imperatively too. */}
                     {search.length > 0 && (
-                      <TouchableOpacity onPress={() => setSearch('')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
+                      <TouchableOpacity onPress={() => { setSearch(''); searchInputRef.current?.clear(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
                         <Feather name="x" size={14} color={C.textMuted} />
                       </TouchableOpacity>
                     )}
@@ -655,9 +656,18 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
                 </View>
 
                 {/* Muscle group filter pills */}
+                {/* A ScrollView defaults to flexShrink: 1, so once the keyboard
+                    shrinks the sheet this row collapsed to a sliver and the
+                    filters became unusable mid-search. Pin it to its content
+                    height and let the exercise list absorb the squeeze. */}
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
+                  // Same reason as the list below: without this the first tap on
+                  // a pill mid-search is swallowed dismissing the keyboard, so
+                  // the filter never applies.
+                  keyboardShouldPersistTaps="handled"
+                  style={s.filterPillScroll}
                   contentContainerStyle={{ paddingHorizontal: Spacing.xl, gap: 6, paddingBottom: 8 }}
                 >
                   <TouchableOpacity
@@ -810,6 +820,7 @@ const s = StyleSheet.create({
   searchWrap: { marginBottom: 10 },
   searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: Radius.lg, paddingHorizontal: 12, paddingVertical: 10 },
   searchInput: { flex: 1, fontSize: FontSize.base, padding: 0 },
+  filterPillScroll: { flexGrow: 0, flexShrink: 0 },
   filterPill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: Radius.full, borderWidth: 1 },
   filterPillText: { fontSize: 11, fontWeight: FontWeight.semibold },
   exerciseRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1 },

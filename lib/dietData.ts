@@ -18,7 +18,9 @@ import { FunctionRegion } from '@supabase/supabase-js';
 import { fetch as expoFetch } from 'expo/fetch';
 import { useSupabaseClient, getSupabaseAccessToken } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
-import { coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
+import { isMeasurementUnit } from '@/lib/units';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -63,6 +65,10 @@ export interface DayTotals { kcal: number; protein_g: number; carb_g: number; fa
 export interface DayData {
   byMeal: Record<MealType, LoggedEntry[]>;
   totals: DayTotals;
+  /** The day `byMeal`/`totals` actually describe. Lags `dayIso` by a render on a
+   *  day switch (state carries the previous day until the refetch lands), so
+   *  callers that mirror totals elsewhere must key off THIS, not their own iso. */
+  totalsDayIso: string;
   loading: boolean;
   reload: () => void;
 }
@@ -119,7 +125,8 @@ async function findOrCreateMeal(
  *  instantly from what the dashboard already loaded (no 5s cold re-fetch), then
  *  revalidates silently. Only today is cached (past days cold-load); keyed by user
  *  + day so it never bleeds across accounts or midnight. */
-let _navCache: { key: string; byMeal: Record<MealType, LoggedEntry[]> } | null = null;
+interface DayCache { key: string; byMeal: Record<MealType, LoggedEntry[]> }
+let _navCache: DayCache | null = null;
 
 /** Grouped entries + totals for a single calendar day (dayIso = YYYY-MM-DD). */
 export function useDayNutrition(dayIso: string): DayData {
@@ -128,37 +135,75 @@ export function useDayNutrition(dayIso: string): DayData {
   const isToday = dayIso === ymd(new Date());
   const key = `${user?.id ?? 'anon'}:${dayIso}`;
   // Instant-paint cache is today-only (the dashboard preloads it); past days load fresh.
-  const seed = isToday && _navCache && _navCache.key === key ? _navCache.byMeal : null;
+  // In-memory nav cache first, then the on-disk read cache, so a cold start
+  // paints today's real totals instead of an empty ring that fills in later.
+  const diskSeed = isToday ? readCache<DayCache>('dayNutrition', user?.id) : null;
+  const seed = isToday && _navCache && _navCache.key === key
+    ? _navCache.byMeal
+    : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
+  // The day `byMeal` belongs to. Seeded state is today's; every setByMeal below
+  // is followed by stamping the day it was fetched for.
+  const [totalsDayIso, setTotalsDayIso] = useState<string>(dayIso);
   const [loading, setLoading] = useState(!seed);
   const [tick, setTick] = useState(0);
+  // Every byMeal write goes through here so totalsDayIso can never drift from it.
+  const setByMealForDay = useCallback((next: Record<MealType, LoggedEntry[]>, forDay: string) => {
+    setByMeal(next);
+    setTotalsDayIso(forDay);
+  }, []);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (isToday) {
+        // Hydration may not have finished by first render; re-seed once it has.
+        await hydrateCache(user?.id);
+        if (cancelled) return;
+        const disk = readCache<DayCache>('dayNutrition', user?.id);
+        // Key-aware on BOTH sides: _navCache is a module global that survives an
+        // account switch, so `!_navCache` alone would let a previous user's
+        // entry block this user's disk restore.
+        if (disk && disk.key === key && (!_navCache || _navCache.key !== key)) {
+          _navCache = disk;
+          setByMealForDay(disk.byMeal, dayIso);
+          setLoading(false);
+        }
+      }
       if (!supabase) { setLoading(false); return; }
       const cached = isToday && _navCache && _navCache.key === key;
       // Only show the loading state on a true cold load; a same-key cache means we
       // already painted real numbers, so revalidate silently (no zeros flash).
       if (!cached) setLoading(true);
       const { start, end } = dayRange(dateFromYmd(dayIso));
-      const { data: meals } = await supabase
+      const { data: meals, error: mealsErr } = await supabase
         .from('meals').select('id, meal_type')
         .gte('logged_at', start).lte('logged_at', end);
       if (cancelled) return;
+      // A FAILED query also lands here with data null. Treating that as "no
+      // meals logged" would blank the day AND persist those zeros to the day
+      // cache, so an offline blip would keep painting an empty ring after the
+      // network came back. Keep what we have and stop.
+      if (mealsErr) { setLoading(false); return; }
       if (!meals || meals.length === 0) {
         const empty = emptyByMeal();
-        if (isToday) _navCache = { key, byMeal: empty };
-        setByMeal(empty); setLoading(false); return;
+        if (isToday) {
+          _navCache = { key, byMeal: empty };
+          writeCache<DayCache>('dayNutrition', user?.id, _navCache);
+        }
+        setByMealForDay(empty, dayIso); setLoading(false); return;
       }
       const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
-      const { data: entries } = await supabase
+      const { data: entries, error: entriesErr } = await supabase
         .from('meal_entries')
         .select('id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g')
         .in('meal_id', meals.map((m: any) => m.id))
         .order('position');
       if (cancelled) return;
+      // Same reasoning: meals exist, so an entries failure must not be cached
+      // as a day with meals but no food in them.
+      if (entriesErr) { setLoading(false); return; }
       const grouped = emptyByMeal();
       for (const e of entries ?? []) {
         const mt = typeOf.get((e as any).meal_id) ?? 'snack';
@@ -170,8 +215,11 @@ export function useDayNutrition(dayIso: string): DayData {
           carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
         });
       }
-      if (isToday) _navCache = { key, byMeal: grouped };
-      setByMeal(grouped);
+      if (isToday) {
+        _navCache = { key, byMeal: grouped };
+        writeCache<DayCache>('dayNutrition', user?.id, _navCache);
+      }
+      setByMealForDay(grouped, dayIso);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -198,7 +246,7 @@ export function useDayNutrition(dayIso: string): DayData {
     return t;
   }, [byMeal]);
 
-  return { byMeal, totals, loading, reload };
+  return { byMeal, totals, totalsDayIso, loading, reload };
 }
 
 /** Today's diary — the dashboard + default diet view. Thin wrapper so existing
@@ -215,6 +263,12 @@ export interface DayNutrition { dayIso: string; kcal: number; protein_g: number;
 export async function loadNutritionHistory(supabase: Supa | null, days = 14): Promise<DayNutrition[]> {
   const today = new Date();
   const startDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
+  return loadNutritionRange(supabase, startDate, days);
+}
+
+/** Per-day macro totals for `days` calendar days starting at `startDate`
+ *  (oldest → newest), zeros for unlogged days. Used by the diary week strip. */
+export async function loadNutritionRange(supabase: Supa | null, startDate: Date, days: number): Promise<DayNutrition[]> {
   // Empty per-day skeleton first, so gaps render as zeros in order.
   const out: DayNutrition[] = [];
   const idx = new Map<string, number>();
@@ -225,8 +279,9 @@ export async function loadNutritionHistory(supabase: Supa | null, days = 14): Pr
     out.push({ dayIso: iso, kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 });
   }
   if (!supabase) return out;
+  const lastDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + (days - 1));
   const { start } = dayRange(startDate);
-  const { end } = dayRange(today);
+  const { end } = dayRange(lastDate);
   const { data: meals } = await supabase
     .from('meals').select('id, logged_at')
     .gte('logged_at', start).lte('logged_at', end);
@@ -372,10 +427,21 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
     const key = (e.food_name ?? '').toLowerCase().trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const grams = num(e.grams_logged);
     const qty = num(e.quantity) || 1;
-    const per100 = grams > 0 ? 100 / grams : 0; // entry snapshot -> per-100 basis
-    const unitGrams = qty > 0 ? grams / qty : grams; // grams of one serving_unit
+    const loggedGrams = num(e.grams_logged);
+    // A parsed entry often has NO gram weight: Drona knew a scoop of whey was
+    // 130 kcal without knowing what it weighed, so grams_logged is null. The
+    // old `grams > 0 ? 100 / grams : 0` turned that into a per-100 basis of
+    // ZERO, which multiplied every macro to nothing. The row then read
+    // "0 cal · 0g P", and re-logging it from Recent wrote those zeros into a
+    // real diary entry, so the bug laundered itself into the user's day.
+    //
+    // With no mass to scale by, treat one serving_unit as the 100-unit basis.
+    // The per-UNIT macros are preserved exactly, which is all this list feeds:
+    // the picker re-logs by serving, not by weight.
+    const unitGrams = loggedGrams > 0 && qty > 0 ? loggedGrams / qty : 100;
+    const totalGrams = unitGrams * qty;
+    const per100 = totalGrams > 0 ? 100 / totalGrams : 0;
     out.push({
       id: e.food_id ?? null,
       name: e.food_name,
@@ -385,7 +451,16 @@ export async function recentFoods(supabase: Supa | null, limit = 20): Promise<Pi
       carb_g: num(e.carb_g) * per100, fat_g: num(e.fat_g) * per100,
       fiber_g: num(e.fiber_g) * per100, sugar_g: num(e.sugar_g) * per100,
       sat_fat_g: num(e.sat_fat_g) * per100, sodium_mg: num(e.sodium_mg) * per100,
-      servings: unitGrams > 0 ? [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }] : [],
+      // A weightless entry keeps its own label ("scoop", "bowl") instead of
+      // dropping to the generic "100 g". But NOT when that label is itself a
+      // measurement unit: resolveBaseAmount matches a food's own servings
+      // BEFORE the mass/volume tables, so a synthetic {label:'g', grams:100}
+      // makes "1 g" resolve to 100 g. The weighed branch above is immune by
+      // accident (grams/qty is already the right per-unit conversion); this
+      // 100 fallback is not, so measurement labels keep the real converter.
+      servings: isMeasurementUnit(e.serving_unit ?? '')
+        ? []
+        : [{ label: e.serving_unit || '100 g', grams: unitGrams, is_default: true }],
     });
     if (out.length >= limit) break;
   }
@@ -497,7 +572,25 @@ export type ParseMealResult =
     proposal?: { items: ParsedMealItem[]; note: string } | null;
     cleared?: boolean;
   }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  // A 402 the paywall answers, not an error. `scope` says WHICH wall was hit:
+  // 'free' is the daily allowance spent, 'pro' is a Pro-only feature. Both open
+  // /upgrade, on different copy, instead of the app blaming itself.
+  | { kind: 'cap'; scope: 'free' | 'pro'; used?: number; limit?: number };
+
+/** Drona's line for a cap result. Shared so every parse call site says the same
+ *  thing: this copy was written three times and a fourth site would drift. */
+export function capNotice(cap: { scope: 'free' | 'pro'; limit?: number }): string {
+  if (cap.scope === 'pro') return 'That one is Overload Pro. Your logging stays free.';
+  return cap.limit != null
+    ? `That is your ${cap.limit} free logs for today. Pro logs as much as you eat.`
+    : 'That is your free logs for today. Pro logs as much as you eat.';
+}
+
+/** Which paywall a cap result opens. */
+export function capUpgradeContext(cap: { scope: 'free' | 'pro' }): 'pro_feature' | 'cap_parse' {
+  return cap.scope === 'pro' ? 'pro_feature' : 'cap_parse';
+}
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
  *  parsed path and the researched-proposal path so both stay in step. */
@@ -767,7 +860,16 @@ export async function parseMeal(
     // Never hand the raw edge-function error to the card — it carries HTTP
     // statuses and provider error bodies. The helper pulls the real reason off
     // error.context for the log and returns user-safe copy.
-    if (res.error) return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
+    if (res.error) {
+      // A 402 is the paywall, not a breakage. Checked BEFORE the message
+      // helper, which buckets every non-2xx into "something broke on my end".
+      const cap = await coachInvokeCapSignal(res.error);
+      // Both kinds are paywalls. Handling only 'cap' would let a pro_required
+      // 402 fall through to the generic "something broke" line, which is the
+      // exact bug this branch exists to fix.
+      if (cap) return { kind: 'cap', scope: cap.kind === 'pro' ? 'pro' : 'free', used: cap.used, limit: cap.limit };
+      return { kind: 'error', message: await coachInvokeErrorMessage(res.error) };
+    }
     data = res.data;
   } catch (e) {
     return { kind: 'error', message: 'No connection. Type it again when you are back online.' };
@@ -851,6 +953,103 @@ export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promi
 export interface NutritionTargets { kcal: number; protein: number; carb: number; fat: number }
 export const DEFAULT_TARGETS: NutritionTargets = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
 
+// Macros carry the calories, so a new calorie goal has to move them with it.
+// We keep the user's ENERGY SPLIT (the share of the day's kcal from each macro)
+// and re-derive grams for the new total, rather than leaving stale grams that
+// still add up to the old goal. Shared by the goal sheet and by the coach
+// program sync, so both write a consistent set.
+export const KCAL_PER_G = { protein: 4, carb: 4, fat: 9 } as const;
+
+export interface EnergySplit { p: number; c: number; f: number }
+
+/** Share of total energy from each macro. Falls back to the default split when
+ *  the grams are all zero (nothing to take a ratio of). */
+export function energySplit(t: { protein: number; carb: number; fat: number }): EnergySplit {
+  const p = t.protein * KCAL_PER_G.protein;
+  const c = t.carb * KCAL_PER_G.carb;
+  const f = t.fat * KCAL_PER_G.fat;
+  const total = p + c + f;
+  if (!(total > 0)) {
+    const dp = DEFAULT_TARGETS.protein * KCAL_PER_G.protein;
+    const dc = DEFAULT_TARGETS.carb * KCAL_PER_G.carb;
+    const df = DEFAULT_TARGETS.fat * KCAL_PER_G.fat;
+    const dt = dp + dc + df;
+    return { p: dp / dt, c: dc / dt, f: df / dt };
+  }
+  return { p: p / total, c: c / total, f: f / total };
+}
+
+/** Grams that hold `split` and add up to `kcal`. Protein and fat round first;
+ *  carbs take the leftover so the three land on the goal, not near it. */
+export function macrosForKcal(kcal: number, split: EnergySplit): { protein: number; carb: number; fat: number } {
+  const protein = Math.max(0, Math.round((kcal * split.p) / KCAL_PER_G.protein));
+  const fat = Math.max(0, Math.round((kcal * split.f) / KCAL_PER_G.fat));
+  const carb = Math.max(
+    0,
+    Math.round((kcal - protein * KCAL_PER_G.protein - fat * KCAL_PER_G.fat) / KCAL_PER_G.carb),
+  );
+  return { protein, carb, fat };
+}
+
+/** Calories the three gram targets actually add up to. */
+export function macroKcal(t: { protein: number; carb: number; fat: number }): number {
+  return t.protein * KCAL_PER_G.protein + t.carb * KCAL_PER_G.carb + t.fat * KCAL_PER_G.fat;
+}
+
+/**
+ * Fill in only the macros a caller left out, so all four targets add up to
+ * `kcal`. Whatever the caller specified is kept EXACTLY; the omitted ones share
+ * the calories left over, in the same proportion they had to each other before.
+ *
+ * This is the partial case `macrosForKcal` cannot express. A coach phase that
+ * says "1300 kcal, keep protein at 100" must not have its 100 g overwritten,
+ * and must not have carbs and fat derived from a split that still counts the
+ * old protein: that lands back on four numbers that do not add up.
+ */
+export function fillMissingMacros(
+  kcal: number,
+  given: { protein?: number | null; carb?: number | null; fat?: number | null },
+  current: { protein: number; carb: number; fat: number },
+): { protein: number; carb: number; fat: number } {
+  const KEYS = ['protein', 'carb', 'fat'] as const;
+  const out = {
+    protein: given.protein ?? current.protein,
+    carb: given.carb ?? current.carb,
+    fat: given.fat ?? current.fat,
+  };
+  const missing = KEYS.filter((k) => given[k] == null);
+  if (missing.length === 0) return out;
+
+  const fixedKcal = KEYS
+    .filter((k) => given[k] != null)
+    .reduce((sum, k) => sum + (given[k] as number) * KCAL_PER_G[k], 0);
+  // A phase whose explicit macros already exceed its calorie target leaves
+  // nothing to share out; zero beats a negative gram target.
+  const remaining = Math.max(0, kcal - fixedKcal);
+
+  const raw = missing.map((k) => current[k] * KCAL_PER_G[k]);
+  const rawTotal = raw.reduce((a, b) => a + b, 0);
+  const weights = rawTotal > 0 ? raw : missing.map((k) => DEFAULT_TARGETS[k] * KCAL_PER_G[k]);
+  const wTotal = weights.reduce((a, b) => a + b, 0);
+  const share = wTotal > 0 ? weights.map((w) => w / wTotal) : missing.map(() => 1 / missing.length);
+
+  // The last omitted macro takes whatever is left rather than its own rounded
+  // share, so the four land ON the target instead of near it.
+  let used = 0;
+  missing.forEach((k, i) => {
+    if (i < missing.length - 1) {
+      const grams = Math.max(0, Math.round((remaining * share[i]) / KCAL_PER_G[k]));
+      out[k] = grams;
+      used += grams * KCAL_PER_G[k];
+    } else {
+      out[k] = Math.max(0, Math.round((remaining - used) / KCAL_PER_G[k]));
+    }
+  });
+  return out;
+}
+
+interface CachedTargets { targets: NutritionTargets; isCustom: boolean }
+
 /** Read the user's daily targets. isCustom = they've set at least one real goal
  *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
 export function useNutritionTargets(): {
@@ -860,17 +1059,30 @@ export function useNutritionTargets(): {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
   const clerkId = user?.id ?? null;
-  const [targets, setTargets] = useState<NutritionTargets>(DEFAULT_TARGETS);
-  const [isCustom, setIsCustom] = useState(false);
+  // Seed from the read cache so a cold start paints the user's real goal, not
+  // the 2000 kcal default that then snaps to (say) 1600 once the fetch lands.
+  const cachedSeed = readCache<CachedTargets>('nutritionTargets', clerkId);
+  const [targets, setTargets] = useState<NutritionTargets>(cachedSeed?.targets ?? DEFAULT_TARGETS);
+  const [isCustom, setIsCustom] = useState(cachedSeed?.isCustom ?? false);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
-  const apply = useCallback((t: NutritionTargets) => { setTargets(t); setIsCustom(true); }, []);
+  const apply = useCallback((t: NutritionTargets) => {
+    setTargets(t); setIsCustom(true);
+    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true });
+  }, [clerkId]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // The synchronous seed above misses when the cache hasn't hydrated from
+      // disk yet (first render after launch), so re-read once it has.
+      await hydrateCache(clerkId);
+      if (cancelled) return;
+      const cached = readCache<CachedTargets>('nutritionTargets', clerkId);
+      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); }
+
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
       const { data } = clerkId
@@ -879,16 +1091,18 @@ export function useNutritionTargets(): {
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
-      setTargets({
+      const next: NutritionTargets = {
         kcal: pick(d.daily_calorie_target, DEFAULT_TARGETS.kcal),
         protein: pick(d.protein_target_g, DEFAULT_TARGETS.protein),
         carb: pick(d.carb_target_g, DEFAULT_TARGETS.carb),
         fat: pick(d.fat_target_g, DEFAULT_TARGETS.fat),
-      });
-      setIsCustom(
+      };
+      const nextIsCustom =
         d.daily_calorie_target != null || d.protein_target_g != null ||
-        d.carb_target_g != null || d.fat_target_g != null,
-      );
+        d.carb_target_g != null || d.fat_target_g != null;
+      setTargets(next);
+      setIsCustom(nextIsCustom);
+      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom });
     })();
     return () => { cancelled = true; };
   }, [supabase, clerkId, tick]);
@@ -1141,7 +1355,13 @@ export async function updateEntryQuantity(
   entry: LoggedEntry,
   newQuantity: number,
 ): Promise<{ error?: string }> {
-  const q1 = Math.min(Math.max(newQuantity, 0.25), 50);
+  // Cap only. Every CREATE path (the picker, a parse, a saved meal) writes an
+  // unbounded quantity and the column has no CHECK, so clamping the EDIT path
+  // to 50 made portions you could log but could not adjust: editing a 200 x
+  // entry silently rewrote it to 50. The floor is an epsilon, not a quarter,
+  // for the same reason — 0.1 of something is a real portion, and rounding it
+  // up to 0.25 without saying so is the bug this pair used to have.
+  const q1 = Math.min(Math.max(newQuantity, 0.01), 999);
   const q0 = entry.quantity > 0 ? entry.quantity : 1;
   const f = q1 / q0;
   const patch: Record<string, number> = {

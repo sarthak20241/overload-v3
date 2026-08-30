@@ -21,7 +21,9 @@ export type CacheEntity =
   | 'analyticsWorkouts'
   | 'profileXp'
   | 'profile'
-  | 'prevPerf';
+  | 'prevPerf'
+  | 'nutritionTargets'
+  | 'dayNutrition';
 
 const ENTITIES: CacheEntity[] = [
   'routines',
@@ -33,6 +35,8 @@ const ENTITIES: CacheEntity[] = [
   'profileXp',
   'profile',
   'prevPerf',
+  'nutritionTargets',
+  'dayNutrition',
 ];
 const KEY = (entity: CacheEntity, userId: string) => `cache_${entity}_v1::${userId}`;
 

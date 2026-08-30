@@ -11,12 +11,19 @@
  *   declined  — non-food input: Drona's redirect line + dismiss.
  *   error     — parse/transport failure: message + Retry.
  *
+ * A review card is tall and sits in an absolutely-positioned wrapper over the
+ * day list, so it hides the very entries a user wants to check against before
+ * confirming. It can be COLLAPSED to a one-line summary that keeps the parse
+ * alive while giving the screen back: nothing is written and nothing is thrown
+ * away, so browsing the day is no longer a choice between the card and the
+ * screen behind it.
+ *
  * The user picks the section and confirms; only then do the entries land in that
  * meal section underneath. Numbers carry receipts: catalog lines are silent,
  * sourced/estimated lines say where they came from.
  */
 import React, { useEffect, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
   useReducedMotion, FadeIn,
@@ -26,6 +33,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import type { ParsedMeal, ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
+import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 export type ParseCardState = 'analysing' | 'streaming' | 'review' | 'declined' | 'error';
@@ -59,6 +67,11 @@ interface Props {
   /** Rows to show while the numbers are still resolving (state 'streaming'). */
   streamingRows?: StreamingRow[] | null;
   rawText: string;
+  /** Height cap for the whole card. Long meals used to grow past the top of
+   *  the screen (the card is pinned above the input, outside any scroll), so
+   *  the item list scrolls inside this cap while the totals row and the
+   *  section/actions footer stay pinned and always reachable. */
+  maxHeight?: number;
   meal?: ParsedMeal | null;
   mealType?: MealType;                       // currently selected section (review)
   message?: string | null;
@@ -87,6 +100,10 @@ interface Props {
   onSave?: () => void;                        // save this parse as a meal/recipe
   onRetry?: () => void;
   onDismiss?: () => void;
+  /** Collapsed to the summary line. Owned by the screen so a fresh parse can
+   *  reopen it: a new meal the user has not seen yet must never arrive hidden. */
+  minimized?: boolean;
+  onToggleMinimize?: () => void;
 }
 
 const r0 = (n: number) => Math.round(n);
@@ -133,18 +150,85 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, streamingRows, rawText, meal, mealType, message, adding, saved, notice, proposalLabel,
+  state, streamingRows, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
   onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
+  minimized, onToggleMinimize,
 }: Props) {
   const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
   const { C } = useTheme();
   const s = makeStyles(C);
   const selected: MealType = mealType ?? meal?.meal_type ?? 'snack';
+  // Collapsing is only offered on `review`. The other three states are already
+  // short and transient, and hiding a decline or an error would just lose it.
+  // Not while work is in flight either: collapsing would hide the "Adding..."
+  // or checking status and leave Discard as the one live control on the strip,
+  // which is the same race onEditItem/onRemoveItem are already frozen for.
+  const collapsible = state === 'review' && !!meal && !!onToggleMinimize
+    && !adding && !busyChecking;
+  const isCollapsed = collapsible && !!minimized;
+  const items = state === 'review' && meal ? meal.items : [];
+  const sum = items.reduce(
+    (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g }),
+    { kcal: 0, p: 0, c: 0, f: 0 },
+  );
+
+  if (isCollapsed && meal) {
+    const kcal = r0(meal.items.reduce((sum, it) => sum + it.kcal, 0));
+    const n = meal.items.length;
+    const summary = `${n} ${n === 1 ? 'item' : 'items'} · ${kcal} kcal → ${mealLabel(selected)}`;
+    return (
+      <Animated.View entering={FadeIn.duration(160)} style={[s.card, s.cardCollapsed]}>
+        {/* Expand and Discard are SIBLINGS, not nested. A Pressable inside an
+            accessible Pressable can be collapsed into the outer button by
+            VoiceOver / TalkBack, leaving Discard unreachable. */}
+        <View style={s.collapsedRow}>
+          <Pressable
+            onPress={onToggleMinimize}
+            style={s.collapsedMain}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: false }}
+            accessibilityLabel={`Waiting to be added: ${summary}`}
+            accessibilityHint="Opens the parsed meal again"
+          >
+            <DronaMark size={16} />
+            <Text style={s.collapsedTxt} numberOfLines={1}>{summary}</Text>
+            <Feather name="chevron-up" size={15} color={C.textMuted} />
+          </Pressable>
+          {!!onDismiss && (
+            <Pressable
+              onPress={onDismiss}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Discard"
+            >
+              <Feather name="x" size={14} color={C.textMuted} />
+            </Pressable>
+          )}
+        </View>
+      </Animated.View>
+    );
+  }
 
   return (
-    <Animated.View entering={FadeIn.duration(160)} style={s.card}>
-      {!!rawText && <Text style={s.raw} numberOfLines={2}>{rawText}</Text>}
+    <Animated.View entering={FadeIn.duration(160)} style={[s.card, maxHeight != null && { maxHeight }]}>
+      {(!!rawText || collapsible) && (
+        <View style={s.rawRow}>
+          {!!rawText && <Text style={[s.raw, s.rawGrow]} numberOfLines={2}>{rawText}</Text>}
+          {collapsible && (
+            <Pressable
+              onPress={onToggleMinimize}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: true }}
+              accessibilityLabel="Minimize"
+              accessibilityHint="Keeps this meal waiting while you browse the day"
+            >
+              <Feather name="chevron-down" size={15} color={C.textMuted} />
+            </Pressable>
+          )}
+        </View>
+      )}
 
       {state === 'analysing' && <Analysing C={C} />}
 
@@ -157,7 +241,7 @@ export function ParsedMealCard({
       )}
 
       {state === 'review' && meal && (
-        <View>
+        <View style={s.reviewBody}>
           {/* Drona answering a question about these lines. The meal stays. */}
           {!!notice && (
             <View style={s.notice}>
@@ -182,6 +266,31 @@ export function ParsedMealCard({
               )}
             </View>
           )}
+
+          {/* Meal totals, pinned above the scrolling lines: the whole-meal
+              read stays visible however long the list is. Single-line meals
+              skip it — the line IS the total. */}
+          {items.length > 1 && (
+            <View style={s.totals}>
+              <Text style={[s.totalNum, { color: C.foreground }]}>{r0(sum.kcal)}</Text>
+              <Text style={[s.totalNum, { color: C.macro.protein }]}>{r0(sum.p)}g P</Text>
+              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{r0(sum.c)}g C</Text>
+              <Text style={[s.totalNum, { color: C.macro.fat }]}>{r0(sum.f)}g F</Text>
+              <Text style={s.totalCount}>{items.length} items</Text>
+            </View>
+          )}
+
+          {/* Only the lines scroll; totals above and section/actions below
+              stay pinned. Dragging the list also drops the keyboard, which
+              buys back the space it was taking. */}
+          <ScrollView
+            style={s.itemsScroll}
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator
+            persistentScrollbar
+          >
           {meal.items.map((it, i) => {
             const prov = provenance(it.source);
             return (
@@ -196,7 +305,7 @@ export function ParsedMealCard({
                 <View style={s.itemHead}>
                   <Text style={s.itemName} numberOfLines={1}>
                     {it.food_name}
-                    <Text style={s.serving}>{'  '}{it.quantity !== 1 ? `${it.quantity} × ` : ''}{it.serving_label}</Text>
+                    <Text style={s.serving}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text>
                   </Text>
                   {prov && <Text style={s.provChip}>{prov}</Text>}
                   {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
@@ -212,7 +321,7 @@ export function ParsedMealCard({
                   )}
                 </View>
                 <View style={s.macros}>
-                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} kcal</Text>
+                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} cal</Text>
                   <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
                   <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
                   <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
@@ -250,6 +359,7 @@ export function ParsedMealCard({
               </Pressable>
             );
           })}
+          </ScrollView>
 
           {/* Section selector — the user decides where this meal goes. */}
           <View style={s.sectionRow}>
@@ -269,7 +379,9 @@ export function ParsedMealCard({
           </View>
 
           {meal.drona_line ? (
-            <View style={s.dronaRow}>
+            // flex:0 override: dronaRow's shared flex:1 (basis 0) would collapse
+            // this row to nothing once the card sits at its maxHeight cap.
+            <View style={[s.dronaRow, { flex: 0 }]}>
               <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
               <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
             </View>
@@ -454,6 +566,33 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card,
     },
     raw: { fontSize: FontSize.sm, color: C.textDim, marginBottom: Spacing.sm },
+    // The chevron sits on the first line of the raw text, not below it, so
+    // minimizing costs the card no extra height while it is open.
+    rawRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
+    rawGrow: { flex: 1 },
+
+    // Collapsed: tighter padding than the open card so the strip reads as a
+    // handle rather than an empty card.
+    cardCollapsed: { paddingVertical: 10, paddingHorizontal: Spacing.md },
+    collapsedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    // Takes the row so tapping anywhere but the X expands.
+    collapsedMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    collapsedTxt: {
+      flex: 1, fontSize: FontSize.sm, color: C.foreground,
+      fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'],
+    },
+
+    // flexShrink on the body + the scroll is what makes the maxHeight cap
+    // squeeze the LIST rather than push the footer off the card.
+    reviewBody: { flexShrink: 1 },
+    itemsScroll: { flexGrow: 0, flexShrink: 1 },
+
+    totals: {
+      flexDirection: 'row', alignItems: 'baseline', gap: Spacing.md,
+      paddingBottom: Spacing.sm, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+    },
+    totalNum: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, fontVariant: ['tabular-nums'] },
+    totalCount: { marginLeft: 'auto', fontSize: FontSize.xs, color: C.textMuted },
 
     notice: {
       backgroundColor: C.primarySubtle, borderRadius: Radius.md,

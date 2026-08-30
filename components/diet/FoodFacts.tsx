@@ -39,7 +39,10 @@ export function FoodCompositionCard({ n, C }: { n: ResolvedNutrients; C: C }) {
 export function NutritionFactsPanel({ n, C }: { n: ResolvedNutrients; C: C }) {
   return (
     <View style={[s.facts, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
-      <FactRow label="Calories" value={r0(n.kcal).toLocaleString()} bold C={C} />
+      {/* Every other row carries its unit, so a bare number here read as a
+          quantity with no scale ("Calories 14"). Calories is the one figure
+          people compare across apps; it says what it is. */}
+      <FactRow label="Calories" value={`${r0(n.kcal).toLocaleString()} cal`} bold C={C} />
       <FactRow label="Total Fat" value={`${r1(n.fat_g)} g`} C={C} />
       <FactRow label="Saturated Fat" value={`${r1(n.sat_fat_g)} g`} indent C={C} />
       <FactRow label="Total Carbohydrate" value={`${r1(n.carb_g)} g`} C={C} />

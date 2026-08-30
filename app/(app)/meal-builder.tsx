@@ -23,7 +23,7 @@ import {
   searchCatalog, createSavedMeal, updateSavedMeal, logSavedMeal, loadServings, getLogMeal,
   type PickerFood, type ParsedMealItem, type SavedMeal, type SavedMealItem,
 } from '@/lib/dietData';
-import { defaultServing, resolveBaseAmount, nutrientsForAmount, type FoodServing, type ResolvedNutrients, type MealType } from '@/lib/foods';
+import { defaultServing, resolveBaseAmount, nutrientsForAmount, formatServing, type FoodServing, type ResolvedNutrients, type MealType } from '@/lib/foods';
 import { FoodCompositionCard, NutritionFactsPanel } from '@/components/diet/FoodFacts';
 import { haptics } from '@/lib/haptics';
 
@@ -385,9 +385,9 @@ export default function MealBuilderScreen() {
           items.map((it, i) => (
             <View key={i} style={[s.item, { borderColor: C.borderSubtle }]}>
               <Pressable style={{ flex: 1 }} onPress={() => editItem(it, i)}>
-                <Text style={s.itemName} numberOfLines={1}>{it.food_name}<Text style={s.itemServ}>{'  '}{round(it.quantity * 10) / 10} × {it.serving_label}</Text></Text>
+                <Text style={s.itemName} numberOfLines={1}>{it.food_name}<Text style={s.itemServ}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text></Text>
                 <View style={s.itemMacros}>
-                  <Text style={[s.macro, { color: C.foreground }]}>{round(it.kcal)}</Text>
+                  <Text style={[s.macro, { color: C.foreground }]}>{round(it.kcal)} cal</Text>
                   <Text style={[s.macro, { color: C.macro.protein }]}>{round(it.protein_g)} P</Text>
                   <Text style={[s.macro, { color: C.macro.carbs }]}>{round(it.carb_g)} C</Text>
                   <Text style={[s.macro, { color: C.macro.fat }]}>{round(it.fat_g)} F</Text>
