@@ -148,8 +148,11 @@ export default function NutritionScreen() {
   const [dayScrollY, setDayScrollY] = useState(0);
   // Quantised: this runs on every scroll frame, and the cap only has to move in
   // steps a person can see. Returning `prev` unchanged skips the re-render.
+  // Floored at 0: iOS rubber-banding reports a negative offset for the length of
+  // an overscroll bounce, which would push the summary's computed screen position
+  // DOWN past where it is drawn and shrink the card for the duration of the pull.
   const onDayScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const y = Math.round(e.nativeEvent.contentOffset.y / 16) * 16;
+    const y = Math.max(0, Math.round(e.nativeEvent.contentOffset.y / 16) * 16);
     setDayScrollY((prev) => (prev === y ? prev : y));
   }, []);
   // Cap the parse card so a long meal never runs past the top of the screen
