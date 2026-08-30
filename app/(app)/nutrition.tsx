@@ -29,6 +29,7 @@ import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
+import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   parseMeal, parseMealStreaming, logParsedMeal,
@@ -37,6 +38,7 @@ import {
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
+import { getParseSpeed, setParseSpeed, type ParseSpeed } from '@/lib/parseSpeed';
 import type { MealType } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
@@ -135,6 +137,19 @@ export default function NutritionScreen() {
   // Mirror of `flow` for callbacks that must read it without re-subscribing
   // (runParse would otherwise capture a stale flow or churn its identity).
   const flowRef = useRef<ParseFlow>(flow);
+  // Parse tier (Quick default / Thorough opt-in). A ref mirrors the state so
+  // onSend reads the CURRENT choice, matching the flowRef idiom above.
+  const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
+  const parseSpeedRef = useRef<ParseSpeed>('quick');
+  const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  useEffect(() => {
+    getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
+  }, []);
+  const pickParseSpeed = (v: ParseSpeed) => {
+    parseSpeedRef.current = v;
+    setParseSpeedState(v);
+    void setParseSpeed(v);
+  };
   useEffect(() => { flowRef.current = flow; }, [flow]);
   // What was said, so a bare "yes" can answer whatever Drona just offered.
   // Kept in a ref (never rendered) and trimmed to the last few turns.
@@ -192,8 +207,10 @@ export default function NutritionScreen() {
     const args = { text: t, mealHint: mealForNow(), previous: pending, turns };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
-    // not opening the stream saves the wasted round trip.
-    const res = pending
+    // not opening the stream saves the wasted round trip. A user on Thorough
+    // takes the same full-pipeline road as a correction - parseMeal sends no
+    // speed field, which the server reads as smart.
+    const res = pending || parseSpeedRef.current === 'thorough'
       ? await parseMeal(supabase, args)
       : await parseMealStreaming(supabase, args, (rows) => {
         // Guard on the raw text: a stream that resolves after the user has
@@ -594,6 +611,21 @@ export default function NutritionScreen() {
               // instead of scrolling off one clipped line. Submit via the arrow.
               multiline
             />
+            {/* Parse-tier chip: quiet in the default (Quick), lime when the user
+                has opted into Thorough, so only the non-default state draws the
+                eye. Tap opens the sheet; the choice is sticky. */}
+            <Pressable
+              onPress={() => setSpeedSheetOpen(true)}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel={parseSpeed === 'thorough' ? 'Logging mode: Thorough' : 'Logging mode: Quick'}
+            >
+              <Feather
+                name={parseSpeed === 'thorough' ? 'target' : 'zap'}
+                size={14}
+                color={parseSpeed === 'thorough' ? C.accentText : C.textSecondary}
+              />
+            </Pressable>
             <Pressable
               onPress={onSend}
               hitSlop={8}
@@ -651,6 +683,12 @@ export default function NutritionScreen() {
       />
 
       {/* Jump the diary to any past day. */}
+      <ParseSpeedSheet
+        open={speedSheetOpen}
+        value={parseSpeed}
+        onClose={() => setSpeedSheetOpen(false)}
+        onPick={pickParseSpeed}
+      />
       <DayPickerSheet
         open={calendarOpen}
         date={viewDate}
