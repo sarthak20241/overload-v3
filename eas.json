@@ -46,6 +46,15 @@
         "track": "alpha",
         "changesNotSentForReview": true
       }
+    },
+    "open-testing": {
+      "ios": {
+        "ascAppId": "6773063775"
+      },
+      "android": {
+        "track": "beta",
+        "changesNotSentForReview": true
+      }
     }
   }
 }
