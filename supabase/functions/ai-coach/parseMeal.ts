@@ -1410,14 +1410,19 @@ When in doubt between correction and addition, prefer addition: adding a wrong i
  * about half that, and the estimate is already in hand when the accept gate
  * rejects a row.
  *
- * The per-100 contract is IN THE FIELD NAMES, not just the descriptions. The
- * first probe asked for "per-100g kcal" in prose and got back
- * {est_grams: 450, est_kcal: 350} for a plate of chole bhature - 350 is
- * neither a credible total nor per-100, the model had conflated the two.
- * A name like est_per100_kcal is much harder to misread.
+ * v2: the est_ fields are TOTALS for the line, not per-100 x grams. Measured
+ * 2026-08-30 with the catalog stripped away: the model's per-piece GRAM
+ * knowledge is 2-5x high (6 cashews -> 42 g against a true 9; 20 cashews ->
+ * 160 g, so the multiplication was fine and the piece weight was not), while
+ * calorie-per-serving knowledge is what its training data actually contains.
+ * Asking for kcal directly removes the weakest number from the chain;
+ * est_total_g survives as a display label and never feeds the macro math.
  */
 const FAST_EXTRACT_TOOL = (() => {
   const t = JSON.parse(JSON.stringify(EXTRACT_TOOL));
+  // Its own name: the schema is different enough that calling it extract_meal
+  // would be a lie in every trace.
+  t.name = "estimate_meal";
   const item = t.input_schema.properties.items.items;
 
   // Fast mode only ever runs when there is NO previous meal (see `fastMode`
@@ -1430,34 +1435,31 @@ const FAST_EXTRACT_TOOL = (() => {
   }
   delete item.properties.corrects_food_name;
 
-  // EXTRACT_TOOL's own description ends "Extraction only: no nutrition numbers,
-  // no serving-size guessing beyond what the text says." Correct for smart,
-  // FATAL here: it sits directly on the tool being forced, next to five est_
-  // fields this same builder marks REQUIRED. Splitting EXTRACT_SYSTEM removed
-  // the contradiction from the system prompt and left the louder copy of it
-  // right here, which is why the estimates stayed sloppy after that fix.
-  t.description = "Report every distinct food or drink in the text as a separate item, " +
-    "and for each one give your own best nutrition and weight estimate in the est_ fields. " +
-    "name/quantity/unit stay strictly extraction: they mirror what the text says. " +
-    "The est_ fields are the opposite - they are yours to estimate, they are required, " +
+  // The inherited items description spends ~50 words on corrects_previous and
+  // removed_food_names - both deleted above. Instructions about fields that do
+  // not exist are budget spent teaching nothing.
+  t.input_schema.properties.items.description = "One entry per distinct food or drink the user ate.";
+
+  t.description = "Log the user's meal. name/quantity/unit/prep mirror what the text says. " +
+    "The est_ fields are yours to estimate - TOTALS for the line as eaten - " +
     "and nothing downstream will correct them.";
 
   Object.assign(item.properties, {
-    est_per100_kcal: {
+    est_kcal: {
       type: "number",
-      description: "Your best kcal PER 100 g (or 100 ml) of this food. PER 100, never the total for the amount eaten.",
+      description: "TOTAL kcal for this line as eaten: the serving applied, the count multiplied in. Never per-100, never per piece.",
     },
-    est_per100_protein_g: { type: "number", description: "Protein grams PER 100 g." },
-    est_per100_carb_g: { type: "number", description: "Carb grams PER 100 g." },
-    est_per100_fat_g: { type: "number", description: "Fat grams PER 100 g." },
+    est_protein_g: { type: "number", description: "TOTAL protein grams for the line." },
+    est_carb_g: { type: "number", description: "TOTAL carb grams for the line." },
+    est_fat_g: { type: "number", description: "TOTAL fat grams for the line." },
     est_total_g: {
       type: "number",
-      description: 'TOTAL grams (or ml) for the WHOLE line, with the count already multiplied in: "1 plate chole bhature" is ~400, "2 rotis" ~80. N pieces is N times the weight of one piece, never one piece and never the whole pack.',
+      description: "Grams (or ml) the whole line comes to. Display only - it labels the entry and never feeds the calorie math - but still your honest best guess.",
     },
   });
   item.required = [
     ...item.required,
-    "est_per100_kcal", "est_per100_protein_g", "est_per100_carb_g", "est_per100_fat_g", "est_total_g",
+    "est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g",
   ];
   return t;
 })();
@@ -1470,60 +1472,70 @@ const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lif
  *  model not to do the exact thing FAST_EXTRACT_TOOL makes required. */
 const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition.`;
 
-/** Both modes. quantity and unit mirror what the user SAID, in fast as much as
- *  in smart: converting a stated count to grams is est_total_g's job, not this
- *  one's, and inventing an amount nobody typed is still wrong either way. */
+/** Smart only, since fast carries its own standalone prompt below. quantity
+ *  and unit mirror what the user SAID; inventing an amount nobody typed is
+ *  decide's call to make, not extraction's. */
 const EXTRACT_SHARED_RULES =
   ` Do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
 
 /**
- * Fast only: the estimating half of the job, which Smart does in decide.
+ * Fast's whole prompt, standalone. v2, redesigned 2026-08-30.
  *
- * Measured on the eval corpus in FAST_MODE before this existed: "2 good day
- * biscuits" came back 40 g and "britannia marie gold 4 biscuits" ALSO came back
- * 40 g. The count was not reaching the grams at all - the model answered "some
- * biscuits", roughly a packet, for both. On device "2 oreo biscuits" gave 56 g
- * against a true ~22 g.
+ * v1 was EXTRACT_SYSTEM_HEAD + shared rules + a bullet list of estimating
+ * rules bolted on: a segmentation prompt asked, in its sixth bullet, to also
+ * be a calorie tracker. v2 states the actual job in the first sentence and
+ * teaches by example instead of by rule.
  *
- * WHAT BELONGS HERE, AND WHAT DOES NOT.
+ * The est_ fields are TOTALS for the line (see FAST_EXTRACT_TOOL): the model's
+ * per-piece gram knowledge measured 2-5x high with the catalog stripped away,
+ * while its calorie knowledge is the thing its training data is full of.
+ * est_total_g is displayed, never multiplied.
  *
- * An earlier version named the eval's own inputs and quoted its observed
- * failure values back at the model ("4 marie biscuits is ~20 g and never 44",
- * "100g soya chunks stays quantity 100"). That is teaching the test: those
- * cases then pass by recall and stop measuring anything.
- *
- * Removing it entirely was measured too, and it does not work. Held out, the
- * shape-only version ("small pieces are small, multiply by the count") sizes
- * NUTS correctly - 6 cashews at 9 g, 5 almonds at 6 g - but not biscuits: it
- * returned 60 g for four thin ones and 82 g for two cream ones, worse than
- * before any of this. It failed the same way on Monaco, a biscuit no prompt
- * has ever named, so the gap is real knowledge and not an eval artifact. The
- * model's prior for "a biscuit" is roughly a small pack.
- *
- * So: the RULE is stated generically, and one line of genuine reference data
- * covers the category the model cannot size. The named brands are India's
- * best-selling biscuits and already appear in buildDecideSystemPrompt; they
- * are domain constants, not answers copied off a scoreboard. Monaco, Oreo,
- * rusks, cashews and dates stay deliberately UNNAMED so the probe cases in
- * the eval keep testing generalisation rather than recall.
+ * The few-shot foods - dates, pistachios, vada pav, cutting chai, grilled
+ * fish, khichdi - are deliberately ABSENT from the eval corpus
+ * (scripts/parse-meal-eval/cases.ts), which stays a held-out test. Do not
+ * "fix" an eval failure by adding its food here; that is teaching the test,
+ * and the probe cases exist to catch exactly that.
  */
-const FAST_EXTRACT_RULES = `
+const FAST_EXTRACT_SYSTEM = `You are the calorie tracking agent inside OVERLOAD, a fitness app. The user tells you what they ate in one meal, in plain text. For every food or drink mentioned, report it via the estimate_meal tool with your best nutrition estimate.
 
-FAST MODE. This is the ONLY model call in the parse. There is no second pass to correct your numbers, so the est_ fields ARE the answer.
+Serving size:
+- If the user states an amount ("100g paneer", "250 ml", "half katori"), use exactly that.
+- If not, assume one average serving of that food.
+- Counts multiply: "3 pieces" means the numbers cover all 3.
 
-- est_per100_kcal / _protein_g / _carb_g / _fat_g: your own best per-100 knowledge for that food. Required. Give them.
-- est_total_g: grams for the WHOLE line, with the count already multiplied in. Find the weight of ONE, then multiply. N pieces is never the weight of one piece, and never the weight of the pack they came out of.
-- The est_ fields are IN ADDITION to quantity and unit, never instead of them. An amount the user STATED stays in quantity: "250 ml buttermilk" is quantity 250, unit "ml", and est_total_g 250. Moving a stated amount into est_total_g and leaving quantity 1 logs one gram of food.
-- Small pieces are genuinely small. A packaged biscuit, a cracker, a nut, a seed, a date: each is single-digit grams, occasionally low double digits, so a few of them come to tens of grams and not hundreds. Density varies within a category, so weigh the specific item: a thin dry biscuit is lighter than a cream-filled one, a cashew heavier than a peanut, a soft date several times a dried one.
-- Indian packaged biscuits weigh far less than people assume, and the type decides it: a thin glucose or tea biscuit (Marie, Parle-G) is ~4-6 g each, a cream-filled or cookie one (Good Day, Bourbon) is ~7-12 g each. Other small dry baked pieces sit in the same range. Multiply by the count.
-- Household measures, when the user names one instead of a count: 1 katori ~150 g cooked, 1 bowl ~250 g, 1 glass ~250 ml, 1 cup ~200 ml, 1 scoop whey ~32 g, 1 roti ~40 g, 1 egg ~50 g.`;
+All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
 
-/** Smart's prompt, unchanged in meaning: head + the no-nutrition rule + shared. */
+Keep names faithful: correct spelling ("panner" is "paneer"), and keep words that change the food ("low fat", "double toned", "boiled") - dropping them logs a different food.
+
+One item per food the user LISTED. A composite dish is one item ("rajma chawal"), but an add-on named alongside a dish is its own line, never folded in - the user edits and deletes lines one at a time. Never drop an item, never merge two named foods into one.
+
+Indian context: plain "tea" or "chai" is milk tea; plain "coffee" is milk coffee.
+
+If there is nothing to log (a question, chatter, a workout), decline.
+
+Examples:
+
+Input: "2 medjool dates and 10 pistachios"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "medjool dates", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "est_kcal": 130, "est_protein_g": 0.8, "est_carb_g": 36, "est_fat_g": 0.1, "est_total_g": 48},
+  {"name": "pistachios", "brand": null, "quantity": 10, "unit": "piece", "prep": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 2, "est_fat_g": 3.2, "est_total_g": 7}]}
+
+Input: "1 vada pav with extra chutney and a cutting chai"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "vada pav", "brand": null, "quantity": 1, "unit": "piece", "prep": null, "est_kcal": 290, "est_protein_g": 6, "est_carb_g": 40, "est_fat_g": 12, "est_total_g": 120},
+  {"name": "chutney", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "est_kcal": 30, "est_protein_g": 0.5, "est_carb_g": 4, "est_fat_g": 1.5, "est_total_g": 20},
+  {"name": "milk tea", "brand": null, "quantity": 1, "unit": "cutting", "prep": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 5, "est_fat_g": 1.5, "est_total_g": 90}]}
+
+Input: "150g grilled fish and half katori khichdi"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
+  {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
+
+Input: "played football for an hour"
+Output: {"declined": true, "decline_message": "That's training, not a meal. Tell me what you ate and I'll log it.", "meal_type_from_text": null, "items": []}`;
+
 const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
-
-/** Fast's prompt: the same segmentation job, minus the sentence that forbade
- *  nutrition, plus the estimating rules decide would otherwise have carried. */
-const FAST_EXTRACT_SYSTEM = EXTRACT_SYSTEM_HEAD + EXTRACT_SHARED_RULES + FAST_EXTRACT_RULES;
 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
@@ -1686,9 +1698,10 @@ export interface ExtractedItem {
   /** When this entry corrects a line of the meal under review, that line's
    *  food_name verbatim — the handle we re-target it by. */
   correctsFoodName?: string | null;
-  /** Fast mode only: the model's own per-100 numbers, produced in the SAME
-   *  call that named the food. Null when any field was missing or negative -
-   *  a partial estimate is not an estimate. */
+  /** Fast mode only: the model's own numbers, produced in the SAME call that
+   *  named the food. TOTALS for the line as eaten - kcal/macros ready to log,
+   *  total_g a display label that never feeds the math. Null when any field
+   *  was missing or negative: a partial estimate is not an estimate. */
   est?: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number } | null;
 }
 
@@ -3138,7 +3151,7 @@ export async function runParseMeal(
         : EXTRACT_SYSTEM_SMART,
     ),
     tools: withToolCache([fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL]),
-    tool_choice: { type: "tool", name: "extract_meal" },
+    tool_choice: { type: "tool", name: fastMode ? "estimate_meal" : "extract_meal" },
     messages: [{
       role: "user",
       content: hasPrevious
@@ -3167,12 +3180,12 @@ export async function runParseMeal(
   if (extractRes) {
     anthropicCalls++;
     accumulate(extractRes.data);
-    toolCalls.push("extract_meal");
+    toolCalls.push(fastMode ? "estimate_meal" : "extract_meal");
   }
 
   const extractBlock = extractRes
     ? ((extractRes.data.content ?? []) as Array<Record<string, any>>)
-      .find((b) => b.type === "tool_use" && b.name === "extract_meal")
+      .find((b) => b.type === "tool_use" && (b.name === "extract_meal" || b.name === "estimate_meal"))
     : undefined;
   // When the extract call was skipped, the grammar's own items ARE the extract
   // result. Every flag defaults false: the grammar refuses corrections,
@@ -3215,7 +3228,10 @@ export async function runParseMeal(
         // missing field silently read as 0 is how zero-kcal lines shipped once
         // before.
         est: (() => {
-          const nums = ["est_per100_kcal", "est_per100_protein_g", "est_per100_carb_g", "est_per100_fat_g", "est_total_g"]
+          // TOTALS for the line, not per-100 (see FAST_EXTRACT_TOOL). Any
+          // missing or negative field voids the whole estimate - a partial
+          // estimate silently read as 0 is how zero-kcal lines shipped once.
+          const nums = ["est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g"]
             .map((k) => o[k]);
           if (!nums.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)) return null;
           const [kcal, protein_g, carb_g, fat_g, total_g] = nums as number[];
@@ -3310,7 +3326,7 @@ export async function runParseMeal(
       : null;
   steps.push({
     iter: 0,
-    tool: "extract_meal",
+    tool: fastMode ? "estimate_meal" : "extract_meal",
     input: { item_count: extItems.length, declined: ext.declined === true },
   });
 
@@ -3507,19 +3523,16 @@ export async function runParseMeal(
   if (fastMode) {
     deps.onProgress?.({
       kind: "items",
-      items: toResolve.map((r) => {
-        // est is per 100g; the row shows the whole line.
-        const line = r.est ? r.est.total_g / 100 : 0;
-        return {
-          name: r.brand ? `${r.brand} ${r.name}` : r.name,
-          quantity: r.quantity,
-          unit: r.unit,
-          est_kcal: r.est ? round1(r.est.kcal * line) : null,
-          est_protein_g: r.est ? round1(r.est.protein_g * line) : null,
-          est_carb_g: r.est ? round1(r.est.carb_g * line) : null,
-          est_fat_g: r.est ? round1(r.est.fat_g * line) : null,
-        };
-      }),
+      items: toResolve.map((r) => ({
+        // est carries line TOTALS now, so the shimmer numbers need no scaling.
+        name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        quantity: r.quantity,
+        unit: r.unit,
+        est_kcal: r.est ? round1(r.est.kcal) : null,
+        est_protein_g: r.est ? round1(r.est.protein_g) : null,
+        est_carb_g: r.est ? round1(r.est.carb_g) : null,
+        est_fat_g: r.est ? round1(r.est.fat_g) : null,
+      })),
     });
   }
 
@@ -3621,67 +3634,52 @@ export async function runParseMeal(
           confidence: "high" as const,
         };
       }
-      // An ACCEPTED row whose unit would not resolve (tbsp on a row with no
-      // spoon anchor, katori on a USDA row) used to discard the row entirely
-      // and fall to a pure estimate. Half of that estimate is unnecessary: the
-      // row's per-100 is measured, only the PORTION is a guess. So use the
-      // row's density with the model's gram estimate - roasted edamame gets
-      // its real 38 g protein per 100 instead of the model's 11.
-      if (pick && !per1 && r.est && r.est.total_g > 0) {
-        const grams = round1(Math.min(r.est.total_g, 5000));
-        const f = grams / 100;
-        return {
-          food_id: pick.cand.food_id,
-          food_name: said,
-          quantity: r.quantity > 0 ? r.quantity : 1,
-          serving_label: r.unit,
-          grams,
-          kcal: round1(pick.cand.kcal * f),
-          protein_g: round1(pick.cand.protein_g * f),
-          carb_g: round1(pick.cand.carb_g * f),
-          fat_g: round1(pick.cand.fat_g * f),
-          fiber_g: pick.cand.fiber_g === null ? null : round1(pick.cand.fiber_g * f),
-          source: pick.cand.source,
-          assumption: `Took that as about ${Math.round(grams)} g`,
-          confidence: "medium" as const,
-        };
-      }
+      // NOTE the branch that used to sit here - catalog density x the model's
+      // gram estimate for an accepted row with an unresolvable unit - is gone
+      // on purpose. It existed because the per-100 estimate was the weak
+      // number; now the GRAM guess is the weak number and est kcal/macros are
+      // the strong ones, so mixing a measured density with a 2-5x gram guess
+      // produces worse lines than the estimate used directly.
       if (r.est) {
-        // The model's own numbers, sanity-checked before anyone sees them.
-        // Atwater first: when stated kcal and macros disagree by more than 30%
-        // (the shipped checkAtwater tolerance) the macros win - three
-        // constrained numbers against one free one, and the probe caught the
-        // model conflating a total with per-100 exactly once already.
+        // The model's own line totals, sanity-checked before anyone sees them.
+        // Atwater is scale-free, so it works unchanged on totals: when stated
+        // kcal and macros disagree by more than 30% (the shipped checkAtwater
+        // tolerance) the macros win - three constrained numbers against one
+        // free one.
         const { protein_g, carb_g, fat_g, total_g } = r.est;
         const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
         const kcal = (atwater > 0 && Math.abs(r.est.kcal - atwater) > 0.3 * Math.max(r.est.kcal, atwater))
           ? atwater
           : r.est.kcal;
-        const bad = implausiblePer100({ kcal, protein_g, carb_g, fat_g });
-        if (!bad) {
-          const f = total_g / 100;
-          return {
-            food_id: null,
-            // Brand included: an estimate has no row name to display, so this
-            // IS the display, and "multigrain bar" for a Yogabar loses the
-            // product identity the user typed.
-            food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
-            quantity: r.quantity > 0 ? r.quantity : 1,
-            serving_label: r.unit,
-            grams: round1(total_g),
-            kcal: round1(kcal * f),
-            protein_g: round1(protein_g * f),
-            carb_g: round1(carb_g * f),
-            fat_g: round1(fat_g * f),
-            fiber_g: null,
-            source: "estimate" as const,
-            assumption: pick
-              ? "Close matches did not quite fit, so these are estimated"
-              : "No close match in the catalog, so these are estimated",
-            confidence: "medium" as const,
-          };
-        }
-        deps.log?.(`[parse_meal] fast estimate failed physics for "${r.name}": ${bad}`);
+        const item: ParsedItem = {
+          food_id: null,
+          // Brand included: an estimate has no row name to display, so this
+          // IS the display, and "multigrain bar" for a Yogabar loses the
+          // product identity the user typed.
+          food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
+          quantity: r.quantity > 0 ? r.quantity : 1,
+          serving_label: r.unit,
+          // Display only. A wrong gram guess now mislabels the line instead of
+          // corrupting the calories, which is the whole point of v2.
+          grams: round1(Math.min(total_g, 5000)),
+          kcal: round1(kcal),
+          protein_g: round1(protein_g),
+          carb_g: round1(carb_g),
+          fat_g: round1(fat_g),
+          fiber_g: null,
+          source: "estimate" as const,
+          assumption: pick
+            ? "Close matches did not quite fit, so these are estimated"
+            : "No close match in the catalog, so these are estimated",
+          confidence: "medium" as const,
+        };
+        // Per-100 physics no longer applies (these are line totals); the line
+        // guard does. An absurd line still logs - visibly low-confidence - so
+        // the user sees their food rather than a silent drop.
+        const bad = implausibleLine(item);
+        if (!bad) return item;
+        deps.log?.(`[parse_meal] fast estimate implausible for "${r.name}": ${bad}`);
+        return { ...item, confidence: "low" as const };
       }
       // No acceptable row AND no usable estimate: the existing best-effort
       // fallback, visibly low-confidence rather than silently dropped.

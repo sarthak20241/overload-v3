@@ -44,6 +44,7 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-28 | **84/87** | **FAST MODE** (`FAST_MODE=on`) — one fused call, no decide |
 | 2026-08-29 | **86/88** | + fast piece counts (count reaches the grams); API/Haiku |
 | 2026-08-29 | **8/10 subset** | + prompt de-overfitted, 3 held-out probes added; both failures are the pack-portion serving bug, not the prompt |
+| 2026-08-30 | **83/91 CLI** | **FAST v2**: estimate-first rewrite - calorie-tracker prompt + 4 few-shots, est_ fields are line TOTALS (per-100 retired), tool renamed estimate_meal; kcal no longer flows through the model's 2-5x-high gram guesses (6 cashews: 42 g -> 48 kcal, truth ~52). Known gaps: thin-biscuit kcal prior ~2x (tea-milk-default), est_total_g display label runs hot on estimate lines (gram bounds on estimate-tier cases now measure the LABEL, not the macros), edamame protein under. Decline judgement unreliable on CLI runs. |
 
 ### Fast mode measures as accurate as the full pipeline, and much cheaper
 

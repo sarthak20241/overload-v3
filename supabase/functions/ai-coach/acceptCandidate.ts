@@ -68,6 +68,16 @@ const FORM_WORDS = new Set([
   "powder", "powdered", "dried", "dehydrated", "condensed", "evaporated",
   "concentrate", "syrup", "mix", "instant", "frozen", "canned", "pickled",
   "jam", "juice", "squash", "cordial", "chips", "crisps",
+  // The <ingredient> <product> family: "5 almonds" matched "Almond oil" in 2
+  // of 10 runs (a tie on unexplained words - "oil" vs "nfs" - left search
+  // order to decide) and multiplied its 1-cup serving to 1120 g / 9900 kcal.
+  // Same shape: Cashew butter for cashews, Rice flour for rice. Directional
+  // like every form word: the user SAYING "peanut butter" covers "butter", so
+  // real spreads still match. "milk" is deliberately NOT here despite Almond
+  // milk fitting the pattern - milk is the food itself in half the catalog,
+  // and listing it rejected "Milk, whole" for "doodh" (the synonym map is not
+  // consulted by this check) and would reject Chai / Milk Tea for "chai".
+  "oil", "butter", "flour", "paste", "spread",
   // A PART is the same blindness as a form: the user who says "egg" means the
   // whole egg, and a yolk-only row is 347 kcal against 143 - the original
   // incident this whole guard family exists for. variantClash cannot catch it
