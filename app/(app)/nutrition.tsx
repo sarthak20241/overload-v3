@@ -595,7 +595,7 @@ export default function NutritionScreen() {
 
         {isSignedIn ? (
           <View style={s.input}>
-            <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8}>
+            <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
             <TextInput
@@ -619,6 +619,7 @@ export default function NutritionScreen() {
               hitSlop={12}
               accessibilityRole="button"
               accessibilityLabel={parseSpeed === 'thorough' ? 'Logging mode: Thorough' : 'Logging mode: Quick'}
+              style={s.iconBox}
             >
               <Feather
                 name={parseSpeed === 'thorough' ? 'target' : 'zap'}
@@ -740,9 +741,21 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     inputWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, backgroundColor: C.background },
     // alignItems flex-end keeps the search + send icons on the bottom line as the field grows.
-    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 10, ...Shadow.card },
+    // Radius.xxl, not lg: a 16px corner on a 44px-tall full-width bar reads as
+    // a wide flat box; a near-pill reads as a composer (the ChatGPT/Claude cure
+    // for exactly this width perception). Still a fixed radius, so the corners
+    // stay sane when the multiline field grows the bar.
+    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 10, ...Shadow.card },
     // maxHeight caps growth (~4 lines) then scrolls; textAlignVertical top for Android multiline.
-    inputText: { flex: 1, fontSize: FontSize.base, color: C.foreground, padding: 0, maxHeight: 96, textAlignVertical: 'top' },
+    // The row bottom-aligns (icons must hug the bottom as the field grows), so
+    // at REST the centers drift: the 28pt send circle's center sits higher than
+    // a bare 16px icon's or the text line's. Fix by giving every icon the same
+    // 28pt centered box the send button already has, and lifting the text line
+    // (lineHeight 20 + marginBottom 4 -> center 14pt above padding, same as a
+    // 28pt box). Growth still works: the LAST text line stays on that center
+    // while earlier lines stack above.
+    inputText: { flex: 1, fontSize: FontSize.base, lineHeight: 20, color: C.foreground, padding: 0, marginBottom: 4, maxHeight: 96, textAlignVertical: 'top' },
+    iconBox: { height: 28, justifyContent: 'center', alignItems: 'center' },
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }
