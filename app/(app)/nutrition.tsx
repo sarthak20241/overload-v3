@@ -12,7 +12,10 @@
  * day-load + the NL parse (Drona edge fn) wire in next.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions } from 'react-native';
+import {
+  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions,
+  type NativeScrollEvent, type NativeSyntheticEvent,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -135,9 +138,20 @@ export default function NutritionScreen() {
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
   const { height: winH } = useWindowDimensions();
-  // Bottom edge of the calorie ring + macro bars, in the day scroll's own
-  // coordinates — which are screen coordinates while the day sits at its top.
+  // Bottom edge of the calorie ring + macro bars, in the day scroll's CONTENT
+  // coordinates, plus how far that content is currently scrolled. Subtracting
+  // the second from the first is what turns it into a position on screen — the
+  // two only agree while the day sits at its top, and the input bar the card
+  // hangs off is pinned outside the scroll, so a user can absolutely be
+  // scrolled down at a meal section when a parse lands.
   const [summaryBottom, setSummaryBottom] = useState(0);
+  const [dayScrollY, setDayScrollY] = useState(0);
+  // Quantised: this runs on every scroll frame, and the cap only has to move in
+  // steps a person can see. Returning `prev` unchanged skips the re-render.
+  const onDayScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = Math.round(e.nativeEvent.contentOffset.y / 16) * 16;
+    setDayScrollY((prev) => (prev === y ? prev : y));
+  }, []);
   // Cap the parse card so a long meal never runs past the top of the screen
   // (the card is pinned above the input, outside the day scroll — the lines
   // scroll INSIDE it instead). 96 ≈ the input bar plus its gap.
@@ -156,8 +170,12 @@ export default function NutritionScreen() {
   // that: never starve the card below its header + a line + its footer (260),
   // and never let it run more than ~60% of the screen. Both stay under
   // `hardAvail`, since a floor is only a floor while it fits.
+  // Where the summary's bottom edge actually sits on screen right now. Once it
+  // has scrolled up past the safe area there is nothing left to protect, and
+  // `Math.max` hands the card the whole gap back.
+  const summaryScreenBottom = summaryBottom - dayScrollY;
   const belowSummary = summaryBottom > 0
-    ? winH - (summaryBottom + Spacing.md) - 96
+    ? winH - kbHeight - Math.max(insets.top, summaryScreenBottom + Spacing.md) - 96
     : hardAvail;
   const restingHeight = Math.min(
     Math.min(winH * 0.6, hardAvail),
@@ -563,6 +581,8 @@ export default function NutritionScreen() {
         contentContainerStyle={{ paddingTop: insets.top + Spacing.sm, paddingBottom: 150 }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        onScroll={onDayScroll}
+        scrollEventThrottle={16}
       >
         {/* Header — back + a day stepper (‹ Today ›, tap the label for the calendar) */}
         <View style={s.header}>
