@@ -135,19 +135,35 @@ export default function NutritionScreen() {
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
   const { height: winH } = useWindowDimensions();
+  // Bottom edge of the calorie ring + macro bars, in the day scroll's own
+  // coordinates — which are screen coordinates while the day sits at its top.
+  const [summaryBottom, setSummaryBottom] = useState(0);
   // Cap the parse card so a long meal never runs past the top of the screen
   // (the card is pinned above the input, outside the day scroll — the lines
-  // scroll INSIDE it instead). ~60% of the screen keyboard-closed; with the
-  // keyboard up, whatever fits above it (96 ≈ input bar + gap).
+  // scroll INSIDE it instead). 96 ≈ the input bar plus its gap.
   //
-  // The 260 floor is keyboard-CLOSED only. Applied with the keyboard up it
-  // stops being a floor and becomes an overflow: on a compact phone the space
-  // above the keyboard can be under 260, and forcing 260 there pushes the
-  // card's own header (and its minimize control) off the top of the screen.
-  const availAboveKb = winH - kbHeight - insets.top - 96;
-  const cardMaxHeight = kbHeight > 0
-    ? Math.max(0, Math.min(winH * 0.6, availAboveKb))
-    : Math.max(260, Math.min(winH * 0.6, availAboveKb));
+  // `hardAvail` is the whole gap between the safe area and the input bar. It is
+  // the ceiling in both states, so the card's own header — and the minimize
+  // control in it — is always on screen.
+  const hardAvail = winH - kbHeight - insets.top - 96;
+
+  // Keyboard UP: take all of it. The keyboard already hides the day, so holding
+  // the card short only buys blank space nobody can read behind — it costs the
+  // user rows of the meal they are still correcting.
+  //
+  // Keyboard DOWN: start below the summary instead, so the ring and the macro
+  // bars the card is about to change stay readable behind it. Two guards on
+  // that: never starve the card below its header + a line + its footer (260),
+  // and never let it run more than ~60% of the screen. Both stay under
+  // `hardAvail`, since a floor is only a floor while it fits.
+  const belowSummary = summaryBottom > 0
+    ? winH - (summaryBottom + Spacing.md) - 96
+    : hardAvail;
+  const restingHeight = Math.min(
+    Math.min(winH * 0.6, hardAvail),
+    Math.max(Math.min(260, hardAvail), belowSummary),
+  );
+  const cardMaxHeight = Math.max(0, kbHeight > 0 ? hardAvail : restingHeight);
 
   // AI food logging (Drona parse). Signed-in only; guests keep the picker.
   // Parse -> review card (nothing logged yet) -> the user picks the section and
@@ -626,7 +642,13 @@ export default function NutritionScreen() {
 
         {/* Summary — calorie hero ring (LEFT + eaten/goal caption below + same-hue
             overshoot) and three macro bars carrying target + signed over. */}
-        <View style={s.summary}>
+        <View
+          style={s.summary}
+          onLayout={(e) => {
+            const { y, height } = e.nativeEvent.layout;
+            setSummaryBottom(y + height);
+          }}
+        >
           <Pressable onPress={() => setGoalOpen(true)} hitSlop={8} style={s.goalBtn} accessibilityLabel="Edit daily goal">
             <Feather name="sliders" size={12} color={isCustom ? C.textDim : C.accentText} />
             <Text style={[s.goalBtnTxt, { color: isCustom ? C.textDim : C.accentText }]}>{isCustom ? 'Goal' : 'Set goal'}</Text>
