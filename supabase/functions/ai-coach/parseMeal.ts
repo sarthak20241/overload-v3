@@ -681,11 +681,6 @@ export interface ParseMealInput {
    *  no decide. Honoured only on a first-shot log; with a meal on screen the
    *  turn may be a correction and falls through to the full pipeline. */
   mode?: "fast" | null;
-  /** EXPERIMENT KNOB (fast mode only): skip the catalog resolve entirely, so
-   *  every line ships the model's own estimate. Exists to measure what the
-   *  catalog step actually costs end to end now that the function runs next to
-   *  the DB; not exposed anywhere in product UI. */
-  noCatalog?: boolean;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
@@ -3538,17 +3533,10 @@ export async function runParseMeal(
     });
   }
 
-  // Experiment knob: estimate-only fast mode. No candidates means the accept
-  // gate has nothing to accept, so every line falls through to the model's own
-  // estimate - which is the point: it isolates what the catalog step costs.
-  const skipResolve = fastMode && input.noCatalog === true;
-  const resolved: ResolvedItem[] = skipResolve
-    ? toResolve.map((item) => ({ ...item, candidates: [] }))
-    : await Promise.all(
-      toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
-    );
+  const resolved: ResolvedItem[] = await Promise.all(
+    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
+  );
   T.resolve_ms = Date.now() - tResolve0;
-  if (skipResolve) T.no_catalog = 1;
   const tDecide0 = Date.now();
 
   // ── Stage 3: decide ───────────────────────────────────────────────────────
