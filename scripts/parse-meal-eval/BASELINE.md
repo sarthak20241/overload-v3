@@ -45,6 +45,8 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-29 | **86/88** | + fast piece counts (count reaches the grams); API/Haiku |
 | 2026-08-29 | **8/10 subset** | + prompt de-overfitted, 3 held-out probes added; both failures are the pack-portion serving bug, not the prompt |
 | 2026-08-30 | **83/91 CLI** | **FAST v2**: estimate-first rewrite - calorie-tracker prompt + 4 few-shots, est_ fields are line TOTALS (per-100 retired), tool renamed estimate_meal; kcal no longer flows through the model's 2-5x-high gram guesses (6 cashews: 42 g -> 48 kcal, truth ~52). Known gaps: thin-biscuit kcal prior ~2x (tea-milk-default), est_total_g display label runs hot on estimate lines (gram bounds on estimate-tier cases now measure the LABEL, not the macros), edamame protein under. Decline judgement unreliable on CLI runs. |
+| 2026-08-30 | **87/91 CLI** | + main merged (single-scan staples, cap paywall); label-recall guideline |
+| 2026-08-31 | **88/91 CLI** | **LABEL CHAIN**: model recalls the pack's printed label as three fields (serving_g / serving_kcal / pieces_per_serving), CODE derives the line - recall is the model's strength, arithmetic is ours. Held out, Monaco went 2.3x -> 1.15x on kcal and 60 g -> 15 g on the label without any prompt naming it. Chain fires ONLY for counted pieces: v1 fired on "1 cup cooked rice" and answered with the pack's DRY 30 g serving, so household/pack units (cup, katori, spoon, packet...) are excluded. Remaining fails: maggi-packet gram label, edamame protein, one CLI-shim artifact. |
 
 ### Fast mode measures as accurate as the full pipeline, and much cheaper
 

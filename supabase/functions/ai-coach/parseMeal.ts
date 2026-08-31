@@ -1413,6 +1413,71 @@ When in doubt between correction and addition, prefer addition: adding a wrong i
  * Asking for kcal directly removes the weakest number from the chain;
  * est_total_g survives as a display label and never feeds the macro math.
  */
+/**
+ * The label chain: the model RECALLS the pack's printed facts, the CODE does
+ * the arithmetic.
+ *
+ * Measured with the catalog stripped away, the model's one-shot guess at
+ * "grams for N pieces" runs 1.5-5x high, while its recall of literal label
+ * text ("per serving 30 g, about 4 pieces, 160 kcal") is what its training
+ * data actually contains. So the tool asks for the label as three separate
+ * facts and this function derives the line from them:
+ *
+ *   one piece = serving_g / pieces;  total = count x one piece
+ *
+ * kcal and macros scale TOGETHER by the same ratio, so checkAtwater still
+ * holds afterwards; the ratio is clamped so one mis-recalled label cannot
+ * swing a line 20x. A stated mass ("100g soya chunks") bypasses the chain
+ * entirely - the user's own number always wins.
+ */
+/** Units the label chain must never touch: household measures and pack-level
+ *  units, where "pieces per serving" is meaningless or the label's serving
+ *  basis (often DRY weight) does not describe what is in the bowl. */
+const NON_PIECE_UNITS = new Set([
+  "cup", "cups", "katori", "katoris", "glass", "glasses", "bowl", "bowls",
+  "plate", "plates", "tbsp", "tsp", "tablespoon", "tablespoons", "teaspoon",
+  "teaspoons", "spoon", "spoons", "scoop", "scoops", "mug", "mugs", "shot",
+  "shots", "packet", "packets", "pack", "packs", "bottle", "bottles", "can",
+  "cans", "ladle", "ladles", "handful", "handfuls",
+]);
+
+export function applyLabelChain(
+  quantity: number,
+  unit: string,
+  est: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number },
+  label: { serving_g: unknown; serving_kcal: unknown; pieces: unknown },
+): { est: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number }; applied: boolean } {
+  const num = (v: unknown, lo: number, hi: number): number | null =>
+    typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+  const u = unit.trim().toLowerCase();
+  // The chain's premise is PIECES: count x (serving grams / pieces per
+  // serving). A stated mass wins outright, and a household measure must never
+  // enter it - measured on the eval the first version fired for "1 cup cooked
+  // rice" and answered with the pack's DRY 30 g serving, and for "1 packet
+  // maggi" where "pieces" means nothing. Those units already have their own
+  // resolution paths; the chain is only for counted pieces.
+  if (MASS_UNITS.has(u) || NON_PIECE_UNITS.has(u)) return { est, applied: false };
+  const servingG = num(label.serving_g, 1, 1000);
+  const pieces = num(label.pieces, 0.25, 100);
+  if (servingG === null || pieces === null) return { est, applied: false };
+  const perPieceG = servingG / pieces;
+  if (!(perPieceG >= 0.3 && perPieceG <= 500)) return { est, applied: false };
+  const qty = quantity > 0 ? quantity : 1;
+  const total_g = Math.min(qty * perPieceG, 5000);
+  const servingKcal = num(label.serving_kcal, 1, 2000);
+  let { kcal, protein_g, carb_g, fat_g } = est;
+  if (servingKcal !== null) {
+    const derivedKcal = (qty * servingKcal) / pieces;
+    if (kcal > 0) {
+      const ratio = Math.min(Math.max(derivedKcal / kcal, 0.2), 5);
+      kcal *= ratio; protein_g *= ratio; carb_g *= ratio; fat_g *= ratio;
+    } else {
+      kcal = derivedKcal;
+    }
+  }
+  return { est: { kcal, protein_g, carb_g, fat_g, total_g }, applied: true };
+}
+
 const FAST_EXTRACT_TOOL = (() => {
   const t = JSON.parse(JSON.stringify(EXTRACT_TOOL));
   // Its own name: the schema is different enough that calling it extract_meal
@@ -1440,6 +1505,22 @@ const FAST_EXTRACT_TOOL = (() => {
     "and nothing downstream will correct them.";
 
   Object.assign(item.properties, {
+    // Recall fields come BEFORE the est_ totals on purpose: generation is
+    // sequential, so the model writes the label facts down first and the
+    // totals it then emits already agree with them - and applyLabelChain
+    // re-derives the line from these in code regardless.
+    label_serving_g: {
+      type: ["number", "null"],
+      description: "BRANDED PACKAGED food only: the serving size printed on its nutrition label, in g or ml, as you recall it. null for unpackaged food, home cooking, or a label you cannot recall.",
+    },
+    label_serving_kcal: {
+      type: ["number", "null"],
+      description: "kcal the label states FOR THAT SERVING - never per 100 g. null when unknown.",
+    },
+    label_pieces_per_serving: {
+      type: ["number", "null"],
+      description: "How many pieces make up that printed serving (biscuits, wafers, slices). null when the food is not eaten in pieces or you cannot recall the count.",
+    },
     est_kcal: {
       type: "number",
       description: "TOTAL kcal for this line as eaten: the serving applied, the count multiplied in. Never per-100, never per piece.",
@@ -1454,6 +1535,7 @@ const FAST_EXTRACT_TOOL = (() => {
   });
   item.required = [
     ...item.required,
+    "label_serving_g", "label_serving_kcal", "label_pieces_per_serving",
     "est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g",
   ];
   return t;
@@ -1501,7 +1583,7 @@ Serving size:
 
 All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
 
-For a branded packaged food, work from its printed nutrition label as you remember it - packs state kcal per piece or per 100 g - and derive the total from that, not from a general feel for the category. A pack's own numbers beat instinct: small packaged pieces are usually far lighter and lower-calorie than they feel.
+For a BRANDED PACKAGED food, recall the pack's printed nutrition label and report it in the label_ fields: the serving size in grams, the kcal for that serving, and how many pieces that serving is. The app does the arithmetic from those - one piece = serving grams / pieces, and the user's count multiplies from there - so give the label EXACTLY as the pack states it, never pre-scaled to the user's amount. Small packaged pieces are far lighter than they feel. Unpackaged food, home cooking, or a label you cannot recall: set all three label_ fields to null and estimate as usual.
 
 Keep names faithful: correct spelling ("panner" is "paneer"), and keep words that change the food ("low fat", "double toned", "boiled") - dropping them logs a different food.
 
@@ -1515,19 +1597,23 @@ Examples:
 
 Input: "2 medjool dates and 10 pistachios"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "medjool dates", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "est_kcal": 130, "est_protein_g": 0.8, "est_carb_g": 36, "est_fat_g": 0.1, "est_total_g": 48},
-  {"name": "pistachios", "brand": null, "quantity": 10, "unit": "piece", "prep": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 2, "est_fat_g": 3.2, "est_total_g": 7}]}
+  {"name": "medjool dates", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 130, "est_protein_g": 0.8, "est_carb_g": 36, "est_fat_g": 0.1, "est_total_g": 48},
+  {"name": "pistachios", "brand": null, "quantity": 10, "unit": "piece", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 2, "est_fat_g": 3.2, "est_total_g": 7}]}
+
+Input: "3 chocolate cream wafers"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "chocolate cream wafers", "brand": null, "quantity": 3, "unit": "piece", "prep": null, "label_serving_g": 30, "label_serving_kcal": 160, "label_pieces_per_serving": 4, "est_kcal": 120, "est_protein_g": 1.1, "est_carb_g": 14.3, "est_fat_g": 6.4, "est_total_g": 22.5}]}
 
 Input: "1 vada pav with extra chutney and a cutting chai"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "vada pav", "brand": null, "quantity": 1, "unit": "piece", "prep": null, "est_kcal": 290, "est_protein_g": 6, "est_carb_g": 40, "est_fat_g": 12, "est_total_g": 120},
-  {"name": "chutney", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "est_kcal": 30, "est_protein_g": 0.5, "est_carb_g": 4, "est_fat_g": 1.5, "est_total_g": 20},
-  {"name": "milk tea", "brand": null, "quantity": 1, "unit": "cutting", "prep": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 5, "est_fat_g": 1.5, "est_total_g": 90}]}
+  {"name": "vada pav", "brand": null, "quantity": 1, "unit": "piece", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 290, "est_protein_g": 6, "est_carb_g": 40, "est_fat_g": 12, "est_total_g": 120},
+  {"name": "chutney", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 30, "est_protein_g": 0.5, "est_carb_g": 4, "est_fat_g": 1.5, "est_total_g": 20},
+  {"name": "milk tea", "brand": null, "quantity": 1, "unit": "cutting", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 5, "est_fat_g": 1.5, "est_total_g": 90}]}
 
 Input: "150g grilled fish and half katori khichdi"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
-  {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
+  {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
+  {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
 
 Input: "played football for an hour"
 Output: {"declined": true, "decline_message": "That's training, not a meal. Tell me what you ate and I'll log it.", "meal_type_from_text": null, "items": []}`;
@@ -3209,31 +3295,54 @@ export async function runParseMeal(
       const o = r as Record<string, unknown>;
       const name = typeof o.name === "string" ? o.name.trim().slice(0, 80) : "";
       if (!name) return [];
+      // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
+      // so "500 ml milk" or "250 g chicken" would be silently truncated. The
+      // bound only exists to stop absurd input reaching the model.
+      const quantity = coerceQuantity(o.quantity);
+      const unit = typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving";
+      // All five or nothing: a partial estimate is not an estimate, and a
+      // missing field silently read as 0 is how zero-kcal lines shipped once
+      // before.
+      const rawEst = (() => {
+        const nums = ["est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g"]
+          .map((k) => o[k]);
+        if (!nums.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)) return null;
+        const [kcal, protein_g, carb_g, fat_g, total_g] = nums as number[];
+        return total_g > 0 ? { kcal, protein_g, carb_g, fat_g, total_g: Math.min(total_g, 5000) } : null;
+      })();
+      // Label chain: recall is the model's job, arithmetic is ours. When the
+      // model reported the pack's printed serving, the line is RE-DERIVED from
+      // it in code and the model's own multiplication is overridden.
+      const chained = rawEst
+        ? applyLabelChain(quantity, unit, rawEst, {
+          serving_g: o.label_serving_g,
+          serving_kcal: o.label_serving_kcal,
+          pieces: o.label_pieces_per_serving,
+        })
+        : null;
+      if (chained?.applied) {
+        steps.push({
+          iter: 0,
+          tool: "label_chain",
+          input: {
+            item: name,
+            serving_g: Number(o.label_serving_g),
+            serving_kcal: o.label_serving_kcal === null ? null : Number(o.label_serving_kcal),
+            pieces: Number(o.label_pieces_per_serving),
+          },
+          result: { total_g: round1(chained.est.total_g), kcal: round1(chained.est.kcal) },
+        });
+      }
       return [{
         name,
         brand: typeof o.brand === "string" && o.brand.trim() ? o.brand.trim().slice(0, 60) : null,
-        // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
-        // so "500 ml milk" or "250 g chicken" would be silently truncated. The
-        // bound only exists to stop absurd input reaching the model.
-        quantity: coerceQuantity(o.quantity),
-        unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
+        quantity,
+        unit,
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
         correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()
           ? o.corrects_food_name.trim().slice(0, 120)
           : null,
-        // All five or nothing: a partial estimate is not an estimate, and a
-        // missing field silently read as 0 is how zero-kcal lines shipped once
-        // before.
-        est: (() => {
-          // TOTALS for the line, not per-100 (see FAST_EXTRACT_TOOL). Any
-          // missing or negative field voids the whole estimate - a partial
-          // estimate silently read as 0 is how zero-kcal lines shipped once.
-          const nums = ["est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g"]
-            .map((k) => o[k]);
-          if (!nums.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)) return null;
-          const [kcal, protein_g, carb_g, fat_g, total_g] = nums as number[];
-          return total_g > 0 ? { kcal, protein_g, carb_g, fat_g, total_g: Math.min(total_g, 5000) } : null;
-        })(),
+        est: chained ? chained.est : rawEst,
       }];
     });
   // Shadow: did the grammar name the same foods the model did? Recorded, never

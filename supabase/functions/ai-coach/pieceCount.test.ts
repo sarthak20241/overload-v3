@@ -14,6 +14,7 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  applyLabelChain,
   type CandidateFood,
   fallbackFromResolved,
   gramsPerUnit,
@@ -251,4 +252,56 @@ Deno.test("a label that NAMES the piece is still multiplied", () => {
     ]))?.grams,
     11,
   );
+});
+
+// ── applyLabelChain ─────────────────────────────────────────────────────────
+// The model recalls the pack's label; the CODE multiplies. These pin the
+// arithmetic and every guard rail.
+
+const EST = { kcal: 150, protein_g: 2, carb_g: 20, fat_g: 7, total_g: 60 };
+
+Deno.test("label chain: derives total and rescales macros together", () => {
+  // 3 pieces of a pack stating: serving 30 g = 4 pieces, 160 kcal.
+  const { est, applied } = applyLabelChain(3, "piece", EST, { serving_g: 30, serving_kcal: 160, pieces: 4 });
+  assertEquals(applied, true);
+  assertEquals(est.total_g, 22.5);            // 3 x 30/4
+  assertEquals(est.kcal, 120);                // 3 x 160/4, ratio 0.8 from 150
+  assertEquals(est.protein_g, 2 * 0.8);       // macros move by the SAME ratio,
+  assertEquals(est.fat_g, 7 * 0.8);           // so Atwater still holds
+});
+
+Deno.test("label chain: grams-only label fixes the weight, leaves kcal alone", () => {
+  const { est, applied } = applyLabelChain(3, "piece", EST, { serving_g: 30, serving_kcal: null, pieces: 4 });
+  assertEquals(applied, true);
+  assertEquals(est.total_g, 22.5);
+  assertEquals(est.kcal, 150);
+});
+
+Deno.test("label chain: a stated mass bypasses the chain entirely", () => {
+  const { applied } = applyLabelChain(100, "g", EST, { serving_g: 30, serving_kcal: 160, pieces: 4 });
+  assertEquals(applied, false);
+});
+
+Deno.test("label chain: household and pack units never enter the chain", () => {
+  // The eval caught the first version answering "1 cup cooked rice" with the
+  // pack's DRY 30 g serving. Cups, spoons and packets are not pieces.
+  for (const u of ["cup", "katori", "packet", "spoons", "tbsp", "scoop", "bowl", "glass", "plate"]) {
+    assertEquals(applyLabelChain(1, u, EST, { serving_g: 30, serving_kcal: 160, pieces: 4 }).applied, false, u);
+  }
+});
+
+Deno.test("label chain: null or absurd label facts change nothing", () => {
+  assertEquals(applyLabelChain(3, "piece", EST, { serving_g: null, serving_kcal: 160, pieces: 4 }).applied, false);
+  assertEquals(applyLabelChain(3, "piece", EST, { serving_g: 30, serving_kcal: 160, pieces: null }).applied, false);
+  assertEquals(applyLabelChain(3, "piece", EST, { serving_g: 5000, serving_kcal: 160, pieces: 4 }).applied, false);
+  assertEquals(applyLabelChain(3, "piece", EST, { serving_g: 30, serving_kcal: 160, pieces: 200 }).applied, false);
+  // Schema says number|null, but the wire can carry anything.
+  assertEquals(applyLabelChain(3, "piece", EST, { serving_g: "30", serving_kcal: 160, pieces: 4 }).applied, false);
+});
+
+Deno.test("label chain: the correction ratio is clamped at 5x either way", () => {
+  const tiny = { ...EST, kcal: 10 };
+  // Derived would be 375 kcal (37.5x); the clamp holds it to 5x.
+  const { est } = applyLabelChain(3, "piece", tiny, { serving_g: 30, serving_kcal: 500, pieces: 4 });
+  assertEquals(est.kcal, 50);
 });
