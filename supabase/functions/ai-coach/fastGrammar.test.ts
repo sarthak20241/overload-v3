@@ -110,3 +110,25 @@ Deno.test("REFUSES a preposition clause, and drops provenance words", () => {
   // But never drop ALL the words - "homemade" alone is not a food.
   assertEquals(parseFastGrammar("100g homemade"), null);
 });
+
+// Review of PR #138: the grammar emitted "kg"/"l", which parseMeal's own
+// MASS_UNITS (grams and millilitres only) cannot read - gramsPerUnit returns
+// null and the line lands on the 100-unit basis, so "1 kg rice" logged as
+// ~100 g. Only reachable with PARSE_FAST_GRAMMAR=on, which is not the default,
+// but it is a live tripwire for the day it is switched on.
+Deno.test("kg and litres convert to the base units parseMeal understands", () => {
+  assertEquals(parseFastGrammar("1 kg rice"), [
+    { name: "rice", quantity: 1000, unit: "g", prep: null },
+  ]);
+  assertEquals(parseFastGrammar("2 l milk"), [
+    { name: "milk", quantity: 2000, unit: "ml", prep: null },
+  ]);
+  // Name-first shape takes the same road.
+  assertEquals(parseFastGrammar("paneer 1.5 kg"), [
+    { name: "paneer", quantity: 1500, unit: "g", prep: null },
+  ]);
+  // The plain spellings are unchanged.
+  assertEquals(parseFastGrammar("100g paneer"), [
+    { name: "paneer", quantity: 100, unit: "g", prep: null },
+  ]);
+});

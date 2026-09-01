@@ -497,9 +497,15 @@ function SettlingRow(
         <Text style={[s.macroNum, { color: C.textMuted }]}>
           {known ? `${Math.round(kcal)} kcal` : '··· kcal'}
         </Text>
-        <Text style={[s.macroNum, { color: C.textMuted }]}>{known ? `${Math.round(p)}g P` : '···g P'}</Text>
-        <Text style={[s.macroNum, { color: C.textMuted }]}>{known ? `${Math.round(c)}g C` : '···g C'}</Text>
-        <Text style={[s.macroNum, { color: C.textMuted }]}>{known ? `${Math.round(f)}g F` : '···g F'}</Text>
+        {/* Each macro answers for ITSELF. One shared flag keyed off est_kcal
+            meant a row with calories but a null protein rendered "0g P" -
+            useSettling(null) eases toward 0 - which reads as "no protein in
+            this food" rather than "not known yet". A wrong fact beats a
+            placeholder to the eye, and protein is the number this audience
+            reads first. */}
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{row.est_protein_g != null ? `${Math.round(p)}g P` : '···g P'}</Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{row.est_carb_g != null ? `${Math.round(c)}g C` : '···g C'}</Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{row.est_fat_g != null ? `${Math.round(f)}g F` : '···g F'}</Text>
       </View>
       <Text style={s.serving}>working it out</Text>
     </View>

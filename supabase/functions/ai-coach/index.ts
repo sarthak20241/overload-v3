@@ -1900,11 +1900,35 @@ async function handleParseMealRequest(args: {
             web_search_requests: result.usage.web_search_requests,
             latency_ms: Date.now() - startedAtMs,
           });
+          // coach_traces too. The JSON path gets this for free because it
+          // returns through respond(), which calls recordTrace; the SSE path
+          // returns its own Response and so recorded nothing here. Fast mode
+          // is the DEFAULT tier, so leaving it out meant the token-cost table
+          // was quietly missing most parses.
+          trace.status = "success";
+          trace.http_status = 200;
+          trace.input_tokens = result.usage.input_tokens || null;
+          trace.output_tokens = result.usage.output_tokens || null;
+          trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
+          trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
+          trace.tool_calls = result.tool_calls;
+          trace.response_preview = preview(
+            result.parsed
+              ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
+              : result.declined?.message ?? null,
+          );
+          await recordTrace(admin, trace, startedAtMs);
         } catch (e) {
           // The client has already been given a 200 and possibly some rows, so
           // the failure has to arrive as an event; there is no status code left
           // to change. The client treats this exactly like a failed request.
           send("error", { message: String(e).slice(0, 200) });
+          // The stream still cost tokens and still has to appear in the cost
+          // table, so record the failure rather than dropping it silently.
+          trace.status = "error";
+          trace.http_status = 200;
+          trace.error_message = String(e).slice(0, 300);
+          try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
         } finally {
           controller.close();
         }

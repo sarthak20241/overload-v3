@@ -631,7 +631,11 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
   // MASS_UNITS, not a hand-written subset. The old inline list missed "gm",
   // "gms", "millilitre" and "milliliter", so "2 gm" fell through to the count
   // branch and was read as two PIECES.
-  const portions = top?.servings.filter((s) => s.grams > 0 && !isBasisServing(s)) ?? [];
+  // namesAPiece as well as !isBasisServing, matching gramsPerUnit exactly. Only
+  // checking the basis let a PACK portion through here - "1 serving (14.4 g)"
+  // is about three crackers - and a count then multiplied it, which is the bug
+  // namesAPiece was added to close on the other path.
+  const portions = top?.servings.filter((s) => s.grams > 0 && !isBasisServing(s) && namesAPiece(s)) ?? [];
   const sv = portions.find((s) => s.is_default) ?? portions[0];
   let grams: number;
   if (MASS_UNITS.has(unit)) {

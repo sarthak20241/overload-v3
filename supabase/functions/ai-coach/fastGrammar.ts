@@ -27,9 +27,27 @@ export interface GrammarItem {
 }
 
 /** Mass and volume units: the quantity IS the amount. */
-const MASS_UNITS: Record<string, string> = {
-  g: "g", gm: "g", gms: "g", gram: "g", grams: "g",
-  ml: "ml", mls: "ml", l: "l", litre: "l", liter: "l", kg: "kg",
+// Maps to the unit AND the multiplier that reaches the base unit. parseMeal's
+// own MASS_UNITS knows only the gram and millilitre spellings, so emitting
+// "kg" or "l" hands it a unit it cannot read: gramsPerUnit finds no serving
+// label containing the word, returns null, and fallbackFromResolved lands on
+// the 100-unit basis. "1 kg rice" would log as ~100 g. Convert here instead,
+// so the grammar only ever emits units the rest of the pipeline understands.
+const MASS_UNITS: Record<string, { unit: string; factor: number }> = {
+  g: { unit: "g", factor: 1 },
+  gm: { unit: "g", factor: 1 },
+  gms: { unit: "g", factor: 1 },
+  gram: { unit: "g", factor: 1 },
+  grams: { unit: "g", factor: 1 },
+  kg: { unit: "g", factor: 1000 },
+  kgs: { unit: "g", factor: 1000 },
+  ml: { unit: "ml", factor: 1 },
+  mls: { unit: "ml", factor: 1 },
+  l: { unit: "ml", factor: 1000 },
+  litre: { unit: "ml", factor: 1000 },
+  liter: { unit: "ml", factor: 1000 },
+  litres: { unit: "ml", factor: 1000 },
+  liters: { unit: "ml", factor: 1000 },
 };
 
 /** Household containers and pieces: the quantity counts servings. */
@@ -153,8 +171,9 @@ function parsePart(raw: string): GrammarItem | null {
   // SHAPE 1  "100g paneer" / "250 ml milk"
   const m1 = body.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)\s+(.+)$/);
   if (m1 && MASS_UNITS[m1[2]]) {
+    const mu = MASS_UNITS[m1[2]];
     const name = cleanName(takePrep(m1[3].split(" ")));
-    return name ? { name, quantity: Number(m1[1]), unit: MASS_UNITS[m1[2]], prep } : null;
+    return name ? { name, quantity: Number(m1[1]) * mu.factor, unit: mu.unit, prep } : null;
   }
   // SHAPE 2  "1 katori dal" / "2 scoops whey"
   if (m1 && COUNT_UNITS.has(m1[2])) {
@@ -164,8 +183,9 @@ function parsePart(raw: string): GrammarItem | null {
   // SHAPE 3  "paneer 100g" - name BEFORE the amount, common in real logs.
   const m3 = body.match(/^(.+?)\s+(\d+(?:\.\d+)?)\s*([a-z]+)$/);
   if (m3 && MASS_UNITS[m3[3]]) {
+    const mu = MASS_UNITS[m3[3]];
     const name = cleanName(takePrep(m3[1].split(" ")));
-    return name ? { name, quantity: Number(m3[2]), unit: MASS_UNITS[m3[3]], prep } : null;
+    return name ? { name, quantity: Number(m3[2]) * mu.factor, unit: mu.unit, prep } : null;
   }
   // SHAPE 4  "curd 1 katori"
   if (m3 && COUNT_UNITS.has(m3[3])) {

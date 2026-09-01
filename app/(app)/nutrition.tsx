@@ -230,6 +230,15 @@ export default function NutritionScreen() {
   // Both statuses mean "a parse is running": 'analysing' before any rows,
   // 'streaming' once fast mode has painted names but not finished.
   const parseInFlight = flow.status === 'analysing' || flow.status === 'streaming';
+  /** Which parse owns the card right now.
+   *
+   *  Guarding on the raw text is not enough: Discard is reachable mid-stream,
+   *  so the user can dismiss a running parse, send something else, and the
+   *  abandoned request still resolves and calls setFlow unconditionally -
+   *  replacing the meal they are actually looking at. Log the same thing twice
+   *  and the texts even match. A counter cannot collide with anything, and it
+   *  is the same idiom `checkTokenRef` already uses for the double-check. */
+  const parseTokenRef = useRef(0);
   useEffect(() => {
     getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
   }, []);
@@ -304,6 +313,7 @@ export default function NutritionScreen() {
     // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
     // an unrelated line until the abandoned 5-9s lookup finally settles.
     setChecking(null);
+    const token = ++parseTokenRef.current;
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
@@ -316,12 +326,18 @@ export default function NutritionScreen() {
     const res = pending || parseSpeedRef.current === 'thorough'
       ? await parseMeal(supabase, args)
       : await parseMealStreaming(supabase, args, (rows) => {
-        // Guard on the raw text: a stream that resolves after the user has
-        // moved on must not repaint the card they are now looking at.
+        // A stream that resolves after the user has moved on must not repaint
+        // the card they are now looking at.
+        if (parseTokenRef.current !== token) return;
         setFlow((cur) => (
           cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows } : cur
         ));
       });
+    // From here on we are writing to the card. If another parse has started, or
+    // the user discarded this one, this result is stale - drop it whole rather
+    // than let any branch below (declined, cap, error, review) speak for a
+    // parse the user has moved on from.
+    if (parseTokenRef.current !== token) return;
     // A reply that is not a meal (an answer, or a failure) must NOT discard a
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
@@ -604,6 +620,9 @@ export default function NutritionScreen() {
   const onDismiss = useCallback(() => {
     setChecking(null);
     setCardMinimized(false);
+    // Discard is reachable mid-parse. Bumping the token orphans whatever is in
+    // flight so it cannot resurrect the card the user just threw away.
+    parseTokenRef.current += 1;
     setFlow({ status: 'idle' });
   }, []);
 
