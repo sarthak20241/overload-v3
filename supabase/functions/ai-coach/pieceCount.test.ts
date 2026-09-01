@@ -317,3 +317,15 @@ Deno.test("label chain: the model's own judgment gates it", () => {
     assertEquals(est, EST);
   }
 });
+
+Deno.test("label chain: kcal 0 with real macros keeps the line self-consistent", () => {
+  // Flagged in review of PR #138: setting kcal alone would leave macros
+  // describing a different amount of food than the calories claim.
+  const zero = { kcal: 0, protein_g: 2, carb_g: 20, fat_g: 7, total_g: 60 };
+  const { est } = applyLabelChain(3, "piece", zero,
+    { applies: true, serving_g: 30, serving_kcal: 160, pieces: 4 });
+  assertEquals(est.kcal, 120);
+  const atwater = 4 * est.protein_g + 4 * est.carb_g + 9 * est.fat_g;
+  // Within checkAtwater's shipped 30% tolerance, which the old branch failed.
+  assertEquals(Math.abs(est.kcal - atwater) <= 0.3 * Math.max(est.kcal, atwater), true);
+});

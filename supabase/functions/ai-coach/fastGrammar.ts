@@ -112,7 +112,6 @@ function cleanName(words: string[]): string | null {
   // Drop provenance words. If that leaves NOTHING, the message named no food at
   // all ("100g homemade") and refusing beats searching for a describing word.
   kept = kept.filter((w) => !PROVENANCE_WORDS.has(w));
-  if (kept.length === 0) return null;
   if (kept.length === 0 || kept.length > 4) return null;
   // A digit inside the name means an amount the grammar failed to consume:
   // "paneer 100g", "rasmalai 2pc", "good day biscuits 2".

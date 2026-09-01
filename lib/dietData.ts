@@ -778,7 +778,11 @@ export async function parseMealStreaming(
     }
     // A stream that ended without an `end` frame is a truncated response, not a
     // parse. Re-running costs a wait; showing a half-meal costs trust.
-    if (!final) return sawAny ? parseMeal(supabase, args) : parseMeal(supabase, args);
+    // Both outcomes take the same road - a stream that never produced a final
+    // frame is unusable whether or not it painted rows first - so this is one
+    // call, not a ternary onto itself. (`sawAny` remains as the trace signal
+    // for telling a truncated stream from a silent one.)
+    if (!final) return parseMeal(supabase, args);
     return final;
   } catch {
     return parseMeal(supabase, args);

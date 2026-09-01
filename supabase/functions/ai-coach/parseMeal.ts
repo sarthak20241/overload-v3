@@ -1475,6 +1475,15 @@ export function applyLabelChain(
     if (kcal > 0) {
       const ratio = Math.min(Math.max(derivedKcal / kcal, 0.2), 5);
       kcal *= ratio; protein_g *= ratio; carb_g *= ratio; fat_g *= ratio;
+    } else if (protein_g + carb_g + fat_g > 0) {
+      // kcal 0 with real macros: there is no ratio to scale by, and setting
+      // kcal alone would leave the line disagreeing with its own macros (and
+      // failing checkAtwater downstream). Scale the macros to the label's
+      // energy split instead, so the two still describe one food.
+      const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
+      const ratio = Math.min(Math.max(derivedKcal / atwater, 0.2), 5);
+      protein_g *= ratio; carb_g *= ratio; fat_g *= ratio;
+      kcal = derivedKcal;
     } else {
       kcal = derivedKcal;
     }

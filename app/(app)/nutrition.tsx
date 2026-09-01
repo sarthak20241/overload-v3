@@ -227,6 +227,9 @@ export default function NutritionScreen() {
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // Both statuses mean "a parse is running": 'analysing' before any rows,
+  // 'streaming' once fast mode has painted names but not finished.
+  const parseInFlight = flow.status === 'analysing' || flow.status === 'streaming';
   useEffect(() => {
     getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
   }, []);
@@ -553,7 +556,12 @@ export default function NutritionScreen() {
   const onSend = useCallback(() => {
     const t = text.trim();
     if (!t) return;
-    if (flow.status === 'analysing') return; // a parse is already in flight
+    // 'streaming' is mid-parse too: fast mode flips to it ~1.2s in, when the
+    // first rows land but the parse is still running. Guarding only on
+    // 'analysing' re-opened the send control and let a second parse race the
+    // first, and setFlow(reviewFlow) below is unconditional, so whichever
+    // finished last won regardless of which meal the user meant.
+    if (flow.status === 'analysing' || flow.status === 'streaming') return;
     // Guest fallback: no JWT means parse_meal would 401, so route to the
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
@@ -850,8 +858,8 @@ export default function NutritionScreen() {
             <Pressable
               onPress={onSend}
               hitSlop={8}
-              disabled={!text.trim() || flow.status === 'analysing'}
-              style={[s.send, { opacity: text.trim() && flow.status !== 'analysing' ? 1 : 0.4 }]}
+              disabled={!text.trim() || parseInFlight}
+              style={[s.send, { opacity: text.trim() && !parseInFlight ? 1 : 0.4 }]}
             >
               <Feather name="arrow-up" size={16} color={C.background} />
             </Pressable>
