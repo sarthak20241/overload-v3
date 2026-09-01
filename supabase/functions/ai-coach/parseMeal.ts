@@ -1445,8 +1445,12 @@ export function applyLabelChain(
   quantity: number,
   unit: string,
   est: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number },
-  label: { serving_g: unknown; serving_kcal: unknown; pieces: unknown },
+  label: { applies: unknown; serving_g: unknown; serving_kcal: unknown; pieces: unknown },
 ): { est: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number }; applied: boolean } {
+  // The MODEL's own judgment gates everything: it knows cooked rice is not the
+  // rice on the pack's label, and that homemade food has no label at all. The
+  // unit blacklist below stays as the code-side backstop - both must agree.
+  if (label.applies !== true) return { est, applied: false };
   const num = (v: unknown, lo: number, hi: number): number | null =>
     typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
   const u = unit.trim().toLowerCase();
@@ -1509,9 +1513,13 @@ const FAST_EXTRACT_TOOL = (() => {
     // sequential, so the model writes the label facts down first and the
     // totals it then emits already agree with them - and applyLabelChain
     // re-derives the line from these in code regardless.
+    label_applies: {
+      type: "boolean",
+      description: "true ONLY when this is a branded packaged item eaten AS-IS from the pack, in the form the label describes. false when the food is unpackaged or homemade, and false when a packaged item was PREPARED after opening (cooked, soaked, fried) - the label describes what is in the pack, not the dish made from it.",
+    },
     label_serving_g: {
       type: ["number", "null"],
-      description: "BRANDED PACKAGED food only: the serving size printed on its nutrition label, in g or ml, as you recall it. null for unpackaged food, home cooking, or a label you cannot recall.",
+      description: "Only when label_applies is true: the serving size printed on the pack's nutrition label, in g or ml, as you recall it. null otherwise, and null when you cannot recall the label.",
     },
     label_serving_kcal: {
       type: ["number", "null"],
@@ -1535,7 +1543,7 @@ const FAST_EXTRACT_TOOL = (() => {
   });
   item.required = [
     ...item.required,
-    "label_serving_g", "label_serving_kcal", "label_pieces_per_serving",
+    "label_applies", "label_serving_g", "label_serving_kcal", "label_pieces_per_serving",
     "est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g",
   ];
   return t;
@@ -1583,7 +1591,9 @@ Serving size:
 
 All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
 
-For a BRANDED PACKAGED food, recall the pack's printed nutrition label and report it in the label_ fields: the serving size in grams, the kcal for that serving, and how many pieces that serving is. The app does the arithmetic from those - one piece = serving grams / pieces, and the user's count multiplies from there - so give the label EXACTLY as the pack states it, never pre-scaled to the user's amount. Small packaged pieces are far lighter than they feel. Unpackaged food, home cooking, or a label you cannot recall: set all three label_ fields to null and estimate as usual.
+First decide, per item, whether the pack's label even applies (label_applies). It applies ONLY to a branded packaged item eaten as-is from the pack. It does NOT apply to unpackaged or homemade food, and it does NOT apply once a packaged item has been prepared - cooked rice is no longer the rice on the pack, soaked or fried changes the weight and the numbers. In every such case set label_applies false, the other label_ fields null, and simply estimate the user's serving.
+
+When the label DOES apply, recall it and report it in the label_ fields: the serving size in grams, the kcal for that serving, and how many pieces that serving is. The app does the arithmetic - one piece = serving grams / pieces, and the user's count multiplies from there - so give the label EXACTLY as the pack states it, never pre-scaled to the user's amount. Small packaged pieces are far lighter than they feel.
 
 Keep names faithful: correct spelling ("panner" is "paneer"), and keep words that change the food ("low fat", "double toned", "boiled") - dropping them logs a different food.
 
@@ -1597,23 +1607,23 @@ Examples:
 
 Input: "2 medjool dates and 10 pistachios"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "medjool dates", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 130, "est_protein_g": 0.8, "est_carb_g": 36, "est_fat_g": 0.1, "est_total_g": 48},
-  {"name": "pistachios", "brand": null, "quantity": 10, "unit": "piece", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 2, "est_fat_g": 3.2, "est_total_g": 7}]}
+  {"name": "medjool dates", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 130, "est_protein_g": 0.8, "est_carb_g": 36, "est_fat_g": 0.1, "est_total_g": 48},
+  {"name": "pistachios", "brand": null, "quantity": 10, "unit": "piece", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 2, "est_fat_g": 3.2, "est_total_g": 7}]}
 
 Input: "3 chocolate cream wafers"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "chocolate cream wafers", "brand": null, "quantity": 3, "unit": "piece", "prep": null, "label_serving_g": 30, "label_serving_kcal": 160, "label_pieces_per_serving": 4, "est_kcal": 120, "est_protein_g": 1.1, "est_carb_g": 14.3, "est_fat_g": 6.4, "est_total_g": 22.5}]}
+  {"name": "chocolate cream wafers", "brand": null, "quantity": 3, "unit": "piece", "prep": null, "label_applies": true, "label_serving_g": 30, "label_serving_kcal": 160, "label_pieces_per_serving": 4, "est_kcal": 120, "est_protein_g": 1.1, "est_carb_g": 14.3, "est_fat_g": 6.4, "est_total_g": 22.5}]}
 
 Input: "1 vada pav with extra chutney and a cutting chai"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "vada pav", "brand": null, "quantity": 1, "unit": "piece", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 290, "est_protein_g": 6, "est_carb_g": 40, "est_fat_g": 12, "est_total_g": 120},
-  {"name": "chutney", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 30, "est_protein_g": 0.5, "est_carb_g": 4, "est_fat_g": 1.5, "est_total_g": 20},
-  {"name": "milk tea", "brand": null, "quantity": 1, "unit": "cutting", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 5, "est_fat_g": 1.5, "est_total_g": 90}]}
+  {"name": "vada pav", "brand": null, "quantity": 1, "unit": "piece", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 290, "est_protein_g": 6, "est_carb_g": 40, "est_fat_g": 12, "est_total_g": 120},
+  {"name": "chutney", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 30, "est_protein_g": 0.5, "est_carb_g": 4, "est_fat_g": 1.5, "est_total_g": 20},
+  {"name": "milk tea", "brand": null, "quantity": 1, "unit": "cutting", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 5, "est_fat_g": 1.5, "est_total_g": 90}]}
 
 Input: "150g grilled fish and half katori khichdi"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
-  {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
-  {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
+  {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
+  {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
 
 Input: "played football for an hour"
 Output: {"declined": true, "decline_message": "That's training, not a meal. Tell me what you ate and I'll log it.", "meal_type_from_text": null, "items": []}`;
@@ -3315,6 +3325,7 @@ export async function runParseMeal(
       // it in code and the model's own multiplication is overridden.
       const chained = rawEst
         ? applyLabelChain(quantity, unit, rawEst, {
+          applies: o.label_applies,
           serving_g: o.label_serving_g,
           serving_kcal: o.label_serving_kcal,
           pieces: o.label_pieces_per_serving,

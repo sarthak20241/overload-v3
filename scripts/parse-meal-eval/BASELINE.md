@@ -47,6 +47,7 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-30 | **83/91 CLI** | **FAST v2**: estimate-first rewrite - calorie-tracker prompt + 4 few-shots, est_ fields are line TOTALS (per-100 retired), tool renamed estimate_meal; kcal no longer flows through the model's 2-5x-high gram guesses (6 cashews: 42 g -> 48 kcal, truth ~52). Known gaps: thin-biscuit kcal prior ~2x (tea-milk-default), est_total_g display label runs hot on estimate lines (gram bounds on estimate-tier cases now measure the LABEL, not the macros), edamame protein under. Decline judgement unreliable on CLI runs. |
 | 2026-08-30 | **87/91 CLI** | + main merged (single-scan staples, cap paywall); label-recall guideline |
 | 2026-08-31 | **88/91 CLI** | **LABEL CHAIN**: model recalls the pack's printed label as three fields (serving_g / serving_kcal / pieces_per_serving), CODE derives the line - recall is the model's strength, arithmetic is ours. Held out, Monaco went 2.3x -> 1.15x on kcal and 60 g -> 15 g on the label without any prompt naming it. Chain fires ONLY for counted pieces: v1 fired on "1 cup cooked rice" and answered with the pack's DRY 30 g serving, so household/pack units (cup, katori, spoon, packet...) are excluded. Remaining fails: maggi-packet gram label, edamame protein, one CLI-shim artifact. |
+| 2026-09-01 | **88/91 API** | + label_applies: the MODEL decides whether a pack label describes what was eaten. It does not for prepared food (cooked rice is not the rice on the pack) or unpackaged food. Held out: cooked dalia and loose chivda correctly skip the chain, Oreo and Monaco use it, cashews untouched. |
 
 ### Fast mode measures as accurate as the full pipeline, and much cheaper
 
@@ -119,6 +120,14 @@ Fast has no decide output to read, so a wrong line is undiagnosable without it.
 `DEBUG_STEPS=1 FAST_MODE=on ONLY=<case> npx tsx ...` prints each `search_foods`
 and `fast_fill` step. Five real bugs were found this way in one smoke run; all
 five had been invisible.
+
+### EVAL_CONCURRENCY above ~8 starves the CLI shim
+
+2026-09-01: `EVAL_VIA_CLI=1 EVAL_CONCURRENCY=12` scored 47/91 and 43 of the 44
+failures were `claude -p exceeded 180000ms`, with an "avg latency" of 942s. The
+shim spawns a process per call and 12 at once outruns it. The same tree scored
+88/91 at concurrency 8 through the API, avg 5.7s. Keep CLI runs at 6-8, and
+treat any run whose avg latency is in the hundreds of seconds as void.
 
 ### A run that starves mid-way is not a result
 
