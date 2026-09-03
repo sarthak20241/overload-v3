@@ -3225,7 +3225,14 @@ export async function runParseMeal(
   // model to read intent - "And a dosa" parses cleanly as one dosa but MEANS
   // add it to what is already there.
   const grammarMode = deps.fastGrammarMode ?? "off";
-  const laneA = (!hasPrevious && grammarMode !== "off")
+  // fastMode, not just "not a correction". Every comment here calls this
+  // "Fast mode's Lane A", but the gate never checked the tier: with
+  // PARSE_FAST_GRAMMAR=on it would have intercepted ANY first-shot parse whose
+  // text matched the grammar - Thorough-tier requests, and old clients that
+  // never send speed:"fast" - and fed un-normalised names into decide with no
+  // spelling fixes and no "chai" -> "milk tea" canonicalisation. Latent while
+  // the default is "shadow"; a one-line trap for whoever flips the switch.
+  const laneA = (fastMode && grammarMode !== "off")
     ? parseFastGrammar(input.text)
     : null;
   if (laneA) {
@@ -3383,7 +3390,7 @@ export async function runParseMeal(
   // 20 grams of Y") and the grammar refuses clause starters, spelled-out
   // numbers and >4-word names by design. Coverage, not just agreement, is what
   // decides whether Lane A is ever worth switching on, so log the refusal too.
-  if (!laneA && grammarMode !== "off" && !hasPrevious && extractRes) {
+  if (!laneA && grammarMode !== "off" && fastMode && extractRes) {
     steps.push({
       iter: 0,
       tool: "lane_a_shadow",
