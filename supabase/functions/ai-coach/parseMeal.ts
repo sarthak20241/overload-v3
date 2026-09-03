@@ -26,7 +26,11 @@
 
 import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
-import { cacheKey, type PreciseCacheRow } from "./preciseCache.ts";
+import {
+  cacheKey,
+  type PreciseCacheRow,
+  type SourceReading,
+} from "./preciseCache.ts";
 import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -1225,6 +1229,94 @@ const WEB_LOOKUP_TOOL = {
   },
 };
 
+/**
+ * Super's lookup tool. Deliberately NOT report_labels.
+ *
+ * report_labels answers "what is this food's number?" and its prompt says to
+ * pick the most credible source and never average. That is right for the
+ * challenge path, where one trustworthy panel settles an argument.
+ *
+ * Super asks a different question: "who says so, and do they agree?" A row is
+ * only verified when two INDEPENDENT sources land within 10% of the number we
+ * keep (meetsVerificationBar), and independenceKey identifies a web source by
+ * its HOST. So each reading has to arrive separately and carry its url, and a
+ * merged best-guess is useless here however credible it is. Two shapes for two
+ * questions; folding them together would break one of them.
+ *
+ * A reading with no url still counts, but every such reading collapses to the
+ * same "web:unknown" key, so a model that skips urls cannot manufacture a
+ * second source by repeating itself.
+ */
+const SUPER_LOOKUP_TOOL = {
+  name: "report_sources",
+  description:
+    "Report every nutrition source you found, once, after your searches. One entry per " +
+    "SOURCE per food, not one per food: two sites that agree are two entries. " +
+    "found=false when nothing trustworthy surfaced for that food.",
+  input_schema: {
+    type: "object",
+    properties: {
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            for_item: { type: "string", description: "The item name EXACTLY as given to you." },
+            found: { type: "boolean" },
+            readings: {
+              type: "array",
+              description:
+                "One entry per source you actually read. Do NOT merge or average them: " +
+                "reporting them separately is the whole point, because agreement between " +
+                "independent sources is what gets a number trusted.",
+              items: {
+                type: "object",
+                properties: {
+                  url: {
+                    type: ["string", "null"],
+                    description:
+                      "Full url of the page you read these numbers from. The site identifies " +
+                      "the source, so pages from one site count once however many you read.",
+                  },
+                  per_100: {
+                    type: "object",
+                    description: "Macros per 100 g (or 100 ml for liquids) from THIS source.",
+                    properties: {
+                      kcal: { type: "number" },
+                      protein_g: { type: "number" },
+                      carb_g: { type: "number" },
+                      fat_g: { type: "number" },
+                      fiber_g: { type: ["number", "null"] },
+                    },
+                    required: ["kcal", "protein_g", "carb_g", "fat_g"],
+                  },
+                },
+                required: ["per_100"],
+              },
+            },
+            serving_label: {
+              type: ["string", "null"],
+              description:
+                'The pack\'s own serving if one is stated, e.g. "1 biscuit (11 g)" or ' +
+                '"30 g". null for a dish or when no serving is printed.',
+            },
+            serving_grams: { type: ["number", "null"], description: "That serving in grams. null when unknown." },
+            source_note: {
+              type: ["string", "null"],
+              description:
+                'Short note for the user. For a packaged food name the label ("per the ' +
+                'Britannia label"). For a DISH say what it represents ("typical restaurant ' +
+                'preparation"), so a measured panel is distinguishable from a typical value.',
+            },
+          },
+          required: ["for_item", "found"],
+        },
+      },
+    },
+    required: ["results"],
+  },
+};
+
 interface WebLabel {
   per_100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
   source_note: string | null;
@@ -1369,6 +1461,123 @@ async function runWebLookup(
           // here would reach the result unclamped.
           fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) && p.fiber_g >= 0 ? p.fiber_g : null,
         },
+        source_note: typeof o.source_note === "string" && o.source_note.trim()
+          ? scrubDashes(o.source_note).slice(0, 80)
+          : null,
+      });
+    }
+    return out.size > 0 ? out : null;
+  }
+  return null;
+}
+
+/** What Super learned about one food: every reading, plus the pack's own
+ *  serving when it states one. */
+export interface SuperFinding {
+  readings: SourceReading[];
+  serving_label: string | null;
+  serving_grams: number | null;
+  source_note: string | null;
+}
+
+/**
+ * Super's web lookup: same bounded loop as runWebLookup, different question.
+ *
+ * Asks for every source separately rather than one settled answer, because
+ * verification is agreement BETWEEN sources and a merged number has already
+ * thrown that away. Shares WEB_SEARCH_TOOL's max_uses cap and the pause-turn
+ * handling, both of which are load-bearing and already proven on the challenge
+ * path.
+ */
+export async function runSuperLookup(
+  deps: ParseMealDeps,
+  items: ExtractedItem[],
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<Map<string, SuperFinding> | null> {
+  const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
+  const system =
+    "You verify nutrition numbers for a fitness app. For EACH food, find TWO OR MORE " +
+    "INDEPENDENT sources, then call report_sources exactly once.\n" +
+    "Independent means different sites. Two pages of one site are ONE source, so a " +
+    "second page there is wasted effort. Report each source as its own reading with " +
+    "the url you read it from. Do NOT merge, average or pick between them: whether " +
+    "they agree is the app's decision, not yours, and it cannot be made from a " +
+    "number you already blended.\n" +
+    'PACKAGED OR BRANDED: prefer the brand\'s own panel, then reputable label ' +
+    "listings. Record the pack's stated serving when it prints one.\n" +
+    "A DISH (no wrapper: chole bhature, paneer bhurji, a restaurant plate): there is " +
+    "no label and you must not wait for one. Use reputable nutrition databases or " +
+    'published analyses for a TYPICAL preparation, and say so in source_note.\n' +
+    "Report a food as found=false when nothing trustworthy surfaced. One source is " +
+    "still worth reporting: the app decides what one source is worth. Never invent a " +
+    "url and never invent numbers. Speed matters: no prose.";
+  const conversation: AnthropicMsg[] = [{
+    role: "user",
+    content: JSON.stringify(items.map((i) => ({ name: i.name, ...(i.brand ? { brand: i.brand } : {}) }))),
+  }];
+
+  for (let turn = 0; turn < WEB_LOOKUP_MAX_TURNS; turn++) {
+    const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
+    const result = await callAnthropicOnce(webDeps, {
+      model: deps.model,
+      max_tokens: 1200,
+      system,
+      tools: [WEB_SEARCH_TOOL, SUPER_LOOKUP_TOOL],
+      messages: conversation,
+      ...(lastTurn ? { tool_choice: { type: "tool", name: "report_sources" } } : {}),
+    });
+    if (!result.ok) {
+      deps.log?.(`[parse_meal] super lookup failed: ${result.status}`);
+      return null;
+    }
+    onCall();
+    onUsage(result.data);
+    const blocks: Array<Record<string, any>> = result.data.content ?? [];
+    if (result.data.stop_reason === "pause_turn") {
+      conversation.push({ role: "assistant", content: blocks });
+      continue;
+    }
+    const report = blocks.find((b) => b.type === "tool_use" && b.name === "report_sources");
+    if (!report) {
+      conversation.push({ role: "assistant", content: blocks });
+      conversation.push({ role: "user", content: "Call report_sources now with what you have." });
+      continue;
+    }
+    const out = new Map<string, SuperFinding>();
+    const results = (report.input as Record<string, unknown>)?.results;
+    for (const r of Array.isArray(results) ? results : []) {
+      const o = r as Record<string, any>;
+      if (o.found !== true || typeof o.for_item !== "string") continue;
+      const readings: SourceReading[] = [];
+      for (const raw of Array.isArray(o.readings) ? o.readings : []) {
+        const p = (raw as Record<string, any>)?.per_100;
+        if (!p) continue;
+        const nums = [p.kcal, p.protein_g, p.carb_g, p.fat_g];
+        if (!nums.every((n: unknown) => typeof n === "number" && Number.isFinite(n) && (n as number) >= 0)) continue;
+        readings.push({
+          source: "web",
+          ref: typeof raw.url === "string" && raw.url.trim() ? raw.url.trim().slice(0, 500) : null,
+          per_100: {
+            kcal: p.kcal,
+            protein_g: p.protein_g,
+            carb_g: p.carb_g,
+            fat_g: p.fat_g,
+            fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) && p.fiber_g >= 0 ? p.fiber_g : null,
+          },
+        });
+      }
+      if (readings.length === 0) continue;
+      const grams = typeof o.serving_grams === "number" && Number.isFinite(o.serving_grams) &&
+          o.serving_grams > 0 && o.serving_grams <= 5000
+        ? o.serving_grams
+        : null;
+      out.set(o.for_item, {
+        readings,
+        serving_label: typeof o.serving_label === "string" && o.serving_label.trim()
+          ? o.serving_label.trim().slice(0, 60)
+          : null,
+        serving_grams: grams,
         source_note: typeof o.source_note === "string" && o.source_note.trim()
           ? scrubDashes(o.source_note).slice(0, 80)
           : null,
