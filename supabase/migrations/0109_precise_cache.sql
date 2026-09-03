@@ -67,16 +67,31 @@ begin;
 -- the 0046 CHECK does not allow yet. The source tag is load-bearing the same way
 -- 'off' is: it says where these numbers came from and lets us re-check or pull
 -- them back as a set.
+--
+-- The list below is LIVE DATA, not 0046's list. This migration first shipped
+-- rewriting the constraint to 0046's five values and failed on apply:
+--
+--   ERROR 23514: check constraint "foods_source_check" of relation "foods"
+--   is violated by some row
+--
+-- because production also holds 'cofid' (2794 rows) and 'ciqual' (2198), both
+-- ingested by scripts/diet-catalog and neither ever added to the CHECK. Re-adding
+-- a constraint is a whole-table validation, so the omission is not a slow drift:
+-- it fails immediately and takes the transaction with it, precise_cache included.
+--
+-- So: query the live values before touching a CHECK a seed file claims to own,
+-- and widen rather than restate.
+--   select source, count(*) from public.foods group by source;
 
 do $$
 begin
   alter table public.foods drop constraint if exists foods_source_check;
   alter table public.foods add constraint foods_source_check
-    check (source in ('usda','off','curated','user','web_verified'));
+    check (source in ('usda','off','cofid','ciqual','curated','user','web_verified'));
 
   alter table public.food_servings drop constraint if exists food_servings_source_check;
   alter table public.food_servings add constraint food_servings_source_check
-    check (source in ('usda','off','curated','user','web_verified'));
+    check (source in ('usda','off','cofid','ciqual','curated','user','web_verified'));
 end $$;
 
 -- When we last had evidence for this row. Only promoted rows carry it today; the
