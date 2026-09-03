@@ -758,7 +758,6 @@ export async function parseMealStreaming(
     const dec = new TextDecoder();
     let buf = '';
     let final: ParseMealResult | null = null;
-    let sawAny = false;
 
     for (;;) {
       const { done, value } = await reader.read();
@@ -773,7 +772,6 @@ export async function parseMealStreaming(
         if (!ev || !raw) continue;
         let payload: any;
         try { payload = JSON.parse(raw); } catch { continue; }
-        sawAny = true;
         if (ev === 'items' && Array.isArray(payload.items)) {
           const num = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v : null);
           onItems(payload.items.map((i: any) => ({
@@ -799,11 +797,10 @@ export async function parseMealStreaming(
       }
     }
     // A stream that ended without an `end` frame is a truncated response, not a
-    // parse. Re-running costs a wait; showing a half-meal costs trust.
-    // Both outcomes take the same road - a stream that never produced a final
-    // frame is unusable whether or not it painted rows first - so this is one
-    // call, not a ternary onto itself. (`sawAny` remains as the trace signal
-    // for telling a truncated stream from a silent one.)
+    // parse. Re-running costs a wait; showing a half-meal costs trust. Both
+    // outcomes take the same road - a stream that never produced a final frame
+    // is unusable whether or not it painted rows first - so this is one call,
+    // not a ternary onto itself.
     if (!final) return parseMeal(supabase, args);
     return final;
   } catch (e) {
