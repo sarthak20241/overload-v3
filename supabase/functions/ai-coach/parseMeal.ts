@@ -28,6 +28,7 @@ import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
 import {
   cacheKey,
+  meetsVerificationBar,
   type PreciseCacheRow,
   type SourceReading,
 } from "./preciseCache.ts";
@@ -687,9 +688,11 @@ export interface ParseMealInput {
   localHour: number | null;
   mealHint: MealType | null;
   /** "fast": one model call names AND estimates, catalog resolve, code fill,
-   *  no decide. Honoured only on a first-shot log; with a meal on screen the
+   *  no decide. "super": the precise cache, then a per-item web lookup inside
+   *  the resolve fan-out, then the full pipeline on verified numbers.
+   *  Both are honoured only on a first-shot log; with a meal on screen the
    *  turn may be a correction and falls through to the full pipeline. */
-  mode?: "fast" | null;
+  mode?: "fast" | "super" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
@@ -788,6 +791,27 @@ export interface ParseMealDeps {
    *  SERVICE-ROLE client, because 0109 grants precise_cache to service_role
    *  only and a user-scoped read would return nothing. */
   preciseCacheGet?(key: string): Promise<PreciseCacheRow | null>;
+
+  /** Super only: store what a lookup cost us to learn, so the next person asking
+   *  about this food does not pay for it again. Upsert on cache_key; a
+   *  re-verification must set last_verified_at = now() or the row ages out on
+   *  its first sighting. Optional and structural for the same reasons as the
+   *  read above. */
+  preciseCachePut?(row: {
+    cache_key: string;
+    display_name: string;
+    brand: string | null;
+    base_unit: "g" | "ml";
+    kcal: number;
+    protein_g: number;
+    carb_g: number;
+    fat_g: number;
+    fiber_g: number | null;
+    servings: { label: string; grams: number }[];
+    evidence: SourceReading[];
+    verified: boolean;
+    source_note: string | null;
+  }): Promise<void>;
   // Cross-encoder rerank over the merged candidate docs. Optional - absent
   // when unconfigured; the merge order stands. See rerank.ts.
   rerankCandidates?(query: string, docs: string[]): Promise<{
@@ -2085,6 +2109,90 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  * - and widening the union to "precise" would mean touching every switch that
  * reads it. The trace step below is where a cache hit is actually visible.
  */
+/**
+ * One food, looked up and banked: run the web lookup, judge the evidence, store
+ * the verdict, hand back a candidate.
+ *
+ * Median-not-mean on purpose. Sources disagree by outliers, not by noise: one
+ * site quoting a 300 kcal bar at 30 kcal drags a mean far enough to fail its
+ * own verification, while the median simply ignores it. With two readings the
+ * median is their midpoint, which is what a person would do by hand.
+ *
+ * The row is written whatever the verdict, and that is deliberate. An
+ * unverified answer still cost real money to obtain and is still better than an
+ * estimate, so caching it stops us buying the same weak answer repeatedly;
+ * `verified` is what 7d's promotion job gates on, so an unverified row simply
+ * never graduates into the catalog.
+ */
+export async function superLookupOne(
+  deps: ParseMealDeps,
+  item: ExtractedItem,
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<CandidateFood | null> {
+  const found = await runSuperLookup(deps, [item], onUsage, onCall);
+  const finding = found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+  if (!finding || finding.readings.length === 0) return null;
+
+  const mid = (pick: (r: SourceReading) => number): number => {
+    const xs = finding.readings.map(pick).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    if (xs.length === 0) return 0;
+    const h = xs.length >> 1;
+    return xs.length % 2 ? xs[h] : round1((xs[h - 1] + xs[h]) / 2);
+  };
+  const per100 = {
+    kcal: mid((r) => r.per_100.kcal),
+    protein_g: mid((r) => r.per_100.protein_g),
+    carb_g: mid((r) => r.per_100.carb_g),
+    fat_g: mid((r) => r.per_100.fat_g),
+  };
+  // Physics before belief: sources agreeing on an impossible number is still an
+  // impossible number, and one that would then be cached and promoted.
+  const bad = implausiblePer100(per100);
+  if (bad) {
+    deps.log?.(`[parse_meal] super lookup implausible for "${item.name}": ${bad}`);
+    return null;
+  }
+  const fibers = finding.readings
+    .map((r) => r.per_100.fiber_g)
+    .filter((n): n is number => typeof n === "number" && n >= 0);
+  const fiber_g = fibers.length > 0 ? mid((r) => r.per_100.fiber_g ?? 0) : null;
+
+  const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
+  const servings = finding.serving_label && finding.serving_grams
+    ? [{ label: finding.serving_label, grams: finding.serving_grams }]
+    : [];
+  const display = item.brand ? `${item.brand} ${item.name}` : item.name;
+
+  if (deps.preciseCachePut) {
+    // Never let a cache write cost the user their meal: the lookup already
+    // succeeded and the line is good whether or not the row lands.
+    await deps.preciseCachePut({
+      cache_key: cacheKey(item.name, item.brand),
+      display_name: display,
+      brand: item.brand,
+      base_unit: "g",
+      ...per100,
+      fiber_g,
+      servings,
+      evidence: finding.readings,
+      verified,
+      source_note: finding.source_note,
+    }).catch((e) => deps.log?.(`[parse_meal] precise_cache write failed: ${String(e).slice(0, 120)}`));
+  }
+
+  return {
+    food_id: null,
+    name: display,
+    brand: item.brand,
+    base_unit: "g",
+    ...per100,
+    fiber_g,
+    servings,
+    source: "catalog",
+  };
+}
+
 export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
   return {
     food_id: null,
@@ -2112,6 +2220,12 @@ async function resolveOneItem(
   /** Fast mode: skip FatSecret (~4s cold cache) and the reranker (~400ms +
    *  429 risk). The accept gate does the judging instead. */
   lean = false,
+  /** Super mode: on a cache miss, look the food up on the web INSIDE the
+   *  fan-out, before decide and before render. That timing is the whole design
+   *  (see the WEB_LOOKUP_TOOL header): upgrade before the card exists and it is
+   *  stable, upgrade after and the user watches numbers move under a live Add
+   *  button. */
+  superLookup?: (item: ExtractedItem) => Promise<CandidateFood | null>,
 ): Promise<ResolvedItem> {
   // ── Precise-cache short-circuit (Phase 7b) ────────────────────────────────
   // Read BEFORE the fan-out, not as another arm of it: the whole point is that
@@ -2143,6 +2257,26 @@ async function resolveOneItem(
         },
       });
       return { ...item, candidates: [synthesizeVolumeAnchors(cacheRowToCandidate(cached))] };
+    }
+  }
+
+  // Cache miss in Super: pay for the lookup once, here, before the other
+  // sources run. A verified web answer is better than anything the catalog
+  // ladder can offer for the foods Super exists to handle, so it short-circuits
+  // exactly like a hit would; the write-through inside superLookup is what
+  // stops the next person paying again.
+  if (superLookup) {
+    const tWeb0 = Date.now();
+    const found = await superLookup(item).catch(() => null);
+    if (found) {
+      toolCalls.push("super_lookup");
+      steps.push({
+        iter: 1,
+        tool: "super_lookup",
+        input: { item: item.name, ms: Date.now() - tWeb0 },
+        result: { name: found.name, kcal: found.kcal },
+      });
+      return { ...item, candidates: [synthesizeVolumeAnchors(found)] };
     }
   }
 
@@ -3498,6 +3632,12 @@ export async function runParseMeal(
   // be a correction, removal, question or addition, and those need the full
   // pipeline; silently degrading them to fast would eat the user's intent.
   const fastMode = input.mode === "fast" && !hasPrevious;
+  // Super rides the SAME first-shot rule, and for the same reason: a correction
+  // needs the previous meal resolved, which is the full pipeline's job. Note it
+  // is deliberately not fastMode's sibling in behaviour - super keeps decide,
+  // keeps the reranker, keeps every guard. The only thing it adds is where the
+  // numbers come from.
+  const superMode = input.mode === "super" && !hasPrevious;
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -3949,7 +4089,23 @@ export async function runParseMeal(
   }
 
   const resolved: ResolvedItem[] = await Promise.all(
-    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
+    toResolve.map((item) =>
+      resolveOneItem(
+        deps,
+        item,
+        steps,
+        toolCalls,
+        stapleNames,
+        fastMode,
+        // Per ITEM, not per meal: each food's lookup finishes on its own clock,
+        // so a cached item is never held up by a sibling still being searched.
+        // accumulate() is passed through so the web_search_requests these calls
+        // spend land in usage, which is what 0112 prices.
+        superMode
+          ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
+          : undefined,
+      )
+    ),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();

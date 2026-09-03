@@ -68,3 +68,127 @@ Deno.test("the key the resolver looks up is the key the cache stores", () => {
   // and the cache costs money without ever paying out.
   assertEquals(cacheKey("Low Fat Paneer", "Milky Mist"), cacheKey("  low  fat   paneer ", "milky mist"));
 });
+
+// ── superLookupOne: the miss path ───────────────────────────────────────────
+// The lookup itself is a model call, so these drive it through a stubbed
+// fetchFn and assert on what the function DECIDES: the median, the physics
+// gate, the verdict it stores, and that a write failure cannot cost the meal.
+
+import { superLookupOne } from "./parseMeal.ts";
+import type { ParseMealDeps } from "./parseMeal.ts";
+
+const reading = (url: string | null, kcal: number) => ({
+  url,
+  per_100: { kcal, protein_g: 5, carb_g: 10, fat_g: 2, fiber_g: 1 },
+});
+
+/** A deps object whose one model call returns the given report_sources payload. */
+function stubDeps(
+  readings: unknown[],
+  captured: { row?: Record<string, unknown> },
+  opts: { putThrows?: boolean; serving?: [string, number] } = {},
+): ParseMealDeps {
+  return {
+    anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000,
+    webSearchEnabled: true, fastGrammarMode: "off",
+    searchFoods: async () => [], backfillOffFood: async () => null,
+    getFoodPer100: async () => null, getFoodServings: async () => [],
+    preciseCachePut: async (row) => {
+      if (opts.putThrows) throw new Error("db down");
+      captured.row = row as unknown as Record<string, unknown>;
+    },
+    fetchFn: (async () => new Response(JSON.stringify({
+      stop_reason: "tool_use",
+      content: [{
+        type: "tool_use",
+        name: "report_sources",
+        input: {
+          results: [{
+            for_item: "protein bar",
+            found: true,
+            readings,
+            ...(opts.serving ? { serving_label: opts.serving[0], serving_grams: opts.serving[1] } : {}),
+            source_note: "per the label",
+          }],
+        },
+      }],
+      usage: {},
+    }), { status: 200 })) as unknown as typeof fetch,
+  };
+}
+
+const ITEM = { name: "protein bar", brand: null, quantity: 1, unit: "piece", prep: null };
+
+Deno.test("two agreeing hosts verify, and the stored number is their median", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(stubDeps([reading("https://a.com/x", 380), reading("https://b.com/y", 400)], cap), ITEM, () => {}, () => {})
+    .then((c) => {
+      assertEquals(c?.kcal, 390);
+      assertEquals(cap.row?.verified, true);
+      assertEquals((cap.row?.evidence as unknown[]).length, 2);
+    });
+});
+
+Deno.test("two pages of ONE host are one source, so nothing is verified", () => {
+  // independenceKey folds by host. This is the failure the whole design exists
+  // to prevent: a site repeating itself is not corroboration.
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(stubDeps([reading("https://a.com/x", 380), reading("https://a.com/y", 385)], cap), ITEM, () => {}, () => {})
+    .then((c) => {
+      assertEquals(c !== null, true);           // still usable, still cached
+      assertEquals(cap.row?.verified, false);   // but never promotable
+    });
+});
+
+Deno.test("an outlier is ignored by the median rather than dragging it", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([reading("https://a.com/1", 380), reading("https://b.com/2", 400), reading("https://c.com/3", 30)], cap),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.kcal, 380);  // a mean would be 270 and fail its own bar
+    assertEquals(cap.row?.verified, true);
+  });
+});
+
+Deno.test("agreement on an impossible number is still refused", () => {
+  // Physics before belief: sources agreeing does not make 900 kcal of protein
+  // real, and a cached impossibility would go on to be promoted.
+  const cap: { row?: Record<string, unknown> } = {};
+  const huge = [
+    { url: "https://a.com", per_100: { kcal: 900, protein_g: 90, carb_g: 90, fat_g: 90, fiber_g: 0 } },
+    { url: "https://b.com", per_100: { kcal: 900, protein_g: 90, carb_g: 90, fat_g: 90, fiber_g: 0 } },
+  ];
+  return superLookupOne(stubDeps(huge, cap), ITEM, () => {}, () => {}).then((c) => {
+    assertEquals(c, null);
+    assertEquals(cap.row, undefined);  // nothing impossible is ever cached
+  });
+});
+
+Deno.test("the pack's serving is carried onto the candidate", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([reading("https://a.com", 380), reading("https://b.com", 390)], cap, { serving: ["1 bar (60 g)", 60] }),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.servings, [{ label: "1 bar (60 g)", grams: 60 }]);
+  });
+});
+
+Deno.test("a failed cache write does not cost the user their line", () => {
+  // The lookup already succeeded and the number is good. Losing the row costs
+  // the NEXT lookup money; losing the line costs this user their meal.
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([reading("https://a.com", 380), reading("https://b.com", 390)], cap, { putThrows: true }),
+    ITEM, () => {}, () => {},
+  ).then((c) => assertEquals(c?.kcal, 385));
+});
+
+Deno.test("no readings means no candidate and no write", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(stubDeps([], cap), ITEM, () => {}, () => {}).then((c) => {
+    assertEquals(c, null);
+    assertEquals(cap.row, undefined);
+  });
+});
