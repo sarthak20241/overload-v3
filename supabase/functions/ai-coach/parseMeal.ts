@@ -799,6 +799,14 @@ export interface ParseMealDeps {
    *  correction path simply falls back to the full pipeline. */
   getFoodServings?(foodId: string): Promise<ServingOption[]>;
   fetchFn?: typeof fetch;
+  /** Aborts the model calls when the caller no longer wants the answer.
+   *
+   *  The SSE transport hands this the stream's own cancellation, so a client
+   *  that navigates away or discards the card stops the work rather than just
+   *  stopping its own reading. Without it the edge function ran every
+   *  Anthropic call to completion for nobody: real tokens, real cost, a result
+   *  that was never rendered. */
+  abortSignal?: AbortSignal;
   log?: (msg: string) => void;
 }
 
@@ -1748,6 +1756,12 @@ async function callAnthropicOnce(
   const fetchFn = deps.fetchFn ?? fetch;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
+  // The caller's cancellation rides the same controller the timeout uses, so
+  // an abandoned request dies exactly like a timed-out one. Checked first:
+  // a signal that fired between calls must not start another.
+  if (deps.abortSignal?.aborted) controller.abort();
+  const onCallerAbort = () => controller.abort();
+  deps.abortSignal?.addEventListener("abort", onCallerAbort, { once: true });
   try {
     const response = await fetchFn("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -1772,6 +1786,7 @@ async function callAnthropicOnce(
     };
   } finally {
     clearTimeout(timeoutId);
+    deps.abortSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
 

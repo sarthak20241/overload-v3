@@ -1836,8 +1836,18 @@ async function handleParseMealRequest(args: {
 
   if (wantsStream) {
     const enc = new TextEncoder();
-    const deps = makeParseDeps(userClient, admin, userId);
+    // Client cancellation -> model cancellation. Without this the reader
+    // hanging up only stopped the WRITES: send() threw into an empty catch
+    // while runParseMeal happily finished every Anthropic call, spending real
+    // tokens on a result nobody would see. The client-side AbortController in
+    // dietData.ts is the other half; on its own it stopped the app reading,
+    // not the server working.
+    const abort = new AbortController();
+    const deps = { ...makeParseDeps(userClient, admin, userId), abortSignal: abort.signal };
     const stream = new ReadableStream({
+      cancel() {
+        abort.abort();
+      },
       async start(controller) {
         const send = (event: string, data: unknown) => {
           try {

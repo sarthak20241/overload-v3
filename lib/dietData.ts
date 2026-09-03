@@ -685,10 +685,13 @@ export interface StreamedItem {
  * rather than an error, and the only cost is the wait they would have had
  * anyway.
  *
- * ABANDONED PARSES ARE CANCELLED. Pass an AbortSignal and navigating away (or
- * discarding the card) aborts the request: without one the read loop keeps
- * going and the server runs the whole model call to completion for a client
- * that stopped listening, which is billed compute nobody will ever see.
+ * ABANDONED PARSES ARE CANCELLED, ON BOTH SIDES. Pass an AbortSignal and
+ * navigating away (or discarding the card) aborts the request; the edge
+ * function's stream has a `cancel()` handler that turns that disconnect into an
+ * AbortSignal on its own model calls (see index.ts and ParseMealDeps.abortSignal).
+ * Client-side abort alone was only half of it: the app stopped reading while
+ * the server finished every Anthropic call, spending real tokens on a result
+ * nobody would ever see.
  *
  * The server also emits a `fill` event, deliberately ignored here: it carries
  * the same payload as `end` and is sent immediately before it, so handling it
