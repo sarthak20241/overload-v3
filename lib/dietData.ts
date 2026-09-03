@@ -680,14 +680,25 @@ export interface StreamedItem {
  * numbers settle when the catalog answers (~300ms later).
  *
  * Falls back to the plain JSON parseMeal on ANY streaming failure - no body,
- * a malformed frame, a mid-stream disconnect. A user whose network dislikes
- * long-lived responses gets the old behaviour rather than an error, and the
- * only cost is the wait they would have had anyway.
+ * a malformed frame, a mid-stream disconnect, or a server `error` event. A
+ * user whose network dislikes long-lived responses gets the old behaviour
+ * rather than an error, and the only cost is the wait they would have had
+ * anyway.
+ *
+ * ABANDONED PARSES ARE CANCELLED. Pass an AbortSignal and navigating away (or
+ * discarding the card) aborts the request: without one the read loop keeps
+ * going and the server runs the whole model call to completion for a client
+ * that stopped listening, which is billed compute nobody will ever see.
+ *
+ * The server also emits a `fill` event, deliberately ignored here: it carries
+ * the same payload as `end` and is sent immediately before it, so handling it
+ * would repaint the card twice with identical data.
  */
 export async function parseMealStreaming(
   supabase: Supa,
   args: Parameters<typeof parseMeal>[1],
   onItems: (items: StreamedItem[]) => void,
+  signal?: AbortSignal,
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
   if (!text) return { kind: 'error', message: 'Type what you ate first.' };
@@ -720,6 +731,7 @@ export async function parseMealStreaming(
         'Content-Type': 'application/json',
         'x-region': 'us-east-1',
       },
+      signal,
       body: JSON.stringify({
         mode: 'parse_meal',
         // `mode` dispatches the handler; `speed` picks the tier inside it. They
@@ -738,7 +750,11 @@ export async function parseMealStreaming(
     });
     if (!res.ok || !res.body) return parseMeal(supabase, args);
 
+    // Abort releases the socket, which is what tells the edge function nobody
+    // is listening. Without it the server finishes the whole model call for a
+    // client that walked away - billed compute for a result no one sees.
     const reader = res.body.getReader();
+    signal?.addEventListener('abort', () => { void reader.cancel().catch(() => {}); }, { once: true });
     const dec = new TextDecoder();
     let buf = '';
     let final: ParseMealResult | null = null;
@@ -772,7 +788,13 @@ export async function parseMealStreaming(
         } else if (ev === 'end') {
           final = toParseResult(payload);
         } else if (ev === 'error') {
-          return { kind: 'error', message: 'That did not go through. Try again.' };
+          // Fall back like every other stream failure does. The docstring has
+          // always claimed "ANY streaming failure" falls back, and this branch
+          // was the one exception: a transient mid-stream error that the
+          // buffered path would have answered fine became a dead end for the
+          // user. The 200 is already sent, so this costs the wait again - the
+          // same cost the truncated-stream path below already accepts.
+          return parseMeal(supabase, args);
         }
       }
     }
@@ -784,7 +806,13 @@ export async function parseMealStreaming(
     // for telling a truncated stream from a silent one.)
     if (!final) return parseMeal(supabase, args);
     return final;
-  } catch {
+  } catch (e) {
+    // A deliberate abort is not a failure to retry: the caller has moved on, so
+    // falling back would start a SECOND full parse for a card nobody is
+    // watching - the exact waste the abort exists to prevent.
+    if (signal?.aborted || (e as { name?: string })?.name === 'AbortError') {
+      return { kind: 'error', message: 'Cancelled.' };
+    }
     return parseMeal(supabase, args);
   }
 }
