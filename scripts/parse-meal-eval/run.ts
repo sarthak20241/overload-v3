@@ -54,6 +54,13 @@ const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
 // API. Correctness only - see claude-cli-fetch.ts for what it does not model.
 const VIA_CLI = env("EVAL_VIA_CLI") === "1";
 const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.trim())) : null;
+// How many cases run at once. Default 1 keeps the historical serial behaviour
+// (and the historical latency numbers, which are only comparable when nothing
+// else is competing for the same API). Raise it for a quick correctness sweep:
+// EVAL_CONCURRENCY=6 turns an ~11 minute run into ~2. Latency and token figures
+// from a parallel run are still valid per case, but avg latency is not
+// comparable to a serial baseline.
+const CONCURRENCY = Math.max(1, Number(env("EVAL_CONCURRENCY") || "1") || 1);
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local in cwd).");
@@ -158,6 +165,10 @@ const deps: ParseMealDeps = {
   maxTokens: 1600,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
+  // FAST_GRAMMAR=on runs Lane A for real, so the eval can prove the code-named
+  // path produces the same meals as the model-named one.
+  fastGrammarMode: (env("FAST_GRAMMAR") || "off") as "off" | "shadow" | "on",
+
   searchFoods: searchCatalogWithServings,
   backfillOffFood: async () => {
     // DRY RUN: never write to prod from the eval. The model still receives
@@ -303,17 +314,27 @@ async function main() {
   const outcomes: CaseOutcome[] = [];
   let totalTokens = 0;
 
-  for (const c of cases) {
+  if (CONCURRENCY > 1) console.log(`running ${CONCURRENCY} cases at a time\n`);
+
+  // One case, start to printed verdict. Pulled out of the loop so a worker pool
+  // can drive it; the body is otherwise unchanged.
+  const runOne = async (c: EvalCase): Promise<void> => {
     const started = Date.now();
+    let lastSteps: import("../../supabase/functions/ai-coach/parseMeal").ParseStep[] | null = null;
     try {
       const baseInput = {
         localHour: c.hour ?? null,
         mealHint: null,
+        // FAST_MODE=on runs every case through the no-decide fast path, so the
+        // whole corpus doubles as fast's accuracy eval. Follow-ups carry
+        // previousItems, so runParseMeal ignores the mode there by design.
+        mode: (env("FAST_MODE") === "on" ? "fast" : null) as "fast" | null,
         recentFoods: [],
         todayTotals: null,
         targets: { daily_calorie_target: 2400, protein_target_g: 140 },
       };
       let result = await runParseMeal(deps, { ...baseInput, text: c.text });
+      lastSteps = result.steps;
       // Follow-up cases: replay the first parse as the meal on screen, then
       // score the follow-up — exactly what the client sends.
       if (c.followUp) {
@@ -330,6 +351,7 @@ async function main() {
           previousText: c.text,
           previousItems: prev,
         });
+        lastSteps = result.steps;
       }
       const failures = scoreCase(c, result);
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
@@ -354,13 +376,39 @@ async function main() {
         tiers: [], ms: Date.now() - started, tokens: 0, summary: "",
       });
     }
-    const last = outcomes[outcomes.length - 1];
+    // THIS case's outcome, found by id. Reading outcomes[length - 1] worked
+    // only while the loop was serial; with workers interleaving it would print
+    // another case's verdict under this case's name.
+    const last = outcomes.find((o) => o.id === c.id)!;
     console.log(`${last.pass ? "PASS" : "FAIL"}  ${c.id.padEnd(24)} ${last.ms}ms  [${last.tiers.join(",")}]`);
+    if (!last.pass && env("DEBUG_STEPS") === "1" && lastSteps) {
+      for (const st of lastSteps) {
+        if (["fast_fill", "search_foods", "lane_a_grammar"].includes(String(st.tool))) {
+          console.log(`      # ${st.tool} ${JSON.stringify(st.input)} -> ${JSON.stringify(st.result ?? null)}`);
+        }
+      }
+    }
     if (!last.pass) for (const f of last.failures) console.log(`      - ${f}`);
     if (last.summary) console.log(`      ${last.summary}`);
     // Be gentle with the API and OFF.
     await new Promise((r) => setTimeout(r, 400));
-  }
+  };
+
+  // Bounded pool. Cases are independent - each runParseMeal call carries its own
+  // state and the only shared things are append-only (outcomes, totalTokens,
+  // offLookups), so N workers pulling from one queue is safe. Verdicts print as
+  // they finish, so at CONCURRENCY > 1 the order is completion order, not corpus
+  // order; every line carries its case id.
+  const queue = [...cases];
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        await runOne(next);
+      }
+    }),
+  );
 
   const passed = outcomes.filter((o) => o.pass).length;
   const declineCases = cases.filter((c) => c.expect.declined).length;

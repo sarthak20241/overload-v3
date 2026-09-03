@@ -30,6 +30,26 @@ export function setSupabaseTokenGetter(fn: (() => Promise<string | null>) | null
   clerkTokenGetter = fn;
 }
 
+/**
+ * The current Clerk JWT, for the one caller that has to build its own request
+ * instead of going through supabase-js: the SSE stream in `parseMealStreaming`,
+ * which needs `expo/fetch` for a readable body.
+ *
+ * Do NOT reach for `supabase.auth.getSession()` to get this. Clerk owns the
+ * session here and nothing is ever written to Supabase auth, so getSession()
+ * returns null for a perfectly signed-in user. That is exactly how streaming
+ * shipped silently disabled: the token read failed, the code fell back to the
+ * buffered JSON path, and it looked like the server simply never streamed.
+ */
+export async function getSupabaseAccessToken(): Promise<string | null> {
+  if (!clerkTokenGetter) return null;
+  try {
+    return await clerkTokenGetter();
+  } catch {
+    return null;
+  }
+}
+
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: ExpoSecureStoreAdapter,

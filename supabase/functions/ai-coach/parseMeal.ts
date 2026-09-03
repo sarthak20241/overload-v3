@@ -25,6 +25,8 @@
 // so catalog-backed numbers are never model-invented.
 
 import { nearWord } from "./textMatch.ts";
+import { parseFastGrammar } from "./fastGrammar.ts";
+import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -301,22 +303,131 @@ export function reconcileExtracted(
 const SKIP_DECIDE_MIN_TOP_SCORE = 0.75;
 
 /** Units we can convert without asking a model. */
-const MASS_UNITS = new Set(["g", "gram", "grams", "gm", "gms", "ml", "millilitre", "milliliter"]);
+const MASS_UNITS = new Set([
+  "g", "gram", "grams", "gm", "gms",
+  "ml", "millilitre", "milliliter", "millilitres", "milliliters",
+]);
+
+/** Every metric amount in a label - "100 g", "100g", "(11 g)" - built from
+ *  MASS_UNITS so the two can never drift apart. Longest spelling first, so
+ *  "gram" is not half-eaten by "g". */
+const MASS_AMOUNT_RE = new RegExp(
+  `\\d+(?:\\.\\d+)?\\s*(?:${[...MASS_UNITS].sort((a, b) => b.length - a.length).join("|")})\\b`,
+  "gi",
+);
+
+/** Words that name no PIECE. "serving" is the very unit we are trying to
+ *  resolve, so a label built only from these plus a metric amount tells us
+ *  nothing the user's own word did not. */
+const GENERIC_PORTION_WORDS = new Set([
+  "serving", "servings", "portion", "portions", "per", "of", "approx", "about", "1", "one",
+]);
+
+/**
+ * True for a serving that states a BASIS, not a portion.
+ *
+ * Two shapes, and neither can answer "how much is ONE of these?":
+ *   - a bare metric amount:      "100 g", "100g", "per 100 ml", "30 g"
+ *   - the per-100 basis dressed  "1 serving (100 g)", "per serving - 100 g"
+ *     up as a generic serving
+ *
+ * Every candidate source injects one. The catalog carries a per-100 basis row,
+ * FatSecret v4 adds an explicit "100 g" serving (serving_id 0) to branded foods
+ * on purpose (see fatsecret.ts), and OFF passes contributor free text straight
+ * through as the label, which is where the dressed-up shape comes from.
+ *
+ * The first shape is a pure text test, so "30 g" is caught as readily as
+ * "100 g". The second is gated on exactly 100 g, because a named amount that is
+ * NOT the per-100 basis is a real pack portion: "1 serving (30 g)" on a protein
+ * bar means one bar, and refusing it would lose a measured weight.
+ */
+export function isBasisServing(sv: ServingOption): boolean {
+  const words = sv.label.toLowerCase()
+    .replace(MASS_AMOUNT_RE, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  // Nothing survived the amount: the label WAS the amount.
+  if (words.length === 0) return true;
+  return sv.grams === 100 && words.every((w) => GENERIC_PORTION_WORDS.has(w));
+}
+
+/**
+ * Does this serving label name a countable PIECE, rather than a portion?
+ *
+ * "1 serving (14.4 g)" states a portion size and says nothing about how much
+ * ONE of the thing weighs. Treating it as a piece is what logged "3 monaco
+ * biscuits" as 43.2 g: the row's serving is roughly three crackers, and the
+ * count multiplied it again. A Monaco is ~4.4 g, so three are ~13 g.
+ *
+ * "1 cookie (11 g)", "1 large", "1 slice (20 g)" DO name a piece - something
+ * survives once the amount and the generic portion words are stripped - so a
+ * count can safely multiply them.
+ *
+ * Deliberately conservative: an unnamed portion falls through to the model's
+ * est_total_g, which is a labelled estimate. Guessing a piece weight from a
+ * portion is precise about the wrong amount, which is the failure this whole
+ * gate exists to avoid.
+ */
+export function namesAPiece(sv: ServingOption): boolean {
+  const words = sv.label.toLowerCase()
+    .replace(MASS_AMOUNT_RE, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.some((w) => !GENERIC_PORTION_WORDS.has(w));
+}
 
 /** Grams for one unit of what the user said, or null when it needs judgment. */
-function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
+export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number; label: string } | null {
   const u = unit.trim().toLowerCase();
   if (MASS_UNITS.has(u)) return { grams: 1, label: cand.base_unit === "ml" ? "ml" : "g" };
   // A serving anchor whose label mentions the user's word ("1 large" for
   // "large", "1 scoop (30 g)" for "scoop").
-  if (u) {
-    const hit = cand.servings.find((sv) => sv.grams > 0 && sv.label.toLowerCase().includes(u));
+  //
+  // A BASIS serving can never be that anchor, even when the words line up. The
+  // user's count word is often "serving" (the grammar emits it for every
+  // counted noun, see fastGrammar SHAPE 5), and "1 serving (100 g)" contains
+  // it - so without this the per-100 basis matched here and the whole
+  // piece-count guard below was bypassed.
+  //
+  // A GENERIC count word cannot be that anchor either. "serving" is what both
+  // the grammar and extract emit for any counted noun, and it appears inside
+  // "1 serving (14.4 g)" - so matching on it here let an unnamed portion pose
+  // as a piece and skipped the guard below entirely. Generic words fall
+  // through; only a real anchor word ("large", "scoop", "slice") matches.
+  if (u && !GENERIC_PORTION_WORDS.has(u) && u !== "piece" && u !== "pieces") {
+    const hit = cand.servings.find((sv) =>
+      sv.grams > 0 && !isBasisServing(sv) && sv.label.toLowerCase().includes(u)
+    );
     if (hit) return { grams: hit.grams, label: hit.label };
   }
-  // A bare count ("2 eggs", "1 bar") resolves against the row's own default.
+  // A bare count ("2 eggs", "1 bar", "2 oreo biscuits" - the grammar and the
+  // extract call both emit "serving" for a counted noun) resolves against the
+  // row's own default, but ONLY against a serving that describes one PIECE.
+  //
+  // Multiplying a bare mass label by the count is the I-class bug reproduced in
+  // production on 2026-08-28: "2 oreo biscuits and 1 amul cheese slice" logged
+  // 200 g / 966 kcal and 100 g / 316 kcal against a true ~22 g / ~105 kcal and
+  // ~20 g / ~63 kcal, because both rows carry "100 g" and nothing else. Smart
+  // never hits this - buildDecideSystemPrompt spells the household weights out
+  // ("2 biscuits is ~15-20 g, never 90") - and Fast skips decide entirely, so
+  // the refusal here IS Fast's version of that knowledge: the caller drops to
+  // the model's own est_total_g, which the fused extract call already returned
+  // for exactly this reason.
+  //
+  // Filtering rather than rejecting also fixes the ordering: a row carrying
+  // both "1 cookie (11 g)" and a default "100 g" now picks the cookie.
   if (!u || u === "serving" || u === "servings" || u === "piece" || u === "pieces") {
-    const def = cand.servings.find((sv) => sv.is_default && sv.grams > 0) ??
-      cand.servings.find((sv) => sv.grams > 0);
+    // namesAPiece, not merely "not the basis": a row whose only portion is
+    // "1 serving (14.4 g)" cannot say what ONE biscuit weighs, and multiplying
+    // that portion by the count is how "3 monaco biscuits" reached 43.2 g.
+    const portions = cand.servings.filter((sv) =>
+      sv.grams > 0 && !isBasisServing(sv) && namesAPiece(sv)
+    );
+    const def = portions.find((sv) => sv.is_default) ?? portions[0];
     if (def) return { grams: def.grams, label: def.label };
   }
   return null;
@@ -512,24 +623,48 @@ export function groundDronaLine(
 /** A rough, clearly-flagged line for a food decide dropped. Uses the top
  *  resolved candidate's per-100 where we have it, and keeps food_id null so it
  *  reads (and refines) as the estimate it is. */
-function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per100>): ParsedItem {
+export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<string, Per100>): ParsedItem {
   const top = r.candidates[0];
   const p = top?.food_id ? candidatePer100.get(top.food_id) : undefined;
   const unit = r.unit.trim().toLowerCase();
   const qty = r.quantity > 0 ? r.quantity : 1;
+  // MASS_UNITS, not a hand-written subset. The old inline list missed "gm",
+  // "gms", "millilitre" and "milliliter", so "2 gm" fell through to the count
+  // branch and was read as two PIECES.
+  // namesAPiece as well as !isBasisServing, matching gramsPerUnit exactly. Only
+  // checking the basis let a PACK portion through here - "1 serving (14.4 g)"
+  // is about three crackers - and a count then multiplied it, which is the bug
+  // namesAPiece was added to close on the other path.
+  const portions = top?.servings.filter((s) => s.grams > 0 && !isBasisServing(s) && namesAPiece(s)) ?? [];
+  const sv = portions.find((s) => s.is_default) ?? portions[0];
   let grams: number;
-  if (unit === "g" || unit === "ml" || unit === "gram" || unit === "grams") {
+  if (MASS_UNITS.has(unit)) {
     grams = qty;
+  } else if (sv) {
+    // A REAL portion serving beats the model's estimate: "1 cookie (11 g)" is
+    // measured, est.total_g is free text. Order matters and this is the order.
+    grams = sv.grams * qty;
+  } else if (r.est && r.est.total_g > 0) {
+    // No portion anchor on the row, so the model's own gram estimate for the
+    // line. It ALREADY accounts for the count ("2 biscuits" -> ~22 g), so it
+    // must not be multiplied again. Capped like every other free-text gram.
+    grams = Math.min(r.est.total_g, 5000);
   } else {
-    const sv = top?.servings.find((s) => s.is_default) ?? top?.servings[0];
-    grams = (sv && sv.grams > 0 ? sv.grams : 100) * qty;
+    // Nothing measured and nothing estimated. The row's only serving is a bare
+    // mass label ("100 g"), which states a MASS and not a portion - multiplying
+    // it by a piece count is exactly how 2 Oreos logged as 200 g. Take ONE
+    // basis and let the low confidence say the rest.
+    grams = 100;
   }
   const f = grams / 100;
   return {
     food_id: null,
     food_name: top?.name ?? r.name,
     quantity: qty,
-    serving_label: unit || "serving",
+    // The label that DROVE the gram math, so quantity x serving_label still
+    // reads as grams on the card. Filling the raw user word here printed
+    // "2 x serving" against 22 g derived from "1 cookie (11 g)".
+    serving_label: (!MASS_UNITS.has(unit) && sv) ? sv.label : (unit || "serving"),
     grams: round1(grams),
     kcal: p ? round1(p.kcal * f) : 0,
     protein_g: p ? round1(p.protein_g * f) : 0,
@@ -546,6 +681,10 @@ export interface ParseMealInput {
   text: string;
   localHour: number | null;
   mealHint: MealType | null;
+  /** "fast": one model call names AND estimates, catalog resolve, code fill,
+   *  no decide. Honoured only on a first-shot log; with a meal on screen the
+   *  turn may be a correction and falls through to the full pipeline. */
+  mode?: "fast" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
@@ -569,19 +708,66 @@ export interface ParseMealInput {
 
 // Injected by index.ts (production) or the eval harness (dry run). Keeping
 // this structural (no supabase-js types) is what makes the module portable.
+/**
+ * Progress the client can render before the meal is finished (Phase 4).
+ *
+ * Deliberately only TWO events, and neither is "almost done". Measured on
+ * device: names land ~1.2s in, macros ~1.5s. The gap worth filling is the one
+ * where we know WHAT the user ate but not yet the numbers - so `items` paints
+ * the rows and `fill` settles them. Anything finer would be motion without
+ * information.
+ *
+ * The estimate rides along on `items` because the fused naming call already
+ * produced it: the shimmer can animate toward a real figure rather than
+ * spinning at nothing, and if the catalog then agrees within ~10% it barely
+ * moves. A number that approaches something true is honest; one that approaches
+ * nothing is decoration.
+ */
+/** The model's own numbers for a whole line, from the naming call. All four
+ *  travel together: a row that shimmers a calorie count but blanks its macros
+ *  reads as broken, and the card has to reserve the same space it will need
+ *  once the catalog answers or the row jumps when it settles. Null on every
+ *  field when the model gave no usable estimate. */
+export interface ProgressItem {
+  name: string;
+  quantity: number;
+  unit: string;
+  est_kcal: number | null;
+  est_protein_g: number | null;
+  est_carb_g: number | null;
+  est_fat_g: number | null;
+}
+
+export type ParseProgress =
+  | { kind: "items"; items: ProgressItem[] }
+  | { kind: "fill"; items: ParsedItem[]; meal_type: MealType; drona_line: string };
+
 export interface ParseMealDeps {
   anthropicApiKey: string;
   model: string;
   maxTokens: number;
   timeoutMs: number;
   webSearchEnabled: boolean;
+  /** Called as soon as each stage has something worth showing. Absent for
+   *  non-streaming callers, which is every caller today. */
+  onProgress?(p: ParseProgress): void;
   /** P3 skip-decide. 'off' always calls decide; 'shadow' calls decide but also
    *  computes the code fill and records whether they agree; 'on' skips decide
    *  when the gate passes. Default off: this removes the model from the
    *  decision, so it earns its way in on shadow-mode agreement data. */
   skipDecideMode?: "off" | "shadow" | "on";
+  /** Fast Lane A: name the items in CODE and skip the extract call entirely.
+   *  Shadow records what the grammar WOULD have produced without acting on it,
+   *  so its agreement with extract can be measured on real traffic first. */
+  fastGrammarMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
-  searchFoods(query: string): Promise<CandidateFood[]>;
+  // `lean` = trigram only, skip the semantic leg. The semantic leg embeds the
+  // query via an EXTERNAL Voyage API call first, which is ~1s and rate-limited,
+  // so a ladder of concurrent searches queues there - measured: every query in
+  // a batch reporting near-identical 0.8-1.6s wall times while the co-located
+  // trigram RPC costs ~30ms. Fast mode passes lean=true; synonym-bridging is
+  // decide's concern, and fast has no decide.
+  searchFoods(query: string, lean?: boolean): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
   // Returns the new (or pre-existing) food id, or null on failure/dry-run.
   backfillOffFood(food: OffProduct): Promise<string | null>;
@@ -613,6 +799,14 @@ export interface ParseMealDeps {
    *  correction path simply falls back to the full pipeline. */
   getFoodServings?(foodId: string): Promise<ServingOption[]>;
   fetchFn?: typeof fetch;
+  /** Aborts the model calls when the caller no longer wants the answer.
+   *
+   *  The SSE transport hands this the stream's own cancellation, so a client
+   *  that navigates away or discards the card stops the work rather than just
+   *  stopping its own reading. Without it the edge function ran every
+   *  Anthropic call to completion for nobody: real tokens, real cost, a result
+   *  that was never rendered. */
+  abortSignal?: AbortSignal;
   log?: (msg: string) => void;
 }
 
@@ -1213,7 +1407,249 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
 - ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance.
 When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
-const EXTRACT_SYSTEM = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated). Do NOT resolve nutrition, do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+/**
+ * Fast mode's naming call, which also carries the model's own numbers.
+ *
+ * Measured 2026-08-27: requiring these fields costs +658ms and roughly doubles
+ * output tokens, so ONLY fast pays it - Smart keeps the lean tool and lets
+ * decide handle the fallback. The win is that a separate estimate call cannot
+ * start until the names exist, i.e. a full extra round trip (~1.2s); fused is
+ * about half that, and the estimate is already in hand when the accept gate
+ * rejects a row.
+ *
+ * v2: the est_ fields are TOTALS for the line, not per-100 x grams. Measured
+ * 2026-08-30 with the catalog stripped away: the model's per-piece GRAM
+ * knowledge is 2-5x high (6 cashews -> 42 g against a true 9; 20 cashews ->
+ * 160 g, so the multiplication was fine and the piece weight was not), while
+ * calorie-per-serving knowledge is what its training data actually contains.
+ * Asking for kcal directly removes the weakest number from the chain;
+ * est_total_g survives as a display label and never feeds the macro math.
+ */
+/**
+ * The label chain: the model RECALLS the pack's printed facts, the CODE does
+ * the arithmetic.
+ *
+ * Measured with the catalog stripped away, the model's one-shot guess at
+ * "grams for N pieces" runs 1.5-5x high, while its recall of literal label
+ * text ("per serving 30 g, about 4 pieces, 160 kcal") is what its training
+ * data actually contains. So the tool asks for the label as three separate
+ * facts and this function derives the line from them:
+ *
+ *   one piece = serving_g / pieces;  total = count x one piece
+ *
+ * kcal and macros scale TOGETHER by the same ratio, so checkAtwater still
+ * holds afterwards; the ratio is clamped so one mis-recalled label cannot
+ * swing a line 20x. A stated mass ("100g soya chunks") bypasses the chain
+ * entirely - the user's own number always wins.
+ */
+/** Units the label chain must never touch: household measures and pack-level
+ *  units, where "pieces per serving" is meaningless or the label's serving
+ *  basis (often DRY weight) does not describe what is in the bowl. */
+const NON_PIECE_UNITS = new Set([
+  "cup", "cups", "katori", "katoris", "glass", "glasses", "bowl", "bowls",
+  "plate", "plates", "tbsp", "tsp", "tablespoon", "tablespoons", "teaspoon",
+  "teaspoons", "spoon", "spoons", "scoop", "scoops", "mug", "mugs", "shot",
+  "shots", "packet", "packets", "pack", "packs", "bottle", "bottles", "can",
+  "cans", "ladle", "ladles", "handful", "handfuls",
+]);
+
+export function applyLabelChain(
+  quantity: number,
+  unit: string,
+  est: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number },
+  label: { applies: unknown; serving_g: unknown; serving_kcal: unknown; pieces: unknown },
+): { est: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number }; applied: boolean } {
+  // The MODEL's own judgment gates everything: it knows cooked rice is not the
+  // rice on the pack's label, and that homemade food has no label at all. The
+  // unit blacklist below stays as the code-side backstop - both must agree.
+  if (label.applies !== true) return { est, applied: false };
+  const num = (v: unknown, lo: number, hi: number): number | null =>
+    typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+  const u = unit.trim().toLowerCase();
+  // The chain's premise is PIECES: count x (serving grams / pieces per
+  // serving). A stated mass wins outright, and a household measure must never
+  // enter it - measured on the eval the first version fired for "1 cup cooked
+  // rice" and answered with the pack's DRY 30 g serving, and for "1 packet
+  // maggi" where "pieces" means nothing. Those units already have their own
+  // resolution paths; the chain is only for counted pieces.
+  if (MASS_UNITS.has(u) || NON_PIECE_UNITS.has(u)) return { est, applied: false };
+  const servingG = num(label.serving_g, 1, 1000);
+  const pieces = num(label.pieces, 0.25, 100);
+  if (servingG === null || pieces === null) return { est, applied: false };
+  const perPieceG = servingG / pieces;
+  if (!(perPieceG >= 0.3 && perPieceG <= 500)) return { est, applied: false };
+  const qty = quantity > 0 ? quantity : 1;
+  const total_g = Math.min(qty * perPieceG, 5000);
+  const servingKcal = num(label.serving_kcal, 1, 2000);
+  let { kcal, protein_g, carb_g, fat_g } = est;
+  if (servingKcal !== null) {
+    const derivedKcal = (qty * servingKcal) / pieces;
+    if (kcal > 0) {
+      const ratio = Math.min(Math.max(derivedKcal / kcal, 0.2), 5);
+      kcal *= ratio; protein_g *= ratio; carb_g *= ratio; fat_g *= ratio;
+    } else if (protein_g + carb_g + fat_g > 0) {
+      // kcal 0 with real macros: there is no ratio to scale by, and setting
+      // kcal alone would leave the line disagreeing with its own macros (and
+      // failing checkAtwater downstream). Scale the macros to the label's
+      // energy split instead, so the two still describe one food.
+      const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
+      const ratio = Math.min(Math.max(derivedKcal / atwater, 0.2), 5);
+      protein_g *= ratio; carb_g *= ratio; fat_g *= ratio;
+      kcal = derivedKcal;
+    } else {
+      kcal = derivedKcal;
+    }
+  }
+  return { est: { kcal, protein_g, carb_g, fat_g, total_g }, applied: true };
+}
+
+const FAST_EXTRACT_TOOL = (() => {
+  const t = JSON.parse(JSON.stringify(EXTRACT_TOOL));
+  // Its own name: the schema is different enough that calling it extract_meal
+  // would be a lie in every trace.
+  t.name = "estimate_meal";
+  const item = t.input_schema.properties.items.items;
+
+  // Fast mode only ever runs when there is NO previous meal (see `fastMode`
+  // below), and every one of these fields is documented as "only ever true when
+  // a previous meal was given". Leaving them in the schema asks Haiku to
+  // consider, and often emit, five fields whose answer is fixed. Latency here is
+  // output tokens, so a field the model cannot need is pure delay.
+  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names"]) {
+    delete t.input_schema.properties[dead];
+  }
+  delete item.properties.corrects_food_name;
+
+  // The inherited items description spends ~50 words on corrects_previous and
+  // removed_food_names - both deleted above. Instructions about fields that do
+  // not exist are budget spent teaching nothing.
+  t.input_schema.properties.items.description = "One entry per distinct food or drink the user ate.";
+
+  t.description = "Log the user's meal. name/quantity/unit/prep mirror what the text says. " +
+    "The est_ fields are yours to estimate - TOTALS for the line as eaten - " +
+    "and nothing downstream will correct them.";
+
+  Object.assign(item.properties, {
+    // Recall fields come BEFORE the est_ totals on purpose: generation is
+    // sequential, so the model writes the label facts down first and the
+    // totals it then emits already agree with them - and applyLabelChain
+    // re-derives the line from these in code regardless.
+    label_applies: {
+      type: "boolean",
+      description: "true ONLY when this is a branded packaged item eaten AS-IS from the pack, in the form the label describes. false when the food is unpackaged or homemade, and false when a packaged item was PREPARED after opening (cooked, soaked, fried) - the label describes what is in the pack, not the dish made from it.",
+    },
+    label_serving_g: {
+      type: ["number", "null"],
+      description: "Only when label_applies is true: the serving size printed on the pack's nutrition label, in g or ml, as you recall it. null otherwise, and null when you cannot recall the label.",
+    },
+    label_serving_kcal: {
+      type: ["number", "null"],
+      description: "kcal the label states FOR THAT SERVING - never per 100 g. null when unknown.",
+    },
+    label_pieces_per_serving: {
+      type: ["number", "null"],
+      description: "How many pieces make up that printed serving (biscuits, wafers, slices). null when the food is not eaten in pieces or you cannot recall the count.",
+    },
+    est_kcal: {
+      type: "number",
+      description: "TOTAL kcal for this line as eaten: the serving applied, the count multiplied in. Never per-100, never per piece.",
+    },
+    est_protein_g: { type: "number", description: "TOTAL protein grams for the line." },
+    est_carb_g: { type: "number", description: "TOTAL carb grams for the line." },
+    est_fat_g: { type: "number", description: "TOTAL fat grams for the line." },
+    est_total_g: {
+      type: "number",
+      description: "Grams (or ml) the whole line comes to. Display only - it labels the entry and never feeds the calorie math - but still your honest best guess.",
+    },
+  });
+  item.required = [
+    ...item.required,
+    "label_applies", "label_serving_g", "label_serving_kcal", "label_pieces_per_serving",
+    "est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g",
+  ];
+  return t;
+})();
+
+const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
+
+/** Smart only. There, nutrition is decide's job, and asking for it here would
+ *  buy output tokens for numbers the second call overwrites anyway. In FAST
+ *  there IS no second call, so this sentence must not be sent: it told the
+ *  model not to do the exact thing FAST_EXTRACT_TOOL makes required. */
+const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition.`;
+
+/** Smart only, since fast carries its own standalone prompt below. quantity
+ *  and unit mirror what the user SAID; inventing an amount nobody typed is
+ *  decide's call to make, not extraction's. */
+const EXTRACT_SHARED_RULES =
+  ` Do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+
+/**
+ * Fast's whole prompt, standalone. v2, redesigned 2026-08-30.
+ *
+ * v1 was EXTRACT_SYSTEM_HEAD + shared rules + a bullet list of estimating
+ * rules bolted on: a segmentation prompt asked, in its sixth bullet, to also
+ * be a calorie tracker. v2 states the actual job in the first sentence and
+ * teaches by example instead of by rule.
+ *
+ * The est_ fields are TOTALS for the line (see FAST_EXTRACT_TOOL): the model's
+ * per-piece gram knowledge measured 2-5x high with the catalog stripped away,
+ * while its calorie knowledge is the thing its training data is full of.
+ * est_total_g is displayed, never multiplied.
+ *
+ * The few-shot foods - dates, pistachios, vada pav, cutting chai, grilled
+ * fish, khichdi - are deliberately ABSENT from the eval corpus
+ * (scripts/parse-meal-eval/cases.ts), which stays a held-out test. Do not
+ * "fix" an eval failure by adding its food here; that is teaching the test,
+ * and the probe cases exist to catch exactly that.
+ */
+const FAST_EXTRACT_SYSTEM = `You are the calorie tracking agent inside OVERLOAD, a fitness app. The user tells you what they ate in one meal, in plain text. For every food or drink mentioned, report it via the estimate_meal tool with your best nutrition estimate.
+
+Serving size:
+- If the user states an amount ("100g paneer", "250 ml", "half katori"), use exactly that.
+- If not, assume one average serving of that food.
+- Counts multiply: "3 pieces" means the numbers cover all 3.
+
+All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
+
+First decide, per item, whether the pack's label even applies (label_applies). It applies ONLY to a branded packaged item eaten as-is from the pack. It does NOT apply to unpackaged or homemade food, and it does NOT apply once a packaged item has been prepared - cooked rice is no longer the rice on the pack, soaked or fried changes the weight and the numbers. In every such case set label_applies false, the other label_ fields null, and simply estimate the user's serving.
+
+When the label DOES apply, recall it and report it in the label_ fields: the serving size in grams, the kcal for that serving, and how many pieces that serving is. The app does the arithmetic - one piece = serving grams / pieces, and the user's count multiplies from there - so give the label EXACTLY as the pack states it, never pre-scaled to the user's amount. Small packaged pieces are far lighter than they feel.
+
+Keep names faithful: correct spelling ("panner" is "paneer"), and keep words that change the food ("low fat", "double toned", "boiled") - dropping them logs a different food.
+
+One item per food the user LISTED. A composite dish is one item ("rajma chawal"), but an add-on named alongside a dish is its own line, never folded in - the user edits and deletes lines one at a time. Never drop an item, never merge two named foods into one.
+
+Indian context: plain "tea" or "chai" is milk tea; plain "coffee" is milk coffee.
+
+If there is nothing to log (a question, chatter, a workout), decline.
+
+Examples:
+
+Input: "2 medjool dates and 10 pistachios"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "medjool dates", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 130, "est_protein_g": 0.8, "est_carb_g": 36, "est_fat_g": 0.1, "est_total_g": 48},
+  {"name": "pistachios", "brand": null, "quantity": 10, "unit": "piece", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 2, "est_fat_g": 3.2, "est_total_g": 7}]}
+
+Input: "3 chocolate cream wafers"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "chocolate cream wafers", "brand": null, "quantity": 3, "unit": "piece", "prep": null, "label_applies": true, "label_serving_g": 30, "label_serving_kcal": 160, "label_pieces_per_serving": 4, "est_kcal": 120, "est_protein_g": 1.1, "est_carb_g": 14.3, "est_fat_g": 6.4, "est_total_g": 22.5}]}
+
+Input: "1 vada pav with extra chutney and a cutting chai"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "vada pav", "brand": null, "quantity": 1, "unit": "piece", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 290, "est_protein_g": 6, "est_carb_g": 40, "est_fat_g": 12, "est_total_g": 120},
+  {"name": "chutney", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 30, "est_protein_g": 0.5, "est_carb_g": 4, "est_fat_g": 1.5, "est_total_g": 20},
+  {"name": "milk tea", "brand": null, "quantity": 1, "unit": "cutting", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 40, "est_protein_g": 1.5, "est_carb_g": 5, "est_fat_g": 1.5, "est_total_g": 90}]}
+
+Input: "150g grilled fish and half katori khichdi"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
+  {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
+
+Input: "played football for an hour"
+Output: {"declined": true, "decline_message": "That's training, not a meal. Tell me what you ate and I'll log it.", "meal_type_from_text": null, "items": []}`;
+
+const EXTRACT_SYSTEM_SMART = EXTRACT_SYSTEM_HEAD + EXTRACT_NO_NUTRITION + EXTRACT_SHARED_RULES;
 
 export function buildDecideSystemPrompt(input: ParseMealInput): string {
   const hint = input.mealHint ?? mealForHour(input.localHour);
@@ -1320,6 +1756,12 @@ async function callAnthropicOnce(
   const fetchFn = deps.fetchFn ?? fetch;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
+  // The caller's cancellation rides the same controller the timeout uses, so
+  // an abandoned request dies exactly like a timed-out one. Checked first:
+  // a signal that fired between calls must not start another.
+  if (deps.abortSignal?.aborted) controller.abort();
+  const onCallerAbort = () => controller.abort();
+  deps.abortSignal?.addEventListener("abort", onCallerAbort, { once: true });
   try {
     const response = await fetchFn("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -1344,6 +1786,7 @@ async function callAnthropicOnce(
     };
   } finally {
     clearTimeout(timeoutId);
+    deps.abortSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
 
@@ -1376,9 +1819,14 @@ export interface ExtractedItem {
   /** When this entry corrects a line of the meal under review, that line's
    *  food_name verbatim — the handle we re-target it by. */
   correctsFoodName?: string | null;
+  /** Fast mode only: the model's own numbers, produced in the SAME call that
+   *  named the food. TOTALS for the line as eaten - kcal/macros ready to log,
+   *  total_g a display label that never feeds the math. Null when any field
+   *  was missing or negative: a partial estimate is not an estimate. */
+  est?: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number } | null;
 }
 
-interface ResolvedItem extends ExtractedItem {
+export interface ResolvedItem extends ExtractedItem {
   candidates: CandidateFood[];
   /** Absolute relevance of the top candidate after rerank. The P3 skip-decide
    *  gate keys on this; absent when rerank did not run. */
@@ -1427,6 +1875,9 @@ async function resolveOneItem(
   /** Lower-cased names of foods this user logs repeatedly (I13). Used ONLY to
    *  stop the reranker discarding them; see the promotion below. */
   stapleNames?: Set<string>,
+  /** Fast mode: skip FatSecret (~4s cold cache) and the reranker (~400ms +
+   *  429 risk). The accept gate does the judging instead. */
+  lean = false,
 ): Promise<ResolvedItem> {
   // Query ladder: full name, brand-qualified, then progressively fewer words
   // (the 0079 search requires EVERY word to match, so an over-specified name
@@ -1437,7 +1888,26 @@ async function resolveOneItem(
   // Brand-qualified FIRST. The loop below stops at the first query that
   // returns anything, so leading with the generic name lets a generic row
   // win for a branded item whose own row exists and is never searched for.
-  if (item.brand) push(`${item.brand} ${item.name}`);
+  // Only prefix the brand when the name does not already carry it. The model
+  // reports brand "Oreo" AND name "Oreo biscuits" for "2 oreo biscuits", which
+  // built the query "Oreo Oreo biscuits" - a wasted ~500ms search for a string
+  // no row contains, and it pushes a real query off the 4-deep ladder.
+  const has = (part: string | null | undefined) =>
+    !!part && item.name.toLowerCase().includes(part.toLowerCase());
+  const withPart = (part: string | null | undefined, base: string) =>
+    part && !base.toLowerCase().includes(part.toLowerCase()) ? `${part} ${base}` : base;
+  if (item.brand && !has(item.brand)) push(withPart(item.brand, item.name));
+  // PREP BELONGS IN THE LADDER, and its absence cost a real case. Extract puts
+  // prep in its own field, so "1 cup cooked rice" arrives as name "rice" with
+  // prep "cooked" - a ONE-rung ladder that only ever searched "rice" and came
+  // back with Rice cake, Rice milk, Rice paper. "cooked rice" returns
+  // "Rice, cooked, NFS" as its top row and was never asked for; the gate then
+  // picked Rice cake at 30 g against a real cup of ~175 g.
+  //
+  // This is the mirror of the brand bug in the accept gate: three places
+  // rebuild the user's phrase from {brand, prep, name} and each included a
+  // different subset. They agree now - ladder and gate both consider all three.
+  if (item.prep && !has(item.prep)) push(withPart(item.prep, item.name));
   push(item.name);
   const words = item.name.split(/\s+/).filter(Boolean);
   // Drop LEADING words before trailing ones. Prep state is written as a
@@ -1462,19 +1932,36 @@ async function resolveOneItem(
   // second query is far cheaper than the wrong food.
   const multiWord = words.length > 1;
   const runCatalog = async (): Promise<CandidateFood[]> => {
-    const merged: CandidateFood[] = [];
-    const seenKeys = new Set<string>();
-    let successes = 0;
-    for (const q of queries.slice(0, 4)) {
-      if (successes >= (multiWord ? 2 : 1)) break;
+    // All ladder queries fire CONCURRENTLY; the ladder's preference order is
+    // applied to the results, not to the waiting. The serial version paid the
+    // SUM of the queries (measured 300-1400ms EACH against production - the
+    // "~30ms" note above was from another region), so a two-success ladder cost
+    // 0.7-2.5s. Concurrent, it costs the slowest single query. The trade is
+    // that we always run all four searches instead of stopping after two
+    // successes - a few extra ~30ms index hits now that the function runs next
+    // to the DB, spent to remove a serial wait.
+    //
+    // Success-counting semantics are unchanged: results merge in ladder order
+    // and only the first N successful queries contribute, so the candidate
+    // list is identical to what the serial loop produced.
+    const ladder = queries.slice(0, 4);
+    const settled = await Promise.all(ladder.map(async (q) => {
       toolCalls.push("search_foods");
+      const tq0 = Date.now();
       let found: CandidateFood[] = [];
       try {
-        found = (await deps.searchFoods(q)).slice(0, 6);
+        found = (await deps.searchFoods(q, lean)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
       }
-      if (found.length > 0) {
+      return { q, found, ms: Date.now() - tq0 };
+    }));
+    const merged: CandidateFood[] = [];
+    const seenKeys = new Set<string>();
+    let successes = 0;
+    for (const { q, found, ms } of settled) {
+      const counted = successes < (multiWord ? 2 : 1);
+      if (found.length > 0 && counted) {
         successes++;
         for (const c of found) {
           const key = c.food_id ?? `name:${c.name.toLowerCase()}`;
@@ -1487,13 +1974,23 @@ async function resolveOneItem(
       steps.push({
         iter: 1,
         tool: "search_foods",
-        input: { query: q },
+        input: { query: q, ms },
         result: { count: found.length, top: found.slice(0, 5).map((c) => c.name) },
       });
     }
     return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
+    // Fast mode is catalog + the model's own estimate, nothing else. OFF sits
+    // in the same Promise.all as the catalog search, so its latency IS the
+    // resolve time whenever it is the slowest leg - and it was: 1.3s when it
+    // returned nothing against 3.4-4.6s when it returned products to back-fill.
+    // What it bought for that was thin. On "banana" it offered "Yogurt Bnine
+    // BANANA" and "Banana chips", which the accept gate then threw away.
+    // A packaged-food database earns its place in Smart, where there is time to
+    // rerank it and a model to judge it. Here the honest fallback is the
+    // estimate, which already rode in on the naming call for free.
+    if (lean) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
@@ -1503,10 +2000,17 @@ async function resolveOneItem(
       // Backfill so the candidate carries a real food_id (verify needs it) and
       // the NEXT user's catalog search finds it at tier 1 - the catalog is
       // meant to compound with use.
-      for (const p of products) {
-        const foodId = await deps.backfillOffFood(p);
+      //
+      // CONCURRENTLY. These were awaited one at a time, so a query returning
+      // three products paid three sequential cross-region writes INSIDE the
+      // user's parse. OFF_TIMEOUT_MS caps the search but not this loop, which
+      // is why resolve swung between 1.3s (OFF found nothing) and 4.6s (OFF
+      // found three). The writes are independent rows; nothing here reads back
+      // what another one wrote.
+      const ids = await Promise.all(products.map((p) => deps.backfillOffFood(p)));
+      products.forEach((p, i) => {
         found.push({
-          food_id: foodId,
+          food_id: ids[i],
           name: p.name,
           brand: p.brand,
           base_unit: p.base_unit,
@@ -1518,7 +2022,7 @@ async function resolveOneItem(
           servings: p.serving ? [p.serving] : [],
           source: "off",
         });
-      }
+      });
     } catch (e) {
       deps.log?.(`[parse_meal] OFF resolve threw for "${q}": ${String(e).slice(0, 120)}`);
     }
@@ -1532,7 +2036,7 @@ async function resolveOneItem(
   };
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
-    if (!deps.searchFatSecret) return [];
+    if (lean || !deps.searchFatSecret) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
@@ -1586,7 +2090,7 @@ async function resolveOneItem(
   // Rerank: the user's own phrase against each candidate, best first. This is
   // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
   // the sources returned. Fail-open: on any miss the merge order stands.
-  if (deps.rerankCandidates && usable.length > 1) {
+  if (!lean && deps.rerankCandidates && usable.length > 1) {
     const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
     const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
     const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
@@ -1655,7 +2159,7 @@ function scrubDashes(s: string): string {
  *  never persisted, so their ids are ephemeral and getFoodPer100 is skipped for
  *  them - without a name on the fallback, every fatsecret pick bypassed
  *  variantClash and unhonouredGrade entirely. */
-type Per100 = {
+export type Per100 = {
   kcal: number;
   protein_g: number;
   carb_g: number;
@@ -1726,8 +2230,15 @@ export function variantClash(
     // Longest first: "double toned" must win over "toned" inside the same name.
     const ordered = [...group].sort((x, y) => y.length - x.length);
     const inSaid = ordered.find((g) => a.includes(` ${g} `));
+    if (!inSaid) continue;
+    // A row can legitimately list SEVERAL terms of one group: USDA writes
+    // "Egg, whole, boiled or poached". If the user's own term is among them
+    // there is no contradiction - comparing against whichever term happens to
+    // be longest called boiled-vs-poached a clash and rejected the exact row
+    // the user wanted.
+    if (b.includes(` ${inSaid} `)) continue;
     const inRow = ordered.find((g) => b.includes(` ${g} `));
-    if (inSaid && inRow && inSaid !== inRow) return { said: inSaid, row: inRow };
+    if (inRow) return { said: inSaid, row: inRow };
   }
   return null;
 }
@@ -2716,18 +3227,59 @@ export async function runParseMeal(
   // ── Stage 1: extract ──────────────────────────────────────────────────────
   const prevItems = input.previousItems ?? [];
   const hasPrevious = prevItems.length > 0;
+  // Fast only ever handles a first-shot log. With a card on screen the turn may
+  // be a correction, removal, question or addition, and those need the full
+  // pipeline; silently degrading them to fast would eat the user's intent.
+  const fastMode = input.mode === "fast" && !hasPrevious;
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
+  // ── Lane A: can CODE name these items? ────────────────────────────────────
+  // Only on a first-shot log. With a card on screen the turn may be a
+  // correction, a removal, a question or an addition, and all of those need the
+  // model to read intent - "And a dosa" parses cleanly as one dosa but MEANS
+  // add it to what is already there.
+  const grammarMode = deps.fastGrammarMode ?? "off";
+  // fastMode, not just "not a correction". Every comment here calls this
+  // "Fast mode's Lane A", but the gate never checked the tier: with
+  // PARSE_FAST_GRAMMAR=on it would have intercepted ANY first-shot parse whose
+  // text matched the grammar - Thorough-tier requests, and old clients that
+  // never send speed:"fast" - and fed un-normalised names into decide with no
+  // spelling fixes and no "chai" -> "milk tea" canonicalisation. Latent while
+  // the default is "shadow"; a one-line trap for whoever flips the switch.
+  const laneA = (fastMode && grammarMode !== "off")
+    ? parseFastGrammar(input.text)
+    : null;
+  if (laneA) {
+    steps.push({
+      iter: 0,
+      tool: "lane_a_grammar",
+      input: { mode: grammarMode, items: laneA.length },
+      result: { named: laneA.map((i) => `${i.quantity} ${i.unit} ${i.prep ?? ""} ${i.name}`.trim()) },
+    });
+  }
+
   const tExtract0 = Date.now();
-  const extractRes = await callAnthropicOnce(deps, {
+  // THE POINT of Lane A: when it is on and it matched, the extract call does
+  // not happen at all. That is the ~1.2s the sub-second budget needs back.
+  const extractRes = (laneA && grammarMode === "on")
+    ? null
+    : await callAnthropicOnce(deps, {
     model: deps.model,
     max_tokens: 700,
     // The correction rules only matter when a meal is on screen, so they stay
     // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
-    system: cacheableSystem(hasPrevious ? EXTRACT_SYSTEM + EXTRACT_CORRECTION_RULES : EXTRACT_SYSTEM),
-    tools: withToolCache([EXTRACT_TOOL]),
-    tool_choice: { type: "tool", name: "extract_meal" },
+    // fastMode is defined as mode === "fast" && !hasPrevious, so these three
+    // branches are exclusive by construction.
+    system: cacheableSystem(
+      fastMode
+        ? FAST_EXTRACT_SYSTEM
+        : hasPrevious
+        ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
+        : EXTRACT_SYSTEM_SMART,
+    ),
+    tools: withToolCache([fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL]),
+    tool_choice: { type: "tool", name: fastMode ? "estimate_meal" : "extract_meal" },
     messages: [{
       role: "user",
       content: hasPrevious
@@ -2750,16 +3302,37 @@ export async function runParseMeal(
         : input.text.trim().slice(0, 500),
     }],
   });
-  if (!extractRes.ok) {
+  if (extractRes && !extractRes.ok) {
     throw new Error(`anthropic_${extractRes.status}: ${extractRes.body.slice(0, 300)}`);
   }
-  anthropicCalls++;
-  accumulate(extractRes.data);
-  toolCalls.push("extract_meal");
+  if (extractRes) {
+    anthropicCalls++;
+    accumulate(extractRes.data);
+    toolCalls.push(fastMode ? "estimate_meal" : "extract_meal");
+  }
 
-  const extractBlock = ((extractRes.data.content ?? []) as Array<Record<string, any>>)
-    .find((b) => b.type === "tool_use" && b.name === "extract_meal");
-  const ext = (extractBlock?.input ?? {}) as Record<string, unknown>;
+  const extractBlock = extractRes
+    ? ((extractRes.data.content ?? []) as Array<Record<string, any>>)
+      .find((b) => b.type === "tool_use" && (b.name === "extract_meal" || b.name === "estimate_meal"))
+    : undefined;
+  // When the extract call was skipped, the grammar's own items ARE the extract
+  // result. Every flag defaults false: the grammar refuses corrections,
+  // removals and questions outright, so none of them can be true here.
+  const ext: Record<string, unknown> = extractBlock?.input ?? (
+    laneA && grammarMode === "on"
+      ? {
+        declined: false,
+        items: laneA.map((i) => ({
+          name: i.name,
+          brand: null,
+          quantity: i.quantity,
+          unit: i.unit,
+          prep: i.prep,
+          corrects_food_name: null,
+        })),
+      }
+      : {}
+  );
   let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
     .slice(0, 12)
     .flatMap((r: unknown): ExtractedItem[] => {
@@ -2767,20 +3340,102 @@ export async function runParseMeal(
       const o = r as Record<string, unknown>;
       const name = typeof o.name === "string" ? o.name.trim().slice(0, 80) : "";
       if (!name) return [];
+      // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
+      // so "500 ml milk" or "250 g chicken" would be silently truncated. The
+      // bound only exists to stop absurd input reaching the model.
+      const quantity = coerceQuantity(o.quantity);
+      const unit = typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving";
+      // All five or nothing: a partial estimate is not an estimate, and a
+      // missing field silently read as 0 is how zero-kcal lines shipped once
+      // before.
+      const rawEst = (() => {
+        const nums = ["est_kcal", "est_protein_g", "est_carb_g", "est_fat_g", "est_total_g"]
+          .map((k) => o[k]);
+        if (!nums.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)) return null;
+        const [kcal, protein_g, carb_g, fat_g, total_g] = nums as number[];
+        return total_g > 0 ? { kcal, protein_g, carb_g, fat_g, total_g: Math.min(total_g, 5000) } : null;
+      })();
+      // Label chain: recall is the model's job, arithmetic is ours. When the
+      // model reported the pack's printed serving, the line is RE-DERIVED from
+      // it in code and the model's own multiplication is overridden.
+      const chained = rawEst
+        ? applyLabelChain(quantity, unit, rawEst, {
+          applies: o.label_applies,
+          serving_g: o.label_serving_g,
+          serving_kcal: o.label_serving_kcal,
+          pieces: o.label_pieces_per_serving,
+        })
+        : null;
+      if (chained?.applied) {
+        steps.push({
+          iter: 0,
+          tool: "label_chain",
+          input: {
+            item: name,
+            serving_g: Number(o.label_serving_g),
+            serving_kcal: o.label_serving_kcal === null ? null : Number(o.label_serving_kcal),
+            pieces: Number(o.label_pieces_per_serving),
+          },
+          result: { total_g: round1(chained.est.total_g), kcal: round1(chained.est.kcal) },
+        });
+      }
       return [{
         name,
         brand: typeof o.brand === "string" && o.brand.trim() ? o.brand.trim().slice(0, 60) : null,
-        // NOT capped at 100: for a mass/volume unit the quantity IS the amount,
-        // so "500 ml milk" or "250 g chicken" would be silently truncated. The
-        // bound only exists to stop absurd input reaching the model.
-        quantity: coerceQuantity(o.quantity),
-        unit: typeof o.unit === "string" && o.unit.trim() ? o.unit.trim().slice(0, 30) : "serving",
+        quantity,
+        unit,
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
         correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()
           ? o.corrects_food_name.trim().slice(0, 120)
           : null,
+        est: chained ? chained.est : rawEst,
       }];
     });
+  // Shadow: did the grammar name the same foods the model did? Recorded, never
+  // acted on, so flipping to "on" is a decision made from real traffic rather
+  // than from how confident the grammar feels. Names are compared through
+  // wordsOverlap because extract deliberately corrects spelling ("panner" ->
+  // "paneer") and canonicalises ("chai" -> "milk tea"), so an exact match would
+  // report disagreement where the two actually agree.
+  // A REFUSAL is the most important thing to record, and it used to record
+  // nothing: the shadow block sat inside `if (laneA && ...)`, so the only
+  // traces written were the rare ones where the grammar produced something.
+  // Measured 2026-09-01 against real production inputs, Lane A parsed 1 of 8 -
+  // real logs are long multi-food sentences ("Breakfast was X, 25 grams, and
+  // 20 grams of Y") and the grammar refuses clause starters, spelled-out
+  // numbers and >4-word names by design. Coverage, not just agreement, is what
+  // decides whether Lane A is ever worth switching on, so log the refusal too.
+  if (!laneA && grammarMode !== "off" && fastMode && extractRes) {
+    steps.push({
+      iter: 0,
+      tool: "lane_a_shadow",
+      input: { refused: true, items_extract: extItems.length },
+      result: { agree: false, refused: true },
+    });
+  }
+  if (laneA && grammarMode === "shadow" && extractRes) {
+    const sameCount = laneA.length === extItems.length;
+    const sameNames = sameCount &&
+      laneA.every((g, i) => wordsOverlap(g.name, extItems[i].name));
+    const sameAmounts = sameCount && laneA.every((g, i) =>
+      Math.abs(g.quantity - extItems[i].quantity) < 0.01 &&
+      g.unit.replace(/s$/, "") === extItems[i].unit.toLowerCase().replace(/s$/, "")
+    );
+    steps.push({
+      iter: 0,
+      tool: "lane_a_shadow",
+      input: { same_count: sameCount, same_names: sameNames, same_amounts: sameAmounts },
+      // Both readings ALWAYS, agreement included. Discarding them on agreement
+      // meant a later catalog change could not be checked against what the two
+      // lanes actually said at the time - only against a boolean.
+      result: {
+        agree: sameNames && sameAmounts,
+        grammar: laneA.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
+        extract: extItems.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
+      },
+    });
+  }
+
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Previous lines the user explicitly re-targeted. These are deliberately
@@ -2843,7 +3498,7 @@ export async function runParseMeal(
       : null;
   steps.push({
     iter: 0,
-    tool: "extract_meal",
+    tool: fastMode ? "estimate_meal" : "extract_meal",
     input: { item_count: extItems.length, declined: ext.declined === true },
   });
 
@@ -3028,8 +3683,33 @@ export async function runParseMeal(
       .filter((r) => (r.times ?? 0) >= 2)
       .map((r) => r.food_name.trim().toLowerCase()),
   );
-  const resolved = await Promise.all(
-    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames)),
+  // FAST MODE: paint the rows BEFORE the resolve, not after it.
+  //
+  // The names and the model's own per-100 numbers both came back on the extract
+  // call, so this is the moment they are known. Emitting after the resolve (as
+  // this used to) left only the accept gate to overlap: measured on device,
+  // rows landed at 7371ms of a 7628ms parse, so the user waited the full time
+  // and then saw everything at once. The resolve is the slow part - catalog,
+  // OFF, FatSecret, and OFF's 503 retries - and it is exactly what the
+  // shimmering number is meant to cover.
+  if (fastMode) {
+    deps.onProgress?.({
+      kind: "items",
+      items: toResolve.map((r) => ({
+        // est carries line TOTALS now, so the shimmer numbers need no scaling.
+        name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        quantity: r.quantity,
+        unit: r.unit,
+        est_kcal: r.est ? round1(r.est.kcal) : null,
+        est_protein_g: r.est ? round1(r.est.protein_g) : null,
+        est_carb_g: r.est ? round1(r.est.carb_g) : null,
+        est_fat_g: r.est ? round1(r.est.fat_g) : null,
+      })),
+    });
+  }
+
+  const resolved: ResolvedItem[] = await Promise.all(
+    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
@@ -3043,6 +3723,167 @@ export async function runParseMeal(
   // P3: when every item reranked strongly and its quantity converts without
   // judgment, the code fill IS the answer and this whole call is skipped.
   const candidatePer100 = per100ForItems(resolved);
+
+  // ── FAST MODE: no decide call, ever ───────────────────────────────────────
+  // The pick decide makes in Smart is made here by the accept gate, which
+  // DEFAULTS TO NO: a row that does not cover the user's words falls through to
+  // the estimate the naming call already produced. Near-but-uncertain beats
+  // precise-about-the-wrong-food, and the estimate is free at this point - it
+  // rode in on the extract call.
+  if (fastMode) {
+    // The rows were already painted above, before the resolve. One `items`
+    // event per parse: a second one here would renumber rows the card has
+    // already keyed and animated.
+    const guards = { variantClash, unhonouredGrade, implausiblePer100 };
+    const fastItems: ParsedItem[] = resolved.map((r) => {
+      // What the user actually named: prep + BRAND + name.
+      //
+      // The brand was missing, and its absence inverted the gate. Extract
+      // reports brand "Amul" and name "cheese slice" separately, so `said` was
+      // just "cheese slice" - the word "amul" was never required of a
+      // candidate, and worse, firstAcceptable then counted it AGAINST the right
+      // row. Measured on device: "Amul Cheese Slice A" carries two words the
+      // user "did not say" (amul, a) while "Cheese, provolone, sliced" carries
+      // one (provolone), so provolone won 2 of 5 runs. A row was beating the
+      // correct one precisely by NOT being the brand that was asked for.
+      //
+      // With the brand in `said`, coverage now REJECTS provolone outright
+      // (nothing in it covers "amul") rather than merely ranking it lower.
+      //
+      // Both joins guard against doubling, as the prep one already did: extract
+      // often bakes the qualifier into the name too ("boiled egg" + prep
+      // "boiled", "Oreo biscuits" + brand "Oreo"), and the trace showed the gate
+      // judging "boiled boiled egg", which skews coverage and the guards.
+      const withPrefix = (prefix: string | null | undefined, base: string) =>
+        prefix && !base.toLowerCase().includes(prefix.toLowerCase())
+          ? `${prefix} ${base}`
+          : base;
+      // The brand is only required when it IS the product. On a commodity fixed
+      // by standard (Amul vs Mother Dairy toned milk) requiring it would lock
+      // the generic row out of every branded phrase.
+      const brandWord = brandIsIdentity(r.brand, r.name) ? r.brand : null;
+      const said = withPrefix(r.prep, withPrefix(brandWord, r.name));
+      const pick = firstAcceptable(said, r.candidates, guards);
+      const per1 = pick ? gramsPerUnit(r.unit, pick.cand) : null;
+      // Per-item verdict in the trace. Fast has no decide output to read, so
+      // without this a wrong line is undiagnosable after the fact.
+      steps.push({
+        iter: 2,
+        tool: "fast_fill",
+        input: { item: said, unit: r.unit, candidates: r.candidates.length },
+        result: {
+          picked: pick ? pick.cand.name : null,
+          unit_resolved: !!per1,
+          used: pick && per1 ? "catalog" : (r.est ? "estimate" : "fallback"),
+        },
+      });
+      if (pick && per1) {
+        const qty = r.quantity > 0 ? r.quantity : 1;
+        const grams = round1(per1.grams * qty);
+        const f = grams / 100;
+        return {
+          food_id: pick.cand.food_id,
+          // The user's phrase, not the row's name: verifyItems runs the
+          // name/row agreement on it, then displays the row's real name.
+          food_name: said,
+          quantity: qty,
+          serving_label: per1.label,
+          grams,
+          kcal: round1(pick.cand.kcal * f),
+          protein_g: round1(pick.cand.protein_g * f),
+          carb_g: round1(pick.cand.carb_g * f),
+          fat_g: round1(pick.cand.fat_g * f),
+          fiber_g: pick.cand.fiber_g === null ? null : round1(pick.cand.fiber_g * f),
+          source: pick.cand.source,
+          assumption: null,
+          confidence: "high" as const,
+        };
+      }
+      // NOTE the branch that used to sit here - catalog density x the model's
+      // gram estimate for an accepted row with an unresolvable unit - is gone
+      // on purpose. It existed because the per-100 estimate was the weak
+      // number; now the GRAM guess is the weak number and est kcal/macros are
+      // the strong ones, so mixing a measured density with a 2-5x gram guess
+      // produces worse lines than the estimate used directly.
+      if (r.est) {
+        // The model's own line totals, sanity-checked before anyone sees them.
+        // Atwater is scale-free, so it works unchanged on totals: when stated
+        // kcal and macros disagree by more than 30% (the shipped checkAtwater
+        // tolerance) the macros win - three constrained numbers against one
+        // free one.
+        const { protein_g, carb_g, fat_g, total_g } = r.est;
+        const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
+        const kcal = (atwater > 0 && Math.abs(r.est.kcal - atwater) > 0.3 * Math.max(r.est.kcal, atwater))
+          ? atwater
+          : r.est.kcal;
+        const item: ParsedItem = {
+          food_id: null,
+          // Brand included: an estimate has no row name to display, so this
+          // IS the display, and "multigrain bar" for a Yogabar loses the
+          // product identity the user typed.
+          food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
+          quantity: r.quantity > 0 ? r.quantity : 1,
+          serving_label: r.unit,
+          // Display only. A wrong gram guess now mislabels the line instead of
+          // corrupting the calories, which is the whole point of v2.
+          grams: round1(Math.min(total_g, 5000)),
+          kcal: round1(kcal),
+          protein_g: round1(protein_g),
+          carb_g: round1(carb_g),
+          fat_g: round1(fat_g),
+          fiber_g: null,
+          source: "estimate" as const,
+          assumption: pick
+            ? "Close matches did not quite fit, so these are estimated"
+            : "No close match in the catalog, so these are estimated",
+          confidence: "medium" as const,
+        };
+        // Per-100 physics no longer applies (these are line totals); the line
+        // guard does. An absurd line still logs - visibly low-confidence - so
+        // the user sees their food rather than a silent drop.
+        const bad = implausibleLine(item);
+        if (!bad) return item;
+        deps.log?.(`[parse_meal] fast estimate implausible for "${r.name}": ${bad}`);
+        return { ...item, confidence: "low" as const };
+      }
+      // No acceptable row AND no usable estimate: the existing best-effort
+      // fallback, visibly low-confidence rather than silently dropped.
+      return fallbackFromResolved(r, candidatePer100);
+    });
+
+    // verifyItems re-reads the chosen food rows, so it is a DB round trip that
+    // was sitting outside every timer: extract_ms + resolve_ms never added up
+    // to latency_ms and the gap was being blamed on plumbing.
+    const tVerify0 = Date.now();
+    const verified = await verifyItems(deps, fastItems, candidatePer100);
+    T.verify_ms = Date.now() - tVerify0;
+
+    const tPost0 = Date.now();
+    const items = stripEphemeralIds(flagPrepMismatch(
+      checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
+      prepForItems(resolved),
+    ));
+    T.post_ms = Date.now() - tPost0;
+    T.decide_ms = 0;
+    steps.push({ iter: 9, tool: "__timing", input: { ...T, fast: true } });
+    const fastMeal = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    const fastLine = templateDronaLine(items);
+    deps.onProgress?.({ kind: "fill", items, meal_type: fastMeal, drona_line: fastLine });
+    return {
+      parsed: {
+        meal_type: fastMeal,
+        items,
+        drona_line: fastLine,
+        corrects_previous: false,
+      },
+      declined: null,
+      usage,
+      tool_calls: toolCalls,
+      steps,
+      iterations: anthropicCalls,
+    };
+  }
+
   const skipMode = deps.skipDecideMode ?? "off";
   const codeFill = (skipMode !== "off" && !correctsPrevious)
     ? codeFillItems(resolved, candidatePer100)

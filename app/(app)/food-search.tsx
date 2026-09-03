@@ -183,7 +183,7 @@ export default function FoodSearchScreen() {
     // Provenance = the least-confident source across items (estimate > web > off).
     // 'manual' ranks with catalog: the user set those numbers themselves, so a
     // corrected line is not less trustworthy than a matched one.
-    const rank: Record<ParsedMealItem['source'], number> = { estimate: 3, web: 2, off: 1, manual: 0, catalog: 0 };
+    const rank: Record<ParsedMealItem['source'], number> = { estimate: 3, web: 2, off: 1, fatsecret: 1, manual: 0, catalog: 0 };
     const src = items.reduce<ParsedMealItem['source']>((worst, it) => (rank[it.source] > rank[worst] ? it.source : worst), 'catalog');
     setLogMeal(meal);
     router.push({

@@ -40,7 +40,102 @@ Read the gate table before treating a failure as a regression.
 | 2026-08-24 | 81/86 | + I11 grade routing + migration 0106 milk ladder |
 | 2026-08-24 | 85/86 | + I6 deletion-by-text and challenge-carries-fix |
 | 2026-08-24 | 86/86 | + I13 frequency-ranked staples |
-| 2026-08-24 | **83/86** | + I1 changed-only correction resolve — **current baseline** |
+| 2026-08-24 | 83/86 | + I1 changed-only correction resolve |
+| 2026-08-28 | **84/87** | **FAST MODE** (`FAST_MODE=on`) — one fused call, no decide |
+| 2026-08-29 | **86/88** | + fast piece counts (count reaches the grams); API/Haiku |
+| 2026-08-29 | **8/10 subset** | + prompt de-overfitted, 3 held-out probes added; both failures are the pack-portion serving bug, not the prompt |
+| 2026-08-30 | **83/91 CLI** | **FAST v2**: estimate-first rewrite - calorie-tracker prompt + 4 few-shots, est_ fields are line TOTALS (per-100 retired), tool renamed estimate_meal; kcal no longer flows through the model's 2-5x-high gram guesses (6 cashews: 42 g -> 48 kcal, truth ~52). Known gaps: thin-biscuit kcal prior ~2x (tea-milk-default), est_total_g display label runs hot on estimate lines (gram bounds on estimate-tier cases now measure the LABEL, not the macros), edamame protein under. Decline judgement unreliable on CLI runs. |
+| 2026-08-30 | **87/91 CLI** | + main merged (single-scan staples, cap paywall); label-recall guideline |
+| 2026-08-31 | **88/91 CLI** | **LABEL CHAIN**: model recalls the pack's printed label as three fields (serving_g / serving_kcal / pieces_per_serving), CODE derives the line - recall is the model's strength, arithmetic is ours. Held out, Monaco went 2.3x -> 1.15x on kcal and 60 g -> 15 g on the label without any prompt naming it. Chain fires ONLY for counted pieces: v1 fired on "1 cup cooked rice" and answered with the pack's DRY 30 g serving, so household/pack units (cup, katori, spoon, packet...) are excluded. Remaining fails: maggi-packet gram label, edamame protein, one CLI-shim artifact. |
+| 2026-09-01 | **88/91 API** | + label_applies: the MODEL decides whether a pack label describes what was eaten. It does not for prepared food (cooked rice is not the rice on the pack) or unpackaged food. Held out: cooked dalia and loose chivda correctly skip the chain, Oreo and Monaco use it, cashews untouched. |
+
+### Fast mode measures as accurate as the full pipeline, and much cheaper
+
+Run `FAST_MODE=on npx tsx scripts/parse-meal-eval/run.ts` to score the whole
+corpus through the no-decide path. Follow-up cases carry previousItems, so
+runParseMeal ignores the mode for those by design - fast is first-shot only.
+
+```
+                 standard          fast
+accuracy         83/86             84/87
+avg latency      ~6500ms           3807ms      (-41%)
+tokens/run       ~540k             243k        (-55%)
+tier mix         catalog 73        catalog 72, estimate 12
+```
+
+Same accuracy, no decide call. The estimate share roughly doubles, which is the
+DESIGN working rather than a regression: the accept gate refuses a row that does
+not cover the user's words, and the fused naming call has already produced an
+estimate to fall back on.
+
+Remaining fast failures are known and not fast-specific: `chole-bhature`
+(composite dish the model splits differently run to run), `audit-multi-meal-day`
+and `audit-range-quantity` (both I8 gates, expected to fail until multi-meal
+lands).
+
+### Run cases in parallel
+
+`EVAL_CONCURRENCY=6` runs six cases at a time; an ~11 minute serial run finishes
+in ~2. Verdicts print in COMPLETION order, not corpus order, so read the case id
+rather than the position. Per-case latency stays valid, but `avg latency` from a
+parallel run is not comparable to a serial baseline - the cases are competing
+for the same API.
+
+Pair it with `EVAL_VIA_CLI=1` for a correctness sweep on the subscription
+instead of the API key. The CLI shim is NOT the production path: it occasionally
+returns prose instead of JSON, which shows up as `anthropic_502: no JSON in CLI
+reply` on the decline cases. Judge declines from an API run.
+
+### The prompt must not be tuned on this corpus
+
+`FAST_EXTRACT_RULES` once named these cases' own inputs and quoted their
+observed failure values back at the model ("4 marie biscuits is ~20 g and never
+44"). Those cases then passed by recall and measured nothing.
+
+Removing it entirely was measured too, and does NOT work: held out, a shape-only
+prompt sizes nuts correctly (6 cashews at 9 g) but returns 60 g for four thin
+biscuits and 82 g for two cream ones - worse than before the fix, and it fails
+the same way on Monaco, which no prompt has ever named. The model's prior for
+"a biscuit" is roughly a small pack.
+
+So the prompt carries the RULE plus one line of category reference data, and
+`probe-count-monaco` / `probe-count-cashews` / `probe-count-rusk` use foods no
+prompt names. If a prompt edit passes the biscuit cases but fails the probes, it
+taught the answers instead of the rule.
+
+### Known failure: a catalog serving that is a PACK portion
+
+`probe-count-monaco` and `probe-count-rusk` fail today, and not on the prompt.
+OFF's `serving_size` is the manufacturer's suggested serving, which for biscuits
+is several pieces: `Parle Monaco Classic Biscuits` carries `1 serving (14.4 g)`
+(~3 crackers) and `Britannia Marie Gold` carries `1 serving (15 g)` (~3
+biscuits). A piece count then multiplies THAT, so "3 monaco biscuits" logs 43.2
+g. `isBasisServing` cannot catch it: these are real named portions, not a
+per-100 basis in disguise. Fixing it needs the serving's piece count read out of
+the label, or a per-piece anchor preferred over a pack one.
+
+### DEBUG_STEPS=1 prints the pick for a failing case
+
+Fast has no decide output to read, so a wrong line is undiagnosable without it.
+`DEBUG_STEPS=1 FAST_MODE=on ONLY=<case> npx tsx ...` prints each `search_foods`
+and `fast_fill` step. Five real bugs were found this way in one smoke run; all
+five had been invisible.
+
+### EVAL_CONCURRENCY above ~8 starves the CLI shim
+
+2026-09-01: `EVAL_VIA_CLI=1 EVAL_CONCURRENCY=12` scored 47/91 and 43 of the 44
+failures were `claude -p exceeded 180000ms`, with an "avg latency" of 942s. The
+shim spawns a process per call and 12 at once outruns it. The same tree scored
+88/91 at concurrency 8 through the API, avg 5.7s. Keep CLI runs at 6-8, and
+treat any run whose avg latency is in the hundreds of seconds as void.
+
+### A run that starves mid-way is not a result
+
+2026-08-28: a standard run scored 70/87 and I nearly recorded it as a
+regression. 9 cases had died instantly with `anthropic_400: credit balance is
+too low` and 4 more timed out while the API was refusing. Check the failure
+BODIES before believing a drop - `grep -oE "threw: [^\"]{0,60}"` over the log
+separates a real regression from an infrastructure one in one command.
 
 ### I1: the number went DOWN and that is not a regression
 

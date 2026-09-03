@@ -1,0 +1,134 @@
+// Run with: deno test supabase/functions/ai-coach/fastGrammar.test.ts
+//
+// Every REJECT case below is something the first version of this grammar
+// happily accepted, measured against 107 real production inputs. Lane A has no
+// model anywhere in its path, so a mis-parse logs a wrong food with nothing to
+// catch it. These are the cases that make refusing worth more than covering.
+
+import { assertEquals } from "jsr:@std/assert@1";
+import { parseFastGrammar } from "./fastGrammar.ts";
+
+const one = (t: string) => {
+  const g = parseFastGrammar(t);
+  assertEquals(g?.length, 1, `expected 1 item from "${t}"`);
+  return g![0];
+};
+
+Deno.test("amount before the name", () => {
+  assertEquals(one("100g paneer"), { name: "paneer", quantity: 100, unit: "g", prep: null });
+  assertEquals(one("250ml toned milk"), { name: "toned milk", quantity: 250, unit: "ml", prep: null });
+  assertEquals(one("1 katori dal"), { name: "dal", quantity: 1, unit: "katori", prep: null });
+});
+
+Deno.test("name before the amount, which real logs do constantly", () => {
+  // The first version read this as ONE SERVING of a food called "paneer 100g".
+  assertEquals(one("Paneer 100g"), { name: "paneer", quantity: 100, unit: "g", prep: null });
+  assertEquals(one("Curd 1 katori"), { name: "curd", quantity: 1, unit: "katori", prep: null });
+});
+
+Deno.test("counted nouns and articles", () => {
+  assertEquals(one("2 eggs").quantity, 2);
+  assertEquals(one("a samosa"), { name: "samosa", quantity: 1, unit: "serving", prep: null });
+  assertEquals(one("a bowl of dal"), { name: "dal", quantity: 1, unit: "bowl", prep: null });
+});
+
+Deno.test("REFUSES a bare phrase, because grammar cannot tell food from chatter", () => {
+  // This is the hardest limit of Lane A and it cost real regressions to find.
+  // Accepting any 1-4 words as a name logged these, both caught by the eval:
+  assertEquals(parseFastGrammar("feeling tired today man"), null);  // -> Man Fuel Protein Shake
+  assertEquals(parseFastGrammar("craving pizza right now"), null);  // -> 700 kcal of pizza
+  // The cost is real: these ARE foods and now go to Lane B instead.
+  assertEquals(parseFastGrammar("chole salad"), null);
+  assertEquals(parseFastGrammar("dosa and curry"), null);
+  // Telling them apart needs the catalog, not more word rules.
+});
+
+Deno.test("prep words survive into the name's query", () => {
+  const g = one("2 boiled eggs");
+  assertEquals(g.prep, "boiled");
+  assertEquals(g.name, "eggs");
+});
+
+Deno.test("splits on connectives without leaking them", () => {
+  assertEquals(parseFastGrammar("100g paneer and 50g tofu")!.length, 2);
+  assertEquals(parseFastGrammar("1 katori dal and 2 roti")!.length, 2);
+  // A connective must never survive into a name: "Ram papad, and bhel puri"
+  // once produced a food called "and bhel puri". Both parts are bare now, so
+  // the whole message is refused, but the leading-connective strip still runs.
+  assertEquals(parseFastGrammar("2 eggs, and 1 katori dal")!.map((i) => i.name), ["eggs", "dal"]);
+});
+
+Deno.test("REFUSES a metrics log", () => {
+  // Read "water", "sleep" and "weight" as three foods.
+  assertEquals(parseFastGrammar("Water: 2500 ml, Sleep: 600 min, Weight: 70.45 kg"), null);
+});
+
+Deno.test("REFUSES a trailing clause rather than eating it", () => {
+  // Became a food called "peanuts for snacks".
+  assertEquals(parseFastGrammar("8gm peanuts for snacks"), null);
+  assertEquals(parseFastGrammar("a samosa from haldiram"), null);
+});
+
+Deno.test("REFUSES spelled-out numbers", () => {
+  // Became a food called "two rotis".
+  assertEquals(parseFastGrammar("Two rotis and dal"), null);
+});
+
+Deno.test("REFUSES an unparsed unit left in the name", () => {
+  // "tblspn" is a unit the grammar cannot read, so the amount was missed.
+  assertEquals(parseFastGrammar("2 tblspn roasted edameme"), null);
+  assertEquals(parseFastGrammar("60 cals veggies"), null);
+  assertEquals(parseFastGrammar("Tea half cup"), null);
+});
+
+Deno.test("REFUSES corrections, removals and questions", () => {
+  for (const t of ["Make the roti 3", "Remove the tofu", "Actually i had a small one",
+                   "is that right?", "Yes please", "i ate 2 roties and chole i katori"]) {
+    assertEquals(parseFastGrammar(t), null, `should refuse: ${t}`);
+  }
+});
+
+Deno.test("REFUSES a whole-day dump", () => {
+  assertEquals(parseFastGrammar("Breakfast: eggs\nLunch: dal chawal"), null);
+});
+
+Deno.test("REFUSES 'with', which joins a dish to its parts", () => {
+  // "protein shake with 500ml milk and 1 scoop whey" is ONE shake. Splitting on
+  // "with" made it three items and broke the shake-two-items eval case.
+  const g = parseFastGrammar("protein shake with 500ml milk and 1 scoop whey");
+  assertEquals(g, null);
+});
+
+Deno.test("REFUSES a preposition clause, and drops provenance words", () => {
+  // "1 tsp ghee ON MY roti" is two foods; the grammar once read it as one food
+  // called "ghee on my roti" and silently lost the roti.
+  assertEquals(parseFastGrammar("1 tsp ghee on my roti"), null);
+  // "fresh"/"homemade" describe provenance, not the product (I11b calls them
+  // droppable). Keeping them searched for the whole phrase and missed the
+  // plain Curd row.
+  assertEquals(parseFastGrammar("100g fresh homemade curd")![0].name, "curd");
+  // But never drop ALL the words - "homemade" alone is not a food.
+  assertEquals(parseFastGrammar("100g homemade"), null);
+});
+
+// Review of PR #138: the grammar emitted "kg"/"l", which parseMeal's own
+// MASS_UNITS (grams and millilitres only) cannot read - gramsPerUnit returns
+// null and the line lands on the 100-unit basis, so "1 kg rice" logged as
+// ~100 g. Only reachable with PARSE_FAST_GRAMMAR=on, which is not the default,
+// but it is a live tripwire for the day it is switched on.
+Deno.test("kg and litres convert to the base units parseMeal understands", () => {
+  assertEquals(parseFastGrammar("1 kg rice"), [
+    { name: "rice", quantity: 1000, unit: "g", prep: null },
+  ]);
+  assertEquals(parseFastGrammar("2 l milk"), [
+    { name: "milk", quantity: 2000, unit: "ml", prep: null },
+  ]);
+  // Name-first shape takes the same road.
+  assertEquals(parseFastGrammar("paneer 1.5 kg"), [
+    { name: "paneer", quantity: 1500, unit: "g", prep: null },
+  ]);
+  // The plain spellings are unchanged.
+  assertEquals(parseFastGrammar("100g paneer"), [
+    { name: "paneer", quantity: 100, unit: "g", prep: null },
+  ]);
+});

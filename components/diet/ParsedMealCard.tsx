@@ -22,7 +22,7 @@
  * meal section underneath. Numbers carry receipts: catalog lines are silent,
  * sourced/estimated lines say where they came from.
  */
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing,
@@ -36,7 +36,22 @@ import type { MealType } from '@/lib/foods';
 import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
-export type ParseCardState = 'analysing' | 'review' | 'declined' | 'error';
+export type ParseCardState = 'analysing' | 'streaming' | 'review' | 'declined' | 'error';
+
+/** A row whose name is known but whose numbers have not landed yet. */
+export interface StreamingRow {
+  name: string;
+  quantity: number;
+  unit: string;
+  /** The model's own guess for this line. The counters animate toward these, so
+   *  they approach something true rather than spinning at nothing. All four
+   *  together: the streaming row shows the same four numbers the settled row
+   *  will, so nothing appears, moves or resizes when the catalog answers. */
+  est_kcal: number | null;
+  est_protein_g: number | null;
+  est_carb_g: number | null;
+  est_fat_g: number | null;
+}
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'breakfast', label: 'Breakfast' },
@@ -49,6 +64,8 @@ const mealLabel = (m: MealType) => MEAL_OPTIONS.find((o) => o.value === m)?.labe
 
 interface Props {
   state: ParseCardState;
+  /** Rows to show while the numbers are still resolving (state 'streaming'). */
+  streamingRows?: StreamingRow[] | null;
   rawText: string;
   /** Height cap for the whole card. Long meals used to grow past the top of
    *  the screen (the card is pinned above the input, outside any scroll), so
@@ -133,7 +150,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 }
 
 export function ParsedMealCard({
-  state, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
+  state, streamingRows, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
   onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
   minimized, onToggleMinimize,
@@ -214,6 +231,14 @@ export function ParsedMealCard({
       )}
 
       {state === 'analysing' && <Analysing C={C} />}
+
+      {state === 'streaming' && !!streamingRows && (
+        <View>
+          {streamingRows.map((r, i) => (
+            <SettlingRow key={i} row={r} C={C} s={s} first={i === 0} />
+          ))}
+        </View>
+      )}
 
       {state === 'review' && meal && (
         <View style={s.reviewBody}>
@@ -424,6 +449,99 @@ export function ParsedMealCard({
 }
 
 /** The "Drona is reading that" shimmer while the parse is in flight. */
+/**
+ * A row that knows its name but not yet its number.
+ *
+ * The counter animates toward the model's own estimate rather than spinning at
+ * nothing: when the catalog answers ~300ms later it usually agrees within ~10%,
+ * so the number barely moves and reads as SETTLING. A figure that approaches
+ * something true is honest; one that approaches nothing is decoration, and it
+ * looks like a bug the moment the real value lands somewhere else.
+ *
+ * The animation is driven by ARRIVAL, not a fixed duration. If the catalog
+ * answers in 200ms the row settles in 200ms - a timed animation would be
+ * adding latency in order to look fast, which is the opposite of the point.
+ */
+function SettlingRow(
+  { row, C, s, first }: {
+    row: StreamingRow;
+    C: ReturnType<typeof useTheme>['C'];
+    s: ReturnType<typeof makeStyles>;
+    first: boolean;
+  },
+) {
+  const kcal = useSettling(row.est_kcal);
+  const p = useSettling(row.est_protein_g);
+  const c = useSettling(row.est_carb_g);
+  const f = useSettling(row.est_fat_g);
+  // Macros are small numbers, so one decimal would jitter every frame while a
+  // calorie count reads fine as a whole number. Both settle to the same shape
+  // the review row uses.
+  const known = row.est_kcal !== null;
+
+  return (
+    <View style={[s.item, !first && s.itemDivider]}>
+      <View style={s.itemHead}>
+        <Text style={s.itemName} numberOfLines={1}>
+          {row.name}
+          <Text style={s.serving}>
+            {'  '}{row.quantity !== 1 ? `${row.quantity} × ` : ''}{row.unit}
+          </Text>
+        </Text>
+      </View>
+      {/* Same four fields, same order, same units as the settled row above, so
+          the only thing that changes when the catalog answers is the numbers -
+          nothing appears, moves or resizes under the user's eyes. Dimmed
+          throughout to say "not final yet" without a second layout. */}
+      <View style={s.macros}>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>
+          {known ? `${Math.round(kcal)} kcal` : '··· kcal'}
+        </Text>
+        {/* Each macro answers for ITSELF. One shared flag keyed off est_kcal
+            meant a row with calories but a null protein rendered "0g P" -
+            useSettling(null) eases toward 0 - which reads as "no protein in
+            this food" rather than "not known yet". A wrong fact beats a
+            placeholder to the eye, and protein is the number this audience
+            reads first. */}
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{row.est_protein_g != null ? `${Math.round(p)}g P` : '···g P'}</Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{row.est_carb_g != null ? `${Math.round(c)}g C` : '···g C'}</Text>
+        <Text style={[s.macroNum, { color: C.textMuted }]}>{row.est_fat_g != null ? `${Math.round(f)}g F` : '···g F'}</Text>
+      </View>
+      <Text style={s.serving}>working it out</Text>
+    </View>
+  );
+}
+
+/**
+ * Eases a counter from 0 toward `target`: fast at first, slowing as it nears,
+ * so it reads as converging on an answer rather than counting up to one.
+ *
+ * Returns 0 for a null target — the caller renders "···" in that case instead,
+ * since a number easing toward nothing is a lie about how much we know.
+ */
+function useSettling(target: number | null): number {
+  const [shown, setShown] = useState(0);
+  const to = target ?? 0;
+
+  useEffect(() => {
+    if (to <= 0) { setShown(0); return; }
+    let raf: number;
+    let v = 0;
+    const step = () => {
+      v += (to - v) * 0.18;
+      setShown(v);
+      // Macros can be small (0-2g), so a fixed 1-unit stop would never settle
+      // proportionally. Stop within half a unit or 1% of the target.
+      if (Math.abs(to - v) > Math.max(0.5, to * 0.01)) raf = requestAnimationFrame(step);
+      else setShown(to);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [to]);
+
+  return shown;
+}
+
 function Analysing({ C }: { C: ReturnType<typeof useTheme>['C'] }) {
   const s = makeStyles(C);
   const pulse = useSharedValue(0.4);

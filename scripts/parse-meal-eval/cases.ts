@@ -337,7 +337,73 @@ export const CASES: EvalCase[] = [
     id: "marie-gold",
     text: "britannia marie gold 4 biscuits",
     hour: 16,
-    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "marie" }] },
+    // The count has to reach the grams. This case asserted only the NAME, so
+    // it passed at 40 g (10 g a biscuit) while Fast was reading "4 biscuits"
+    // as one lump. A Marie Gold is ~4.7 g, so four are ~19 g; the ceiling here
+    // is 8 g a biscuit, already generous against the decide prompt's own
+    // "1 small packaged biscuit ~5-10 g".
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "marie", gramsBetween: [12, 32] }],
+    },
+  },
+  // ── Piece-count PROBES: foods no prompt names ───────────────────────────
+  // The fast prompt deliberately carries no per-food weights (see
+  // FAST_EXTRACT_RULES). These three exist to keep that honest: none of them
+  // appears in any prompt, so they measure whether the model can apply
+  // "find one piece, multiply by the count" to a food it was never handed.
+  // If a future prompt edit passes the biscuit cases but fails these, that
+  // edit taught the answers instead of the rule.
+  {
+    id: "probe-count-monaco",
+    text: "3 monaco biscuits",
+    hour: 17,
+    // A Monaco is ~4.4 g, so three are ~13 g. Ceiling is 8 g a cracker.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "monaco", nameIncludesAny: ["biscuit", "cracker"], gramsBetween: [8, 24] }],
+    },
+  },
+  {
+    id: "probe-count-cashews",
+    text: "6 cashews",
+    hour: 16,
+    // A cashew is ~1.5 g, so six are ~9 g.
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{ nameIncludes: "cashew", gramsBetween: [5, 16] }],
+    },
+  },
+  {
+    id: "probe-count-rusk",
+    text: "2 rusk with tea",
+    hour: 8,
+    // A rusk is ~11 g, so two are ~22 g. Paired with tea so the case also
+    // covers a count sitting next to a household measure.
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "rusk", nameIncludesAny: ["toast"], gramsBetween: [12, 34] },
+        { nameIncludes: "chai", nameIncludesAny: ["tea"] },
+      ],
+    },
+  },
+  {
+    // The 2026-08-28 production trace, verbatim. Both rows carry only a "100 g"
+    // basis serving, so this is the exact input that logged 200 g / 966 kcal
+    // and 100 g / 316 kcal. The conversion guard fixed the multiplication; this
+    // case guards the number the model itself now has to supply.
+    // One Oreo is ~11 g, so two are ~22 g; an Amul slice is ~20 g.
+    id: "oreo-and-cheese-slice",
+    text: "2 oreo biscuits and 1 amul cheese slice",
+    hour: 9,
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "oreo", gramsBetween: [14, 34], kcalBetween: [60, 170] },
+        { nameIncludes: "cheese", gramsBetween: [12, 30], kcalBetween: [40, 110] },
+      ],
+    },
   },
   {
     id: "amul-kool",
@@ -501,7 +567,14 @@ export const CASES: EvalCase[] = [
       minItems: 2, maxItems: 2,
       items: [
         { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130], kcalBetween: [20, 80] },
-        { nameIncludes: "good day", nameIncludesAny: ["goodday", "biscuit", "cookie"], kcalBetween: [50, 250] },
+        // 2 biscuits, so the grams must show TWO. The old ceiling of 250 kcal
+        // and no gram bound let a 40 g lump through (20 g a biscuit).
+        {
+          nameIncludes: "good day",
+          nameIncludesAny: ["goodday", "biscuit", "cookie"],
+          gramsBetween: [8, 24],
+          kcalBetween: [40, 130],
+        },
       ],
     },
   },
@@ -667,7 +740,14 @@ export const CASES: EvalCase[] = [
     id: "log-biscuits-and-chai",
     text: "2 good day biscuits and chai half cup",
     hour: 17,
-    expect: { minItems: 2, maxItems: 2 },
+    // Asserted only that two items came back, so a 40 g biscuit lump passed.
+    expect: {
+      minItems: 2, maxItems: 2,
+      items: [
+        { nameIncludes: "biscuit", nameIncludesAny: ["good day", "goodday", "cookie"], gramsBetween: [8, 24] },
+        { nameIncludes: "chai", nameIncludesAny: ["tea"], gramsBetween: [50, 130] },
+      ],
+    },
   },
   {
     id: "log-question-declines",

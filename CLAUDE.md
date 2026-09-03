@@ -14,9 +14,25 @@ npx expo start --android
 
 # Install new dependency
 npx expo install <package>
+
+# parse_meal eval — ALWAYS route model calls through the Claude CLI, so the
+# run bills the subscription instead of API credit.
+EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
+# Composable: ONLY=case-a,case-b  FAST_MODE=on  EVAL_WEB_SEARCH=1  DEBUG_STEPS=1
+
+# Use the API key ONLY when the question is latency or token cost. The harness
+# warns that CLI timings are not comparable — they measure the CLI, not the
+# pipeline. Correctness and per-case pass/fail are identical either way.
+ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
+
+# Edge function unit tests (the one real test suite).
+deno test --allow-all supabase/functions/ai-coach/
 ```
 
-There are no configured lint, test, or build scripts.
+There are no configured lint or build scripts.
+
+When reporting eval results, say which mode was used — a latency number must
+never be quoted from a CLI run.
 
 ## Environment Setup
 

@@ -91,6 +91,12 @@ const PARSE_MEAL_MAX_TOKENS = 1600;
 let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
+// Fast Lane A. Shadow by default: measure the grammar against extract on real
+// traffic before letting it replace the call.
+const PARSE_FAST_GRAMMAR = (Deno.env.get("PARSE_FAST_GRAMMAR") ?? "shadow") as "off" | "shadow" | "on";
+// Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
+// server never routes anyone to fast on its own.
+const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
 // users get metered AI instead of none: 3 chat messages and 3 meal parses
@@ -1310,6 +1316,9 @@ async function searchCatalogWithServings(
   admin: SupabaseClient,
   userId: string,
   query: string,
+  /** Trigram only - skip the semantic leg and the Voyage embed call in front
+   *  of it. Fast mode's flag; see ParseMealDeps.searchFoods for the numbers. */
+  lean = false,
 ): Promise<CandidateFood[]> {
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
@@ -1342,13 +1351,21 @@ async function searchCatalogWithServings(
   // time is max(trigram, embed+semantic), not the sum, and the p_floor=0.50 on
   // the RPC keeps semantic from returning junk near-neighbours - so a genuine
   // catalog miss still returns nothing here and falls through to OFF.
+  // Lean uses the LIKE-only RPC (0111): explain(analyze) put the ranked
+  // function's `<%` word-similarity path at ~942ms of pure CPU for 'milk',
+  // against 29ms for the LIKE tiers on the same index. Fast mode's accept gate
+  // re-judges candidates in code anyway, so the fuzzy ranking bought nothing
+  // there. Smart keeps the ranked function - decide reads its ordering.
   const [trigram, semantic] = await Promise.all([
-    userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 })
+    userClient.rpc(
+      lean ? "search_foods_fast_with_servings" : "search_foods_ranked_with_servings",
+      { q: query, lim: 8 },
+    )
       .then((res: { data: unknown; error: { message: string } | null }) => {
         if (res.error) console.log("[parse_meal] trigram search error:", res.error.message);
         return (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>;
       }),
-    embedQuery(query, admin, userId).then(async (vec) => {
+    lean ? Promise.resolve([] as Array<Record<string, unknown>>) : embedQuery(query, admin, userId).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data, error } = await userClient.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -1558,7 +1575,7 @@ function makeParseDeps(
     maxTokens: PARSE_MEAL_MAX_TOKENS,
     timeoutMs: ANTHROPIC_TIMEOUT_MS,
     webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
-    searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
+    searchFoods: (q, lean) => searchCatalogWithServings(userClient, admin, userId, q, lean),
     backfillOffFood: (p) => backfillOffFoodRow(admin, p),
     // Only present when configured, so an unconfigured deploy simply never
     // calls FatSecret and the meal resolves from catalog + OFF as before.
@@ -1577,6 +1594,7 @@ function makeParseDeps(
         )
       : undefined,
     skipDecideMode: PARSE_SKIP_DECIDE,
+    fastGrammarMode: PARSE_FAST_GRAMMAR,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
         voyageRerank(VOYAGE_API_KEY, q, docs, fetch, (m) => console.log(m))
@@ -1804,6 +1822,179 @@ async function handleParseMealRequest(args: {
   const preParseMs = Date.now() - startedAtMs;
   const runParse0 = Date.now();
 
+  // STREAMING is opt-in per request and additive: the JSON response below is
+  // untouched, so an older app build keeps working exactly as before. Only a
+  // client that asks for it, and only in fast mode where there is a gap worth
+  // filling, gets the event stream.
+  // The speed tier rides on its OWN field. `body.mode` is the dispatch value and
+  // is already "parse_meal" by the time we are here, so reading the tier off it
+  // was a gate that could never open: Fast and streaming were both unreachable
+  // from the app, and the eval never caught it because it calls runParseMeal
+  // directly and never crosses this HTTP boundary.
+  const wantsFast = body.speed === "fast" && PARSE_FAST_MODE !== "off";
+  const wantsStream = body.stream === true && wantsFast;
+
+  if (wantsStream) {
+    const enc = new TextEncoder();
+    // Client cancellation -> model cancellation. Without this the reader
+    // hanging up only stopped the WRITES: send() threw into an empty catch
+    // while runParseMeal happily finished every Anthropic call, spending real
+    // tokens on a result nobody would see. The client-side AbortController in
+    // dietData.ts is the other half; on its own it stopped the app reading,
+    // not the server working.
+    const abort = new AbortController();
+    const deps = { ...makeParseDeps(userClient, admin, userId), abortSignal: abort.signal };
+    const stream = new ReadableStream({
+      cancel() {
+        abort.abort();
+      },
+      async start(controller) {
+        const send = (event: string, data: unknown) => {
+          try {
+            controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            // The client hung up mid-parse. Not an error worth failing the
+            // parse over: the trace below still records what happened.
+          }
+        };
+        try {
+          const result = await runParseMeal(
+            { ...deps, onProgress: (p) => send(p.kind, p) },
+            {
+              text,
+              localHour,
+              mealHint,
+              mode: "fast",
+              recentFoods: [],
+              todayTotals: null,
+              targets: null,
+              contextPromise,
+              previousText: previousText ?? null,
+              previousItems,
+              recentTurns,
+            },
+          );
+          send("end", {
+            parsed: result.parsed,
+            declined: result.declined,
+            proposal: result.proposal ?? null,
+          });
+          void recordParseTrace(admin, {
+            user_id: userId,
+            input_text: text.slice(0, 500),
+            meal_hint: mealHint,
+            model: PARSE_MEAL_MODEL,
+            outcome: result.parsed ? "meal" : "declined",
+            message: result.declined?.message ?? null,
+            iterations: result.iterations,
+            // The streaming path never recorded edge timing, so everything
+            // outside extract/resolve was invisible and got lumped together as
+            // unexplained latency. pre_parse_ms is auth + the rate-limit write
+            // before the parse starts; run_parse_ms brackets the parse itself,
+            // so latency - pre - run is what the response and trace cost.
+            steps: [...result.steps, {
+              iter: 9,
+              tool: "__edge_timing",
+              input: {
+                pre_parse_ms: preParseMs,
+                run_parse_ms: Date.now() - runParse0,
+                cold_isolate: PARSE_ISOLATE_REQUESTS <= 1,
+                region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
+                  Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
+                streamed: true,
+              },
+            }],
+            items: result.parsed?.items ?? null,
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            web_search_requests: result.usage.web_search_requests,
+            latency_ms: Date.now() - startedAtMs,
+          });
+          // COST. recordTrace writes coach_traces; logTokenUsage writes the
+          // token-cost table that cost_summary, cost_by_day and the admin
+          // pages read. They are separate calls, and the SSE branch had
+          // NEITHER - so a fix that only added recordTrace still left every
+          // streamed parse invisible to cost reporting. Fast+streaming is the
+          // default tier, so that was most parses. Same shape as the JSON path.
+          void logTokenUsage(admin, {
+            pipeline: "parse_meal",
+            provider: "anthropic",
+            model: PARSE_MEAL_MODEL,
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            cache_read_tokens: result.usage.cache_read_input_tokens,
+            cache_creation_tokens: result.usage.cache_creation_input_tokens,
+            latency_ms: Date.now() - startedAtMs,
+            status: "success",
+            metadata: {
+              user_id: userId,
+              mode: "parse_meal",
+              streamed: true,
+              item_count: result.parsed?.items.length ?? 0,
+              sources: result.parsed?.items.map((i) => i.source) ?? [],
+              declined: result.declined !== null,
+              web_search_requests: result.usage.web_search_requests,
+              tool_calls: result.tool_calls,
+            },
+          });
+          // coach_traces too. The JSON path gets this for free because it
+          // returns through respond(), which calls recordTrace; the SSE path
+          // returns its own Response.
+          trace.status = "success";
+          trace.http_status = 200;
+          trace.input_tokens = result.usage.input_tokens || null;
+          trace.output_tokens = result.usage.output_tokens || null;
+          trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
+          trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
+          trace.tool_calls = result.tool_calls;
+          trace.response_preview = preview(
+            result.parsed
+              ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
+              : result.declined?.message ?? null,
+          );
+          await recordTrace(admin, trace, startedAtMs);
+        } catch (e) {
+          // The client has already been given a 200 and possibly some rows, so
+          // the failure has to arrive as an event; there is no status code left
+          // to change. The client treats this exactly like a failed request.
+          send("error", { message: String(e).slice(0, 200) });
+          // The stream still cost tokens and still has to appear in the cost
+          // table, so record the failure rather than dropping it silently.
+          // usage is unavailable on this path (the throw may predate it), so
+          // the row carries zeros and the error - it marks the attempt as
+          // having happened rather than inventing numbers.
+          void logTokenUsage(admin, {
+            pipeline: "parse_meal",
+            provider: "anthropic",
+            model: PARSE_MEAL_MODEL,
+            input_tokens: 0,
+            output_tokens: 0,
+            latency_ms: Date.now() - startedAtMs,
+            status: "error",
+            error_message: String(e).slice(0, 300),
+            metadata: { user_id: userId, mode: "parse_meal", streamed: true },
+          });
+          trace.status = "internal_error";
+          trace.http_status = 200;
+          trace.error_message = String(e).slice(0, 300);
+          try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        ...CORS_HEADERS,
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        // Proxies buffer by default, which would collapse the whole point.
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
   try {
     const result = await runParseMeal(
       makeParseDeps(userClient, admin, userId),
@@ -1811,6 +2002,10 @@ async function handleParseMealRequest(args: {
         text,
         localHour,
         mealHint,
+        // Client-chosen, server-killable. PARSE_FAST_MODE=off ignores the
+        // client entirely, so a bad Fast rollout dies with one env change and
+        // no app release.
+        mode: wantsFast ? "fast" : null,
         // Placeholders; the real values are awaited from contextPromise inside
         // runParseMeal (after extract), so these queries overlap extraction.
         recentFoods: [],
@@ -2154,6 +2349,16 @@ async function handleAnonOnboardingPlan(args: {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS_HEADERS });
+  }
+
+  // Keep-warm ping (pg_cron, every 4 min). Cold isolates were adding 1-2s to
+  // the first parse someone pays for; a scheduled no-op keeps one resident.
+  // Deliberately BEFORE auth and before the admin client: the point is to boot
+  // the isolate, not to do work, and a ping must never touch the DB or logs.
+  if (new URL(req.url).searchParams.get("warm") === "1") {
+    return new Response(JSON.stringify({ ok: true, warm: true }), {
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    });
   }
 
   const startedAtMs = Date.now();

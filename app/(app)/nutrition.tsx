@@ -33,11 +33,13 @@ import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import Svg, { Circle } from 'react-native-svg';
+import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
+import { getParseSpeed, setParseSpeed, type ParseSpeed } from '@/lib/parseSpeed';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, logParsedMeal, capNotice, capUpgradeContext,
+  parseMeal, parseMealStreaming, logParsedMeal, capNotice, capUpgradeContext,
   loadNutritionRange, dateFromYmd,
-  type ParsedMeal, type LoggedEntry, type ParsedMealItem,
+  type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem,
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -52,6 +54,10 @@ import { DronaMark } from '@/components/coach/DronaMark';
 type ParseFlow =
   | { status: 'idle' }
   | { status: 'analysing'; raw: string }
+  // Fast mode only: the names are known and the numbers are still settling, so
+  // the card shows real rows with shimmering figures instead of a spinner.
+  // Named rows arrive ~1.2s ahead of the finished parse; this is that window.
+  | { status: 'streaming'; raw: string; rows: StreamedItem[] }
   // `notice` carries a reply that is NOT a new meal (an answer to a question,
   // or a parse failure) while the reviewed meal stays on screen. Asking
   // "is that right?" must never throw away work the user hasn't added yet.
@@ -216,6 +222,38 @@ export default function NutritionScreen() {
   // parse can force it open: a meal the user has not seen yet must never
   // arrive already hidden behind a summary line.
   const [cardMinimized, setCardMinimized] = useState(false);
+  // Parse tier (Quick default / Thorough opt-in). A ref mirrors the state so
+  // onSend reads the CURRENT choice, matching the flowRef idiom above.
+  const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
+  const parseSpeedRef = useRef<ParseSpeed>('quick');
+  const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // Both statuses mean "a parse is running": 'analysing' before any rows,
+  // 'streaming' once fast mode has painted names but not finished.
+  const parseInFlight = flow.status === 'analysing' || flow.status === 'streaming';
+  /** Which parse owns the card right now.
+   *
+   *  Guarding on the raw text is not enough: Discard is reachable mid-stream,
+   *  so the user can dismiss a running parse, send something else, and the
+   *  abandoned request still resolves and calls setFlow unconditionally -
+   *  replacing the meal they are actually looking at. Log the same thing twice
+   *  and the texts even match. A counter cannot collide with anything, and it
+   *  is the same idiom `checkTokenRef` already uses for the double-check. */
+  const parseTokenRef = useRef(0);
+  /** Aborts the in-flight streamed parse. Paired with parseTokenRef: the token
+   *  decides who may WRITE to the card, this stops the work for whoever may
+   *  not. Without it a discarded or navigated-away parse still ran the whole
+   *  model call server-side, billed, for a result nobody would ever see. */
+  const parseAbortRef = useRef<AbortController | null>(null);
+  // Unmount is the case a token cannot cover: there is no card left to guard.
+  useEffect(() => () => parseAbortRef.current?.abort(), []);
+  useEffect(() => {
+    getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
+  }, []);
+  const pickParseSpeed = (v: ParseSpeed) => {
+    parseSpeedRef.current = v;
+    setParseSpeedState(v);
+    void setParseSpeed(v);
+  };
   const [savedListOpen, setSavedListOpen] = useState(false);
   const nowMeal = mealForNow();
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
@@ -282,12 +320,34 @@ export default function NutritionScreen() {
     // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
     // an unrelated line until the abandoned 5-9s lookup finally settles.
     setChecking(null);
+    const token = ++parseTokenRef.current;
+    parseAbortRef.current?.abort();
+    const ac = new AbortController();
+    parseAbortRef.current = ac;
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
-    const res = await parseMeal(supabase, {
-      text: t, mealHint: mealForNow(), previous: pending, turns,
-    });
+    const args = { text: t, mealHint: mealForNow(), previous: pending, turns };
+    // Streaming is only worth it on a first-shot log: a correction needs the
+    // full pipeline anyway, and parseMealStreaming falls back on its own, but
+    // not opening the stream saves the wasted round trip. A user on Thorough
+    // takes that same full-pipeline road - parseMeal sends no speed field,
+    // which the server reads as smart.
+    const res = pending || parseSpeedRef.current === 'thorough'
+      ? await parseMeal(supabase, args)
+      : await parseMealStreaming(supabase, args, (rows) => {
+        // A stream that resolves after the user has moved on must not repaint
+        // the card they are now looking at.
+        if (parseTokenRef.current !== token) return;
+        setFlow((cur) => (
+          cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows } : cur
+        ));
+      }, ac.signal);
+    // From here on we are writing to the card. If another parse has started, or
+    // the user discarded this one, this result is stale - drop it whole rather
+    // than let any branch below (declined, cap, error, review) speak for a
+    // parse the user has moved on from.
+    if (parseTokenRef.current !== token) return;
     // A reply that is not a meal (an answer, or a failure) must NOT discard a
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
@@ -522,7 +582,12 @@ export default function NutritionScreen() {
   const onSend = useCallback(() => {
     const t = text.trim();
     if (!t) return;
-    if (flow.status === 'analysing') return; // a parse is already in flight
+    // 'streaming' is mid-parse too: fast mode flips to it ~1.2s in, when the
+    // first rows land but the parse is still running. Guarding only on
+    // 'analysing' re-opened the send control and let a second parse race the
+    // first, and setFlow(reviewFlow) below is unconditional, so whichever
+    // finished last won regardless of which meal the user meant.
+    if (flow.status === 'analysing' || flow.status === 'streaming') return;
     // Guest fallback: no JWT means parse_meal would 401, so route to the
     // manual picker exactly as the old bar did.
     if (!isSignedIn) { openSearch(mealForNow()); return; }
@@ -565,6 +630,11 @@ export default function NutritionScreen() {
   const onDismiss = useCallback(() => {
     setChecking(null);
     setCardMinimized(false);
+    // Discard is reachable mid-parse. Bumping the token orphans whatever is in
+    // flight so it cannot resurrect the card the user just threw away, and the
+    // abort stops that work rather than merely ignoring its answer.
+    parseTokenRef.current += 1;
+    parseAbortRef.current?.abort();
     setFlow({ status: 'idle' });
   }, []);
 
@@ -748,6 +818,8 @@ export default function NutritionScreen() {
               state={flow.status as ParseCardState}
               rawText={flow.raw}
               maxHeight={cardMaxHeight}
+              // Fast mode's settling window: real names, shimmering numbers.
+              streamingRows={flow.status === 'streaming' ? flow.rows : null}
               meal={flow.status === 'review' ? flow.meal : null}
               mealType={flow.status === 'review' ? flow.mealType : undefined}
               adding={adding}
@@ -782,7 +854,7 @@ export default function NutritionScreen() {
 
         {isSignedIn ? (
           <View style={s.input}>
-            <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8}>
+            <Pressable onPress={() => openSearch(mealForNow())} hitSlop={8} style={s.iconBox}>
               <Feather name="search" size={16} color={C.textSecondary} />
             </Pressable>
             <TextInput
@@ -798,11 +870,27 @@ export default function NutritionScreen() {
               // instead of scrolling off one clipped line. Submit via the arrow.
               multiline
             />
+            {/* Parse-tier chip: quiet in the default (Quick), lime when the user
+                has opted into Thorough, so only the non-default state draws the
+                eye. Tap opens the sheet; the choice is sticky. */}
+            <Pressable
+              onPress={() => setSpeedSheetOpen(true)}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel={parseSpeed === 'thorough' ? 'Logging mode: Thorough' : 'Logging mode: Quick'}
+              style={s.iconBox}
+            >
+              <Feather
+                name={parseSpeed === 'thorough' ? 'target' : 'zap'}
+                size={14}
+                color={parseSpeed === 'thorough' ? C.accentText : C.textSecondary}
+              />
+            </Pressable>
             <Pressable
               onPress={onSend}
               hitSlop={8}
-              disabled={!text.trim() || flow.status === 'analysing'}
-              style={[s.send, { opacity: text.trim() && flow.status !== 'analysing' ? 1 : 0.4 }]}
+              disabled={!text.trim() || parseInFlight}
+              style={[s.send, { opacity: text.trim() && !parseInFlight ? 1 : 0.4 }]}
             >
               <Feather name="arrow-up" size={16} color={C.background} />
             </Pressable>
@@ -855,6 +943,12 @@ export default function NutritionScreen() {
       />
 
       {/* Jump the diary to any past day. */}
+      <ParseSpeedSheet
+        open={speedSheetOpen}
+        value={parseSpeed}
+        onClose={() => setSpeedSheetOpen(false)}
+        onPick={pickParseSpeed}
+      />
       <DayPickerSheet
         open={calendarOpen}
         date={viewDate}
@@ -921,9 +1015,17 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     inputWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, backgroundColor: C.background },
     // alignItems flex-end keeps the search + send icons on the bottom line as the field grows.
-    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 10, ...Shadow.card },
+    // Radius.xxl, not lg: a 16px corner on a 48pt full-width bar reads as a wide
+    // flat box; a near-pill reads as a composer. Fixed radius, so the corners
+    // stay sane when the multiline field grows the bar.
+    input: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: Radius.xxl, paddingHorizontal: Spacing.lg, paddingVertical: 10, ...Shadow.card },
     // maxHeight caps growth (~4 lines) then scrolls; textAlignVertical top for Android multiline.
-    inputText: { flex: 1, fontSize: FontSize.base, color: C.foreground, padding: 0, maxHeight: 96, textAlignVertical: 'top' },
+    // The row bottom-aligns (icons must hug the bottom as the field grows), so
+    // at REST the centres drift: the 28pt send circle's centre sits higher than
+    // a bare 16px icon's or the text line's. Every icon gets the same 28pt
+    // centred box the send button has, and the text line is lifted to match.
+    inputText: { flex: 1, fontSize: FontSize.base, lineHeight: 20, color: C.foreground, padding: 0, marginBottom: 4, maxHeight: 96, textAlignVertical: 'top' },
+    iconBox: { height: 28, justifyContent: 'center', alignItems: 'center' },
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }

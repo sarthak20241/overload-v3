@@ -15,7 +15,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
-import { useSupabaseClient } from '@/lib/supabase';
+import { fetch as expoFetch } from 'expo/fetch';
+import { useSupabaseClient, getSupabaseAccessToken } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
 import { isMeasurementUnit } from '@/lib/units';
@@ -616,6 +617,206 @@ function toParsedItem(i: any): ParsedMealItem {
   };
 }
 
+/**
+ * Shape an edge response into a ParseMealResult.
+ *
+ * Extracted so the JSON path and the SSE `end` frame cannot drift: they carry
+ * the SAME payload, and two copies of this mapping is how a new field ends up
+ * honoured on one path and silently dropped on the other.
+ */
+function toParseResult(data: any): ParseMealResult {
+  if (data?.declined?.message) {
+    const p = data?.proposal;
+    const proposal = p && Array.isArray(p.items) && p.items.length > 0
+      ? { items: (p.items as any[]).map(toParsedItem), note: String(p.note ?? 'Use these numbers') }
+      : null;
+    return {
+      kind: 'declined',
+      message: String(data.declined.message),
+      proposal,
+      cleared: data.declined.cleared === true,
+    };
+  }
+  const parsed = data?.parsed;
+  if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) {
+    return { kind: 'error', message: 'Drona could not read that one. Give it another shot.' };
+  }
+  const mealType: MealType =
+    parsed.meal_type === 'breakfast' || parsed.meal_type === 'lunch' ||
+    parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
+      ? parsed.meal_type : 'snack';
+  return {
+    kind: 'parsed',
+    meal: {
+      meal_type: mealType,
+      items: (parsed.items as any[]).map(toParsedItem),
+      drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
+      corrects_previous: parsed.corrects_previous === true,
+    },
+  };
+}
+
+/** What the card can show before the meal is finished. */
+export interface StreamedItem {
+  name: string;
+  quantity: number;
+  unit: string;
+  /** The model's own guess for the whole line, from the naming call. The
+   *  shimmering numbers animate toward THESE, so they approach something true
+   *  rather than spinning at nothing. Null when the model gave no usable
+   *  estimate, in which case the row shimmers without a target.
+   *
+   *  All four move together. A row that settles a calorie count while its
+   *  macros sit blank reads as broken, and showing the same four fields the
+   *  final row shows is what stops the card resizing when the catalog answers. */
+  est_kcal: number | null;
+  est_protein_g: number | null;
+  est_carb_g: number | null;
+  est_fat_g: number | null;
+}
+
+/**
+ * Fast mode over SSE: rows appear as soon as the names are known (~1.2s),
+ * numbers settle when the catalog answers (~300ms later).
+ *
+ * Falls back to the plain JSON parseMeal on ANY streaming failure - no body,
+ * a malformed frame, a mid-stream disconnect, or a server `error` event. A
+ * user whose network dislikes long-lived responses gets the old behaviour
+ * rather than an error, and the only cost is the wait they would have had
+ * anyway.
+ *
+ * ABANDONED PARSES ARE CANCELLED, ON BOTH SIDES. Pass an AbortSignal and
+ * navigating away (or discarding the card) aborts the request; the edge
+ * function's stream has a `cancel()` handler that turns that disconnect into an
+ * AbortSignal on its own model calls (see index.ts and ParseMealDeps.abortSignal).
+ * Client-side abort alone was only half of it: the app stopped reading while
+ * the server finished every Anthropic call, spending real tokens on a result
+ * nobody would ever see.
+ *
+ * The server also emits a `fill` event, deliberately ignored here: it carries
+ * the same payload as `end` and is sent immediately before it, so handling it
+ * would repaint the card twice with identical data.
+ */
+export async function parseMealStreaming(
+  supabase: Supa,
+  args: Parameters<typeof parseMeal>[1],
+  onItems: (items: StreamedItem[]) => void,
+  signal?: AbortSignal,
+): Promise<ParseMealResult> {
+  const text = args.text.trim();
+  if (!text) return { kind: 'error', message: 'Type what you ate first.' };
+
+  // A correction, question or removal must NOT take the fast path: it needs the
+  // full pipeline to read intent. Same rule the server enforces; checked here
+  // too so we do not even open a stream we know will be ignored.
+  if (args.previous && args.previous.items.length > 0) return parseMeal(supabase, args);
+
+  const now = new Date();
+  const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  try {
+    // Clerk owns the session; nothing is ever written to Supabase auth, so
+    // `supabase.auth.getSession()` returns null for a signed-in user and every
+    // stream fell back to the JSON path below without a trace.
+    const token = await getSupabaseAccessToken();
+    if (!token) return parseMeal(supabase, args);
+
+    // Region pin, matching what supabase-js sends for FunctionRegion.UsEast1:
+    // the x-region header below AND this query parameter. VERIFIED working
+    // (curl shows x-sb-edge-region flip to us-east-1 with either one, and the
+    // device trace agrees: pre_parse 1290->442ms, verifyItems 255->30ms).
+    // An earlier round concluded "the pin does not work" - that test ran on a
+    // stale bundle from a dead Metro watcher, not on this code.
+    const res = await expoFetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/ai-coach?forceFunctionRegion=us-east-1`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'x-region': 'us-east-1',
+      },
+      signal,
+      body: JSON.stringify({
+        mode: 'parse_meal',
+        // `mode` dispatches the handler; `speed` picks the tier inside it. They
+        // are separate fields on purpose - folding the tier into `mode` is what
+        // made streaming unreachable, since `mode` is always 'parse_meal' here.
+        speed: 'fast',
+        stream: true,
+        text,
+        local_hour: now.getHours(),
+        local_date: localDate,
+        ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
+        ...(args.turns && args.turns.length > 0
+          ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
+          : {}),
+      }),
+    });
+    if (!res.ok || !res.body) return parseMeal(supabase, args);
+
+    // Abort releases the socket, which is what tells the edge function nobody
+    // is listening. Without it the server finishes the whole model call for a
+    // client that walked away - billed compute for a result no one sees.
+    const reader = res.body.getReader();
+    signal?.addEventListener('abort', () => { void reader.cancel().catch(() => {}); }, { once: true });
+    const dec = new TextDecoder();
+    let buf = '';
+    let final: ParseMealResult | null = null;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const ev = frame.split('\n').find((l) => l.startsWith('event:'))?.slice(6).trim();
+        const raw = frame.split('\n').find((l) => l.startsWith('data:'))?.slice(5).trim();
+        if (!ev || !raw) continue;
+        let payload: any;
+        try { payload = JSON.parse(raw); } catch { continue; }
+        if (ev === 'items' && Array.isArray(payload.items)) {
+          const num = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v : null);
+          onItems(payload.items.map((i: any) => ({
+            name: String(i.name ?? ''),
+            quantity: Number(i.quantity) || 1,
+            unit: String(i.unit ?? 'serving'),
+            est_kcal: num(i.est_kcal),
+            est_protein_g: num(i.est_protein_g),
+            est_carb_g: num(i.est_carb_g),
+            est_fat_g: num(i.est_fat_g),
+          })));
+        } else if (ev === 'end') {
+          final = toParseResult(payload);
+        } else if (ev === 'error') {
+          // Fall back like every other stream failure does. The docstring has
+          // always claimed "ANY streaming failure" falls back, and this branch
+          // was the one exception: a transient mid-stream error that the
+          // buffered path would have answered fine became a dead end for the
+          // user. The 200 is already sent, so this costs the wait again - the
+          // same cost the truncated-stream path below already accepts.
+          return parseMeal(supabase, args);
+        }
+      }
+    }
+    // A stream that ended without an `end` frame is a truncated response, not a
+    // parse. Re-running costs a wait; showing a half-meal costs trust. Both
+    // outcomes take the same road - a stream that never produced a final frame
+    // is unusable whether or not it painted rows first - so this is one call,
+    // not a ternary onto itself.
+    if (!final) return parseMeal(supabase, args);
+    return final;
+  } catch (e) {
+    // A deliberate abort is not a failure to retry: the caller has moved on, so
+    // falling back would start a SECOND full parse for a card nobody is
+    // watching - the exact waste the abort exists to prevent.
+    if (signal?.aborted || (e as { name?: string })?.name === 'AbortError') {
+      return { kind: 'error', message: 'Cancelled.' };
+    }
+    return parseMeal(supabase, args);
+  }
+}
+
 /** Call the ai-coach edge function in parse_meal mode. The Clerk JWT rides on
  *  the client's fetch wrapper automatically, so a signed-out client (base anon
  *  client) would 401 — callers gate on isSignedIn before invoking. */
@@ -703,36 +904,7 @@ export async function parseMeal(
     return { kind: 'error', message: 'No connection. Type it again when you are back online.' };
   }
 
-  if (data?.declined?.message) {
-    const p = data?.proposal;
-    const proposal = p && Array.isArray(p.items) && p.items.length > 0
-      ? { items: (p.items as any[]).map(toParsedItem), note: String(p.note ?? 'Use these numbers') }
-      : null;
-    return {
-      kind: 'declined',
-      message: String(data.declined.message),
-      proposal,
-      cleared: data.declined.cleared === true,
-    };
-  }
-  const parsed = data?.parsed;
-  if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) {
-    return { kind: 'error', message: 'Drona could not read that one. Give it another shot.' };
-  }
-  const mealType: MealType =
-    parsed.meal_type === 'breakfast' || parsed.meal_type === 'lunch' ||
-    parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
-      ? parsed.meal_type : 'snack';
-  const items: ParsedMealItem[] = (parsed.items as any[]).map(toParsedItem);
-  return {
-    kind: 'parsed',
-    meal: {
-      meal_type: mealType,
-      items,
-      drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
-      corrects_previous: parsed.corrects_previous === true,
-    },
-  };
+  return toParseResult(data);
 }
 
 /** The result of writing a parsed meal — carries the ids needed to Undo. */

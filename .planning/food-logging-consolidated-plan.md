@@ -197,6 +197,57 @@ Build:
 Test: on-device, the card never mutates after render; affordance renders on
 low-confidence lines only; meal_type parity on traces.
 
+### Phase 4 M1 RESULT 2026-08-27: STREAMING WORKS, END TO END, ON DEVICE
+
+The risk is retired. Measured with a throwaway probe (supabase/functions/
+sse-probe + app/sse-probe.tsx, both deletable once M2 lands) rather than
+assumed.
+
+SERVER. A Supabase edge function streams and nothing in the edge runtime or the
+CDN in front of it buffers. Ten events sent 400ms apart arrived 400ms apart:
+  cold isolate  first byte 1.75s
+  warm          first byte 0.46-0.86s, gaps 0.35-0.47s
+
+CLIENT. expo/fetch on iOS hands chunks over as they arrive; res.body is a real
+ReadableStream and the reader yields per chunk:
+  status 200 @ 333-471ms, first event @ 359-483ms, gaps 377-435ms
+
+CALIBRATION THAT CHANGES THE PLAN. The transport floor is ~350-480ms warm from
+India, because execution is pinned to us-east-1 (deliberate: it removes several
+internal round trips at the cost of one cross-ocean user hop). So:
+  Fast Lane A (no LLM)      ~0.5s transport + search/fill  -> sub-second is real
+  Fast Lane B (Haiku first) ~0.5s + ~1.2s extract          -> first row ~1.6-1.7s
+The "first row under 1 second" target holds for Lane A and does NOT hold for
+Lane B. Either state that honestly, or route more inputs into Lane A.
+
+ONE THING RULED OUT. The first run showed the final `end` event arriving 1718ms
+after the previous one while every other gap was ~400ms. It did NOT reproduce
+(397ms on the next run): cold-start noise on the first request after a deploy,
+not a flush-on-close problem. Recorded because it would otherwise look like a
+reason to redesign how `end` seals the card, and it is not.
+
+ANDROID: PROVEN TOO (2026-08-27), so the both-platforms gate is met.
+Worth having run rather than reasoned about: SSE is only a protocol, but
+expo/fetch is a native module with SEPARATE implementations (Swift/NSURLSession
+on iOS, Kotlin/OkHttp on Android) and either could have buffered the body.
+Android's pumpResponseBodyStream emits per chunk, and the device agrees:
+  server sends  400ms apart
+  iOS receives  377-435ms apart
+  Android       246-455ms apart
+Run on a STANDALONE SDK-54 app in Expo Go: the real app needs native modules
+Expo Go lacks, and an Android dev build is a long gradle cycle for one
+question. Pinning to 54 mattered - the scaffold defaults to SDK 57, and proving
+streaming there would have proven nothing about what we ship. Ignore Android's
+6.5s to first byte: emulator plus Expo Go overhead, not a device number. The
+GAPS are the evidence.
+
+CLIENT-CODE HAZARD found in the native source, true on BOTH platforms: chunks
+are buffered into a sink until the JS side starts reading, and only emitted
+once it does. So take getReader() IMMEDIATELY after the fetch resolves. Any
+await in between and early chunks pile up and land in a lump - which would look
+exactly like the transport buffering, and send the next person chasing the
+wrong thing.
+
 ### Phase 4. Transport (the risk phase)
 Build: SSE streaming out of the edge function BEHIND a client-declared flag
 (old clients keep the JSON response; version-skew rule); expo/fetch streaming
@@ -205,6 +256,51 @@ Test DAY ONE: a throwaway probe streams 10 events through the production path
 on iOS AND Android dev clients. Then: mid-stream disconnect -> client falls
 back to buffered-complete; event replay/idempotence; old-client compat.
 Gate: stream verified on device, both platforms, with fallback proven.
+
+#### Phase 4 M3 RESULT 2026-08-28: THE GATE WAS DEAD, AND THE EVAL COULD NOT SEE IT
+The card render works (verified on device: 2 catalog rows, 143 + 122 kcal, high
+confidence). Getting there exposed the bigger finding.
+
+`handleParseMealRequest` read the speed tier off `body.mode`, which is the
+DISPATCH value and is already "parse_meal" by the time that code runs. So
+`body.mode === "fast"` could never be true: Fast mode and SSE streaming were
+both unreachable from the app for their entire build. On device every request
+silently took the standard pipeline (~9s, zero `items` frames).
+
+The eval could not catch it: `scripts/parse-meal-eval/run.ts` calls
+`runParseMeal` DIRECTLY and never crosses the HTTP boundary. 84/87 @ 3807ms was
+true of the pipeline and said nothing about whether the app could reach it.
+
+Fixed: the tier rides on its own `body.speed` field. Standing rule for the rest
+of this plan - **a green eval is not evidence that a request-shape gate works.**
+Anything read off the request body needs one check that actually crosses HTTP.
+
+Two more bugs sat behind that one, each individually silent:
+
+2. `parseMealStreaming` read the JWT from `supabase.auth.getSession()`. Clerk
+   owns the session and nothing is ever written to Supabase auth, so that read
+   returned null for a signed-in user and every stream bailed to the JSON path
+   on its first line. The fallback IS the old behaviour, so it looked like the
+   server just never streamed. Now reads `getSupabaseAccessToken()`.
+3. The `items` event was emitted AFTER the resolve, leaving only the accept
+   gate to overlap: rows at 7371ms of a 7628ms parse. Names and the model's
+   per-100 estimates both arrive on the extract call, so the emit moved ahead
+   of the resolve - which is the slow part, and exactly what the shimmer is for.
+
+Pattern worth naming: all three failed by falling back to something that works.
+Nothing errored, nothing logged, and the card looked correct every time. The
+only tell was a latency that matched the pipeline the code claimed not to be
+running. **When a fast path is optional, measure whether it ran - do not infer
+it from a correct-looking result.**
+
+DEVICE RESULT (warm, "2 eggs 1 banana", prod): rows 3551ms, final 5115ms, so
+1.6s of shimmer; both rows catalog/high. Standard was 7.5-9s. Rows at 3.5s is
+still above the 1.2s target - that is the extract call's own latency and is a
+separate piece of work, not a transport problem.
+
+Also, the simulator's synthetic keyboard drops roughly half the characters and
+can background the app, so it cannot drive the nutrition input. `app/sse-probe.tsx`
+fires the real streaming call on one tap instead; delete it when Phase 4 signs off.
 
 ### Phase 5. Smart progressive
 - 5a Stage-boundary events, ZERO pipeline change: item events when extract
@@ -289,3 +385,73 @@ exercised on device; Fast toggle hidden/disabled gracefully on old servers.
 - INDB (Anuvaad): confirm license, then batch-ingest as source='indb'.
 - Rerank vendor eval (Voyage vs Cohere) on parse_traces, open since P2.
 - food_log_stats / commonality refresh cadence.
+
+### A/B RESULT 2026-08-29: the catalog is no longer worth trading away
+iPhone 16 Pro Max, prod, warm us-east-1, 5 paired rounds of the same phrase
+("2 oreo biscuits and 1 amul cheese slice"). A = estimate only (no catalog at
+all), B = fast + catalog.
+
+  A  2097 2102 1925 1958 2110   avg 2038ms
+  B  2188 2148 2181 2195 2141   avg 2171ms
+
+The catalog now costs **133ms**, against ~1400ms before the 0111 LIKE-only
+search. Per-query search time fell 478-1413ms -> 51-217ms. Extract is a steady
+~1.7-1.9s and is now ~85% of the whole parse.
+
+So the question that started this - estimate-only vs catalog - is settled the
+boring way: keep the catalog. It buys real rows (Oreo 271 kcal from a catalog
+row vs the model's 134-269 kcal swing across runs) for a rounding error of
+time. Estimate-only stays as a probe knob, not a product mode.
+
+Remaining cost is the model call itself, and splitting it is still the wrong
+move: the region pin already cut extract from ~3.0s to ~1.8s, which is about
+what a split's FIRST call alone was projected to cost.
+
+Caveat on accuracy, unchanged from before: this phrase is a branded snack, the
+model's home turf. The catalog's value shows on curated Indian staples and on
+rows a user accumulates. Also seen in these runs: "amul cheese slice" matched
+"Cheese, provolone, sliced" twice out of five - the LIKE ladder has no synonym
+bridge, so a missing catalog row falls to a wrong-but-plausible one rather than
+to the estimate. Worth a look before Fast ships wide.
+
+### FAST-MODE EVAL 2026-08-30: 86/91, and what the number is worth
+First full fast-mode corpus run (EVAL_VIA_CLI=1 FAST_MODE=on, EVAL_CONCURRENCY=6,
+~11 min against ~70 serial). Log is gitignored; rerun to reproduce.
+
+  baseline before today's two fixes   85/91
+  after                               86/91   (tier mix ~74 catalog / 19 estimate)
+
+Two structural bugs fixed, both found by tracing a single failure rather than by
+reading the score:
+
+1. LADDER MISSING PREP. Extract splits prep into its own field and the ladder
+   only combined brand + name, so "1 cup cooked rice" searched "rice" ALONE and
+   got Rice cake / Rice milk / Rice paper. "cooked rice" returns
+   "Rice, cooked, NFS" as its top row and was never asked for.
+   This is the exact mirror of the accept-gate brand bug fixed the same day:
+   three places rebuild the user's phrase from {brand, prep, name} and each
+   included a different subset. They agree now.
+
+2. A PORTION IS NOT A PIECE. "1 serving (14.4 g)" on Parle Monaco is ~three
+   crackers; the count multiplied it again for 43.2 g. namesAPiece() now asks
+   whether anything survives stripping the amount and the generic portion
+   words - "1 cookie (11 g)" and "1 large" do, "1 serving (14.4 g)" does not.
+   Also fixed the branch above it, which matched ANY label containing the
+   user's unit word: "serving" is what extract emits for every counted noun, so
+   the portion posed as a piece and skipped the guard entirely.
+   No food weights were added anywhere; the rule reads the label the catalog
+   already ships, so an unseen row behaves correctly.
+
+**THE SUITE IS FLAKY AND THE FULL-SUITE NUMBER LIES.** The run straight after
+these fixes read 82/91 - apparently a 3-case regression. Re-running the seven
+changed cases showed FOUR of the five "regressions" passed cleanly, including
+oreo-and-cheese-slice landing 24 g / 115.9 kcal and 20 g / 63.2 kcal against the
+original production bug's 200 g / 966 kcal and 100 g / 316 kcal. Judge a change
+by re-running its changed cases; never by one full-suite delta.
+
+Remaining failures, none about food identity:
+- marie-gold, probe-count-monaco: piece weights still over. Both rows carry only
+  an unnamed portion, so these now ride the model's est_total_g and the estimate
+  is heavy. The next lever is the estimate, not the conversion.
+- probe-count-cashews, edamame-tbsp-regression: flaky, both pass on re-run.
+- log-question-declines: CLI shim artifact, not a pipeline result.
