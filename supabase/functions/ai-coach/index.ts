@@ -1900,11 +1900,36 @@ async function handleParseMealRequest(args: {
             web_search_requests: result.usage.web_search_requests,
             latency_ms: Date.now() - startedAtMs,
           });
+          // COST. recordTrace writes coach_traces; logTokenUsage writes the
+          // token-cost table that cost_summary, cost_by_day and the admin
+          // pages read. They are separate calls, and the SSE branch had
+          // NEITHER - so a fix that only added recordTrace still left every
+          // streamed parse invisible to cost reporting. Fast+streaming is the
+          // default tier, so that was most parses. Same shape as the JSON path.
+          void logTokenUsage(admin, {
+            pipeline: "parse_meal",
+            provider: "anthropic",
+            model: PARSE_MEAL_MODEL,
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            cache_read_tokens: result.usage.cache_read_input_tokens,
+            cache_creation_tokens: result.usage.cache_creation_input_tokens,
+            latency_ms: Date.now() - startedAtMs,
+            status: "success",
+            metadata: {
+              user_id: userId,
+              mode: "parse_meal",
+              streamed: true,
+              item_count: result.parsed?.items.length ?? 0,
+              sources: result.parsed?.items.map((i) => i.source) ?? [],
+              declined: result.declined !== null,
+              web_search_requests: result.usage.web_search_requests,
+              tool_calls: result.tool_calls,
+            },
+          });
           // coach_traces too. The JSON path gets this for free because it
           // returns through respond(), which calls recordTrace; the SSE path
-          // returns its own Response and so recorded nothing here. Fast mode
-          // is the DEFAULT tier, so leaving it out meant the token-cost table
-          // was quietly missing most parses.
+          // returns its own Response.
           trace.status = "success";
           trace.http_status = 200;
           trace.input_tokens = result.usage.input_tokens || null;
@@ -1925,7 +1950,21 @@ async function handleParseMealRequest(args: {
           send("error", { message: String(e).slice(0, 200) });
           // The stream still cost tokens and still has to appear in the cost
           // table, so record the failure rather than dropping it silently.
-          trace.status = "error";
+          // usage is unavailable on this path (the throw may predate it), so
+          // the row carries zeros and the error - it marks the attempt as
+          // having happened rather than inventing numbers.
+          void logTokenUsage(admin, {
+            pipeline: "parse_meal",
+            provider: "anthropic",
+            model: PARSE_MEAL_MODEL,
+            input_tokens: 0,
+            output_tokens: 0,
+            latency_ms: Date.now() - startedAtMs,
+            status: "error",
+            error_message: String(e).slice(0, 300),
+            metadata: { user_id: userId, mode: "parse_meal", streamed: true },
+          });
+          trace.status = "internal_error";
           trace.http_status = 200;
           trace.error_message = String(e).slice(0, 300);
           try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
