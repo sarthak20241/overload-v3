@@ -3375,6 +3375,22 @@ export async function runParseMeal(
   // wordsOverlap because extract deliberately corrects spelling ("panner" ->
   // "paneer") and canonicalises ("chai" -> "milk tea"), so an exact match would
   // report disagreement where the two actually agree.
+  // A REFUSAL is the most important thing to record, and it used to record
+  // nothing: the shadow block sat inside `if (laneA && ...)`, so the only
+  // traces written were the rare ones where the grammar produced something.
+  // Measured 2026-09-01 against real production inputs, Lane A parsed 1 of 8 -
+  // real logs are long multi-food sentences ("Breakfast was X, 25 grams, and
+  // 20 grams of Y") and the grammar refuses clause starters, spelled-out
+  // numbers and >4-word names by design. Coverage, not just agreement, is what
+  // decides whether Lane A is ever worth switching on, so log the refusal too.
+  if (!laneA && grammarMode !== "off" && !hasPrevious && extractRes) {
+    steps.push({
+      iter: 0,
+      tool: "lane_a_shadow",
+      input: { refused: true, items_extract: extItems.length },
+      result: { agree: false, refused: true },
+    });
+  }
   if (laneA && grammarMode === "shadow" && extractRes) {
     const sameCount = laneA.length === extItems.length;
     const sameNames = sameCount &&
@@ -3387,7 +3403,11 @@ export async function runParseMeal(
       iter: 0,
       tool: "lane_a_shadow",
       input: { same_count: sameCount, same_names: sameNames, same_amounts: sameAmounts },
-      result: (sameNames && sameAmounts) ? { agree: true } : {
+      // Both readings ALWAYS, agreement included. Discarding them on agreement
+      // meant a later catalog change could not be checked against what the two
+      // lanes actually said at the time - only against a boolean.
+      result: {
+        agree: sameNames && sameAmounts,
         grammar: laneA.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
         extract: extItems.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
       },
