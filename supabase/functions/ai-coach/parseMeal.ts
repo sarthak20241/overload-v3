@@ -26,6 +26,7 @@
 
 import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
+import { cacheKey, type PreciseCacheRow } from "./preciseCache.ts";
 import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -774,6 +775,15 @@ export interface ParseMealDeps {
   // Tier 2b: FatSecret lookup. Optional - absent when no credentials are
   // configured, which is how the source stays behind a flag.
   searchFatSecret?(query: string): Promise<CandidateFood[]>;
+
+  /** Super only: read the precise cache before spending a web lookup. Optional
+   *  in the same way searchFatSecret is - absent means the source is simply not
+   *  available, and every call site guards on it, so the eval harness and any
+   *  deploy without the migration degrade silently instead of throwing.
+   *  Structural on purpose (no supabase-js types); index.ts binds it to the
+   *  SERVICE-ROLE client, because 0109 grants precise_cache to service_role
+   *  only and a user-scoped read would return nothing. */
+  preciseCacheGet?(key: string): Promise<PreciseCacheRow | null>;
   // Cross-encoder rerank over the merged candidate docs. Optional - absent
   // when unconfigured; the merge order stands. See rerank.ts.
   rerankCandidates?(query: string, docs: string[]): Promise<{
@@ -1852,6 +1862,36 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
   return derived.length > 0 ? { ...c, servings: [...c.servings, ...derived] } : c;
 }
 
+/**
+ * A cache row as a candidate the rest of the pipeline can eat.
+ *
+ * `food_id: null` is deliberate. The row is not in `foods` (7d's nightly job
+ * decides that separately), so handing out an id would send verifyItems to the
+ * catalog to re-read numbers that are not there and blank the line. Same reason
+ * FatSecret rows carry a null id.
+ *
+ * `source: "catalog"` is a lie of convenience and worth naming: CandidateFood's
+ * source union is closed and is what the accept gate and the decide payload key
+ * on. A cache hit IS catalog-grade - it is the verified answer we paid to learn
+ * - and widening the union to "precise" would mean touching every switch that
+ * reads it. The trace step below is where a cache hit is actually visible.
+ */
+export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
+  return {
+    food_id: null,
+    name: row.display_name,
+    brand: row.brand,
+    base_unit: row.base_unit === "ml" ? "ml" : "g",
+    kcal: row.kcal,
+    protein_g: row.protein_g,
+    carb_g: row.carb_g,
+    fat_g: row.fat_g,
+    fiber_g: row.fiber_g,
+    servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
+    source: "catalog",
+  };
+}
+
 async function resolveOneItem(
   deps: ParseMealDeps,
   item: ExtractedItem,
@@ -1864,6 +1904,39 @@ async function resolveOneItem(
    *  429 risk). The accept gate does the judging instead. */
   lean = false,
 ): Promise<ResolvedItem> {
+  // ── Precise-cache short-circuit (Phase 7b) ────────────────────────────────
+  // Read BEFORE the fan-out, not as another arm of it: the whole point is that
+  // a hit costs no web latency and no web quota. 0109's precise_cache_get()
+  // returns nothing for a row older than its TTL, and that absence IS the
+  // signal to research the food again - staleness is handled in the DB, so
+  // there is no freshness check to forget here.
+  //
+  // Returning early skips the plausibility filter, the reranker, staple
+  // promotion and the 6-row cap. That is safe only because a cached row was
+  // already verified before it was written, and it is the sole candidate, so
+  // there is nothing to rank it against. synthesizeVolumeAnchors still runs -
+  // spoon anchors are derived from the row's own cup serving and a cached row
+  // deserves them as much as a catalog one.
+  if (deps.preciseCacheGet) {
+    const key = cacheKey(item.name, item.brand);
+    const tCache0 = Date.now();
+    const cached = await deps.preciseCacheGet(key).catch(() => null);
+    if (cached) {
+      toolCalls.push("precise_cache_hit");
+      steps.push({
+        iter: 1,
+        tool: "precise_cache_hit",
+        input: { item: item.name, key, ms: Date.now() - tCache0 },
+        result: {
+          name: cached.display_name,
+          verified: cached.verified === true,
+          sources: (cached.evidence ?? []).length,
+        },
+      });
+      return { ...item, candidates: [synthesizeVolumeAnchors(cacheRowToCandidate(cached))] };
+    }
+  }
+
   // Query ladder: full name, brand-qualified, then progressively fewer words
   // (the 0079 search requires EVERY word to match, so an over-specified name
   // like "almonds raw whole" returns nothing while "almonds" hits). A

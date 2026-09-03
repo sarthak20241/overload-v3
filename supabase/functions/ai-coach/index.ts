@@ -12,6 +12,7 @@ import {
   runParseMeal,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
+import type { PreciseCacheRow } from "./preciseCache.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
@@ -96,6 +97,10 @@ const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "fals
 const PARSE_FAST_GRAMMAR = (Deno.env.get("PARSE_FAST_GRAMMAR") ?? "shadow") as "off" | "shadow" | "on";
 // Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
 // server never routes anyone to fast on its own.
+// Phase 7b: the precise-cache read short-circuit. Default ON, env kill-switch
+// only, matching PARSE_MEAL_WEB_SEARCH - a cache that cannot be turned off
+// without a redeploy is a cache that will be redeployed at the worst moment.
+const PARSE_PRECISE_CACHE = Deno.env.get("PARSE_PRECISE_CACHE") !== "false";
 const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
@@ -1592,6 +1597,22 @@ function makeParseDeps(
           fetch,
           (m) => console.log(m),
         )
+      : undefined,
+    // Service role, not userClient: 0109 revokes precise_cache from anon and
+    // authenticated and grants precise_cache_get to service_role alone, so a
+    // user-scoped call returns nothing rather than erroring - a silent miss on
+    // every lookup. Same reasoning as backfillOffFood above.
+    preciseCacheGet: PARSE_PRECISE_CACHE
+      ? async (key: string) => {
+        const { data, error } = await admin
+          .rpc("precise_cache_get", { p_key: key })
+          .maybeSingle();
+        if (error) {
+          console.log(`[parse_meal] precise_cache_get failed: ${error.message}`);
+          return null;
+        }
+        return (data as PreciseCacheRow | null) ?? null;
+      }
       : undefined,
     skipDecideMode: PARSE_SKIP_DECIDE,
     fastGrammarMode: PARSE_FAST_GRAMMAR,
