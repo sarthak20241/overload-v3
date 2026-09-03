@@ -42,7 +42,14 @@ export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
  *  be persisted (their terms allow serving a request, not replicating the DB),
  *  but decide selects candidates BY id, so they still need to be addressable.
  *  These ids are resolved from the in-memory candidate map and stripped before
- *  anything reaches meal_entries, whose food_id is a real uuid FK. */
+ *  anything reaches meal_entries, whose food_id is a real uuid FK.
+ *
+ *  Super's cache and web candidates use the same mechanism for the same reason:
+ *  they are real numbers that are not (yet) catalog rows. Without an id decide
+ *  cannot select them, so it silently estimates instead - measured on the
+ *  canonical case, where a correct 197 kcal/100 g web answer was resolved and
+ *  then ignored because it was unaddressable. 7d's nightly job is what turns a
+ *  verified cache row into a real, persistable food_id. */
 export const EPHEMERAL_ID_PREFIX = "fs:";
 
 export function isEphemeralId(id: string | null): boolean {
@@ -1513,6 +1520,25 @@ export interface SuperFinding {
  * handling, both of which are load-bearing and already proven on the challenge
  * path.
  */
+/** Which provider a url actually is. FatSecret and Open Food Facts are named
+ *  because independenceKey treats them differently from an anonymous site:
+ *  FatSecret can never verify a row (their terms), and all OFF pages are one
+ *  source however many are read. Anything else is an ordinary web source. */
+function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
+  if (!ref) return "web";
+  let host = "";
+  try {
+    host = new URL(ref).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "web";
+  }
+  if (host === "fatsecret.com" || host.endsWith(".fatsecret.com") || /(^|\.)fatsecret\.[a-z.]+$/.test(host)) {
+    return "fatsecret";
+  }
+  if (host === "openfoodfacts.org" || host.endsWith(".openfoodfacts.org")) return "off";
+  return "web";
+}
+
 export async function runSuperLookup(
   deps: ParseMealDeps,
   items: ExtractedItem[],
@@ -1533,6 +1559,12 @@ export async function runSuperLookup(
     "A DISH (no wrapper: chole bhature, paneer bhurji, a restaurant plate): there is " +
     "no label and you must not wait for one. Use reputable nutrition databases or " +
     'published analyses for a TYPICAL preparation, and say so in source_note.\n' +
+    "Give ALL FOUR of kcal, protein_g, carb_g and fat_g for every reading. A panel " +
+    "that lists energy without macros is half a row and the app cannot log it, so " +
+    "read the full panel or find a source that shows one.\n" +
+    "FatSecret pages do not count toward agreement, so a FatSecret listing alone " +
+    "leaves a food unconfirmed. Report it if it is what you have, but look for a " +
+    "brand site or another database as well.\n" +
     "Report a food as found=false when nothing trustworthy surfaced. One source is " +
     "still worth reporting: the app decides what one source is worth. Never invent a " +
     "url and never invent numbers. Speed matters: no prose.";
@@ -1577,17 +1609,29 @@ export async function runSuperLookup(
       for (const raw of Array.isArray(o.readings) ? o.readings : []) {
         const p = (raw as Record<string, any>)?.per_100;
         if (!p) continue;
-        const nums = [p.kcal, p.protein_g, p.carb_g, p.fat_g];
-        if (!nums.every((n: unknown) => typeof n === "number" && Number.isFinite(n) && (n as number) >= 0)) continue;
+        const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+        // kcal ALONE is enough to keep a reading. Measured on the canonical case:
+        // the model returned the right answer (190 kcal for Milky Mist low fat
+        // paneer) with protein/carb/fat null, and requiring all four threw the
+        // whole finding away. Verification is kcal-based (meetsVerificationBar
+        // takes one number), so a kcal-only reading is real evidence; the stored
+        // macros come from whichever readings carry them.
+        if (!ok(p.kcal)) continue;
+        const ref = typeof raw.url === "string" && raw.url.trim() ? raw.url.trim().slice(0, 500) : null;
         readings.push({
-          source: "web",
-          ref: typeof raw.url === "string" && raw.url.trim() ? raw.url.trim().slice(0, 500) : null,
+          // Classify by HOST, never blanket "web". A fatsecret.co.in page is a
+          // FatSecret reading, and independenceKey excludes FatSecret outright -
+          // their terms do not allow replicating the database, and 7d would
+          // otherwise promote a row into our catalog on their evidence alone.
+          // Labelling it "web" would have quietly walked through that line.
+          source: providerFromRef(ref),
+          ref,
           per_100: {
             kcal: p.kcal,
-            protein_g: p.protein_g,
-            carb_g: p.carb_g,
-            fat_g: p.fat_g,
-            fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) && p.fiber_g >= 0 ? p.fiber_g : null,
+            protein_g: ok(p.protein_g) ? p.protein_g : 0,
+            carb_g: ok(p.carb_g) ? p.carb_g : 0,
+            fat_g: ok(p.fat_g) ? p.fat_g : 0,
+            fiber_g: ok(p.fiber_g) ? p.fiber_g : null,
           },
         });
       }
@@ -2134,17 +2178,30 @@ export async function superLookupOne(
   const finding = found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
   if (!finding || finding.readings.length === 0) return null;
 
-  const mid = (pick: (r: SourceReading) => number): number => {
-    const xs = finding.readings.map(pick).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
-    if (xs.length === 0) return 0;
-    const h = xs.length >> 1;
-    return xs.length % 2 ? xs[h] : round1((xs[h - 1] + xs[h]) / 2);
+  const median = (xs: number[]): number => {
+    const s = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    if (s.length === 0) return 0;
+    const h = s.length >> 1;
+    return s.length % 2 ? s[h] : round1((s[h - 1] + s[h]) / 2);
   };
+  // kcal from EVERY reading; macros only from readings that actually carried
+  // them. A source that reported kcal alone still votes on energy and still
+  // counts toward verification, but it must not drag protein toward zero by
+  // being counted as a reading of "0 g protein".
+  const withMacros = finding.readings.filter((r) =>
+    r.per_100.protein_g > 0 || r.per_100.carb_g > 0 || r.per_100.fat_g > 0
+  );
+  if (withMacros.length === 0) {
+    // Energy with no composition is not a food row: it would log 190 kcal of
+    // paneer with 0 g protein, which is worse than admitting we do not know.
+    deps.log?.(`[parse_meal] super lookup found kcal but no macros for "${item.name}"`);
+    return null;
+  }
   const per100 = {
-    kcal: mid((r) => r.per_100.kcal),
-    protein_g: mid((r) => r.per_100.protein_g),
-    carb_g: mid((r) => r.per_100.carb_g),
-    fat_g: mid((r) => r.per_100.fat_g),
+    kcal: median(finding.readings.map((r) => r.per_100.kcal)),
+    protein_g: median(withMacros.map((r) => r.per_100.protein_g)),
+    carb_g: median(withMacros.map((r) => r.per_100.carb_g)),
+    fat_g: median(withMacros.map((r) => r.per_100.fat_g)),
   };
   // Physics before belief: sources agreeing on an impossible number is still an
   // impossible number, and one that would then be cached and promoted.
@@ -2153,10 +2210,10 @@ export async function superLookupOne(
     deps.log?.(`[parse_meal] super lookup implausible for "${item.name}": ${bad}`);
     return null;
   }
-  const fibers = finding.readings
+  const fibers = withMacros
     .map((r) => r.per_100.fiber_g)
     .filter((n): n is number => typeof n === "number" && n >= 0);
-  const fiber_g = fibers.length > 0 ? mid((r) => r.per_100.fiber_g ?? 0) : null;
+  const fiber_g = fibers.length > 0 ? median(fibers) : null;
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
   const servings = finding.serving_label && finding.serving_grams
@@ -2182,7 +2239,7 @@ export async function superLookupOne(
   }
 
   return {
-    food_id: null,
+    food_id: `${EPHEMERAL_ID_PREFIX}web_${cacheKey(item.name, item.brand)}`,
     name: display,
     brand: item.brand,
     base_unit: "g",
@@ -2195,7 +2252,10 @@ export async function superLookupOne(
 
 export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
   return {
-    food_id: null,
+    // Ephemeral, not the row's real uuid: precise_cache is not `foods`, so the
+    // id must never reach meal_entries' FK. Addressable for decide, stripped
+    // before logging.
+    food_id: `${EPHEMERAL_ID_PREFIX}pc_${row.cache_key}`,
     name: row.display_name,
     brand: row.brand,
     base_unit: row.base_unit === "ml" ? "ml" : "g",

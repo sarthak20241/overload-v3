@@ -5,7 +5,19 @@
 // preciseCache.test.ts already owns the key/freshness/verification rules.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { cacheRowToCandidate } from "./parseMeal.ts";
+import {
+  cacheRowToCandidate,
+  isEphemeralId,
+  type ParsedItem,
+  stripEphemeralIds,
+} from "./parseMeal.ts";
+
+/** Minimal ParsedItem, so the stripper can be exercised on one field. */
+const EMPTY: ParsedItem = {
+  food_id: null, food_name: "x", quantity: 1, serving_label: "g", grams: 1,
+  kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0, fiber_g: null,
+  source: "estimate", assumption: null, confidence: "low",
+};
 import { cacheKey, type PreciseCacheRow } from "./preciseCache.ts";
 
 const row = (over: Partial<PreciseCacheRow> = {}): PreciseCacheRow => ({
@@ -27,11 +39,17 @@ const row = (over: Partial<PreciseCacheRow> = {}): PreciseCacheRow => ({
   ...over,
 });
 
-Deno.test("cache row carries NO food_id", () => {
-  // The row is not in `foods` - 7d's nightly job decides that separately. An id
-  // here would send verifyItems to the catalog to re-read numbers that are not
-  // there, and blank the line. Same reason FatSecret candidates are id-less.
-  assertEquals(cacheRowToCandidate(row()).food_id, null);
+Deno.test("cache row carries an EPHEMERAL id, never a real one", () => {
+  // It needs SOME id or decide cannot select it and silently estimates instead
+  // - measured on the canonical case, where a correct web answer was resolved
+  // and then ignored for being unaddressable. But precise_cache is not `foods`,
+  // so the id must be ephemeral and get stripped before it reaches
+  // meal_entries' uuid FK. Same mechanism FatSecret uses.
+  const id = cacheRowToCandidate(row()).food_id;
+  assertEquals(isEphemeralId(id), true);
+  assertEquals(id?.startsWith("fs:"), true);
+  // And it must round-trip through the stripper as null, never as a fake uuid.
+  assertEquals(stripEphemeralIds([{ ...EMPTY, food_id: id }])[0].food_id, null);
 });
 
 Deno.test("cache row keeps its own macros and identity", () => {
