@@ -1360,15 +1360,29 @@ const SUPER_LOOKUP_TOOL = {
                   },
                   per_100: {
                     type: "object",
-                    description: "Macros per 100 g (or 100 ml for liquids) from THIS source.",
+                    description:
+                      "Macros per 100 g (or 100 ml for liquids) from THIS source. " +
+                      "Use null for anything this page does not state. Do NOT write 0 for " +
+                      "a value that is simply missing: 0 is a claim that the food contains " +
+                      "none, and cooking oil really does have 0 g protein.",
                     properties: {
                       kcal: { type: "number" },
-                      protein_g: { type: "number" },
-                      carb_g: { type: "number" },
-                      fat_g: { type: "number" },
+                      // Nullable, and that is the whole fix. These were required
+                      // numbers, so a page that printed no protein left the model
+                      // no way to say so - it had to write something, and it wrote
+                      // 0. Three sources for Cadbury Gems came back [0, 3.6, 0]
+                      // where two of the zeros meant "not stated", and the median
+                      // dutifully returned 0 g protein for milk chocolate.
+                      // A spurious zero can only ever drag a median DOWN, which is
+                      // why measured protein leaned low rather than being noisy.
+                      protein_g: { type: ["number", "null"] },
+                      carb_g: { type: ["number", "null"] },
+                      fat_g: { type: ["number", "null"] },
                       fiber_g: { type: ["number", "null"] },
                     },
-                    required: ["kcal", "protein_g", "carb_g", "fat_g"],
+                    // kcal only. A reading with no energy is not a reading; a
+                    // reading with no protein is a reading with no protein.
+                    required: ["kcal"],
                   },
                 },
                 required: ["per_100"],
@@ -2246,6 +2260,123 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  * `verified` is what 7d's promotion job gates on, so an unverified row simply
  * never graduates into the catalog.
  */
+/**
+ * Turn what several sources said into one answer, or say why we cannot.
+ *
+ * EACH MACRO IS DECIDED SEPARATELY, by the sources that actually stated THAT
+ * macro. The version this replaced filtered whole readings - it kept a reading
+ * if ANY of its three macros was above zero, and then let all three of them
+ * vote. So a page that printed carbs and fat but no protein still cast a
+ * "0 g protein" vote. Cadbury Gems came back [0, 3.6, 0] from three sources,
+ * two of those zeros meaning "the page did not say", and the median returned
+ * 0 g protein for milk chocolate.
+ *
+ * Nothing downstream caught it, and it is worth knowing why: implausiblePer100
+ * only rejects negatives, impossible totals and ceilings, and checkAtwater
+ * passed at 2.5% because 80 g carb and 18 g fat already account for 470 kcal
+ * without any protein at all. A wrong number that is internally consistent
+ * survives every guard we have.
+ *
+ * A spurious zero can only ever pull a median DOWN, never up, which is why
+ * measured protein leaned low rather than being noisy in both directions.
+ *
+ * A STATED zero still counts. Oil really is 0 g protein and 0 g carb, so
+ * "treat 0 as missing" would be wrong for exactly the foods whose zero is real.
+ * That distinction only exists because the tool schema lets a reading say null.
+ *
+ * Exported for tests: superLookupOne itself calls the network, so this is the
+ * only place the reconciliation maths can be checked without mocking HTTP.
+ */
+export function reconcileReadings(
+  readings: SourceReading[],
+): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null } | { reason: string } {
+  if (readings.length === 0) return { reason: "no readings" };
+
+  const median = (xs: number[]): number => {
+    const s = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    if (s.length === 0) return 0;
+    const h = s.length >> 1;
+    return s.length % 2 ? s[h] : round1((s[h - 1] + s[h]) / 2);
+  };
+
+  // TWO different failures, and fixing only one makes things worse. Measured:
+  // per-macro medians alone took protein bias from -4% to -16% across three runs.
+  //
+  //   (a) a reading with NO COMPOSITION AT ALL. FatSecret returned Cadbury Gems
+  //       as 469 kcal with 0 protein, 0 carb, 0 fat. That is not a panel saying
+  //       the food is empty, it is a page with no panel on it. Counting its
+  //       zeros put protein at median([0, 3.6]) = 1.8 - exactly half, which is
+  //       the fingerprint this left in three consecutive runs.
+  //   (b) a reading that HAS a panel but omits one macro, which is what null is
+  //       for and what the per-macro pools below handle.
+  //
+  // So drop (a) whole, then handle (b) per macro. Oil survives: 0 protein, 0
+  // carb, 100 fat has real composition, so its zeros are kept and stay zero.
+  //
+  // WHAT MAKES AN ALL-ZERO PANEL WRONG IS THE CALORIES BESIDE IT, not the zeros.
+  // Calories come from macros, so 469 kcal with 0/0/0 contradicts itself and the
+  // page plainly printed no panel. But black coffee, water and a diet drink
+  // really are 0/0/0, and there the zeros are the whole truth - an earlier cut
+  // of this rule threw those away, which would have made Super refuse every
+  // near-zero food. So the drop only applies to a reading that claims real
+  // energy it cannot account for.
+  //
+  // Known exception, accepted: neat spirits carry calories from alcohol, which
+  // is not P/C/F, so a correct 231 kcal / 0 / 0 / 0 vodka panel is dropped here
+  // and Super falls back to an estimate for it. Alcohol is not what this tier is
+  // for, and inventing an ethanol column to rescue it would cost more than it
+  // is worth.
+  const ZERO_PANEL_KCAL_FLOOR = 20;
+  const num = (n: number | null | undefined) =>
+    typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
+  const hasComposition = (r: SourceReading) => {
+    const anyMacro = num(r.per_100.protein_g) + num(r.per_100.carb_g) + num(r.per_100.fat_g) > 0;
+    if (anyMacro) return true;
+    // Nothing but zeros: believe them only if there are no calories to explain.
+    return num(r.per_100.kcal) < ZERO_PANEL_KCAL_FLOOR;
+  };
+  const withPanel = readings.filter(hasComposition);
+  if (withPanel.length === 0) return { reason: "no source stated any composition" };
+
+  const stated = (pick: (r: SourceReading) => number | null | undefined) =>
+    withPanel
+      .map(pick)
+      .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+
+  // Energy from EVERY reading, including one with no panel: a page can quote a
+  // calorie figure without a macro breakdown and still be a real reading of the
+  // energy, and it still counts toward verification, which is kcal-based.
+  const kcals = readings
+    .map((r) => r.per_100.kcal)
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  const proteins = stated((r) => r.per_100.protein_g);
+  const carbs = stated((r) => r.per_100.carb_g);
+  const fats = stated((r) => r.per_100.fat_g);
+
+  // Energy with no composition is not a food row: it would log 190 kcal of
+  // paneer with 0 g protein, which is worse than admitting we do not know.
+  // Checked per macro for the same reason the medians are - a lookup that found
+  // carbs but never found protein knows less than it appears to.
+  if (kcals.length === 0) return { reason: "no source stated energy" };
+  if (proteins.length === 0) return { reason: "no source stated protein" };
+  if (carbs.length === 0) return { reason: "no source stated carbohydrate" };
+  if (fats.length === 0) return { reason: "no source stated fat" };
+
+  const per100: Omit<Per100, "fiber_g"> = {
+    kcal: median(kcals),
+    protein_g: median(proteins),
+    carb_g: median(carbs),
+    fat_g: median(fats),
+  };
+  // Physics before belief: sources agreeing on an impossible number is still an
+  // impossible number, and one that would then be cached and promoted.
+  const bad = implausiblePer100(per100);
+  if (bad) return { reason: bad };
+
+  const fibers = stated((r) => r.per_100.fiber_g);
+  return { per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+}
+
 export async function superLookupOne(
   deps: ParseMealDeps,
   item: ExtractedItem,
@@ -2256,42 +2387,12 @@ export async function superLookupOne(
   const finding = found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
   if (!finding || finding.readings.length === 0) return null;
 
-  const median = (xs: number[]): number => {
-    const s = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
-    if (s.length === 0) return 0;
-    const h = s.length >> 1;
-    return s.length % 2 ? s[h] : round1((s[h - 1] + s[h]) / 2);
-  };
-  // kcal from EVERY reading; macros only from readings that actually carried
-  // them. A source that reported kcal alone still votes on energy and still
-  // counts toward verification, but it must not drag protein toward zero by
-  // being counted as a reading of "0 g protein".
-  const withMacros = finding.readings.filter((r) =>
-    r.per_100.protein_g > 0 || r.per_100.carb_g > 0 || r.per_100.fat_g > 0
-  );
-  if (withMacros.length === 0) {
-    // Energy with no composition is not a food row: it would log 190 kcal of
-    // paneer with 0 g protein, which is worse than admitting we do not know.
-    deps.log?.(`[parse_meal] super lookup found kcal but no macros for "${item.name}"`);
+  const reconciled = reconcileReadings(finding.readings);
+  if ("reason" in reconciled) {
+    deps.log?.(`[parse_meal] super lookup rejected "${item.name}": ${reconciled.reason}`);
     return null;
   }
-  const per100 = {
-    kcal: median(finding.readings.map((r) => r.per_100.kcal)),
-    protein_g: median(withMacros.map((r) => r.per_100.protein_g)),
-    carb_g: median(withMacros.map((r) => r.per_100.carb_g)),
-    fat_g: median(withMacros.map((r) => r.per_100.fat_g)),
-  };
-  // Physics before belief: sources agreeing on an impossible number is still an
-  // impossible number, and one that would then be cached and promoted.
-  const bad = implausiblePer100(per100);
-  if (bad) {
-    deps.log?.(`[parse_meal] super lookup implausible for "${item.name}": ${bad}`);
-    return null;
-  }
-  const fibers = withMacros
-    .map((r) => r.per_100.fiber_g)
-    .filter((n): n is number => typeof n === "number" && n >= 0);
-  const fiber_g = fibers.length > 0 ? median(fibers) : null;
+  const { per100, fiber_g } = reconciled;
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
   // The same evidence, measured the other way. `verified` says whether anyone
