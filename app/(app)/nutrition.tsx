@@ -239,6 +239,13 @@ export default function NutritionScreen() {
    *  and the texts even match. A counter cannot collide with anything, and it
    *  is the same idiom `checkTokenRef` already uses for the double-check. */
   const parseTokenRef = useRef(0);
+  /** Aborts the in-flight streamed parse. Paired with parseTokenRef: the token
+   *  decides who may WRITE to the card, this stops the work for whoever may
+   *  not. Without it a discarded or navigated-away parse still ran the whole
+   *  model call server-side, billed, for a result nobody would ever see. */
+  const parseAbortRef = useRef<AbortController | null>(null);
+  // Unmount is the case a token cannot cover: there is no card left to guard.
+  useEffect(() => () => parseAbortRef.current?.abort(), []);
   useEffect(() => {
     getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
   }, []);
@@ -314,6 +321,9 @@ export default function NutritionScreen() {
     // an unrelated line until the abandoned 5-9s lookup finally settles.
     setChecking(null);
     const token = ++parseTokenRef.current;
+    parseAbortRef.current?.abort();
+    const ac = new AbortController();
+    parseAbortRef.current = ac;
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
@@ -332,7 +342,7 @@ export default function NutritionScreen() {
         setFlow((cur) => (
           cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows } : cur
         ));
-      });
+      }, ac.signal);
     // From here on we are writing to the card. If another parse has started, or
     // the user discarded this one, this result is stale - drop it whole rather
     // than let any branch below (declined, cap, error, review) speak for a
@@ -621,8 +631,10 @@ export default function NutritionScreen() {
     setChecking(null);
     setCardMinimized(false);
     // Discard is reachable mid-parse. Bumping the token orphans whatever is in
-    // flight so it cannot resurrect the card the user just threw away.
+    // flight so it cannot resurrect the card the user just threw away, and the
+    // abort stops that work rather than merely ignoring its answer.
     parseTokenRef.current += 1;
+    parseAbortRef.current?.abort();
     setFlow({ status: 'idle' });
   }, []);
 

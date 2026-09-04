@@ -844,6 +844,14 @@ export interface ParseMealDeps {
    *  correction path simply falls back to the full pipeline. */
   getFoodServings?(foodId: string): Promise<ServingOption[]>;
   fetchFn?: typeof fetch;
+  /** Aborts the model calls when the caller no longer wants the answer.
+   *
+   *  The SSE transport hands this the stream's own cancellation, so a client
+   *  that navigates away or discards the card stops the work rather than just
+   *  stopping its own reading. Without it the edge function ran every
+   *  Anthropic call to completion for nobody: real tokens, real cost, a result
+   *  that was never rendered. */
+  abortSignal?: AbortSignal;
   log?: (msg: string) => void;
 }
 
@@ -2035,6 +2043,12 @@ async function callAnthropicOnce(
   const fetchFn = deps.fetchFn ?? fetch;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), deps.timeoutMs);
+  // The caller's cancellation rides the same controller the timeout uses, so
+  // an abandoned request dies exactly like a timed-out one. Checked first:
+  // a signal that fired between calls must not start another.
+  if (deps.abortSignal?.aborted) controller.abort();
+  const onCallerAbort = () => controller.abort();
+  deps.abortSignal?.addEventListener("abort", onCallerAbort, { once: true });
   try {
     const response = await fetchFn("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -2059,6 +2073,7 @@ async function callAnthropicOnce(
     };
   } finally {
     clearTimeout(timeoutId);
+    deps.abortSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
 
@@ -3707,7 +3722,14 @@ export async function runParseMeal(
   // model to read intent - "And a dosa" parses cleanly as one dosa but MEANS
   // add it to what is already there.
   const grammarMode = deps.fastGrammarMode ?? "off";
-  const laneA = (!hasPrevious && grammarMode !== "off")
+  // fastMode, not just "not a correction". Every comment here calls this
+  // "Fast mode's Lane A", but the gate never checked the tier: with
+  // PARSE_FAST_GRAMMAR=on it would have intercepted ANY first-shot parse whose
+  // text matched the grammar - Thorough-tier requests, and old clients that
+  // never send speed:"fast" - and fed un-normalised names into decide with no
+  // spelling fixes and no "chai" -> "milk tea" canonicalisation. Latent while
+  // the default is "shadow"; a one-line trap for whoever flips the switch.
+  const laneA = (fastMode && grammarMode !== "off")
     ? parseFastGrammar(input.text)
     : null;
   if (laneA) {
@@ -3857,6 +3879,22 @@ export async function runParseMeal(
   // wordsOverlap because extract deliberately corrects spelling ("panner" ->
   // "paneer") and canonicalises ("chai" -> "milk tea"), so an exact match would
   // report disagreement where the two actually agree.
+  // A REFUSAL is the most important thing to record, and it used to record
+  // nothing: the shadow block sat inside `if (laneA && ...)`, so the only
+  // traces written were the rare ones where the grammar produced something.
+  // Measured 2026-09-01 against real production inputs, Lane A parsed 1 of 8 -
+  // real logs are long multi-food sentences ("Breakfast was X, 25 grams, and
+  // 20 grams of Y") and the grammar refuses clause starters, spelled-out
+  // numbers and >4-word names by design. Coverage, not just agreement, is what
+  // decides whether Lane A is ever worth switching on, so log the refusal too.
+  if (!laneA && grammarMode !== "off" && fastMode && extractRes) {
+    steps.push({
+      iter: 0,
+      tool: "lane_a_shadow",
+      input: { refused: true, items_extract: extItems.length },
+      result: { agree: false, refused: true },
+    });
+  }
   if (laneA && grammarMode === "shadow" && extractRes) {
     const sameCount = laneA.length === extItems.length;
     const sameNames = sameCount &&
@@ -3869,7 +3907,11 @@ export async function runParseMeal(
       iter: 0,
       tool: "lane_a_shadow",
       input: { same_count: sameCount, same_names: sameNames, same_amounts: sameAmounts },
-      result: (sameNames && sameAmounts) ? { agree: true } : {
+      // Both readings ALWAYS, agreement included. Discarding them on agreement
+      // meant a later catalog change could not be checked against what the two
+      // lanes actually said at the time - only against a boolean.
+      result: {
+        agree: sameNames && sameAmounts,
         grammar: laneA.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
         extract: extItems.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
       },
