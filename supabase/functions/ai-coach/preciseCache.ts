@@ -51,6 +51,23 @@ export interface Per100 {
   fiber_g?: number | null;
 }
 
+/**
+ * What ONE source said, which is not the same shape as what we conclude.
+ *
+ * A page can print energy and leave protein off the panel entirely, and null is
+ * how that is recorded. It has to be distinguishable from a printed zero: oil
+ * genuinely contains 0 g protein, so "treat 0 as missing" would be wrong for
+ * exactly the foods where the zero is real. Only `kcal` is required - a reading
+ * with no energy is not a reading at all.
+ */
+export interface ReadingPer100 {
+  kcal: number;
+  protein_g: number | null;
+  carb_g: number | null;
+  fat_g: number | null;
+  fiber_g?: number | null;
+}
+
 /** Where a reading came from. 'web' covers anything the web search returned, and
  *  those are told apart by host, not lumped together as one source. */
 export type EvidenceProvider = "off" | "fatsecret" | "catalog" | "web";
@@ -65,7 +82,8 @@ export interface SourceReading {
    *  2026-08-27). Kept on the shape so resolvers can record provenance now and we
    *  are not re-plumbing evidence the day it starts mattering. */
   derived_from?: EvidenceProvider | null;
-  per_100: Per100;
+  /** Reading shape, not row shape: macros may be null where the page was silent. */
+  per_100: ReadingPer100;
 }
 
 /** A cache row as stored (macros flattened, the way the table holds them). */
