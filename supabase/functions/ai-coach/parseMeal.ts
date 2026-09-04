@@ -4202,7 +4202,7 @@ export async function runParseMeal(
         // Per ITEM, not per meal: each food's lookup finishes on its own clock,
         // so a cached item is never held up by a sibling still being searched.
         // accumulate() is passed through so the web_search_requests these calls
-        // spend land in usage, which is what 0112 prices.
+        // spend land in usage, which is what 0113 prices.
         superMode
           ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
           : undefined,
