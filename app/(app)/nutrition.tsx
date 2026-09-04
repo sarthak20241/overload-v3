@@ -37,7 +37,7 @@ import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import { getParseSpeed, setParseSpeed, type ParseSpeed } from '@/lib/parseSpeed';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, parseMealStreaming, logParsedMeal, capNotice, capUpgradeContext,
+  parseMeal, parseMealStreaming, logParsedMeal, sectionsOf, capNotice, capUpgradeContext,
   loadNutritionRange, dateFromYmd,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem,
 } from '@/lib/dietData';
@@ -599,10 +599,28 @@ export default function NutritionScreen() {
     setFlow((f) => (f.status === 'review' ? { ...f, mealType: m, mealTypePicked: true } : f));
   }, []);
 
+  /** Multi-section card: move every line of one group to another section. */
+  const onMoveGroup = useCallback((from: MealType, to: MealType) => {
+    setFlow((f) => {
+      if (f.status !== 'review' || from === to) return f;
+      const items = f.meal.items.map((it) => (it.meal_type === from ? { ...it, meal_type: to } : it));
+      // Keep the meal-level field honest: it is the first line's section.
+      return { ...f, meal: { ...f.meal, items, meal_type: items[0]?.meal_type ?? f.meal.meal_type } };
+    });
+  }, []);
+
   const onAdd = useCallback(async () => {
     if (flow.status !== 'review' || !supabase || adding) return;
     setAdding(true);
-    const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate);
+    // Single-section card: the chip row moves EVERY line to the picked
+    // section, exactly as before. Multi-section card (a message that named
+    // several meals): there is no chip row, each line goes where the user
+    // saw it grouped, and the group headers are how they re-home a group.
+    const multi = sectionsOf(flow.meal).length > 1;
+    const items = multi
+      ? flow.meal.items
+      : flow.meal.items.map((it) => ({ ...it, meal_type: flow.mealType }));
+    const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType, items }, viewDate);
     setAdding(false);
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
@@ -827,6 +845,7 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' ? flow.message : null
               }
               onMealTypeChange={onMealTypeChange}
+              onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
               proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
               onAcceptProposal={() => setFlow((f) => (
