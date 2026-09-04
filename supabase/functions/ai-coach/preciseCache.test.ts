@@ -4,7 +4,7 @@
 // silent: serving a number that has aged out, and calling something "verified"
 // on the strength of one source that answered twice.
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
 import {
   cacheKey,
   independenceKey,
@@ -205,4 +205,41 @@ Deno.test("spread counts sources verification is not allowed to count", () => {
   ];
   assertEquals(meetsVerificationBar(300, evidence).verified, false);
   assertEquals(Math.round((kcalSpread(evidence) ?? 0) * 100), 33);
+});
+
+// ── Non-ASCII names must not all collide on one row ────────────────────────
+// Flagged by CodeRabbit on PR #139. The normaliser keeps only [a-z0-9], so a
+// name written entirely outside ASCII collapsed to "" and every such food shared
+// a single cache row - the expensive failure, since a false hit serves one food's
+// macros for another.
+
+Deno.test("a name with no ASCII characters still gets a key", () => {
+  const k = cacheKey("पनीर");
+  assertNotEquals(k, "");
+  assertEquals(k.startsWith("u:"), true, k);
+});
+
+Deno.test("two different non-ASCII names do not collide", () => {
+  assertNotEquals(cacheKey("पनीर"), cacheKey("豆腐"));
+});
+
+Deno.test("the fallback is stable for the same input", () => {
+  assertEquals(cacheKey("豆腐"), cacheKey("豆腐"));
+});
+
+Deno.test("brand still separates two identical non-ASCII names", () => {
+  assertNotEquals(cacheKey("पनीर", "अमूल"), cacheKey("पनीर", "मदर डेयरी"));
+});
+
+Deno.test("a name with ANY ascii keeps the normal key, not the fallback", () => {
+  // Mixed input must not silently switch encodings - only a total collapse does.
+  const k = cacheKey("पनीर paneer", "Amul");
+  assertEquals(k, "amul|paneer");
+});
+
+Deno.test("the fallback key stays bounded for a pasted paragraph", () => {
+  // cache_key is indexed; a long paste must not become the index entry.
+  const k = cacheKey("字".repeat(500));
+  assertEquals(k.startsWith("u:"), true);
+  assertEquals(k.length < 900, true, `key was ${k.length} chars`);
 });

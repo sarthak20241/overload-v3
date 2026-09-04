@@ -142,7 +142,24 @@ export function cacheKey(name: string, brand?: string | null): string {
       .trim();
   const n = norm(name ?? "");
   const b = norm(brand ?? "");
-  return b ? `${b}|${n}` : n;
+  if (n || b) return b ? `${b}|${n}` : n;
+
+  // NOTHING SURVIVED NORMALISATION, which happens for a name written entirely
+  // outside ASCII - "पनीर", "豆腐". The normaliser keeps only [a-z0-9], so those
+  // collapse to the empty string, and every one of them would then share the
+  // single cache row keyed "". That is the false hit this file's own header
+  // calls the expensive kind: a miss costs a lookup, a hit costs correctness,
+  // and here paneer would be served tofu's macros.
+  //
+  // So fall back to the code points, which are stable, distinct per input, and
+  // still a plain ASCII key. Prefixed `u:` so it can never collide with a
+  // normalised key, and capped because cache_key is an indexed column and a
+  // pasted paragraph should not become the index entry.
+  const raw = `${brand ?? ""} ${name ?? ""}`.trim().slice(0, 120);
+  const points = Array.from(raw)
+    .map((c) => (c.codePointAt(0) ?? 0).toString(36))
+    .join("-");
+  return `u:${points}`;
 }
 
 /** Is this row still worth serving? Anything else must trigger a fresh lookup. */

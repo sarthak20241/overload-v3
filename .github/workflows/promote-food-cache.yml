@@ -75,10 +75,16 @@ jobs:
           LIMIT: ${{ github.event.inputs.limit || '200' }}
         run: |
           set -eo pipefail
-          ARGS="--limit=${LIMIT}"
-          if [ "${DRY_RUN}" = "true" ]; then ARGS="${ARGS} --dry-run"; fi
+          # An ARRAY, and unquoted "${ARGS}" is why. `limit` is free text typed
+          # into the Actions UI, so a value of `200 --dry-run` used to word-split
+          # into a second flag and turn a real promotion run into a dry run - the
+          # failure being silent and in the safe direction is what makes it easy
+          # to miss. Quoted element-wise expansion keeps each argument whole, so
+          # that value now reaches the script as one nonsense --limit it rejects.
+          ARGS=("--limit=${LIMIT}")
+          if [ "${DRY_RUN}" = "true" ]; then ARGS+=("--dry-run"); fi
           # --node-modules-dir=none: the repo root carries the React Native
           # node_modules, and Deno otherwise tries to resolve supabase-js's npm
           # dependencies out of it and fails. Nothing here wants a node_modules.
           deno run --node-modules-dir=none --allow-env --allow-net \
-            tools/promote-food-cache/run.ts ${ARGS}
+            tools/promote-food-cache/run.ts "${ARGS[@]}"
