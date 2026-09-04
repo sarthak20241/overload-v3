@@ -307,6 +307,18 @@ export function ParsedMealCard({
                     {it.food_name}
                     <Text style={s.serving}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text>
                   </Text>
+                  {/* Precise only, and only when two INDEPENDENT sources landed
+                      on the same energy. It sits where the provenance chip goes
+                      because a verified line comes back as 'catalog', which
+                      prints no chip - so this fills a slot rather than fighting
+                      one. Deliberately narrow: it claims agreement, not
+                      correctness, and nothing else in the app may set it. */}
+                  {it.verified && (
+                    <View style={s.verifiedChip}>
+                      <Feather name="check" size={9} color={C.accentText} />
+                      <Text style={s.verifiedText}>VERIFIED</Text>
+                    </View>
+                  )}
                   {prov && <Text style={s.provChip}>{prov}</Text>}
                   {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
                   {onRemoveItem && meal.items.length > 1 && (
@@ -624,6 +636,11 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     provChip: {
       fontSize: 10, color: C.textMuted, fontWeight: FontWeight.medium,
       letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase',
+    },
+    verifiedChip: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+    verifiedText: {
+      fontSize: 9, color: C.accentText, fontWeight: FontWeight.semibold,
+      letterSpacing: LetterSpacing.eyebrow,
     },
     macros: { flexDirection: 'row', gap: Spacing.md, marginTop: 5 },
     macroNum: { fontSize: 11, fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'] },
