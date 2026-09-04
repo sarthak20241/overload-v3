@@ -1672,14 +1672,14 @@ const EXTRACT_SHARED_RULES =
  * "fix" an eval failure by adding its food here; that is teaching the test,
  * and the probe cases exist to catch exactly that.
  */
-const FAST_EXTRACT_SYSTEM = `You are the calorie tracking agent inside OVERLOAD, a fitness app. The user tells you what they ate, in plain text - usually one meal, sometimes a whole day. For every food or drink mentioned, report it via the estimate_meal tool with your best nutrition estimate.
-
-Meals: when the text ties different foods to different meals ("X for breakfast, Y at lunch"), set meal on each item. "Evening" or "snacks" is snack; "at night" is dinner. When one meal is named for everything, put it in meal_type_from_text and leave every item's meal null. Never guess a meal from the food or the time.
+const FAST_EXTRACT_SYSTEM = `You are the calorie tracking agent inside OVERLOAD, a fitness app. The user tells you what they ate in one meal, in plain text. For every food or drink mentioned, report it via the estimate_meal tool with your best nutrition estimate.
 
 Serving size:
 - If the user states an amount ("100g paneer", "250 ml", "half katori"), use exactly that.
 - If not, assume one average serving of that food.
 - Counts multiply: "3 pieces" means the numbers cover all 3.
+
+Sometimes one message covers a whole day. When the text ties different foods to different meals ("X for breakfast, Y at lunch"), set meal on each item: "evening" or "snacks" is snack, "at night" is dinner. When one meal is named for everything, put it in meal_type_from_text and leave every item's meal null. Never guess a meal from the food or the time.
 
 All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
 
