@@ -159,9 +159,21 @@ async function refreshFood(foodId: string, cand: PromotionCandidate, agreeing: s
 }
 
 async function main() {
+  // UNPROMOTED ROWS FIRST, and the LIMIT is why it matters. The view carries
+  // both kinds - rows never promoted, and promoted rows kept in scope so a
+  // re-verification can refresh the catalog copy. Re-verifying bumps
+  // last_verified_at, so promoted rows keep floating to the top of a
+  // recency-only sort. Once there are more than LIMIT of them, every run fills
+  // its budget with rows that answer "already-current" and a row that has never
+  // reached the catalog is never even looked at. Nothing surfaces that: the run
+  // reports success, having promoted nothing.
+  //
+  // promoted_food_id is null for unpromoted rows, so nullsFirst puts the work
+  // that actually publishes ahead of the work that merely re-checks.
   const { data, error } = await db
     .from("precise_cache_promotable")
     .select("*")
+    .order("promoted_food_id", { ascending: true, nullsFirst: true })
     .order("last_verified_at", { ascending: false })
     .limit(LIMIT);
   if (error) throw new Error(`reading precise_cache_promotable failed: ${error.message}`);

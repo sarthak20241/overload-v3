@@ -2411,9 +2411,28 @@ async function resolveOneItem(
   // there is no freshness check to forget here.
   //
   // Returning early skips the plausibility filter, the reranker, staple
-  // promotion and the 6-row cap. That is safe only because a cached row was
-  // already verified before it was written, and it is the sole candidate, so
-  // there is nothing to rank it against. synthesizeVolumeAnchors still runs -
+  // promotion and the 6-row cap. This used to claim that was safe "because a
+  // cached row was already verified before it was written". That was FALSE and
+  // contradicted superLookupOne's own header a few hundred lines up, which says
+  // the row is written whatever the verdict - `verified` gates promotion into
+  // the catalog, never the write and never the read.
+  //
+  // What actually makes it safe is narrower: reconcileReadings ran
+  // implausiblePer100 before the row was stored, so a cached row has passed
+  // physics even when unverified, and re-running the filter here would only ask
+  // the same question again. It is the sole candidate, so there is nothing to
+  // rank it against.
+  //
+  // What that does NOT cover, left open deliberately: an unverified row is
+  // served ahead of the catalog ladder for the full TTL. CodeRabbit proposed
+  // gating hits on verified === true. Measured, only 11-13 of 16 probe rows come
+  // back verified, and the Milky Mist paneer row - the correct 190 kcal answer -
+  // is verified: false because one of its two sources was FatSecret, which is
+  // excluded for LICENSING rather than quality. Gating on the flag would throw
+  // away right answers to enforce a legal rule that has nothing to do with
+  // whether the number is good. Revisit when a source-quality signal exists that
+  // is not doing double duty as a licence check.
+  // synthesizeVolumeAnchors still runs -
   // spoon anchors are derived from the row's own cup serving and a cached row
   // deserves them as much as a catalog one.
   if (deps.preciseCacheGet) {
