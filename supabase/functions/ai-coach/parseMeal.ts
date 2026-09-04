@@ -2249,9 +2249,29 @@ export function reconcileReadings(
   //
   // So drop (a) whole, then handle (b) per macro. Oil survives: 0 protein, 0
   // carb, 100 fat has real composition, so its zeros are kept and stay zero.
-  const hasComposition = (r: SourceReading) =>
-    [r.per_100.protein_g, r.per_100.carb_g, r.per_100.fat_g]
-      .some((n) => typeof n === "number" && Number.isFinite(n) && n > 0);
+  //
+  // WHAT MAKES AN ALL-ZERO PANEL WRONG IS THE CALORIES BESIDE IT, not the zeros.
+  // Calories come from macros, so 469 kcal with 0/0/0 contradicts itself and the
+  // page plainly printed no panel. But black coffee, water and a diet drink
+  // really are 0/0/0, and there the zeros are the whole truth - an earlier cut
+  // of this rule threw those away, which would have made Super refuse every
+  // near-zero food. So the drop only applies to a reading that claims real
+  // energy it cannot account for.
+  //
+  // Known exception, accepted: neat spirits carry calories from alcohol, which
+  // is not P/C/F, so a correct 231 kcal / 0 / 0 / 0 vodka panel is dropped here
+  // and Super falls back to an estimate for it. Alcohol is not what this tier is
+  // for, and inventing an ethanol column to rescue it would cost more than it
+  // is worth.
+  const ZERO_PANEL_KCAL_FLOOR = 20;
+  const num = (n: number | null | undefined) =>
+    typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
+  const hasComposition = (r: SourceReading) => {
+    const anyMacro = num(r.per_100.protein_g) + num(r.per_100.carb_g) + num(r.per_100.fat_g) > 0;
+    if (anyMacro) return true;
+    // Nothing but zeros: believe them only if there are no calories to explain.
+    return num(r.per_100.kcal) < ZERO_PANEL_KCAL_FLOOR;
+  };
   const withPanel = readings.filter(hasComposition);
   if (withPanel.length === 0) return { reason: "no source stated any composition" };
 

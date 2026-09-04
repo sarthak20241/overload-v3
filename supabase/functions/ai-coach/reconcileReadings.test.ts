@@ -158,3 +158,42 @@ Deno.test("every reading lacking a panel is a refusal, not a plate of zeros", ()
   ]);
   assertObjectMatch(out as Record<string, unknown>, { reason: "no source stated any composition" });
 });
+
+// ── Near-zero foods must survive the no-panel drop ─────────────────────────
+// Sarthak's objection, and it was right: a food can genuinely be close to 0 g
+// protein. What makes an all-zero panel wrong is the CALORIES beside it, not the
+// zeros. These pin that the drop is conditional on energy.
+
+Deno.test("black coffee is really 0/0/0 and keeps its zeros", () => {
+  const out = ok(reconcileReadings([
+    r("https://a.example/coffee", 2, 0, 0, 0),
+    r("https://b.example/coffee", 1, 0, 0, 0),
+  ]));
+  assertObjectMatch(out.per100, { protein_g: 0, carb_g: 0, fat_g: 0 });
+});
+
+Deno.test("a zero-calorie drink survives even beside a page that has a panel", () => {
+  const out = ok(reconcileReadings([
+    r("https://a.example/soda", 0, 0, 0, 0),
+    r("https://b.example/soda", 1, 0, 0.1, 0),
+  ]));
+  assertEquals(out.per100.protein_g, 0);
+});
+
+Deno.test("sugar keeps 0 protein because its carbs are a real panel", () => {
+  const out = ok(reconcileReadings([
+    r("https://a.example/sugar", 400, 0, 100, 0),
+    r("https://b.example/sugar", 399, 0, 99.8, 0),
+  ]));
+  assertObjectMatch(out.per100, { protein_g: 0, carb_g: 99.9 });
+});
+
+Deno.test("but 469 kcal of zeros is still a missing panel, not an empty food", () => {
+  // The distinction the whole rule turns on: calories come from macros, so this
+  // page contradicts itself, while the coffee above does not.
+  const out = ok(reconcileReadings([
+    r("https://www.fatsecret.co.in/...", 469, 0, 0, 0),
+    r("https://clearcals.com/...", 472.3, 3.6, 75.1, 17.5),
+  ]));
+  assertEquals(out.per100.protein_g, 3.6);
+});
