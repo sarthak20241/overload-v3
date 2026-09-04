@@ -210,3 +210,153 @@ Deno.test("no readings means no candidate and no write", () => {
     assertEquals(cap.row, undefined);
   });
 });
+
+// ── The evidence has to LEAVE the lookup ────────────────────────────────────
+// superLookupOne judged the sources and then kept the verdict to itself: the
+// cache row knew, and the candidate handed back to the pipeline did not. So
+// decide stated a number two sources fought over exactly as flatly as one they
+// agreed on, and the client had nothing to badge. These pin the carry.
+
+import {
+  buildDecideSystemPrompt,
+  candidatePayload,
+  type CandidateFood,
+  type ParseMealInput,
+  type ResolvedItem,
+  verifiedForItems,
+} from "./parseMeal.ts";
+
+Deno.test("agreeing sources leave the lookup as verified, spread zero", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([reading("https://a.com/x", 380), reading("https://b.com/y", 400)], cap),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.verified, true);
+    assertEquals(c?.kcal_spread, 0.05);
+    // Same verdict the row got. The candidate and the cache must never be able
+    // to say different things about one lookup.
+    assertEquals(cap.row?.verified, c?.verified);
+  });
+});
+
+Deno.test("disagreeing sources leave the lookup unverified, with the gap", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([reading("https://a.com/x", 190), reading("https://b.com/y", 283)], cap),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.verified, false);
+    assertEquals(Math.round((c?.kcal_spread ?? 0) * 100), 33);
+    assertEquals(cap.row?.verified, false);
+  });
+});
+
+const candidate = (over: Partial<CandidateFood> = {}): CandidateFood => ({
+  food_id: "fs:web_protein bar",
+  name: "Protein Bar",
+  brand: null,
+  base_unit: "g",
+  kcal: 380,
+  protein_g: 20,
+  carb_g: 40,
+  fat_g: 12,
+  fiber_g: null,
+  servings: [],
+  source: "catalog",
+  ...over,
+});
+
+Deno.test("a candidate its sources agreed on says NOTHING to decide", () => {
+  // The payload is cached input tokens on every meal anyone logs. A per-item
+  // "sources agreed" line would pay for itself on none of them, and silence is
+  // already the signal.
+  const p = candidatePayload(candidate({ verified: true, kcal_spread: 0.05 }));
+  assertEquals("sources_disagree_pct" in p, false);
+  // Nor does an untouched catalog row, which was never put through the bar.
+  assertEquals("sources_disagree_pct" in candidatePayload(candidate()), false);
+});
+
+Deno.test("a candidate its sources fought over is flagged to decide", () => {
+  const p = candidatePayload(candidate({ verified: false, kcal_spread: 0.33 }));
+  assertEquals(p.sources_disagree_pct, 33);
+});
+
+Deno.test("the decide prompt tells the model what that flag means", () => {
+  // The flag and the rule that reads it are one mechanism. If the field is ever
+  // renamed and the prompt is not, decide is handed a key it was never told
+  // about and hedges on nothing.
+  const input = {
+    text: "one protein bar",
+    localHour: 9,
+    mealHint: null,
+    recentFoods: [],
+    todayTotals: null,
+    targets: null,
+  } as unknown as ParseMealInput;
+  const prompt = buildDecideSystemPrompt(input);
+  assertEquals(prompt.includes("sources_disagree_pct"), true);
+});
+
+Deno.test("verified rides the food_id to the logged line, then the id goes", () => {
+  // stripEphemeralIds is the last moment the id exists, which is why the stamp
+  // happens there: after it there is no handle back to the candidate at all.
+  const c = candidate({ verified: true });
+  const resolved = [{
+    name: "protein bar", brand: null, quantity: 1, unit: "piece", prep: null,
+    candidates: [c],
+  }] as unknown as ResolvedItem[];
+  const line: ParsedItem = { ...EMPTY, food_id: c.food_id, source: "catalog" };
+  const [out] = stripEphemeralIds([line], verifiedForItems(resolved));
+  assertEquals(out.verified, true);
+  assertEquals(out.food_id, null);
+});
+
+Deno.test("a line no one researched is left unstamped, never stamped false", () => {
+  // Absent means "we never asked", false means "we asked and it failed". A
+  // catalog row that was never put through the bar must not be badged as a
+  // failure, so it must not carry the field at all.
+  const c = candidate({ food_id: "11111111-2222-3333-4444-555555555555" });
+  const resolved = [{
+    name: "roti", brand: null, quantity: 1, unit: "piece", prep: null,
+    candidates: [c],
+  }] as unknown as ResolvedItem[];
+  const [out] = stripEphemeralIds(
+    [{ ...EMPTY, food_id: c.food_id, source: "catalog" }],
+    verifiedForItems(resolved),
+  );
+  assertEquals("verified" in out, false);
+  assertEquals(out.food_id, c.food_id);  // a real uuid survives the strip
+});
+
+Deno.test("a cache hit carries the same evidence a fresh lookup would", () => {
+  // Otherwise the badge and decide's hedging flicker on cache state: contested
+  // for whoever paid for the lookup, plain fact for everyone served the row.
+  const contested = cacheRowToCandidate(row({
+    verified: false,
+    evidence: [
+      { source: "web", ref: "https://a.com", per_100: { kcal: 190, protein_g: 24, carb_g: 4, fat_g: 9 } },
+      { source: "off", ref: null, per_100: { kcal: 283, protein_g: 20, carb_g: 3, fat_g: 22 } },
+    ],
+  }));
+  assertEquals(contested.verified, false);
+  assertEquals(candidatePayload(contested).sources_disagree_pct, 33);
+
+  const agreed = cacheRowToCandidate(row({
+    verified: true,
+    evidence: [
+      { source: "web", ref: "https://a.com", per_100: { kcal: 190, protein_g: 24, carb_g: 4, fat_g: 9 } },
+      { source: "off", ref: null, per_100: { kcal: 192, protein_g: 24, carb_g: 4, fat_g: 9 } },
+    ],
+  }));
+  assertEquals(agreed.verified, true);
+  assertEquals("sources_disagree_pct" in candidatePayload(agreed), false);
+});
+
+Deno.test("a cache row with no stored evidence is unflagged, not contested", () => {
+  // Rows written before evidence was kept, and rows whose readings did not
+  // survive the JSON round trip. Nothing to compare is not a disagreement.
+  const c = cacheRowToCandidate(row({ verified: true, evidence: [] }));
+  assertEquals(c.kcal_spread, undefined);
+  assertEquals("sources_disagree_pct" in candidatePayload(c), false);
+});

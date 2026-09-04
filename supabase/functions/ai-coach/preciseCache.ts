@@ -203,3 +203,39 @@ export function meetsVerificationBar(
   const list = [...agreeing].sort();
   return { verified: list.length >= MIN_INDEPENDENT_SOURCES, agreeing: list };
 }
+
+/**
+ * How far the readings for one food sat apart on energy, as a fraction of the
+ * largest of them: (max - min) / max over every reading's per-100 kcal.
+ *
+ * Max as the denominator on purpose, and not the mean or the stored median: it
+ * is the same reference kcalAgrees() uses, so a spread above VERIFY_TOLERANCE
+ * means exactly "at least one pair here would have failed the agreement test".
+ * One number, one threshold, and no second notion of "close enough" that can
+ * drift out of step with the first.
+ *
+ * Every reading counts, including FatSecret ones and repeats of a single host.
+ * That is deliberately WIDER than independenceKey's rule: independence decides
+ * who may VOUCH for a number, while spread only reports that we could not
+ * reconcile what we read, and a source we are not allowed to promote on can
+ * still be telling us the number is shaky.
+ *
+ * Returns null when there is nothing to compare (fewer than two usable
+ * readings). A lone reading neither agreed nor disagreed, and reporting 0 there
+ * would dress thin evidence up as consensus - that gap is what `verified` is
+ * for, not this.
+ */
+export function kcalSpread(evidence: SourceReading[]): number | null {
+  const kcals = (evidence ?? [])
+    .map((r) => r?.per_100?.kcal)
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  if (kcals.length < 2) return null;
+  const max = Math.max(...kcals);
+  const min = Math.min(...kcals);
+  if (max <= 0) return 0;
+  // The same absolute floor kcalAgrees() applies, for the same reason: black
+  // coffee read at 2 kcal and at 3 kcal is 50% apart and identical in every way
+  // a person cares about. Without it every near-zero food looks contested.
+  if (max - min <= VERIFY_MIN_ABS_KCAL) return 0;
+  return (max - min) / max;
+}

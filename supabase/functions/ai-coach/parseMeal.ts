@@ -28,9 +28,11 @@ import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
 import {
   cacheKey,
+  kcalSpread,
   meetsVerificationBar,
   type PreciseCacheRow,
   type SourceReading,
+  VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
 import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
@@ -79,6 +81,21 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  // ── Evidence, on the candidate that was actually researched ───────────────
+  // Super and precise-cache hits only. superLookupOne already computed both to
+  // write the cache row, and both used to die there: the verdict never left the
+  // function, so decide stated a number two sources fought over exactly as
+  // flatly as one they agreed on, and the client had nothing to badge.
+  //
+  // ABSENT, not false, on every other candidate. A catalog or OFF row was never
+  // put through meetsVerificationBar at all, and `verified: false` on it would
+  // read as "we checked and it failed" - a claim we have no evidence for.
+  /** Two independent sources agreed with the kcal we kept. See meetsVerificationBar. */
+  verified?: boolean;
+  /** Fraction of the largest kcal reading that the readings spanned. See
+   *  kcalSpread: 0 means they landed together, absent means there was only one
+   *  of them and there was nothing to compare. */
+  kcal_spread?: number;
 }
 
 export interface ParsedItem {
@@ -97,6 +114,13 @@ export interface ParsedItem {
   source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
+  /** The candidate behind this line cleared the verification bar: two
+   *  independent sources agreed with its calories. Set only for lines whose
+   *  numbers came from a researched row (Super lookup or precise-cache hit);
+   *  ABSENT means the question was never asked, which is not the same as
+   *  answered no, so a badge belongs on `true` alone. Stamped in
+   *  stripEphemeralIds, the one step every return path already owes. */
+  verified?: boolean;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -524,6 +548,23 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
           kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
           name: c.name,
         });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** The verification verdict for every candidate that HAS one, keyed the same
+ *  way as per100ForItems so a logged line can be traced back to the evidence
+ *  behind it. Candidates that were never researched contribute no entry at all,
+ *  which is what keeps `verified: false` off a catalog line nobody ever checked
+ *  (absent means "not asked", false means "asked and failed"). */
+export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean> {
+  const byFood = new Map<string, boolean>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.verified !== undefined && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, c.verified);
       }
     }
   }
@@ -1978,6 +2019,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   NEVER drop these, they ARE the product: fat grade (low fat, full fat, full cream, toned, double toned, skimmed); protein or sugar claims (high protein, zero sugar, no added sugar, diet); part or variant (yolk, white, whole, brown, wholewheat, maida); prep state (raw, boiled, roasted, fried, dried - 2-3x density); brand on a FORMULATED product, where the recipe IS the product (protein bars and powders, biscuits, cereals, sauces, ready meals, flavoured yogurt); a DISH reduced to an ingredient (paneer butter masala is not Paneer).
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
+- sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -2077,7 +2119,22 @@ async function callAnthropicOnce(
   }
 }
 
-function candidatePayload(c: CandidateFood): Record<string, unknown> {
+/**
+ * Is this candidate's evidence contested enough that decide must be told?
+ *
+ * VERIFY_TOLERANCE is the threshold on purpose, not a second number of our own:
+ * a spread above it means two of the readings would have failed kcalAgrees, so
+ * "materially disagreed" here means exactly what it means everywhere else in
+ * the evidence code. Absent spread (nothing researched, or a single reading) is
+ * silence, never a warning.
+ */
+function sourcesDisagree(c: CandidateFood): boolean {
+  return typeof c.kcal_spread === "number" && c.kcal_spread > VERIFY_TOLERANCE;
+}
+
+// Exported for tests: this is the exact shape decide sees for a candidate, and
+// what it does NOT say on the agreeing case is as load-bearing as what it does.
+export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
     name: c.name,
@@ -2092,6 +2149,12 @@ function candidatePayload(c: CandidateFood): Record<string, unknown> {
     },
     servings: c.servings.slice(0, 6),
     source: c.source,
+    // Emitted ONLY when the sources fought, which is the rare case. Sending a
+    // spread (or a `verified` flag) on every candidate would add a line to
+    // every item of every decide call to say "nothing to see here", and this
+    // payload is cached input tokens on every meal anyone logs. Silence is the
+    // signal that the numbers agreed.
+    ...(sourcesDisagree(c) ? { sources_disagree_pct: Math.round(c.kcal_spread! * 100) } : {}),
   };
 }
 
@@ -2231,6 +2294,13 @@ export async function superLookupOne(
   const fiber_g = fibers.length > 0 ? median(fibers) : null;
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
+  // The same evidence, measured the other way. `verified` says whether anyone
+  // is allowed to vouch for the number; the spread says how far the readings we
+  // actually got sat apart. Both ride out on the candidate, because the cache
+  // row is not the only consumer of this verdict: decide has to hedge on a
+  // contested number and the client has to badge an uncontested one, and
+  // neither can do that from a row it never sees.
+  const spread = kcalSpread(finding.readings);
   const servings = finding.serving_label && finding.serving_grams
     ? [{ label: finding.serving_label, grams: finding.serving_grams }]
     : [];
@@ -2262,6 +2332,8 @@ export async function superLookupOne(
     fiber_g,
     servings,
     source: "catalog",
+    verified,
+    ...(spread === null ? {} : { kcal_spread: spread }),
   };
 }
 
@@ -2281,6 +2353,19 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    // A hit is the SAME verdict superLookupOne reached, read back instead of
+    // re-bought. Dropping it here would have made the badge and decide's
+    // hedging flicker on cache state - a food shown as contested on the lookup
+    // that paid for it and as plain fact to everyone served from the row.
+    // `=== true` because the column is boolean but the row arrives as JSON.
+    verified: row.verified === true,
+    // Recomputed from the stored readings rather than stored as its own column:
+    // it is a pure function of `evidence`, and a second column could go stale
+    // against the readings it claims to summarise.
+    ...(() => {
+      const spread = kcalSpread(row.evidence ?? []);
+      return spread === null ? {} : { kcal_spread: spread };
+    })(),
   };
 }
 
@@ -2954,9 +3039,27 @@ export function retargetMismatchedIds(
  *
  * This is a helper rather than an inline map because EVERY return path owes it:
  * the skip-decide path returns early and used to bypass the inline version.
+ *
+ * It also stamps `verified`, and that is not a stowaway: the food_id is the
+ * ONLY handle from a logged line back to the candidate its numbers came from,
+ * and the very next statement here throws that handle away. Doing it anywhere
+ * else means either doing it before the guardrails (where reconcileQuantity and
+ * the variant checks can still repoint a line) or after the id is gone. Riding
+ * along with the strip also inherits its one real guarantee - that every return
+ * path calls it - instead of adding a second step each path could forget.
  */
-export function stripEphemeralIds(items: ParsedItem[]): ParsedItem[] {
-  return items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+export function stripEphemeralIds(
+  items: ParsedItem[],
+  /** food_id -> did the evidence behind that candidate clear the bar. Only
+   *  researched candidates appear (see verifiedForItems); a line matched to
+   *  anything else is left unstamped rather than stamped false. */
+  verifiedByFood?: Map<string, boolean>,
+): ParsedItem[] {
+  return items.map((it) => {
+    const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
+    const marked = verdict === undefined ? it : { ...it, verified: verdict };
+    return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
+  });
 }
 
 /**
@@ -4357,10 +4460,13 @@ export async function runParseMeal(
     T.verify_ms = Date.now() - tVerify0;
 
     const tPost0 = Date.now();
-    const items = stripEphemeralIds(flagPrepMismatch(
-      checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
-      prepForItems(resolved),
-    ));
+    const items = stripEphemeralIds(
+      flagPrepMismatch(
+        checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
+        prepForItems(resolved),
+      ),
+      verifiedForItems(resolved),
+    );
     T.post_ms = Date.now() - tPost0;
     T.decide_ms = 0;
     steps.push({ iter: 9, tool: "__timing", input: { ...T, fast: true } });
@@ -4402,13 +4508,16 @@ export async function runParseMeal(
     // as the decide path. codeFillItems derives grams from real serving anchors
     // rather than free-form model output, so it should rarely bite - but "should
     // rarely" is not a reason for two paths to have different defences.
-    const filled = stripEphemeralIds(flagPrepMismatch(
-      checkAtwater(reconcileQuantity(
-        await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
-        servingsForItems(resolved),
-      )),
-      prepForItems(resolved),
-    ));
+    const filled = stripEphemeralIds(
+      flagPrepMismatch(
+        checkAtwater(reconcileQuantity(
+          await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+          servingsForItems(resolved),
+        )),
+        prepForItems(resolved),
+      ),
+      verifiedForItems(resolved),
+    );
     steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
     return {
       parsed: {
@@ -4551,8 +4660,9 @@ export async function runParseMeal(
     });
   }
   // See stripEphemeralIds: every path that returns items to the client must
-  // strip them, not just this one.
-  items = stripEphemeralIds(items);
+  // strip them, not just this one. The verification map goes in with them,
+  // because the id it keys on is what this call is about to erase.
+  items = stripEphemeralIds(items, verifiedForItems(resolved));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
