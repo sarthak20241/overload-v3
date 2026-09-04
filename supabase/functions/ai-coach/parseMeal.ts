@@ -3140,7 +3140,16 @@ export async function verifyItems(
         carb_g: round1(alt.carb_g * g),
         fat_g: round1(alt.fat_g * g),
         fiber_g: alt.fiber_g === null ? item.fiber_g : round1(alt.fiber_g * g),
-        confidence: "medium" as const,
+        // Medium is the CEILING here, not a verdict: this branch is taken
+        // whenever there is no row to re-read (every ephemeral id), so it
+        // cannot tell a well-backed number from a lonely one and refuses to
+        // say high. A Super line two independent sources agreed on IS that
+        // evidence, so it keeps whatever decide chose - otherwise decide's
+        // agreed/disputed rule would be overwritten here and the distinction
+        // it exists to draw would never reach anything.
+        confidence: (item.food_id && verifiedIds?.has(item.food_id))
+          ? item.confidence
+          : ("medium" as const),
       });
     }
     const f = item.grams / 100;

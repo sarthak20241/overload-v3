@@ -159,3 +159,38 @@ Deno.test("a FatSecret reading sits in evidence and counts for nothing", () => {
 Deno.test("a row with no evidence column does not throw", () => {
   assertEquals(cacheRowToCandidate(row({ evidence: null as never })).evidence?.independent_sources, 0);
 });
+
+// ── The ceiling on the no-row-to-re-read branch ─────────────────────────────
+// Every ephemeral id (FatSecret, cache hit, web lookup) skips the row read, so
+// verifyItems used to flatten ALL of them to medium. That silently discarded
+// decide's agreed/disputed judgement for exactly the candidates the evidence
+// rule was written for, which made the rule unobservable.
+
+/** Deps with no row to read, so the candidate's own per-100 basis is used. */
+const NO_ROW = { ...DEPS, getFoodPer100: async () => null } as unknown as ParseMealDeps;
+const BASIS = new Map([["f1", { kcal: 190, protein_g: 25, carb_g: 7, fat_g: 7, fiber_g: null, name: "Paneer" }]]);
+
+Deno.test("an unbacked ephemeral line is still capped at medium", async () => {
+  const [it] = await verifyItems(NO_ROW, [ITEM({ confidence: "high" })], BASIS);
+  assertEquals(it.confidence, "medium");
+});
+
+Deno.test("a disputed Super line is capped at medium even if decide said high", async () => {
+  // Not in the verified set, so the cap applies. Belt and braces: the prompt
+  // already tells decide not to do this, and the code does not rely on that.
+  const [it] = await verifyItems(NO_ROW, [ITEM({ confidence: "high" })], BASIS, new Set(["other"]));
+  assertEquals(it.confidence, "medium");
+});
+
+Deno.test("an AGREED Super line keeps decide's own confidence", async () => {
+  const [it] = await verifyItems(NO_ROW, [ITEM({ confidence: "high" })], BASIS, new Set(["f1"]));
+  assertEquals(it.confidence, "high");
+  assertEquals(it.verified, true);
+});
+
+Deno.test("agreement does not push a cautious line UP", async () => {
+  // The set lifts a ceiling; it never sets a floor. If decide had a reason to
+  // hedge, two sources agreeing on the panel does not answer that reason.
+  const [it] = await verifyItems(NO_ROW, [ITEM({ confidence: "medium" })], BASIS, new Set(["f1"]));
+  assertEquals(it.confidence, "medium");
+});

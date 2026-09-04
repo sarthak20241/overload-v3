@@ -67,7 +67,10 @@ async function run(label: string) {
   });
   const tools = r.tool_calls.join(",");
   const items = (r.parsed?.items ?? [])
-    .map((i) => `${i.food_name} ${i.grams}g ${i.kcal}kcal/${i.protein_g}p [${i.source}] ${i.confidence}`)
+    .map((i) =>
+      `${i.food_name} ${i.grams}g ${i.kcal}kcal/${i.protein_g}p [${i.source}] ` +
+      `${i.confidence}${i.verified ? " CHECKED-TWICE" : ""}`
+    )
     .join(" | ");
   console.log(`\n${label}  ${Date.now() - t0}ms  web_searches=${r.usage.web_search_requests}`);
   console.log(`  tools: ${tools}`);
