@@ -1,4 +1,4 @@
--- 0112: price Anthropic's web_search server tool, so cost_usd stops lying.
+-- 0113: price Anthropic's web_search server tool, so cost_usd stops lying.
 --
 -- WHY THIS EXISTS. Super mode's whole value is that it goes and looks a product
 -- up on the web, and Anthropic charges for that lookup TWICE: once in tokens for
