@@ -28,6 +28,7 @@ import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
 import {
   cacheKey,
+  independenceKey,
   meetsVerificationBar,
   type PreciseCacheRow,
   type SourceReading,
@@ -79,6 +80,20 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  /** SUPER ONLY: how well web evidence backs these numbers. Absent on every
+   *  ordinary candidate, which is the point - a catalog row makes no claim
+   *  about independent corroboration and must not be shown as if it did.
+   *
+   *  Present on the two candidates that were researched for THIS request: a
+   *  precise-cache hit and a fresh web lookup. `agreed` is
+   *  meetsVerificationBar()'s verdict, so it carries that function's
+   *  licensing rule intact - FatSecret readings can inform the number and can
+   *  sit in evidence, but never count toward agreement.
+   *
+   *  Two consumers, deliberately different: decide reads it to set confidence
+   *  (see candidatePayload), and verifiedForItems turns `agreed` into the
+   *  ParsedItem.verified the card badges. */
+  evidence?: { independent_sources: number; agreed: boolean };
 }
 
 export interface ParsedItem {
@@ -97,6 +112,18 @@ export interface ParsedItem {
   source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
+  /** Two independent sources agreed on this line's numbers (Super only).
+   *
+   *  Set in CODE by verifyItems, never by the model and never read off the
+   *  wire: sanitizeItems drops it deliberately, so a decide call cannot award
+   *  itself a badge. Absent means "we are not claiming corroboration", which
+   *  is the honest default for every catalog, OFF, FatSecret and estimate
+   *  line - it is NOT a claim that the line is wrong.
+   *
+   *  Fails closed on a round trip: a meal the client sends back as
+   *  previousItems loses the flag, so a corrected line is re-badged only if it
+   *  is re-researched. Under-claiming here is the cheap direction. */
+  verified?: boolean;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -528,6 +555,22 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
     }
   }
   return byFood;
+}
+
+/** Candidate food_ids whose numbers two INDEPENDENT sources agreed on, so a
+ *  line that ends up on one of them can say so (ParsedItem.verified).
+ *
+ *  Only Super candidates ever qualify: a catalog row is not "unverified", it
+ *  simply makes no claim about corroboration, and badging every catalog line
+ *  would make the mark mean nothing. */
+export function verifiedForItems(resolved: ResolvedItem[]): Set<string> {
+  const ids = new Set<string>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.evidence?.agreed === true) ids.add(c.food_id);
+    }
+  }
+  return ids;
 }
 
 /** Serving options for every candidate we offered, so the display quantity can
@@ -1979,6 +2022,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
+- A candidate carrying "evidence" was looked up on the web for THIS request, so it is about the exact product the user named and beats any generic row next to it. "agreed": true means independent sources landed on the same number; treat that line exactly like a catalog row. "agreed": false means they did not agree and we kept the middle number: still log it, still say nothing about the disagreement in assumption, but never mark that line confidence high. Candidates with no "evidence" key make no claim either way and are judged on the rules above.
 </candidate_rules>
 
 <quantity_rules>
@@ -2077,7 +2121,7 @@ async function callAnthropicOnce(
   }
 }
 
-function candidatePayload(c: CandidateFood): Record<string, unknown> {
+export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
     name: c.name,
@@ -2092,6 +2136,11 @@ function candidatePayload(c: CandidateFood): Record<string, unknown> {
     },
     servings: c.servings.slice(0, 6),
     source: c.source,
+    // Super only, and omitted entirely otherwise. An absent key reads as "no
+    // claim"; emitting agreed:false on every ordinary catalog row would teach
+    // the model that most of its candidates are disputed, which is the exact
+    // opposite of what it means.
+    ...(c.evidence ? { evidence: c.evidence } : {}),
   };
 }
 
@@ -2230,7 +2279,7 @@ export async function superLookupOne(
     .filter((n): n is number => typeof n === "number" && n >= 0);
   const fiber_g = fibers.length > 0 ? median(fibers) : null;
 
-  const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
+  const { verified, agreeing } = meetsVerificationBar(per100.kcal, finding.readings);
   const servings = finding.serving_label && finding.serving_grams
     ? [{ label: finding.serving_label, grams: finding.serving_grams }]
     : [];
@@ -2262,6 +2311,10 @@ export async function superLookupOne(
     fiber_g,
     servings,
     source: "catalog",
+    // agreeing counts INDEPENDENT sources, not readings: three pages of one
+    // site are one, and a FatSecret reading is none. So this number is what
+    // decide and the badge should both key on.
+    evidence: { independent_sources: agreeing.length, agreed: verified },
   };
 }
 
@@ -2281,6 +2334,17 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    // Recounted from the stored readings rather than trusting a stored count,
+    // because independenceKey's rules can tighten (they already have: hosts,
+    // then the FatSecret exclusion) and an old row must be judged by today's
+    // rule. `agreed` still comes from the row: that verdict was reached against
+    // the number actually stored, which is a check we cannot redo from here.
+    evidence: {
+      independent_sources: new Set(
+        (row.evidence ?? []).map(independenceKey).filter((k): k is string => k !== null),
+      ).size,
+      agreed: row.verified === true,
+    },
   };
 }
 
@@ -3011,8 +3075,16 @@ export async function verifyItems(
   deps: ParseMealDeps,
   items: ParsedItem[],
   fallback?: Map<string, Per100>,
+  /** Candidate ids two independent sources agreed on (verifiedForItems). The
+   *  stamp happens AFTER the pass below, keyed on each line's FINAL food_id,
+   *  which is what makes it safe: a line this function demotes to an estimate
+   *  loses its id and therefore its badge, with no separate rule to remember. */
+  verifiedIds?: Set<string>,
 ): Promise<ParsedItem[]> {
-  return await Promise.all(items.map(async (item) => {
+  // The return annotation is load-bearing: it used to come from this function's
+  // own signature (the Promise.all was returned directly), and without it the
+  // literal confidence values below widen to string.
+  const out = await Promise.all(items.map(async (item): Promise<ParsedItem> => {
     if (item.source !== "catalog" && item.source !== "off" && item.source !== "fatsecret") {
       // An estimate carries the model's OWN numbers, so an all-zero line means
       // it omitted them (the decide schema says to omit only when a food_id is
@@ -3093,6 +3165,15 @@ export async function verifyItems(
     deps.log?.(`[parse_meal] implausible row used for "${item.food_name}": ${bad}`);
     return { ...scaled, confidence: "low" as const };
   }));
+  if (!verifiedIds || verifiedIds.size === 0) return out;
+  // A demoted line is never badged: confidence "low" means a guardrail
+  // overruled the sources, and two sources agreeing on a number we then had to
+  // override is not something to show a checkmark for.
+  return out.map((it) =>
+    it.food_id && verifiedIds.has(it.food_id) && it.confidence !== "low"
+      ? { ...it, verified: true }
+      : it
+  );
 }
 
 // Clamp/normalize whatever the model handed us before it touches the DB or UI.
@@ -4221,6 +4302,8 @@ export async function runParseMeal(
   // P3: when every item reranked strongly and its quantity converts without
   // judgment, the code fill IS the answer and this whole call is skipped.
   const candidatePer100 = per100ForItems(resolved);
+  // Empty on every non-Super parse, and verifyItems short-circuits on empty.
+  const candidateVerified = verifiedForItems(resolved);
 
   // ── FAST MODE: no decide call, ever ───────────────────────────────────────
   // The pick decide makes in Smart is made here by the accept gate, which
@@ -4353,7 +4436,7 @@ export async function runParseMeal(
     // was sitting outside every timer: extract_ms + resolve_ms never added up
     // to latency_ms and the gap was being blamed on plumbing.
     const tVerify0 = Date.now();
-    const verified = await verifyItems(deps, fastItems, candidatePer100);
+    const verified = await verifyItems(deps, fastItems, candidatePer100, candidateVerified);
     T.verify_ms = Date.now() - tVerify0;
 
     const tPost0 = Date.now();
@@ -4404,7 +4487,7 @@ export async function runParseMeal(
     // rarely" is not a reason for two paths to have different defences.
     const filled = stripEphemeralIds(flagPrepMismatch(
       checkAtwater(reconcileQuantity(
-        await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+        await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100, candidateVerified),
         servingsForItems(resolved),
       )),
       prepForItems(resolved),
@@ -4485,7 +4568,7 @@ export async function runParseMeal(
     resolved,
     deps.log,
   );
-  let items = await verifyItems(deps, picked, candidatePer100);
+  let items = await verifyItems(deps, picked, candidatePer100, candidateVerified);
   if (correctsPrevious) {
     // Enforce the correction contract on every line the user did not re-target:
     // still present (1), and if it was hand-edited, its provenance and numbers
@@ -4517,7 +4600,7 @@ export async function runParseMeal(
     // on them.
     const codeItems = stripEphemeralIds(flagPrepMismatch(
       checkAtwater(reconcileQuantity(
-        await verifyItems(deps, codeFill.items, candidatePer100),
+        await verifyItems(deps, codeFill.items, candidatePer100, candidateVerified),
         servingsForItems(resolved),
       )),
       prepForItems(resolved),

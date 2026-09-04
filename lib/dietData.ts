@@ -545,6 +545,11 @@ export interface ParsedMealItem {
   source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
+  /** Two independent sources agreed on these numbers. Set by the server on
+   *  Super lines only; absent everywhere else, and absent is NOT a doubt
+   *  signal, it just means we are making no such claim. Display only: nothing
+   *  writes it to meal_entries. */
+  verified?: boolean;
 }
 
 export interface ParsedMeal {
@@ -614,6 +619,9 @@ function toParsedItem(i: any): ParsedMealItem {
       : 'estimate',
     assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
     confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
+    // Strict true only. Any other shape means the server is not claiming
+    // corroboration, and a badge is the one thing that must never be inferred.
+    ...(i.verified === true ? { verified: true as const } : {}),
   };
 }
 

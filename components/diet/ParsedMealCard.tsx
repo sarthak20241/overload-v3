@@ -308,6 +308,12 @@ export function ParsedMealCard({
                     <Text style={s.serving}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text>
                   </Text>
                   {prov && <Text style={s.provChip}>{prov}</Text>}
+                  {it.verified && (
+                    <View style={s.verifiedChip} accessibilityLabel="Two sources agreed on these numbers">
+                      <Feather name="check" size={10} color={C.accentText} />
+                      <Text style={s.verifiedTxt}>checked twice</Text>
+                    </View>
+                  )}
                   {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
                   {onRemoveItem && meal.items.length > 1 && (
                     <Pressable
@@ -623,6 +629,14 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },
     provChip: {
       fontSize: 10, color: C.textMuted, fontWeight: FontWeight.medium,
+      letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase',
+    },
+    // Same weight and size as provChip on purpose: this is provenance, not a
+    // trophy. The accent is the only thing that separates it, and it earns that
+    // because it is the one mark on the card backed by two outside sources.
+    verifiedChip: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+    verifiedTxt: {
+      fontSize: 10, color: C.accentText, fontWeight: FontWeight.medium,
       letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase',
     },
     macros: { flexDirection: 'row', gap: Spacing.md, marginTop: 5 },

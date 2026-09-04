@@ -228,6 +228,28 @@ credit gate. Target <= 12s.
 Verify: milky-mist-class query grounds from web; verified badge renders;
 cache hit serves next identical query at Smart speed.
 
+STATUS 2026-09-04. Engine done (7a/7b): fan-out lookup, cross-check, cache +
+write-through, nightly promotion, all proven live on the canonical case.
+
+Evidence plumbing DONE this pass. CandidateFood.evidence
+{independent_sources, agreed} is set on the two researched candidates (cache
+hit, fresh lookup) and nowhere else, then read by two consumers: decide sees it
+in candidatePayload under a rule that says log a disputed number but never call
+it high confidence, and verifiedForItems turns `agreed` into
+ParsedItem.verified, which verifyItems stamps on the FINAL food_id so a demoted
+line drops the badge automatically. Card renders "checked twice"; 13 tests in
+superEvidence.test.ts.
+
+Note on the original wording: "disagreements in-prompt" predates the median.
+superLookupOne now settles conflicting readings in CODE before decide sees
+anything, so what decide gets is the verdict (agreed / not) rather than the raw
+spread. Handing it three numbers to arbitrate would re-open the averaging bug
+the median exists to close.
+
+REMAINING: Super button + Pro gate (client); challenge flow reroute;
+PARSE_SUPER_MODE is still `off` in production, so all of the above is inert
+until that flips.
+
 ### P6. FatSecret Premier (external dependency)
 When sales replies: set FATSECRET_REGION=IN (+ others), re-eval India coverage
 (the original milky mist case must resolve at tier 2), revisit quota.
