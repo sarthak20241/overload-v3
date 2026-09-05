@@ -1,4 +1,4 @@
--- 0113: "Just log it" (auto-logged meals) on meal_entries.
+-- 0114: "Just log it" (auto-logged meals) on meal_entries.
 --
 -- 1. logged_via gains 'ai_auto': the edge function wrote this entry itself
 --    after a parse the user sent in "Just log it" mode, as opposed to 'ai'
