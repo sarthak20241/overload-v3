@@ -153,6 +153,18 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
       source: changed ? 'manual' : item.source,
       confidence: changed ? 'high' : item.confidence,
       assumption: changed ? null : item.assumption,
+      // And it stops being ours to vouch for. `verified` is a claim that two
+      // INDEPENDENT sources agreed on this line's numbers; the moment the user
+      // edits them it is a claim about numbers nobody checked. It rode through
+      // on the spread above while source, confidence and assumption were all
+      // being reset around it - the same stale-field shape that put a Breakfast
+      // line into Snacks on the correction path.
+      //
+      // Cleared on any `changed`, including a pure rescale where the per-100
+      // basis really is still the verified one. That slightly under-claims, and
+      // it is the right direction: this file already calls a rescale 'manual',
+      // so a line marked as the user's own must not also carry our badge.
+      verified: changed ? false : item.verified,
     });
   }
 
