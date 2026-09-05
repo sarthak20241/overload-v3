@@ -31,7 +31,7 @@ import Animated, {
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
-import type { ParsedMeal, ParsedMealItem } from '@/lib/dietData';
+import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
 import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
@@ -62,18 +62,7 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
 
 const mealLabel = (m: MealType) => MEAL_OPTIONS.find((o) => o.value === m)?.label ?? 'Snacks';
 
-/** The distinct sections the lines fall into, first-seen order. One entry is
- *  the ordinary single-meal card; more than one is a full-day message and the
- *  card changes shape (grouped lines, no chip row). Mirrors lib/dietData's
- *  sectionsOf, inlined so the card stays a pure view of its props. */
-function sectionsOfItems(items: ParsedMealItem[], fallback: MealType): MealType[] {
-  const seen: MealType[] = [];
-  for (const it of items) {
-    const m = it.meal_type ?? fallback;
-    if (!seen.includes(m)) seen.push(m);
-  }
-  return seen.length ? seen : [fallback];
-}
+
 
 interface Props {
   state: ParseCardState;

@@ -1780,17 +1780,43 @@ export function assignItemMeals(
   },
 ): ParsedItem[] {
   const { explicit, fallback, carriedFor } = meals;
+  // BEST match, not first match. Taking the first overlapping name let a
+  // generic line steal a specific one's entry: for lines ["Dal", "Dal makhani"]
+  // against extracted ["dal makhani" (lunch), "dal" (dinner)], "Dal" overlaps
+  // "dal makhani" and claimed it, leaving "Dal makhani" the leftover "dal" -
+  // both meals wrong, and swapped rather than merely missing. So every pair is
+  // scored and the strongest assignments are made first, which pins the exact
+  // pair before the loose one can take it.
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, " ");
+  const score = (it: ParsedItem, e: ExtractedItem): number => {
+    const withBrand = e.brand ? `${e.brand} ${e.name}` : e.name;
+    const a = norm(it.food_name);
+    if (a === norm(withBrand) || a === norm(e.name)) return 3;      // same name
+    if (a.includes(norm(e.name)) || norm(e.name).includes(a)) return 2;  // one contains the other
+    if (wordsOverlap(it.food_name, withBrand) || wordsOverlap(it.food_name, e.name)) return 1;
+    return 0;
+  };
+  const pairs: { i: number; e: number; s: number }[] = [];
+  items.forEach((it, i) =>
+    extracted.forEach((e, ei) => {
+      const s = score(it, e);
+      if (s > 0) pairs.push({ i, e: ei, s });
+    })
+  );
+  // Strongest first; ties keep source order so the result stays deterministic.
+  pairs.sort((x, y) => y.s - x.s || x.i - y.i || x.e - y.e);
+  const matched = new Map<number, ExtractedItem>();
   const used = new Set<number>();
-  const claim = (it: ParsedItem, idx: number): ExtractedItem | undefined => {
-    for (let i = 0; i < extracted.length; i++) {
-      if (used.has(i)) continue;
-      const e = extracted[i];
-      const withBrand = e.brand ? `${e.brand} ${e.name}` : e.name;
-      if (wordsOverlap(it.food_name, withBrand) || wordsOverlap(it.food_name, e.name)) {
-        used.add(i);
-        return e;
-      }
-    }
+  for (const { i, e } of pairs) {
+    if (matched.has(i) || used.has(e)) continue;
+    matched.set(i, extracted[e]);
+    used.add(e);
+  }
+  const claim = (_it: ParsedItem, idx: number): ExtractedItem | undefined => {
+    const m = matched.get(idx);
+    if (m) return m;
+    // Nothing overlapped. Position is only meaningful when the two lists are
+    // the same length AND that slot was not taken by a name match.
     if (extracted.length === items.length && !used.has(idx)) {
       used.add(idx);
       return extracted[idx];

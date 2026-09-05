@@ -940,13 +940,18 @@ export interface LoggedParseRef {
 /** The sections a parsed meal's lines fall into, in first-seen order. Each
  *  line carries its own meal_type (server-stamped); the meal-level field is
  *  only the fallback for a line that somehow lacks one. */
-export function sectionsOf(meal: ParsedMeal): MealType[] {
+export function sectionsOfItems(items: ParsedMealItem[], fallback: MealType): MealType[] {
   const seen: MealType[] = [];
-  for (const it of meal.items) {
-    const m = it.meal_type ?? meal.meal_type;
+  for (const it of items) {
+    const m = it.meal_type ?? fallback;
     if (!seen.includes(m)) seen.push(m);
   }
-  return seen.length ? seen : [meal.meal_type];
+  return seen.length ? seen : [fallback];
+}
+
+/** The same rule for a whole parsed meal, whose own meal_type is the fallback. */
+export function sectionsOf(meal: ParsedMeal): MealType[] {
+  return sectionsOfItems(meal.items, meal.meal_type);
 }
 
 /** Write a parsed meal to the day's log, one section at a time: group the

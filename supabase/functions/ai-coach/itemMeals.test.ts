@@ -170,3 +170,28 @@ Deno.test("carriedFor never overrides a meal the text named for that item", () =
   );
   assertEquals(out[0].meal_type, "dinner");
 });
+
+Deno.test("a generic line does not steal the specific line's tag", () => {
+  // Greedy first-match let "Dal" claim the "dal makhani" entry, leaving
+  // "Dal makhani" the leftover "dal" - both sections wrong, and SWAPPED rather
+  // than merely missing, which is the worst shape for a bug like this because
+  // both lines look plausibly placed. Pairs are scored and the exact match is
+  // assigned before the loose one can take it.
+  const out = assignItemMeals(
+    [line("Dal"), line("Dal makhani")],
+    [ext("dal makhani", "lunch"), ext("dal", "dinner")],
+    { explicit: null, fallback: "snack" },
+  );
+  assertEquals(out.map((i) => i.meal_type), ["dinner", "lunch"]);
+});
+
+Deno.test("ordering is stable when two lines score the same", () => {
+  // Two identical names, two entries: ties keep source order, so the result is
+  // deterministic rather than depending on how the scorer happened to sort.
+  const out = assignItemMeals(
+    [line("roti"), line("roti")],
+    [ext("roti", "breakfast"), ext("roti", "dinner")],
+    { explicit: null, fallback: "snack" },
+  );
+  assertEquals(out.map((i) => i.meal_type), ["breakfast", "dinner"]);
+});

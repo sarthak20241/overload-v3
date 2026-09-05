@@ -327,7 +327,18 @@ export default function NutritionScreen() {
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
-    const args = { text: t, mealHint: mealForNow(), previous: pending, turns };
+    // The card on screen is a better hint than the wall clock. "and a dosa"
+    // added to a meal the user has placed in Dinner must join THAT meal, and
+    // sending mealForNow() split the card in two whenever the clock disagreed:
+    // an appended line has no carried section to fall back on, so the hint is
+    // the only thing standing between it and the hour. Falls back to the clock
+    // for a first-shot log, which is what it was always for.
+    const args = {
+      text: t,
+      mealHint: prevReview?.mealType ?? mealForNow(),
+      previous: pending,
+      turns,
+    };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
     // not opening the stream saves the wasted round trip. A user on Thorough
