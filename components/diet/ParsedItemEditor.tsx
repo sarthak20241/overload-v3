@@ -21,7 +21,14 @@ import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { loadFoodForEdit, type ParsedMealItem, type Per100Macros } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
-import type { FoodServing } from '@/lib/foods';
+import type { FoodServing, MealType } from '@/lib/foods';
+
+const MEAL_OPTIONS: { value: MealType; label: string }[] = [
+  { value: 'breakfast', label: 'Breakfast' },
+  { value: 'lunch', label: 'Lunch' },
+  { value: 'dinner', label: 'Dinner' },
+  { value: 'snack', label: 'Snacks' },
+];
 
 interface Props {
   item: ParsedMealItem | null;   // null = closed
@@ -52,6 +59,10 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   const [fat, setFat] = useState('0');
   // Once the user types in a macro field we stop auto-deriving macros.
   const [macrosTouched, setMacrosTouched] = useState(false);
+  // Which diary section this one line goes to. A full-day message ("eggs for
+  // breakfast, dal at lunch") is the only time it differs line to line, and
+  // this is where a single line gets re-homed without moving its group.
+  const [section, setSection] = useState<MealType>('snack');
 
   // Seed from the item each time the sheet opens, then load the food's real
   // servings + per-100 basis (only for catalog-backed lines).
@@ -65,6 +76,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     setCarb(String(r1(item.carb_g)));
     setFat(String(r1(item.fat_g)));
     setMacrosTouched(false);
+    setSection(item.meal_type);
     setServings([]);
     setPer100(null);
     let alive = true;
@@ -142,6 +154,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
       Math.abs(gramsNum - item.grams) > 0.5;
     onSave({
       ...item,
+      meal_type: section,
       quantity: qtyNum || 1,
       serving_label: label || item.serving_label,
       grams: gramsNum,
@@ -162,6 +175,28 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
       <View style={s.sheet}>
         <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Text style={s.title} numberOfLines={1}>{item?.food_name ?? ''}</Text>
+
+          <Text style={s.eyebrow}>Meal</Text>
+          <View style={s.chipWrap}>
+            {MEAL_OPTIONS.map((o) => {
+              const on = o.value === section;
+              return (
+                <Pressable
+                  key={o.value}
+                  onPress={() => setSection(o.value)}
+                  hitSlop={4}
+                  style={[s.chip, on ? s.chipOn : s.chipOff]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={`Log to ${o.label}`}
+                >
+                  <Text style={[s.chipTxt, { color: on ? C.background : C.textSecondary }]}>
+                    {o.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
           {servings.length > 0 && (
             <>

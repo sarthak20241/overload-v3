@@ -122,6 +122,7 @@ export default function FoodDetailScreen() {
           kcal: n.kcal, protein_g: n.protein_g, carb_g: n.carb_g, fat_g: n.fat_g, fiber_g: n.fiber_g ?? null,
           source: aiSource, assumption: params.assumption || null,
           confidence: aiSource === 'estimate' ? 'low' : aiSource === 'web' ? 'medium' : 'high',
+          meal_type: meal,
         };
         ({ error } = await logParsedMeal(supabase, { meal_type: meal, items: [item], drona_line: '' }));
       } else {

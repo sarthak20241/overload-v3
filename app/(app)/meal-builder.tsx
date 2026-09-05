@@ -41,6 +41,9 @@ function savedItemToParsed(it: SavedMealItem): ParsedMealItem {
     serving_label: it.serving_unit, grams: it.grams_logged ?? 0,
     kcal: it.kcal, protein_g: it.protein_g, carb_g: it.carb_g, fat_g: it.fat_g,
     fiber_g: it.fiber_g ?? null, source: 'catalog', assumption: null, confidence: 'high',
+    // The builder logs every line to the section it was opened from; a saved
+    // meal has no section of its own.
+    meal_type: getLogMeal(),
   };
 }
 
@@ -148,6 +151,7 @@ export default function MealBuilderScreen() {
       grams: pickGrams,
       kcal: pickNutr.kcal, protein_g: pickNutr.protein_g, carb_g: pickNutr.carb_g, fat_g: pickNutr.fat_g,
       fiber_g: pickNutr.fiber_g ?? null,
+      meal_type: targetMeal,
       source: 'catalog', assumption: null, confidence: 'high',
     };
     haptics.success();

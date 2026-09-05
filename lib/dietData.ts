@@ -545,9 +545,16 @@ export interface ParsedMealItem {
   source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
+  /** The diary section THIS line goes to. One message can cover a whole day
+   *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
+   *  belong to different sections. The server stamps every line; the client
+   *  never infers it. */
+  meal_type: MealType;
 }
 
 export interface ParsedMeal {
+  /** The first line's section. Kept for the single-meal card, whose chip row
+   *  moves EVERY line together; a multi-section meal is read off the lines. */
   meal_type: MealType;
   items: ParsedMealItem[];
   drona_line: string;
@@ -594,8 +601,26 @@ export function capUpgradeContext(cap: { scope: 'free' | 'pro' }): 'pro_feature'
 
 /** One raw item from the edge function -> a ParsedMealItem. Shared by the
  *  parsed path and the researched-proposal path so both stay in step. */
-function toParsedItem(i: any): ParsedMealItem {
+const isMealType = (v: unknown): v is MealType =>
+  v === 'breakfast' || v === 'lunch' || v === 'dinner' || v === 'snack';
+
+/** `fallbackMeal` is the section to use for a line that carries none - the
+ *  meal-level one for a parsed meal, and NULL for a proposal, whose lines
+ *  belong wherever the lines they replace are.
+ *
+ *  NO DEFAULT, deliberately. It had one, and `toParsedItem(i, undefined)` was
+ *  written to mean "no fallback" - but a JS default fires on an explicitly
+ *  passed undefined too, so that call still produced 'snack' and the opt-out
+ *  did nothing at all. Requiring the argument makes the mistake unsayable
+ *  rather than merely caught, which is worth more than a test here: lib/ has
+ *  no test harness, so a test could not have run anyway. */
+function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
   return {
+    // NULL is how a caller says "this line has no section of its own": a
+    // proposal line belongs wherever the line it replaces is, and
+    // onAcceptProposal fills it in. `??` treats null the same as undefined
+    // downstream, so the inheritance chain reads naturally.
+    meal_type: isMealType(i.meal_type) ? i.meal_type : (fallbackMeal as MealType),
     food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
     food_name: String(i.food_name ?? 'Food'),
     quantity: num(i.quantity) || 1,
@@ -628,7 +653,12 @@ function toParseResult(data: any): ParseMealResult {
   if (data?.declined?.message) {
     const p = data?.proposal;
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
-      ? { items: (p.items as any[]).map(toParsedItem), note: String(p.note ?? 'Use these numbers') }
+      // null fallback on purpose. A proposal line has no section of its own:
+      // it REPLACES a line on the card and belongs wherever that line is, so
+      // guessing here (the default is 'snack') would re-file a breakfast item
+      // the moment the user accepted better numbers for it. onAcceptProposal
+      // does the inheriting; a null section is how it knows to.
+      ? { items: (p.items as any[]).map((i) => toParsedItem(i, null)), note: String(p.note ?? 'Use these numbers') }
       : null;
     return {
       kind: 'declined',
@@ -649,7 +679,7 @@ function toParseResult(data: any): ParseMealResult {
     kind: 'parsed',
     meal: {
       meal_type: mealType,
-      items: (parsed.items as any[]).map(toParsedItem),
+      items: (parsed.items as any[]).map((i) => toParsedItem(i, mealType)),
       drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
       corrects_previous: parsed.corrects_previous === true,
     },
@@ -879,6 +909,9 @@ export async function parseMeal(
               fat_g: it.fat_g,
               fiber_g: it.fiber_g,
               source: it.source,
+              // Sent so a correction does not collapse a full-day log into one
+              // section: the server rebuilds every line from these.
+              meal_type: it.meal_type,
               assumption: it.assumption,
               confidence: it.confidence,
             })),
@@ -907,22 +940,70 @@ export async function parseMeal(
   return toParseResult(data);
 }
 
-/** The result of writing a parsed meal — carries the ids needed to Undo. */
-export interface LoggedParseRef {
+/** One diary section written by a parsed meal — the ids needed to Undo it. */
+export interface LoggedSectionRef {
+  mealType: MealType;
   mealId: string;
   entryIds: string[];
   createdMeal: boolean; // true if we created the meal row (so Undo can remove it)
 }
 
-/** Write a parsed meal to today's log: find-or-create the meal of parsed.meal_type,
- *  then batch-insert each item as a meal_entry with the parser's FINAL macros and
- *  logged_via='ai'. Returns ids for Undo, or { error }. */
+/** The result of writing a parsed meal. One entry per section it touched:
+ *  a single-meal message has one, "eggs for breakfast, dal at lunch" has two. */
+export interface LoggedParseRef {
+  sections: LoggedSectionRef[];
+}
+
+/** The sections a parsed meal's lines fall into, in first-seen order. Each
+ *  line carries its own meal_type (server-stamped); the meal-level field is
+ *  only the fallback for a line that somehow lacks one. */
+export function sectionsOfItems(items: ParsedMealItem[], fallback: MealType): MealType[] {
+  const seen: MealType[] = [];
+  for (const it of items) {
+    const m = it.meal_type ?? fallback;
+    if (!seen.includes(m)) seen.push(m);
+  }
+  return seen.length ? seen : [fallback];
+}
+
+/** The same rule for a whole parsed meal, whose own meal_type is the fallback. */
+export function sectionsOf(meal: ParsedMeal): MealType[] {
+  return sectionsOfItems(meal.items, meal.meal_type);
+}
+
+/** Write a parsed meal to the day's log, one section at a time: group the
+ *  lines by their meal_type, find-or-create each section's meal row, then
+ *  batch-insert that group's lines with the parser's FINAL macros and
+ *  logged_via='ai'. Returns ids for Undo, or { error }.
+ *
+ *  Sections are written in sequence and a failure part-way undoes what
+ *  already landed, so the day never ends up with breakfast logged and lunch
+ *  missing from a message that named both. */
 export async function logParsedMeal(
   supabase: Supa,
   meal: ParsedMeal,
   date: Date = getLogDate(),
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
-  const m = await findOrCreateMeal(supabase, meal.meal_type, date);
+  const done: LoggedSectionRef[] = [];
+  for (const section of sectionsOf(meal)) {
+    const lines = meal.items.filter((it) => (it.meal_type ?? meal.meal_type) === section);
+    const r = await logSection(supabase, section, lines, date);
+    if (r.error || !r.ref) {
+      await undoParsedMeal(supabase, { sections: done });
+      return { error: r.error ?? 'Could not add that' };
+    }
+    done.push(r.ref);
+  }
+  return { ref: { sections: done } };
+}
+
+async function logSection(
+  supabase: Supa,
+  mealType: MealType,
+  items: ParsedMealItem[],
+  date: Date,
+): Promise<{ ref?: LoggedSectionRef; error?: string }> {
+  const m = await findOrCreateMeal(supabase, mealType, date);
   if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
   const mealId = m.id;
   const createdMeal = !!m.created;
@@ -931,7 +1012,7 @@ export async function logParsedMeal(
     .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
   const base = count ?? 0;
 
-  const rows = meal.items.map((it, idx) => ({
+  const rows = items.map((it, idx) => ({
     meal_id: mealId,
     food_id: it.food_id,
     food_name: it.food_name,
@@ -959,19 +1040,22 @@ export async function logParsedMeal(
     return { error: error.message };
   }
   const entryIds = (inserted ?? []).map((r: any) => String(r.id));
-  return { ref: { mealId: mealId!, entryIds, createdMeal } };
+  return { ref: { mealType, mealId, entryIds, createdMeal } };
 }
 
-/** Undo an AI-logged meal: delete the inserted entries, and the meal too if we
- *  created it for this log and it is now empty. Best-effort. */
+/** Undo an AI-logged meal: delete the inserted entries in every section it
+ *  wrote, and each meal row too if we created it for this log and it is now
+ *  empty. Best-effort. */
 export async function undoParsedMeal(supabase: Supa, ref: LoggedParseRef): Promise<void> {
-  if (ref.entryIds.length > 0) {
-    await supabase.from('meal_entries').delete().in('id', ref.entryIds);
-  }
-  if (ref.createdMeal) {
-    const { count } = await supabase
-      .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', ref.mealId);
-    if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', ref.mealId);
+  for (const s of ref.sections) {
+    if (s.entryIds.length > 0) {
+      await supabase.from('meal_entries').delete().in('id', s.entryIds);
+    }
+    if (s.createdMeal) {
+      const { count } = await supabase
+        .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', s.mealId);
+      if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', s.mealId);
+    }
   }
 }
 

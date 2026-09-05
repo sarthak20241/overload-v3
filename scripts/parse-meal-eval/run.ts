@@ -298,6 +298,9 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
         failures.push(`"${ie.nameIncludes}" kcal ${match.kcal} outside [${lo}, ${hi}]`);
       }
     }
+    if (ie.meal && (match as { meal_type?: string }).meal_type !== ie.meal) {
+      failures.push(`"${ie.nameIncludes}" meal ${(match as { meal_type?: string }).meal_type ?? "unset"} != ${ie.meal}`);
+    }
   }
   return failures;
 }
