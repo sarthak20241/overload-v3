@@ -1648,11 +1648,20 @@ export async function runSuperLookup(
           // Labelling it "web" would have quietly walked through that line.
           source: providerFromRef(ref),
           ref,
+          // null, NOT 0, for a macro the page did not print. This is the whole
+          // reason ReadingPer100 types them nullable and the schema lets the
+          // model answer null: reconcileReadings decides each macro from the
+          // sources that STATED it, and a 0 here is indistinguishable from a
+          // printed zero, so it votes. Flattening to 0 put the Cadbury Gems bug
+          // straight back - not for an all-null reading, which hasComposition
+          // still drops, but for a PARTIAL panel: a page with carbs and fat and
+          // no protein line kept its reading (carbs are above zero) and then
+          // cast a fake "0 g protein" vote into the protein median.
           per_100: {
             kcal: p.kcal,
-            protein_g: ok(p.protein_g) ? p.protein_g : 0,
-            carb_g: ok(p.carb_g) ? p.carb_g : 0,
-            fat_g: ok(p.fat_g) ? p.fat_g : 0,
+            protein_g: ok(p.protein_g) ? p.protein_g : null,
+            carb_g: ok(p.carb_g) ? p.carb_g : null,
+            fat_g: ok(p.fat_g) ? p.fat_g : null,
             fiber_g: ok(p.fiber_g) ? p.fiber_g : null,
           },
         });

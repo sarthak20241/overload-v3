@@ -210,3 +210,73 @@ Deno.test("no readings means no candidate and no write", () => {
     assertEquals(cap.row, undefined);
   });
 });
+
+// ── The PARSING boundary: null must survive as null ─────────────────────────
+// reconcileReadings.test.ts hands reconcileReadings hand-built readings with
+// real nulls, so it proves the maths and never the path that feeds it. These
+// go through runSuperLookup's parsing, which is where a null was being turned
+// back into a 0 - the schema was made nullable so a page could say "protein
+// not printed", and four lines later that answer was overwritten.
+//
+// The all-null panel was never the survivor: hasComposition drops 0/0/0 beside
+// real calories whole. It is the PARTIAL panel that got through - carbs and fat
+// stated, protein omitted - because its carbs cleared hasComposition and then
+// its fake 0 voted in the protein median.
+
+/** A reading whose per_100 is spelled out, so a macro can be genuinely absent. */
+const panel = (url: string, per: Record<string, number | null>) => ({ url, per_100: per });
+
+Deno.test("a page that omits protein does not vote 0 into the protein median", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([
+      // Two hosts print carbs and fat but no protein line at all. One host does.
+      panel("https://a.com", { kcal: 470, carb_g: 80, fat_g: 18 }),
+      panel("https://b.com", { kcal: 472, protein_g: 3.6, carb_g: 75, fat_g: 17.5 }),
+      panel("https://c.com", { kcal: 470, carb_g: 80, fat_g: 18 }),
+    ], cap),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    // THE BUG: with null flattened to 0 the pool was [0, 3.6, 0] -> 0 g protein
+    // for a food that plainly has some. Only the source that stated it votes.
+    assertEquals(c?.protein_g, 3.6);
+    const ev = cap.row?.evidence as Array<{ per_100: Record<string, unknown> }>;
+    assertEquals(ev[0].per_100.protein_g, null);   // recorded as "not stated"
+    assertEquals(ev[1].per_100.protein_g, 3.6);
+  });
+});
+
+Deno.test("a STATED zero is not a missing one: oil keeps its 0 g protein", () => {
+  // The reason the fix is null-vs-0 and not "treat 0 as missing". Oil really is
+  // 0 g protein and 0 g carb; a blanket rule would throw that truth away.
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([
+      panel("https://a.com", { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }),
+      panel("https://b.com", { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 }),
+    ], cap),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.protein_g, 0);
+    assertEquals(c?.carb_g, 0);
+    const ev = cap.row?.evidence as Array<{ per_100: Record<string, unknown> }>;
+    assertEquals(ev[0].per_100.protein_g, 0);      // stated, so kept as 0
+  });
+});
+
+Deno.test("a reading with kcal and no panel at all still counts for energy", () => {
+  // Unchanged by the fix, asserted so it stays that way: a page can quote
+  // calories with no breakdown, and that is real evidence of the energy even
+  // though it states no macro.
+  const cap: { row?: Record<string, unknown> } = {};
+  return superLookupOne(
+    stubDeps([
+      panel("https://a.com", { kcal: 380 }),
+      panel("https://b.com", { kcal: 384, protein_g: 20, carb_g: 40, fat_g: 12 }),
+    ], cap),
+    ITEM, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.kcal, 382);        // both readings vote on energy
+    assertEquals(c?.protein_g, 20);    // only the one with a panel votes on protein
+  });
+});
