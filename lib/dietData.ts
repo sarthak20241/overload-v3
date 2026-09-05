@@ -606,9 +606,11 @@ const isMealType = (v: unknown): v is MealType =>
 
 /** `fallbackMeal` is the meal-level section, for a line from an older server
  *  build (or a proposal) that carries none. A line is never left unplaced. */
-function toParsedItem(i: any, fallbackMeal: MealType = 'snack'): ParsedMealItem {
+function toParsedItem(i: any, fallbackMeal: MealType | undefined = 'snack'): ParsedMealItem {
   return {
-    meal_type: isMealType(i.meal_type) ? i.meal_type : fallbackMeal,
+    // `undefined` is a real answer here, not a missing one: a proposal line's
+    // section belongs to the line it replaces and is filled in at accept time.
+    meal_type: isMealType(i.meal_type) ? i.meal_type : (fallbackMeal as MealType),
     food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
     food_name: String(i.food_name ?? 'Food'),
     quantity: num(i.quantity) || 1,
@@ -641,7 +643,12 @@ function toParseResult(data: any): ParseMealResult {
   if (data?.declined?.message) {
     const p = data?.proposal;
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
-      ? { items: (p.items as any[]).map((i) => toParsedItem(i)), note: String(p.note ?? 'Use these numbers') }
+      // No fallbackMeal on purpose. A proposal line has no section of its own:
+        // it REPLACES a line on the card and belongs wherever that line is, so
+        // guessing here (the old default was 'snack') would re-file a breakfast
+        // item the moment the user accepted better numbers for it.
+        // onAcceptProposal does the inheriting; undefined is how it knows to.
+      ? { items: (p.items as any[]).map((i) => toParsedItem(i, undefined)), note: String(p.note ?? 'Use these numbers') }
       : null;
     return {
       kind: 'declined',

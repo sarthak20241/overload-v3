@@ -195,3 +195,39 @@ Deno.test("ordering is stable when two lines score the same", () => {
   );
   assertEquals(out.map((i) => i.meal_type), ["breakfast", "dinner"]);
 });
+
+Deno.test("the same food in two sections: position decides which one is corrected", () => {
+  // "roti" logged at breakfast AND lunch. Correcting the second must not file
+  // into the first just because the name matches it earlier in the list.
+  const prev = [
+    { food_name: "roti", meal: "breakfast" as const },
+    { food_name: "roti", meal: "lunch" as const },
+  ];
+  const carriedFor = (name: string, idx?: number) => {
+    const want = name.trim().toLowerCase();
+    const hits = prev.filter((p) => p.food_name === want);
+    if (hits.length === 1) return hits[0].meal;
+    if (idx !== undefined && prev[idx]?.food_name === want) return prev[idx].meal;
+    const distinct = new Set(hits.map((h) => h.meal));
+    return distinct.size === 1 ? hits[0].meal : undefined;
+  };
+  const out = assignItemMeals(
+    [line("roti"), line("roti")],
+    [ext("roti", null, null, "roti"), ext("roti", null, null, "roti")],
+    { explicit: null, fallback: "dinner", carriedFor },
+  );
+  assertEquals(out.map((i) => i.meal_type), ["breakfast", "lunch"]);
+});
+
+Deno.test("a name in two sections with no positional handle is left to the fallback", () => {
+  // Genuinely ambiguous: one line, a name that exists in two sections, and no
+  // index that agrees. Guessing the first would file it confidently wrong, so
+  // it falls back instead - wrong is recoverable, confidently wrong is not.
+  const carriedFor = (_n: string, _i?: number) => undefined;
+  const out = assignItemMeals(
+    [line("roti")],
+    [ext("roti", null, null, "roti")],
+    { explicit: null, fallback: "dinner", carriedFor },
+  );
+  assertEquals(out[0].meal_type, "dinner");
+});

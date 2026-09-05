@@ -1776,7 +1776,7 @@ export function assignItemMeals(
      *  which has no such field - so without this a full-day log collapses into
      *  one section the moment the user corrects anything. The extracted item's
      *  correctsFoodName is the handle back to the line it replaces. */
-    carriedFor?: (foodName: string) => MealType | undefined;
+    carriedFor?: (foodName: string, idx?: number) => MealType | undefined;
   },
 ): ParsedItem[] {
   const { explicit, fallback, carriedFor } = meals;
@@ -1829,7 +1829,7 @@ export function assignItemMeals(
     // (tryFastCorrection) or from the previous meal by name when decide rebuilt
     // it and dropped it.
     const carried = it.meal_type ??
-      (e?.correctsFoodName ? carriedFor?.(e.correctsFoodName) : undefined);
+      (e?.correctsFoodName ? carriedFor?.(e.correctsFoodName, idx) : undefined);
     // Per-item beats explicit beats carried beats guess. The middle two are the
     // pair that has to stay in this order: the text saying "lunch" now outranks
     // the section a line was sitting in, while the clock never does.
@@ -3979,10 +3979,22 @@ export async function runParseMeal(
   };
   /** Section of a previous line, by the food_name decide was told to correct.
    *  Case-folded because the model echoes the name back with its own casing. */
-  const prevMealByName = (foodName: string): MealType | undefined => {
+  const prevMealByName = (foodName: string, idx?: number): MealType | undefined => {
     const want = foodName.trim().toLowerCase();
-    return (input.previousItems ?? [])
-      .find((p) => p.food_name.trim().toLowerCase() === want)?.meal_type;
+    const prev = input.previousItems ?? [];
+    const hits = prev.filter((p) => p.food_name.trim().toLowerCase() === want);
+    if (hits.length === 0) return undefined;
+    if (hits.length === 1) return hits[0].meal_type;
+    // The same food logged into two sections ("roti" at breakfast AND lunch)
+    // makes the name alone ambiguous, and taking the first hit files the
+    // correction into whichever happens to come first. Position disambiguates
+    // when it agrees with the name; otherwise prefer the sections the hits
+    // AGREE on, and only give up when they genuinely disagree.
+    if (idx !== undefined && prev[idx] && prev[idx].food_name.trim().toLowerCase() === want) {
+      return prev[idx].meal_type;
+    }
+    const distinct = new Set(hits.map((h) => h.meal_type));
+    return distinct.size === 1 ? hits[0].meal_type : undefined;
   };
 
   const declineResult = (message: string, cleared?: boolean): ParseMealResult => ({
@@ -4319,7 +4331,16 @@ export async function runParseMeal(
       // The web found something materially different, most likely another
       // variant. Offer it rather than apply it: a wrong silent swap is worse
       // than the number they already had.
-      const items = flagPrepMismatch(checkAtwater(researched.items));
+      // Stamped like every other return path, not left to researchPrevious
+      // copying meal_type off the previous line. That copy is what makes this
+      // correct TODAY, and a proposal that arrived without a section used to
+      // reach a client that defaulted it to Snacks - so a breakfast line the
+      // user accepted better numbers for moved meals. Defence on both sides.
+      const items = assignItemMeals(
+        flagPrepMismatch(checkAtwater(researched.items)), extItems,
+        { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour),
+          carriedFor: prevMealByName },
+      );
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {

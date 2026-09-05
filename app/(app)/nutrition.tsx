@@ -885,11 +885,22 @@ export default function NutritionScreen() {
               onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
               proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
-              onAcceptProposal={() => setFlow((f) => (
-                f.status === 'review' && f.proposal
-                  ? { ...f, meal: { ...f.meal, items: f.proposal.items }, notice: null, proposal: null }
-                  : f
-              ))}
+              onAcceptProposal={() => setFlow((f) => {
+                if (f.status !== 'review' || !f.proposal) return f;
+                // The proposal replaces the LINES, never their placement. Each
+                // incoming line inherits the section of the line it stands in
+                // for, matched by name and falling back to position, so
+                // accepting better numbers for a breakfast item cannot move it.
+                const bySection = new Map(f.meal.items.map((it) => [it.food_name.trim().toLowerCase(), it.meal_type]));
+                const items = f.proposal.items.map((it, i) => ({
+                  ...it,
+                  meal_type: it.meal_type
+                    ?? bySection.get(it.food_name.trim().toLowerCase())
+                    ?? f.meal.items[i]?.meal_type
+                    ?? f.mealType,
+                }));
+                return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
+              })}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
               // Frozen while a check is in flight: editing or removing a line
               // mid-lookup shifts indices and races the write below.
