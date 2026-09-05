@@ -566,8 +566,24 @@ export interface ParsedMeal {
 
 /** parse_meal outcome: either a parsed meal to log, or a decline (non-food
  *  input) carrying Drona's redirect line, or a transport/parse error. */
+/** Why the server did NOT write the diary on a "Just log it" send. The client
+ *  falls back to the review card in every case; the value picks the notice. */
+export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
+
 export type ParseMealResult =
-  | { kind: 'parsed'; meal: ParsedMeal }
+  | {
+    kind: 'parsed';
+    meal: ParsedMeal;
+    /** "Just log it": the server already wrote these lines. The card goes
+     *  straight to "Added" and Undo uses this ref. */
+    logged?: LoggedParseRef | null;
+    /** "Just log it" was asked for and the server declined to write. */
+    autoLogSkipped?: AutoLogSkipped | null;
+  }
+  // "Just log it" only: the request left and no answer came back (a dropped
+  // stream). The server keeps working without us, so this is NOT retried
+  // here; the pending list and the diary settle it.
+  | { kind: 'sent'; message: string }
   // `proposal` carries researched numbers that materially disagree with what is
   // on screen (usually a different product variant). The user chooses; applying
   // is local, so it costs nothing.
@@ -658,6 +674,24 @@ function toParseResult(data: any): ParseMealResult {
     parsed.meal_type === 'breakfast' || parsed.meal_type === 'lunch' ||
     parsed.meal_type === 'dinner' || parsed.meal_type === 'snack'
       ? parsed.meal_type : 'snack';
+  // "Just log it": the server wrote the diary and says which rows, or says why
+  // it did not. Absent on a review-mode response.
+  const rawLogged = data?.logged;
+  const logged: LoggedParseRef | null = rawLogged && Array.isArray(rawLogged.sections)
+    ? {
+      sections: (rawLogged.sections as any[]).flatMap((s) => (
+        typeof s?.meal_id === 'string' && Array.isArray(s.entry_ids)
+          ? [{
+            mealType: isMealType(s.meal_type) ? s.meal_type : mealType,
+            mealId: String(s.meal_id),
+            entryIds: (s.entry_ids as unknown[]).map(String),
+            createdMeal: s.created_meal === true,
+          }]
+          : []
+      )),
+    }
+    : null;
+  const skipped = data?.auto_log_skipped;
   return {
     kind: 'parsed',
     meal: {
@@ -666,6 +700,8 @@ function toParseResult(data: any): ParseMealResult {
       drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
       corrects_previous: parsed.corrects_previous === true,
     },
+    logged,
+    autoLogSkipped: skipped === 'declined' || skipped === 'implausible' || skipped === 'write_error' ? skipped : null,
   };
 }
 
@@ -688,6 +724,23 @@ export interface StreamedItem {
   est_fat_g: number | null;
 }
 
+/** "Just log it" request fields. `tz_offset_min` lets the server turn the
+ *  diary day into the user's local window for its meals lookup, the same
+ *  window dayRange() draws here. */
+function autoLogFields(auto: { clientId: string; logDate: string } | null | undefined, now: Date) {
+  return auto
+    ? { auto_log: true, client_id: auto.clientId, log_date: auto.logDate, tz_offset_min: now.getTimezoneOffset() }
+    : {};
+}
+
+/** The stream dropped after the request left. In "Just log it" the server
+ *  keeps working without us, so re-sending here would only race it; the
+ *  pending list settles it on the next look at the diary. */
+const sentResult = (): ParseMealResult => ({
+  kind: 'sent',
+  message: 'Sent. Drona is adding it to your diary; give it a moment.',
+});
+
 /**
  * Fast mode over SSE: rows appear as soon as the names are known (~1.2s),
  * numbers settle when the catalog answers (~300ms later).
@@ -697,6 +750,12 @@ export interface StreamedItem {
  * user whose network dislikes long-lived responses gets the old behaviour
  * rather than an error, and the only cost is the wait they would have had
  * anyway.
+ *
+ * ONE EXCEPTION: a "Just log it" send (args.autoLog) whose stream drops AFTER
+ * the request left comes back as `sent`, not as a second parse. The server
+ * keeps working after the client hangs up in that mode and writes the diary
+ * itself, so re-sending would race it; the pending list (lib/autoLog) settles
+ * what happened on the next look at the diary.
  *
  * ABANDONED PARSES ARE CANCELLED, ON BOTH SIDES. Pass an AbortSignal and
  * navigating away (or discarding the card) aborts the request; the edge
@@ -762,8 +821,12 @@ export async function parseMealStreaming(
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
           : {}),
+        ...autoLogFields(args.autoLog, now),
       }),
     });
+    // A non-2xx is decided before any parse starts (auth, cap, rate limit), so
+    // the JSON path can take over safely even in "Just log it": nothing has
+    // been written and nothing is still running.
     if (!res.ok || !res.body) return parseMeal(supabase, args);
 
     // Abort releases the socket, which is what tells the edge function nobody
@@ -817,7 +880,9 @@ export async function parseMealStreaming(
     // outcomes take the same road - a stream that never produced a final frame
     // is unusable whether or not it painted rows first - so this is one call,
     // not a ternary onto itself.
-    if (!final) return parseMeal(supabase, args);
+    // In "Just log it" the server is still working on the parse we just lost
+    // sight of, so a second send would only race it; see sentResult.
+    if (!final) return args.autoLog ? sentResult() : parseMeal(supabase, args);
     return final;
   } catch (e) {
     // A deliberate abort is not a failure to retry: the caller has moved on, so
@@ -826,6 +891,9 @@ export async function parseMealStreaming(
     if (signal?.aborted || (e as { name?: string })?.name === 'AbortError') {
       return { kind: 'error', message: 'Cancelled.' };
     }
+    // Same rule as the truncated stream above: in "Just log it" the request
+    // may well have reached the server, which finishes without us.
+    if (args.autoLog) return sentResult();
     return parseMeal(supabase, args);
   }
 }
@@ -846,6 +914,10 @@ export async function parseMeal(
     /** Recent turns of this logging conversation, oldest first. Lets a bare
      *  "yes" answer whatever Drona just offered. */
     turns?: { role: 'user' | 'drona'; text: string }[];
+    /** "Just log it": ask the server to write the diary itself. `clientId` is
+     *  a fresh uuid per send (the idempotency key: a Retry re-uses it and the
+     *  server writes once), `logDate` the diary day (YYYY-MM-DD) to land on. */
+    autoLog?: { clientId: string; logDate: string } | null;
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -872,6 +944,7 @@ export async function parseMeal(
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
           : {}),
+        ...autoLogFields(args.autoLog, now),
         ...(args.previous && args.previous.items.length > 0
           ? {
             previous_text: args.previous.text,
