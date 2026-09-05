@@ -7,11 +7,22 @@ import {
   type MealType,
   type OffProduct,
   type ParseMealDeps,
+  type ParseMealResult,
+  type ParseStep,
   type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
+import {
+  type AutoLogSkip,
+  type AutoLogStore,
+  autoLogBlocker,
+  type LoggedSection,
+  parseAbortFor,
+  readAutoLogRequest,
+  writeAutoLog,
+} from "./autoLog.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
@@ -1559,6 +1570,15 @@ function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): 
     }
   })();
   // Keep the insert alive past the response so a fast return can't drop the trace.
+  keepAlive(p);
+}
+
+/** Keep a promise alive past the response. The edge runtime tears an isolate
+ *  down once its response is done (or its stream cancelled) unless the work is
+ *  registered with waitUntil; this is that registration. Used for the trace
+ *  insert and, in "Just log it" mode, for the parse + diary write that must
+ *  finish after the user has closed the app. */
+function keepAlive(p: Promise<unknown>): void {
   const er = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
   if (er?.waitUntil) er.waitUntil(p); else void p;
 }
@@ -1630,6 +1650,75 @@ function makeParseDeps(
       }));
     },
     log: (msg) => console.log(msg),
+  };
+}
+
+/** The user-scoped client as the auto-log store. RLS holds throughout: meals
+ *  default user_id from the JWT's sub and entries are scoped through their
+ *  parent meal, exactly as the client's own writes are. Never the admin client:
+ *  a bug here must not be able to write into someone else's diary. */
+function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
+  const rows = (data: unknown) => (data ?? []) as Array<Record<string, unknown>>;
+  return {
+    async entriesByClientId(clientId) {
+      const { data, error } = await userClient
+        .from("meal_entries").select("id, meal_id").eq("client_id", clientId);
+      if (error) throw new Error(`entries lookup: ${error.message}`);
+      return rows(data).map((r) => ({ id: String(r.id), meal_id: String(r.meal_id) }));
+    },
+    async mealsById(ids) {
+      if (ids.length === 0) return [];
+      const { data, error } = await userClient
+        .from("meals").select("id, meal_type, client_id").in("id", ids);
+      if (error) throw new Error(`meals lookup: ${error.message}`);
+      return rows(data).map((r) => ({
+        id: String(r.id),
+        meal_type: r.meal_type as MealType,
+        client_id: r.client_id === null || r.client_id === undefined ? null : String(r.client_id),
+      }));
+    },
+    async findMeal(mealType, startIso, endIso) {
+      const { data, error } = await userClient
+        .from("meals").select("id").eq("meal_type", mealType)
+        .gte("logged_at", startIso).lte("logged_at", endIso)
+        .order("logged_at", { ascending: true }).limit(1);
+      if (error) throw new Error(`meal lookup: ${error.message}`);
+      const row = rows(data)[0];
+      return row ? String(row.id) : null;
+    },
+    async createMeal(row) {
+      const { data, error } = await userClient.from("meals").insert(row).select("id").single();
+      if (error) {
+        // 23505 = unique_violation, here on uq_meals_client_id: a concurrent
+        // attempt of this same send created the row first.
+        if (error.code === "23505") return { conflict: true };
+        return { error: error.message };
+      }
+      return { id: String((data as Record<string, unknown>).id) };
+    },
+    async mealByClientId(clientId) {
+      const { data } = await userClient
+        .from("meals").select("id").eq("client_id", clientId).maybeSingle();
+      return data ? String((data as Record<string, unknown>).id) : null;
+    },
+    async countEntries(mealId) {
+      const { count } = await userClient
+        .from("meal_entries").select("id", { count: "exact", head: true }).eq("meal_id", mealId);
+      return count ?? 0;
+    },
+    async insertEntries(entryRows) {
+      const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id");
+      if (error) return { error: error.message };
+      return { ids: rows(data).map((r) => String(r.id)) };
+    },
+    async deleteEntries(ids) {
+      await userClient.from("meal_entries").delete().in("id", ids);
+    },
+    async deleteMealIfEmpty(mealId) {
+      const { count } = await userClient
+        .from("meal_entries").select("id", { count: "exact", head: true }).eq("meal_id", mealId);
+      if ((count ?? 0) === 0) await userClient.from("meals").delete().eq("id", mealId);
+    },
   };
 }
 
@@ -1782,6 +1871,88 @@ async function handleParseMealRequest(args: {
     })
     : [];
 
+  // "Just log it" (plan B). Honoured only with a uuid client_id (the
+  // idempotency key), and never on a follow-up to a meal under review: a card
+  // on screen means the user is in review mode for THAT meal whatever the
+  // sticky toggle says, and auto-writing a correction would log lines the
+  // review card was still holding back.
+  const auto = readAutoLogRequest(body, localDate);
+  const autoLogArmed = auto.autoLog && previousItems.length === 0;
+
+  /** After a parse in auto mode: write the diary, or say why not. Never
+   *  throws. Returns the fields the response carries (`logged` when the write
+   *  happened, `auto_log_skipped` when it did not) and the step the trace
+   *  records. A write error after a good parse still returns the parsed meal,
+   *  so a connected client can fall back to the review card and Add by hand. */
+  const finishAutoLog = async (result: ParseMealResult): Promise<{
+    extra: { logged?: { sections: LoggedSection[] }; auto_log_skipped?: AutoLogSkip };
+    step: ParseStep | null;
+  }> => {
+    if (!autoLogArmed || !auto.clientId) {
+      // Asked for but not armed (a follow-up, or no uuid): say so in the
+      // trace, stay silent on ordinary review-mode requests.
+      return {
+        extra: {},
+        step: auto.autoLog
+          ? { iter: 9, tool: "__auto_log", input: { requested: true, armed: false, auto_logged: false, auto_log_skipped: null } }
+          : null,
+      };
+    }
+    let extra: { logged?: { sections: LoggedSection[] }; auto_log_skipped?: AutoLogSkip } = {};
+    let reason: string | null = null;
+    let replayed = false;
+    if (!result.parsed || result.declined) {
+      // A declined parse never logs, whatever mode the user is in.
+      extra = { auto_log_skipped: "declined" };
+    } else if ((reason = autoLogBlocker(result.parsed.items)) !== null) {
+      // Trust mode is for ordinary meals, not the one the parser itself doubts.
+      extra = { auto_log_skipped: "implausible" };
+    } else {
+      try {
+        const write = await writeAutoLog(supabaseAutoLogStore(userClient), {
+          clientId: auto.clientId,
+          items: result.parsed.items,
+          fallbackMeal: result.parsed.meal_type,
+          logDate: auto.logDate ?? new Date().toISOString().slice(0, 10),
+          tzOffsetMin: auto.tzOffsetMin,
+        });
+        if ("error" in write) {
+          reason = write.error;
+          extra = { auto_log_skipped: "write_error" };
+        } else {
+          extra = { logged: write.logged };
+          replayed = write.replayed;
+        }
+      } catch (e) {
+        reason = String(e).slice(0, 200);
+        extra = { auto_log_skipped: "write_error" };
+      }
+      if (extra.auto_log_skipped === "write_error") {
+        console.log(`[parse_meal] auto-log write failed: ${reason}`);
+      }
+    }
+    return {
+      extra,
+      step: {
+        iter: 9,
+        tool: "__auto_log",
+        input: {
+          requested: true,
+          armed: true,
+          client_id: auto.clientId,
+          log_date: auto.logDate,
+          auto_logged: !!extra.logged,
+          auto_log_skipped: extra.auto_log_skipped ?? null,
+          reason,
+          replayed,
+          sections: extra.logged?.sections.map((s) => ({
+            meal_type: s.meal_type, meal_id: s.meal_id, entries: s.entry_ids.length, created_meal: s.created_meal,
+          })) ?? null,
+        },
+      },
+    };
+  };
+
   // Context (recents/targets/totals) is only needed by the DECIDE stage. Fire
   // it here WITHOUT awaiting so the queries run concurrently with the extract
   // model call; runParseMeal awaits contextPromise after extract. This hides
@@ -1842,11 +2013,15 @@ async function handleParseMealRequest(args: {
     // tokens on a result nobody would see. The client-side AbortController in
     // dietData.ts is the other half; on its own it stopped the app reading,
     // not the server working.
-    const abort = new AbortController();
+    //
+    // EXCEPT in "Just log it" mode. There the client hanging up is the expected
+    // path (type, send, close the app), so cancel() is a no-op and the parse
+    // runs through to the diary write. parseAbortFor scopes that to the flag.
+    const abort = parseAbortFor(autoLogArmed);
     const deps = { ...makeParseDeps(userClient, admin, userId), abortSignal: abort.signal };
     const stream = new ReadableStream({
       cancel() {
-        abort.abort();
+        abort.cancel();
       },
       async start(controller) {
         const send = (event: string, data: unknown) => {
@@ -1857,130 +2032,143 @@ async function handleParseMealRequest(args: {
             // parse over: the trace below still records what happened.
           }
         };
-        try {
-          const result = await runParseMeal(
-            { ...deps, onProgress: (p) => send(p.kind, p) },
-            {
-              text,
-              localHour,
-              mealHint,
-              mode: "fast",
-              recentFoods: [],
-              todayTotals: null,
-              targets: null,
-              contextPromise,
-              previousText: previousText ?? null,
-              previousItems,
-              recentTurns,
-            },
-          );
-          send("end", {
-            parsed: result.parsed,
-            declined: result.declined,
-            proposal: result.proposal ?? null,
-          });
-          void recordParseTrace(admin, {
-            user_id: userId,
-            input_text: text.slice(0, 500),
-            meal_hint: mealHint,
-            model: PARSE_MEAL_MODEL,
-            outcome: result.parsed ? "meal" : "declined",
-            message: result.declined?.message ?? null,
-            iterations: result.iterations,
-            // The streaming path never recorded edge timing, so everything
-            // outside extract/resolve was invisible and got lumped together as
-            // unexplained latency. pre_parse_ms is auth + the rate-limit write
-            // before the parse starts; run_parse_ms brackets the parse itself,
-            // so latency - pre - run is what the response and trace cost.
-            steps: [...result.steps, {
-              iter: 9,
-              tool: "__edge_timing",
-              input: {
-                pre_parse_ms: preParseMs,
-                run_parse_ms: Date.now() - runParse0,
-                cold_isolate: PARSE_ISOLATE_REQUESTS <= 1,
-                region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
-                  Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
-                streamed: true,
+        // Just log it: the user may have closed the app already, and the
+        // runtime tears the isolate down once the stream is cancelled unless
+        // the work is registered with waitUntil. Review mode is unchanged:
+        // the client leaving aborts the parse (see parseAbortFor above).
+        const work = (async () => {
+          try {
+            const result = await runParseMeal(
+              { ...deps, onProgress: (p) => send(p.kind, p) },
+              {
+                text,
+                localHour,
+                mealHint,
+                mode: "fast",
+                recentFoods: [],
+                todayTotals: null,
+                targets: null,
+                contextPromise,
+                previousText: previousText ?? null,
+                previousItems,
+                recentTurns,
               },
-            }],
-            items: result.parsed?.items ?? null,
-            input_tokens: result.usage.input_tokens,
-            output_tokens: result.usage.output_tokens,
-            web_search_requests: result.usage.web_search_requests,
-            latency_ms: Date.now() - startedAtMs,
-          });
-          // COST. recordTrace writes coach_traces; logTokenUsage writes the
-          // token-cost table that cost_summary, cost_by_day and the admin
-          // pages read. They are separate calls, and the SSE branch had
-          // NEITHER - so a fix that only added recordTrace still left every
-          // streamed parse invisible to cost reporting. Fast+streaming is the
-          // default tier, so that was most parses. Same shape as the JSON path.
-          void logTokenUsage(admin, {
-            pipeline: "parse_meal",
-            provider: "anthropic",
-            model: PARSE_MEAL_MODEL,
-            input_tokens: result.usage.input_tokens,
-            output_tokens: result.usage.output_tokens,
-            cache_read_tokens: result.usage.cache_read_input_tokens,
-            cache_creation_tokens: result.usage.cache_creation_input_tokens,
-            latency_ms: Date.now() - startedAtMs,
-            status: "success",
-            metadata: {
+            );
+            // The diary write happens BEFORE `end` so a connected client's
+            // strip goes straight to "Added" with the ids Undo needs.
+            const autoRes = await finishAutoLog(result);
+            send("end", {
+              parsed: result.parsed,
+              declined: result.declined,
+              proposal: result.proposal ?? null,
+              // Just log it: `logged` when the diary was written, else why not.
+              ...autoRes.extra,
+            });
+            void recordParseTrace(admin, {
               user_id: userId,
-              mode: "parse_meal",
-              streamed: true,
-              item_count: result.parsed?.items.length ?? 0,
-              sources: result.parsed?.items.map((i) => i.source) ?? [],
-              declined: result.declined !== null,
+              input_text: text.slice(0, 500),
+              meal_hint: mealHint,
+              model: PARSE_MEAL_MODEL,
+              outcome: result.parsed ? "meal" : "declined",
+              message: result.declined?.message ?? null,
+              iterations: result.iterations,
+              // The streaming path never recorded edge timing, so everything
+              // outside extract/resolve was invisible and got lumped together as
+              // unexplained latency. pre_parse_ms is auth + the rate-limit write
+              // before the parse starts; run_parse_ms brackets the parse itself,
+              // so latency - pre - run is what the response and trace cost.
+              steps: [...result.steps, ...(autoRes.step ? [autoRes.step] : []), {
+                iter: 9,
+                tool: "__edge_timing",
+                input: {
+                  pre_parse_ms: preParseMs,
+                  run_parse_ms: Date.now() - runParse0,
+                  cold_isolate: PARSE_ISOLATE_REQUESTS <= 1,
+                  region: Deno.env.get("SB_REGION") ?? Deno.env.get("SB_EXECUTION_REGION") ??
+                    Deno.env.get("DENO_REGION") ?? Deno.env.get("AWS_REGION") ?? "unknown",
+                  streamed: true,
+                },
+              }],
+              items: result.parsed?.items ?? null,
+              input_tokens: result.usage.input_tokens,
+              output_tokens: result.usage.output_tokens,
               web_search_requests: result.usage.web_search_requests,
-              tool_calls: result.tool_calls,
-            },
-          });
-          // coach_traces too. The JSON path gets this for free because it
-          // returns through respond(), which calls recordTrace; the SSE path
-          // returns its own Response.
-          trace.status = "success";
-          trace.http_status = 200;
-          trace.input_tokens = result.usage.input_tokens || null;
-          trace.output_tokens = result.usage.output_tokens || null;
-          trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
-          trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
-          trace.tool_calls = result.tool_calls;
-          trace.response_preview = preview(
-            result.parsed
-              ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
-              : result.declined?.message ?? null,
-          );
-          await recordTrace(admin, trace, startedAtMs);
-        } catch (e) {
-          // The client has already been given a 200 and possibly some rows, so
-          // the failure has to arrive as an event; there is no status code left
-          // to change. The client treats this exactly like a failed request.
-          send("error", { message: String(e).slice(0, 200) });
-          // The stream still cost tokens and still has to appear in the cost
-          // table, so record the failure rather than dropping it silently.
-          // usage is unavailable on this path (the throw may predate it), so
-          // the row carries zeros and the error - it marks the attempt as
-          // having happened rather than inventing numbers.
-          void logTokenUsage(admin, {
-            pipeline: "parse_meal",
-            provider: "anthropic",
-            model: PARSE_MEAL_MODEL,
-            input_tokens: 0,
-            output_tokens: 0,
-            latency_ms: Date.now() - startedAtMs,
-            status: "error",
-            error_message: String(e).slice(0, 300),
-            metadata: { user_id: userId, mode: "parse_meal", streamed: true },
-          });
-          trace.status = "internal_error";
-          trace.http_status = 200;
-          trace.error_message = String(e).slice(0, 300);
-          try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
-        } finally {
-          controller.close();
-        }
+              latency_ms: Date.now() - startedAtMs,
+            });
+            // COST. recordTrace writes coach_traces; logTokenUsage writes the
+            // token-cost table that cost_summary, cost_by_day and the admin
+            // pages read. They are separate calls, and the SSE branch had
+            // NEITHER - so a fix that only added recordTrace still left every
+            // streamed parse invisible to cost reporting. Fast+streaming is the
+            // default tier, so that was most parses. Same shape as the JSON path.
+            void logTokenUsage(admin, {
+              pipeline: "parse_meal",
+              provider: "anthropic",
+              model: PARSE_MEAL_MODEL,
+              input_tokens: result.usage.input_tokens,
+              output_tokens: result.usage.output_tokens,
+              cache_read_tokens: result.usage.cache_read_input_tokens,
+              cache_creation_tokens: result.usage.cache_creation_input_tokens,
+              latency_ms: Date.now() - startedAtMs,
+              status: "success",
+              metadata: {
+                user_id: userId,
+                mode: "parse_meal",
+                streamed: true,
+                item_count: result.parsed?.items.length ?? 0,
+                sources: result.parsed?.items.map((i) => i.source) ?? [],
+                declined: result.declined !== null,
+                web_search_requests: result.usage.web_search_requests,
+                tool_calls: result.tool_calls,
+              },
+            });
+            // coach_traces too. The JSON path gets this for free because it
+            // returns through respond(), which calls recordTrace; the SSE path
+            // returns its own Response.
+            trace.status = "success";
+            trace.http_status = 200;
+            trace.input_tokens = result.usage.input_tokens || null;
+            trace.output_tokens = result.usage.output_tokens || null;
+            trace.cache_creation_input_tokens = result.usage.cache_creation_input_tokens || null;
+            trace.cache_read_input_tokens = result.usage.cache_read_input_tokens || null;
+            trace.tool_calls = result.tool_calls;
+            trace.response_preview = preview(
+              result.parsed
+                ? `${result.parsed.drona_line} [${result.parsed.items.map((i) => i.food_name).join(", ")}]`
+                : result.declined?.message ?? null,
+            );
+            await recordTrace(admin, trace, startedAtMs);
+          } catch (e) {
+            // The client has already been given a 200 and possibly some rows, so
+            // the failure has to arrive as an event; there is no status code left
+            // to change. The client treats this exactly like a failed request.
+            send("error", { message: String(e).slice(0, 200) });
+            // The stream still cost tokens and still has to appear in the cost
+            // table, so record the failure rather than dropping it silently.
+            // usage is unavailable on this path (the throw may predate it), so
+            // the row carries zeros and the error - it marks the attempt as
+            // having happened rather than inventing numbers.
+            void logTokenUsage(admin, {
+              pipeline: "parse_meal",
+              provider: "anthropic",
+              model: PARSE_MEAL_MODEL,
+              input_tokens: 0,
+              output_tokens: 0,
+              latency_ms: Date.now() - startedAtMs,
+              status: "error",
+              error_message: String(e).slice(0, 300),
+              metadata: { user_id: userId, mode: "parse_meal", streamed: true },
+            });
+            trace.status = "internal_error";
+            trace.http_status = 200;
+            trace.error_message = String(e).slice(0, 300);
+            try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
+          } finally {
+            controller.close();
+          }
+        })();
+        if (autoLogArmed) keepAlive(work);
+        await work;
       },
     });
     return new Response(stream, {
@@ -1996,27 +2184,35 @@ async function handleParseMealRequest(args: {
   }
 
   try {
-    const result = await runParseMeal(
-      makeParseDeps(userClient, admin, userId),
-      {
-        text,
-        localHour,
-        mealHint,
-        // Client-chosen, server-killable. PARSE_FAST_MODE=off ignores the
-        // client entirely, so a bad Fast rollout dies with one env change and
-        // no app release.
-        mode: wantsFast ? "fast" : null,
-        // Placeholders; the real values are awaited from contextPromise inside
-        // runParseMeal (after extract), so these queries overlap extraction.
-        recentFoods: [],
-        todayTotals: null,
-        targets: null,
-        contextPromise,
-        previousText,
-        previousItems,
-        recentTurns,
-      },
-    );
+    // Just log it on the JSON path: the parse AND the diary write stay alive
+    // past the response, so a client that drops the connection mid-wait
+    // still gets its meal logged. Same rule the stream applies.
+    const work = (async () => {
+      const result = await runParseMeal(
+        makeParseDeps(userClient, admin, userId),
+        {
+          text,
+          localHour,
+          mealHint,
+          // Client-chosen, server-killable. PARSE_FAST_MODE=off ignores the
+          // client entirely, so a bad Fast rollout dies with one env change and
+          // no app release.
+          mode: wantsFast ? "fast" : null,
+          // Placeholders; the real values are awaited from contextPromise inside
+          // runParseMeal (after extract), so these queries overlap extraction.
+          recentFoods: [],
+          todayTotals: null,
+          targets: null,
+          contextPromise,
+          previousText,
+          previousItems,
+          recentTurns,
+        },
+      );
+      return { result, autoRes: await finishAutoLog(result) };
+    })();
+    if (autoLogArmed) keepAlive(work);
+    const { result, autoRes } = await work;
 
     trace.status = "success";
     trace.input_tokens = result.usage.input_tokens || null;
@@ -2055,6 +2251,7 @@ async function handleParseMealRequest(args: {
     // observability + eval, whether or not the user ends up logging it.
     const edgeSteps = [
       ...result.steps,
+      ...(autoRes.step ? [autoRes.step] : []),
       {
         iter: 9,
         tool: "__edge_timing",
@@ -2089,6 +2286,8 @@ async function handleParseMealRequest(args: {
         declined: result.declined,
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
+        // Just log it: `logged` when the diary was written, else why not.
+        ...autoRes.extra,
         usage: result.usage,
         tool_calls: result.tool_calls,
       },
