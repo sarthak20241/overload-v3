@@ -39,7 +39,17 @@ if (!SUPABASE_URL || !SERVICE_KEY) {
 
 const args = Deno.args;
 const DRY_RUN = args.includes("--dry-run");
-const LIMIT = Number(args.find((a) => a.startsWith("--limit="))?.split("=")[1] ?? 200);
+// Validated, not just parsed. The workflow passes whatever an operator typed
+// into the Actions box straight through, and `Number("200 --dry-run")` is NaN,
+// which PostgREST turns into `.limit(NaN)` - a request that either errors far
+// from here or silently returns nothing. A bad value should stop the run where
+// it was typed, with the value in the message.
+const rawLimit = args.find((a) => a.startsWith("--limit="))?.split("=")[1];
+const LIMIT = rawLimit === undefined ? 200 : Number(rawLimit);
+if (!Number.isInteger(LIMIT) || LIMIT < 1 || LIMIT > 5000) {
+  console.error(`--limit must be a whole number between 1 and 5000, got ${JSON.stringify(rawLimit)}`);
+  Deno.exit(2);
+}
 
 const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
