@@ -2,17 +2,20 @@
  * ParseSpeedSheet — how should Drona log what you type?
  *
  * Two tiers, set once and sticky (lib/parseSpeed): Quick is the default
- * estimate-first fast parse, Thorough is the full catalog pipeline. Portal
- * sheet like the other diet sheets; no keyboard input, so the plain
- * SlideInDown idiom (DayPickerSheet's) is enough and useSheetSlide is not
- * needed. Copy stays in Drona's voice: what he does, never which model ran.
+ * estimate-first fast parse, Thorough is the full catalog pipeline. Below them,
+ * one switch: "Just log it" (lib/autoLog), where send commits and the server
+ * writes the diary itself. One sheet answers the whole question of how Drona
+ * logs, so the composer grows no extra chrome. Portal sheet like the other
+ * diet sheets; no keyboard input, so the plain SlideInDown idiom
+ * (DayPickerSheet's) is enough and useSheetSlide is not needed. Copy stays in
+ * Drona's voice: what he does, never which model ran.
  */
 import { useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet, BackHandler } from 'react-native';
+import { View, Text, Pressable, StyleSheet, BackHandler, Switch, Platform } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
+import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
@@ -21,8 +24,11 @@ import type { ParseSpeed } from '@/lib/parseSpeed';
 interface Props {
   open: boolean;
   value: ParseSpeed;
+  /** "Just log it" is on: send commits, no review card. */
+  autoLog: boolean;
   onClose: () => void;
   onPick: (v: ParseSpeed) => void;
+  onAutoLogChange: (on: boolean) => void;
 }
 
 const OPTIONS: { key: ParseSpeed; icon: 'zap' | 'target'; title: string; sub: string }[] = [
@@ -30,7 +36,7 @@ const OPTIONS: { key: ParseSpeed; icon: 'zap' | 'target'; title: string; sub: st
   { key: 'thorough', icon: 'target', title: 'Thorough', sub: 'A few seconds slower. Drona double-checks every item against the food catalog.' },
 ];
 
-export function ParseSpeedSheet({ open, value, onClose, onPick }: Props) {
+export function ParseSpeedSheet({ open, value, autoLog, onClose, onPick, onAutoLogChange }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -82,6 +88,30 @@ export function ParseSpeedSheet({ open, value, onClose, onPick }: Props) {
                 </Pressable>
               );
             })}
+
+            {/* "Just log it": a switch, not a third tier. It changes WHAT send
+                does (commit), not how the parse runs, so it sits apart from the
+                tiers and the sheet stays open when it flips: the user may want
+                to read the sub-copy twice before trusting it. */}
+            <View style={[s.toggleRow, { borderTopColor: C.borderSubtle }]}>
+              <View style={[s.rowIcon, { backgroundColor: autoLog ? C.primarySubtle : C.muted }]}>
+                <Feather name="check-circle" size={12} color={autoLog ? C.accentText : C.textSecondary} />
+              </View>
+              <View style={s.rowBody}>
+                <Text style={[s.rowTitle, { color: C.foreground }]}>Just log it</Text>
+                <Text style={[s.rowSub, { color: C.textSecondary }]}>
+                  Drona adds it straight to your diary. Close the app if you like. Undo from the diary any time.
+                </Text>
+              </View>
+              <Switch
+                value={autoLog}
+                onValueChange={(v) => { haptics.selection(); onAutoLogChange(v); }}
+                trackColor={{ true: Colors.primary, false: C.border }}
+                thumbColor={Platform.OS === 'android' ? (autoLog ? Colors.primaryFg : '#f4f4f5') : undefined}
+                ios_backgroundColor={C.border}
+                accessibilityLabel="Just log it. Drona adds what you type straight to your diary."
+              />
+            </View>
           </Pressable>
         </Animated.View>
       </Pressable>
@@ -100,4 +130,10 @@ const s = StyleSheet.create({
   rowTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   rowSub: { fontSize: FontSize.sm, marginTop: 2, lineHeight: 17 },
   check: { width: 18, alignItems: 'center' },
+  // Same inner rhythm as the tier rows (icon, body, control) but no card
+  // border: it is a setting under the choice, not a third choice.
+  toggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    marginTop: Spacing.sm, paddingTop: Spacing.lg, paddingHorizontal: Spacing.md, borderTopWidth: 1,
+  },
 });
