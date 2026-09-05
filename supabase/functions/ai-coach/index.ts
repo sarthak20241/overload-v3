@@ -12,6 +12,7 @@ import {
   runParseMeal,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
+import type { PreciseCacheRow } from "./preciseCache.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 
@@ -96,6 +97,14 @@ const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "fals
 const PARSE_FAST_GRAMMAR = (Deno.env.get("PARSE_FAST_GRAMMAR") ?? "shadow") as "off" | "shadow" | "on";
 // Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
 // server never routes anyone to fast on its own.
+// Phase 7b: the precise-cache read short-circuit. Default ON, env kill-switch
+// only, matching PARSE_MEAL_WEB_SEARCH - a cache that cannot be turned off
+// without a redeploy is a cache that will be redeployed at the worst moment.
+// Phase 7b: the Super tier. Default OFF - it spends money on every uncached
+// item, so it has to be switched on deliberately rather than arrive with a
+// deploy.
+const PARSE_SUPER_MODE = Deno.env.get("PARSE_SUPER_MODE") ?? "off";
+const PARSE_PRECISE_CACHE = Deno.env.get("PARSE_PRECISE_CACHE") !== "false";
 const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
@@ -1593,6 +1602,35 @@ function makeParseDeps(
           (m) => console.log(m),
         )
       : undefined,
+    // Service role, not userClient: 0109 revokes precise_cache from anon and
+    // authenticated and grants precise_cache_get to service_role alone, so a
+    // user-scoped call returns nothing rather than erroring - a silent miss on
+    // every lookup. Same reasoning as backfillOffFood above.
+    preciseCacheGet: PARSE_PRECISE_CACHE
+      ? async (key: string) => {
+        const { data, error } = await admin
+          .rpc("precise_cache_get", { p_key: key })
+          .maybeSingle();
+        if (error) {
+          console.log(`[parse_meal] precise_cache_get failed: ${error.message}`);
+          return null;
+        }
+        return (data as PreciseCacheRow | null) ?? null;
+      }
+      : undefined,
+    // Service role again, and upsert on cache_key so a re-verification refreshes
+    // the row rather than colliding. last_verified_at is set explicitly on every
+    // write: leaving it to the column default would only stamp inserts, so a
+    // re-verified row would keep its original date and age out on schedule
+    // despite having just been confirmed.
+    preciseCachePut: PARSE_PRECISE_CACHE
+      ? async (row) => {
+        const { error } = await admin
+          .from("precise_cache")
+          .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" });
+        if (error) console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
+      }
+      : undefined,
     skipDecideMode: PARSE_SKIP_DECIDE,
     fastGrammarMode: PARSE_FAST_GRAMMAR,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
@@ -1832,6 +1870,16 @@ async function handleParseMealRequest(args: {
   // from the app, and the eval never caught it because it calls runParseMeal
   // directly and never crosses this HTTP boundary.
   const wantsFast = body.speed === "fast" && PARSE_FAST_MODE !== "off";
+  // Super is opt-in per request like fast, and gated the same way. It is NOT
+  // credit-gated here yet: 7c owns that, and shipping the gate before the tier
+  // works would only mean debugging two things at once.
+  const wantsSuper = body.speed === "super" && PARSE_SUPER_MODE !== "off";
+  // Streaming is Fast's alone, deliberately: the stream exists to paint rows
+  // while the numbers settle, and Super's answer arrives whole after a web
+  // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
+  // gap in the Super wiring - Super runs entirely in the non-streaming branch
+  // below, and the hardcoded "fast" in this block's trace line is correct
+  // because this block cannot be reached any other way.
   const wantsStream = body.stream === true && wantsFast;
 
   if (wantsStream) {
@@ -2005,7 +2053,7 @@ async function handleParseMealRequest(args: {
         // Client-chosen, server-killable. PARSE_FAST_MODE=off ignores the
         // client entirely, so a bad Fast rollout dies with one env change and
         // no app release.
-        mode: wantsFast ? "fast" : null,
+        mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
         // Placeholders; the real values are awaited from contextPromise inside
         // runParseMeal (after extract), so these queries overlap extraction.
         recentFoods: [],

@@ -26,6 +26,12 @@
 
 import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
+import {
+  cacheKey,
+  meetsVerificationBar,
+  type PreciseCacheRow,
+  type SourceReading,
+} from "./preciseCache.ts";
 import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -36,7 +42,14 @@ export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
  *  be persisted (their terms allow serving a request, not replicating the DB),
  *  but decide selects candidates BY id, so they still need to be addressable.
  *  These ids are resolved from the in-memory candidate map and stripped before
- *  anything reaches meal_entries, whose food_id is a real uuid FK. */
+ *  anything reaches meal_entries, whose food_id is a real uuid FK.
+ *
+ *  Super's cache and web candidates use the same mechanism for the same reason:
+ *  they are real numbers that are not (yet) catalog rows. Without an id decide
+ *  cannot select them, so it silently estimates instead - measured on the
+ *  canonical case, where a correct 197 kcal/100 g web answer was resolved and
+ *  then ignored because it was unaddressable. 7d's nightly job is what turns a
+ *  verified cache row into a real, persistable food_id. */
 export const EPHEMERAL_ID_PREFIX = "fs:";
 
 export function isEphemeralId(id: string | null): boolean {
@@ -682,9 +695,11 @@ export interface ParseMealInput {
   localHour: number | null;
   mealHint: MealType | null;
   /** "fast": one model call names AND estimates, catalog resolve, code fill,
-   *  no decide. Honoured only on a first-shot log; with a meal on screen the
+   *  no decide. "super": the precise cache, then a per-item web lookup inside
+   *  the resolve fan-out, then the full pipeline on verified numbers.
+   *  Both are honoured only on a first-shot log; with a meal on screen the
    *  turn may be a correction and falls through to the full pipeline. */
-  mode?: "fast" | null;
+  mode?: "fast" | "super" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
@@ -774,6 +789,36 @@ export interface ParseMealDeps {
   // Tier 2b: FatSecret lookup. Optional - absent when no credentials are
   // configured, which is how the source stays behind a flag.
   searchFatSecret?(query: string): Promise<CandidateFood[]>;
+
+  /** Super only: read the precise cache before spending a web lookup. Optional
+   *  in the same way searchFatSecret is - absent means the source is simply not
+   *  available, and every call site guards on it, so the eval harness and any
+   *  deploy without the migration degrade silently instead of throwing.
+   *  Structural on purpose (no supabase-js types); index.ts binds it to the
+   *  SERVICE-ROLE client, because 0109 grants precise_cache to service_role
+   *  only and a user-scoped read would return nothing. */
+  preciseCacheGet?(key: string): Promise<PreciseCacheRow | null>;
+
+  /** Super only: store what a lookup cost us to learn, so the next person asking
+   *  about this food does not pay for it again. Upsert on cache_key; a
+   *  re-verification must set last_verified_at = now() or the row ages out on
+   *  its first sighting. Optional and structural for the same reasons as the
+   *  read above. */
+  preciseCachePut?(row: {
+    cache_key: string;
+    display_name: string;
+    brand: string | null;
+    base_unit: "g" | "ml";
+    kcal: number;
+    protein_g: number;
+    carb_g: number;
+    fat_g: number;
+    fiber_g: number | null;
+    servings: { label: string; grams: number }[];
+    evidence: SourceReading[];
+    verified: boolean;
+    source_note: string | null;
+  }): Promise<void>;
   // Cross-encoder rerank over the merged candidate docs. Optional - absent
   // when unconfigured; the merge order stands. See rerank.ts.
   rerankCandidates?(query: string, docs: string[]): Promise<{
@@ -1223,6 +1268,108 @@ const WEB_LOOKUP_TOOL = {
   },
 };
 
+/**
+ * Super's lookup tool. Deliberately NOT report_labels.
+ *
+ * report_labels answers "what is this food's number?" and its prompt says to
+ * pick the most credible source and never average. That is right for the
+ * challenge path, where one trustworthy panel settles an argument.
+ *
+ * Super asks a different question: "who says so, and do they agree?" A row is
+ * only verified when two INDEPENDENT sources land within 10% of the number we
+ * keep (meetsVerificationBar), and independenceKey identifies a web source by
+ * its HOST. So each reading has to arrive separately and carry its url, and a
+ * merged best-guess is useless here however credible it is. Two shapes for two
+ * questions; folding them together would break one of them.
+ *
+ * A reading with no url still counts, but every such reading collapses to the
+ * same "web:unknown" key, so a model that skips urls cannot manufacture a
+ * second source by repeating itself.
+ */
+const SUPER_LOOKUP_TOOL = {
+  name: "report_sources",
+  description:
+    "Report every nutrition source you found, once, after your searches. One entry per " +
+    "SOURCE per food, not one per food: two sites that agree are two entries. " +
+    "found=false when nothing trustworthy surfaced for that food.",
+  input_schema: {
+    type: "object",
+    properties: {
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            for_item: { type: "string", description: "The item name EXACTLY as given to you." },
+            found: { type: "boolean" },
+            readings: {
+              type: "array",
+              description:
+                "One entry per source you actually read. Do NOT merge or average them: " +
+                "reporting them separately is the whole point, because agreement between " +
+                "independent sources is what gets a number trusted.",
+              items: {
+                type: "object",
+                properties: {
+                  url: {
+                    type: ["string", "null"],
+                    description:
+                      "Full url of the page you read these numbers from. The site identifies " +
+                      "the source, so pages from one site count once however many you read.",
+                  },
+                  per_100: {
+                    type: "object",
+                    description:
+                      "Macros per 100 g (or 100 ml for liquids) from THIS source. " +
+                      "Use null for anything this page does not state. Do NOT write 0 for " +
+                      "a value that is simply missing: 0 is a claim that the food contains " +
+                      "none, and cooking oil really does have 0 g protein.",
+                    properties: {
+                      kcal: { type: "number" },
+                      // Nullable, and that is the whole fix. These were required
+                      // numbers, so a page that printed no protein left the model
+                      // no way to say so - it had to write something, and it wrote
+                      // 0. Three sources for Cadbury Gems came back [0, 3.6, 0]
+                      // where two of the zeros meant "not stated", and the median
+                      // dutifully returned 0 g protein for milk chocolate.
+                      // A spurious zero can only ever drag a median DOWN, which is
+                      // why measured protein leaned low rather than being noisy.
+                      protein_g: { type: ["number", "null"] },
+                      carb_g: { type: ["number", "null"] },
+                      fat_g: { type: ["number", "null"] },
+                      fiber_g: { type: ["number", "null"] },
+                    },
+                    // kcal only. A reading with no energy is not a reading; a
+                    // reading with no protein is a reading with no protein.
+                    required: ["kcal"],
+                  },
+                },
+                required: ["per_100"],
+              },
+            },
+            serving_label: {
+              type: ["string", "null"],
+              description:
+                'The pack\'s own serving if one is stated, e.g. "1 biscuit (11 g)" or ' +
+                '"30 g". null for a dish or when no serving is printed.',
+            },
+            serving_grams: { type: ["number", "null"], description: "That serving in grams. null when unknown." },
+            source_note: {
+              type: ["string", "null"],
+              description:
+                'Short note for the user. For a packaged food name the label ("per the ' +
+                'Britannia label"). For a DISH say what it represents ("typical restaurant ' +
+                'preparation"), so a measured panel is distinguishable from a typical value.',
+            },
+          },
+          required: ["for_item", "found"],
+        },
+      },
+    },
+    required: ["results"],
+  },
+};
+
 interface WebLabel {
   per_100: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
   source_note: string | null;
@@ -1367,6 +1514,169 @@ async function runWebLookup(
           // here would reach the result unclamped.
           fiber_g: typeof p.fiber_g === "number" && Number.isFinite(p.fiber_g) && p.fiber_g >= 0 ? p.fiber_g : null,
         },
+        source_note: typeof o.source_note === "string" && o.source_note.trim()
+          ? scrubDashes(o.source_note).slice(0, 80)
+          : null,
+      });
+    }
+    return out.size > 0 ? out : null;
+  }
+  return null;
+}
+
+/** What Super learned about one food: every reading, plus the pack's own
+ *  serving when it states one. */
+export interface SuperFinding {
+  readings: SourceReading[];
+  serving_label: string | null;
+  serving_grams: number | null;
+  source_note: string | null;
+}
+
+/**
+ * Super's web lookup: same bounded loop as runWebLookup, different question.
+ *
+ * Asks for every source separately rather than one settled answer, because
+ * verification is agreement BETWEEN sources and a merged number has already
+ * thrown that away. Shares WEB_SEARCH_TOOL's max_uses cap and the pause-turn
+ * handling, both of which are load-bearing and already proven on the challenge
+ * path.
+ */
+/** Which provider a url actually is. FatSecret and Open Food Facts are named
+ *  because independenceKey treats them differently from an anonymous site:
+ *  FatSecret can never verify a row (their terms), and all OFF pages are one
+ *  source however many are read. Anything else is an ordinary web source. */
+function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
+  if (!ref) return "web";
+  let host = "";
+  try {
+    host = new URL(ref).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "web";
+  }
+  if (host === "fatsecret.com" || host.endsWith(".fatsecret.com") || /(^|\.)fatsecret\.[a-z.]+$/.test(host)) {
+    return "fatsecret";
+  }
+  if (host === "openfoodfacts.org" || host.endsWith(".openfoodfacts.org")) return "off";
+  return "web";
+}
+
+export async function runSuperLookup(
+  deps: ParseMealDeps,
+  items: ExtractedItem[],
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<Map<string, SuperFinding> | null> {
+  const webDeps = { ...deps, timeoutMs: Math.min(deps.timeoutMs, WEB_LOOKUP_TIMEOUT_MS) };
+  const system =
+    "You verify nutrition numbers for a fitness app. For EACH food, find TWO OR MORE " +
+    "INDEPENDENT sources, then call report_sources exactly once.\n" +
+    "Independent means different sites. Two pages of one site are ONE source, so a " +
+    "second page there is wasted effort. Report each source as its own reading with " +
+    "the url you read it from. Do NOT merge, average or pick between them: whether " +
+    "they agree is the app's decision, not yours, and it cannot be made from a " +
+    "number you already blended.\n" +
+    'PACKAGED OR BRANDED: prefer the brand\'s own panel, then reputable label ' +
+    "listings. Record the pack's stated serving when it prints one.\n" +
+    "A DISH (no wrapper: chole bhature, paneer bhurji, a restaurant plate): there is " +
+    "no label and you must not wait for one. Use reputable nutrition databases or " +
+    'published analyses for a TYPICAL preparation, and say so in source_note.\n' +
+    "Give ALL FOUR of kcal, protein_g, carb_g and fat_g for every reading. A panel " +
+    "that lists energy without macros is half a row and the app cannot log it, so " +
+    "read the full panel or find a source that shows one.\n" +
+    "FatSecret pages do not count toward agreement, so a FatSecret listing alone " +
+    "leaves a food unconfirmed. Report it if it is what you have, but look for a " +
+    "brand site or another database as well.\n" +
+    "Report a food as found=false when nothing trustworthy surfaced. One source is " +
+    "still worth reporting: the app decides what one source is worth. Never invent a " +
+    "url and never invent numbers. Speed matters: no prose.";
+  const conversation: AnthropicMsg[] = [{
+    role: "user",
+    content: JSON.stringify(items.map((i) => ({ name: i.name, ...(i.brand ? { brand: i.brand } : {}) }))),
+  }];
+
+  for (let turn = 0; turn < WEB_LOOKUP_MAX_TURNS; turn++) {
+    const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
+    const result = await callAnthropicOnce(webDeps, {
+      model: deps.model,
+      max_tokens: 1200,
+      system,
+      tools: [WEB_SEARCH_TOOL, SUPER_LOOKUP_TOOL],
+      messages: conversation,
+      ...(lastTurn ? { tool_choice: { type: "tool", name: "report_sources" } } : {}),
+    });
+    if (!result.ok) {
+      deps.log?.(`[parse_meal] super lookup failed: ${result.status}`);
+      return null;
+    }
+    onCall();
+    onUsage(result.data);
+    const blocks: Array<Record<string, any>> = result.data.content ?? [];
+    if (result.data.stop_reason === "pause_turn") {
+      conversation.push({ role: "assistant", content: blocks });
+      continue;
+    }
+    const report = blocks.find((b) => b.type === "tool_use" && b.name === "report_sources");
+    if (!report) {
+      conversation.push({ role: "assistant", content: blocks });
+      conversation.push({ role: "user", content: "Call report_sources now with what you have." });
+      continue;
+    }
+    const out = new Map<string, SuperFinding>();
+    const results = (report.input as Record<string, unknown>)?.results;
+    for (const r of Array.isArray(results) ? results : []) {
+      const o = r as Record<string, any>;
+      if (o.found !== true || typeof o.for_item !== "string") continue;
+      const readings: SourceReading[] = [];
+      for (const raw of Array.isArray(o.readings) ? o.readings : []) {
+        const p = (raw as Record<string, any>)?.per_100;
+        if (!p) continue;
+        const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+        // kcal ALONE is enough to keep a reading. Measured on the canonical case:
+        // the model returned the right answer (190 kcal for Milky Mist low fat
+        // paneer) with protein/carb/fat null, and requiring all four threw the
+        // whole finding away. Verification is kcal-based (meetsVerificationBar
+        // takes one number), so a kcal-only reading is real evidence; the stored
+        // macros come from whichever readings carry them.
+        if (!ok(p.kcal)) continue;
+        const ref = typeof raw.url === "string" && raw.url.trim() ? raw.url.trim().slice(0, 500) : null;
+        readings.push({
+          // Classify by HOST, never blanket "web". A fatsecret.co.in page is a
+          // FatSecret reading, and independenceKey excludes FatSecret outright -
+          // their terms do not allow replicating the database, and 7d would
+          // otherwise promote a row into our catalog on their evidence alone.
+          // Labelling it "web" would have quietly walked through that line.
+          source: providerFromRef(ref),
+          ref,
+          // null, NOT 0, for a macro the page did not print. This is the whole
+          // reason ReadingPer100 types them nullable and the schema lets the
+          // model answer null: reconcileReadings decides each macro from the
+          // sources that STATED it, and a 0 here is indistinguishable from a
+          // printed zero, so it votes. Flattening to 0 put the Cadbury Gems bug
+          // straight back - not for an all-null reading, which hasComposition
+          // still drops, but for a PARTIAL panel: a page with carbs and fat and
+          // no protein line kept its reading (carbs are above zero) and then
+          // cast a fake "0 g protein" vote into the protein median.
+          per_100: {
+            kcal: p.kcal,
+            protein_g: ok(p.protein_g) ? p.protein_g : null,
+            carb_g: ok(p.carb_g) ? p.carb_g : null,
+            fat_g: ok(p.fat_g) ? p.fat_g : null,
+            fiber_g: ok(p.fiber_g) ? p.fiber_g : null,
+          },
+        });
+      }
+      if (readings.length === 0) continue;
+      const grams = typeof o.serving_grams === "number" && Number.isFinite(o.serving_grams) &&
+          o.serving_grams > 0 && o.serving_grams <= 5000
+        ? o.serving_grams
+        : null;
+      out.set(o.for_item, {
+        readings,
+        serving_label: typeof o.serving_label === "string" && o.serving_label.trim()
+          ? o.serving_label.trim().slice(0, 60)
+          : null,
+        serving_grams: grams,
         source_note: typeof o.source_note === "string" && o.source_note.trim()
           ? scrubDashes(o.source_note).slice(0, 80)
           : null,
@@ -1867,6 +2177,223 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
   return derived.length > 0 ? { ...c, servings: [...c.servings, ...derived] } : c;
 }
 
+/**
+ * A cache row as a candidate the rest of the pipeline can eat.
+ *
+ * `food_id: null` is deliberate. The row is not in `foods` (7d's nightly job
+ * decides that separately), so handing out an id would send verifyItems to the
+ * catalog to re-read numbers that are not there and blank the line. Same reason
+ * FatSecret rows carry a null id.
+ *
+ * `source: "catalog"` is a lie of convenience and worth naming: CandidateFood's
+ * source union is closed and is what the accept gate and the decide payload key
+ * on. A cache hit IS catalog-grade - it is the verified answer we paid to learn
+ * - and widening the union to "precise" would mean touching every switch that
+ * reads it. The trace step below is where a cache hit is actually visible.
+ */
+/**
+ * One food, looked up and banked: run the web lookup, judge the evidence, store
+ * the verdict, hand back a candidate.
+ *
+ * Median-not-mean on purpose. Sources disagree by outliers, not by noise: one
+ * site quoting a 300 kcal bar at 30 kcal drags a mean far enough to fail its
+ * own verification, while the median simply ignores it. With two readings the
+ * median is their midpoint, which is what a person would do by hand.
+ *
+ * The row is written whatever the verdict, and that is deliberate. An
+ * unverified answer still cost real money to obtain and is still better than an
+ * estimate, so caching it stops us buying the same weak answer repeatedly;
+ * `verified` is what 7d's promotion job gates on, so an unverified row simply
+ * never graduates into the catalog.
+ */
+/**
+ * Turn what several sources said into one answer, or say why we cannot.
+ *
+ * EACH MACRO IS DECIDED SEPARATELY, by the sources that actually stated THAT
+ * macro. The version this replaced filtered whole readings - it kept a reading
+ * if ANY of its three macros was above zero, and then let all three of them
+ * vote. So a page that printed carbs and fat but no protein still cast a
+ * "0 g protein" vote. Cadbury Gems came back [0, 3.6, 0] from three sources,
+ * two of those zeros meaning "the page did not say", and the median returned
+ * 0 g protein for milk chocolate.
+ *
+ * Nothing downstream caught it, and it is worth knowing why: implausiblePer100
+ * only rejects negatives, impossible totals and ceilings, and checkAtwater
+ * passed at 2.5% because 80 g carb and 18 g fat already account for 470 kcal
+ * without any protein at all. A wrong number that is internally consistent
+ * survives every guard we have.
+ *
+ * A spurious zero can only ever pull a median DOWN, never up, which is why
+ * measured protein leaned low rather than being noisy in both directions.
+ *
+ * A STATED zero still counts. Oil really is 0 g protein and 0 g carb, so
+ * "treat 0 as missing" would be wrong for exactly the foods whose zero is real.
+ * That distinction only exists because the tool schema lets a reading say null.
+ *
+ * Exported for tests: superLookupOne itself calls the network, so this is the
+ * only place the reconciliation maths can be checked without mocking HTTP.
+ */
+export function reconcileReadings(
+  readings: SourceReading[],
+): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null } | { reason: string } {
+  if (readings.length === 0) return { reason: "no readings" };
+
+  const median = (xs: number[]): number => {
+    const s = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    if (s.length === 0) return 0;
+    const h = s.length >> 1;
+    return s.length % 2 ? s[h] : round1((s[h - 1] + s[h]) / 2);
+  };
+
+  // TWO different failures, and fixing only one makes things worse. Measured:
+  // per-macro medians alone took protein bias from -4% to -16% across three runs.
+  //
+  //   (a) a reading with NO COMPOSITION AT ALL. FatSecret returned Cadbury Gems
+  //       as 469 kcal with 0 protein, 0 carb, 0 fat. That is not a panel saying
+  //       the food is empty, it is a page with no panel on it. Counting its
+  //       zeros put protein at median([0, 3.6]) = 1.8 - exactly half, which is
+  //       the fingerprint this left in three consecutive runs.
+  //   (b) a reading that HAS a panel but omits one macro, which is what null is
+  //       for and what the per-macro pools below handle.
+  //
+  // So drop (a) whole, then handle (b) per macro. Oil survives: 0 protein, 0
+  // carb, 100 fat has real composition, so its zeros are kept and stay zero.
+  //
+  // WHAT MAKES AN ALL-ZERO PANEL WRONG IS THE CALORIES BESIDE IT, not the zeros.
+  // Calories come from macros, so 469 kcal with 0/0/0 contradicts itself and the
+  // page plainly printed no panel. But black coffee, water and a diet drink
+  // really are 0/0/0, and there the zeros are the whole truth - an earlier cut
+  // of this rule threw those away, which would have made Super refuse every
+  // near-zero food. So the drop only applies to a reading that claims real
+  // energy it cannot account for.
+  //
+  // Known exception, accepted: neat spirits carry calories from alcohol, which
+  // is not P/C/F, so a correct 231 kcal / 0 / 0 / 0 vodka panel is dropped here
+  // and Super falls back to an estimate for it. Alcohol is not what this tier is
+  // for, and inventing an ethanol column to rescue it would cost more than it
+  // is worth.
+  const ZERO_PANEL_KCAL_FLOOR = 20;
+  const num = (n: number | null | undefined) =>
+    typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
+  const hasComposition = (r: SourceReading) => {
+    const anyMacro = num(r.per_100.protein_g) + num(r.per_100.carb_g) + num(r.per_100.fat_g) > 0;
+    if (anyMacro) return true;
+    // Nothing but zeros: believe them only if there are no calories to explain.
+    return num(r.per_100.kcal) < ZERO_PANEL_KCAL_FLOOR;
+  };
+  const withPanel = readings.filter(hasComposition);
+  if (withPanel.length === 0) return { reason: "no source stated any composition" };
+
+  const stated = (pick: (r: SourceReading) => number | null | undefined) =>
+    withPanel
+      .map(pick)
+      .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+
+  // Energy from EVERY reading, including one with no panel: a page can quote a
+  // calorie figure without a macro breakdown and still be a real reading of the
+  // energy, and it still counts toward verification, which is kcal-based.
+  const kcals = readings
+    .map((r) => r.per_100.kcal)
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  const proteins = stated((r) => r.per_100.protein_g);
+  const carbs = stated((r) => r.per_100.carb_g);
+  const fats = stated((r) => r.per_100.fat_g);
+
+  // Energy with no composition is not a food row: it would log 190 kcal of
+  // paneer with 0 g protein, which is worse than admitting we do not know.
+  // Checked per macro for the same reason the medians are - a lookup that found
+  // carbs but never found protein knows less than it appears to.
+  if (kcals.length === 0) return { reason: "no source stated energy" };
+  if (proteins.length === 0) return { reason: "no source stated protein" };
+  if (carbs.length === 0) return { reason: "no source stated carbohydrate" };
+  if (fats.length === 0) return { reason: "no source stated fat" };
+
+  const per100: Omit<Per100, "fiber_g"> = {
+    kcal: median(kcals),
+    protein_g: median(proteins),
+    carb_g: median(carbs),
+    fat_g: median(fats),
+  };
+  // Physics before belief: sources agreeing on an impossible number is still an
+  // impossible number, and one that would then be cached and promoted.
+  const bad = implausiblePer100(per100);
+  if (bad) return { reason: bad };
+
+  const fibers = stated((r) => r.per_100.fiber_g);
+  return { per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+}
+
+export async function superLookupOne(
+  deps: ParseMealDeps,
+  item: ExtractedItem,
+  onUsage: (data: any) => void,
+  onCall: () => void,
+): Promise<CandidateFood | null> {
+  const found = await runSuperLookup(deps, [item], onUsage, onCall);
+  const finding = found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+  if (!finding || finding.readings.length === 0) return null;
+
+  const reconciled = reconcileReadings(finding.readings);
+  if ("reason" in reconciled) {
+    deps.log?.(`[parse_meal] super lookup rejected "${item.name}": ${reconciled.reason}`);
+    return null;
+  }
+  const { per100, fiber_g } = reconciled;
+
+  const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
+  const servings = finding.serving_label && finding.serving_grams
+    ? [{ label: finding.serving_label, grams: finding.serving_grams }]
+    : [];
+  const display = item.brand ? `${item.brand} ${item.name}` : item.name;
+
+  if (deps.preciseCachePut) {
+    // Never let a cache write cost the user their meal: the lookup already
+    // succeeded and the line is good whether or not the row lands.
+    await deps.preciseCachePut({
+      cache_key: cacheKey(item.name, item.brand),
+      display_name: display,
+      brand: item.brand,
+      base_unit: "g",
+      ...per100,
+      fiber_g,
+      servings,
+      evidence: finding.readings,
+      verified,
+      source_note: finding.source_note,
+    }).catch((e) => deps.log?.(`[parse_meal] precise_cache write failed: ${String(e).slice(0, 120)}`));
+  }
+
+  return {
+    food_id: `${EPHEMERAL_ID_PREFIX}web_${cacheKey(item.name, item.brand)}`,
+    name: display,
+    brand: item.brand,
+    base_unit: "g",
+    ...per100,
+    fiber_g,
+    servings,
+    source: "catalog",
+  };
+}
+
+export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
+  return {
+    // Ephemeral, not the row's real uuid: precise_cache is not `foods`, so the
+    // id must never reach meal_entries' FK. Addressable for decide, stripped
+    // before logging.
+    food_id: `${EPHEMERAL_ID_PREFIX}pc_${row.cache_key}`,
+    name: row.display_name,
+    brand: row.brand,
+    base_unit: row.base_unit === "ml" ? "ml" : "g",
+    kcal: row.kcal,
+    protein_g: row.protein_g,
+    carb_g: row.carb_g,
+    fat_g: row.fat_g,
+    fiber_g: row.fiber_g,
+    servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
+    source: "catalog",
+  };
+}
+
 async function resolveOneItem(
   deps: ParseMealDeps,
   item: ExtractedItem,
@@ -1878,7 +2405,85 @@ async function resolveOneItem(
   /** Fast mode: skip FatSecret (~4s cold cache) and the reranker (~400ms +
    *  429 risk). The accept gate does the judging instead. */
   lean = false,
+  /** Super mode: on a cache miss, look the food up on the web INSIDE the
+   *  fan-out, before decide and before render. That timing is the whole design
+   *  (see the WEB_LOOKUP_TOOL header): upgrade before the card exists and it is
+   *  stable, upgrade after and the user watches numbers move under a live Add
+   *  button. */
+  superLookup?: (item: ExtractedItem) => Promise<CandidateFood | null>,
 ): Promise<ResolvedItem> {
+  // ── Precise-cache short-circuit (Phase 7b) ────────────────────────────────
+  // Read BEFORE the fan-out, not as another arm of it: the whole point is that
+  // a hit costs no web latency and no web quota. 0109's precise_cache_get()
+  // returns nothing for a row older than its TTL, and that absence IS the
+  // signal to research the food again - staleness is handled in the DB, so
+  // there is no freshness check to forget here.
+  //
+  // Returning early skips the plausibility filter, the reranker, staple
+  // promotion and the 6-row cap. This used to claim that was safe "because a
+  // cached row was already verified before it was written". That was FALSE and
+  // contradicted superLookupOne's own header a few hundred lines up, which says
+  // the row is written whatever the verdict - `verified` gates promotion into
+  // the catalog, never the write and never the read.
+  //
+  // What actually makes it safe is narrower: reconcileReadings ran
+  // implausiblePer100 before the row was stored, so a cached row has passed
+  // physics even when unverified, and re-running the filter here would only ask
+  // the same question again. It is the sole candidate, so there is nothing to
+  // rank it against.
+  //
+  // What that does NOT cover, left open deliberately: an unverified row is
+  // served ahead of the catalog ladder for the full TTL. CodeRabbit proposed
+  // gating hits on verified === true. Measured, only 11-13 of 16 probe rows come
+  // back verified, and the Milky Mist paneer row - the correct 190 kcal answer -
+  // is verified: false because one of its two sources was FatSecret, which is
+  // excluded for LICENSING rather than quality. Gating on the flag would throw
+  // away right answers to enforce a legal rule that has nothing to do with
+  // whether the number is good. Revisit when a source-quality signal exists that
+  // is not doing double duty as a licence check.
+  // synthesizeVolumeAnchors still runs -
+  // spoon anchors are derived from the row's own cup serving and a cached row
+  // deserves them as much as a catalog one.
+  if (deps.preciseCacheGet) {
+    const key = cacheKey(item.name, item.brand);
+    const tCache0 = Date.now();
+    const cached = await deps.preciseCacheGet(key).catch(() => null);
+    if (cached) {
+      toolCalls.push("precise_cache_hit");
+      steps.push({
+        iter: 1,
+        tool: "precise_cache_hit",
+        input: { item: item.name, key, ms: Date.now() - tCache0 },
+        result: {
+          name: cached.display_name,
+          verified: cached.verified === true,
+          sources: (cached.evidence ?? []).length,
+        },
+      });
+      return { ...item, candidates: [synthesizeVolumeAnchors(cacheRowToCandidate(cached))] };
+    }
+  }
+
+  // Cache miss in Super: pay for the lookup once, here, before the other
+  // sources run. A verified web answer is better than anything the catalog
+  // ladder can offer for the foods Super exists to handle, so it short-circuits
+  // exactly like a hit would; the write-through inside superLookup is what
+  // stops the next person paying again.
+  if (superLookup) {
+    const tWeb0 = Date.now();
+    const found = await superLookup(item).catch(() => null);
+    if (found) {
+      toolCalls.push("super_lookup");
+      steps.push({
+        iter: 1,
+        tool: "super_lookup",
+        input: { item: item.name, ms: Date.now() - tWeb0 },
+        result: { name: found.name, kcal: found.kcal },
+      });
+      return { ...item, candidates: [synthesizeVolumeAnchors(found)] };
+    }
+  }
+
   // Query ladder: full name, brand-qualified, then progressively fewer words
   // (the 0079 search requires EVERY word to match, so an over-specified name
   // like "almonds raw whole" returns nothing while "almonds" hits). A
@@ -3231,6 +3836,12 @@ export async function runParseMeal(
   // be a correction, removal, question or addition, and those need the full
   // pipeline; silently degrading them to fast would eat the user's intent.
   const fastMode = input.mode === "fast" && !hasPrevious;
+  // Super rides the SAME first-shot rule, and for the same reason: a correction
+  // needs the previous meal resolved, which is the full pipeline's job. Note it
+  // is deliberately not fastMode's sibling in behaviour - super keeps decide,
+  // keeps the reranker, keeps every guard. The only thing it adds is where the
+  // numbers come from.
+  const superMode = input.mode === "super" && !hasPrevious;
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -3709,7 +4320,23 @@ export async function runParseMeal(
   }
 
   const resolved: ResolvedItem[] = await Promise.all(
-    toResolve.map((item) => resolveOneItem(deps, item, steps, toolCalls, stapleNames, fastMode)),
+    toResolve.map((item) =>
+      resolveOneItem(
+        deps,
+        item,
+        steps,
+        toolCalls,
+        stapleNames,
+        fastMode,
+        // Per ITEM, not per meal: each food's lookup finishes on its own clock,
+        // so a cached item is never held up by a sibling still being searched.
+        // accumulate() is passed through so the web_search_requests these calls
+        // spend land in usage, which is what 0113 prices.
+        superMode
+          ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
+          : undefined,
+      )
+    ),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();

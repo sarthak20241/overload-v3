@@ -1,0 +1,90 @@
+name: Promote Food Cache
+
+# Phase 7d. Super pays for a food's research once; this is how Fast and Smart get
+# to keep it. Nightly, it walks precise_cache and copies the rows that have earned
+# it into the shared `foods` catalog, so a food we already know cold is found by
+# plain search instead of falling to a model estimate.
+#
+# The bar (enforced in supabase/functions/ai-coach/promoteCache.ts, unit tested):
+#   - 2+ INDEPENDENT sources within 10% of the number being published, re-derived
+#     from the stored evidence. FatSecret never counts: their terms allow serving a
+#     request, not replicating their database, and a promoted row is a copy.
+#   - evidence still fresh (90 day TTL)
+#   - physically possible: within the per-100 bounds, and kcal that follow from the
+#     row's own macros. With no usage bar these are the only gate, so they run here
+#     rather than being left to whatever reads the row back.
+#   - named like a food, not like a log line. "200g paneer" is fine on one person's
+#     card and permanent in a catalog everyone searches.
+#   - not already covered by a catalog row (a second "Paneer" splits the ranking)
+#
+# Never runs inline with a parse. A promotion is a write to the shared catalog, and
+# it belongs on its own clock where a mistake is found before thousands of meals are
+# logged against it.
+#
+# Secrets: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, both already configured for
+# the Research Ingest workflow. precise_cache is granted to service_role only
+# (migration 0109), so the anon key cannot run this.
+#
+# Manual trigger: Actions tab -> Promote Food Cache -> Run workflow (dry run by
+# default there, so you can read the decisions before anything is written).
+
+on:
+  schedule:
+    # 4:10am UTC. After Research Ingest's 3am slot so two long jobs are not
+    # competing, and well clear of IST evening logging traffic.
+    - cron: '10 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print decisions without writing to the catalog'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+      limit:
+        description: 'Max cache rows to consider in this run'
+        required: false
+        default: '200'
+
+# Two runs would race on the same precise_cache rows and could double-insert a
+# food. Queue instead of cancelling: a half-finished promotion pass is fine to
+# resume, it is idempotent per row.
+concurrency:
+  group: promote-food-cache
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Promote verified cache rows
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          LIMIT: ${{ github.event.inputs.limit || '200' }}
+        run: |
+          set -eo pipefail
+          # An ARRAY, and unquoted "${ARGS}" is why. `limit` is free text typed
+          # into the Actions UI, so a value of `200 --dry-run` used to word-split
+          # into a second flag and turn a real promotion run into a dry run - the
+          # failure being silent and in the safe direction is what makes it easy
+          # to miss. Quoted element-wise expansion keeps each argument whole, so
+          # that value now reaches the script as one nonsense --limit it rejects.
+          ARGS=("--limit=${LIMIT}")
+          if [ "${DRY_RUN}" = "true" ]; then ARGS+=("--dry-run"); fi
+          # --node-modules-dir=none: the repo root carries the React Native
+          # node_modules, and Deno otherwise tries to resolve supabase-js's npm
+          # dependencies out of it and fails. Nothing here wants a node_modules.
+          deno run --node-modules-dir=none --allow-env --allow-net \
+            tools/promote-food-cache/run.ts "${ARGS[@]}"
