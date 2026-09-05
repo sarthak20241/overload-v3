@@ -1639,6 +1639,14 @@ const FAST_EXTRACT_TOOL = (() => {
   return t;
 })();
 
+/** Output budgets for the extract call. Fast items are heavy (est_ totals,
+ *  label recall, meal): ~110 tokens each, 12-item ceiling, so 1800 leaves
+ *  headroom. Smart items are name/brand/quantity/unit/prep/meal, a third of
+ *  that. Both are caps; a two-item message emits the same ~200 tokens under
+ *  either. Truncation is detected at the call site and reported honestly. */
+const EXTRACT_MAX_TOKENS_FAST = 1800;
+const EXTRACT_MAX_TOKENS_SMART = 700;
+
 const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
 
 /** Smart only. There, nutrition is decide's job, and asking for it here would
@@ -3348,7 +3356,13 @@ export async function runParseMeal(
     ? null
     : await callAnthropicOnce(deps, {
     model: deps.model,
-    max_tokens: 700,
+    // A cap, not a target: the model emits what the message needs, so a short
+    // message costs the same under either number. Fast items carry ~110 output
+    // tokens each (est_ totals, label recall, meal), and a whole-day message
+    // (I8) is six or more of them: at 700 the sixth item was cut off mid-JSON
+    // and the parse reported "that did not look like food". Smart items are a
+    // third the size, so 700 still covers the 12-item ceiling there.
+    max_tokens: fastMode ? EXTRACT_MAX_TOKENS_FAST : EXTRACT_MAX_TOKENS_SMART,
     // The correction rules only matter when a meal is on screen, so they stay
     // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
     // fastMode is defined as mode === "fast" && !hasPrevious, so these three
@@ -3397,6 +3411,27 @@ export async function runParseMeal(
     ? ((extractRes.data.content ?? []) as Array<Record<string, any>>)
       .find((b) => b.type === "tool_use" && (b.name === "extract_meal" || b.name === "estimate_meal"))
     : undefined;
+  // Cut off mid-JSON: the tool_use block comes back with an empty `input`, the
+  // item list reads as empty, and the old path told the user their food "did
+  // not look like food". Wrong on the facts and unactionable. Say what
+  // happened, say what to do, and leave a trace step so the budget can be
+  // tuned from real traffic instead of from a support message.
+  if (extractRes && extractRes.data?.stop_reason === "max_tokens") {
+    toolCalls.push(fastMode ? "estimate_meal__truncated" : "extract_meal__truncated");
+    steps.push({
+      iter: 0,
+      tool: "extract_truncated",
+      input: {
+        max_tokens: fastMode ? EXTRACT_MAX_TOKENS_FAST : EXTRACT_MAX_TOKENS_SMART,
+        output_tokens: extractRes.data?.usage?.output_tokens ?? null,
+        chars: input.text.length,
+      },
+      result: null,
+    });
+    return declineResult(
+      "That was a long one and I lost the end of it. Send it as two messages and I will log both.",
+    );
+  }
   // When the extract call was skipped, the grammar's own items ARE the extract
   // result. Every flag defaults false: the grammar refuses corrections,
   // removals and questions outright, so none of them can be true here.
