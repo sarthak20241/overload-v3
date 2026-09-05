@@ -1889,6 +1889,12 @@ async function handleParseMealRequest(args: {
     );
   }
   const wantsSuper = body.speed === "super" && PARSE_SUPER_MODE !== "off";
+  // Streaming is Fast's alone, deliberately: the stream exists to paint rows
+  // while the numbers settle, and Super's answer arrives whole after a web
+  // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
+  // gap in the Super wiring - Super runs entirely in the non-streaming branch
+  // below, and the hardcoded "fast" in this block's trace line is correct
+  // because this block cannot be reached any other way.
   const wantsStream = body.stream === true && wantsFast;
 
   if (wantsStream) {
