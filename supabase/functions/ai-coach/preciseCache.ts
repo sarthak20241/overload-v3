@@ -205,10 +205,10 @@ export function isFresh(lastVerifiedAt: string | Date, now: Date = new Date()): 
  * The identity of a reading for independence purposes, or null if it can never
  * count toward the bar.
  *
- * FatSecret is excluded outright - both because of their terms and because a row
- * that only FatSecret vouches for is a row we must not copy into our catalog.
- * 'catalog' is excluded too: our own rows are what the web lookup is being used to
- * check, so counting them would let a row confirm itself.
+ * FatSecret splits on `via`: a page a web search found counts as its host, a
+ * reading from their API never counts, and unknown provenance is treated as the
+ * API. 'catalog' is excluded outright: our own rows are what the web lookup is
+ * being used to check, so counting them would let a row confirm itself.
  *
  * Identity is the SOURCE WE READ, not any origin it declares. derived_from is
  * recorded and ignored.
