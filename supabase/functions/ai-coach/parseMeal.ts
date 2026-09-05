@@ -28,9 +28,11 @@ import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
 import {
   cacheKey,
+  kcalSpread,
   meetsVerificationBar,
   type PreciseCacheRow,
   type SourceReading,
+  VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
 import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
@@ -79,6 +81,21 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  // ── Evidence, on the candidate that was actually researched ───────────────
+  // Super and precise-cache hits only. superLookupOne already computed both to
+  // write the cache row, and both used to die there: the verdict never left the
+  // function, so decide stated a number two sources fought over exactly as
+  // flatly as one they agreed on, and the client had nothing to badge.
+  //
+  // ABSENT, not false, on every other candidate. A catalog or OFF row was never
+  // put through meetsVerificationBar at all, and `verified: false` on it would
+  // read as "we checked and it failed" - a claim we have no evidence for.
+  /** Two independent sources agreed with the kcal we kept. See meetsVerificationBar. */
+  verified?: boolean;
+  /** Fraction of the largest kcal reading that the readings spanned. See
+   *  kcalSpread: 0 means they landed together, absent means there was only one
+   *  of them and there was nothing to compare. */
+  kcal_spread?: number;
 }
 
 export interface ParsedItem {
@@ -97,6 +114,20 @@ export interface ParsedItem {
   source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
+  /** The candidate behind this line cleared the verification bar: two
+   *  independent sources agreed with its calories. Set only for lines whose
+   *  numbers came from a researched row (Super lookup or precise-cache hit);
+   *  ABSENT means the question was never asked, which is not the same as
+   *  answered no, so a badge belongs on `true` alone. Stamped in
+   *  stripEphemeralIds, the one step every return path already owes. */
+  verified?: boolean;
+  /** Which diary section this line belongs in. Optional on the type because
+   *  lines are built in a dozen places (fill, fallback, decide, corrections,
+   *  research) and none of them knows the meal; assignItemMeals stamps it in
+   *  one place before any result leaves runParseMeal, so on the wire it is
+   *  always present. A line that already carries one (a corrected previous
+   *  line) keeps it unless the new text names a meal for that line. */
+  meal_type?: MealType;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -524,6 +555,23 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
           kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
           name: c.name,
         });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** The verification verdict for every candidate that HAS one, keyed the same
+ *  way as per100ForItems so a logged line can be traced back to the evidence
+ *  behind it. Candidates that were never researched contribute no entry at all,
+ *  which is what keeps `verified: false` off a catalog line nobody ever checked
+ *  (absent means "not asked", false means "asked and failed"). */
+export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean> {
+  const byFood = new Map<string, boolean>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.verified !== undefined && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, c.verified);
       }
     }
   }
@@ -1097,6 +1145,16 @@ const EXTRACT_TOOL = {
               description:
                 'Preparation state the text implies: "roasted", "fried", "cooked", "raw", ' +
                 "etc. null when unstated.",
+            },
+            meal: {
+              type: ["string", "null"],
+              enum: ["breakfast", "lunch", "dinner", "snack", null],
+              description:
+                "The meal the text ties to THIS item, when one message covers several meals: " +
+                '"2 eggs for breakfast, dal chawal at lunch, oreos in snacks" gives eggs ' +
+                "breakfast, dal lunch, oreos snack. null when the text names no meal for this " +
+                "item, and null when the message names ONE meal for everything (that goes in " +
+                "meal_type_from_text instead). Never infer it from the food or the time of day.",
             },
           },
           required: ["name", "quantity", "unit"],
@@ -1697,6 +1755,58 @@ export function mealForHour(hour: number | null): MealType {
   return "snack";
 }
 
+/**
+ * Stamp every line with the diary section it belongs in - ONCE, here, before a
+ * result leaves runParseMeal - so "2 eggs for breakfast, dal chawal at lunch"
+ * lands in two sections instead of collapsing into one (plan I8).
+ *
+ * Lines are built in a dozen places (fast fill, the fallback, decide, the
+ * correction paths, research) and none of them knows the meal, so this runs at
+ * the return sites rather than in every constructor. The meal for a line is,
+ * in order: the meal extraction tied to THAT item, then the meal the line
+ * already carries (a corrected previous line keeps its section), then the
+ * meal-level default the caller computed exactly as before. A message that
+ * names no per-item meal therefore comes out byte-for-byte as it did before
+ * this existed - the common case does not change shape.
+ *
+ * Matching a final line back to its extracted item goes by name overlap first
+ * (decide renames lines to the catalog row's display name, so "cheese slice"
+ * has to find "Amul Cheese slices"), then by position when the counts still
+ * line up, and a line that matches nothing takes the default rather than a
+ * neighbour's meal. Each extracted item is used at most once so two "roti"
+ * lines cannot both claim the same breakfast tag.
+ */
+export function assignItemMeals(
+  items: ParsedItem[],
+  extracted: ExtractedItem[],
+  defaultMeal: MealType,
+): ParsedItem[] {
+  if (!extracted.some((e) => e.meal)) {
+    return items.map((it) => ({ ...it, meal_type: it.meal_type ?? defaultMeal }));
+  }
+  const used = new Set<number>();
+  const claim = (it: ParsedItem, idx: number): ExtractedItem | undefined => {
+    for (let i = 0; i < extracted.length; i++) {
+      if (used.has(i)) continue;
+      const e = extracted[i];
+      const withBrand = e.brand ? `${e.brand} ${e.name}` : e.name;
+      if (wordsOverlap(it.food_name, withBrand) || wordsOverlap(it.food_name, e.name)) {
+        used.add(i);
+        return e;
+      }
+    }
+    if (extracted.length === items.length && !used.has(idx)) {
+      used.add(idx);
+      return extracted[idx];
+    }
+    return undefined;
+  };
+  return items.map((it, idx) => {
+    const e = claim(it, idx);
+    return { ...it, meal_type: e?.meal ?? it.meal_type ?? defaultMeal };
+  });
+}
+
 const EXTRACT_CORRECTION_RULES = `
 
 A meal the user just logged may be shown to you as previous_meal (it is on screen, not yet saved). If so, decide what the new text is doing:
@@ -1871,6 +1981,14 @@ const FAST_EXTRACT_TOOL = (() => {
   return t;
 })();
 
+/** Output budgets for the extract call. Fast items are heavy (est_ totals,
+ *  label recall, meal): ~110 tokens each, 12-item ceiling, so 5000 leaves
+ *  headroom. Smart items are name/brand/quantity/unit/prep/meal, a third of
+ *  that. Both are caps; a two-item message emits the same ~200 tokens under
+ *  either. Truncation is detected at the call site and reported honestly. */
+const EXTRACT_MAX_TOKENS_FAST = 5000;
+const EXTRACT_MAX_TOKENS_SMART = 700;
+
 const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
 
 /** Smart only. There, nutrition is decide's job, and asking for it here would
@@ -1883,7 +2001,7 @@ const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition.`;
  *  and unit mirror what the user SAID; inventing an amount nobody typed is
  *  decide's call to make, not extraction's. */
 const EXTRACT_SHARED_RULES =
-  ` Do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two).`;
+  ` Do NOT guess amounts the text does not state (use unit "serving" and quantity 1), and do NOT drop items. Composite dishes stay one item ("rajma chawal"), separately listed foods split ("paneer and 2 roti" is two). One message can cover a whole day: when the text ties different foods to different meals, set meal on each item; when it names one meal for everything, use meal_type_from_text and leave meal null.`;
 
 /**
  * Fast's whole prompt, standalone. v2, redesigned 2026-08-30.
@@ -1910,6 +2028,8 @@ Serving size:
 - If the user states an amount ("100g paneer", "250 ml", "half katori"), use exactly that.
 - If not, assume one average serving of that food.
 - Counts multiply: "3 pieces" means the numbers cover all 3.
+
+Sometimes one message covers a whole day. When the text ties different foods to different meals ("X for breakfast, Y at lunch"), set meal on each item: "evening" or "snacks" is snack, "at night" is dinner. When one meal is named for everything, put it in meal_type_from_text and leave every item's meal null. Never guess a meal from the food or the time.
 
 All est_ numbers are TOTALS for the line as eaten, not per-100 and not per-piece. est_total_g is your best guess at the weight; it only labels the entry, the est_ macros are what the user sees.
 
@@ -1946,6 +2066,12 @@ Input: "150g grilled fish and half katori khichdi"
 Output: {"declined": false, "meal_type_from_text": null, "items": [
   {"name": "fish", "brand": null, "quantity": 150, "unit": "g", "prep": "grilled", "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 200, "est_protein_g": 30, "est_carb_g": 0, "est_fat_g": 8, "est_total_g": 150},
   {"name": "khichdi", "brand": null, "quantity": 0.5, "unit": "katori", "prep": null, "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 90, "est_protein_g": 3, "est_carb_g": 15, "est_fat_g": 2, "est_total_g": 75}]}
+
+Input: "curd rice for lunch, a mango shake in the evening and 2 khakhra at night"
+Output: {"declined": false, "meal_type_from_text": null, "items": [
+  {"name": "curd rice", "brand": null, "quantity": 1, "unit": "serving", "prep": null, "meal": "lunch", "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 260, "est_protein_g": 7, "est_carb_g": 42, "est_fat_g": 7, "est_total_g": 250},
+  {"name": "mango shake", "brand": null, "quantity": 1, "unit": "glass", "prep": null, "meal": "snack", "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 220, "est_protein_g": 5, "est_carb_g": 40, "est_fat_g": 4, "est_total_g": 250},
+  {"name": "khakhra", "brand": null, "quantity": 2, "unit": "piece", "prep": null, "meal": "dinner", "label_applies": false, "label_serving_g": null, "label_serving_kcal": null, "label_pieces_per_serving": null, "est_kcal": 110, "est_protein_g": 3, "est_carb_g": 18, "est_fat_g": 3, "est_total_g": 28}]}
 
 Input: "played football for an hour"
 Output: {"declined": true, "decline_message": "That's training, not a meal. Tell me what you ate and I'll log it.", "meal_type_from_text": null, "items": []}`;
@@ -1992,6 +2118,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   NEVER drop these, they ARE the product: fat grade (low fat, full fat, full cream, toned, double toned, skimmed); protein or sugar claims (high protein, zero sugar, no added sugar, diet); part or variant (yolk, white, whole, brown, wholewheat, maida); prep state (raw, boiled, roasted, fried, dried - 2-3x density); brand on a FORMULATED product, where the recipe IS the product (protein bars and powders, biscuits, cereals, sauces, ready meals, flavoured yogurt); a DISH reduced to an ingredient (paneer butter masala is not Paneer).
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
+- sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -2091,7 +2218,22 @@ async function callAnthropicOnce(
   }
 }
 
-function candidatePayload(c: CandidateFood): Record<string, unknown> {
+/**
+ * Is this candidate's evidence contested enough that decide must be told?
+ *
+ * VERIFY_TOLERANCE is the threshold on purpose, not a second number of our own:
+ * a spread above it means two of the readings would have failed kcalAgrees, so
+ * "materially disagreed" here means exactly what it means everywhere else in
+ * the evidence code. Absent spread (nothing researched, or a single reading) is
+ * silence, never a warning.
+ */
+function sourcesDisagree(c: CandidateFood): boolean {
+  return typeof c.kcal_spread === "number" && c.kcal_spread > VERIFY_TOLERANCE;
+}
+
+// Exported for tests: this is the exact shape decide sees for a candidate, and
+// what it does NOT say on the agreeing case is as load-bearing as what it does.
+export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
     name: c.name,
@@ -2106,6 +2248,12 @@ function candidatePayload(c: CandidateFood): Record<string, unknown> {
     },
     servings: c.servings.slice(0, 6),
     source: c.source,
+    // Emitted ONLY when the sources fought, which is the rare case. Sending a
+    // spread (or a `verified` flag) on every candidate would add a line to
+    // every item of every decide call to say "nothing to see here", and this
+    // payload is cached input tokens on every meal anyone logs. Silence is the
+    // signal that the numbers agreed.
+    ...(sourcesDisagree(c) ? { sources_disagree_pct: Math.round(c.kcal_spread! * 100) } : {}),
   };
 }
 
@@ -2120,6 +2268,11 @@ export interface ExtractedItem {
   /** When this entry corrects a line of the meal under review, that line's
    *  food_name verbatim — the handle we re-target it by. */
   correctsFoodName?: string | null;
+  /** The meal the text tied to THIS item ("eggs for breakfast, dal at lunch").
+   *  null when the text did not name one for it - never inferred from the
+   *  food or the clock. assignItemMeals resolves null to the meal-level
+   *  default, so a single-meal message is unchanged by this field. */
+  meal?: MealType | null;
   /** Fast mode only: the model's own numbers, produced in the SAME call that
    *  named the food. TOTALS for the line as eaten - kcal/macros ready to log,
    *  total_g a display label that never feeds the math. Null when any field
@@ -2332,6 +2485,13 @@ export async function superLookupOne(
   const { per100, fiber_g } = reconciled;
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
+  // The same evidence, measured the other way. `verified` says whether anyone
+  // is allowed to vouch for the number; the spread says how far the readings we
+  // actually got sat apart. Both ride out on the candidate, because the cache
+  // row is not the only consumer of this verdict: decide has to hedge on a
+  // contested number and the client has to badge an uncontested one, and
+  // neither can do that from a row it never sees.
+  const spread = kcalSpread(finding.readings);
   const servings = finding.serving_label && finding.serving_grams
     ? [{ label: finding.serving_label, grams: finding.serving_grams }]
     : [];
@@ -2363,6 +2523,8 @@ export async function superLookupOne(
     fiber_g,
     servings,
     source: "catalog",
+    verified,
+    ...(spread === null ? {} : { kcal_spread: spread }),
   };
 }
 
@@ -2382,6 +2544,19 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    // A hit is the SAME verdict superLookupOne reached, read back instead of
+    // re-bought. Dropping it here would have made the badge and decide's
+    // hedging flicker on cache state - a food shown as contested on the lookup
+    // that paid for it and as plain fact to everyone served from the row.
+    // `=== true` because the column is boolean but the row arrives as JSON.
+    verified: row.verified === true,
+    // Recomputed from the stored readings rather than stored as its own column:
+    // it is a pure function of `evidence`, and a second column could go stale
+    // against the readings it claims to summarise.
+    ...(() => {
+      const spread = kcalSpread(row.evidence ?? []);
+      return spread === null ? {} : { kcal_spread: spread };
+    })(),
   };
 }
 
@@ -2411,28 +2586,9 @@ async function resolveOneItem(
   // there is no freshness check to forget here.
   //
   // Returning early skips the plausibility filter, the reranker, staple
-  // promotion and the 6-row cap. This used to claim that was safe "because a
-  // cached row was already verified before it was written". That was FALSE and
-  // contradicted superLookupOne's own header a few hundred lines up, which says
-  // the row is written whatever the verdict - `verified` gates promotion into
-  // the catalog, never the write and never the read.
-  //
-  // What actually makes it safe is narrower: reconcileReadings ran
-  // implausiblePer100 before the row was stored, so a cached row has passed
-  // physics even when unverified, and re-running the filter here would only ask
-  // the same question again. It is the sole candidate, so there is nothing to
-  // rank it against.
-  //
-  // What that does NOT cover, left open deliberately: an unverified row is
-  // served ahead of the catalog ladder for the full TTL. CodeRabbit proposed
-  // gating hits on verified === true. Measured, only 11-13 of 16 probe rows come
-  // back verified, and the Milky Mist paneer row - the correct 190 kcal answer -
-  // is verified: false because one of its two sources was FatSecret, which is
-  // excluded for LICENSING rather than quality. Gating on the flag would throw
-  // away right answers to enforce a legal rule that has nothing to do with
-  // whether the number is good. Revisit when a source-quality signal exists that
-  // is not doing double duty as a licence check.
-  // synthesizeVolumeAnchors still runs -
+  // promotion and the 6-row cap. That is safe only because a cached row was
+  // already verified before it was written, and it is the sole candidate, so
+  // there is nothing to rank it against. synthesizeVolumeAnchors still runs -
   // spoon anchors are derived from the row's own cup serving and a cached row
   // deserves them as much as a catalog one.
   if (deps.preciseCacheGet) {
@@ -3074,9 +3230,27 @@ export function retargetMismatchedIds(
  *
  * This is a helper rather than an inline map because EVERY return path owes it:
  * the skip-decide path returns early and used to bypass the inline version.
+ *
+ * It also stamps `verified`, and that is not a stowaway: the food_id is the
+ * ONLY handle from a logged line back to the candidate its numbers came from,
+ * and the very next statement here throws that handle away. Doing it anywhere
+ * else means either doing it before the guardrails (where reconcileQuantity and
+ * the variant checks can still repoint a line) or after the id is gone. Riding
+ * along with the strip also inherits its one real guarantee - that every return
+ * path calls it - instead of adding a second step each path could forget.
  */
-export function stripEphemeralIds(items: ParsedItem[]): ParsedItem[] {
-  return items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+export function stripEphemeralIds(
+  items: ParsedItem[],
+  /** food_id -> did the evidence behind that candidate clear the bar. Only
+   *  researched candidates appear (see verifiedForItems); a line matched to
+   *  anything else is left unstamped rather than stamped false. */
+  verifiedByFood?: Map<string, boolean>,
+): ParsedItem[] {
+  return items.map((it) => {
+    const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
+    const marked = verdict === undefined ? it : { ...it, verified: verdict };
+    return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
+  });
 }
 
 /**
@@ -3868,7 +4042,13 @@ export async function runParseMeal(
     ? null
     : await callAnthropicOnce(deps, {
     model: deps.model,
-    max_tokens: 700,
+    // A cap, not a target: the model emits what the message needs, so a short
+    // message costs the same under either number. Fast items carry ~110 output
+    // tokens each (est_ totals, label recall, meal), and a whole-day message
+    // (I8) is six or more of them: at 700 the sixth item was cut off mid-JSON
+    // and the parse reported "that did not look like food". Smart items are a
+    // third the size, so 700 still covers the 12-item ceiling there.
+    max_tokens: fastMode ? EXTRACT_MAX_TOKENS_FAST : EXTRACT_MAX_TOKENS_SMART,
     // The correction rules only matter when a meal is on screen, so they stay
     // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
     // fastMode is defined as mode === "fast" && !hasPrevious, so these three
@@ -3917,6 +4097,27 @@ export async function runParseMeal(
     ? ((extractRes.data.content ?? []) as Array<Record<string, any>>)
       .find((b) => b.type === "tool_use" && (b.name === "extract_meal" || b.name === "estimate_meal"))
     : undefined;
+  // Cut off mid-JSON: the tool_use block comes back with an empty `input`, the
+  // item list reads as empty, and the old path told the user their food "did
+  // not look like food". Wrong on the facts and unactionable. Say what
+  // happened, say what to do, and leave a trace step so the budget can be
+  // tuned from real traffic instead of from a support message.
+  if (extractRes && extractRes.data?.stop_reason === "max_tokens") {
+    toolCalls.push(fastMode ? "estimate_meal__truncated" : "extract_meal__truncated");
+    steps.push({
+      iter: 0,
+      tool: "extract_truncated",
+      input: {
+        max_tokens: fastMode ? EXTRACT_MAX_TOKENS_FAST : EXTRACT_MAX_TOKENS_SMART,
+        output_tokens: extractRes.data?.usage?.output_tokens ?? null,
+        chars: input.text.length,
+      },
+      result: null,
+    });
+    return declineResult(
+      "That was a long one and I lost the end of it. Send it as two messages and I will log both.",
+    );
+  }
   // When the extract call was skipped, the grammar's own items ARE the extract
   // result. Every flag defaults false: the grammar refuses corrections,
   // removals and questions outright, so none of them can be true here.
@@ -3989,6 +4190,9 @@ export async function runParseMeal(
         prep: typeof o.prep === "string" && o.prep.trim() ? o.prep.trim().slice(0, 30) : null,
         correctsFoodName: typeof o.corrects_food_name === "string" && o.corrects_food_name.trim()
           ? o.corrects_food_name.trim().slice(0, 120)
+          : null,
+        meal: o.meal === "breakfast" || o.meal === "lunch" || o.meal === "dinner" || o.meal === "snack"
+          ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
       }];
@@ -4129,12 +4333,15 @@ export async function runParseMeal(
       };
     }
     if (researched) {
-      const items = flagPrepMismatch(checkAtwater(researched.items));
+      const researchDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+      const items = assignItemMeals(
+        flagPrepMismatch(checkAtwater(researched.items)), extItems, researchDefault,
+      );
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
         parsed: {
-          meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+          meal_type: items[0]?.meal_type ?? researchDefault,
           items,
           drona_line: researched.note,
           corrects_previous: true,
@@ -4217,12 +4424,18 @@ export async function runParseMeal(
     if (corrected) {
       T.fast_correction = 1;
       steps.push({ iter: 1, tool: "fast_correction", input: { items: corrected.length } });
-      const items = flagPrepMismatch(checkAtwater(corrected));
+      const correctionDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+      // A corrected line keeps the section it already had (assignItemMeals
+      // reads it off the previous line), so "make it 3 eggs" never drags
+      // breakfast into whatever meal the clock says it is now.
+      const items = assignItemMeals(
+        flagPrepMismatch(checkAtwater(corrected)), extItems, correctionDefault,
+      );
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
       return {
         parsed: {
-          meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+          meal_type: items[0]?.meal_type ?? correctionDefault,
           items,
           drona_line: "Updated. Numbers adjusted.",
           corrects_previous: true,
@@ -4477,14 +4690,24 @@ export async function runParseMeal(
     T.verify_ms = Date.now() - tVerify0;
 
     const tPost0 = Date.now();
-    const items = stripEphemeralIds(flagPrepMismatch(
-      checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
-      prepForItems(resolved),
-    ));
+    const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    const items = assignItemMeals(
+      stripEphemeralIds(
+        flagPrepMismatch(
+          checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
+          prepForItems(resolved),
+        ),
+        verifiedForItems(resolved),
+      ),
+      extItems,
+      fastDefault,
+    );
     T.post_ms = Date.now() - tPost0;
     T.decide_ms = 0;
     steps.push({ iter: 9, tool: "__timing", input: { ...T, fast: true } });
-    const fastMeal = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    // The meal-level field is the FIRST line's section: deterministic, and
+    // for a single-meal message identical to the default it used to be.
+    const fastMeal = items[0]?.meal_type ?? fastDefault;
     const fastLine = templateDronaLine(items);
     deps.onProgress?.({ kind: "fill", items, meal_type: fastMeal, drona_line: fastLine });
     return {
@@ -4522,17 +4745,25 @@ export async function runParseMeal(
     // as the decide path. codeFillItems derives grams from real serving anchors
     // rather than free-form model output, so it should rarely bite - but "should
     // rarely" is not a reason for two paths to have different defences.
-    const filled = stripEphemeralIds(flagPrepMismatch(
-      checkAtwater(reconcileQuantity(
-        await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
-        servingsForItems(resolved),
-      )),
-      prepForItems(resolved),
-    ));
+    const fillDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    const filled = assignItemMeals(
+      stripEphemeralIds(
+        flagPrepMismatch(
+          checkAtwater(reconcileQuantity(
+            await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+            servingsForItems(resolved),
+          )),
+          prepForItems(resolved),
+        ),
+        verifiedForItems(resolved),
+      ),
+      extItems,
+      fillDefault,
+    );
     steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
     return {
       parsed: {
-        meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+        meal_type: filled[0]?.meal_type ?? fillDefault,
         items: filled,
         drona_line: templateDronaLine(filled),
         corrects_previous: false,
@@ -4671,18 +4902,21 @@ export async function runParseMeal(
     });
   }
   // See stripEphemeralIds: every path that returns items to the client must
-  // strip them, not just this one.
-  items = stripEphemeralIds(items);
+  // strip them, not just this one. The verification map goes in with them,
+  // because the id it keys on is what this call is about to erase.
+  items = stripEphemeralIds(items, verifiedForItems(resolved));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
     );
   }
-  const mealType: MealType =
+  const decideDefault: MealType =
     raw.meal_type === "breakfast" || raw.meal_type === "lunch" ||
     raw.meal_type === "dinner" || raw.meal_type === "snack"
       ? raw.meal_type
       : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
+  items = assignItemMeals(items, extItems, decideDefault);
+  const mealType: MealType = items[0]?.meal_type ?? decideDefault;
   // Grounded against the FINAL items (stripEphemeralIds ran above), so a
   // sentence quoting a macro the model invented cannot survive next to the
   // numbers that contradict it.
