@@ -243,6 +243,13 @@ export function independenceKey(r: SourceReading): string | null {
   if (origin === "fatsecret") {
     if (r.via !== "web_search") return null;
     const host = hostOf(r.ref);
+    // Deliberately STRICTER than the plain-web branch below, which buckets a
+    // ref-less reading as "web:unknown". Here a reading with no readable host
+    // is dropped instead. The asymmetry is the point: this is the branch that
+    // decides whether FatSecret data becomes eligible for the shared catalog,
+    // and "we cannot tell which page this was" is not a good enough answer to
+    // that question. An ordinary site being wrong costs a number; this being
+    // wrong costs a licence.
     return host ? `web:${host}` : null;
   }
   // Web readings are identified by host: one site is one source no matter how

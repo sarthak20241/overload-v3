@@ -244,3 +244,28 @@ Deno.test("the fallback key stays bounded for a pasted paragraph", () => {
   assertEquals(k.startsWith("u:"), true);
   assertEquals(k.length < 900, true, `key was ${k.length} chars`);
 });
+
+Deno.test("a FatSecret web_search reading with no readable ref is still dropped", () => {
+  // Stricter than the plain-web branch, which buckets a ref-less reading as
+  // "web:unknown". Flagged as an asymmetry by the PR bot on #144 and kept on
+  // purpose: this branch decides eligibility for the shared catalog, and "we
+  // cannot tell which page this was" is not good enough for that question.
+  assertEquals(independenceKey(reading("fatsecret", 190, { via: "web_search" })), null);
+  assertEquals(
+    independenceKey(reading("fatsecret", 190, { via: "web_search", ref: "not a url" })),
+    null,
+  );
+  // The plain-web branch keeps its looser behaviour, unchanged.
+  assertEquals(independenceKey(reading("web", 190)), "web:unknown");
+});
+
+Deno.test("providerFromRef's country domains still classify after the tidy", () => {
+  // The three-condition test collapsed to one regex; these are the hosts that
+  // must keep resolving to FatSecret rather than to an anonymous site.
+  for (const host of ["fatsecret.co.in", "www.fatsecret.com", "platform.fatsecret.com"]) {
+    assertEquals(
+      independenceKey(reading("fatsecret", 190, { via: "web_search", ref: `https://${host}/x` })),
+      `web:${host.replace(/^www\./, "")}`,
+    );
+  }
+});

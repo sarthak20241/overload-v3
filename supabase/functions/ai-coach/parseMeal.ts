@@ -1555,9 +1555,9 @@ function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
   } catch {
     return "web";
   }
-  if (host === "fatsecret.com" || host.endsWith(".fatsecret.com") || /(^|\.)fatsecret\.[a-z.]+$/.test(host)) {
-    return "fatsecret";
-  }
+  // One test, not three: the regex already covers fatsecret.com and any
+  // subdomain of it, as well as the country domains (fatsecret.co.in, .co.uk).
+  if (/(^|\.)fatsecret\.[a-z.]+$/.test(host)) return "fatsecret";
   if (host === "openfoodfacts.org" || host.endsWith(".openfoodfacts.org")) return "off";
   return "web";
 }
