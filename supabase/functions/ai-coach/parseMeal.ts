@@ -1567,9 +1567,10 @@ export interface SuperFinding {
  * path.
  */
 /** Which provider a url actually is. FatSecret and Open Food Facts are named
- *  because independenceKey treats them differently from an anonymous site:
- *  FatSecret can never verify a row (their terms), and all OFF pages are one
- *  source however many are read. Anything else is an ordinary web source. */
+ *  because independenceKey treats them differently from an anonymous site: all
+ *  OFF pages are one source however many are read, and a FatSecret reading counts
+ *  only when its `via` says a web search found it, never when it came from their
+ *  API. Anything else is an ordinary web source. */
 function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
   if (!ref) return "web";
   let host = "";
@@ -1578,9 +1579,9 @@ function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
   } catch {
     return "web";
   }
-  if (host === "fatsecret.com" || host.endsWith(".fatsecret.com") || /(^|\.)fatsecret\.[a-z.]+$/.test(host)) {
-    return "fatsecret";
-  }
+  // One test, not three: the regex already covers fatsecret.com and any
+  // subdomain of it, as well as the country domains (fatsecret.co.in, .co.uk).
+  if (/(^|\.)fatsecret\.[a-z.]+$/.test(host)) return "fatsecret";
   if (host === "openfoodfacts.org" || host.endsWith(".openfoodfacts.org")) return "off";
   return "web";
 }
@@ -1608,9 +1609,10 @@ export async function runSuperLookup(
     "Give ALL FOUR of kcal, protein_g, carb_g and fat_g for every reading. A panel " +
     "that lists energy without macros is half a row and the app cannot log it, so " +
     "read the full panel or find a source that shows one.\n" +
-    "FatSecret pages do not count toward agreement, so a FatSecret listing alone " +
-    "leaves a food unconfirmed. Report it if it is what you have, but look for a " +
-    "brand site or another database as well.\n" +
+    "Two sources agree only when they are DIFFERENT SITES: several pages of one " +
+    "site are one source however many times they repeat a number, so a second " +
+    "reading from a host you already used adds nothing. Prefer a brand site or a " +
+    "second database over another page of the same one.\n" +
     "Report a food as found=false when nothing trustworthy surfaced. One source is " +
     "still worth reporting: the app decides what one source is worth. Never invent a " +
     "url and never invent numbers. Speed matters: no prose.";
@@ -1665,13 +1667,18 @@ export async function runSuperLookup(
         if (!ok(p.kcal)) continue;
         const ref = typeof raw.url === "string" && raw.url.trim() ? raw.url.trim().slice(0, 500) : null;
         readings.push({
-          // Classify by HOST, never blanket "web". A fatsecret.co.in page is a
-          // FatSecret reading, and independenceKey excludes FatSecret outright -
-          // their terms do not allow replicating the database, and 7d would
-          // otherwise promote a row into our catalog on their evidence alone.
-          // Labelling it "web" would have quietly walked through that line.
+          // Classify by HOST, never blanket "web". The host is the identity that
+          // makes two pages of one site count once, and it is also what keeps a
+          // fatsecret.co.in reading recognisable as FatSecret rather than
+          // anonymous - which matters because the API half of that brand is still
+          // excluded. Which half this is comes from `via` below, not from here.
           source: providerFromRef(ref),
           ref,
+          // These readings come from the model's web_search tool, so they are
+          // pages anyone could open. independenceKey needs that stated rather
+          // than guessed: it is what lets a FatSecret PAGE count while an
+          // API-derived reading never does.
+          via: "web_search",
           // null, NOT 0, for a macro the page did not print. This is the whole
           // reason ReadingPer100 types them nullable and the schema lets the
           // model answer null: reconcileReadings decides each macro from the

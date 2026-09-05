@@ -82,6 +82,8 @@ Deno.test("the failure this prevents: a stale `verified` flag publishing itself"
 Deno.test("FatSecret-only evidence never reaches the catalog", () => {
   // Their terms allow serving a request, not replicating the database. A promoted
   // row is a copy, so this is the line that keeps us on the right side of it.
+  // These readings carry no `via`, so their provenance is unknown and they do not
+  // count - see the api-derived case below, and the public-page case after it.
   const d = promotionDecision(
     cand({
       evidence: [
@@ -315,4 +317,76 @@ Deno.test("a row someone deleted is not silently re-inserted", () => {
   const d = promotionDecision(cand({ promoted_food_id: "food-gone" }), [], NOW);
   assertEquals(d.action, "skip");
   if (d.action === "skip") assertEquals(d.reason, "promoted-row-missing");
+});
+
+
+// ── the FatSecret split, at the level that actually writes to the catalog ──
+// promotionDecision calls meetsVerificationBar itself, so the rule has to be
+// exercised here and not only in preciseCache.test.ts. Flagged by the PR bot on
+// #144: the cases above all used refless readings and so never touched the new
+// behaviour at the promotion boundary, which is the one with legal consequences.
+
+Deno.test("a FatSecret PAGE plus one other host promotes", () => {
+  // Changed 2026-09-05 on Sarthak's call: a page a web search landed on is public,
+  // read under no agreement, carrying the manufacturer's own printed numbers.
+  const d = promotionDecision(
+    cand({
+      evidence: [
+        {
+          source: "fatsecret",
+          ref: "https://www.fatsecret.co.in/calories-nutrition/milky-mist/paneer/100g",
+          via: "web_search",
+          per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 },
+        },
+        web(189, "https://www.mynetdiary.com/food/paneer.html"),
+      ],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "promote");
+});
+
+Deno.test("API-DERIVED FatSecret evidence still cannot promote, URL or not", () => {
+  // The regression that matters most in this file. FatSecret's food.get returns a
+  // food_url; citing it must never turn paid-API evidence into a promotable
+  // source. Provenance is stated on the reading, never inferred from the ref.
+  const d = promotionDecision(
+    cand({
+      evidence: [
+        {
+          source: "fatsecret",
+          ref: "https://www.fatsecret.com/calories-nutrition/milky-mist/paneer",
+          via: "api",
+          per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 },
+        },
+        web(189, "https://www.mynetdiary.com/food/paneer.html"),
+      ],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "unverified");
+});
+
+Deno.test("two FatSecret pages on one host are still one source at promotion", () => {
+  const d = promotionDecision(
+    cand({
+      evidence: [
+        {
+          source: "fatsecret", ref: "https://www.fatsecret.co.in/a", via: "web_search",
+          per_100: { kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12 },
+        },
+        {
+          source: "fatsecret", ref: "https://www.fatsecret.co.in/b", via: "web_search",
+          per_100: { kcal: 191, protein_g: 18, carb_g: 2, fat_g: 12 },
+        },
+      ],
+    }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "unverified");
 });
