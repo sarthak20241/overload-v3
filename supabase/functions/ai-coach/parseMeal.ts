@@ -1648,6 +1648,11 @@ export async function runSuperLookup(
           // Labelling it "web" would have quietly walked through that line.
           source: providerFromRef(ref),
           ref,
+          // These readings come from the model's web_search tool, so they are
+          // pages anyone could open. independenceKey needs that stated rather
+          // than guessed: it is what lets a FatSecret PAGE count while an
+          // API-derived reading never does.
+          via: "web_search",
           // null, NOT 0, for a macro the page did not print. This is the whole
           // reason ReadingPer100 types them nullable and the schema lets the
           // model answer null: reconcileReadings decides each macro from the

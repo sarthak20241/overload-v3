@@ -79,14 +79,26 @@ Deno.test("a typo misses rather than collides", () => {
 
 // ── independence ───────────────────────────────────────────────────────────
 
-Deno.test("a FatSecret reading with no public URL is still excluded", () => {
+Deno.test("a FatSecret reading of unknown provenance is excluded", () => {
   // The API is a contract: we accepted terms to call it, and those terms cover
-  // serving a request rather than replicating the database. A reading with no
-  // http(s) ref cannot be shown to have come from a public page, so it does not
-  // count. Nothing writes evidence on that path today; the test is what keeps it
-  // excluded by default if something ever does.
+  // serving a request rather than replicating the database. Absent `via` means we
+  // cannot show the reading came off a public page, so it does not count.
   assertEquals(independenceKey(reading("fatsecret", 190)), null);
   assertEquals(independenceKey(reading("fatsecret", 190, { ref: "food_id:12345" })), null);
+});
+
+Deno.test("A URL DOES NOT MAKE IT PUBLIC: api-derived evidence stays excluded", () => {
+  // The regression this guards is subtle and was in the first cut of this rule.
+  // FatSecret's food.get returns a food_url, so the natural thing to do when
+  // citing sources is to attach it - and a "has an http(s) ref" test would then
+  // have let paid-API evidence count toward promotion into the shared catalog.
+  // Provenance is stated, never inferred.
+  assertEquals(
+    independenceKey(reading("fatsecret", 190, {
+      ref: "https://www.fatsecret.com/calories-nutrition/x", via: "api",
+    })),
+    null,
+  );
 });
 
 Deno.test("a FatSecret PAGE found by web search counts like any other site", () => {
@@ -96,15 +108,19 @@ Deno.test("a FatSecret PAGE found by web search counts like any other site", () 
   // it cost real answers - the Milky Mist paneer row sat at verified: false
   // holding a correct 190 kcal only because its second source was this host.
   assertEquals(
-    independenceKey(reading("fatsecret", 190, { ref: "https://www.fatsecret.co.in/x/100g" })),
+    independenceKey(reading("fatsecret", 190, {
+      ref: "https://www.fatsecret.co.in/x/100g", via: "web_search",
+    })),
     "web:fatsecret.co.in",
   );
 });
 
 Deno.test("a FatSecret page and a different site verify a row together", () => {
   const r = meetsVerificationBar(190, [
-    reading("fatsecret", 190, { ref: "https://www.fatsecret.co.in/calories-nutrition/x/100g" }),
-    reading("web", 189, { ref: "https://www.mynetdiary.com/food/x.html" }),
+    reading("fatsecret", 190, {
+      ref: "https://www.fatsecret.co.in/calories-nutrition/x/100g", via: "web_search",
+    }),
+    reading("web", 189, { ref: "https://www.mynetdiary.com/food/x.html", via: "web_search" }),
   ]);
   assertEquals(r.verified, true);
   assertEquals(r.agreeing, ["web:fatsecret.co.in", "web:mynetdiary.com"]);
@@ -178,8 +194,8 @@ Deno.test("two pages of one FatSecret host are still one source", () => {
   // on the same site are one reading however many of them agree, exactly as for
   // any other host. So a row backed only by FatSecret still cannot verify itself.
   const r = meetsVerificationBar(190, [
-    reading("fatsecret", 190, { ref: "https://platform.fatsecret.com/1" }),
-    reading("fatsecret", 191, { ref: "https://platform.fatsecret.com/2" }),
+    reading("fatsecret", 190, { ref: "https://platform.fatsecret.com/1", via: "web_search" }),
+    reading("fatsecret", 191, { ref: "https://platform.fatsecret.com/2", via: "web_search" }),
   ]);
   assertEquals(r.verified, false);
   assertEquals(r.agreeing, ["web:platform.fatsecret.com"]);

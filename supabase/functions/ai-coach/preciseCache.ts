@@ -34,8 +34,12 @@
  * other, we accepted no terms to read it, and the number on it is the
  * manufacturer's printed panel - a fact, and republishing a fact does not create
  * ownership of it. So a public page counts toward verification like any other
- * host, while a reading actually derived from the API does not. independenceKey
- * draws that line on whether the reading carries an http(s) URL.
+ * host, while a reading actually derived from the API does not.
+ *
+ * independenceKey draws that line on the reading's own `via` field, set by
+ * whoever built it. NOT on whether it carries a URL: FatSecret's food.get
+ * returns a food_url, so a URL test would let API evidence in the moment anyone
+ * cited it. Unknown provenance never counts.
  *
  * The old rule excluded both halves and it cost real answers: the Milky Mist
  * paneer row is verified: false holding a correct 190 kcal, purely because its
@@ -90,6 +94,22 @@ export interface SourceReading {
    *  2026-08-27). Kept on the shape so resolvers can record provenance now and we
    *  are not re-plumbing evidence the day it starts mattering. */
   derived_from?: EvidenceProvider | null;
+  /**
+   * HOW this reading was obtained, which for FatSecret decides whether it can
+   * count toward verification. Only "web_search" does.
+   *
+   * This is recorded explicitly rather than inferred from the ref, and the
+   * difference matters. The first cut of this rule used "has an http(s) URL" as
+   * a proxy for "found on a public page", which held only because fatsecret.ts
+   * happens not to set a ref today. FatSecret's own food.get returns a food_url,
+   * so the obvious future change - citing it on API-derived evidence - would
+   * have silently passed that test and counted toward promotion into the shared
+   * catalog. A proxy that fails open is not a legal boundary.
+   *
+   * Absent means unknown, and unknown never counts for FatSecret. Adding a
+   * citation to an API response cannot flip that; only setting this field can.
+   */
+  via?: "web_search" | "api";
   /** Reading shape, not row shape: macros may be null where the page was silent. */
   per_100: ReadingPer100;
 }
@@ -210,16 +230,20 @@ export function independenceKey(r: SourceReading): string | null {
   //   a correct 190 kcal, because its second source happened to be a FatSecret
   //   URL rather than any other site's.
   //
-  // Today the API half writes no evidence at all - fatsecret.ts builds a
-  // CandidateFood, never a SourceReading, and the only thing that tags a reading
-  // "fatsecret" is providerFromRef reading a URL. So the http(s) test below is
-  // presently always true for these. It is written as a test rather than a
-  // deletion so that the day something does record API-derived evidence, it is
-  // excluded by default instead of quietly counting.
+  // The discriminator is `via`, set by whoever built the reading, NOT a guess
+  // from the ref. An earlier cut of this used "carries an http(s) URL" as a
+  // stand-in for "came off a public page". That was wrong in the dangerous
+  // direction: FatSecret's food.get returns a food_url, so the natural future
+  // change of citing it on API-derived evidence would have passed the test and
+  // started counting toward promotion into the shared catalog - silently, and
+  // exactly against the terms the rule exists to respect.
+  //
+  // Unknown provenance never counts. Only an explicit "web_search" does, so a
+  // reading can never drift into eligibility by gaining a citation.
   if (origin === "fatsecret") {
+    if (r.via !== "web_search") return null;
     const host = hostOf(r.ref);
-    if (!host || !/^https?:$/i.test(protocolOf(r.ref) ?? "")) return null;
-    return `web:${host}`;
+    return host ? `web:${host}` : null;
   }
   // Web readings are identified by host: one site is one source no matter how
   // many of its pages repeat the same number.
@@ -231,17 +255,6 @@ function hostOf(ref: string | null | undefined): string | null {
   if (!ref) return null;
   try {
     return new URL(ref).hostname.replace(/^www\./, "").toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-/** The scheme of a ref, so "is this a page someone could open" is answerable.
- *  A bare product id or an api: ref is not a public page. */
-function protocolOf(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  try {
-    return new URL(ref).protocol;
   } catch {
     return null;
   }
