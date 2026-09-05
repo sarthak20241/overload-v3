@@ -4942,11 +4942,18 @@ export async function runParseMeal(
       : null;
   const decideDefault: MealType =
     rawMealType ?? mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
-  // decide's own meal_type is the explicit answer when it gave one; otherwise
-  // the text's. Either way it outranks a carried section, and the clock does not.
+  // `explicit` is the meal the TEXT named, and ONLY that. decide's own
+  // meal_type belongs in the fallback, below the carried section, because it is
+  // a GUESS and not the user speaking - the decide prompt tells it to fall back
+  // to the hint when the text names nothing, so its answer is the hint wearing
+  // a different hat. Feeding it in as `explicit` let it outrank every carried
+  // section: "make the poha half a plate" on a breakfast/lunch/snack day came
+  // back with decide guessing "snack" and the whole day collapsed into Snacks,
+  // which is the exact bug the explicit/carried split was added to prevent,
+  // reintroduced one layer up. Verified on device against live v153.
   items = assignItemMeals(items, extItems, {
-    explicit: rawMealType ?? mealFromText,
-    fallback: input.mealHint ?? mealForHour(input.localHour),
+    explicit: mealFromText,
+    fallback: rawMealType ?? input.mealHint ?? mealForHour(input.localHour),
     carriedFor: prevMealByName,
   });
   const mealType: MealType = items[0]?.meal_type ?? decideDefault;

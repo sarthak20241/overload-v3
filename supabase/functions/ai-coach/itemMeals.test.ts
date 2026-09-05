@@ -231,3 +231,21 @@ Deno.test("a name in two sections with no positional handle is left to the fallb
   );
   assertEquals(out[0].meal_type, "dinner");
 });
+
+Deno.test("decide's own guess must not outrank a carried section", () => {
+  // The device found this on live v153. A correction goes through the full
+  // decide path, decide answers meal_type "snack" (its prompt tells it to fall
+  // back to the hint when the text names no meal, so its answer is a guess),
+  // and feeding that in as `explicit` collapsed a breakfast/lunch/snack day
+  // into Snacks. decide's answer is a FALLBACK; only the text is explicit.
+  const out = assignItemMeals(
+    [
+      line("Poha", { meal_type: "breakfast" }),
+      line("Rajma Chawal", { meal_type: "lunch" }),
+      line("Khakhra", { meal_type: "snack" }),
+    ],
+    [ext("poha"), ext("rajma chawal"), ext("khakhra")],
+    { explicit: null, fallback: "snack" },   // fallback = decide's guess
+  );
+  assertEquals(out.map((i) => i.meal_type), ["breakfast", "lunch", "snack"]);
+});
