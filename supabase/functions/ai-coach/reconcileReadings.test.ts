@@ -197,3 +197,74 @@ Deno.test("but 469 kcal of zeros is still a missing panel, not an empty food", (
   ]));
   assertEquals(out.per100.protein_g, 3.6);
 });
+
+// ── The PARSING half, which had no test and therefore had the bug ───────────
+//
+// The tests above pin reconcileReadings, and they pass on code that is wrong,
+// because the fake zero was being manufactured one layer earlier - inside
+// runSuperLookup, which calls the network and so could not be reached. The
+// aggregator was handed a 0 and had no way to know it was invented.
+//
+// parseReading is that layer, extracted. These tests are the ones that would
+// have caught it.
+import { parseReading } from "./parseMeal.ts";
+
+Deno.test("PARSING: an omitted macro stays null and never becomes 0", () => {
+  const out = parseReading({
+    url: "https://example.com/gems",
+    per_100: { kcal: 469, carb_g: 80, fat_g: 18 },
+  });
+  assertEquals(out?.per_100.protein_g, null, "omitted must be null, not 0");
+  assertEquals(out?.per_100.carb_g, 80);
+  assertEquals(out?.per_100.fat_g, 18);
+});
+
+Deno.test("PARSING: an explicit null stays null", () => {
+  const out = parseReading({
+    url: "https://example.com/x",
+    per_100: { kcal: 190, protein_g: null, carb_g: null, fat_g: null },
+  });
+  assertEquals(out?.per_100.protein_g, null);
+  assertEquals(out?.per_100.carb_g, null);
+  assertEquals(out?.per_100.fat_g, null);
+});
+
+Deno.test("PARSING: a STATED zero survives as zero", () => {
+  // Oil really is 0 g protein. If this ever reads null, the fix went too far
+  // and every genuinely-zero macro would silently stop counting.
+  const out = parseReading({
+    url: "https://example.com/oil",
+    per_100: { kcal: 884, protein_g: 0, carb_g: 0, fat_g: 100 },
+  });
+  assertEquals(out?.per_100.protein_g, 0);
+  assertEquals(out?.per_100.carb_g, 0);
+  assertEquals(out?.per_100.fat_g, 100);
+});
+
+Deno.test("PARSING: end to end, a partial panel does not drag protein down", () => {
+  // The whole bug in one assertion: two pages omit protein, one states 3.6.
+  // With the coercion in place this returned median([0, 3.6, 0]) = 0.
+  const readings = [
+    { url: "https://a.example/1", per_100: { kcal: 469, carb_g: 80, fat_g: 18 } },
+    { url: "https://b.example/2", per_100: { kcal: 472, protein_g: 3.6, carb_g: 75, fat_g: 17.5 } },
+    { url: "https://c.example/3", per_100: { kcal: 470, carb_g: 80, fat_g: 18 } },
+  ].map(parseReading).filter((x): x is NonNullable<typeof x> => x !== null);
+  assertEquals(readings.length, 3);
+  assertEquals(ok(reconcileReadings(readings)).per100.protein_g, 3.6);
+});
+
+Deno.test("PARSING: kcal alone is still a reading, and a bad kcal is not", () => {
+  assertEquals(parseReading({ url: "https://x.example", per_100: { kcal: 190 } }) !== null, true);
+  assertEquals(parseReading({ url: "https://x.example", per_100: { kcal: -1 } }), null);
+  assertEquals(parseReading({ url: "https://x.example" }), null);
+  assertEquals(parseReading(null), null);
+});
+
+Deno.test("PARSING: a FatSecret host is labelled fatsecret, not web", () => {
+  // The licensing line. independenceKey excludes FatSecret by name, so a
+  // mislabel here would let a FatSecret page vouch for a row we then promote.
+  const fs = parseReading({ url: "https://www.fatsecret.co.in/x", per_100: { kcal: 190 } });
+  assertEquals(fs?.source, "fatsecret");
+  const web = parseReading({ url: "https://www.mynetdiary.com/x", per_100: { kcal: 190 } });
+  assertEquals(web?.source, "web");
+});

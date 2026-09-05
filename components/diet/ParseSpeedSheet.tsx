@@ -1,11 +1,18 @@
 /**
  * ParseSpeedSheet — how should Drona log what you type?
  *
- * Two tiers, set once and sticky (lib/parseSpeed): Quick is the default
- * estimate-first fast parse, Thorough is the full catalog pipeline. Portal
- * sheet like the other diet sheets; no keyboard input, so the plain
- * SlideInDown idiom (DayPickerSheet's) is enough and useSheetSlide is not
- * needed. Copy stays in Drona's voice: what he does, never which model ran.
+ * Three tiers, set once and sticky (lib/parseSpeed): Quick is the default
+ * estimate-first fast parse, Thorough is the full catalog pipeline, Precise is
+ * the Pro tier that reads the product's own numbers off the web and
+ * cross-checks two sources. Portal sheet like the other diet sheets; no
+ * keyboard input, so the plain SlideInDown idiom (DayPickerSheet's) is enough
+ * and useSheetSlide is not needed. Copy stays in Drona's voice: what he does,
+ * never which model ran.
+ *
+ * A locked Precise stays VISIBLE and readable rather than hidden or greyed to
+ * illegibility: someone has to be able to read what they would get before the
+ * upgrade screen asks them to pay for it. Tapping it routes to /upgrade
+ * instead of selecting, and the stored preference is left alone.
  */
 import { useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet, BackHandler } from 'react-native';
@@ -21,16 +28,33 @@ import type { ParseSpeed } from '@/lib/parseSpeed';
 interface Props {
   open: boolean;
   value: ParseSpeed;
+  /** Live entitlement, not a stored flag. False locks Precise behind /upgrade. */
+  canUsePrecise: boolean;
   onClose: () => void;
   onPick: (v: ParseSpeed) => void;
+  /** Called instead of onPick when a locked tier is tapped. */
+  onUpgrade: () => void;
 }
 
-const OPTIONS: { key: ParseSpeed; icon: 'zap' | 'target'; title: string; sub: string }[] = [
+const OPTIONS: {
+  key: ParseSpeed;
+  icon: 'zap' | 'target' | 'award';
+  title: string;
+  sub: string;
+  pro?: boolean;
+}[] = [
   { key: 'quick', icon: 'zap', title: 'Quick', sub: 'Logs in seconds. Drona estimates from what you typed.' },
   { key: 'thorough', icon: 'target', title: 'Thorough', sub: 'A few seconds slower. Drona double-checks every item against the food catalog.' },
+  {
+    key: 'precise',
+    icon: 'award',
+    title: 'Precise',
+    sub: 'Slowest, and worth it on packaged food. Drona reads the product’s own numbers and checks them against a second source. He remembers, so the next time is instant.',
+    pro: true,
+  },
 ];
 
-export function ParseSpeedSheet({ open, value, onClose, onPick }: Props) {
+export function ParseSpeedSheet({ open, value, canUsePrecise, onClose, onPick, onUpgrade }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -55,24 +79,46 @@ export function ParseSpeedSheet({ open, value, onClose, onPick }: Props) {
             <Text style={[s.title, { color: C.foreground }]}>How should Drona log?</Text>
 
             {OPTIONS.map((o) => {
-              const sel = o.key === value;
+              const locked = o.pro === true && !canUsePrecise;
+              // A locked row is never "selected", even if a lapsed subscriber's
+              // stored preference still says Precise. The tick has to agree with
+              // what will actually run (effectiveParseSpeed), or the sheet
+              // promises a tier the parse then quietly does not use.
+              const sel = o.key === value && !locked;
               return (
                 <Pressable
                   key={o.key}
-                  onPress={() => { haptics.tick(); onPick(o.key); onClose(); }}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: sel }}
-                  accessibilityLabel={`${o.title}. ${o.sub}`}
+                  onPress={() => {
+                    haptics.tick();
+                    onClose();
+                    if (locked) onUpgrade();
+                    else onPick(o.key);
+                  }}
+                  accessibilityRole={locked ? 'button' : 'radio'}
+                  accessibilityState={locked ? { disabled: false } : { selected: sel }}
+                  accessibilityLabel={locked ? `${o.title}. ${o.sub} Overload Pro.` : `${o.title}. ${o.sub}`}
+                  accessibilityHint={locked ? 'Opens the upgrade screen' : undefined}
                   style={({ pressed }) => [
                     s.row,
                     { borderColor: sel ? C.accentText : C.border, backgroundColor: pressed ? C.muted : C.card },
                   ]}
                 >
                   <View style={[s.rowIcon, { backgroundColor: C.muted }]}>
-                    <Feather name={o.icon} size={12} color={sel ? C.accentText : C.textSecondary} />
+                    <Feather
+                      name={locked ? 'lock' : o.icon}
+                      size={12}
+                      color={sel ? C.accentText : C.textSecondary}
+                    />
                   </View>
                   <View style={s.rowBody}>
-                    <Text style={[s.rowTitle, { color: C.foreground }]}>{o.title}</Text>
+                    <View style={s.rowTitleLine}>
+                      <Text style={[s.rowTitle, { color: C.foreground }]}>{o.title}</Text>
+                      {locked && (
+                        <View style={[s.proPill, { borderColor: C.accentText }]}>
+                          <Text style={[s.proText, { color: C.accentText }]}>PRO</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={[s.rowSub, { color: C.textSecondary }]}>{o.sub}</Text>
                   </View>
                   {/* Reserve the slot either way so selecting never shifts the row text. */}
@@ -97,7 +143,10 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, borderWidth: 1, borderRadius: Radius.lg, padding: Spacing.md, marginBottom: Spacing.sm },
   rowIcon: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   rowBody: { flex: 1 },
+  rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   rowTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  proPill: { borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: 5, paddingVertical: 1 },
+  proText: { fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: LetterSpacing.eyebrow },
   rowSub: { fontSize: FontSize.sm, marginTop: 2, lineHeight: 17 },
   check: { width: 18, alignItems: 'center' },
 });

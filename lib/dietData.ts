@@ -545,6 +545,12 @@ export interface ParsedMealItem {
   source: 'catalog' | 'off' | 'fatsecret' | 'web' | 'estimate' | 'manual';
   assumption: string | null;
   confidence: 'high' | 'medium' | 'low';
+  /** Precise tier only: two INDEPENDENT sources landed within tolerance of this
+   *  line's energy. Not "we are confident" - `confidence` already says that -
+   *  but "more than one place off our own shelf agrees", which is the one claim
+   *  worth putting a mark on the card for. */
+  verified?: boolean;
+
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
    *  belong to different sections. The server stamps every line; the client
@@ -639,6 +645,10 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
       : 'estimate',
     assumption: typeof i.assumption === 'string' && i.assumption.trim() ? i.assumption.trim() : null,
     confidence: i.confidence === 'high' || i.confidence === 'low' ? i.confidence : 'medium',
+    // Only ever true when the server says so. Absent on every tier but Precise,
+    // and absent from an older server build, so the badge simply does not
+    // render rather than claiming a cross-check that never happened.
+    verified: i.verified === true,
   };
 }
 
@@ -863,6 +873,11 @@ export async function parseMeal(
     /** Recent turns of this logging conversation, oldest first. Lets a bare
      *  "yes" answer whatever Drona just offered. */
     turns?: { role: 'user' | 'drona'; text: string }[];
+    /** Pipeline tier. Omitted means smart, which is what every existing caller
+     *  wants and what the server assumes when the field is absent. Only
+     *  'super' (Precise) is passed here - 'fast' rides the streaming call
+     *  instead, because the whole point of that tier is the stream. */
+    speed?: 'super';
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -885,6 +900,10 @@ export async function parseMeal(
         text,
         local_hour: now.getHours(),
         local_date: localDate,
+        // Tier rides its OWN field: `mode` is the dispatch value and reading the
+        // tier off it is the gate that could never open (see index.ts). Absent
+        // = smart, which is every caller that does not ask.
+        ...(args.speed ? { speed: args.speed } : {}),
         ...(args.mealHint ? { meal_hint: args.mealHint } : {}),
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }

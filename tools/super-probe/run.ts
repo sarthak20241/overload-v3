@@ -6,6 +6,7 @@
 //   ONLY=amul-lassi,cadbury-gems  npx tsx tools/super-probe/run.ts
 //   CONCURRENCY=4                 npx tsx tools/super-probe/run.ts
 //   KEEP=1                        npx tsx tools/super-probe/run.ts   # warm run
+//   RESTORE=<path>                npx tsx tools/super-probe/run.ts   # crash recovery
 //
 // COSTS REAL MONEY and this one cannot go through the Claude CLI. Super's
 // lookup uses Anthropic's SERVER-SIDE web_search tool, which only exists on the
@@ -16,9 +17,15 @@
 // cache read is live for EVERY tier, not just Super - so a row this probe writes
 // is served to real users for the full 90-day TTL. Some of what Super finds is
 // wrong (a run of this probe banked Cadbury 5 Star at 533 kcal against a 447
-// label), so the probe DELETES every row it wrote when it finishes. Pass KEEP=1
-// only when you are deliberately testing the warm path, and clear up after.
-import { readFileSync } from "node:fs";
+// label), so the probe deletes every row IT wrote when it finishes.
+//
+// It deletes NOTHING ELSE. Rows that already existed are borrowed and put back
+// (see "borrowing production rows" below) - the earlier cleanup deleted by
+// pattern, which would have destroyed a real user's row for any food sharing a
+// token once Super went live. KEEP=1 skips the borrow entirely and leaves the
+// probe's own rows in production; use it only for a deliberate warm-path test,
+// and clear up after.
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { type ParseMealDeps, runParseMeal } from "../../supabase/functions/ai-coach/parseMeal";
 import { PROBE_CASES, type ProbeCase, type Range } from "./cases";
@@ -171,23 +178,121 @@ async function runOne(c: ProbeCase): Promise<Result> {
 
 const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100 >= 0 ? "+" : "")}${(x * 100).toFixed(0)}%`);
 
+// ─────────────────────── borrowing production rows ───────────────────────
+//
+// precise_cache is GLOBAL and has no owner column - by design, because a
+// product's macros are a fact about the product, not about whoever asked. That
+// makes "delete the rows for this case" a dangerous instruction: the original
+// cleanup deleted by `ilike cache_key %token%` for each of the case's tokens,
+// which was harmless while the table held one row and stops being harmless the
+// moment Super is on and real users create rows. A case with the token "paneer"
+// would delete a user's researched paneer row, and a KEEP=1 run would leave a
+// wrong one in its place for the full 90-day TTL.
+//
+// So the probe no longer deletes anything it did not create. It BORROWS:
+//   1. read the rows its loose tokens match, whole,
+//   2. write them to disk BEFORE touching the table (the crash net),
+//   3. delete them BY EXACT cache_key - never a pattern,
+//   4. run,
+//   5. delete only keys that were NOT borrowed (those are the probe's own),
+//   6. put the borrowed rows back, then drop the file.
+//
+// A run that dies between 3 and 6 leaves the file behind on purpose. Restore it
+// with RESTORE=<path> npx tsx tools/super-probe/run.ts - that is why the path is
+// printed loudly rather than logged quietly.
+const RESTORE_DIR = "tools/super-probe";
+
+type CacheRow = Record<string, unknown> & { cache_key: string };
+
+/** Rows a case's tokens match. Read-only; the loose match stays loose here
+ *  because over-matching a row we are about to preserve costs nothing, while
+ *  under-matching one would leave it to be deleted as "ours" in step 5. */
+async function matchingRows(c: ProbeCase): Promise<CacheRow[]> {
+  let q = admin.from("precise_cache").select("*");
+  for (const t of c.keyTokens) q = q.ilike("cache_key", `%${t}%`);
+  const { data, error } = await q;
+  if (error) throw new Error(`precise_cache read failed: ${error.message}`);
+  return (data ?? []) as CacheRow[];
+}
+
+let restorePath: string | null = null;
+let borrowedKeys = new Set<string>();
+
+async function borrowRows(cases: ProbeCase[]): Promise<CacheRow[]> {
+  const rows: CacheRow[] = [];
+  const seen = new Set<string>();
+  for (const c of cases) {
+    for (const r of await matchingRows(c)) {
+      if (!seen.has(r.cache_key)) { seen.add(r.cache_key); rows.push(r); }
+    }
+  }
+  borrowedKeys = seen;
+  if (rows.length === 0) return rows;
+
+  // Disk before delete. If this write fails we have not touched the table yet,
+  // so failing here is safe and failing after would not be.
+  restorePath = `${RESTORE_DIR}/.borrowed-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+  writeFileSync(restorePath, JSON.stringify(rows, null, 2));
+  console.log(`borrowed ${rows.length} existing row(s) -> ${restorePath}`);
+
+  const { error } = await admin.from("precise_cache").delete().in("cache_key", [...seen]);
+  if (error) throw new Error(`could not clear borrowed rows: ${error.message}`);
+  return rows;
+}
+
+/** Put back exactly what we took, and only then drop the file. */
+async function giveBackRows(): Promise<void> {
+  if (!restorePath) return;
+  await restoreFrom(restorePath);
+}
+
+async function restoreFrom(path: string): Promise<void> {
+  const rows = JSON.parse(readFileSync(path, "utf8")) as CacheRow[];
+  if (rows.length === 0) { unlinkSync(path); return; }
+  const { error } = await admin.from("precise_cache").upsert(rows, { onConflict: "cache_key" });
+  if (error) {
+    console.error(`\nRESTORE FAILED (${error.message}). Rows are still in ${path}.`);
+    console.error(`Retry with: RESTORE=${path} npx tsx tools/super-probe/run.ts`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`restored ${rows.length} borrowed row(s) from ${path}`);
+  unlinkSync(path);
+}
+
+/** Rows the PROBE wrote: matched by the case's tokens, minus everything we
+ *  borrowed. This is the only set the probe is allowed to delete. */
+async function deleteOwnRows(cases: ProbeCase[]): Promise<number> {
+  const mine = new Set<string>();
+  for (const c of cases) {
+    for (const r of await matchingRows(c)) {
+      if (!borrowedKeys.has(r.cache_key)) mine.add(r.cache_key);
+    }
+  }
+  if (mine.size === 0) return 0;
+  const { count, error } = await admin
+    .from("precise_cache").delete({ count: "exact" }).in("cache_key", [...mine]);
+  if (error) throw new Error(`cleanup failed: ${error.message}`);
+  return count ?? 0;
+}
+
 (async () => {
   const only = (process.env.ONLY ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const cases = only.length ? PROBE_CASES.filter((c) => only.includes(c.id)) : PROBE_CASES;
   const conc = Number(process.env.CONCURRENCY ?? 4);
 
-  if (process.env.KEEP !== "1") {
-    let cleared = 0;
-    for (const c of cases) {
-      let q = admin.from("precise_cache").delete({ count: "exact" });
-      for (const t of c.keyTokens) q = q.ilike("cache_key", `%${t}%`);
-      const { count } = await q;
-      cleared += count ?? 0;
-    }
-    console.log(`cleared ${cleared} cache rows for ${cases.length} cases (cold run)`);
-  } else {
-    console.log("KEEP=1: warm run, cache rows left in place");
+  if (process.env.RESTORE) {
+    await restoreFrom(process.env.RESTORE);
+    return;
   }
+
+  // Take the borrowed rows out of the way, having first written them down.
+  const borrowed = process.env.KEEP === "1" ? [] : await borrowRows(cases);
+  console.log(
+    process.env.KEEP === "1"
+      ? "KEEP=1: warm run, cache rows left in place"
+      : `cleared ${borrowed.length} cache rows for ${cases.length} cases (cold run)`,
+  );
   console.log(`running ${cases.length} cases, concurrency ${conc}\n`);
 
   const results: Result[] = [];
@@ -258,15 +363,17 @@ const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100 >= 0 ? "+" :
   // not a fact we want served to anyone. Runs even when cases failed, because a
   // failed case is exactly the one whose wrong row you least want left behind.
   if (process.env.KEEP !== "1") {
-    let removed = 0;
-    for (const c of cases) {
-      let q = admin.from("precise_cache").delete({ count: "exact" });
-      for (const t of c.keyTokens) q = q.ilike("cache_key", `%${t}%`);
-      const { count } = await q;
-      removed += count ?? 0;
-    }
+    const removed = await deleteOwnRows(cases);
     console.log(`\ncleaned up ${removed} probe rows from precise_cache`);
+    await giveBackRows();
   } else {
     console.log("\nKEEP=1: probe rows LEFT IN PRODUCTION - delete them yourself.");
   }
-})();
+})().catch(async (e) => {
+  // A crash after the borrow is the case the disk file exists for. Try to hand
+  // the rows back before dying; if that fails too, restoreFrom prints the exact
+  // command to finish the job by hand. Never swallow the original error.
+  console.error(`\nprobe failed: ${e instanceof Error ? e.message : String(e)}`);
+  await giveBackRows().catch(() => {});
+  process.exitCode = 1;
+});

@@ -28,9 +28,11 @@ import { nearWord } from "./textMatch.ts";
 import { parseFastGrammar } from "./fastGrammar.ts";
 import {
   cacheKey,
+  kcalSpread,
   meetsVerificationBar,
   type PreciseCacheRow,
   type SourceReading,
+  VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
 import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
 
@@ -79,6 +81,21 @@ export interface CandidateFood {
   // not replicating the DB), so those candidates carry food_id null and their
   // per-100 numbers travel with them. See fatsecret.ts.
   source: "catalog" | "off" | "fatsecret";
+  // ── Evidence, on the candidate that was actually researched ───────────────
+  // Super and precise-cache hits only. superLookupOne already computed both to
+  // write the cache row, and both used to die there: the verdict never left the
+  // function, so decide stated a number two sources fought over exactly as
+  // flatly as one they agreed on, and the client had nothing to badge.
+  //
+  // ABSENT, not false, on every other candidate. A catalog or OFF row was never
+  // put through meetsVerificationBar at all, and `verified: false` on it would
+  // read as "we checked and it failed" - a claim we have no evidence for.
+  /** Two independent sources agreed with the kcal we kept. See meetsVerificationBar. */
+  verified?: boolean;
+  /** Fraction of the largest kcal reading that the readings spanned. See
+   *  kcalSpread: 0 means they landed together, absent means there was only one
+   *  of them and there was nothing to compare. */
+  kcal_spread?: number;
 }
 
 export interface ParsedItem {
@@ -97,6 +114,13 @@ export interface ParsedItem {
   source: "catalog" | "off" | "fatsecret" | "web" | "estimate" | "manual";
   assumption: string | null;
   confidence: "high" | "medium" | "low";
+  /** The candidate behind this line cleared the verification bar: two
+   *  independent sources agreed with its calories. Set only for lines whose
+   *  numbers came from a researched row (Super lookup or precise-cache hit);
+   *  ABSENT means the question was never asked, which is not the same as
+   *  answered no, so a badge belongs on `true` alone. Stamped in
+   *  stripEphemeralIds, the one step every return path already owes. */
+  verified?: boolean;
   /** Which diary section this line belongs in. Optional on the type because
    *  lines are built in a dozen places (fill, fallback, decide, corrections,
    *  research) and none of them knows the meal; assignItemMeals stamps it in
@@ -538,6 +562,23 @@ function per100ForItems(resolved: ResolvedItem[]): Map<string, Per100> {
           kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g, fiber_g: c.fiber_g,
           name: c.name,
         });
+      }
+    }
+  }
+  return byFood;
+}
+
+/** The verification verdict for every candidate that HAS one, keyed the same
+ *  way as per100ForItems so a logged line can be traced back to the evidence
+ *  behind it. Candidates that were never researched contribute no entry at all,
+ *  which is what keeps `verified: false` off a catalog line nobody ever checked
+ *  (absent means "not asked", false means "asked and failed"). */
+export function verifiedForItems(resolved: ResolvedItem[]): Map<string, boolean> {
+  const byFood = new Map<string, boolean>();
+  for (const r of resolved) {
+    for (const c of r.candidates) {
+      if (c.food_id && c.verified !== undefined && !byFood.has(c.food_id)) {
+        byFood.set(c.food_id, c.verified);
       }
     }
   }
@@ -1567,10 +1608,9 @@ export interface SuperFinding {
  * path.
  */
 /** Which provider a url actually is. FatSecret and Open Food Facts are named
- *  because independenceKey treats them differently from an anonymous site: all
- *  OFF pages are one source however many are read, and a FatSecret reading counts
- *  only when its `via` says a web search found it, never when it came from their
- *  API. Anything else is an ordinary web source. */
+ *  because independenceKey treats them differently from an anonymous site:
+ *  FatSecret can never verify a row (their terms), and all OFF pages are one
+ *  source however many are read. Anything else is an ordinary web source. */
 function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
   if (!ref) return "web";
   let host = "";
@@ -1579,11 +1619,61 @@ function providerFromRef(ref: string | null): "web" | "fatsecret" | "off" {
   } catch {
     return "web";
   }
-  // One test, not three: the regex already covers fatsecret.com and any
-  // subdomain of it, as well as the country domains (fatsecret.co.in, .co.uk).
-  if (/(^|\.)fatsecret\.[a-z.]+$/.test(host)) return "fatsecret";
+  if (host === "fatsecret.com" || host.endsWith(".fatsecret.com") || /(^|\.)fatsecret\.[a-z.]+$/.test(host)) {
+    return "fatsecret";
+  }
   if (host === "openfoodfacts.org" || host.endsWith(".openfoodfacts.org")) return "off";
   return "web";
+}
+
+/**
+ * One entry of the model's report_sources output -> a SourceReading, or null if
+ * it is not a reading at all.
+ *
+ * Exported and pure ONLY so it can be tested. It used to be an inline block
+ * inside runSuperLookup, which calls the network, so nothing could reach it -
+ * and that is how it came to hold a bug that the aggregator's own test suite
+ * was written to prevent. reconcileReadings was extracted for exactly this
+ * reason a day earlier; this is the other half of the same lesson.
+ */
+export function parseReading(raw: unknown): SourceReading | null {
+  const r = raw as Record<string, any> | null;
+  const p = r?.per_100;
+  if (!p) return null;
+  const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  // kcal ALONE is enough to keep a reading. Measured on the canonical case:
+  // the model returned the right answer (190 kcal for Milky Mist low fat
+  // paneer) with protein/carb/fat null, and requiring all four threw the
+  // whole finding away. Verification is kcal-based (meetsVerificationBar
+  // takes one number), so a kcal-only reading is real evidence; the stored
+  // macros come from whichever readings carry them.
+  if (!ok(p.kcal)) return null;
+  const ref = typeof r?.url === "string" && r.url.trim() ? r.url.trim().slice(0, 500) : null;
+  return {
+    // Classify by HOST, never blanket "web". A fatsecret.co.in page is a
+    // FatSecret reading, and independenceKey excludes FatSecret outright -
+    // their terms do not allow replicating the database, and 7d would
+    // otherwise promote a row into our catalog on their evidence alone.
+    // Labelling it "web" would have quietly walked through that line.
+    source: providerFromRef(ref),
+    ref,
+    per_100: {
+      kcal: p.kcal,
+      // null, NOT 0, and the distinction is the whole point of the schema being
+      // nullable. `0` is a claim that the food contains none of this macro;
+      // null is "the page did not say". Coercing to 0 here undid the nullable
+      // schema four lines after declaring it, and left reconcileReadings unable
+      // to tell the two apart - so a PARTIAL panel (carbs and fat stated,
+      // protein omitted) passed the no-panel drop on its carbs and then voted a
+      // fake 0 into the protein median. That is the Cadbury Gems failure
+      // surviving in the one shape the earlier fix did not cover. fiber_g was
+      // already right, which is what made the inconsistency easy to miss.
+      protein_g: ok(p.protein_g) ? p.protein_g : null,
+      carb_g: ok(p.carb_g) ? p.carb_g : null,
+      fat_g: ok(p.fat_g) ? p.fat_g : null,
+      fiber_g: ok(p.fiber_g) ? p.fiber_g : null,
+    },
+  };
 }
 
 export async function runSuperLookup(
@@ -1609,10 +1699,9 @@ export async function runSuperLookup(
     "Give ALL FOUR of kcal, protein_g, carb_g and fat_g for every reading. A panel " +
     "that lists energy without macros is half a row and the app cannot log it, so " +
     "read the full panel or find a source that shows one.\n" +
-    "Two sources agree only when they are DIFFERENT SITES: several pages of one " +
-    "site are one source however many times they repeat a number, so a second " +
-    "reading from a host you already used adds nothing. Prefer a brand site or a " +
-    "second database over another page of the same one.\n" +
+    "FatSecret pages do not count toward agreement, so a FatSecret listing alone " +
+    "leaves a food unconfirmed. Report it if it is what you have, but look for a " +
+    "brand site or another database as well.\n" +
     "Report a food as found=false when nothing trustworthy surfaced. One source is " +
     "still worth reporting: the app decides what one source is worth. Never invent a " +
     "url and never invent numbers. Speed matters: no prose.";
@@ -1655,47 +1744,8 @@ export async function runSuperLookup(
       if (o.found !== true || typeof o.for_item !== "string") continue;
       const readings: SourceReading[] = [];
       for (const raw of Array.isArray(o.readings) ? o.readings : []) {
-        const p = (raw as Record<string, any>)?.per_100;
-        if (!p) continue;
-        const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
-        // kcal ALONE is enough to keep a reading. Measured on the canonical case:
-        // the model returned the right answer (190 kcal for Milky Mist low fat
-        // paneer) with protein/carb/fat null, and requiring all four threw the
-        // whole finding away. Verification is kcal-based (meetsVerificationBar
-        // takes one number), so a kcal-only reading is real evidence; the stored
-        // macros come from whichever readings carry them.
-        if (!ok(p.kcal)) continue;
-        const ref = typeof raw.url === "string" && raw.url.trim() ? raw.url.trim().slice(0, 500) : null;
-        readings.push({
-          // Classify by HOST, never blanket "web". The host is the identity that
-          // makes two pages of one site count once, and it is also what keeps a
-          // fatsecret.co.in reading recognisable as FatSecret rather than
-          // anonymous - which matters because the API half of that brand is still
-          // excluded. Which half this is comes from `via` below, not from here.
-          source: providerFromRef(ref),
-          ref,
-          // These readings come from the model's web_search tool, so they are
-          // pages anyone could open. independenceKey needs that stated rather
-          // than guessed: it is what lets a FatSecret PAGE count while an
-          // API-derived reading never does.
-          via: "web_search",
-          // null, NOT 0, for a macro the page did not print. This is the whole
-          // reason ReadingPer100 types them nullable and the schema lets the
-          // model answer null: reconcileReadings decides each macro from the
-          // sources that STATED it, and a 0 here is indistinguishable from a
-          // printed zero, so it votes. Flattening to 0 put the Cadbury Gems bug
-          // straight back - not for an all-null reading, which hasComposition
-          // still drops, but for a PARTIAL panel: a page with carbs and fat and
-          // no protein line kept its reading (carbs are above zero) and then
-          // cast a fake "0 g protein" vote into the protein median.
-          per_100: {
-            kcal: p.kcal,
-            protein_g: ok(p.protein_g) ? p.protein_g : null,
-            carb_g: ok(p.carb_g) ? p.carb_g : null,
-            fat_g: ok(p.fat_g) ? p.fat_g : null,
-            fiber_g: ok(p.fiber_g) ? p.fiber_g : null,
-          },
-        });
+        const parsed = parseReading(raw);
+        if (parsed) readings.push(parsed);
       }
       if (readings.length === 0) continue;
       const grams = typeof o.serving_grams === "number" && Number.isFinite(o.serving_grams) &&
@@ -2155,6 +2205,7 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   NEVER drop these, they ARE the product: fat grade (low fat, full fat, full cream, toned, double toned, skimmed); protein or sugar claims (high protein, zero sugar, no added sugar, diet); part or variant (yolk, white, whole, brown, wholewheat, maida); prep state (raw, boiled, roasted, fried, dried - 2-3x density); brand on a FORMULATED product, where the recipe IS the product (protein bars and powders, biscuits, cereals, sauces, ready meals, flavoured yogurt); a DISH reduced to an ingredient (paneer butter masala is not Paneer).
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
+- sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -2254,7 +2305,22 @@ async function callAnthropicOnce(
   }
 }
 
-function candidatePayload(c: CandidateFood): Record<string, unknown> {
+/**
+ * Is this candidate's evidence contested enough that decide must be told?
+ *
+ * VERIFY_TOLERANCE is the threshold on purpose, not a second number of our own:
+ * a spread above it means two of the readings would have failed kcalAgrees, so
+ * "materially disagreed" here means exactly what it means everywhere else in
+ * the evidence code. Absent spread (nothing researched, or a single reading) is
+ * silence, never a warning.
+ */
+function sourcesDisagree(c: CandidateFood): boolean {
+  return typeof c.kcal_spread === "number" && c.kcal_spread > VERIFY_TOLERANCE;
+}
+
+// Exported for tests: this is the exact shape decide sees for a candidate, and
+// what it does NOT say on the agreeing case is as load-bearing as what it does.
+export function candidatePayload(c: CandidateFood): Record<string, unknown> {
   return {
     food_id: c.food_id,
     name: c.name,
@@ -2269,6 +2335,12 @@ function candidatePayload(c: CandidateFood): Record<string, unknown> {
     },
     servings: c.servings.slice(0, 6),
     source: c.source,
+    // Emitted ONLY when the sources fought, which is the rare case. Sending a
+    // spread (or a `verified` flag) on every candidate would add a line to
+    // every item of every decide call to say "nothing to see here", and this
+    // payload is cached input tokens on every meal anyone logs. Silence is the
+    // signal that the numbers agreed.
+    ...(sourcesDisagree(c) ? { sources_disagree_pct: Math.round(c.kcal_spread! * 100) } : {}),
   };
 }
 
@@ -2500,6 +2572,13 @@ export async function superLookupOne(
   const { per100, fiber_g } = reconciled;
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
+  // The same evidence, measured the other way. `verified` says whether anyone
+  // is allowed to vouch for the number; the spread says how far the readings we
+  // actually got sat apart. Both ride out on the candidate, because the cache
+  // row is not the only consumer of this verdict: decide has to hedge on a
+  // contested number and the client has to badge an uncontested one, and
+  // neither can do that from a row it never sees.
+  const spread = kcalSpread(finding.readings);
   const servings = finding.serving_label && finding.serving_grams
     ? [{ label: finding.serving_label, grams: finding.serving_grams }]
     : [];
@@ -2531,6 +2610,8 @@ export async function superLookupOne(
     fiber_g,
     servings,
     source: "catalog",
+    verified,
+    ...(spread === null ? {} : { kcal_spread: spread }),
   };
 }
 
@@ -2550,6 +2631,19 @@ export function cacheRowToCandidate(row: PreciseCacheRow): CandidateFood {
     fiber_g: row.fiber_g,
     servings: (row.servings ?? []).filter((sv) => sv && sv.grams > 0),
     source: "catalog",
+    // A hit is the SAME verdict superLookupOne reached, read back instead of
+    // re-bought. Dropping it here would have made the badge and decide's
+    // hedging flicker on cache state - a food shown as contested on the lookup
+    // that paid for it and as plain fact to everyone served from the row.
+    // `=== true` because the column is boolean but the row arrives as JSON.
+    verified: row.verified === true,
+    // Recomputed from the stored readings rather than stored as its own column:
+    // it is a pure function of `evidence`, and a second column could go stale
+    // against the readings it claims to summarise.
+    ...(() => {
+      const spread = kcalSpread(row.evidence ?? []);
+      return spread === null ? {} : { kcal_spread: spread };
+    })(),
   };
 }
 
@@ -2579,28 +2673,9 @@ async function resolveOneItem(
   // there is no freshness check to forget here.
   //
   // Returning early skips the plausibility filter, the reranker, staple
-  // promotion and the 6-row cap. This used to claim that was safe "because a
-  // cached row was already verified before it was written". That was FALSE and
-  // contradicted superLookupOne's own header a few hundred lines up, which says
-  // the row is written whatever the verdict - `verified` gates promotion into
-  // the catalog, never the write and never the read.
-  //
-  // What actually makes it safe is narrower: reconcileReadings ran
-  // implausiblePer100 before the row was stored, so a cached row has passed
-  // physics even when unverified, and re-running the filter here would only ask
-  // the same question again. It is the sole candidate, so there is nothing to
-  // rank it against.
-  //
-  // What that does NOT cover, left open deliberately: an unverified row is
-  // served ahead of the catalog ladder for the full TTL. CodeRabbit proposed
-  // gating hits on verified === true. Measured, only 11-13 of 16 probe rows come
-  // back verified, and the Milky Mist paneer row - the correct 190 kcal answer -
-  // is verified: false because one of its two sources was FatSecret, which is
-  // excluded for LICENSING rather than quality. Gating on the flag would throw
-  // away right answers to enforce a legal rule that has nothing to do with
-  // whether the number is good. Revisit when a source-quality signal exists that
-  // is not doing double duty as a licence check.
-  // synthesizeVolumeAnchors still runs -
+  // promotion and the 6-row cap. That is safe only because a cached row was
+  // already verified before it was written, and it is the sole candidate, so
+  // there is nothing to rank it against. synthesizeVolumeAnchors still runs -
   // spoon anchors are derived from the row's own cup serving and a cached row
   // deserves them as much as a catalog one.
   if (deps.preciseCacheGet) {
@@ -3242,9 +3317,27 @@ export function retargetMismatchedIds(
  *
  * This is a helper rather than an inline map because EVERY return path owes it:
  * the skip-decide path returns early and used to bypass the inline version.
+ *
+ * It also stamps `verified`, and that is not a stowaway: the food_id is the
+ * ONLY handle from a logged line back to the candidate its numbers came from,
+ * and the very next statement here throws that handle away. Doing it anywhere
+ * else means either doing it before the guardrails (where reconcileQuantity and
+ * the variant checks can still repoint a line) or after the id is gone. Riding
+ * along with the strip also inherits its one real guarantee - that every return
+ * path calls it - instead of adding a second step each path could forget.
  */
-export function stripEphemeralIds(items: ParsedItem[]): ParsedItem[] {
-  return items.map((it) => (isEphemeralId(it.food_id) ? { ...it, food_id: null } : it));
+export function stripEphemeralIds(
+  items: ParsedItem[],
+  /** food_id -> did the evidence behind that candidate clear the bar. Only
+   *  researched candidates appear (see verifiedForItems); a line matched to
+   *  anything else is left unstamped rather than stamped false. */
+  verifiedByFood?: Map<string, boolean>,
+): ParsedItem[] {
+  return items.map((it) => {
+    const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
+    const marked = verdict === undefined ? it : { ...it, verified: verdict };
+    return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
+  });
 }
 
 /**
@@ -4724,10 +4817,13 @@ export async function runParseMeal(
     const tPost0 = Date.now();
     const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const items = assignItemMeals(
-      stripEphemeralIds(flagPrepMismatch(
-        checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
-        prepForItems(resolved),
-      )),
+      stripEphemeralIds(
+        flagPrepMismatch(
+          checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
+          prepForItems(resolved),
+        ),
+        verifiedForItems(resolved),
+      ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
@@ -4776,13 +4872,16 @@ export async function runParseMeal(
     // rarely" is not a reason for two paths to have different defences.
     const fillDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const filled = assignItemMeals(
-      stripEphemeralIds(flagPrepMismatch(
-        checkAtwater(reconcileQuantity(
-          await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
-          servingsForItems(resolved),
-        )),
-        prepForItems(resolved),
-      )),
+      stripEphemeralIds(
+        flagPrepMismatch(
+          checkAtwater(reconcileQuantity(
+            await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+            servingsForItems(resolved),
+          )),
+          prepForItems(resolved),
+        ),
+        verifiedForItems(resolved),
+      ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
@@ -4928,8 +5027,9 @@ export async function runParseMeal(
     });
   }
   // See stripEphemeralIds: every path that returns items to the client must
-  // strip them, not just this one.
-  items = stripEphemeralIds(items);
+  // strip them, not just this one. The verification map goes in with them,
+  // because the id it keys on is what this call is about to erase.
+  items = stripEphemeralIds(items, verifiedForItems(resolved));
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
@@ -4942,11 +5042,18 @@ export async function runParseMeal(
       : null;
   const decideDefault: MealType =
     rawMealType ?? mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
-  // decide's own meal_type is the explicit answer when it gave one; otherwise
-  // the text's. Either way it outranks a carried section, and the clock does not.
+  // `explicit` is the meal the TEXT named, and ONLY that. decide's own
+  // meal_type belongs in the fallback, below the carried section, because it is
+  // a GUESS and not the user speaking - the decide prompt tells it to fall back
+  // to the hint when the text names nothing, so its answer is the hint wearing
+  // a different hat. Feeding it in as `explicit` let it outrank every carried
+  // section: "make the poha half a plate" on a breakfast/lunch/snack day came
+  // back with decide guessing "snack" and the whole day collapsed into Snacks,
+  // which is the exact bug the explicit/carried split was added to prevent,
+  // reintroduced one layer up. Verified on device against live v153.
   items = assignItemMeals(items, extItems, {
-    explicit: rawMealType ?? mealFromText,
-    fallback: input.mealHint ?? mealForHour(input.localHour),
+    explicit: mealFromText,
+    fallback: rawMealType ?? input.mealHint ?? mealForHour(input.localHour),
     carriedFor: prevMealByName,
   });
   const mealType: MealType = items[0]?.meal_type ?? decideDefault;

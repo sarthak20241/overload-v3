@@ -10,6 +10,7 @@ import {
   independenceKey,
   isFresh,
   kcalAgrees,
+  kcalSpread,
   meetsVerificationBar,
   PRECISE_CACHE_TTL_DAYS,
   type SourceReading,
@@ -206,6 +207,47 @@ Deno.test("near-zero foods are not split by percentages", () => {
   assertEquals(kcalAgrees(2, 3), true);
   // The absolute floor must not swallow a real gap on a real food.
   assertEquals(kcalAgrees(190, 283), false);
+});
+
+// ── kcalSpread: the other half of the verdict ───────────────────────────────
+// meetsVerificationBar answers "may anyone vouch for this"; kcalSpread answers
+// "how far apart was what we read". Decide hedges on the second one.
+
+Deno.test("readings that land together spread to zero", () => {
+  assertEquals(kcalSpread([reading("web", 380), reading("web", 380)]), 0);
+});
+
+Deno.test("the spread is measured against the LARGEST reading", () => {
+  // Same denominator kcalAgrees uses, so one threshold governs both: 190 vs 283
+  // fails agreement, and must read as a spread above VERIFY_TOLERANCE here.
+  const s = kcalSpread([reading("web", 190), reading("off", 283)]);
+  assertEquals(Math.round((s ?? 0) * 100), 33);
+});
+
+Deno.test("one reading is neither agreement nor disagreement", () => {
+  // Null, not 0. A lone source reported as "0% apart" would look like consensus
+  // to anything downstream reading only this number, and thin evidence is what
+  // `verified` exists to report.
+  assertEquals(kcalSpread([reading("web", 380)]), null);
+  assertEquals(kcalSpread([]), null);
+});
+
+Deno.test("near-zero foods do not read as contested either", () => {
+  // The same floor kcalAgrees applies. Without it black coffee read at 2 and 3
+  // kcal would ship a "sources disagree by 33%" warning on a 1 kcal gap.
+  assertEquals(kcalSpread([reading("web", 2), reading("off", 3)]), 0);
+});
+
+Deno.test("spread counts sources verification is not allowed to count", () => {
+  // Deliberately wider than independenceKey. FatSecret may never VOUCH for a
+  // number, but a FatSecret page disagreeing with the web by a third is still
+  // us failing to reconcile what we read, and the user deserves the hedge.
+  const evidence = [
+    reading("web", 300, { ref: "https://a.com/x" }),
+    reading("fatsecret", 200, { ref: "https://platform.fatsecret.com/1" }),
+  ];
+  assertEquals(meetsVerificationBar(300, evidence).verified, false);
+  assertEquals(Math.round((kcalSpread(evidence) ?? 0) * 100), 33);
 });
 
 // ── Non-ASCII names must not all collide on one row ────────────────────────

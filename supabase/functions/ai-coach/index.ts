@@ -1877,9 +1877,24 @@ async function handleParseMealRequest(args: {
   // from the app, and the eval never caught it because it calls runParseMeal
   // directly and never crosses this HTTP boundary.
   const wantsFast = body.speed === "fast" && PARSE_FAST_MODE !== "off";
-  // Super is opt-in per request like fast, and gated the same way. It is NOT
-  // credit-gated here yet: 7c owns that, and shipping the gate before the tier
-  // works would only mean debugging two things at once.
+  // Super is opt-in per request like fast, and Pro-only: it buys web searches
+  // per uncached food, so a free tier that could reach it would be paying
+  // Anthropic's search fee for someone who is not paying us.
+  //
+  // The app gates the picker too, and degrades a stale 'precise' preference to
+  // Thorough rather than sending a request it knows will bounce. This is the
+  // second lock, for a lapsed subscriber whose cached access is still stale and
+  // for anything calling the function directly. It refuses the TIER, never the
+  // parse - `pro_required` opens the upgrade sheet, and the free user's own
+  // FREE_PARSE_LIMIT logging is untouched.
+  if (body.speed === "super" && parseFreeTier) {
+    trace.status = "unauthorized";
+    trace.error_message = "parse_super_pro_required";
+    return respond(
+      { error: "pro_required", state: "free", feature: "parse_precise" },
+      402,
+    );
+  }
   const wantsSuper = body.speed === "super" && PARSE_SUPER_MODE !== "off";
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web

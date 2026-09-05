@@ -34,7 +34,10 @@ import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
 import Svg, { Circle } from 'react-native-svg';
 import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
-import { getParseSpeed, setParseSpeed, type ParseSpeed } from '@/lib/parseSpeed';
+import {
+  getParseSpeed, setParseSpeed, effectiveParseSpeed, type ParseSpeed,
+} from '@/lib/parseSpeed';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   parseMeal, parseMealStreaming, logParsedMeal, capNotice, capUpgradeContext,
@@ -119,6 +122,14 @@ const MEALS: MealDef[] = [
   { type: 'dinner', label: 'Dinner', icon: 'sunset' },
   { type: 'snack', label: 'Snacks', icon: 'coffee' },
 ];
+
+/** Composer chip face per tier. Kept next to MEALS rather than inline so the
+ *  icon and the screen-reader label cannot drift apart. */
+const SPEED_CHIP: Record<ParseSpeed, { icon: 'zap' | 'target' | 'award'; label: string }> = {
+  quick: { icon: 'zap', label: 'Quick' },
+  thorough: { icon: 'target', label: 'Thorough' },
+  precise: { icon: 'award', label: 'Precise' },
+};
 
 const round = (n: number) => Math.round(n);
 
@@ -222,11 +233,23 @@ export default function NutritionScreen() {
   // parse can force it open: a meal the user has not seen yet must never
   // arrive already hidden behind a summary line.
   const [cardMinimized, setCardMinimized] = useState(false);
-  // Parse tier (Quick default / Thorough opt-in). A ref mirrors the state so
-  // onSend reads the CURRENT choice, matching the flowRef idiom above.
+  // Parse tier (Quick default / Thorough opt-in / Precise for Pro). A ref
+  // mirrors the state so onSend reads the CURRENT choice, matching the flowRef
+  // idiom above.
   const [parseSpeed, setParseSpeedState] = useState<ParseSpeed>('quick');
   const parseSpeedRef = useRef<ParseSpeed>('quick');
   const [speedSheetOpen, setSpeedSheetOpen] = useState(false);
+  // Live entitlement for the Precise tier. Trialing counts: a trial that could
+  // not reach the tier it is meant to sell is not a trial.
+  //
+  // Anything else - free, unknown, still loading, offline - reads as NOT
+  // entitled, which is the safe direction: it degrades Precise to Thorough and
+  // still logs the meal. The server holds the real lock (index.ts 402s a free
+  // tier asking for super), so a wrong guess here costs a tier, never access.
+  const { access: coachAccess } = useCoachAccess();
+  const canUsePrecise = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
+  const canUsePreciseRef = useRef(canUsePrecise);
+  useEffect(() => { canUsePreciseRef.current = canUsePrecise; }, [canUsePrecise]);
   // Both statuses mean "a parse is running": 'analysing' before any rows,
   // 'streaming' once fast mode has painted names but not finished.
   const parseInFlight = flow.status === 'analysing' || flow.status === 'streaming';
@@ -254,6 +277,10 @@ export default function NutritionScreen() {
     setParseSpeedState(v);
     void setParseSpeed(v);
   };
+  // What the chip and the sheet's tick both report: the tier that will run, not
+  // merely the one stored. They must agree with onSend, which asks the same
+  // question of the same two inputs.
+  const runningSpeed = effectiveParseSpeed(parseSpeed, canUsePrecise);
   const [savedListOpen, setSavedListOpen] = useState(false);
   const nowMeal = mealForNow();
   const nowMealLabel = MEALS.find((m) => m.type === nowMeal)?.label ?? 'this meal';
@@ -341,11 +368,17 @@ export default function NutritionScreen() {
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
-    // not opening the stream saves the wasted round trip. A user on Thorough
-    // takes that same full-pipeline road - parseMeal sends no speed field,
-    // which the server reads as smart.
-    const res = pending || parseSpeedRef.current === 'thorough'
-      ? await parseMeal(supabase, args)
+    // not opening the stream saves the wasted round trip. Thorough and Precise
+    // both take that full-pipeline road; they differ only in the speed field,
+    // and no field at all is what the server reads as smart.
+    const tier = effectiveParseSpeed(parseSpeedRef.current, canUsePreciseRef.current);
+    // Corrections stay on smart even for a Precise user. The lookup already
+    // happened on the first shot and its answer is banked; re-running it to
+    // change "2" to "3" would buy the same web searches a second time and slow
+    // down the one interaction that has to feel instant.
+    const precise = tier === 'precise' && !pending;
+    const res = pending || tier !== 'quick'
+      ? await parseMeal(supabase, { ...args, ...(precise ? { speed: 'super' as const } : {}) })
       : await parseMealStreaming(supabase, args, (rows) => {
         // A stream that resolves after the user has moved on must not repaint
         // the card they are now looking at.
@@ -951,20 +984,22 @@ export default function NutritionScreen() {
               // instead of scrolling off one clipped line. Submit via the arrow.
               multiline
             />
-            {/* Parse-tier chip: quiet in the default (Quick), lime when the user
-                has opted into Thorough, so only the non-default state draws the
-                eye. Tap opens the sheet; the choice is sticky. */}
+            {/* Parse-tier chip: quiet in the default (Quick), lime once the user
+                has opted up, so only the non-default state draws the eye. Tap
+                opens the sheet; the choice is sticky. It shows the tier that
+                will actually RUN, so a lapsed subscriber sees Thorough rather
+                than a Precise badge over a Thorough parse. */}
             <Pressable
               onPress={() => setSpeedSheetOpen(true)}
               hitSlop={12}
               accessibilityRole="button"
-              accessibilityLabel={parseSpeed === 'thorough' ? 'Logging mode: Thorough' : 'Logging mode: Quick'}
+              accessibilityLabel={`Logging mode: ${SPEED_CHIP[runningSpeed].label}`}
               style={s.iconBox}
             >
               <Feather
-                name={parseSpeed === 'thorough' ? 'target' : 'zap'}
+                name={SPEED_CHIP[runningSpeed].icon}
                 size={14}
-                color={parseSpeed === 'thorough' ? C.accentText : C.textSecondary}
+                color={runningSpeed === 'quick' ? C.textSecondary : C.accentText}
               />
             </Pressable>
             <Pressable
@@ -1027,8 +1062,10 @@ export default function NutritionScreen() {
       <ParseSpeedSheet
         open={speedSheetOpen}
         value={parseSpeed}
+        canUsePrecise={canUsePrecise}
         onClose={() => setSpeedSheetOpen(false)}
         onPick={pickParseSpeed}
+        onUpgrade={() => router.push({ pathname: '/upgrade', params: { context: 'pro_feature' } })}
       />
       <DayPickerSheet
         open={calendarOpen}
