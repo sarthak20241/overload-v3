@@ -15,9 +15,18 @@
  *   1. VERIFIED, re-derived. Two independent sources within 10% of the number we
  *      would publish, computed from the stored evidence rather than read off the
  *      `verified` flag. The flag was written by whatever code shipped that day; the
- *      evidence is the thing that can still be checked. FatSecret can never be one
- *      of the two (their terms allow serving a request, not replicating their DB),
- *      and neither can our own catalog, which is what the lookup was checking.
+ *      evidence is the thing that can still be checked. Our own catalog can never
+ *      be one of the two, which is what the lookup was checking.
+ *
+ *      FatSecret splits (Sarthak, 2026-09-05), and this header used to say it was
+ *      excluded outright. It is not, and since promotionDecision calls
+ *      meetsVerificationBar directly, that sentence was describing a gate this
+ *      module no longer applies. A reading their API produced still cannot count -
+ *      their terms allow serving a request, not replicating their DB. A
+ *      fatsecret.co.in page a WEB SEARCH found is a public page read under no
+ *      agreement, carrying the manufacturer's own printed numbers, and it counts
+ *      like any other host. independenceKey decides on the reading's `via` field,
+ *      never on whether it happens to carry a URL.
  *   2. FRESH. We do not publish facts we would no longer serve ourselves.
  *   3. PHYSICALLY POSSIBLE. The per-100 basis has to describe a food that could
  *      exist, and its calories have to roughly follow from its own macros.
