@@ -25,13 +25,21 @@
  *   OFF rows that declare a FatSecret origin; that rule is gone, and the numbers we
  *   see from OFF stand on their own.
  *
- * LEGAL, and it is not a detail. FatSecret's terms allow using their data to serve
- * a user's request; they do not allow replicating their database (see fatsecret.ts).
- * Caching the facts we needed for one lookup is the former. So FatSecret readings
- * may sit in `evidence` and may inform a decide call, but they can never be one of
- * the independent sources that make a row verified, which is what makes a row
- * eligible to be copied into our own catalog by the nightly promotion job. That
- * exclusion is a licensing line, not a quality judgement, and it does not move.
+ * LEGAL, and it is not a detail. FatSecret's API terms allow using their data to
+ * serve a user's request; they do not allow replicating their database (see
+ * fatsecret.ts). Caching the facts we needed for one lookup is the former.
+ *
+ * That restriction follows the API, not the brand name (Sarthak, 2026-09-05). A
+ * fatsecret.co.in page returned by a WEB SEARCH is a public web page like any
+ * other, we accepted no terms to read it, and the number on it is the
+ * manufacturer's printed panel - a fact, and republishing a fact does not create
+ * ownership of it. So a public page counts toward verification like any other
+ * host, while a reading actually derived from the API does not. independenceKey
+ * draws that line on whether the reading carries an http(s) URL.
+ *
+ * The old rule excluded both halves and it cost real answers: the Milky Mist
+ * paneer row is verified: false holding a correct 190 kcal, purely because its
+ * second source was a FatSecret URL rather than any other site's.
  *
  * WIRING, deliberately not done here (Phase 7b owns the resolve fan-out):
  *   read   rpc('precise_cache_get', { p_key: cacheKey(name, brand) }) before the
@@ -187,8 +195,32 @@ export function isFresh(lastVerifiedAt: string | Date, now: Date = new Date()): 
  */
 export function independenceKey(r: SourceReading): string | null {
   const origin = r.source;
-  if (origin === "fatsecret" || origin === "catalog") return null;
+  if (origin === "catalog") return null;
   if (origin === "off") return "off";
+  // FatSecret splits in two, and only one half is restricted (Sarthak, 2026-09-05).
+  //
+  //   Their API is a contract. We accepted terms to call it, and those terms
+  //   allow using the data to answer a user and forbid replicating the database.
+  //   A reading from there stays out.
+  //
+  //   A fatsecret.co.in page a WEB SEARCH landed on is a public web page. We
+  //   agreed to nothing to read it, and the number on it is the manufacturer's
+  //   own printed panel - a fact, which nobody owns by republishing. Excluding it
+  //   was costing real answers: the Milky Mist paneer row is verified: false with
+  //   a correct 190 kcal, because its second source happened to be a FatSecret
+  //   URL rather than any other site's.
+  //
+  // Today the API half writes no evidence at all - fatsecret.ts builds a
+  // CandidateFood, never a SourceReading, and the only thing that tags a reading
+  // "fatsecret" is providerFromRef reading a URL. So the http(s) test below is
+  // presently always true for these. It is written as a test rather than a
+  // deletion so that the day something does record API-derived evidence, it is
+  // excluded by default instead of quietly counting.
+  if (origin === "fatsecret") {
+    const host = hostOf(r.ref);
+    if (!host || !/^https?:$/i.test(protocolOf(r.ref) ?? "")) return null;
+    return `web:${host}`;
+  }
   // Web readings are identified by host: one site is one source no matter how
   // many of its pages repeat the same number.
   const host = hostOf(r.ref);
@@ -199,6 +231,17 @@ function hostOf(ref: string | null | undefined): string | null {
   if (!ref) return null;
   try {
     return new URL(ref).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/** The scheme of a ref, so "is this a page someone could open" is answerable.
+ *  A bare product id or an api: ref is not a public page. */
+function protocolOf(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  try {
+    return new URL(ref).protocol;
   } catch {
     return null;
   }

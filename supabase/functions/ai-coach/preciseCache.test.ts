@@ -79,11 +79,35 @@ Deno.test("a typo misses rather than collides", () => {
 
 // ── independence ───────────────────────────────────────────────────────────
 
-Deno.test("FatSecret can never be one of the two sources", () => {
-  // Their terms cover serving a request, not replicating the database, and a
-  // promoted row IS a copy. Excluded at the identity level so no later rule can
-  // accidentally let it back in.
+Deno.test("a FatSecret reading with no public URL is still excluded", () => {
+  // The API is a contract: we accepted terms to call it, and those terms cover
+  // serving a request rather than replicating the database. A reading with no
+  // http(s) ref cannot be shown to have come from a public page, so it does not
+  // count. Nothing writes evidence on that path today; the test is what keeps it
+  // excluded by default if something ever does.
   assertEquals(independenceKey(reading("fatsecret", 190)), null);
+  assertEquals(independenceKey(reading("fatsecret", 190, { ref: "food_id:12345" })), null);
+});
+
+Deno.test("a FatSecret PAGE found by web search counts like any other site", () => {
+  // Changed 2026-09-05 on Sarthak's call. The restriction follows the API, not
+  // the brand: a page a web search landed on is public, we agreed to nothing to
+  // read it, and the number on it is the manufacturer's printed panel. Excluding
+  // it cost real answers - the Milky Mist paneer row sat at verified: false
+  // holding a correct 190 kcal only because its second source was this host.
+  assertEquals(
+    independenceKey(reading("fatsecret", 190, { ref: "https://www.fatsecret.co.in/x/100g" })),
+    "web:fatsecret.co.in",
+  );
+});
+
+Deno.test("a FatSecret page and a different site verify a row together", () => {
+  const r = meetsVerificationBar(190, [
+    reading("fatsecret", 190, { ref: "https://www.fatsecret.co.in/calories-nutrition/x/100g" }),
+    reading("web", 189, { ref: "https://www.mynetdiary.com/food/x.html" }),
+  ]);
+  assertEquals(r.verified, true);
+  assertEquals(r.agreeing, ["web:fatsecret.co.in", "web:mynetdiary.com"]);
 });
 
 Deno.test("OFF is a full independent source, whatever origin it declares", () => {
@@ -149,13 +173,16 @@ Deno.test("OFF plus one web host clears the bar even next to FatSecret evidence"
   assertEquals(r.agreeing, ["off", "web:milkymist.com"]);
 });
 
-Deno.test("a FatSecret-only row is never verified however many readings it has", () => {
+Deno.test("two pages of one FatSecret host are still one source", () => {
+  // The host rule does the work now that the blanket exclusion is gone: two pages
+  // on the same site are one reading however many of them agree, exactly as for
+  // any other host. So a row backed only by FatSecret still cannot verify itself.
   const r = meetsVerificationBar(190, [
     reading("fatsecret", 190, { ref: "https://platform.fatsecret.com/1" }),
     reading("fatsecret", 191, { ref: "https://platform.fatsecret.com/2" }),
   ]);
   assertEquals(r.verified, false);
-  assertEquals(r.agreeing, []);
+  assertEquals(r.agreeing, ["web:platform.fatsecret.com"]);
 });
 
 Deno.test("near-zero foods are not split by percentages", () => {
