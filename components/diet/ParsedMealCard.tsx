@@ -31,7 +31,7 @@ import Animated, {
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
-import type { ParsedMeal, ParsedMealItem } from '@/lib/dietData';
+import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
 import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
@@ -78,6 +78,10 @@ interface Props {
   adding?: boolean;                          // Add in flight (review)
   saved?: boolean;                           // this parse was saved as a meal/recipe
   onMealTypeChange?: (m: MealType) => void;
+  /** Multi-section meal only ("eggs for breakfast, dal at lunch"): move every
+   *  line of one group to another section. The single-section card keeps the
+   *  chip row and onMealTypeChange; this never shows there. */
+  onMoveGroup?: (from: MealType, to: MealType) => void;
   /** A reply that is not a meal (Drona answering a question about these lines,
    *  or a failed follow-up) shown ON the card so the meal survives. */
   notice?: string | null;
@@ -152,7 +156,7 @@ function provenance(source: ParsedMealItem['source']): string | null {
 export function ParsedMealCard({
   state, streamingRows, rawText, maxHeight, meal, mealType, message, adding, saved, notice, proposalLabel,
   checkingIndex, onCheckItem,
-  onMealTypeChange, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
+  onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
   minimized, onToggleMinimize,
 }: Props) {
   const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
@@ -172,11 +176,104 @@ export function ParsedMealCard({
     (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g }),
     { kcal: 0, p: 0, c: 0, f: 0 },
   );
+  // Full-day message: lines span more than one section. The card groups them
+  // under small headers and drops the chip row (there is no single "where does
+  // this go"); a header opens the same four chips for just that group. The
+  // ordinary one-meal card is untouched by any of this.
+  const sections = sectionsOfItems(items, selected);
+  const multi = sections.length > 1;
+  const [openGroup, setOpenGroup] = useState<MealType | null>(null);
+  const destination = multi ? `${sections.length} meals` : mealLabel(selected);
+
+  /** One line of the review list. `i` is the line's index in meal.items - the
+   *  handle every callback uses - and stays the same whether the list is flat
+   *  or grouped, which is what keeps edit/remove/check pointed at the right
+   *  line when groups reorder the display. */
+  const renderRow = (it: ParsedMealItem, i: number, divider: boolean) => {
+    const prov = provenance(it.source);
+    return (
+      <Pressable
+        key={i}
+        onPress={onEditItem ? () => onEditItem(i) : undefined}
+        disabled={!onEditItem}
+        style={({ pressed }) => [s.item, divider && s.itemDivider, pressed && s.itemPressed]}
+        accessibilityLabel={`Edit ${it.food_name}, ${r0(it.kcal)} calories`}
+        accessibilityHint="Opens serving, quantity and macro editing"
+      >
+        <View style={s.itemHead}>
+          <Text style={s.itemName} numberOfLines={1}>
+            {it.food_name}
+            <Text style={s.serving}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text>
+          </Text>
+          {/* Precise only, and only when two INDEPENDENT sources landed on the
+              same energy. It sits where the provenance chip goes because a
+              verified line comes back as 'catalog', which prints no chip - so
+              this fills a slot rather than fighting one. Deliberately narrow:
+              it claims agreement, not correctness, and nothing else in the app
+              may set it. */}
+          {it.verified && (
+            <View style={s.verifiedChip}>
+              <Feather name="check" size={9} color={C.accentText} />
+              <Text style={s.verifiedText}>VERIFIED</Text>
+            </View>
+          )}
+          {prov && <Text style={s.provChip}>{prov}</Text>}
+          {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
+          {onRemoveItem && items.length > 1 && (
+            <Pressable
+              onPress={(e) => { e.stopPropagation(); onRemoveItem(i); }}
+              hitSlop={6}
+              style={s.removeBtn}
+              accessibilityLabel={`Remove ${it.food_name}`}
+            >
+              <Feather name="x" size={13} color={C.textMuted} />
+            </Pressable>
+          )}
+        </View>
+        <View style={s.macros}>
+          <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} cal</Text>
+          <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
+          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
+          <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
+        </View>
+        {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
+        {/* I14. Deliberately a BUTTON, not a tappable sentence: nobody
+            knows to tap prose, and the row itself already opens the
+            editor, so a tap inside it would be ambiguous. Its own hit
+            area, its own label, and it turns into the progress
+            indicator in place rather than moving the card around. */}
+        {onCheckItem && uncertain(it) && (
+          <Pressable
+            onPress={(e) => { e.stopPropagation(); onCheckItem(i); }}
+            disabled={checkingIndex !== null && checkingIndex !== undefined}
+            hitSlop={8}
+            style={s.checkBtn}
+            accessibilityLabel={`Double-check ${it.food_name} online`}
+            accessibilityHint="Looks this food up on the web and offers the numbers it finds"
+          >
+            {checkingIndex === i
+              ? (
+                <>
+                  <ActivityIndicator size="small" color={C.textSecondary} />
+                  <Text style={s.checkTxt}>Checking…</Text>
+                </>
+              )
+              : (
+                <>
+                  <Feather name="search" size={11} color={C.textSecondary} />
+                  <Text style={s.checkTxt}>Double-check</Text>
+                </>
+              )}
+          </Pressable>
+        )}
+      </Pressable>
+    );
+  };
 
   if (isCollapsed && meal) {
     const kcal = r0(meal.items.reduce((sum, it) => sum + it.kcal, 0));
     const n = meal.items.length;
-    const summary = `${n} ${n === 1 ? 'item' : 'items'} · ${kcal} kcal → ${mealLabel(selected)}`;
+    const summary = `${n} ${n === 1 ? 'item' : 'items'} · ${kcal} kcal → ${destination}`;
     return (
       <Animated.View entering={FadeIn.duration(160)} style={[s.card, s.cardCollapsed]}>
         {/* Expand and Discard are SIBLINGS, not nested. A Pressable inside an
@@ -291,89 +388,60 @@ export function ParsedMealCard({
             showsVerticalScrollIndicator
             persistentScrollbar
           >
-          {meal.items.map((it, i) => {
-            const prov = provenance(it.source);
-            return (
-              <Pressable
-                key={i}
-                onPress={onEditItem ? () => onEditItem(i) : undefined}
-                disabled={!onEditItem}
-                style={({ pressed }) => [s.item, i > 0 && s.itemDivider, pressed && s.itemPressed]}
-                accessibilityLabel={`Edit ${it.food_name}, ${r0(it.kcal)} calories`}
-                accessibilityHint="Opens serving, quantity and macro editing"
-              >
-                <View style={s.itemHead}>
-                  <Text style={s.itemName} numberOfLines={1}>
-                    {it.food_name}
-                    <Text style={s.serving}>{'  '}{formatServing(it.quantity, it.serving_label)}</Text>
-                  </Text>
-                  {/* Precise only, and only when two INDEPENDENT sources landed
-                      on the same energy. It sits where the provenance chip goes
-                      because a verified line comes back as 'catalog', which
-                      prints no chip - so this fills a slot rather than fighting
-                      one. Deliberately narrow: it claims agreement, not
-                      correctness, and nothing else in the app may set it. */}
-                  {it.verified && (
-                    <View style={s.verifiedChip}>
-                      <Feather name="check" size={9} color={C.accentText} />
-                      <Text style={s.verifiedText}>VERIFIED</Text>
+          {(multi
+            // Grouped: each section's lines under a small header, original
+            // indices kept so edit/remove/check still address the right line.
+            ? sections.flatMap((sec) => {
+              const rows = meal.items
+                .map((it, i) => ({ it, i }))
+                .filter(({ it }) => (it.meal_type ?? selected) === sec);
+              const open = openGroup === sec;
+              return [
+                <View key={`h-${sec}`}>
+                  <Pressable
+                    onPress={onMoveGroup ? () => setOpenGroup(open ? null : sec) : undefined}
+                    disabled={!onMoveGroup}
+                    hitSlop={4}
+                    style={s.groupHead}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: open }}
+                    accessibilityLabel={`${mealLabel(sec)}, ${rows.length} ${rows.length === 1 ? 'item' : 'items'}`}
+                    accessibilityHint="Move these lines to another meal"
+                  >
+                    <Text style={s.groupHeadTxt}>{mealLabel(sec)}</Text>
+                    <Text style={s.groupHeadCount}>{rows.length} {rows.length === 1 ? 'item' : 'items'}</Text>
+                    {!!onMoveGroup && (
+                      <Feather name={open ? 'chevron-up' : 'chevron-down'} size={13} color={C.textMuted} />
+                    )}
+                  </Pressable>
+                  {open && (
+                    <View style={s.groupChips}>
+                      {MEAL_OPTIONS.map((o) => {
+                        const on = o.value === sec;
+                        return (
+                          <Pressable
+                            key={o.value}
+                            onPress={() => { setOpenGroup(null); onMoveGroup?.(sec, o.value); }}
+                            hitSlop={4}
+                            style={[s.chip, on ? s.chipOn : s.chipOff]}
+                          >
+                            <Text style={[s.chipTxt, { color: on ? C.background : C.textSecondary }]}>{o.label}</Text>
+                          </Pressable>
+                        );
+                      })}
                     </View>
                   )}
-                  {prov && <Text style={s.provChip}>{prov}</Text>}
-                  {onEditItem && <Feather name="edit-2" size={11} color={C.textMuted} />}
-                  {onRemoveItem && meal.items.length > 1 && (
-                    <Pressable
-                      onPress={(e) => { e.stopPropagation(); onRemoveItem(i); }}
-                      hitSlop={6}
-                      style={s.removeBtn}
-                      accessibilityLabel={`Remove ${it.food_name}`}
-                    >
-                      <Feather name="x" size={13} color={C.textMuted} />
-                    </Pressable>
-                  )}
-                </View>
-                <View style={s.macros}>
-                  <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} cal</Text>
-                  <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
-                  <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
-                  <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
-                </View>
-                {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
-                {/* I14. Deliberately a BUTTON, not a tappable sentence: nobody
-                    knows to tap prose, and the row itself already opens the
-                    editor, so a tap inside it would be ambiguous. Its own hit
-                    area, its own label, and it turns into the progress
-                    indicator in place rather than moving the card around. */}
-                {onCheckItem && uncertain(it) && (
-                  <Pressable
-                    onPress={(e) => { e.stopPropagation(); onCheckItem(i); }}
-                    disabled={checkingIndex !== null && checkingIndex !== undefined}
-                    hitSlop={8}
-                    style={s.checkBtn}
-                    accessibilityLabel={`Double-check ${it.food_name} online`}
-                    accessibilityHint="Looks this food up on the web and offers the numbers it finds"
-                  >
-                    {checkingIndex === i
-                      ? (
-                        <>
-                          <ActivityIndicator size="small" color={C.textSecondary} />
-                          <Text style={s.checkTxt}>Checking…</Text>
-                        </>
-                      )
-                      : (
-                        <>
-                          <Feather name="search" size={11} color={C.textSecondary} />
-                          <Text style={s.checkTxt}>Double-check</Text>
-                        </>
-                      )}
-                  </Pressable>
-                )}
-              </Pressable>
-            );
-          })}
+                </View>,
+                ...rows.map(({ it, i }, k) => renderRow(it, i, k > 0)),
+              ];
+            })
+            : meal.items.map((it, i) => renderRow(it, i, i > 0)))}
           </ScrollView>
 
-          {/* Section selector — the user decides where this meal goes. */}
+          {/* Section selector — the user decides where this meal goes. A
+              multi-section meal has no single answer, so the chip row yields
+              to the group headers above. */}
+          {!multi && (
           <View style={s.sectionRow}>
             {MEAL_OPTIONS.map((o) => {
               const on = o.value === selected;
@@ -389,6 +457,7 @@ export function ParsedMealCard({
               );
             })}
           </View>
+          )}
 
           {meal.drona_line ? (
             // flex:0 override: dronaRow's shared flex:1 (basis 0) would collapse
@@ -422,7 +491,7 @@ export function ParsedMealCard({
               style={[s.addBtn, { opacity: adding || busyChecking ? 0.5 : 1 }]}
             >
               <Feather name="plus" size={14} color={C.background} />
-              <Text style={s.addTxt}>{adding ? 'Adding...' : `Add to ${mealLabel(selected)}`}</Text>
+              <Text style={s.addTxt}>{adding ? 'Adding...' : `Add to ${destination}`}</Text>
             </Pressable>
           </View>
         </View>
@@ -659,6 +728,19 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       flexDirection: 'row', gap: 6, marginTop: Spacing.md,
       paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: C.borderSubtle,
     },
+    // Full-day message: one small header per section above its lines. Reads as
+    // a label, not a control, until the chevron says it opens.
+    groupHead: {
+      flexDirection: 'row', alignItems: 'center', gap: 6,
+      marginTop: Spacing.sm, paddingTop: Spacing.sm, paddingBottom: 2,
+      borderTopWidth: 1, borderTopColor: C.borderSubtle,
+    },
+    groupHeadTxt: {
+      fontSize: 10, color: C.textSecondary, fontWeight: FontWeight.semibold,
+      letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase',
+    },
+    groupHeadCount: { fontSize: FontSize.xs, color: C.textMuted, marginRight: 'auto' },
+    groupChips: { flexDirection: 'row', gap: 6, marginTop: 6, marginBottom: 4 },
     chip: {
       flex: 1, alignItems: 'center', paddingVertical: 7, borderRadius: Radius.md, borderWidth: 1,
     },

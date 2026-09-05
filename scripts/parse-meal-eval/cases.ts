@@ -26,6 +26,10 @@ export interface ItemExpectation {
   proteinBetween?: [number, number];
   // Inclusive bounds on the item's total kcal. Omit = not checked.
   kcalBetween?: [number, number];
+  // The diary section THIS item must land in (plan I8, full-day logging).
+  // The meal-level `mealType` above cannot catch a multi-meal message that
+  // collapsed into one section; this can. Omit = not checked.
+  meal?: "breakfast" | "lunch" | "dinner" | "snack";
 }
 
 export interface EvalCase {
@@ -857,7 +861,44 @@ export const CASES: EvalCase[] = [
     id: "audit-multi-meal-day",
     text: "breakfast was 2 eggs, lunch was dal chawal",
     hour: 20,
-    expect: { minItems: 2, items: [{ nameIncludes: "egg" }] },
+    // Per-item sections are the whole point (I8). Before `meal` existed this
+    // case passed with both lines in one section, which is the bug.
+    expect: {
+      minItems: 2,
+      items: [
+        { nameIncludes: "egg", meal: "breakfast" },
+        { nameIncludes: "dal", nameIncludesAny: ["rajma", "chawal", "rice"], meal: "lunch" },
+      ],
+    },
+  },
+  {
+    // Three meals, casual phrasing: "evening" is snacks, "at night" is dinner.
+    id: "audit-multi-meal-three",
+    text: "had 2 idli with sambar in the morning, rajma chawal for lunch and a bowl of upma at night",
+    hour: 22,
+    expect: {
+      minItems: 3,
+      items: [
+        { nameIncludes: "idli", meal: "breakfast" },
+        { nameIncludes: "rajma", meal: "lunch" },
+        { nameIncludes: "upma", meal: "dinner" },
+      ],
+    },
+  },
+  {
+    // ONE meal named for everything: must go to meal_type_from_text, and
+    // every line to that section - the per-item field must not fragment it.
+    id: "audit-one-meal-named-twice",
+    text: "for lunch I had 2 rotis with sabzi and a glass of buttermilk",
+    hour: 20,
+    expect: {
+      minItems: 2,
+      mealType: "lunch",
+      items: [
+        { nameIncludes: "roti", meal: "lunch" },
+        { nameIncludes: "buttermilk", nameIncludesAny: ["chaas", "chaach"], meal: "lunch" },
+      ],
+    },
   },
   // [I6e] Mentioned food is not eaten food.
   {

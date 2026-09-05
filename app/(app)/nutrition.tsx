@@ -354,7 +354,18 @@ export default function NutritionScreen() {
     setFlow({ status: 'analysing', raw: t });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
-    const args = { text: t, mealHint: mealForNow(), previous: pending, turns };
+    // The card on screen is a better hint than the wall clock. "and a dosa"
+    // added to a meal the user has placed in Dinner must join THAT meal, and
+    // sending mealForNow() split the card in two whenever the clock disagreed:
+    // an appended line has no carried section to fall back on, so the hint is
+    // the only thing standing between it and the hour. Falls back to the clock
+    // for a first-shot log, which is what it was always for.
+    const args = {
+      text: t,
+      mealHint: prevReview?.mealType ?? mealForNow(),
+      previous: pending,
+      turns,
+    };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
     // not opening the stream saves the wasted round trip. Thorough and Precise
@@ -598,16 +609,25 @@ export default function NutritionScreen() {
   const onRemoveItem = useCallback((i: number) => {
     setFlow((f): ParseFlow => {
       if (f.status !== 'review') return f;
-      const items = f.meal.items.filter((_, idx) => idx !== i);
+        const items = f.meal.items.filter((_, idx) => idx !== i);
       if (items.length === 0) return { status: 'idle' };
-      return { ...f, meal: { ...f.meal, items } };
+      // Removing the last line of a section collapses the card, exactly as a
+      // group move does, so the head is recomputed here for the same reason:
+      // a stale card-level section is what onAdd falls back to for any line
+      // that carries none.
+      const head = items[0]?.meal_type ?? f.meal.meal_type;
+      return { ...f, mealType: head, meal: { ...f.meal, items, meal_type: head } };
     });
   }, []);
   const onEditSave = useCallback((patch: ParsedMealItem) => {
     setFlow((f) => {
       if (f.status !== 'review' || editIndex === null) return f;
       const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
-      return { ...f, meal: { ...f.meal, items } };
+      // The editor can move one line, which can leave the card with a single
+      // section. Keep the card-level field on the first line so a later
+      // fallback reads the surviving section rather than an emptied one.
+      const head = items[0]?.meal_type ?? f.meal.meal_type;
+      return { ...f, mealType: head, meal: { ...f.meal, items, meal_type: head } };
     });
     setEditIndex(null);
   }, [editIndex]);
@@ -629,13 +649,53 @@ export default function NutritionScreen() {
   }, [text, isSignedIn, flow.status, runParse]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
-    setFlow((f) => (f.status === 'review' ? { ...f, mealType: m, mealTypePicked: true } : f));
+    setFlow((f) => {
+      if (f.status !== 'review') return f;
+      // The chip row moves the WHOLE meal, so it stamps every line rather than
+      // only the card-level field. That is what makes the lines the single
+      // source of truth for where this meal goes: onAdd can then just read
+      // them, instead of deciding between a card-level value and per-line ones
+      // and getting that choice wrong whenever the two disagree.
+      return {
+        ...f,
+        mealType: m,
+        mealTypePicked: true,
+        meal: { ...f.meal, meal_type: m, items: f.meal.items.map((it) => ({ ...it, meal_type: m })) },
+      };
+    });
+  }, []);
+
+  /** Multi-section card: move every line of one group to another section. */
+  const onMoveGroup = useCallback((from: MealType, to: MealType) => {
+    setFlow((f) => {
+      if (f.status !== 'review' || from === to) return f;
+      const items = f.meal.items.map((it) => (it.meal_type === from ? { ...it, meal_type: to } : it));
+      const head = items[0]?.meal_type ?? f.meal.meal_type;
+      // mealType moves too, and that is not cosmetic. Moving the last group out
+      // of a section collapses the card back to ONE section, and onAdd then
+      // takes the single-section branch and stamps flow.mealType over every
+      // line. Left stale, moving breakfast into snacks logged the meal to
+      // breakfast - the section the user had just emptied.
+      return {
+        ...f,
+        meal: { ...f.meal, items, meal_type: head },
+        mealType: head,
+      };
+    });
   }, []);
 
   const onAdd = useCallback(async () => {
     if (flow.status !== 'review' || !supabase || adding) return;
     setAdding(true);
-    const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate);
+    // The LINES say where they go, always. Every control that can change a
+    // section now writes it onto the lines (the chip row stamps all of them,
+    // a group header stamps its group, the line editor stamps one), so there
+    // is no second opinion to reconcile here. meal_type rides along only as
+    // the fallback for a line that carries none, which is what an older
+    // server's response looks like.
+    const { error } = await logParsedMeal(
+      supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
+    );
     setAdding(false);
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
@@ -860,13 +920,34 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' ? flow.message : null
               }
               onMealTypeChange={onMealTypeChange}
+              onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
               proposalLabel={flow.status === 'review' ? flow.proposal?.note ?? null : null}
-              onAcceptProposal={() => setFlow((f) => (
-                f.status === 'review' && f.proposal
-                  ? { ...f, meal: { ...f.meal, items: f.proposal.items }, notice: null, proposal: null }
-                  : f
-              ))}
+              onAcceptProposal={() => setFlow((f) => {
+                if (f.status !== 'review' || !f.proposal) return f;
+                // The proposal replaces the LINES, never their placement. Each
+                // incoming line inherits the section of the line it stands in
+                // for, matched by name and falling back to position, so
+                // accepting better numbers for a breakfast item cannot move it.
+                // POSITION first, then name. A name-keyed map cannot tell two
+                // same-named lines in different sections apart - the later key
+                // overwrites the earlier - and a proposal is a positional
+                // replacement of the same list, so the index is the stronger
+                // handle. The name is the fallback for a reordered list.
+                const key = (n: string) => n.trim().toLowerCase();
+                const bySection = new Map(f.meal.items.map((it) => [key(it.food_name), it.meal_type]));
+                const items = f.proposal.items.map((it, i) => {
+                  const atIdx = f.meal.items[i];
+                  const positional = atIdx && key(atIdx.food_name) === key(it.food_name)
+                    ? atIdx.meal_type
+                    : undefined;
+                  return {
+                    ...it,
+                    meal_type: it.meal_type ?? positional ?? bySection.get(key(it.food_name)) ?? f.mealType,
+                  };
+                });
+                return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
+              })}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
               // Frozen while a check is in flight: editing or removing a line
               // mid-lookup shifts indices and races the write below.

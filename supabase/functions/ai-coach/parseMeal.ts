@@ -203,11 +203,18 @@ export interface PreviousItem {
   source?: ParsedItem["source"];
   assumption?: string | null;
   confidence?: ParsedItem["confidence"];
+  /** The section this line is already in. Correction paths rebuild the WHOLE
+   *  meal from these, so a line that does not carry its section back arrives
+   *  with none, and assignItemMeals then stamps the correction's default on
+   *  it - which silently collapses a logged day into one section the first
+   *  time the user says "make it 3 eggs". */
+  meal_type?: MealType;
 }
 
 /** An untouched previous line, rebuilt verbatim. */
 function previousAsParsedItem(p: PreviousItem): ParsedItem {
   return {
+    meal_type: p.meal_type,
     food_id: p.food_id,
     food_name: p.food_name,
     quantity: p.quantity,
@@ -1794,6 +1801,12 @@ export function mealForHour(hour: number | null): MealType {
  * names no per-item meal therefore comes out byte-for-byte as it did before
  * this existed - the common case does not change shape.
  *
+ * PRECEDENCE, highest first: the meal the text tied to THIS item, then the meal
+ * the text named for the whole message, then the section the line is already in
+ * (a corrected line stays put), then the hint or the clock. Explicit sits above
+ * carried on purpose - "that was lunch" must move a breakfast line - while the
+ * clock sits below it, so 9pm never drags a breakfast line into dinner.
+ *
  * Matching a final line back to its extracted item goes by name overlap first
  * (decide renames lines to the catalog row's display name, so "cheese slice"
  * has to find "Amul Cheese slices"), then by position when the counts still
@@ -1804,22 +1817,63 @@ export function mealForHour(hour: number | null): MealType {
 export function assignItemMeals(
   items: ParsedItem[],
   extracted: ExtractedItem[],
-  defaultMeal: MealType,
+  meals: {
+    /** The meal the TEXT named for the whole message (meal_type_from_text).
+     *  Beats a section the line is already in, because the user just said it:
+     *  "that was lunch" on a breakfast line has to move the line, and an
+     *  earlier version lost that - it kept the carried breakfast because
+     *  carried-beats-default was written before an explicit meal was told
+     *  apart from a clock guess. */
+    explicit: MealType | null;
+    /** meal_hint, else the hour. A guess, so it loses to a carried section. */
+    fallback: MealType;
+    /** The section a line of the PREVIOUS meal is in, by its food_name.
+     *  A correction that goes through decide does not carry meal_type on the
+     *  line at all - sanitizeItems rebuilds every line from the tool's output,
+     *  which has no such field - so without this a full-day log collapses into
+     *  one section the moment the user corrects anything. The extracted item's
+     *  correctsFoodName is the handle back to the line it replaces. */
+    carriedFor?: (foodName: string, idx?: number) => MealType | undefined;
+  },
 ): ParsedItem[] {
-  if (!extracted.some((e) => e.meal)) {
-    return items.map((it) => ({ ...it, meal_type: it.meal_type ?? defaultMeal }));
-  }
+  const { explicit, fallback, carriedFor } = meals;
+  // BEST match, not first match. Taking the first overlapping name let a
+  // generic line steal a specific one's entry: for lines ["Dal", "Dal makhani"]
+  // against extracted ["dal makhani" (lunch), "dal" (dinner)], "Dal" overlaps
+  // "dal makhani" and claimed it, leaving "Dal makhani" the leftover "dal" -
+  // both meals wrong, and swapped rather than merely missing. So every pair is
+  // scored and the strongest assignments are made first, which pins the exact
+  // pair before the loose one can take it.
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, " ");
+  const score = (it: ParsedItem, e: ExtractedItem): number => {
+    const withBrand = e.brand ? `${e.brand} ${e.name}` : e.name;
+    const a = norm(it.food_name);
+    if (a === norm(withBrand) || a === norm(e.name)) return 3;      // same name
+    if (a.includes(norm(e.name)) || norm(e.name).includes(a)) return 2;  // one contains the other
+    if (wordsOverlap(it.food_name, withBrand) || wordsOverlap(it.food_name, e.name)) return 1;
+    return 0;
+  };
+  const pairs: { i: number; e: number; s: number }[] = [];
+  items.forEach((it, i) =>
+    extracted.forEach((e, ei) => {
+      const s = score(it, e);
+      if (s > 0) pairs.push({ i, e: ei, s });
+    })
+  );
+  // Strongest first; ties keep source order so the result stays deterministic.
+  pairs.sort((x, y) => y.s - x.s || x.i - y.i || x.e - y.e);
+  const matched = new Map<number, ExtractedItem>();
   const used = new Set<number>();
-  const claim = (it: ParsedItem, idx: number): ExtractedItem | undefined => {
-    for (let i = 0; i < extracted.length; i++) {
-      if (used.has(i)) continue;
-      const e = extracted[i];
-      const withBrand = e.brand ? `${e.brand} ${e.name}` : e.name;
-      if (wordsOverlap(it.food_name, withBrand) || wordsOverlap(it.food_name, e.name)) {
-        used.add(i);
-        return e;
-      }
-    }
+  for (const { i, e } of pairs) {
+    if (matched.has(i) || used.has(e)) continue;
+    matched.set(i, extracted[e]);
+    used.add(e);
+  }
+  const claim = (_it: ParsedItem, idx: number): ExtractedItem | undefined => {
+    const m = matched.get(idx);
+    if (m) return m;
+    // Nothing overlapped. Position is only meaningful when the two lists are
+    // the same length AND that slot was not taken by a name match.
     if (extracted.length === items.length && !used.has(idx)) {
       used.add(idx);
       return extracted[idx];
@@ -1828,7 +1882,15 @@ export function assignItemMeals(
   };
   return items.map((it, idx) => {
     const e = claim(it, idx);
-    return { ...it, meal_type: e?.meal ?? it.meal_type ?? defaultMeal };
+    // The section this line is ALREADY in, from the line itself when it kept it
+    // (tryFastCorrection) or from the previous meal by name when decide rebuilt
+    // it and dropped it.
+    const carried = it.meal_type ??
+      (e?.correctsFoodName ? carriedFor?.(e.correctsFoodName, idx) : undefined);
+    // Per-item beats explicit beats carried beats guess. The middle two are the
+    // pair that has to stay in this order: the text saying "lunch" now outranks
+    // the section a line was sitting in, while the clock never does.
+    return { ...it, meal_type: e?.meal ?? explicit ?? carried ?? fallback };
   });
 }
 
@@ -3848,6 +3910,7 @@ async function researchPrevious(
       quantity: p.quantity,
       serving_label: p.serving_label,
       grams: p.grams,
+      meal_type: p.meal_type,
       kcal: round1(label.per_100.kcal * f),
       protein_g: round1(label.per_100.protein_g * f),
       carb_g: round1(label.per_100.carb_g * f),
@@ -3952,6 +4015,9 @@ export async function tryFastCorrection(
         source: "manual",
         assumption: prev.assumption ?? null,
         confidence: prev.confidence ?? "high",
+        // The line stays in the section it is already in. Without this a
+        // correction stamps the whole meal with one default.
+        meal_type: prev.meal_type,
       });
       continue;
     }
@@ -3976,6 +4042,7 @@ export async function tryFastCorrection(
       source: prev.source ?? "catalog",
       assumption: prev.assumption ?? null,
       confidence: "high",
+      meal_type: prev.meal_type,
     });
   }
   return out.length > 0 ? out : null;
@@ -4010,6 +4077,26 @@ export async function runParseMeal(
     usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
     usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
   };
+  /** Section of a previous line, by the food_name decide was told to correct.
+   *  Case-folded because the model echoes the name back with its own casing. */
+  const prevMealByName = (foodName: string, idx?: number): MealType | undefined => {
+    const want = foodName.trim().toLowerCase();
+    const prev = input.previousItems ?? [];
+    const hits = prev.filter((p) => p.food_name.trim().toLowerCase() === want);
+    if (hits.length === 0) return undefined;
+    if (hits.length === 1) return hits[0].meal_type;
+    // The same food logged into two sections ("roti" at breakfast AND lunch)
+    // makes the name alone ambiguous, and taking the first hit files the
+    // correction into whichever happens to come first. Position disambiguates
+    // when it agrees with the name; otherwise prefer the sections the hits
+    // AGREE on, and only give up when they genuinely disagree.
+    if (idx !== undefined && prev[idx] && prev[idx].food_name.trim().toLowerCase() === want) {
+      return prev[idx].meal_type;
+    }
+    const distinct = new Set(hits.map((h) => h.meal_type));
+    return distinct.size === 1 ? hits[0].meal_type : undefined;
+  };
+
   const declineResult = (message: string, cleared?: boolean): ParseMealResult => ({
     parsed: null,
     declined: cleared ? { message, cleared } : { message },
@@ -4344,7 +4431,16 @@ export async function runParseMeal(
       // The web found something materially different, most likely another
       // variant. Offer it rather than apply it: a wrong silent swap is worse
       // than the number they already had.
-      const items = flagPrepMismatch(checkAtwater(researched.items));
+      // Stamped like every other return path, not left to researchPrevious
+      // copying meal_type off the previous line. That copy is what makes this
+      // correct TODAY, and a proposal that arrived without a section used to
+      // reach a client that defaulted it to Snacks - so a breakfast line the
+      // user accepted better numbers for moved meals. Defence on both sides.
+      const items = assignItemMeals(
+        flagPrepMismatch(checkAtwater(researched.items)), extItems,
+        { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour),
+          carriedFor: prevMealByName },
+      );
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
       return {
@@ -4360,7 +4456,8 @@ export async function runParseMeal(
     if (researched) {
       const researchDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
       const items = assignItemMeals(
-        flagPrepMismatch(checkAtwater(researched.items)), extItems, researchDefault,
+        flagPrepMismatch(checkAtwater(researched.items)), extItems,
+        { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
       );
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: true } });
@@ -4450,11 +4547,14 @@ export async function runParseMeal(
       T.fast_correction = 1;
       steps.push({ iter: 1, tool: "fast_correction", input: { items: corrected.length } });
       const correctionDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
-      // A corrected line keeps the section it already had (assignItemMeals
-      // reads it off the previous line), so "make it 3 eggs" never drags
-      // breakfast into whatever meal the clock says it is now.
+      // A corrected line keeps the section it already had - tryFastCorrection
+      // carries meal_type off the previous line - so "make it 3 eggs" never
+      // drags breakfast into whatever meal the clock says it is now. But
+      // "that was lunch" DOES move it: mealFromText goes in as `explicit`,
+      // which outranks the carried section.
       const items = assignItemMeals(
-        flagPrepMismatch(checkAtwater(corrected)), extItems, correctionDefault,
+        flagPrepMismatch(checkAtwater(corrected)), extItems,
+        { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
       );
       T.decide_ms = 0;
       steps.push({ iter: 9, tool: "__timing", input: { ...T, web_fired: false } });
@@ -4725,7 +4825,7 @@ export async function runParseMeal(
         verifiedForItems(resolved),
       ),
       extItems,
-      fastDefault,
+      { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
     T.post_ms = Date.now() - tPost0;
     T.decide_ms = 0;
@@ -4783,7 +4883,7 @@ export async function runParseMeal(
         verifiedForItems(resolved),
       ),
       extItems,
-      fillDefault,
+      { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
     steps.push({ iter: 9, tool: "__timing", input: { ...T, skipped_decide: true } });
     return {
@@ -4935,12 +5035,20 @@ export async function runParseMeal(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
     );
   }
-  const decideDefault: MealType =
+  const rawMealType: MealType | null =
     raw.meal_type === "breakfast" || raw.meal_type === "lunch" ||
     raw.meal_type === "dinner" || raw.meal_type === "snack"
       ? raw.meal_type
-      : (mealFromText ?? input.mealHint ?? mealForHour(input.localHour));
-  items = assignItemMeals(items, extItems, decideDefault);
+      : null;
+  const decideDefault: MealType =
+    rawMealType ?? mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+  // decide's own meal_type is the explicit answer when it gave one; otherwise
+  // the text's. Either way it outranks a carried section, and the clock does not.
+  items = assignItemMeals(items, extItems, {
+    explicit: rawMealType ?? mealFromText,
+    fallback: input.mealHint ?? mealForHour(input.localHour),
+    carriedFor: prevMealByName,
+  });
   const mealType: MealType = items[0]?.meal_type ?? decideDefault;
   // Grounded against the FINAL items (stripEphemeralIds ran above), so a
   // sentence quoting a macro the model invented cannot survive next to the
