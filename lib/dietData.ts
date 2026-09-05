@@ -892,6 +892,9 @@ export async function parseMeal(
               fat_g: it.fat_g,
               fiber_g: it.fiber_g,
               source: it.source,
+              // Sent so a correction does not collapse a full-day log into one
+              // section: the server rebuilds every line from these.
+              meal_type: it.meal_type,
               assumption: it.assumption,
               confidence: it.confidence,
             })),

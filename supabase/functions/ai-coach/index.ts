@@ -1778,6 +1778,13 @@ async function handleParseMealRequest(args: {
           : "estimate",
         assumption: typeof r.assumption === "string" && r.assumption.trim() ? r.assumption.trim().slice(0, 160) : null,
         confidence: r.confidence === "high" || r.confidence === "low" ? r.confidence : "medium",
+        // The section the line is already in. Undefined for a client that
+        // predates full-day logging, and the parser falls back exactly as it
+        // did then, so an old build keeps working.
+        meal_type: r.meal_type === "breakfast" || r.meal_type === "lunch" ||
+            r.meal_type === "dinner" || r.meal_type === "snack"
+          ? r.meal_type
+          : undefined,
       }];
     })
     : [];

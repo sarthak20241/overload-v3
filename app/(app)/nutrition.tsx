@@ -37,7 +37,7 @@ import { ParseSpeedSheet } from '@/components/diet/ParseSpeedSheet';
 import { getParseSpeed, setParseSpeed, type ParseSpeed } from '@/lib/parseSpeed';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, parseMealStreaming, logParsedMeal, sectionsOf, capNotice, capUpgradeContext,
+  parseMeal, parseMealStreaming, logParsedMeal, capNotice, capUpgradeContext,
   loadNutritionRange, dateFromYmd,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem,
 } from '@/lib/dietData';
@@ -574,7 +574,11 @@ export default function NutritionScreen() {
     setFlow((f) => {
       if (f.status !== 'review' || editIndex === null) return f;
       const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
-      return { ...f, meal: { ...f.meal, items } };
+      // The editor can move one line, which can leave the card with a single
+      // section. Keep the card-level field on the first line so a later
+      // fallback reads the surviving section rather than an emptied one.
+      const head = items[0]?.meal_type ?? f.meal.meal_type;
+      return { ...f, mealType: head, meal: { ...f.meal, items, meal_type: head } };
     });
     setEditIndex(null);
   }, [editIndex]);
@@ -596,7 +600,20 @@ export default function NutritionScreen() {
   }, [text, isSignedIn, flow.status, runParse]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
-    setFlow((f) => (f.status === 'review' ? { ...f, mealType: m, mealTypePicked: true } : f));
+    setFlow((f) => {
+      if (f.status !== 'review') return f;
+      // The chip row moves the WHOLE meal, so it stamps every line rather than
+      // only the card-level field. That is what makes the lines the single
+      // source of truth for where this meal goes: onAdd can then just read
+      // them, instead of deciding between a card-level value and per-line ones
+      // and getting that choice wrong whenever the two disagree.
+      return {
+        ...f,
+        mealType: m,
+        mealTypePicked: true,
+        meal: { ...f.meal, meal_type: m, items: f.meal.items.map((it) => ({ ...it, meal_type: m })) },
+      };
+    });
   }, []);
 
   /** Multi-section card: move every line of one group to another section. */
@@ -604,23 +621,32 @@ export default function NutritionScreen() {
     setFlow((f) => {
       if (f.status !== 'review' || from === to) return f;
       const items = f.meal.items.map((it) => (it.meal_type === from ? { ...it, meal_type: to } : it));
-      // Keep the meal-level field honest: it is the first line's section.
-      return { ...f, meal: { ...f.meal, items, meal_type: items[0]?.meal_type ?? f.meal.meal_type } };
+      const head = items[0]?.meal_type ?? f.meal.meal_type;
+      // mealType moves too, and that is not cosmetic. Moving the last group out
+      // of a section collapses the card back to ONE section, and onAdd then
+      // takes the single-section branch and stamps flow.mealType over every
+      // line. Left stale, moving breakfast into snacks logged the meal to
+      // breakfast - the section the user had just emptied.
+      return {
+        ...f,
+        meal: { ...f.meal, items, meal_type: head },
+        mealType: head,
+      };
     });
   }, []);
 
   const onAdd = useCallback(async () => {
     if (flow.status !== 'review' || !supabase || adding) return;
     setAdding(true);
-    // Single-section card: the chip row moves EVERY line to the picked
-    // section, exactly as before. Multi-section card (a message that named
-    // several meals): there is no chip row, each line goes where the user
-    // saw it grouped, and the group headers are how they re-home a group.
-    const multi = sectionsOf(flow.meal).length > 1;
-    const items = multi
-      ? flow.meal.items
-      : flow.meal.items.map((it) => ({ ...it, meal_type: flow.mealType }));
-    const { error } = await logParsedMeal(supabase, { ...flow.meal, meal_type: flow.mealType, items }, viewDate);
+    // The LINES say where they go, always. Every control that can change a
+    // section now writes it onto the lines (the chip row stamps all of them,
+    // a group header stamps its group, the line editor stamps one), so there
+    // is no second opinion to reconcile here. meal_type rides along only as
+    // the fallback for a line that carries none, which is what an older
+    // server's response looks like.
+    const { error } = await logParsedMeal(
+      supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
+    );
     setAdding(false);
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
