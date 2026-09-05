@@ -10,6 +10,10 @@
  *               "Add to <section>" button. Drona's one-liner rides along as a preview.
  *   declined  — non-food input: Drona's redirect line + dismiss.
  *   error     — parse/transport failure: message + Retry.
+ *   logged    - "Just log it": the server already wrote the diary. A one-line
+ *               strip ("Added to Lunch · 412 kcal · Undo") over read-only rows.
+ *   sent      - "Just log it": the stream dropped after the request left; the
+ *               diary settles it. One line + dismiss.
  *
  * A review card is tall and sits in an absolutely-positioned wrapper over the
  * day list, so it hides the very entries a user wants to check against before
@@ -31,12 +35,15 @@ import Animated, {
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
-import type { ParsedMeal, ParsedMealItem } from '@/lib/dietData';
+import type { ParsedMeal, ParsedMealItem, LoggedSectionRef } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
 import { formatServing } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
-export type ParseCardState = 'analysing' | 'streaming' | 'review' | 'declined' | 'error';
+/** Two more states for "Just log it": `logged` (the server wrote the diary,
+ *  the card is a strip with Undo over read-only rows) and `sent` (the stream
+ *  dropped after the request left; the diary will show what happened). */
+export type ParseCardState = 'analysing' | 'streaming' | 'review' | 'declined' | 'error' | 'logged' | 'sent';
 
 /** A row whose name is known but whose numbers have not landed yet. */
 export interface StreamingRow {
@@ -121,6 +128,17 @@ interface Props {
    *  reopen it: a new meal the user has not seen yet must never arrive hidden. */
   minimized?: boolean;
   onToggleMinimize?: () => void;
+  /** "Just log it" (state 'logged'): the server already wrote these lines. The
+   *  card is a one-line strip, "Added to Lunch · 412 kcal · Undo", over the
+   *  rows as read-only receipts. No Add, no chip row: nothing is left to
+   *  decide, and the strip's one control undoes the whole send. */
+  logged?: { sections: LoggedSectionRef[] } | null;
+  onUndo?: () => void;
+  undoing?: boolean;
+  /** "Just log it" is on for the parse in flight. The waiting copy says
+   *  "adding", not "reading": send already committed, and the card should
+   *  not read as if a review step were coming. */
+  autoLogging?: boolean;
 }
 
 const r0 = (n: number) => Math.round(n);
@@ -171,6 +189,7 @@ export function ParsedMealCard({
   checkingIndex, onCheckItem,
   onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
   minimized, onToggleMinimize,
+  logged, onUndo, undoing, autoLogging,
 }: Props) {
   const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
   const { C } = useTheme();
@@ -184,7 +203,9 @@ export function ParsedMealCard({
   const collapsible = state === 'review' && !!meal && !!onToggleMinimize
     && !adding && !busyChecking;
   const isCollapsed = collapsible && !!minimized;
-  const items = state === 'review' && meal ? meal.items : [];
+  // 'logged' lists the same rows, read-only: the screen passes no edit/remove/
+  // check callbacks in that state, so renderRow draws them as receipts.
+  const items = (state === 'review' || state === 'logged') && meal ? meal.items : [];
   const sum = items.reduce(
     (a, it) => ({ kcal: a.kcal + it.kcal, p: a.p + it.protein_g, c: a.c + it.carb_g, f: a.f + it.fat_g }),
     { kcal: 0, p: 0, c: 0, f: 0 },
@@ -328,13 +349,68 @@ export function ParsedMealCard({
         </View>
       )}
 
-      {state === 'analysing' && <Analysing C={C} />}
+      {state === 'analysing' && <Analysing C={C} autoLogging={!!autoLogging} />}
 
       {state === 'streaming' && !!streamingRows && (
         <View>
           {streamingRows.map((r, i) => (
             <SettlingRow key={i} row={r} C={C} s={s} first={i === 0} />
           ))}
+          {/* Just log it: the rows still fill in while the app is open (people
+              like watching it), but the footer says where this is going. */}
+          {autoLogging && <Text style={s.autoNote}>Adding to your diary as it settles</Text>}
+        </View>
+      )}
+
+      {state === 'logged' && meal && (
+        <View style={s.reviewBody}>
+          <View style={s.loggedStrip} accessibilityLiveRegion="polite">
+            <Feather name="check" size={13} color={C.accentText} />
+            <Text style={s.loggedTxt} numberOfLines={1}>
+              Added to {logged && logged.sections.length > 1
+                ? `${logged.sections.length} meals`
+                : mealLabel(logged?.sections[0]?.mealType ?? meal.meal_type)}
+              {' · '}{r0(items.reduce((a, it) => a + it.kcal, 0))} kcal
+            </Text>
+            {onUndo && (
+              <Pressable
+                onPress={onUndo}
+                disabled={!!undoing}
+                hitSlop={8}
+                style={[s.undoBtn, { opacity: undoing ? 0.5 : 1 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Undo, remove what Drona just added"
+              >
+                <Text style={s.undoTxt}>{undoing ? 'Undoing...' : 'Undo'}</Text>
+              </Pressable>
+            )}
+            {onDismiss && (
+              <Pressable onPress={onDismiss} hitSlop={10} accessibilityRole="button" accessibilityLabel="Done">
+                <Feather name="x" size={14} color={C.textMuted} />
+              </Pressable>
+            )}
+          </View>
+          <ScrollView style={s.itemsScroll} bounces={false} showsVerticalScrollIndicator persistentScrollbar>
+            {meal.items.map((it, i) => renderRow(it, i, i > 0))}
+          </ScrollView>
+          {meal.drona_line ? (
+            <View style={[s.dronaRow, { flex: 0 }]}>
+              <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
+              <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
+            </View>
+          ) : null}
+        </View>
+      )}
+
+      {state === 'sent' && (
+        <View style={s.dronaRow}>
+          <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
+          <Text style={[s.dronaTxt, { flex: 1 }]}>{message ?? 'Sent. Drona is adding it to your diary; give it a moment.'}</Text>
+          {onDismiss && (
+            <Pressable onPress={onDismiss} hitSlop={10} style={s.dismiss} accessibilityLabel="Dismiss">
+              <Feather name="x" size={15} color={C.textMuted} />
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -624,7 +700,7 @@ function useSettling(target: number | null): number {
   return shown;
 }
 
-function Analysing({ C }: { C: ReturnType<typeof useTheme>['C'] }) {
+function Analysing({ C, autoLogging }: { C: ReturnType<typeof useTheme>['C']; autoLogging: boolean }) {
   const s = makeStyles(C);
   const pulse = useSharedValue(0.4);
   const reduced = useReducedMotion();
@@ -642,7 +718,7 @@ function Analysing({ C }: { C: ReturnType<typeof useTheme>['C'] }) {
   return (
     <Animated.View style={[s.dronaRow, style]}>
       <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
-      <Text style={s.dronaTxt}>Drona is reading that...</Text>
+      <Text style={s.dronaTxt}>{autoLogging ? 'Drona is adding that...' : 'Drona is reading that...'}</Text>
     </Animated.View>
   );
 }
@@ -764,5 +840,20 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     },
     addTxt: { fontSize: FontSize.base, color: C.background, fontWeight: FontWeight.semibold },
     dismiss: { padding: 2 },
+
+    // Just log it. The strip is the whole confirmation: one line, one control.
+    // Lime on the check only; the text stays foreground so the card reads as
+    // a receipt, not a celebration.
+    loggedStrip: {
+      flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+      paddingBottom: Spacing.sm, borderBottomWidth: 1, borderBottomColor: C.borderSubtle,
+    },
+    loggedTxt: {
+      flex: 1, fontSize: FontSize.sm, color: C.foreground,
+      fontWeight: FontWeight.medium, fontVariant: ['tabular-nums'],
+    },
+    undoBtn: { paddingVertical: 4, paddingHorizontal: Spacing.sm },
+    undoTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.semibold },
+    autoNote: { fontSize: FontSize.xs, color: C.textMuted, marginTop: Spacing.sm },
   });
 }
