@@ -604,12 +604,22 @@ export function capUpgradeContext(cap: { scope: 'free' | 'pro' }): 'pro_feature'
 const isMealType = (v: unknown): v is MealType =>
   v === 'breakfast' || v === 'lunch' || v === 'dinner' || v === 'snack';
 
-/** `fallbackMeal` is the meal-level section, for a line from an older server
- *  build (or a proposal) that carries none. A line is never left unplaced. */
-function toParsedItem(i: any, fallbackMeal: MealType | undefined = 'snack'): ParsedMealItem {
+/** `fallbackMeal` is the section to use for a line that carries none - the
+ *  meal-level one for a parsed meal, and NULL for a proposal, whose lines
+ *  belong wherever the lines they replace are.
+ *
+ *  NO DEFAULT, deliberately. It had one, and `toParsedItem(i, undefined)` was
+ *  written to mean "no fallback" - but a JS default fires on an explicitly
+ *  passed undefined too, so that call still produced 'snack' and the opt-out
+ *  did nothing at all. Requiring the argument makes the mistake unsayable
+ *  rather than merely caught, which is worth more than a test here: lib/ has
+ *  no test harness, so a test could not have run anyway. */
+function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
   return {
-    // `undefined` is a real answer here, not a missing one: a proposal line's
-    // section belongs to the line it replaces and is filled in at accept time.
+    // NULL is how a caller says "this line has no section of its own": a
+    // proposal line belongs wherever the line it replaces is, and
+    // onAcceptProposal fills it in. `??` treats null the same as undefined
+    // downstream, so the inheritance chain reads naturally.
     meal_type: isMealType(i.meal_type) ? i.meal_type : (fallbackMeal as MealType),
     food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
     food_name: String(i.food_name ?? 'Food'),
@@ -643,12 +653,12 @@ function toParseResult(data: any): ParseMealResult {
   if (data?.declined?.message) {
     const p = data?.proposal;
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
-      // No fallbackMeal on purpose. A proposal line has no section of its own:
-        // it REPLACES a line on the card and belongs wherever that line is, so
-        // guessing here (the old default was 'snack') would re-file a breakfast
-        // item the moment the user accepted better numbers for it.
-        // onAcceptProposal does the inheriting; undefined is how it knows to.
-      ? { items: (p.items as any[]).map((i) => toParsedItem(i, undefined)), note: String(p.note ?? 'Use these numbers') }
+      // null fallback on purpose. A proposal line has no section of its own:
+      // it REPLACES a line on the card and belongs wherever that line is, so
+      // guessing here (the default is 'snack') would re-file a breakfast item
+      // the moment the user accepted better numbers for it. onAcceptProposal
+      // does the inheriting; a null section is how it knows to.
+      ? { items: (p.items as any[]).map((i) => toParsedItem(i, null)), note: String(p.note ?? 'Use these numbers') }
       : null;
     return {
       kind: 'declined',

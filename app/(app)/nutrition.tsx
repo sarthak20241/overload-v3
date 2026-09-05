@@ -576,9 +576,14 @@ export default function NutritionScreen() {
   const onRemoveItem = useCallback((i: number) => {
     setFlow((f): ParseFlow => {
       if (f.status !== 'review') return f;
-      const items = f.meal.items.filter((_, idx) => idx !== i);
+        const items = f.meal.items.filter((_, idx) => idx !== i);
       if (items.length === 0) return { status: 'idle' };
-      return { ...f, meal: { ...f.meal, items } };
+      // Removing the last line of a section collapses the card, exactly as a
+      // group move does, so the head is recomputed here for the same reason:
+      // a stale card-level section is what onAdd falls back to for any line
+      // that carries none.
+      const head = items[0]?.meal_type ?? f.meal.meal_type;
+      return { ...f, mealType: head, meal: { ...f.meal, items, meal_type: head } };
     });
   }, []);
   const onEditSave = useCallback((patch: ParsedMealItem) => {
