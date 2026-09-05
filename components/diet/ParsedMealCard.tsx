@@ -62,8 +62,6 @@ const MEAL_OPTIONS: { value: MealType; label: string }[] = [
 
 const mealLabel = (m: MealType) => MEAL_OPTIONS.find((o) => o.value === m)?.label ?? 'Snacks';
 
-
-
 interface Props {
   state: ParseCardState;
   /** Rows to show while the numbers are still resolving (state 'streaming'). */

@@ -891,14 +891,23 @@ export default function NutritionScreen() {
                 // incoming line inherits the section of the line it stands in
                 // for, matched by name and falling back to position, so
                 // accepting better numbers for a breakfast item cannot move it.
-                const bySection = new Map(f.meal.items.map((it) => [it.food_name.trim().toLowerCase(), it.meal_type]));
-                const items = f.proposal.items.map((it, i) => ({
-                  ...it,
-                  meal_type: it.meal_type
-                    ?? bySection.get(it.food_name.trim().toLowerCase())
-                    ?? f.meal.items[i]?.meal_type
-                    ?? f.mealType,
-                }));
+                // POSITION first, then name. A name-keyed map cannot tell two
+                // same-named lines in different sections apart - the later key
+                // overwrites the earlier - and a proposal is a positional
+                // replacement of the same list, so the index is the stronger
+                // handle. The name is the fallback for a reordered list.
+                const key = (n: string) => n.trim().toLowerCase();
+                const bySection = new Map(f.meal.items.map((it) => [key(it.food_name), it.meal_type]));
+                const items = f.proposal.items.map((it, i) => {
+                  const atIdx = f.meal.items[i];
+                  const positional = atIdx && key(atIdx.food_name) === key(it.food_name)
+                    ? atIdx.meal_type
+                    : undefined;
+                  return {
+                    ...it,
+                    meal_type: it.meal_type ?? positional ?? bySection.get(key(it.food_name)) ?? f.mealType,
+                  };
+                });
                 return { ...f, meal: { ...f.meal, items }, notice: null, proposal: null };
               })}
               onDismissNotice={() => setFlow((f) => (f.status === 'review' ? { ...f, notice: null, proposal: null } : f))}
