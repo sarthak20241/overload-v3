@@ -1640,11 +1640,11 @@ const FAST_EXTRACT_TOOL = (() => {
 })();
 
 /** Output budgets for the extract call. Fast items are heavy (est_ totals,
- *  label recall, meal): ~110 tokens each, 12-item ceiling, so 1800 leaves
+ *  label recall, meal): ~110 tokens each, 12-item ceiling, so 5000 leaves
  *  headroom. Smart items are name/brand/quantity/unit/prep/meal, a third of
  *  that. Both are caps; a two-item message emits the same ~200 tokens under
  *  either. Truncation is detected at the call site and reported honestly. */
-const EXTRACT_MAX_TOKENS_FAST = 1800;
+const EXTRACT_MAX_TOKENS_FAST = 5000;
 const EXTRACT_MAX_TOKENS_SMART = 700;
 
 const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
