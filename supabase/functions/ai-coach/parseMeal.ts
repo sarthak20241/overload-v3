@@ -1116,8 +1116,10 @@ const EXTRACT_TOOL = {
             corrects_food_name: {
               type: ["string", "null"],
               description:
-                "When correcting, the food_name of the previous line this entry replaces, " +
-                "copied EXACTLY. null for a brand new item.",
+                "The food_name of the previous line this entry REPLACES, copied EXACTLY. " +
+                "Set it only when this entry changes what that line was - a different " +
+                "amount, size, or a different food. null for a brand new item, and null " +
+                "for a line you are copying back untouched.",
             },
             name: {
               type: "string",
@@ -1897,7 +1899,13 @@ export function assignItemMeals(
 const EXTRACT_CORRECTION_RULES = `
 
 A meal the user just logged may be shown to you as previous_meal (it is on screen, not yet saved). If so, decide what the new text is doing:
-- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
+- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal, applying the correction to the line it names and copying the others back unchanged. Leaving a line out DELETES it.
+  corrects_food_name is NOT a label for every line. Set it ONLY on a line that changes what an existing line WAS - a different amount, size, or a different food. A line you are copying back untouched gets corrects_food_name: null.
+  previous_meal [2 slices brown bread, 1 omelette, 1 glass banana shake], user says "make the omelette 3 eggs":
+    {"name":"brown bread","quantity":2,"unit":"slice","corrects_food_name":null}
+    {"name":"omelette","quantity":3,"unit":"egg","corrects_food_name":"omelette"}
+    {"name":"banana shake","quantity":1,"unit":"glass","corrects_food_name":null}
+  Same meal, user says "actually it was muesli, not corn flakes" (previous_meal had corn flakes): the muesli line carries corrects_food_name "corn flakes" - the name of the line it REPLACES, which is not its own name. Every other line gets null. Without that name the app logs both foods.
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
 - QUESTION THAT ALSO STATES THE FIX ("that seems high, make it 100g", "is that right? it was a small one"): set corrects_previous TRUE and list the corrected items as well. The user told you the answer; do not just agree with them and change nothing.

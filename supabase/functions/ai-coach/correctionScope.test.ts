@@ -168,3 +168,46 @@ Deno.test("no previous match means nothing is un-marked", () => {
   assertEquals(replaced.has("poha"), true);
   assertEquals(out.untouched, 0);
 });
+
+// ── The prompt now asks for a tag ONLY on lines that change ─────────────────
+//
+// EXTRACT_CORRECTION_RULES used to say "copy each line's food_name into
+// corrects_food_name, unchanged lines included". It now says the opposite for
+// untouched lines: null. Sarthak's point, and it is the safer shape - the field
+// then means one thing (this REPLACES that) instead of doubling as an identity
+// label that the restore guard reads as "deliberately deleted".
+//
+// Observed both shapes from the same model on the same input, so the code has
+// to keep handling both. These pin that.
+
+Deno.test("an untouched line with NO tag is still recognised as unchanged", () => {
+  // The new shape. Nothing lands in replacedNames at all, so there is nothing
+  // to un-mark and the restore guard can always bring the line back.
+  const replaced = new Set<string>();
+  const out = scopeCorrection(
+    [
+      ext({ name: "Poha", quantity: 1, unit: "plate", correctsFoodName: null }),
+      ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", correctsFoodName: "Rajma Chawal" }),
+    ],
+    [POHA, RAJMA],
+    replaced,
+  );
+  assertEquals(out.unchangedCount, 1, "the untagged line still matches by name, amount and unit");
+  assertEquals(out.toResolve.map((i) => i.name), ["Rajma Chawal"]);
+  assertEquals(replaced.size, 0);
+});
+
+Deno.test("a SWAP keeps its tag, and the swapped-out line stays replaced", () => {
+  // The one case that must still carry a tag. "actually muesli not corn flakes"
+  // names a line whose name is NOT its own; without it the app would restore
+  // the corn flakes and log both.
+  const CORN = prev("Corn Flakes", 1, "bowl");
+  const replaced = new Set(["corn flakes"]);
+  const out = scopeCorrection(
+    [ext({ name: "Muesli", quantity: 1, unit: "bowl", correctsFoodName: "Corn Flakes" })],
+    [CORN],
+    replaced,
+  );
+  assertEquals(out.unchangedCount, 0, "a re-target is a change, however tidy it looks");
+  assertEquals(replaced.has("corn flakes"), true, "the swapped-out line must not be resurrected");
+});

@@ -1038,7 +1038,9 @@ export const CASES: EvalCase[] = [
       items: [
         { nameIncludes: "poha", meal: "breakfast" },
         { nameIncludes: "rajma", meal: "lunch" },
-        { nameIncludes: "khakhra", meal: "snack" },
+        // The model names this differently run to run - "Masala Khakhara",
+        // "Khakhra roasted wheat crisps" - so match the stem only.
+        { nameIncludes: "khakh", meal: "snack" },
       ],
     },
   },
