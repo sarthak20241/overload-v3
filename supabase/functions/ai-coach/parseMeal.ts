@@ -4933,8 +4933,13 @@ export async function runParseMeal(
     raw.meal_type === "dinner" || raw.meal_type === "snack"
       ? raw.meal_type
       : null;
+  // Same order the assignItemMeals call below uses, deliberately. It only ever
+  // fires if items were somehow empty (the early return above makes that
+  // unreachable today), but a constant that states a DIFFERENT precedence from
+  // the code four lines under it is a trap for whoever reads it next - the two
+  // orderings disagreeing is what this whole fix was about.
   const decideDefault: MealType =
-    rawMealType ?? mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    mealFromText ?? rawMealType ?? input.mealHint ?? mealForHour(input.localHour);
   // `explicit` is the meal the TEXT named, and ONLY that. decide's own
   // meal_type belongs in the fallback, below the carried section, because it is
   // a GUESS and not the user speaking - the decide prompt tells it to fall back
