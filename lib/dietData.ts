@@ -620,11 +620,23 @@ export function capUpgradeContext(cap: { scope: 'free' | 'pro' }): 'pro_feature'
 const isMealType = (v: unknown): v is MealType =>
   v === 'breakfast' || v === 'lunch' || v === 'dinner' || v === 'snack';
 
-/** `fallbackMeal` is the meal-level section, for a line from an older server
- *  build (or a proposal) that carries none. A line is never left unplaced. */
-function toParsedItem(i: any, fallbackMeal: MealType = 'snack'): ParsedMealItem {
+/** `fallbackMeal` is the section to use for a line that carries none - the
+ *  meal-level one for a parsed meal, and NULL for a proposal, whose lines
+ *  belong wherever the lines they replace are.
+ *
+ *  NO DEFAULT, deliberately. It had one, and `toParsedItem(i, undefined)` was
+ *  written to mean "no fallback" - but a JS default fires on an explicitly
+ *  passed undefined too, so that call still produced 'snack' and the opt-out
+ *  did nothing at all. Requiring the argument makes the mistake unsayable
+ *  rather than merely caught, which is worth more than a test here: lib/ has
+ *  no test harness, so a test could not have run anyway. */
+function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
   return {
-    meal_type: isMealType(i.meal_type) ? i.meal_type : fallbackMeal,
+    // NULL is how a caller says "this line has no section of its own": a
+    // proposal line belongs wherever the line it replaces is, and
+    // onAcceptProposal fills it in. `??` treats null the same as undefined
+    // downstream, so the inheritance chain reads naturally.
+    meal_type: isMealType(i.meal_type) ? i.meal_type : (fallbackMeal as MealType),
     food_id: typeof i.food_id === 'string' && i.food_id ? i.food_id : null,
     food_name: String(i.food_name ?? 'Food'),
     quantity: num(i.quantity) || 1,
@@ -657,7 +669,12 @@ function toParseResult(data: any): ParseMealResult {
   if (data?.declined?.message) {
     const p = data?.proposal;
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
-      ? { items: (p.items as any[]).map((i) => toParsedItem(i)), note: String(p.note ?? 'Use these numbers') }
+      // null fallback on purpose. A proposal line has no section of its own:
+      // it REPLACES a line on the card and belongs wherever that line is, so
+      // guessing here (the default is 'snack') would re-file a breakfast item
+      // the moment the user accepted better numbers for it. onAcceptProposal
+      // does the inheriting; a null section is how it knows to.
+      ? { items: (p.items as any[]).map((i) => toParsedItem(i, null)), note: String(p.note ?? 'Use these numbers') }
       : null;
     return {
       kind: 'declined',
@@ -965,6 +982,9 @@ export async function parseMeal(
               fat_g: it.fat_g,
               fiber_g: it.fiber_g,
               source: it.source,
+              // Sent so a correction does not collapse a full-day log into one
+              // section: the server rebuilds every line from these.
+              meal_type: it.meal_type,
               assumption: it.assumption,
               confidence: it.confidence,
             })),
@@ -1010,13 +1030,18 @@ export interface LoggedParseRef {
 /** The sections a parsed meal's lines fall into, in first-seen order. Each
  *  line carries its own meal_type (server-stamped); the meal-level field is
  *  only the fallback for a line that somehow lacks one. */
-export function sectionsOf(meal: ParsedMeal): MealType[] {
+export function sectionsOfItems(items: ParsedMealItem[], fallback: MealType): MealType[] {
   const seen: MealType[] = [];
-  for (const it of meal.items) {
-    const m = it.meal_type ?? meal.meal_type;
+  for (const it of items) {
+    const m = it.meal_type ?? fallback;
     if (!seen.includes(m)) seen.push(m);
   }
-  return seen.length ? seen : [meal.meal_type];
+  return seen.length ? seen : [fallback];
+}
+
+/** The same rule for a whole parsed meal, whose own meal_type is the fallback. */
+export function sectionsOf(meal: ParsedMeal): MealType[] {
+  return sectionsOfItems(meal.items, meal.meal_type);
 }
 
 /** Write a parsed meal to the day's log, one section at a time: group the

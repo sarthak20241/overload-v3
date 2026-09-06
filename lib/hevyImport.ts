@@ -200,7 +200,7 @@ export function buildHevyImport(opts: {
   const order: string[] = [];
   const groups = new Map<string, HevyRow[]>();
   for (const row of rows) {
-    const key = `${row['start_time'] ?? ''} ${row['title'] ?? ''}`;
+    const key = `${row['start_time'] ?? ''}\0${row['title'] ?? ''}`;
     let g = groups.get(key);
     if (!g) { g = []; groups.set(key, g); order.push(key); }
     g.push(row);

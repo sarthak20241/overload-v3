@@ -39,15 +39,48 @@ did not exist. Ship A first.
 
 ### Contract
 
-Each item carries its own meal. Resolution order, in code, never in the prompt:
+Each item carries its own meal. Resolution order, in code, never in the prompt.
+AS BUILT (the first draft of this line collapsed the middle two, and a PR bot
+caught what that cost):
 
-    item.meal ?? meal_type_from_text ?? meal_hint ?? mealForHour(local_hour)
+    item.meal ?? explicit ?? carried ?? fallback
+
+      item.meal   the text tied a meal to THIS item
+      explicit    the meal the text named for the whole message
+                  (meal_type_from_text, or decide's own meal_type)
+      carried     the section the line is ALREADY in - on the line for
+                  tryFastCorrection, or recovered from the previous meal by
+                  correctsFoodName for the decide path, which rebuilds lines
+                  through sanitizeItems and so carries no meal_type at all
+      fallback    meal_hint, else mealForHour(local_hour)
+
+WHY `explicit` SITS ABOVE `carried`. The draft ordering was
+`item.meal ?? meal_type_from_text ?? hint ?? hour` with the carried section
+folded in below the text meal, which read fine until a correction: "that was
+lunch" on a logged breakfast line kept breakfast, because carried outranked
+what the user had just said. Explicit is the user's words and wins; the clock
+is a guess and loses.
+
+WHY `carried` SITS ABOVE `fallback`, which is the other half and just as easy
+to get backwards. Say "make it 3 eggs" at 9pm about a breakfast line and the
+hour would drag it into dinner. Worse, a correction rebuilds the WHOLE meal, so
+without carried a three-section day collapses into one on the first correction.
+
+THE CLOCK IS A LAST-RESORT SERVER DEFAULT AND NOTHING ELSE. The parser must
+never infer a meal from the food or the time - that rule already exists for the
+meal-level field (see the decide prompt) and now applies per item. The hour only
+fills a line that no one, not the text and not a previous log, has placed. That
+does mean the same bare input logs to different sections at different times of
+day, which is intended and is the behaviour that predates this feature.
 
 `meal_type_from_text` stays as the whole-message value ("for lunch I had A and
 B" names lunch once for both). `item.meal` is only set when the text ties a
-meal to THAT item. The parser must never infer a meal from the food or the
-clock for an item - that rule already exists for the meal-level field
-(parseMeal.ts:2011) and now applies per item.
+meal to THAT item.
+
+Eval cover: `audit-one-meal-named-twice` is the no-item-meal case (one meal
+named for several foods, which must not fragment); `audit-multi-meal-day` and
+`audit-multi-meal-three` cover per-item meals. The precedence pairs are unit
+tests in `itemMeals.test.ts`, two of them verified to fail when reversed.
 
 `parsed.meal_type` stays for compatibility and the card header: it becomes the
 meal of the FIRST item (not a majority vote - deterministic and explainable).
@@ -72,9 +105,19 @@ meal of the FIRST item (not a majority vote - deterministic and explainable).
 ### Client
 
 6. `logParsedMeal`: group items by `meal_type`, `findOrCreateMeal` per group,
-   one insert per group. `LoggedParseRef` becomes `{ meals: LoggedParseRef[] }`;
-   `undoParsedMeal` walks all of them. The single-meal case is the same code
-   with one group.
+   one insert per group. The single-meal case is the same code with one group.
+
+   AS BUILT, and deliberately not what this line first said. The draft wrote
+   `LoggedParseRef` as `{ meals: LoggedParseRef[] }`, which is recursive and
+   says a reference contains references. Two types instead, and one shape
+   shared by `logParsedMeal`, the `done.logged` payload and `undoParsedMeal`:
+
+       LoggedSectionRef { mealType, mealId, entryIds, createdMeal }
+       LoggedParseRef   { sections: LoggedSectionRef[] }
+
+   Sections are written in sequence and a failure part-way undoes what already
+   landed, so a message naming breakfast and lunch never leaves breakfast
+   logged and lunch missing.
 7. Card, single-meal (the common case): NO visual change. Chip row and
    "Add to Lunch" exactly as today.
 8. Card, multi-meal (>=2 distinct meal types among items): the chip row is
@@ -147,10 +190,18 @@ diary any time."
      port `findOrCreateMeal` + `logParsedMeal` into the edge function using the
      USER-scoped client (RLS holds; nothing runs as admin). Group by
      `meal_type` (this is why A ships first). `logged_via: 'ai_auto'`.
-     `meals.client_id = client_id` on every meal created for this request, so
-     a retry of the same send is a no-op at the unique index.
+     Idempotency, and the draft got this wrong in a way worth recording.
+     0047's index is unique on `(user_id, client_id)`, so putting the SAME
+     client_id on every meal row a request creates cannot work: a two-section
+     send conflicts on its own second insert. Worse, the meal-row key only
+     guards rows a request CREATES, and the common case is a section whose
+     meal row already exists today - a retry there would double the food.
+     AS BUILT: `client_id` lives on `meal_entries` (migration 0114), the send
+     id is derived per section for any meal row created, and a replayed send is
+     detected from the entries rather than the meal.
    - The `done` event (if anyone is still listening) carries
-     `logged: { meals: [{ meal_id, meal_type, entry_ids }] }` so the card can
+     `logged: { sections: [{ meal_type, meal_id, entry_ids, created_meal }] }`,
+     the same shape as LoggedParseRef above, so the card can
      go straight to "Added".
    - The trace records `auto_logged: true|false` and the reason when false
      (declined / flagged / write error).
