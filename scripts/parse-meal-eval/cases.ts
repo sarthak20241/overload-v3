@@ -1018,5 +1018,47 @@ export const CASES: EvalCase[] = [
       minItems: 1, maxItems: 1,
       items: [{ nameIncludes: "paneer", nameExcludes: ["milky mist"], kcalBetween: [200, 500] }],
     },
+  },,
+  {
+    // A CORRECTION MUST NOT DELETE FOOD THE USER DID NOT MENTION. Reproduced on
+    // device against live v154 on 2026-09-06: this exact pair came back with
+    // two items, the poha silently gone along with its whole Breakfast
+    // section. The user said nothing about poha.
+    //
+    // maxItems is the assertion that matters. minItems alone would pass on a
+    // card that quietly lost a line, which is how this reached production.
+    id: "correction-keeps-untouched-lines",
+    text: "poha for breakfast, rajma chawal at lunch, 2 khakhra in the evening",
+    followUp: "make it 2 plates of rajma chawal",
+    hour: 19,
+    expectCorrection: true,
+    expect: {
+      minItems: 3,
+      maxItems: 3,
+      items: [
+        { nameIncludes: "poha", meal: "breakfast" },
+        { nameIncludes: "rajma", meal: "lunch" },
+        { nameIncludes: "khakhra", meal: "snack" },
+      ],
+    },
+  },
+  {
+    // The same shape with a CATALOG-ONLY meal, which is what the fast
+    // correction path requires: it bails if any previous line lacks a catalog
+    // food_id, and a FatSecret-backed khakhra is what kept it from firing in
+    // two device runs. Same contract, different road through the code.
+    id: "correction-keeps-untouched-lines-catalog-only",
+    text: "poha for breakfast, rajma chawal at lunch",
+    followUp: "make it 2 plates of rajma chawal",
+    hour: 19,
+    expectCorrection: true,
+    expect: {
+      minItems: 2,
+      maxItems: 2,
+      items: [
+        { nameIncludes: "poha", meal: "breakfast" },
+        { nameIncludes: "rajma", meal: "lunch" },
+      ],
+    },
   },
 ];

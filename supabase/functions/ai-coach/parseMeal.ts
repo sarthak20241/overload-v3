@@ -3193,20 +3193,40 @@ export function scopeCorrection(
   extItems: ExtractedItem[],
   prevItems: PreviousItem[],
   replaced: Set<string>,
-): { toResolve: ExtractedItem[]; untouched: number } {
+): {
+  toResolve: ExtractedItem[];
+  /** How many lines the NARROWING skipped. 0 both when nothing looked
+   *  unchanged and when everything did, which is why `unchangedCount` is
+   *  reported separately - those two bails have opposite causes. */
+  untouched: number;
+  /** How many lines matched a previous line unchanged, before the narrowing
+   *  decision. Traced, because "the branch did not fire" is uninterpretable
+   *  without knowing whether the count was 0 or all of them. */
+  unchangedCount: number;
+  /** Names lifted out of `replaced`. These are the lines a restore is now
+   *  allowed to bring back; a previous line missing from the final card and
+   *  NOT in this list was treated as deliberately swapped out. */
+  unreplaced: string[];
+} {
   const passthrough = new Map<number, PreviousItem>();
   extItems.forEach((it, i) => {
     const same = unchangedInCorrection(it, prevItems);
     if (same) passthrough.set(i, same);
   });
-  for (const p of passthrough.values()) replaced.delete(p.food_name.trim().toLowerCase());
+  const unreplaced: string[] = [];
+  for (const p of passthrough.values()) {
+    const key = p.food_name.trim().toLowerCase();
+    if (replaced.delete(key)) unreplaced.push(p.food_name);
+  }
   if (passthrough.size > 0 && passthrough.size < extItems.length) {
     return {
       toResolve: extItems.filter((_, i) => !passthrough.has(i)),
       untouched: passthrough.size,
+      unchangedCount: passthrough.size,
+      unreplaced,
     };
   }
-  return { toResolve: extItems, untouched: 0 };
+  return { toResolve: extItems, untouched: 0, unchangedCount: passthrough.size, unreplaced };
 }
 
 export function unchangedInCorrection(
@@ -4463,7 +4483,34 @@ export async function runParseMeal(
   steps.push({
     iter: 0,
     tool: fastMode ? "estimate_meal" : "extract_meal",
-    input: { item_count: extItems.length, declined: ext.declined === true },
+    input: {
+      item_count: extItems.length,
+      declined: ext.declined === true,
+      // WHAT THE MODEL ACTUALLY SAID, on corrections only.
+      //
+      // This trace used to record item_count and nothing else, and that gap
+      // cost real time: a correction dropped a line the user never mentioned
+      // (2026-09-06, "make it 2 plates of rajma chawal" deleted the poha), and
+      // the stored trace could say only that three items went in and two came
+      // out. Every explanation of WHY had to be inferred from reading code,
+      // and the first inference was wrong.
+      //
+      // corrects_food_name is the field that decides whether a previous line
+      // is restorable or deliberately gone, so it is the one worth keeping.
+      // Correction turns only: on a fresh log it is null on every line and
+      // would be pure noise on every row of the table.
+      ...(correctsPrevious
+        ? {
+          corrects_previous: true,
+          removed: removedNames,
+          // "1 plate Poha <- Poha" - amount, unit, name, and the previous line
+          // it claims to replace ("-" when it claims none).
+          extracted: extItems.slice(0, 12).map((i) =>
+            `${i.quantity} ${i.unit} ${i.name} <- ${i.correctsFoodName ?? "-"}`
+          ),
+        }
+        : {}),
+    },
   });
 
   // The user accepted the offer to go and check. This is the one path that
@@ -4644,13 +4691,22 @@ export async function runParseMeal(
   if (correctsPrevious && prevItems.length > 0) {
     const scoped = scopeCorrection(extItems, prevItems, replacedNames);
     toResolve = scoped.toResolve;
-    if (scoped.untouched > 0) {
-      steps.push({
-        iter: 1,
-        tool: "correction_scope",
-        input: { changed: toResolve.length, untouched: scoped.untouched },
-      });
-    }
+    // ALWAYS emitted, including when nothing was narrowed. The absence of this
+    // step used to be the only signal that the scoping had bailed, and an
+    // absence tells you nothing about WHY - it looks identical to a turn that
+    // was never a correction. `unchanged` is the number the branch keys off, so
+    // reading 0 or extracted-count here says at a glance which bail happened.
+    steps.push({
+      iter: 1,
+      tool: "correction_scope",
+      input: {
+        extracted: extItems.length,
+        unchanged: scoped.unchangedCount,
+        re_resolved: toResolve.length,
+        narrowed: scoped.untouched > 0,
+        unreplaced: scoped.unreplaced,
+      },
+    });
   }
   const tResolve0 = Date.now();
   // Only foods with a repeat count are staples; the recency fallback list has
@@ -5003,8 +5059,37 @@ export async function runParseMeal(
     // Enforce the correction contract on every line the user did not re-target:
     // still present (1), and if it was hand-edited, its provenance and numbers
     // survive (2, 3).
+    const beforeGuard = items.map((i) => i.food_name);
     items = keepUncoveredPrevious(items, prevItems, replacedNames);
     items = preserveManual(items, prevItems, replacedNames);
+    // THE STEP THAT NAMES THE CULPRIT. A correction can lose a line in exactly
+    // two ways, and until now the trace could not tell them apart:
+    //   decide omitted it AND the guard restored it   -> harmless
+    //   decide omitted it AND the guard declined to   -> the line is GONE
+    // The guard declines when the name is in replacedNames, which is how a
+    // deliberate swap ("actually paneer not tofu") avoids resurrecting the
+    // tofu. So a name appearing in BOTH `gone` and `replaced` below is the
+    // whole diagnosis: the app believed the user threw that food away.
+    const kept = new Set(items.map((i) => i.food_name.toLowerCase()));
+    const gone = prevItems
+      .map((p) => p.food_name)
+      .filter((n) => !kept.has(n.toLowerCase()));
+    const restored = items
+      .map((i) => i.food_name)
+      .filter((n) => !beforeGuard.includes(n));
+    if (gone.length > 0 || restored.length > 0 || replacedNames.size > 0) {
+      steps.push({
+        iter: 8,
+        tool: "correction_guard",
+        input: {
+          decide_returned: beforeGuard,
+          restored,
+          gone,
+          replaced: [...replacedNames],
+          removed: removedNames,
+        },
+      });
+    }
   } else {
     // A fresh parse: every food the user named must reach the log, even if
     // decide forgot to emit one.
