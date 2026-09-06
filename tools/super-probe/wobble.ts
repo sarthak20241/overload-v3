@@ -22,15 +22,24 @@
 import { readFileSync } from "node:fs";
 import { type ParseMealDeps, runParseMeal } from "../../supabase/functions/ai-coach/parseMeal";
 
+// .env.local is a convenience, not a requirement: CI and anyone running this
+// with ANTHROPIC_API_KEY already exported should not be stopped by a missing
+// file. A real env var still wins over the file.
 const dotenv: Record<string, string> = {};
-for (const line of readFileSync(".env.local", "utf8").split("\n")) {
-  const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-  if (m) dotenv[m[1]] = m[2].replace(/^["']|["']$/g, "");
-}
+try {
+  for (const line of readFileSync(".env.local", "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m) dotenv[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+} catch { /* no .env.local; fall through to process.env */ }
 // No Supabase client on purpose. This probe reads and writes nothing, so it must
 // not require a service-role key to run - a script that asks for prod credentials
 // it never uses is one nobody can be sure is safe.
 const env = (k: string) => process.env[k] ?? dotenv[k] ?? "";
+if (!env("ANTHROPIC_API_KEY")) {
+  console.error("ANTHROPIC_API_KEY is required (export it, or put it in .env.local).");
+  process.exit(1);
+}
 
 const MAX_SEARCHES = 26;
 const RUNS = 3;

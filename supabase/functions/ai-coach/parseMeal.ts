@@ -2583,7 +2583,13 @@ export function reconcileReadings(
     attempts.push({
       how: "complete panels",
       per100: {
-        kcal: kcalMid,
+        // The COMPLETE panels' own energy, not kcalMid. Both bots caught the
+        // same thing independently: pairing complete-panel macros with a median
+        // taken over every reading - incomplete ones and pages with no
+        // breakdown included - is the "right per column, impossible as a row"
+        // failure this whole PR exists to fix, reintroduced one tier up. Tier 3
+        // already avoided it; the reasoning simply was not carried here.
+        kcal: median(complete.map((r) => r.per_100.kcal)),
         protein_g: median(complete.map((r) => r.per_100.protein_g as number)),
         carb_g: median(complete.map((r) => r.per_100.carb_g as number)),
         fat_g: median(complete.map((r) => r.per_100.fat_g as number)),
@@ -2600,9 +2606,9 @@ export function reconcileReadings(
       Math.abs(x.per_100.kcal - kcalMid) - Math.abs(y.per_100.kcal - kcalMid)
     );
     for (const nearest of byNearestKcal) {
-    attempts.push({
-      how: "one whole panel",
-      per100: {
+      attempts.push({
+        how: "one whole panel",
+        per100: {
         // The panel's OWN energy, not kcalMid. This tier claims to copy one real
         // page whole, and it did not: taking the cross-source median here paired
         // macros with a calorie figure that page never printed - and kcals is
@@ -2612,12 +2618,12 @@ export function reconcileReadings(
         // totals and ceilings but never asks whether the calories follow from
         // the macros, and meetsVerificationBar looks only at kcal. So the one
         // tier that exists to guarantee coherence was the one inventing a row.
-        kcal: nearest.per_100.kcal,
-        protein_g: nearest.per_100.protein_g as number,
-        carb_g: nearest.per_100.carb_g as number,
-        fat_g: nearest.per_100.fat_g as number,
-      },
-    });
+          kcal: nearest.per_100.kcal,
+          protein_g: nearest.per_100.protein_g as number,
+          carb_g: nearest.per_100.carb_g as number,
+          fat_g: nearest.per_100.fat_g as number,
+        },
+      });
     }
   }
 

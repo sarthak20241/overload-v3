@@ -206,15 +206,23 @@ Deno.test("but 469 kcal of zeros is still a missing panel, not an empty food", (
 // impossible as a row. Coherent readings are now tried before giving up.
 
 Deno.test("THE BUG: an impossible mix falls back to a coherent panel", () => {
-  // Per-macro medians here give carb 70 (from b) and fat 45 (from c): 122 g of
-  // macros in 100 g of food. Both complete panels are individually fine.
+  // The first version of this test did NOT reach the fallback - its tier-1
+  // medians totalled 97 g, so it passed on the unfixed code too and protected
+  // nothing. Caught on review. These numbers actually break tier 1:
+  //   carb medians [58, 60, 95, 95] -> 77.5, fat [30, 32, 55, 55] -> 43.5,
+  //   protein [7, 7] -> 7. Total 128 g in 100 g of food, so tier 1 is rejected.
+  // The two complete panels are individually sane, so tier 2 rescues it.
   const out = ok(reconcileReadings([
     r("https://a.example/x", 540, 7, 58, 32),
-    r("https://b.example/x", 545, 7, 70, 30),
-    r("https://c.example/x", 542, 7, 58, 45),
+    r("https://b.example/x", 545, 7, 60, 30),
+    r("https://c.example/x", 700, null, 95, 55),
+    r("https://d.example/x", 705, null, 95, 55),
   ]));
+  assertEquals(out.how, "complete panels", "must reach the rescue, not tier 1");
   const total = out.per100.protein_g + out.per100.carb_g + out.per100.fat_g;
   assertEquals(total <= 105, true, `macros totalled ${total} g per 100`);
+  // Energy comes from the complete panels too, never the 700s of the partials.
+  assertEquals(out.per100.kcal, 542.5);
   // The old code returned { reason } here and the parse silently estimated.
 });
 
@@ -241,13 +249,16 @@ Deno.test("a partial reading cannot rescue an impossible mix on its own", () => 
 });
 
 Deno.test("the rescue keeps the protein fix: an omitted protein still cannot vote 0", () => {
-  // b omits protein, so it is not a complete panel and cannot vote in the
-  // coherent step either. Protein stays 7, never median([0, 7]).
+  // Same fixture that actually breaks tier 1, so the rescue really runs. c and d
+  // omit protein, so they are not complete panels and cannot vote in tier 2
+  // either. Protein stays 7 and never becomes median([0, 7]).
   const out = ok(reconcileReadings([
     r("https://a.example/x", 540, 7, 58, 32),
-    r("https://b.example/x", 545, null, 70, 30),
-    r("https://c.example/x", 542, 7, 58, 45),
+    r("https://b.example/x", 545, 7, 60, 30),
+    r("https://c.example/x", 700, null, 95, 55),
+    r("https://d.example/x", 705, null, 95, 55),
   ]));
+  assertEquals(out.how, "complete panels", "must reach the rescue, not tier 1");
   assertEquals(out.per100.protein_g, 7);
   const total = out.per100.protein_g + out.per100.carb_g + out.per100.fat_g;
   assertEquals(total <= 105, true, `macros totalled ${total} g per 100`);
@@ -368,4 +379,19 @@ Deno.test("PARSING: a FatSecret host is labelled fatsecret, not web", () => {
   assertEquals(fs?.source, "fatsecret");
   const web = parseReading({ url: "https://www.mynetdiary.com/x", per_100: { kcal: 190 } });
   assertEquals(web?.source, "web");
+});
+
+Deno.test("tier 2 takes energy from its own panels, not from every reading", () => {
+  // The bug both bots found: complete-panel macros were paired with a median
+  // energy computed over EVERY reading, including partial ones and pages with no
+  // breakdown - the same "right per column, impossible as a row" failure this
+  // file exists to prevent, one tier up. The 700s below must not move the answer.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 545, 7, 60, 30),
+    r("https://c.example/x", 700, null, 95, 55),
+    r("https://d.example/x", 705, null, 95, 55),
+  ]));
+  assertEquals(out.how, "complete panels");
+  assertEquals(out.per100.kcal, 542.5, "median of 540 and 545, not of all four");
 });
