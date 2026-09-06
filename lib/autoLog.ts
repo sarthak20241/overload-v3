@@ -96,7 +96,14 @@ export async function listPending(): Promise<PendingAutoLog[]> {
     const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr)
       ? arr.filter((p): p is PendingAutoLog =>
-        !!p && typeof p.client_id === 'string' && typeof p.text === 'string' && typeof p.sent_at === 'number')
+        // log_date is REQUIRED, not optional. A record without one retries with
+        // no day, the server falls back to today's local_date, and a miss from
+        // yesterday silently lands on today - a wrong day is worse than a
+        // dropped retry, because nothing tells the user it happened. Any such
+        // record is from a build that predates the field; drop it and let the
+        // miss line stay, rather than re-send it somewhere it does not belong.
+        !!p && typeof p.client_id === 'string' && typeof p.text === 'string'
+        && typeof p.sent_at === 'number' && typeof p.log_date === 'string' && !!p.log_date)
       : [];
   } catch {
     return [];

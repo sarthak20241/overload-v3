@@ -1069,32 +1069,39 @@ export default function NutritionScreen() {
                 // still one tap from gone. Cleared by the next app launch.
                 const dronaRef = addedByDronaRef(e.id);
                 return (
-                  <Pressable key={e.id} style={s.entry} onPress={() => setEditEntry(e)}>
-                    <Text style={s.entryName}>
-                      {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
-                    </Text>
-                    <View style={s.macros}>
-                      <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                      <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                      <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
-                      <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
-                    </View>
+                  // Undo is a SIBLING of the row, not nested in it. A Pressable
+                  // is accessible by default, so VoiceOver and TalkBack can fold
+                  // a nested one into the outer button and leave Undo with no
+                  // way to reach it. Same structure ParsedMealCard already uses
+                  // for its collapsed strip, and for the same reason.
+                  <View key={e.id} style={s.entryWrap}>
+                    <Pressable style={s.entry} onPress={() => setEditEntry(e)}>
+                      <Text style={s.entryName}>
+                        {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
+                      </Text>
+                      <View style={s.macros}>
+                        <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
+                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
+                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
+                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
+                      </View>
+                    </Pressable>
                     {dronaRef && (
                       <View style={s.dronaChip}>
                         <DronaMark size={9} color={C.accentText} state="static" />
                         <Text style={s.dronaChipTxt}>Added by Drona</Text>
                         <Text style={s.dronaChipTxt}>·</Text>
                         <Pressable
-                          onPress={(ev) => { ev.stopPropagation(); void onUndoRow(dronaRef); }}
+                          onPress={() => { void onUndoRow(dronaRef); }}
                           hitSlop={8}
                           accessibilityRole="button"
-                          accessibilityLabel="Undo what Drona added"
+                          accessibilityLabel={`Undo ${e.food_name}, added by Drona`}
                         >
                           <Text style={s.dronaChipUndo}>Undo</Text>
                         </Pressable>
                       </View>
                     )}
-                  </Pressable>
+                  </View>
                 );
               })}
 
@@ -1339,7 +1346,12 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     sectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim },
     sectionSub: { fontSize: 11, color: C.textMuted, fontVariant: ['tabular-nums'] },
 
-    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, marginTop: Spacing.sm, ...Shadow.card },
+    // The card and its Drona chip share a wrapper so the chip's Undo can be a
+    // SIBLING of the row's Pressable rather than nested inside it. marginTop
+    // moves here; the entry itself no longer sets it, or every row would gain
+    // a second gap.
+    entryWrap: { marginTop: Spacing.sm },
+    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
     entryName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },

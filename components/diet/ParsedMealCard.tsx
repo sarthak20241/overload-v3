@@ -218,8 +218,13 @@ export function ParsedMealCard({
         onPress={onEditItem ? () => onEditItem(i) : undefined}
         disabled={!onEditItem}
         style={({ pressed }) => [s.item, divider && s.itemDivider, pressed && s.itemPressed]}
-        accessibilityLabel={`Edit ${it.food_name}, ${r0(it.kcal)} calories`}
-        accessibilityHint="Opens serving, quantity and macro editing"
+        // In the `logged` state there is no onEditItem, so this row is a
+        // read-only receipt. Announcing "Edit ..." and promising an editor
+        // there tells a screen-reader user to do something the row cannot do.
+        accessibilityLabel={onEditItem
+          ? `Edit ${it.food_name}, ${r0(it.kcal)} calories`
+          : `${it.food_name}, ${r0(it.kcal)} calories`}
+        accessibilityHint={onEditItem ? "Opens serving, quantity and macro editing" : undefined}
       >
         <View style={s.itemHead}>
           <Text style={s.itemName} numberOfLines={1}>
