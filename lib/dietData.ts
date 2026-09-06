@@ -915,8 +915,17 @@ export async function parseMealStreaming(
     // A deliberate abort is not a failure to retry: the caller has moved on, so
     // falling back would start a SECOND full parse for a card nobody is
     // watching - the exact waste the abort exists to prevent.
+    //
+    // But "the caller moved on" does NOT mean the send did. In "Just log it"
+    // the request has already left and the server finishes without us, so an
+    // abort answers `sent` like every other exit here rather than "Cancelled."
+    // - a word that promises nothing was logged while the diary fills anyway.
+    // Masked today because every deliberate abort in auto mode is preceded by a
+    // parseTokenRef bump, so the stale result is dropped before it is read. The
+    // asymmetry was still a footgun: it made this one branch depend on ordering
+    // three files away rather than on the rule the comment beside it states.
     if (signal?.aborted || (e as { name?: string })?.name === 'AbortError') {
-      return { kind: 'error', message: 'Cancelled.' };
+      return args.autoLog ? sentResult() : { kind: 'error', message: 'Cancelled.' };
     }
     // Same rule as the truncated stream above: in "Just log it" the request
     // may well have reached the server, which finishes without us.
