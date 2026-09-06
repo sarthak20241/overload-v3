@@ -2564,8 +2564,13 @@ export function reconcileReadings(
   // Only a food that previously became an ESTIMATE now gets steps 2 and 3. The
   // protein fix is untouched: a page that omitted protein is not a complete
   // panel, so it cannot vote in step 2, and its null still cannot vote in step 1.
+  // kcal is checked too, not just the three macros. Tier 3 sorts these by
+  // distance from the median energy, and an unusable kcal makes that comparison
+  // NaN, which sorts arbitrarily - the attempt would still be rejected by
+  // implausiblePer100, so no bad data escapes, but a good panel could be tried
+  // after a useless one for no reason.
   const isComplete = (r: SourceReading) =>
-    [r.per_100.protein_g, r.per_100.carb_g, r.per_100.fat_g]
+    [r.per_100.kcal, r.per_100.protein_g, r.per_100.carb_g, r.per_100.fat_g]
       .every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0);
   const complete = withPanel.filter(isComplete);
   const kcalMid = median(kcals);

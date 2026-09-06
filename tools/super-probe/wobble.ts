@@ -7,8 +7,10 @@
 //   npx tsx tools/super-probe/wobble.ts
 //
 // BUDGET, enforced rather than hoped for: 4 foods x 3 runs x at most 2 searches
-// = 24 searches at $0.01, about $0.24. It stops if it passes MAX_SEARCHES, so a
-// retry cannot quietly spend more.
+// = 24 searches at $0.01, about $0.24. MAX_SEARCHES is 26 rather than 24 because
+// the check runs BEFORE each lookup, not during one: at 24 exactly, a planned
+// run would be cancelled by rounding rather than by overspend. The real ceiling
+// is 26 plus at most one run in flight, so ~$0.28 worst case, never open-ended.
 //
 // Deliberately NOT the 16-food corpus in cases.ts: the other twelve were steady,
 // and re-measuring a steady food teaches nothing about wobble. Same reason each
