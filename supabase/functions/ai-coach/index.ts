@@ -1746,7 +1746,14 @@ function supabaseAutoLogStore(userClient: SupabaseClient): AutoLogStore {
     },
     async insertEntries(entryRows) {
       const { data, error } = await userClient.from("meal_entries").insert(entryRows).select("id");
-      if (error) return { error: error.message };
+      if (error) {
+        // 23505 here is 0115's uq_meal_entries_client_id_slot: a concurrent
+        // attempt of this same send already wrote these lines. Same meaning as
+        // the createMeal collision above, and writeAutoLog answers it the same
+        // way - replay theirs rather than append a second copy.
+        if (error.code === "23505") return { conflict: true };
+        return { error: error.message };
+      }
       return { ids: rows(data).map((r) => String(r.id)) };
     },
     async deleteEntries(ids) {
@@ -1808,6 +1815,21 @@ async function handleParseMealRequest(args: {
     trace.error_message = `parse_access_status_threw: ${String(e).slice(0, 200)}`;
     return respond({ error: "Access check failed" }, 500);
   }
+  // BEFORE the slot is reserved, not after. try_reserve_parse_meal_slot below
+  // inserts a row, and a 402 returned past it charged a free user one of their
+  // three daily parses for a request that never ran - a double penalty, and
+  // worst for exactly the person this gate is for: a lapsed subscriber whose
+  // cached access still says Pro, so the app sends 'super' believing it is
+  // allowed. parseFreeTier is already known here, so nothing else has to move.
+  if (body.speed === "super" && parseFreeTier) {
+    trace.status = "unauthorized";
+    trace.error_message = "parse_super_pro_required";
+    return respond(
+      { error: "pro_required", state: "free", feature: "parse_precise" },
+      402,
+    );
+  }
+
   const parseCap = parseFreeTier ? FREE_PARSE_LIMIT : PARSE_RATE_LIMIT_MAX;
 
   // Own bucket, same sliding-window mechanics as the coach limiter. Now
@@ -2058,14 +2080,6 @@ async function handleParseMealRequest(args: {
   // for anything calling the function directly. It refuses the TIER, never the
   // parse - `pro_required` opens the upgrade sheet, and the free user's own
   // FREE_PARSE_LIMIT logging is untouched.
-  if (body.speed === "super" && parseFreeTier) {
-    trace.status = "unauthorized";
-    trace.error_message = "parse_super_pro_required";
-    return respond(
-      { error: "pro_required", state: "free", feature: "parse_precise" },
-      402,
-    );
-  }
   const wantsSuper = body.speed === "super" && PARSE_SUPER_MODE !== "off";
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web

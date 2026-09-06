@@ -205,7 +205,11 @@ export interface AutoLogStore {
   ): Promise<{ id: string } | { conflict: true } | { error: string }>;
   mealByClientId(clientId: string): Promise<string | null>;
   countEntries(mealId: string): Promise<number>;
-  insertEntries(rows: AutoLogEntryRow[]): Promise<{ ids: string[] } | { error: string }>;
+  /** `conflict` is the unique-index violation on (client_id, meal_id, position)
+   *  from 0115 - another attempt of this same send inserted these rows first. */
+  insertEntries(
+    rows: AutoLogEntryRow[],
+  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }>;
   deleteEntries(ids: string[]): Promise<void>;
   deleteMealIfEmpty(mealId: string): Promise<void>;
 }
@@ -308,6 +312,17 @@ export async function writeAutoLog(
       client_id: clientId,
     }));
     const inserted = await store.insertEntries(rows);
+    if ("conflict" in inserted) {
+      // A concurrent attempt of this same send wrote these lines first. The
+      // entriesByClientId pre-check above could not see it - it had not landed
+      // yet when we read - so 0115's unique index is what catches it. Same
+      // answer as the createMeal collision: undo our own partial work and hand
+      // back theirs, rather than appending a second copy of the user's food.
+      if (createdMeal) await store.deleteMealIfEmpty(mealId);
+      await rollback();
+      const theirs = await store.entriesByClientId(clientId);
+      return { logged: { sections: await replay(store, theirs, createdIds) }, replayed: true };
+    }
     if ("error" in inserted) {
       if (createdMeal) await store.deleteMealIfEmpty(mealId);
       await rollback();

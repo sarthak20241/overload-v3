@@ -417,7 +417,15 @@ export default function NutritionScreen() {
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
-    const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
+    // A RETRY carries no context, deliberately. It re-sends one specific past
+    // send, so the meal on screen is not what it is about: passing `pending`
+    // here made the retry text arrive as a CORRECTION of an unrelated reviewed
+    // meal, mutating a card the user was still deciding on while the lost send
+    // was never re-sent at all. The stored pending record survived, so the miss
+    // line simply came back later and the damage looked unrelated to the tap.
+    const pending = retry || !prevReview
+      ? null
+      : { text: prevReview.raw, items: prevReview.meal.items };
     // Leaving the review this check belonged to. Without this the stale index
     // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
     // an unrelated line until the abandoned 5-9s lookup finally settles.
@@ -430,9 +438,14 @@ export default function NutritionScreen() {
     // the user is in review mode for THAT meal whatever the toggle says: a
     // follow-up corrects the card, it never commits behind it. (The server
     // enforces the same rule on previous_items.)
-    const auto = !pending && (retry || autoLogRef.current)
-      ? retry ?? { clientId: newAutoLogClientId(), logDate: ymd(viewDate) }
-      : null;
+    //
+    // A retry is the exception and keeps its own identity: it was an auto send
+    // when it was made, and re-sending it is not a new choice about the toggle.
+    // It cleared `pending` above, so the two rules do not fight.
+    const auto = retry
+      ?? (!pending && autoLogRef.current
+        ? { clientId: newAutoLogClientId(), logDate: ymd(viewDate) }
+        : null);
     if (auto) {
       // Pending BEFORE the request leaves: if the app dies mid-stream, the next
       // open still knows to look for this send in the diary.

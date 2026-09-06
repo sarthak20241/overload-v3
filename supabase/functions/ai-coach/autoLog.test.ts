@@ -158,7 +158,12 @@ class FakeStore implements AutoLogStore {
   countEntries(mealId: string) {
     return Promise.resolve(this.entries.filter((e) => e.meal_id === mealId).length);
   }
-  insertEntries(rows: AutoLogEntryRow[]) {
+  // Return type spelled out to match AutoLogStore: without it TS infers the
+  // narrow union from the happy path and a test that stubs a `conflict` (0115's
+  // unique index firing) cannot assign its replacement.
+  insertEntries(
+    rows: AutoLogEntryRow[],
+  ): Promise<{ ids: string[] } | { conflict: true } | { error: string }> {
     this.calls.push(`insertEntries:${rows.length}`);
     if (this.failInsert) return Promise.resolve({ error: "boom" });
     const ids = rows.map((r) => {
@@ -269,6 +274,38 @@ Deno.test("concurrent duplicate: a unique-index conflict recovers the winner's r
   assert("logged" in res && res.replayed);
   assertEquals(res.logged.sections[0].entry_ids, ["their-entry"]);
   assertEquals(store.entries.length, 1);
+});
+
+Deno.test("concurrent duplicate into an EXISTING meal: the entry index catches it", async () => {
+  // The half the createMeal conflict never covered, and the commoner half: the
+  // section already has a meal row today, so there is no meal to create and no
+  // uq_meals_client_id to collide on. Two attempts of the same send both read
+  // entriesByClientId before either insert lands, both see empty, and without
+  // 0115's unique index on (client_id, meal_id, position) both would insert -
+  // the user's food logged twice, which is the one failure this feature exists
+  // to prevent.
+  const store = new FakeStore();
+  store.meals.push({ id: "lunch-existing", meal_type: "lunch", logged_at: "2026-09-05T02:00:00.000Z", client_id: null });
+  // Their attempt landed between our pre-check and our insert.
+  store.entries.push({ ...rowFor("lunch-existing", "dal"), id: "their-entry" });
+  let firstRead = true;
+  const origRead = store.entriesByClientId.bind(store);
+  store.entriesByClientId = (cid) => {
+    if (firstRead) { firstRead = false; return Promise.resolve([]); }  // pre-check misses
+    return origRead(cid);
+  };
+  const origInsert = store.insertEntries.bind(store);
+  store.insertEntries = (rows) => {
+    store.insertEntries = origInsert;
+    return Promise.resolve({ conflict: true as const });               // 0115 fires
+  };
+
+  const res = await writeAutoLog(store, writeArgs([line("dal", { meal_type: "lunch" })]));
+
+  assert("logged" in res && res.replayed);
+  assertEquals(res.logged.sections[0].entry_ids, ["their-entry"]);
+  assertEquals(store.entries.length, 1);              // NOT two
+  assertEquals(res.logged.sections[0].created_meal, false);
 });
 
 Deno.test("write error part-way undoes the sections that already landed", async () => {
