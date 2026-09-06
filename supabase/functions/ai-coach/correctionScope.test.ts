@@ -104,3 +104,67 @@ Deno.test("a duplicate name does not hide the matching line", () => {
     null,
   );
 });
+
+// ── Un-replacing is a contract, not part of the optimisation ────────────────
+//
+// The bug these pin, found on device against v154. A correction names every
+// line it restates as the thing it "corrects", so an UNTOUCHED line ends up in
+// replacedNames naming itself. A replaced name is treated as deliberately gone,
+// so keepUncoveredPrevious will not restore it if decide omits the line.
+//
+// Un-marking used to live inside the resolve-narrowing branch, which is skipped
+// when every line looks unchanged. So in exactly that case the line stayed
+// marked, decide dropped it, and the restore guard refused to bring it back.
+// Logging a three-meal day and then saying "make it 2 plates of rajma chawal"
+// came back with two items: the poha silently gone, with its whole Breakfast
+// section, though the user never mentioned poha.
+
+import { scopeCorrection } from "./parseMeal.ts";
+
+const POHA = prev("Poha", 1, "plate");
+const RAJMA = prev("Rajma Chawal", 1, "plate");
+
+Deno.test("THE BUG: untouched lines are un-replaced even when NOTHING narrows", () => {
+  // Every line restated unchanged -> the narrowing branch is deliberately
+  // skipped, and the un-marking must still happen.
+  const replaced = new Set(["poha", "rajma chawal"]);
+  const out = scopeCorrection(
+    [
+      ext({ name: "Poha", quantity: 1, unit: "plate", correctsFoodName: "Poha" }),
+      ext({ name: "Rajma Chawal", quantity: 1, unit: "plate", correctsFoodName: "Rajma Chawal" }),
+    ],
+    [POHA, RAJMA],
+    replaced,
+  );
+  assertEquals(replaced.has("poha"), false, "poha must not read as deliberately replaced");
+  assertEquals(replaced.has("rajma chawal"), false);
+  // All unchanged means we probably misread the turn, so resolve everything.
+  assertEquals(out.untouched, 0);
+  assertEquals(out.toResolve.length, 2);
+});
+
+Deno.test("a genuinely re-targeted line STAYS replaced", () => {
+  // The other half of the contract. "actually paneer not tofu" must not
+  // resurrect the tofu line, so a CHANGED line keeps its mark.
+  const replaced = new Set(["poha", "rajma chawal"]);
+  const out = scopeCorrection(
+    [
+      ext({ name: "Poha", quantity: 1, unit: "plate", correctsFoodName: "Poha" }),
+      ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", correctsFoodName: "Rajma Chawal" }),
+    ],
+    [POHA, RAJMA],
+    replaced,
+  );
+  assertEquals(replaced.has("poha"), false, "untouched line un-marked");
+  assertEquals(replaced.has("rajma chawal"), true, "the line the user changed stays replaced");
+  // And the narrowing still applies: only the changed line is re-resolved.
+  assertEquals(out.untouched, 1);
+  assertEquals(out.toResolve.map((i) => i.name), ["Rajma Chawal"]);
+});
+
+Deno.test("no previous match means nothing is un-marked", () => {
+  const replaced = new Set(["poha"]);
+  const out = scopeCorrection([ext({ name: "Idli", quantity: 2, unit: "piece" })], [POHA], replaced);
+  assertEquals(replaced.has("poha"), true);
+  assertEquals(out.untouched, 0);
+});

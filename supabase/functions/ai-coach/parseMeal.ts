@@ -3163,6 +3163,52 @@ export function gradeNotStocked(name: string, candidates: CandidateFood[]): stri
  * name AND the same amount AND the same unit, and gives up on anything it
  * cannot line up exactly.
  */
+/**
+ * Two jobs on a correction, and keeping them in one place is what stopped them
+ * drifting apart:
+ *
+ *   1. UN-REPLACE the untouched lines. `replacedNames` is built from every
+ *      extracted line's `correctsFoodName`, so a line the model restates
+ *      unchanged names ITSELF as the thing it corrects and lands in that set.
+ *      A name in there is treated as deliberately replaced, and
+ *      keepUncoveredPrevious will then refuse to restore it if decide omits the
+ *      line. Un-marking is a CORRECTNESS contract and runs every time.
+ *
+ *   2. NARROW the re-resolve to what changed (I1). Search and rerank are not
+ *      deterministic, so re-resolving an untouched line risks repointing it.
+ *      This is an OPTIMISATION and is skipped when every line looks unchanged,
+ *      because that almost certainly means we misread the turn.
+ *
+ * Job 1 used to live inside job 2's `if`. When the branch did not fire the
+ * un-marking never ran, and an untouched line stayed marked replaced. Measured
+ * on device against v154: logging "poha for breakfast, rajma chawal at lunch,
+ * 2 khakhra in the evening" and then saying "make it 2 plates of rajma chawal"
+ * returned a card with TWO items. The poha was gone, and its whole Breakfast
+ * section with it, though the user never mentioned poha and extract had
+ * returned all three lines.
+ *
+ * `replaced` is mutated in place, which is why it is taken rather than returned.
+ */
+export function scopeCorrection(
+  extItems: ExtractedItem[],
+  prevItems: PreviousItem[],
+  replaced: Set<string>,
+): { toResolve: ExtractedItem[]; untouched: number } {
+  const passthrough = new Map<number, PreviousItem>();
+  extItems.forEach((it, i) => {
+    const same = unchangedInCorrection(it, prevItems);
+    if (same) passthrough.set(i, same);
+  });
+  for (const p of passthrough.values()) replaced.delete(p.food_name.trim().toLowerCase());
+  if (passthrough.size > 0 && passthrough.size < extItems.length) {
+    return {
+      toResolve: extItems.filter((_, i) => !passthrough.has(i)),
+      untouched: passthrough.size,
+    };
+  }
+  return { toResolve: extItems, untouched: 0 };
+}
+
 export function unchangedInCorrection(
   item: ExtractedItem,
   previous: PreviousItem[],
@@ -4596,22 +4642,13 @@ export async function runParseMeal(
   // previous version is restored verbatim by keepUncoveredPrevious below.
   let toResolve = extItems;
   if (correctsPrevious && prevItems.length > 0) {
-    const passthrough = new Map<number, PreviousItem>();
-    extItems.forEach((it, i) => {
-      const same = unchangedInCorrection(it, prevItems);
-      if (same) passthrough.set(i, same);
-    });
-    // If EVERYTHING looks unchanged we have almost certainly misread the turn,
-    // so resolve normally rather than hand back an identical meal.
-    if (passthrough.size > 0 && passthrough.size < extItems.length) {
-      // A passed-through line must not also be marked replaced, or the restore
-      // guard reads it as deliberately dropped and the line disappears.
-      for (const p of passthrough.values()) replacedNames.delete(p.food_name.toLowerCase());
-      toResolve = extItems.filter((_, i) => !passthrough.has(i));
+    const scoped = scopeCorrection(extItems, prevItems, replacedNames);
+    toResolve = scoped.toResolve;
+    if (scoped.untouched > 0) {
       steps.push({
         iter: 1,
         tool: "correction_scope",
-        input: { changed: toResolve.length, untouched: passthrough.size },
+        input: { changed: toResolve.length, untouched: scoped.untouched },
       });
     }
   }
