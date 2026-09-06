@@ -238,14 +238,35 @@ Deno.test("decide's own guess must not outrank a carried section", () => {
   // back to the hint when the text names no meal, so its answer is a guess),
   // and feeding that in as `explicit` collapsed a breakfast/lunch/snack day
   // into Snacks. decide's answer is a FALLBACK; only the text is explicit.
+  //
+  // Shaped as the decide path really arrives, which the first cut of this test
+  // was not: NO meal_type on the lines, because sanitizeItems rebuilds every
+  // line from the tool output and that output has no such field. The sections
+  // come back only through correctsFoodName -> carriedFor. Setting meal_type
+  // inline made the test pass whatever the call site did, which is exactly the
+  // hole that let the bug through in the first place.
+  //
+  // Read the honest limit too: the bug lived at the CALL SITE, in what was
+  // passed as `explicit`, so no unit test of this function can catch it. What
+  // this pins is the contract the call site has to honour - decide's guess
+  // arrives as `fallback` and must lose to a carried section.
+  const prevSection: Record<string, "breakfast" | "lunch" | "snack"> = {
+    "poha": "breakfast",
+    "rajma chawal": "lunch",
+    "khakhra": "snack",
+  };
   const out = assignItemMeals(
+    [line("Poha"), line("Rajma Chawal"), line("Khakhra")],
     [
-      line("Poha", { meal_type: "breakfast" }),
-      line("Rajma Chawal", { meal_type: "lunch" }),
-      line("Khakhra", { meal_type: "snack" }),
+      ext("poha", null, null, "Poha"),
+      ext("rajma chawal", null, null, "Rajma Chawal"),
+      ext("khakhra", null, null, "Khakhra"),
     ],
-    [ext("poha"), ext("rajma chawal"), ext("khakhra")],
-    { explicit: null, fallback: "snack" },   // fallback = decide's guess
+    {
+      explicit: null,
+      fallback: "snack",   // decide's guess, demoted out of `explicit`
+      carriedFor: (n) => prevSection[n.trim().toLowerCase()],
+    },
   );
   assertEquals(out.map((i) => i.meal_type), ["breakfast", "lunch", "snack"]);
 });
