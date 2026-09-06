@@ -1,0 +1,49 @@
+-- 0115: give entry-level idempotency a database guarantee, not just a read.
+--
+-- WHAT WAS WRONG. 0114 added meal_entries.client_id with a PLAIN index, and
+-- writeAutoLog guards a replay by READING it first (entriesByClientId) and
+-- returning early when rows come back. A read is not a lock. Two concurrent
+-- attempts of the same send - the client's Retry racing the original, or two
+-- devices - both read empty, both pass the guard, and both insert. The user's
+-- food is logged twice, which is the exact failure "Just log it" exists to
+-- prevent, and the one a user is least likely to notice.
+--
+-- Only HALF the write was protected. When the section has no meal row yet,
+-- createMeal collides on 0047's uq_meals_client_id and writeAutoLog catches
+-- that and replays. But the COMMON case is a section whose meal row already
+-- exists today, and there the code takes an id from findMeal and inserts with
+-- nothing standing behind it. The protected half was also the only half tested,
+-- which is why it read as covered.
+--
+-- WHY (client_id, meal_id, position). Within one send, position is
+-- `base + idx`, so it is stable for a given set of lines. Two attempts racing
+-- each other both read the same countEntries base before either insert lands,
+-- so they compute the SAME positions and the second one violates this index
+-- instead of appending a duplicate. A sequential retry never reaches here at
+-- all - the entriesByClientId pre-check answers it first - so this index is the
+-- backstop for the interleaving the pre-check cannot see.
+--
+-- PARTIAL, on client_id is not null. Every row written by hand or by the review
+-- card carries no client_id, and those must stay free to repeat: a user may log
+-- two rotis into breakfast at the same position on purpose. Only auto-logged
+-- rows are claimed by a send, so only they are constrained.
+--
+-- CONCURRENTLY, and therefore OUTSIDE a transaction block. A plain CREATE
+-- UNIQUE INDEX takes an ACCESS EXCLUSIVE lock and blocks every write to
+-- meal_entries while it builds - on a live table that is a user-visible stall
+-- for the duration. This is also the review's point about 0114: additive DDL
+-- that validates or builds should not sit inside the same transaction as the
+-- rest. Apply this file on its own.
+--
+-- Pre-check before applying, because a unique index FAILS on existing
+-- duplicates and 0109 already taught us that lesson:
+--   select client_id, meal_id, position, count(*)
+--   from public.meal_entries
+--   where client_id is not null
+--   group by 1,2,3 having count(*) > 1;
+-- Expect zero rows. If it is not zero, the duplicates are real double-logs and
+-- want deleting before this can be added.
+
+create unique index concurrently if not exists uq_meal_entries_client_id_slot
+  on public.meal_entries (client_id, meal_id, position)
+  where client_id is not null;
