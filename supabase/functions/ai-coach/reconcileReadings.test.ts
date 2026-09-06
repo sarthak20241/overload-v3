@@ -252,3 +252,49 @@ Deno.test("the rescue keeps the protein fix: an omitted protein still cannot vot
   const total = out.per100.protein_g + out.per100.carb_g + out.per100.fat_g;
   assertEquals(total <= 105, true, `macros totalled ${total} g per 100`);
 });
+
+// ── The last-resort tier, which had no test at all ─────────────────────────
+// Flagged on PR #146. Every test above resolves at tier 1 or tier 2, so the tier
+// explicitly labelled "least robust" was never exercised.
+//
+// Reaching it takes some doing, and the reason is worth writing down. With an
+// EVEN number of complete panels, tier 2's medians are midpoints, so its macro
+// total is the AVERAGE of the panels' totals - which can never exceed the
+// largest of them. So tier 2 cannot fail while a plausible panel exists, unless
+// one of the complete panels is itself impossible. That is the gap tier 3 fills.
+
+Deno.test("tier 3: one impossible panel drags the medians, a real one rescues it", () => {
+  // b is nonsense (140 g of macros in 100 g). Tier 1 and tier 2 both average it
+  // in and land at 121 g. Tier 3 takes a's panel whole and it is fine.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 500, 5, 95, 3),
+    r("https://b.example/x", 505, 5, 95, 40),
+  ]));
+  assertEquals(out.how, "one whole panel");
+  assertObjectMatch(out.per100, { protein_g: 5, carb_g: 95, fat_g: 3 });
+});
+
+Deno.test("tier 3 copies the panel's OWN energy, not the cross-source median", () => {
+  // The bug the PR bot found: the tier claimed to copy one real page whole and
+  // did not - it paired that page's macros with a median energy no page printed.
+  // kcals includes readings hasComposition already dropped, so that number could
+  // come from a page with no panel at all, and nothing downstream cross-checks
+  // calories against macros.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 500, 5, 95, 3),
+    r("https://b.example/x", 505, 5, 95, 40),
+    // No panel, wildly different energy. Before the fix this dragged the kcal
+    // that got paired with a's macros.
+    r("https://c.example/x", 900, null, null, null),
+  ]));
+  assertEquals(out.how, "one whole panel");
+  assertEquals(out.per100.kcal, 500, "a's own energy, not median([500,505,900])");
+});
+
+Deno.test("the tier that answered is reported, so a rescue is visible", () => {
+  const normal = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 545, 8, 57, 33),
+  ]));
+  assertEquals(normal.how, "per-macro pools");
+});

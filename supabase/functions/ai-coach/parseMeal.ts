@@ -2394,7 +2394,7 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  */
 export function reconcileReadings(
   readings: SourceReading[],
-): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null } | { reason: string } {
+): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null; how: string } | { reason: string } {
   if (readings.length === 0) return { reason: "no readings" };
 
   const median = (xs: number[]): number => {
@@ -2517,18 +2517,36 @@ export function reconcileReadings(
         fat_g: median(complete.map((r) => r.per_100.fat_g as number)),
       },
     });
-    const nearest = complete.reduce((best, r) =>
-      Math.abs(r.per_100.kcal - kcalMid) < Math.abs(best.per_100.kcal - kcalMid) ? r : best
+    // EVERY complete panel, nearest energy first, not just the nearest one. A
+    // single pick was wrong and a test caught it: when one complete panel is the
+    // impossible one, "nearest to the median energy" can select exactly that
+    // panel and the last resort fails on the reading it exists to route around.
+    // The loop below stops at the first attempt that survives physics, so
+    // offering them in order costs nothing and cannot pick a bad panel over a
+    // good one.
+    const byNearestKcal = [...complete].sort((x, y) =>
+      Math.abs(x.per_100.kcal - kcalMid) - Math.abs(y.per_100.kcal - kcalMid)
     );
+    for (const nearest of byNearestKcal) {
     attempts.push({
       how: "one whole panel",
       per100: {
-        kcal: kcalMid,
+        // The panel's OWN energy, not kcalMid. This tier claims to copy one real
+        // page whole, and it did not: taking the cross-source median here paired
+        // macros with a calorie figure that page never printed - and kcals is
+        // built from every reading, including ones hasComposition already threw
+        // away, so the number could come from a page with no panel at all.
+        // Nothing downstream would catch it either: implausiblePer100 checks
+        // totals and ceilings but never asks whether the calories follow from
+        // the macros, and meetsVerificationBar looks only at kcal. So the one
+        // tier that exists to guarantee coherence was the one inventing a row.
+        kcal: nearest.per_100.kcal,
         protein_g: nearest.per_100.protein_g as number,
         carb_g: nearest.per_100.carb_g as number,
         fat_g: nearest.per_100.fat_g as number,
       },
     });
+    }
   }
 
   // Physics before belief: sources agreeing on an impossible number is still an
@@ -2538,7 +2556,15 @@ export function reconcileReadings(
     const bad = implausiblePer100(a.per100);
     if (!bad) {
       const fibers = stated((r) => r.per_100.fiber_g);
-      return { per100: a.per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+      // Which tier answered, so production can tell a normal reconciliation from
+      // a rescue. Without this the `how` labels were written and never read, and
+      // a food quietly falling through to the last resort looked identical to
+      // one the pools handled first time.
+      return {
+        per100: a.per100,
+        fiber_g: fibers.length > 0 ? median(fibers) : null,
+        how: a.how,
+      };
     }
     lastBad = bad;
   }
@@ -2560,7 +2586,14 @@ export async function superLookupOne(
     deps.log?.(`[parse_meal] super lookup rejected "${item.name}": ${reconciled.reason}`);
     return null;
   }
-  const { per100, fiber_g } = reconciled;
+  const { per100, fiber_g, how } = reconciled;
+  // Only worth a line when a rescue tier answered. The pools handling it is the
+  // normal case and does not need saying; falling through to a coherent panel
+  // means the sources disagreed enough to build an impossible row, which is the
+  // thing you want to see in a log when a number looks odd later.
+  if (how !== "per-macro pools") {
+    deps.log?.(`[parse_meal] super lookup for "${item.name}" fell back to: ${how}`);
+  }
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
   const servings = finding.serving_label && finding.serving_grams

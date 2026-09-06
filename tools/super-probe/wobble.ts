@@ -20,7 +20,6 @@
 // cache read path is live on every tier, so a probe row would otherwise be
 // served to real users for 90 days.
 import { readFileSync } from "node:fs";
-import { createClient } from "@supabase/supabase-js";
 import { type ParseMealDeps, runParseMeal } from "../../supabase/functions/ai-coach/parseMeal";
 
 const dotenv: Record<string, string> = {};
@@ -28,10 +27,10 @@ for (const line of readFileSync(".env.local", "utf8").split("\n")) {
   const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
   if (m) dotenv[m[1]] = m[2].replace(/^["']|["']$/g, "");
 }
+// No Supabase client on purpose. This probe reads and writes nothing, so it must
+// not require a service-role key to run - a script that asks for prod credentials
+// it never uses is one nobody can be sure is safe.
 const env = (k: string) => process.env[k] ?? dotenv[k] ?? "";
-const admin = createClient(env("EXPO_PUBLIC_SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
 
 const MAX_SEARCHES = 26;
 const RUNS = 3;
