@@ -2466,7 +2466,7 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  */
 export function reconcileReadings(
   readings: SourceReading[],
-): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null } | { reason: string } {
+): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null; how: string } | { reason: string } {
   if (readings.length === 0) return { reason: "no readings" };
 
   const median = (xs: number[]): number => {
@@ -2539,19 +2539,119 @@ export function reconcileReadings(
   if (carbs.length === 0) return { reason: "no source stated carbohydrate" };
   if (fats.length === 0) return { reason: "no source stated fat" };
 
-  const per100: Omit<Per100, "fiber_g"> = {
-    kcal: median(kcals),
-    protein_g: median(proteins),
-    carb_g: median(carbs),
-    fat_g: median(fats),
-  };
+  // A PANEL HAS TO BE INTERNALLY COHERENT, and per-macro pools alone do not
+  // guarantee that. Measured 2026-09-06: Bingo Mad Angles was rejected twice out
+  // of two with "its macros total 121 g per 100, more than the food weighs", and
+  // Super silently fell back to an estimate having already spent two searches.
+  //
+  // The cause was the fix directly above this. Taking each macro from whichever
+  // sources stated THAT macro means carbs can come from one site and fat from
+  // another, producing a panel no site ever published and that no food could
+  // have. Right per column, impossible as a row.
+  //
+  // So the mix STAYS FIRST and coherence is the rescue, not the default:
+  //
+  //   1. the cross-source pools, exactly as before. Most robust - every stated
+  //      number votes - and correct for the ordinary case where sources broadly
+  //      agree. Changing this would have thrown away readings that were fine.
+  //   2. medians over COMPLETE panels only, so every macro is decided by the
+  //      same set of sources and the columns belong to each other.
+  //   3. the single complete panel nearest the energy median: one real page
+  //      copied whole, so coherent by construction. Least robust (one bad panel
+  //      can win outright), which is why it is last and not first.
+  //
+  // First one that survives physics wins, so nothing that used to work changes.
+  // Only a food that previously became an ESTIMATE now gets steps 2 and 3. The
+  // protein fix is untouched: a page that omitted protein is not a complete
+  // panel, so it cannot vote in step 2, and its null still cannot vote in step 1.
+  // kcal is checked too, not just the three macros. Tier 3 sorts these by
+  // distance from the median energy, and an unusable kcal makes that comparison
+  // NaN, which sorts arbitrarily - the attempt would still be rejected by
+  // implausiblePer100, so no bad data escapes, but a good panel could be tried
+  // after a useless one for no reason.
+  const isComplete = (r: SourceReading) =>
+    [r.per_100.kcal, r.per_100.protein_g, r.per_100.carb_g, r.per_100.fat_g]
+      .every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  const complete = withPanel.filter(isComplete);
+  const kcalMid = median(kcals);
+
+  const attempts: { how: string; per100: Omit<Per100, "fiber_g"> }[] = [{
+    how: "per-macro pools",
+    per100: {
+      kcal: kcalMid,
+      protein_g: median(proteins),
+      carb_g: median(carbs),
+      fat_g: median(fats),
+    },
+  }];
+  if (complete.length > 0) {
+    attempts.push({
+      how: "complete panels",
+      per100: {
+        // The COMPLETE panels' own energy, not kcalMid. Both bots caught the
+        // same thing independently: pairing complete-panel macros with a median
+        // taken over every reading - incomplete ones and pages with no
+        // breakdown included - is the "right per column, impossible as a row"
+        // failure this whole PR exists to fix, reintroduced one tier up. Tier 3
+        // already avoided it; the reasoning simply was not carried here.
+        kcal: median(complete.map((r) => r.per_100.kcal)),
+        protein_g: median(complete.map((r) => r.per_100.protein_g as number)),
+        carb_g: median(complete.map((r) => r.per_100.carb_g as number)),
+        fat_g: median(complete.map((r) => r.per_100.fat_g as number)),
+      },
+    });
+    // EVERY complete panel, nearest energy first, not just the nearest one. A
+    // single pick was wrong and a test caught it: when one complete panel is the
+    // impossible one, "nearest to the median energy" can select exactly that
+    // panel and the last resort fails on the reading it exists to route around.
+    // The loop below stops at the first attempt that survives physics, so
+    // offering them in order costs nothing and cannot pick a bad panel over a
+    // good one.
+    const byNearestKcal = [...complete].sort((x, y) =>
+      Math.abs(x.per_100.kcal - kcalMid) - Math.abs(y.per_100.kcal - kcalMid)
+    );
+    for (const nearest of byNearestKcal) {
+      attempts.push({
+        how: "one whole panel",
+        per100: {
+        // The panel's OWN energy, not kcalMid. This tier claims to copy one real
+        // page whole, and it did not: taking the cross-source median here paired
+        // macros with a calorie figure that page never printed - and kcals is
+        // built from every reading, including ones hasComposition already threw
+        // away, so the number could come from a page with no panel at all.
+        // Nothing downstream would catch it either: implausiblePer100 checks
+        // totals and ceilings but never asks whether the calories follow from
+        // the macros, and meetsVerificationBar looks only at kcal. So the one
+        // tier that exists to guarantee coherence was the one inventing a row.
+          kcal: nearest.per_100.kcal,
+          protein_g: nearest.per_100.protein_g as number,
+          carb_g: nearest.per_100.carb_g as number,
+          fat_g: nearest.per_100.fat_g as number,
+        },
+      });
+    }
+  }
+
   // Physics before belief: sources agreeing on an impossible number is still an
   // impossible number, and one that would then be cached and promoted.
-  const bad = implausiblePer100(per100);
-  if (bad) return { reason: bad };
-
-  const fibers = stated((r) => r.per_100.fiber_g);
-  return { per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+  let lastBad = "";
+  for (const a of attempts) {
+    const bad = implausiblePer100(a.per100);
+    if (!bad) {
+      const fibers = stated((r) => r.per_100.fiber_g);
+      // Which tier answered, so production can tell a normal reconciliation from
+      // a rescue. Without this the `how` labels were written and never read, and
+      // a food quietly falling through to the last resort looked identical to
+      // one the pools handled first time.
+      return {
+        per100: a.per100,
+        fiber_g: fibers.length > 0 ? median(fibers) : null,
+        how: a.how,
+      };
+    }
+    lastBad = bad;
+  }
+  return { reason: lastBad };
 }
 
 export async function superLookupOne(
@@ -2569,7 +2669,14 @@ export async function superLookupOne(
     deps.log?.(`[parse_meal] super lookup rejected "${item.name}": ${reconciled.reason}`);
     return null;
   }
-  const { per100, fiber_g } = reconciled;
+  const { per100, fiber_g, how } = reconciled;
+  // Only worth a line when a rescue tier answered. The pools handling it is the
+  // normal case and does not need saying; falling through to a coherent panel
+  // means the sources disagreed enough to build an impossible row, which is the
+  // thing you want to see in a log when a number looks odd later.
+  if (how !== "per-macro pools") {
+    deps.log?.(`[parse_meal] super lookup for "${item.name}" fell back to: ${how}`);
+  }
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
   // The same evidence, measured the other way. `verified` says whether anyone

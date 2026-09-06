@@ -351,6 +351,36 @@ Gate: Lane A parity on simple cases; reroutes silent; TTFT numbers recorded.
   >=2 times or by >=2 users, dedup check against existing rows first,
   source='web_verified' + last_verified_at (self-heal pattern re-checks).
   Never inline with a parse.
+  NOTE 2026-09-05: the FatSecret-only clause above is SUPERSEDED. Sarthak's
+  call - the restriction follows their API, not the brand. A fatsecret.co.in
+  page found by a web search counts like any other host; API-derived evidence
+  never does. independenceKey decides on the reading's `via` field. See
+  preciseCache.ts and PR #144.
+- 7e NOT STARTED. Three items, none of which improve accuracy - they are locks
+  on the door, and Sarthak deferred them deliberately on 2026-09-05 for that
+  reason. Do them before Super is switched on for real users, not before.
+  * ONE COMPANY IS ONE SOURCE. Measured 2026-09-05: a single search for
+    Britannia Bourbon returned BOTH mobile.fatsecret.com and www.fatsecret.co.in.
+    The host rule sees two hosts, so FatSecret alone can now verify a row and
+    make it eligible for catalog promotion - the exact outcome the old blanket
+    exclusion prevented. Collapse *.fatsecret.* to one identity the way OFF
+    already is. This hole was opened by 7d's supersede above; it is not
+    pre-existing. Small.
+  * A CITED PAGE MUST HAVE COME FROM THE SEARCH. `via: "web_search"` is taken on
+    trust from the model's own tool output; nothing checks the URL was really
+    returned. A hallucinated fatsecret.co.in page with invented numbers would
+    now count. VERIFIED CHEAPLY 2026-09-05 that the fix is free at runtime: the
+    response already carries a `web_search_tool_result` block listing every URL
+    the search returned (10 of them on the probe), and nothing in the codebase
+    reads it. Match by HOST, not exact URL - exact matching would discard good
+    sources over a tidied link, which is how the FatSecret rule was already
+    losing correct answers. Applies to every host, not just FatSecret.
+  * WHY SUPER WOBBLES. The real accuracy item and the only one users would feel.
+    Cadbury 5 Star has returned 447 kcal (exact) twice and 533 (+19%) once from
+    identical code, because the search surfaces different pages each run. Cause
+    not established. Measure before building anything: 3-4 known-wobbly foods,
+    3 runs each, is enough to see it and costs ~$0.20 rather than the ~$1 a full
+    16-food corpus would.
 Test: THE CANONICAL CASE: "milky mist low fat paneer" must ground from web
 with the right macros. Cache: the second identical parse must serve without a
 web call (trace assert). Badge only at 2+ independent sources within 10%
