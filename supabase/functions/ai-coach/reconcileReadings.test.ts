@@ -197,3 +197,58 @@ Deno.test("but 469 kcal of zeros is still a missing panel, not an empty food", (
   ]));
   assertEquals(out.per100.protein_g, 3.6);
 });
+
+// ── An impossible MIX must not become an estimate ──────────────────────────
+// Measured live 2026-09-06, twice out of two: Bingo Mad Angles was rejected with
+// "its macros total 121 g per 100, more than the food weighs" and Super fell
+// back to a guess, having already spent two searches. Per-macro pools let carbs
+// come from one site and fat from another, so the row was right per column and
+// impossible as a row. Coherent readings are now tried before giving up.
+
+Deno.test("THE BUG: an impossible mix falls back to a coherent panel", () => {
+  // Per-macro medians here give carb 70 (from b) and fat 45 (from c): 122 g of
+  // macros in 100 g of food. Both complete panels are individually fine.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 545, 7, 70, 30),
+    r("https://c.example/x", 542, 7, 58, 45),
+  ]));
+  const total = out.per100.protein_g + out.per100.carb_g + out.per100.fat_g;
+  assertEquals(total <= 105, true, `macros totalled ${total} g per 100`);
+  // The old code returned { reason } here and the parse silently estimated.
+});
+
+Deno.test("a coherent mix is untouched, so nothing that worked changes", () => {
+  // Three sources that broadly agree: the per-macro pools survive physics and
+  // are used, exactly as before. Every stated number still votes.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 545, 8, 57, 33),
+    r("https://c.example/x", 542, 6, 59, 31),
+  ]));
+  assertObjectMatch(out.per100, { protein_g: 7, carb_g: 58, fat_g: 32 });
+});
+
+Deno.test("a partial reading cannot rescue an impossible mix on its own", () => {
+  // No complete panel exists, so there is nothing coherent to fall back to and
+  // the refusal stands. Better an honest estimate than an invented panel.
+  const out = reconcileReadings([
+    r("https://a.example/x", 540, 7, 70, null),
+    r("https://b.example/x", 545, 7, null, 45),
+  ]);
+  if (!("reason" in out)) throw new Error("expected a refusal");
+  assertEquals(out.reason.includes("more than the food weighs"), true, out.reason);
+});
+
+Deno.test("the rescue keeps the protein fix: an omitted protein still cannot vote 0", () => {
+  // b omits protein, so it is not a complete panel and cannot vote in the
+  // coherent step either. Protein stays 7, never median([0, 7]).
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 545, null, 70, 30),
+    r("https://c.example/x", 542, 7, 58, 45),
+  ]));
+  assertEquals(out.per100.protein_g, 7);
+  const total = out.per100.protein_g + out.per100.carb_g + out.per100.fat_g;
+  assertEquals(total <= 105, true, `macros totalled ${total} g per 100`);
+});

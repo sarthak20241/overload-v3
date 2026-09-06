@@ -2467,19 +2467,82 @@ export function reconcileReadings(
   if (carbs.length === 0) return { reason: "no source stated carbohydrate" };
   if (fats.length === 0) return { reason: "no source stated fat" };
 
-  const per100: Omit<Per100, "fiber_g"> = {
-    kcal: median(kcals),
-    protein_g: median(proteins),
-    carb_g: median(carbs),
-    fat_g: median(fats),
-  };
+  // A PANEL HAS TO BE INTERNALLY COHERENT, and per-macro pools alone do not
+  // guarantee that. Measured 2026-09-06: Bingo Mad Angles was rejected twice out
+  // of two with "its macros total 121 g per 100, more than the food weighs", and
+  // Super silently fell back to an estimate having already spent two searches.
+  //
+  // The cause was the fix directly above this. Taking each macro from whichever
+  // sources stated THAT macro means carbs can come from one site and fat from
+  // another, producing a panel no site ever published and that no food could
+  // have. Right per column, impossible as a row.
+  //
+  // So the mix STAYS FIRST and coherence is the rescue, not the default:
+  //
+  //   1. the cross-source pools, exactly as before. Most robust - every stated
+  //      number votes - and correct for the ordinary case where sources broadly
+  //      agree. Changing this would have thrown away readings that were fine.
+  //   2. medians over COMPLETE panels only, so every macro is decided by the
+  //      same set of sources and the columns belong to each other.
+  //   3. the single complete panel nearest the energy median: one real page
+  //      copied whole, so coherent by construction. Least robust (one bad panel
+  //      can win outright), which is why it is last and not first.
+  //
+  // First one that survives physics wins, so nothing that used to work changes.
+  // Only a food that previously became an ESTIMATE now gets steps 2 and 3. The
+  // protein fix is untouched: a page that omitted protein is not a complete
+  // panel, so it cannot vote in step 2, and its null still cannot vote in step 1.
+  const isComplete = (r: SourceReading) =>
+    [r.per_100.protein_g, r.per_100.carb_g, r.per_100.fat_g]
+      .every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  const complete = withPanel.filter(isComplete);
+  const kcalMid = median(kcals);
+
+  const attempts: { how: string; per100: Omit<Per100, "fiber_g"> }[] = [{
+    how: "per-macro pools",
+    per100: {
+      kcal: kcalMid,
+      protein_g: median(proteins),
+      carb_g: median(carbs),
+      fat_g: median(fats),
+    },
+  }];
+  if (complete.length > 0) {
+    attempts.push({
+      how: "complete panels",
+      per100: {
+        kcal: kcalMid,
+        protein_g: median(complete.map((r) => r.per_100.protein_g as number)),
+        carb_g: median(complete.map((r) => r.per_100.carb_g as number)),
+        fat_g: median(complete.map((r) => r.per_100.fat_g as number)),
+      },
+    });
+    const nearest = complete.reduce((best, r) =>
+      Math.abs(r.per_100.kcal - kcalMid) < Math.abs(best.per_100.kcal - kcalMid) ? r : best
+    );
+    attempts.push({
+      how: "one whole panel",
+      per100: {
+        kcal: kcalMid,
+        protein_g: nearest.per_100.protein_g as number,
+        carb_g: nearest.per_100.carb_g as number,
+        fat_g: nearest.per_100.fat_g as number,
+      },
+    });
+  }
+
   // Physics before belief: sources agreeing on an impossible number is still an
   // impossible number, and one that would then be cached and promoted.
-  const bad = implausiblePer100(per100);
-  if (bad) return { reason: bad };
-
-  const fibers = stated((r) => r.per_100.fiber_g);
-  return { per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+  let lastBad = "";
+  for (const a of attempts) {
+    const bad = implausiblePer100(a.per100);
+    if (!bad) {
+      const fibers = stated((r) => r.per_100.fiber_g);
+      return { per100: a.per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+    }
+    lastBad = bad;
+  }
+  return { reason: lastBad };
 }
 
 export async function superLookupOne(
