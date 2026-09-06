@@ -250,6 +250,38 @@ export async function writeAutoLog(
   const clientId = args.clientId.toLowerCase();
   const createdIds = new Set(sectionClientIds(clientId));
 
+  // WHAT THE THREE GUARDS BELOW DO AND DO NOT COVER, because 0115's own comment
+  // overclaims and a reader should not have to rediscover this.
+  //
+  //   pre-check         entriesByClientId, below. Catches a SEQUENTIAL replay:
+  //                     the first attempt finished before the second started.
+  //                     This is every retry the client can actually produce.
+  //   uq_meals_client_id  0047. Catches two attempts racing to CREATE the
+  //                     section's meal row.
+  //   uq_meal_entries_client_id_slot  0115. Catches two attempts racing to
+  //                     INSERT into a meal row that already existed - but only
+  //                     while both read countEntries before either commits, so
+  //                     both compute the same `base` and collide on position.
+  //
+  // The gap is real and narrow: if attempt A commits in the window between B's
+  // pre-check and B's countEntries - about one round trip - B computes a higher
+  // base, lands on free positions, and duplicates the food with nothing firing.
+  //
+  // It is unreachable as the client is built, and that is the argument, not the
+  // index. A client_id is a fresh crypto.randomUUID() minted per send on ONE
+  // device and kept in that device's own storage, so two devices can never
+  // present the same one. The only way to get two concurrent writes under one
+  // id is the same device retrying while the original is still in flight, and
+  // a retry is gated behind PENDING_LOST_MS (3 minutes) - by which time the
+  // original has long since finished or failed.
+  //
+  // So the honest statement is: sequential replay is closed by the pre-check,
+  // simultaneous replay is closed by the two indexes, and the sliver between
+  // them requires a client that cannot exist today. If client_id ever becomes
+  // shareable (an account syncing pending sends across devices, say), this
+  // stops being theoretical and position must come from an atomic sequence or
+  // an ON CONFLICT upsert rather than a pre-read count.
+
   // Retry of a send that already landed: hand back what is there.
   const prior = await store.entriesByClientId(clientId);
   if (prior.length > 0) {
