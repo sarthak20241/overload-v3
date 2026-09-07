@@ -2790,11 +2790,17 @@ export async function superLookupOne(
     return null;
   }
   const { per100, fiber_g, how } = reconciled;
-  // Only worth a line when a rescue tier answered. The pools handling it is the
-  // normal case and does not need saying; falling through to a coherent panel
-  // means the sources disagreed enough to build an impossible row, which is the
-  // thing you want to see in a log when a number looks odd later.
-  if (how !== "per-macro pools") {
+  // Only worth a line when a RESCUE answered, and which tier is the rescue moved
+  // when consensus became tier 1. This gate was written when the pools were the
+  // normal path; left alone it logged "fell back to" on every ordinary lookup
+  // and stayed silent on the real fallbacks - the exact noise it exists to
+  // prevent, burying the cases worth reading. Caught on review; no test covers
+  // it because superLookupOne needs the network mocked to reach this line.
+  //
+  // Named explicitly rather than "not tier 1" so that adding a tier later fails
+  // loudly as an unlogged case rather than quietly as a noisy one.
+  const NORMAL_PATHS = ["the page others agree with", "per-macro pools"];
+  if (!NORMAL_PATHS.includes(how)) {
     deps.log?.(`[parse_meal] super lookup for "${item.name}" fell back to: ${how}`);
   }
 
