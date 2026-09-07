@@ -491,3 +491,30 @@ Deno.test("agreeing zeros are agreement, not infinite disagreement", () => {
   assertEquals(out.how, "the page others agree with");
   assertObjectMatch(out.per100, { protein_g: 0, carb_g: 0 });
 });
+
+Deno.test("the winner's fibre travels with it, not a blend of everyone's", () => {
+  // Flagged on #147: four numbers came from one page and fibre from a median
+  // across every reading, so the row was not the "one real page" it claimed.
+  // b wins the vote here; its 2.5 g must survive, not median([2.5, 9, 9]).
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32, 9),
+    r("https://b.example/x", 542, 7.2, 58.5, 31.5, 2.5),
+    r("https://c.example/x", 541, 7.1, 58.2, 31.8, 9),
+  ]));
+  assertEquals(out.how, "the page others agree with");
+  const winners = [9, 2.5, 9];
+  assertEquals(winners.includes(out.fiber_g as number), true,
+    `fibre ${out.fiber_g} came from no single page`);
+});
+
+Deno.test("a winner that printed no fibre reports null, not a borrowed figure", () => {
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32, null),
+    r("https://b.example/x", 541, 7.05, 58.1, 32.1, null),
+    r("https://c.example/x", 610, 3, 75, 20, 12),
+  ]));
+  assertEquals(out.how, "the page others agree with");
+  // c has the fibre and c is the outlier. Borrowing its 12 g would put a number
+  // on the row that the page we actually used never printed.
+  assertEquals(out.fiber_g, null);
+});

@@ -2475,12 +2475,20 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  * decide everything: 20 kcal apart on a 500 kcal food is a 4% disagreement,
  * while 5 g apart on 7 g of protein is 71%, and the raw numbers say the opposite.
  *
- * A field is only compared where BOTH readings state it, so a page that omits
- * fibre is not punished for it. Fields with nothing to compare score 0.
+ * A field is only compared where BOTH readings state it. Today the caller only
+ * ever passes complete panels, so that guard cannot fire - it is kept because
+ * nothing in the signature says the input must be complete, and a future caller
+ * passing partial readings should score them rather than crash on a null.
  */
 export function consensusPanel(
   complete: SourceReading[],
-): { kcal: number; protein_g: number; carb_g: number; fat_g: number } | null {
+): {
+  per100: { kcal: number; protein_g: number; carb_g: number; fat_g: number };
+  /** The winner's OWN fibre, so the whole row comes from one page. null when
+   *  that page did not print a fibre line - which is honest, and better than
+   *  borrowing a figure from a page we did not otherwise use. */
+  fiber_g: number | null;
+} | null {
   if (complete.length < 3) return null;
 
   const fields: ((r: SourceReading) => number | null | undefined)[] = [
@@ -2514,11 +2522,15 @@ export function consensusPanel(
     if (score < bestScore) { bestScore = score; best = cand; }
   }
   if (!best) return null;
+  const fib = best.per_100.fiber_g;
   return {
-    kcal: best.per_100.kcal,
-    protein_g: best.per_100.protein_g as number,
-    carb_g: best.per_100.carb_g as number,
-    fat_g: best.per_100.fat_g as number,
+    per100: {
+      kcal: best.per_100.kcal,
+      protein_g: best.per_100.protein_g as number,
+      carb_g: best.per_100.carb_g as number,
+      fat_g: best.per_100.fat_g as number,
+    },
+    fiber_g: typeof fib === "number" && Number.isFinite(fib) && fib >= 0 ? fib : null,
   };
 }
 
@@ -2607,21 +2619,24 @@ export function reconcileReadings(
   // another, producing a panel no site ever published and that no food could
   // have. Right per column, impossible as a row.
   //
-  // So the mix STAYS FIRST and coherence is the rescue, not the default:
+  // ORDER, and it changed on 2026-09-07. An earlier version of this comment said
+  // "the mix STAYS FIRST and coherence is the rescue" - that is no longer true
+  // and the review caught it still sitting here saying so:
   //
-  //   1. the cross-source pools, exactly as before. Most robust - every stated
-  //      number votes - and correct for the ordinary case where sources broadly
-  //      agree. Changing this would have thrown away readings that were fine.
-  //   2. medians over COMPLETE panels only, so every macro is decided by the
-  //      same set of sources and the columns belong to each other.
-  //   3. the single complete panel nearest the energy median: one real page
-  //      copied whole, so coherent by construction. Least robust (one bad panel
-  //      can win outright), which is why it is last and not first.
+  //   1. THE PAGE THE OTHERS AGREE WITH, whenever three complete panels exist.
+  //      One real published row, so it cannot be impossible. This is now the
+  //      normal path, not a rescue.
+  //   2. the cross-source pools. Every stated number votes, which is more robust
+  //      against a single bad page but can assemble a row nobody published.
+  //   3. medians over COMPLETE panels only, so at least the columns come from
+  //      the same set of sources.
+  //   4. each complete panel whole, nearest energy first.
   //
-  // First one that survives physics wins, so nothing that used to work changes.
-  // Only a food that previously became an ESTIMATE now gets steps 2 and 3. The
-  // protein fix is untouched: a page that omitted protein is not a complete
-  // panel, so it cannot vote in step 2, and its null still cannot vote in step 1.
+  // First one that survives physics wins. 2 through 4 are what handles a food
+  // with fewer than three complete panels, or one where the agreed page turns
+  // out impossible anyway. The protein fix is untouched throughout: a page that
+  // omitted protein is not a complete panel, so it cannot win the vote or feed
+  // steps 3 and 4, and its null still cannot vote in step 2.
   // kcal is checked too, not just the three macros. Tier 3 sorts these by
   // distance from the median energy, and an unusable kcal makes that comparison
   // NaN, which sorts arbitrarily - the attempt would still be rejected by
@@ -2651,8 +2666,23 @@ export function reconcileReadings(
   // care about and what Super has been worst at. Each number is compared
   // RELATIVELY so a 20 kcal gap does not drown a 5 g protein gap.
   const consensus = consensusPanel(complete);
-  const attempts: { how: string; per100: Omit<Per100, "fiber_g"> }[] = [];
-  if (consensus) attempts.push({ how: "the page others agree with", per100: consensus });
+  // fiber CARRIES WITH THE WINNER, not pooled. Flagged on review: the row was
+  // advertised as one real page copied whole while fibre was still a median
+  // across every reading, so four numbers came from one page and the fifth from
+  // a blend. Undefined here means "no preference", and the pooled median below
+  // applies - which is right for the tiers that are themselves pooled.
+  const attempts: {
+    how: string;
+    per100: Omit<Per100, "fiber_g">;
+    fiber_g?: number | null;
+  }[] = [];
+  if (consensus) {
+    attempts.push({
+      how: "the page others agree with",
+      per100: consensus.per100,
+      fiber_g: consensus.fiber_g,
+    });
+  }
   attempts.push({
     how: "per-macro pools",
     per100: {
@@ -2716,6 +2746,9 @@ export function reconcileReadings(
   for (const a of attempts) {
     const bad = implausiblePer100(a.per100);
     if (!bad) {
+      if (a.fiber_g !== undefined) {
+        return { per100: a.per100, fiber_g: a.fiber_g, how: a.how };
+      }
       const fibers = stated((r) => r.per_100.fiber_g);
       // Which tier answered, so production can tell a normal reconciliation from
       // a rescue. Without this the `how` labels were written and never read, and
