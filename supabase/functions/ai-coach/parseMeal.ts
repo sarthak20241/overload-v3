@@ -3231,6 +3231,10 @@ export function scopeCorrection(
   unreplaced: string[];
   /** One line per entry judged CHANGED, showing what was compared. */
   changed: string[];
+  /** Lines the model tagged as untouched whose amount or unit moved anyway.
+   *  Never empty for a healthy prompt; each entry is a user edit we obeyed the
+   *  tag and dropped. */
+  contradictions: string[];
 } {
   const passthrough = new Map<number, PreviousItem>();
   // Why each line was judged CHANGED. "unchanged 0" is the shape that costs a
@@ -3240,9 +3244,22 @@ export function scopeCorrection(
   // the same-named line ("-" when there is no line by that name at all, which
   // is a rename rather than a mismatch).
   const changed: string[] = [];
+  // The model said "untouched" on a line whose numbers moved. We OBEY the tag
+  // (that is the contract now), so this costs the user their edit - and the
+  // only reason it would ever be caught is that it is written down here.
+  // Anything appearing in this list is a prompt problem, not a code one.
+  const contradictions: string[] = [];
   extItems.forEach((it, i) => {
     const same = unchangedInCorrection(it, prevItems);
     if (same) {
+      const qtyMoved = Math.abs((it.quantity || 1) - (same.quantity || 1)) >= 0.001;
+      const unitMoved = (it.unit || "serving").trim().toLowerCase().replace(/s$/, "") !==
+        (same.serving_label || "serving").trim().toLowerCase().replace(/s$/, "");
+      if (qtyMoved || unitMoved) {
+        contradictions.push(
+          `${it.name}: tag says untouched but got ${it.quantity} "${it.unit}" vs stored ${same.quantity} "${same.serving_label}"`,
+        );
+      }
       passthrough.set(i, same);
       return;
     }
@@ -3267,6 +3284,7 @@ export function scopeCorrection(
       unchangedCount: passthrough.size,
       unreplaced,
       changed,
+      contradictions,
     };
   }
   return {
@@ -3275,6 +3293,7 @@ export function scopeCorrection(
     unchangedCount: passthrough.size,
     unreplaced,
     changed,
+    contradictions,
   };
 }
 
@@ -3288,7 +3307,25 @@ export function unchangedInCorrection(
   // keeps the amount and the unit and points corrects_food_name at the old
   // line, so keying off that field alone reads it as untouched and throws the
   // swap away. The item's OWN name has to be the one already on the card.
-  if (item.correctsFoodName && norm(item.correctsFoodName) !== norm(item.name)) return null;
+  // THE TAG DECIDES, and the comparison below no longer overrules it.
+  //
+  // Sarthak's call, and the traces back it: comparing name + amount + serving
+  // label is what kept reporting untouched lines as changed. A model-chosen
+  // label ("plate") against a stored one ("serving") is a mismatch to string
+  // equality and not a change to a person, and a line wrongly called changed is
+  // re-resolved and re-sectioned - which is how a logged day lost its
+  // grouping. The model knows what it edited; it says so in this field.
+  //
+  // ANY non-null tag means changed. That covers both shapes the prompt asks
+  // for: a line correcting itself (amount, serving label or macros edited) and
+  // a swap naming a different line ("Muesli" replacing "Corn Flakes").
+  //
+  // The risk, stated plainly because it is real and accepted: if the model
+  // returns null on a line it DID change, that edit is passed through
+  // untouched and silently dropped. scopeCorrection traces exactly that
+  // contradiction - tag says untouched, numbers disagree - so it is visible in
+  // a trace rather than only in a user's day.
+  if (item.correctsFoodName) return null;
   const target = norm(item.name);
   // Scan ALL same-named lines, do not stop at the first. A meal can hold two
   // entries sharing a name and differing only in size - the "chai 75 g / chai
@@ -3297,16 +3334,24 @@ export function unchangedInCorrection(
   // duplicate is not first in the array. That is the safe direction (an extra
   // re-resolve, not lost data), but a re-resolve is exactly the
   // nondeterministic repoint I1 exists to avoid, so do not accept it needlessly.
-  for (const p of previous) {
-    if (norm(p.food_name) !== target) continue;
+  const named = previous.filter((p) => {
+    if (norm(p.food_name) !== target) return false;
     // A prep word the previous line never carried IS a change ("make the egg
-    // boiled"). Keep scanning: another same-named line may carry it.
-    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) continue;
-    const sameQty = Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001;
-    const sameUnit = unit(item.unit || "serving") === unit(p.serving_label || "serving");
-    if (sameQty && sameUnit) return p;
-  }
-  return null;
+    // boiled"), and it renames the food rather than editing it.
+    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) return false;
+    return true;
+  });
+  if (named.length === 0) return null;
+  if (named.length === 1) return named[0];
+  // Amount and unit are now ONLY a tie-break, not a verdict. A meal can hold
+  // two lines sharing a name and differing in size ("chai 75 g" and "chai
+  // 150 g"), and passing the wrong one through would hand back the wrong
+  // numbers. Prefer the exact match; give up rather than guess.
+  const exact = named.find((p) =>
+    Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001 &&
+    unit(item.unit || "serving") === unit(p.serving_label || "serving")
+  );
+  return exact ?? null;
 }
 
 /**
@@ -4473,10 +4518,25 @@ export async function runParseMeal(
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Previous lines the user explicitly re-targeted. These are deliberately
   // replaced, so the no-drop guard must not resurrect them.
+  // ONLY a tag naming a DIFFERENT line counts as a replacement.
+  //
+  // "Muesli" tagged "Corn Flakes" means the corn flakes are gone and must not
+  // be restored. "Poha" tagged "Poha" means the poha line was EDITED - it is
+  // still on the card, and marking it replaced tells the no-drop guard not to
+  // bring it back if decide omits it. That is the deletion this whole thread
+  // started from.
+  //
+  // The distinction matters more now that the tag decides changed-ness on its
+  // own: the same model tagged every line on one run and only the edited line
+  // on the next, and under a name-blind rule the over-tagging run would mark
+  // every line replaced and disable the guard for the entire meal.
   const replacedNames = new Set(
     extItems
-      .map((i) => i.correctsFoodName?.trim().toLowerCase())
-      .filter((n): n is string => !!n),
+      .filter((i) =>
+        !!i.correctsFoodName &&
+        i.correctsFoodName.trim().toLowerCase() !== i.name.trim().toLowerCase()
+      )
+      .map((i) => i.correctsFoodName!.trim().toLowerCase()),
   );
   // I6a: deletion by text used to be IMPOSSIBLE to express. "remove the tofu"
   // left the line out of items, and keepUncoveredPrevious - whose job is to stop
@@ -4755,6 +4815,7 @@ export async function runParseMeal(
         narrowed: scoped.untouched > 0,
         unreplaced: scoped.unreplaced,
         changed: scoped.changed,
+        ...(scoped.contradictions.length > 0 ? { contradictions: scoped.contradictions } : {}),
       },
     });
   }

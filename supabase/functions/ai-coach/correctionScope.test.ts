@@ -48,13 +48,41 @@ Deno.test("plural units still count as the same unit", () => {
   );
 });
 
-Deno.test("a changed AMOUNT must re-resolve", () => {
-  // "make the roti 3" - the whole point of the turn.
-  assertEquals(unchangedInCorrection(ext({ name: "Roti / Chapati", quantity: 3, unit: "roti" }), [ROTI]), null);
+Deno.test("a changed AMOUNT must re-resolve, and says so with its tag", () => {
+  // "make the roti 3" - the whole point of the turn. The tag is what marks it.
+  assertEquals(
+    unchangedInCorrection(
+      ext({ name: "Roti / Chapati", quantity: 3, unit: "roti", correctsFoodName: "Roti / Chapati" }),
+      [ROTI],
+    ),
+    null,
+  );
 });
 
-Deno.test("a changed UNIT must re-resolve", () => {
-  assertEquals(unchangedInCorrection(ext({ name: "Dal", quantity: 1, unit: "bowl" }), [DAL]), null);
+Deno.test("a changed UNIT must re-resolve, and says so with its tag", () => {
+  assertEquals(
+    unchangedInCorrection(ext({ name: "Dal", quantity: 1, unit: "bowl", correctsFoodName: "Dal" }), [DAL]),
+    null,
+  );
+});
+
+Deno.test("THE ACCEPTED RISK: an untagged line is passed through even if it moved", () => {
+  // The cost of making the tag authoritative, pinned so nobody discovers it by
+  // surprise. The model returning null on a line it DID change means the edit
+  // is handed back untouched and silently dropped. scopeCorrection records the
+  // contradiction so it shows up in a trace rather than only in a user's day.
+  const same = unchangedInCorrection(
+    ext({ name: "Roti / Chapati", quantity: 3, unit: "roti", correctsFoodName: null }),
+    [ROTI],
+  );
+  assertEquals(same?.food_name, "Roti / Chapati", "obeys the tag");
+  const out = scopeCorrection(
+    [ext({ name: "Roti / Chapati", quantity: 3, unit: "roti", correctsFoodName: null })],
+    [ROTI],
+    new Set<string>(),
+  );
+  assertEquals(out.contradictions.length, 1, "and writes it down");
+  assertEquals(out.contradictions[0].includes("tag says untouched"), true, out.contradictions[0]);
 });
 
 Deno.test("a newly stated prep is a change", () => {
@@ -124,30 +152,26 @@ import { scopeCorrection } from "./parseMeal.ts";
 const POHA = prev("Poha", 1, "plate");
 const RAJMA = prev("Rajma Chawal", 1, "plate");
 
-Deno.test("THE BUG: untouched lines are un-replaced even when NOTHING narrows", () => {
-  // Every line restated unchanged -> the narrowing branch is deliberately
-  // skipped, and the un-marking must still happen.
-  const replaced = new Set(["poha", "rajma chawal"]);
-  const out = scopeCorrection(
-    [
-      ext({ name: "Poha", quantity: 1, unit: "plate", correctsFoodName: "Poha" }),
-      ext({ name: "Rajma Chawal", quantity: 1, unit: "plate", correctsFoodName: "Rajma Chawal" }),
-    ],
-    [POHA, RAJMA],
+Deno.test("a SELF-tag is an edit, not a replacement", () => {
+  // "Poha" tagged "Poha" means that line was edited and is still on the card.
+  // Marking it replaced tells the no-drop guard not to restore it if decide
+  // omits it, which is exactly the deletion this whole thread started from.
+  // Only a tag naming a DIFFERENT line is a replacement.
+  const replaced = new Set<string>();
+  scopeCorrection(
+    [ext({ name: "Poha", quantity: 2, unit: "plate", correctsFoodName: "Poha" })],
+    [POHA],
     replaced,
   );
-  assertEquals(replaced.has("poha"), false, "poha must not read as deliberately replaced");
-  assertEquals(replaced.has("rajma chawal"), false);
-  // All unchanged means we probably misread the turn, so resolve everything.
-  assertEquals(out.untouched, 0);
-  assertEquals(out.toResolve.length, 2);
+  assertEquals(replaced.size, 0, "an edited line must stay restorable");
 });
 
-Deno.test("a genuinely re-targeted line STAYS replaced", () => {
-  // The other half of the contract. "actually paneer not tofu" must not
-  // resurrect the tofu line, so a CHANGED line keeps its mark.
-  const replaced = new Set(["poha", "rajma chawal"]);
-  const out = scopeCorrection(
+Deno.test("an over-tagging model cannot disable the no-drop guard", () => {
+  // Observed: the same model tagged every line on one run and only the edited
+  // line on the next. Under a name-blind rule the first run would mark every
+  // line replaced and switch the guard off for the whole meal.
+  const replaced = new Set<string>();
+  scopeCorrection(
     [
       ext({ name: "Poha", quantity: 1, unit: "plate", correctsFoodName: "Poha" }),
       ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", correctsFoodName: "Rajma Chawal" }),
@@ -155,11 +179,7 @@ Deno.test("a genuinely re-targeted line STAYS replaced", () => {
     [POHA, RAJMA],
     replaced,
   );
-  assertEquals(replaced.has("poha"), false, "untouched line un-marked");
-  assertEquals(replaced.has("rajma chawal"), true, "the line the user changed stays replaced");
-  // And the narrowing still applies: only the changed line is re-resolved.
-  assertEquals(out.untouched, 1);
-  assertEquals(out.toResolve.map((i) => i.name), ["Rajma Chawal"]);
+  assertEquals(replaced.size, 0);
 });
 
 Deno.test("no previous match means nothing is un-marked", () => {
