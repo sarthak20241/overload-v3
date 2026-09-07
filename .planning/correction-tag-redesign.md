@@ -1,7 +1,50 @@
 # Correction tagging: one field, two meanings (Sarthak's redesign)
 
-Status: PROPOSED, not built. Raised by Sarthak 2026-09-06 while we were
-diagnosing a correction that silently deleted a line the user never mentioned.
+Status: BUILT and measured, 2026-09-07 (branch claude/super-client, not yet
+deployed). Raised by Sarthak 2026-09-06 while we were diagnosing a correction
+that silently deleted a line the user never mentioned. What shipped is the
+final shape below, reached through two intermediate designs that measurement
+rejected - kept here because the rejections are the reasoning.
+
+## The final rule (what is in the code)
+
+corrects_food_name is the IDENTITY LINK, and it goes on every line the
+correction touched and only those:
+
+    edit      "make the poha half a plate"   poha entry carries "Poha" (own name)
+    swap      "rice, not poha"               rice entry carries "Poha" (old name)
+    untouched                                null
+
+Non-null is what "changed" means. No second field. A line with a tag is
+re-resolved and its previous version is never restored (it is superseded);
+a line without one is copied back verbatim by keepUncoveredPrevious.
+
+Three guards hold it up, and each exists because the previous design failed
+without it:
+1. replacedNames holds every tag, EDITS INCLUDED - or decide renaming an
+   edited line ("Rajma Chawal" -> "Rajma Masala") gets the old one restored
+   beside the new one. Measured: two rajmas, 594 + 433 kcal.
+2. reconcileExtracted runs on corrections over the changed lines - or an
+   edited line decide forgets to emit vanishes, because (1) marked it
+   do-not-restore.
+3. Untouched lines carry no tag, so (1) never touches them and the guard
+   restores them.
+
+Measured 3/3 on the correction cases plus the addition case, with the trace
+showing "2 plate Rajma Chawal EDITED", replaced ["rajma chawal"], restored
+[Poha, Banana], gone [].
+
+## Two designs that were tried and rejected by measurement
+
+- Tag only changed lines, comparison decides changed-ness (2026-09-06 pm):
+  the name+amount+unit comparison kept reporting untouched lines as changed
+  ("plate" vs "serving"), and a line wrongly called changed was re-sectioned.
+- Split into corrects_food_name (swaps only) + is_changed (edits) (2026-09-07
+  am): an edit then carried no identity link, so decide renaming it produced
+  a duplicate. The fact that was missing both times: WHICH old line does this
+  corrected line stand for.
+
+## Original proposal, as written on 2026-09-06
 
 ## The problem, stated once
 
