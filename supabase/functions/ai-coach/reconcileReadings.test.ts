@@ -395,3 +395,99 @@ Deno.test("tier 2 takes energy from its own panels, not from every reading", () 
   assertEquals(out.how, "complete panels");
   assertEquals(out.per100.kcal, 542.5, "median of 540 and 545, not of all four");
 });
+
+// ── Pick the page the others agree with ────────────────────────────────────
+// Sarthak's rule, 2026-09-07. Column-wise medians build a panel no page ever
+// published; picking a real page cannot produce an impossible row. These pin
+// that it is genuinely selected, that it wins on ALL FOUR numbers rather than
+// energy alone, and that it stands down when there is no crowd to ask.
+
+Deno.test("CONSENSUS: the outlier loses and a real page is copied whole", () => {
+  // a and b agree closely; c is the odd one out.
+  //
+  // Asserts the CONTRACT, not the winner. a and b are near-identical, so which
+  // of them is fractionally more central is an implementation detail and pinning
+  // it would make the test break on a harmless change. What must hold is that c
+  // loses and that the answer is one of the real panels, byte for byte, rather
+  // than a blend of all three. My first version of this asserted a specifically
+  // and failed because b was marginally more central - the code was right and
+  // the test was over-specified.
+  const panels = [
+    { kcal: 540, protein_g: 7, carb_g: 58, fat_g: 32 },
+    { kcal: 542, protein_g: 7.2, carb_g: 58.5, fat_g: 31.5 },
+  ];
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 542, 7.2, 58.5, 31.5),
+    r("https://c.example/x", 610, 3, 75, 20),
+  ]));
+  assertEquals(out.how, "the page others agree with");
+  const matched = panels.some((p) =>
+    p.kcal === out.per100.kcal && p.protein_g === out.per100.protein_g &&
+    p.carb_g === out.per100.carb_g && p.fat_g === out.per100.fat_g
+  );
+  assertEquals(matched, true, `got ${JSON.stringify(out.per100)} - not one of the agreeing panels`);
+});
+
+Deno.test("CONSENSUS is judged on all four numbers, not energy alone", () => {
+  // b has the most agreeable ENERGY - it sits between a and c - but its protein
+  // is wildly out. Judging on kcal alone would pick it. a wins on the whole row.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 500, 20, 50, 20),
+    r("https://b.example/x", 505, 2, 52, 21),
+    r("https://c.example/x", 510, 20.5, 51, 20.5),
+  ]));
+  assertEquals(out.how, "the page others agree with");
+  // a and c both hold ~20 g; either winning is correct. What must never happen
+  // is b winning on its agreeable energy while carrying 2 g of protein.
+  assertEquals(out.per100.protein_g >= 19, true, `got ${out.per100.protein_g} g protein`);
+  assertEquals(out.per100.protein_g !== 2, true, "b's odd protein must lose it the vote");
+});
+
+Deno.test("the winner's OWN energy travels with its macros", () => {
+  // The whole point: a real published row, not a row assembled from three.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 400, 10, 50, 12),
+    r("https://b.example/x", 402, 10.2, 50.5, 12.1),
+    r("https://c.example/x", 900, 10, 50, 12),
+  ]));
+  assertEquals(out.per100.kcal, 400, "a's own energy, not median([400,402,900])");
+});
+
+Deno.test("two pages are not a crowd, so the median still decides", () => {
+  // With two, each is exactly as far from the other - picking one would be a
+  // coin toss dressed up as consensus.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 560, 9, 60, 34),
+  ]));
+  assertEquals(out.how, "per-macro pools");
+});
+
+Deno.test("a partial page cannot win the vote, and does not block it", () => {
+  // c omits protein, so it is not a complete panel and cannot be selected. The
+  // three complete ones still form a crowd.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 540, 7, 58, 32),
+    r("https://b.example/x", 542, 7.2, 58.5, 31.5),
+    r("https://c.example/x", 700, null, 95, 55),
+    r("https://d.example/x", 610, 3, 75, 20),
+  ]));
+  assertEquals(out.how, "the page others agree with");
+  // a and b both hold ~7 g and either may win. The contract is that neither the
+  // partial page (c, which states no protein) nor the outlier (d, at 3 g) does.
+  assertEquals(out.per100.protein_g >= 6.9 && out.per100.protein_g <= 7.3, true,
+    `got ${out.per100.protein_g} g protein`);
+});
+
+Deno.test("agreeing zeros are agreement, not infinite disagreement", () => {
+  // Oil: every page says 0 g carb. A naive relative distance divides by zero and
+  // would score identical pages as infinitely far apart.
+  const out = ok(reconcileReadings([
+    r("https://a.example/oil", 884, 0, 0, 100),
+    r("https://b.example/oil", 884, 0, 0, 100),
+    r("https://c.example/oil", 883, 0, 0, 99.9),
+  ]));
+  assertEquals(out.how, "the page others agree with");
+  assertObjectMatch(out.per100, { protein_g: 0, carb_g: 0 });
+});

@@ -2464,6 +2464,64 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  * Exported for tests: superLookupOne itself calls the network, so this is the
  * only place the reconciliation maths can be checked without mocking HTTP.
  */
+/**
+ * The reading the others agree with most, or null when there is no crowd to ask.
+ *
+ * Needs THREE complete panels. With two there is no majority - each is equally
+ * far from the other - so picking one would be a coin toss dressed as consensus,
+ * and the caller falls back to the median instead.
+ *
+ * Distance is RELATIVE per field and summed. Absolute distance would let energy
+ * decide everything: 20 kcal apart on a 500 kcal food is a 4% disagreement,
+ * while 5 g apart on 7 g of protein is 71%, and the raw numbers say the opposite.
+ *
+ * A field is only compared where BOTH readings state it, so a page that omits
+ * fibre is not punished for it. Fields with nothing to compare score 0.
+ */
+export function consensusPanel(
+  complete: SourceReading[],
+): { kcal: number; protein_g: number; carb_g: number; fat_g: number } | null {
+  if (complete.length < 3) return null;
+
+  const fields: ((r: SourceReading) => number | null | undefined)[] = [
+    (r) => r.per_100.kcal,
+    (r) => r.per_100.protein_g,
+    (r) => r.per_100.carb_g,
+    (r) => r.per_100.fat_g,
+  ];
+  const rel = (a: number, b: number) => {
+    const scale = Math.max(Math.abs(a), Math.abs(b));
+    // Two zeros agree perfectly; oil at 0 g carb must not read as infinitely far
+    // from another page also saying 0 g.
+    return scale === 0 ? 0 : Math.abs(a - b) / scale;
+  };
+
+  let best: SourceReading | null = null;
+  let bestScore = Infinity;
+  for (const cand of complete) {
+    let score = 0;
+    for (const other of complete) {
+      if (other === cand) continue;
+      for (const f of fields) {
+        const a = f(cand), b = f(other);
+        if (typeof a === "number" && typeof b === "number" && Number.isFinite(a) && Number.isFinite(b)) {
+          score += rel(a, b);
+        }
+      }
+    }
+    // Strictly less, so a tie keeps the earlier reading and the result does not
+    // depend on iteration order.
+    if (score < bestScore) { bestScore = score; best = cand; }
+  }
+  if (!best) return null;
+  return {
+    kcal: best.per_100.kcal,
+    protein_g: best.per_100.protein_g as number,
+    carb_g: best.per_100.carb_g as number,
+    fat_g: best.per_100.fat_g as number,
+  };
+}
+
 export function reconcileReadings(
   readings: SourceReading[],
 ): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null; how: string } | { reason: string } {
@@ -2575,7 +2633,27 @@ export function reconcileReadings(
   const complete = withPanel.filter(isComplete);
   const kcalMid = median(kcals);
 
-  const attempts: { how: string; per100: Omit<Per100, "fiber_g"> }[] = [{
+  // THE PAGE THE OTHERS AGREE WITH, first. Sarthak's call 2026-09-07, and it is
+  // a better rule than the one it replaces.
+  //
+  // Column-wise medians build a panel NO PAGE EVER PUBLISHED: energy from the
+  // middle of one list, protein from the middle of another, carbs from a third.
+  // Usually harmless, occasionally impossible - that is the 121 g-in-100 g bug
+  // that made Super give up and guess on 3 of 12 measured runs, and the two
+  // rescue tiers below exist only to catch it after the fact.
+  //
+  // Picking a real page cannot produce an impossible row, because a real site
+  // published it. Coherence stops being something to check and becomes
+  // something that cannot break.
+  //
+  // "Agree" is measured across ALL FOUR numbers, not energy alone. A page can
+  // have the right calories and odd protein, and protein is both what users
+  // care about and what Super has been worst at. Each number is compared
+  // RELATIVELY so a 20 kcal gap does not drown a 5 g protein gap.
+  const consensus = consensusPanel(complete);
+  const attempts: { how: string; per100: Omit<Per100, "fiber_g"> }[] = [];
+  if (consensus) attempts.push({ how: "the page others agree with", per100: consensus });
+  attempts.push({
     how: "per-macro pools",
     per100: {
       kcal: kcalMid,
@@ -2583,7 +2661,7 @@ export function reconcileReadings(
       carb_g: median(carbs),
       fat_g: median(fats),
     },
-  }];
+  });
   if (complete.length > 0) {
     attempts.push({
       how: "complete panels",
