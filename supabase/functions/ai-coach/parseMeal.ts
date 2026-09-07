@@ -2510,9 +2510,79 @@ function synthesizeVolumeAnchors(c: CandidateFood): CandidateFood {
  * Exported for tests: superLookupOne itself calls the network, so this is the
  * only place the reconciliation maths can be checked without mocking HTTP.
  */
+/**
+ * The reading the others agree with most, or null when there is no crowd to ask.
+ *
+ * Needs THREE complete panels. With two there is no majority - each is equally
+ * far from the other - so picking one would be a coin toss dressed as consensus,
+ * and the caller falls back to the median instead.
+ *
+ * Distance is RELATIVE per field and summed. Absolute distance would let energy
+ * decide everything: 20 kcal apart on a 500 kcal food is a 4% disagreement,
+ * while 5 g apart on 7 g of protein is 71%, and the raw numbers say the opposite.
+ *
+ * A field is only compared where BOTH readings state it. Today the caller only
+ * ever passes complete panels, so that guard cannot fire - it is kept because
+ * nothing in the signature says the input must be complete, and a future caller
+ * passing partial readings should score them rather than crash on a null.
+ */
+export function consensusPanel(
+  complete: SourceReading[],
+): {
+  per100: { kcal: number; protein_g: number; carb_g: number; fat_g: number };
+  /** The winner's OWN fibre, so the whole row comes from one page. null when
+   *  that page did not print a fibre line - which is honest, and better than
+   *  borrowing a figure from a page we did not otherwise use. */
+  fiber_g: number | null;
+} | null {
+  if (complete.length < 3) return null;
+
+  const fields: ((r: SourceReading) => number | null | undefined)[] = [
+    (r) => r.per_100.kcal,
+    (r) => r.per_100.protein_g,
+    (r) => r.per_100.carb_g,
+    (r) => r.per_100.fat_g,
+  ];
+  const rel = (a: number, b: number) => {
+    const scale = Math.max(Math.abs(a), Math.abs(b));
+    // Two zeros agree perfectly; oil at 0 g carb must not read as infinitely far
+    // from another page also saying 0 g.
+    return scale === 0 ? 0 : Math.abs(a - b) / scale;
+  };
+
+  let best: SourceReading | null = null;
+  let bestScore = Infinity;
+  for (const cand of complete) {
+    let score = 0;
+    for (const other of complete) {
+      if (other === cand) continue;
+      for (const f of fields) {
+        const a = f(cand), b = f(other);
+        if (typeof a === "number" && typeof b === "number" && Number.isFinite(a) && Number.isFinite(b)) {
+          score += rel(a, b);
+        }
+      }
+    }
+    // Strictly less, so a tie keeps the earlier reading and the result does not
+    // depend on iteration order.
+    if (score < bestScore) { bestScore = score; best = cand; }
+  }
+  if (!best) return null;
+  const fib = best.per_100.fiber_g;
+  return {
+    per100: {
+      kcal: best.per_100.kcal,
+      protein_g: best.per_100.protein_g as number,
+      carb_g: best.per_100.carb_g as number,
+      fat_g: best.per_100.fat_g as number,
+    },
+    fiber_g: typeof fib === "number" && Number.isFinite(fib) && fib >= 0 ? fib : null,
+  };
+}
+
 export function reconcileReadings(
   readings: SourceReading[],
-): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null } | { reason: string } {
+): { per100: Omit<Per100, "fiber_g">; fiber_g: number | null; how: string } | { reason: string } {
   if (readings.length === 0) return { reason: "no readings" };
 
   const median = (xs: number[]): number => {
@@ -2585,19 +2655,169 @@ export function reconcileReadings(
   if (carbs.length === 0) return { reason: "no source stated carbohydrate" };
   if (fats.length === 0) return { reason: "no source stated fat" };
 
-  const per100: Omit<Per100, "fiber_g"> = {
-    kcal: median(kcals),
-    protein_g: median(proteins),
-    carb_g: median(carbs),
-    fat_g: median(fats),
-  };
+  // A PANEL HAS TO BE INTERNALLY COHERENT, and per-macro pools alone do not
+  // guarantee that. Measured 2026-09-06: Bingo Mad Angles was rejected twice out
+  // of two with "its macros total 121 g per 100, more than the food weighs", and
+  // Super silently fell back to an estimate having already spent two searches.
+  //
+  // The cause was the fix directly above this. Taking each macro from whichever
+  // sources stated THAT macro means carbs can come from one site and fat from
+  // another, producing a panel no site ever published and that no food could
+  // have. Right per column, impossible as a row.
+  //
+  // ORDER, and it changed on 2026-09-07. An earlier version of this comment said
+  // "the mix STAYS FIRST and coherence is the rescue" - that is no longer true
+  // and the review caught it still sitting here saying so:
+  //
+  //   1. THE PAGE THE OTHERS AGREE WITH, whenever three complete panels exist.
+  //      One real published row, so it cannot be impossible. This is now the
+  //      normal path, not a rescue.
+  //   2. the cross-source pools. Every stated number votes, which is more robust
+  //      against a single bad page but can assemble a row nobody published.
+  //   3. medians over COMPLETE panels only, so at least the columns come from
+  //      the same set of sources.
+  //   4. each complete panel whole, nearest energy first.
+  //
+  // First one that survives physics wins. 2 through 4 are what handles a food
+  // with fewer than three complete panels, or one where the agreed page turns
+  // out impossible anyway. The protein fix is untouched throughout: a page that
+  // omitted protein is not a complete panel, so it cannot win the vote or feed
+  // steps 3 and 4, and its null still cannot vote in step 2.
+  // kcal is checked too, not just the three macros. Tier 3 sorts these by
+  // distance from the median energy, and an unusable kcal makes that comparison
+  // NaN, which sorts arbitrarily - the attempt would still be rejected by
+  // implausiblePer100, so no bad data escapes, but a good panel could be tried
+  // after a useless one for no reason.
+  const isComplete = (r: SourceReading) =>
+    [r.per_100.kcal, r.per_100.protein_g, r.per_100.carb_g, r.per_100.fat_g]
+      .every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  const complete = withPanel.filter(isComplete);
+  const kcalMid = median(kcals);
+
+  // THE PAGE THE OTHERS AGREE WITH, first. Sarthak's call 2026-09-07, and it is
+  // a better rule than the one it replaces.
+  //
+  // Column-wise medians build a panel NO PAGE EVER PUBLISHED: energy from the
+  // middle of one list, protein from the middle of another, carbs from a third.
+  // Usually harmless, occasionally impossible - that is the 121 g-in-100 g bug
+  // that made Super give up and guess on 3 of 12 measured runs, and the two
+  // rescue tiers below exist only to catch it after the fact.
+  //
+  // Picking a real page cannot produce an impossible row, because a real site
+  // published it. Coherence stops being something to check and becomes
+  // something that cannot break.
+  //
+  // "Agree" is measured across ALL FOUR numbers, not energy alone. A page can
+  // have the right calories and odd protein, and protein is both what users
+  // care about and what Super has been worst at. Each number is compared
+  // RELATIVELY so a 20 kcal gap does not drown a 5 g protein gap.
+  const consensus = consensusPanel(complete);
+  // fiber CARRIES WITH THE WINNER, not pooled. Flagged on review: the row was
+  // advertised as one real page copied whole while fibre was still a median
+  // across every reading, so four numbers came from one page and the fifth from
+  // a blend. Undefined here means "no preference", and the pooled median below
+  // applies - which is right for the tiers that are themselves pooled.
+  const attempts: {
+    how: string;
+    per100: Omit<Per100, "fiber_g">;
+    fiber_g?: number | null;
+  }[] = [];
+  if (consensus) {
+    attempts.push({
+      how: "the page others agree with",
+      per100: consensus.per100,
+      fiber_g: consensus.fiber_g,
+    });
+  }
+  attempts.push({
+    how: "per-macro pools",
+    per100: {
+      kcal: kcalMid,
+      protein_g: median(proteins),
+      carb_g: median(carbs),
+      fat_g: median(fats),
+    },
+  });
+  if (complete.length > 0) {
+    attempts.push({
+      how: "complete panels",
+      per100: {
+        // The COMPLETE panels' own energy, not kcalMid. Both bots caught the
+        // same thing independently: pairing complete-panel macros with a median
+        // taken over every reading - incomplete ones and pages with no
+        // breakdown included - is the "right per column, impossible as a row"
+        // failure this whole PR exists to fix, reintroduced one tier up. Tier 3
+        // already avoided it; the reasoning simply was not carried here.
+        kcal: median(complete.map((r) => r.per_100.kcal)),
+        protein_g: median(complete.map((r) => r.per_100.protein_g as number)),
+        carb_g: median(complete.map((r) => r.per_100.carb_g as number)),
+        fat_g: median(complete.map((r) => r.per_100.fat_g as number)),
+      },
+    });
+    // EVERY complete panel, nearest energy first, not just the nearest one. A
+    // single pick was wrong and a test caught it: when one complete panel is the
+    // impossible one, "nearest to the median energy" can select exactly that
+    // panel and the last resort fails on the reading it exists to route around.
+    // The loop below stops at the first attempt that survives physics, so
+    // offering them in order costs nothing and cannot pick a bad panel over a
+    // good one.
+    const byNearestKcal = [...complete].sort((x, y) =>
+      Math.abs(x.per_100.kcal - kcalMid) - Math.abs(y.per_100.kcal - kcalMid)
+    );
+    for (const nearest of byNearestKcal) {
+      attempts.push({
+        how: "one whole panel",
+        // Its own fibre too. This tier makes the same "one real page copied
+        // whole" promise as the consensus tier, so pooling the fifth number
+        // here would be the identical incoherence, left in the identical file.
+        // Flagged on review after the consensus tier was fixed and this one was
+        // not.
+        fiber_g: typeof nearest.per_100.fiber_g === "number" &&
+            Number.isFinite(nearest.per_100.fiber_g) && nearest.per_100.fiber_g >= 0
+          ? nearest.per_100.fiber_g
+          : null,
+        per100: {
+        // The panel's OWN energy, not kcalMid. This tier claims to copy one real
+        // page whole, and it did not: taking the cross-source median here paired
+        // macros with a calorie figure that page never printed - and kcals is
+        // built from every reading, including ones hasComposition already threw
+        // away, so the number could come from a page with no panel at all.
+        // Nothing downstream would catch it either: implausiblePer100 checks
+        // totals and ceilings but never asks whether the calories follow from
+        // the macros, and meetsVerificationBar looks only at kcal. So the one
+        // tier that exists to guarantee coherence was the one inventing a row.
+          kcal: nearest.per_100.kcal,
+          protein_g: nearest.per_100.protein_g as number,
+          carb_g: nearest.per_100.carb_g as number,
+          fat_g: nearest.per_100.fat_g as number,
+        },
+      });
+    }
+  }
+
   // Physics before belief: sources agreeing on an impossible number is still an
   // impossible number, and one that would then be cached and promoted.
-  const bad = implausiblePer100(per100);
-  if (bad) return { reason: bad };
-
-  const fibers = stated((r) => r.per_100.fiber_g);
-  return { per100, fiber_g: fibers.length > 0 ? median(fibers) : null };
+  let lastBad = "";
+  for (const a of attempts) {
+    const bad = implausiblePer100(a.per100);
+    if (!bad) {
+      if (a.fiber_g !== undefined) {
+        return { per100: a.per100, fiber_g: a.fiber_g, how: a.how };
+      }
+      const fibers = stated((r) => r.per_100.fiber_g);
+      // Which tier answered, so production can tell a normal reconciliation from
+      // a rescue. Without this the `how` labels were written and never read, and
+      // a food quietly falling through to the last resort looked identical to
+      // one the pools handled first time.
+      return {
+        per100: a.per100,
+        fiber_g: fibers.length > 0 ? median(fibers) : null,
+        how: a.how,
+      };
+    }
+    lastBad = bad;
+  }
+  return { reason: lastBad };
 }
 
 export async function superLookupOne(
@@ -2615,7 +2835,20 @@ export async function superLookupOne(
     deps.log?.(`[parse_meal] super lookup rejected "${item.name}": ${reconciled.reason}`);
     return null;
   }
-  const { per100, fiber_g } = reconciled;
+  const { per100, fiber_g, how } = reconciled;
+  // Only worth a line when a RESCUE answered, and which tier is the rescue moved
+  // when consensus became tier 1. This gate was written when the pools were the
+  // normal path; left alone it logged "fell back to" on every ordinary lookup
+  // and stayed silent on the real fallbacks - the exact noise it exists to
+  // prevent, burying the cases worth reading. Caught on review; no test covers
+  // it because superLookupOne needs the network mocked to reach this line.
+  //
+  // Named explicitly rather than "not tier 1" so that adding a tier later fails
+  // loudly as an unlogged case rather than quietly as a noisy one.
+  const NORMAL_PATHS = ["the page others agree with", "per-macro pools"];
+  if (!NORMAL_PATHS.includes(how)) {
+    deps.log?.(`[parse_meal] super lookup for "${item.name}" fell back to: ${how}`);
+  }
 
   const { verified } = meetsVerificationBar(per100.kcal, finding.readings);
   // The same evidence, measured the other way. `verified` says whether anyone
@@ -5318,8 +5551,13 @@ export async function runParseMeal(
     raw.meal_type === "dinner" || raw.meal_type === "snack"
       ? raw.meal_type
       : null;
+  // Same order the assignItemMeals call below uses, deliberately. It only ever
+  // fires if items were somehow empty (the early return above makes that
+  // unreachable today), but a constant that states a DIFFERENT precedence from
+  // the code four lines under it is a trap for whoever reads it next - the two
+  // orderings disagreeing is what this whole fix was about.
   const decideDefault: MealType =
-    rawMealType ?? mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
+    mealFromText ?? rawMealType ?? input.mealHint ?? mealForHour(input.localHour);
   // `explicit` is the meal the TEXT named, and ONLY that. decide's own
   // meal_type belongs in the fallback, below the carried section, because it is
   // a GUESS and not the user speaking - the decide prompt tells it to fall back

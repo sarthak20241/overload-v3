@@ -5,7 +5,10 @@
  * each with its entries + subtotal, under a co-equal calories + protein summary
  * (MacroRing). Logging = the inline "Tell Drona what you ate" input at the bottom
  * (Journable model): you type/speak plain words, the entry resolves in place, and
- * tapping an entry shows Drona's read. Calm/mature system: Inter (system fallback
+ * tapping an entry shows Drona's read. With "Just log it" on (the logging-mode
+ * sheet), send commits and the server writes the diary itself, so the user can
+ * close the app; the diary reconciles what landed on the next open (lib/autoLog).
+ * Calm/mature system: Inter (system fallback
  * for now), tabular figures, Colors.macro register, lime reserved for the action.
  *
  * v1 renders with sample data so the layout is verifiable on-device; the Supabase
@@ -13,7 +16,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions,
+  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -40,10 +43,15 @@ import {
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, parseMealStreaming, logParsedMeal, capNotice, capUpgradeContext,
+  parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext,
   loadNutritionRange, dateFromYmd,
-  type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem,
+  type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
+import {
+  getAutoLog, setAutoLog, newAutoLogClientId, addPending, removePending, touchPending,
+  reconcilePending, markAddedByDrona, addedByDronaRef, forgetAddedByDrona,
+  type PendingAutoLog,
+} from '@/lib/autoLog';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
@@ -56,11 +64,19 @@ import { DronaMark } from '@/components/coach/DronaMark';
  *  picks a section and taps Add. mealType is the currently-selected section. */
 type ParseFlow =
   | { status: 'idle' }
-  | { status: 'analysing'; raw: string }
+  // `auto`: this parse was sent in "Just log it" mode, so the card says
+  // "adding" rather than "reading" while it waits.
+  | { status: 'analysing'; raw: string; auto?: boolean }
   // Fast mode only: the names are known and the numbers are still settling, so
   // the card shows real rows with shimmering figures instead of a spinner.
   // Named rows arrive ~1.2s ahead of the finished parse; this is that window.
-  | { status: 'streaming'; raw: string; rows: StreamedItem[] }
+  | { status: 'streaming'; raw: string; rows: StreamedItem[]; auto?: boolean }
+  // "Just log it": the server wrote the diary. The card is the receipt + Undo;
+  // `ref` is what Undo deletes, `clientId` the send it belongs to.
+  | { status: 'logged'; raw: string; meal: ParsedMeal; ref: LoggedParseRef; clientId: string }
+  // "Just log it": the stream dropped after the request left. The server
+  // finishes without us; the pending list (lib/autoLog) settles it.
+  | { status: 'sent'; raw: string; message: string; clientId: string }
   // `notice` carries a reply that is NOT a new meal (an answer to a question,
   // or a parse failure) while the reviewed meal stays on screen. Asking
   // "is that right?" must never throw away work the user hasn't added yet.
@@ -79,7 +95,13 @@ type ParseFlow =
   | { status: 'declined'; raw: string; message: string }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
-  | { status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType };
+  // `clientId`/`logDate`: a "Just log it" send that failed in transport. Retry
+  // re-uses the SAME id, so if the request did reach the server (which then
+  // finished without us) the retry is a no-op there instead of a double log.
+  | {
+      status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
+      clientId?: string; logDate?: string;
+    };
 
 const fmtK = (n: number) => Math.round(n).toLocaleString();
 const calCaption = (eaten: number, goal: number) =>
@@ -205,7 +227,10 @@ export default function NutritionScreen() {
 
   // AI food logging (Drona parse). Signed-in only; guests keep the picker.
   // Parse -> review card (nothing logged yet) -> the user picks the section and
-  // taps Add -> we write it. No auto-log, no auto-dismiss: the user is in control.
+  // taps Add -> we write it. No auto-dismiss, no timer: the user is in control.
+  // The one exception is opt-in: with "Just log it" on (lib/autoLog), send IS
+  // the commit and the SERVER writes the diary, so the user can close the app.
+  // Undo lives on the receipt strip and on each diary row Drona added.
   const [text, setText] = useState('');
   const [flow, setFlow] = useState<ParseFlow>({ status: 'idle' });
   // Mirror of `flow` for callbacks that must read it without re-subscribing
@@ -277,6 +302,52 @@ export default function NutritionScreen() {
     setParseSpeedState(v);
     void setParseSpeed(v);
   };
+  // "Just log it" (lib/autoLog). Same ref-mirrors-state idiom as the tier, so
+  // onSend reads the choice as of the tap.
+  const [autoLog, setAutoLogState] = useState(false);
+  const autoLogRef = useRef(false);
+  useEffect(() => {
+    getAutoLog().then((v) => { autoLogRef.current = v; setAutoLogState(v); });
+  }, []);
+  const pickAutoLog = (v: boolean) => {
+    autoLogRef.current = v;
+    setAutoLogState(v);
+    void setAutoLog(v);
+  };
+  const [undoing, setUndoing] = useState(false);
+  // Sends the diary never confirmed, older than lib/autoLog's PENDING_LOST_MS.
+  // Each is one line in the day with Retry: never re-sent silently.
+  const [lostSends, setLostSends] = useState<PendingAutoLog[]>([]);
+  // A dropped stream gets one follow-up look a few seconds later, while the
+  // screen is still up; foreground and mount cover everything after that.
+  const sentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (sentTimerRef.current) clearTimeout(sentTimerRef.current); }, []);
+
+  /** Look every settled pending send up in the diary. Found rows get their
+   *  "Added by Drona" chip and the day refreshes; a send the server never took
+   *  becomes a visible miss. Runs on mount, on foreground, and once after a
+   *  dropped stream. */
+  const reconcile = useCallback(async () => {
+    if (!supabase) return;
+    const r = await reconcilePending(supabase);
+    setLostSends(r.lost);
+    if (r.found.length === 0) return;
+    reload();
+    // The card was waiting on one of these: the diary now shows it with its
+    // chip, so the card has nothing left to say.
+    setFlow((f) => (
+      f.status === 'sent' && r.found.some((x) => x.pending.client_id === f.clientId)
+        ? { status: 'idle' }
+        : f
+    ));
+  }, [supabase, reload]);
+  useEffect(() => {
+    void reconcile();
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void reconcile();
+    });
+    return () => sub.remove();
+  }, [reconcile]);
   // What the chip and the sheet's tick both report: the tier that will run, not
   // merely the one stored. They must agree with onSend, which asks the same
   // question of the same two inputs.
@@ -333,7 +404,11 @@ export default function NutritionScreen() {
     });
   }, []);
 
-  const runParse = useCallback(async (raw: string) => {
+  /** `retry`: re-send a "Just log it" send with its ORIGINAL id and day (from
+   *  the error card or a "Drona didn't get" line). Forces auto mode even if the
+   *  toggle has since been flipped: the user is retrying that send, not making
+   *  a new choice. */
+  const runParse = useCallback(async (raw: string, retry?: { clientId: string; logDate: string }) => {
     const t = raw.trim();
     if (!t || !supabase) return;
     setSavedReview(false);
@@ -342,7 +417,15 @@ export default function NutritionScreen() {
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
-    const pending = prevReview ? { text: prevReview.raw, items: prevReview.meal.items } : null;
+    // A RETRY carries no context, deliberately. It re-sends one specific past
+    // send, so the meal on screen is not what it is about: passing `pending`
+    // here made the retry text arrive as a CORRECTION of an unrelated reviewed
+    // meal, mutating a card the user was still deciding on while the lost send
+    // was never re-sent at all. The stored pending record survived, so the miss
+    // line simply came back later and the damage looked unrelated to the tap.
+    const pending = retry || !prevReview
+      ? null
+      : { text: prevReview.raw, items: prevReview.meal.items };
     // Leaving the review this check belonged to. Without this the stale index
     // rides into the NEXT card and freezes Add/Edit/Remove behind a spinner on
     // an unrelated line until the abandoned 5-9s lookup finally settles.
@@ -351,7 +434,26 @@ export default function NutritionScreen() {
     parseAbortRef.current?.abort();
     const ac = new AbortController();
     parseAbortRef.current = ac;
-    setFlow({ status: 'analysing', raw: t });
+    // "Just log it" applies to a fresh meal only. With a review card on screen
+    // the user is in review mode for THAT meal whatever the toggle says: a
+    // follow-up corrects the card, it never commits behind it. (The server
+    // enforces the same rule on previous_items.)
+    //
+    // A retry is the exception and keeps its own identity: it was an auto send
+    // when it was made, and re-sending it is not a new choice about the toggle.
+    // It cleared `pending` above, so the two rules do not fight.
+    const auto = retry
+      ?? (!pending && autoLogRef.current
+        ? { clientId: newAutoLogClientId(), logDate: ymd(viewDate) }
+        : null);
+    if (auto) {
+      // Pending BEFORE the request leaves: if the app dies mid-stream, the next
+      // open still knows to look for this send in the diary.
+      if (retry) await touchPending(auto.clientId);
+      else await addPending({ client_id: auto.clientId, text: t, sent_at: Date.now(), log_date: auto.logDate });
+      setLostSends((l) => l.filter((x) => x.client_id !== auto.clientId));
+    }
+    setFlow({ status: 'analysing', raw: t, auto: !!auto });
     const turns = turnsRef.current.slice();
     pushTurn('user', t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
@@ -365,6 +467,7 @@ export default function NutritionScreen() {
       mealHint: prevReview?.mealType ?? mealForNow(),
       previous: pending,
       turns,
+      autoLog: auto,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
@@ -384,7 +487,7 @@ export default function NutritionScreen() {
         // the card they are now looking at.
         if (parseTokenRef.current !== token) return;
         setFlow((cur) => (
-          cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows } : cur
+          cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows, auto: cur.auto } : cur
         ));
       }, ac.signal);
     // From here on we are writing to the card. If another parse has started, or
@@ -392,6 +495,19 @@ export default function NutritionScreen() {
     // than let any branch below (declined, cap, error, review) speak for a
     // parse the user has moved on from.
     if (parseTokenRef.current !== token) return;
+    // "Just log it" bookkeeping. Any real answer means the server is done with
+    // this send, logged or not, so it leaves the pending list. `sent` is the
+    // one non-answer: the stream dropped and the server may still be writing,
+    // so it stays pending and a reconcile settles it. `error` stays too: a
+    // transport failure cannot say whether the request arrived, and the card's
+    // Retry re-uses the same id so the server writes at most once.
+    if (auto && res.kind !== 'sent' && res.kind !== 'error') void removePending(auto.clientId);
+    if (res.kind === 'sent') {
+      setFlow({ status: 'sent', raw: t, message: res.message, clientId: auto?.clientId ?? '' });
+      if (sentTimerRef.current) clearTimeout(sentTimerRef.current);
+      sentTimerRef.current = setTimeout(() => { void reconcile(); }, 6000);
+      return;
+    }
     // A reply that is not a meal (an answer, or a failure) must NOT discard a
     // meal still under review — that is unlogged work the user would have to
     // retype. Keep the card and show the reply as a notice on it.
@@ -428,10 +544,28 @@ export default function NutritionScreen() {
       // leaving it up would attach "use these numbers" to an error the user
       // just got for something else entirely.
       if (prevReview) { setFlow({ ...prevReview, notice: res.message, proposal: null }); return; }
-      setFlow({ status: 'error', raw: t, message: res.message });
+      setFlow({
+        status: 'error', raw: t, message: res.message,
+        ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
+      });
       return;
     }
     pushTurn('drona', res.meal.drona_line);
+    // "Just log it": the server already wrote these lines. Straight to the
+    // receipt; the diary refresh paints the rows with their chip.
+    if (auto && res.logged) {
+      markAddedByDrona(res.logged);
+      reload();
+      setFlow({ status: 'logged', raw: t, meal: res.meal, ref: res.logged, clientId: auto.clientId });
+      return;
+    }
+    // Asked to log, and the server sent it back for review instead. Say why
+    // on the card; the meal itself is fine to Add by hand.
+    const skippedNotice = auto && res.autoLogSkipped === 'implausible'
+      ? 'One of these numbers looked off to Drona, so he left it for you to check before it goes in.'
+      : auto && res.autoLogSkipped === 'write_error'
+      ? 'Drona could not write that to your diary. Check it and tap Add.'
+      : null;
     // The user's own section pick outranks a guess made from the follow-up
     // text alone; without a pick we take the server's.
     const keptMealType = prevReview?.mealTypePicked ? prevReview.mealType : null;
@@ -454,14 +588,14 @@ export default function NutritionScreen() {
           mealType: keptMealType ?? res.meal.meal_type,
           mealTypePicked: prevReview?.mealTypePicked,
         };
-    setFlow(reviewFlow);
+    setFlow(skippedNotice ? { ...reviewFlow, notice: skippedNotice } : reviewFlow);
     // I15: NOTHING fires after this point. The card the user is reading is the
     // card they will log. The automatic web refine that used to run here swapped
     // numbers in while Add was already live, so a user could tap Add on 180 kcal
     // and log 240 - a review step whose contents change is not a review step.
     // Web lookups are now user-initiated only (the challenge button on a
     // low-confidence line) and belong to Super mode.
-  }, [supabase]);
+  }, [supabase, viewDate, reload, reconcile]);
 
   /** Index of the pending line being corrected (null = editor closed). Edits
    *  are pure client state: nothing is written until Add, so a correction just
@@ -716,7 +850,11 @@ export default function NutritionScreen() {
     if (flow.meal && flow.mealType) {
       setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.mealType });
     } else {
-      void runParse(flow.raw);
+      // A failed "Just log it" send retries under its ORIGINAL id (see ParseFlow).
+      void runParse(
+        flow.raw,
+        flow.clientId && flow.logDate ? { clientId: flow.clientId, logDate: flow.logDate } : undefined,
+      );
     }
   }, [flow, runParse]);
 
@@ -729,6 +867,40 @@ export default function NutritionScreen() {
     parseTokenRef.current += 1;
     parseAbortRef.current?.abort();
     setFlow({ status: 'idle' });
+  }, []);
+
+  /** Undo on the receipt strip: delete every row the send wrote, then put the
+   *  meal back on the review card. The user undid the WRITE, not the parse, so
+   *  the lines stay on screen to fix or Add by hand rather than vanishing. */
+  const onUndo = useCallback(async () => {
+    if (flow.status !== 'logged' || !supabase || undoing) return;
+    setUndoing(true);
+    await undoParsedMeal(supabase, flow.ref);
+    forgetAddedByDrona(flow.ref);
+    setUndoing(false);
+    reload();
+    setCardMinimized(false);
+    setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.meal.meal_type });
+  }, [flow, supabase, undoing, reload]);
+
+  /** Undo from a diary row's "Added by Drona" chip: the whole send that row
+   *  came from, which is the action being undone. Removing one line is what
+   *  tapping the row already does. */
+  const onUndoRow = useCallback(async (ref: LoggedParseRef) => {
+    if (!supabase) return;
+    await undoParsedMeal(supabase, ref);
+    forgetAddedByDrona(ref);
+    reload();
+  }, [supabase, reload]);
+
+  /** A send the server never took, re-sent under the SAME id and day. */
+  const onRetryLost = useCallback((p: PendingAutoLog) => {
+    setLostSends((l) => l.filter((x) => x.client_id !== p.client_id));
+    void runParse(p.text, { clientId: p.client_id, logDate: p.log_date });
+  }, [runParse]);
+  const onForgetLost = useCallback(async (p: PendingAutoLog) => {
+    await removePending(p.client_id);
+    setLostSends((l) => l.filter((x) => x.client_id !== p.client_id));
   }, []);
 
   const eaten = { kcal: totals.kcal, protein: totals.protein_g, carb: totals.carb_g, fat: totals.fat_g };
@@ -859,6 +1031,23 @@ export default function NutritionScreen() {
           <Text style={s.dronaTxt}>{dronaLine}</Text>
         </View>
 
+        {/* "Just log it" sends the server never took (a network drop on send,
+            found by the reconcile). Visible, never silently re-sent: the user
+            closed the app trusting it went through, so a miss has to be seen.
+            Retry re-sends under the SAME id; the x forgets it. */}
+        {lostSends.map((p) => (
+          <View key={p.client_id} style={s.lost}>
+            <Feather name="alert-circle" size={12} color={C.textSecondary} style={{ marginTop: 2 }} />
+            <Text style={s.lostTxt} numberOfLines={2}>{`Drona didn't get: '${p.text}'`}</Text>
+            <Pressable onPress={() => onRetryLost(p)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry sending this to Drona">
+              <Text style={s.lostAction}>Retry</Text>
+            </Pressable>
+            <Pressable onPress={() => void onForgetLost(p)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Forget this one">
+              <Feather name="x" size={13} color={C.textMuted} />
+            </Pressable>
+          </View>
+        ))}
+
         {/* Meal sections */}
         {MEALS.map((m) => {
           const entries = byMeal[m.type];
@@ -874,19 +1063,47 @@ export default function NutritionScreen() {
                 )}
               </View>
 
-              {entries.map((e) => (
-                <Pressable key={e.id} style={s.entry} onPress={() => setEditEntry(e)}>
-                  <Text style={s.entryName}>
-                    {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
-                  </Text>
-                  <View style={s.macros}>
-                    <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                    <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                    <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
-                    <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
+              {entries.map((e) => {
+                // A row Drona added in "Just log it" this launch wears a quiet
+                // chip with Undo, so a meal logged while the app was closed is
+                // still one tap from gone. Cleared by the next app launch.
+                const dronaRef = addedByDronaRef(e.id);
+                return (
+                  // Undo is a SIBLING of the row, not nested in it. A Pressable
+                  // is accessible by default, so VoiceOver and TalkBack can fold
+                  // a nested one into the outer button and leave Undo with no
+                  // way to reach it. Same structure ParsedMealCard already uses
+                  // for its collapsed strip, and for the same reason.
+                  <View key={e.id} style={s.entryWrap}>
+                    <Pressable style={s.entry} onPress={() => setEditEntry(e)}>
+                      <Text style={s.entryName}>
+                        {e.food_name} <Text style={s.serving}>· {formatServing(e.quantity, e.serving_unit)}</Text>
+                      </Text>
+                      <View style={s.macros}>
+                        <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
+                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
+                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
+                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
+                      </View>
+                    </Pressable>
+                    {dronaRef && (
+                      <View style={s.dronaChip}>
+                        <DronaMark size={9} color={C.accentText} state="static" />
+                        <Text style={s.dronaChipTxt}>Added by Drona</Text>
+                        <Text style={s.dronaChipTxt}>·</Text>
+                        <Pressable
+                          onPress={() => { void onUndoRow(dronaRef); }}
+                          hitSlop={8}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Undo ${e.food_name}, added by Drona`}
+                        >
+                          <Text style={s.dronaChipUndo}>Undo</Text>
+                        </Pressable>
+                      </View>
+                    )}
                   </View>
-                </Pressable>
-              ))}
+                );
+              })}
 
               <Pressable style={s.add} hitSlop={8} onPress={() => openSearch(m.type)}>
                 <Feather name="plus" size={14} color={C.accentText} />
@@ -913,12 +1130,17 @@ export default function NutritionScreen() {
               maxHeight={cardMaxHeight}
               // Fast mode's settling window: real names, shimmering numbers.
               streamingRows={flow.status === 'streaming' ? flow.rows : null}
-              meal={flow.status === 'review' ? flow.meal : null}
+              meal={flow.status === 'review' || flow.status === 'logged' ? flow.meal : null}
               mealType={flow.status === 'review' ? flow.mealType : undefined}
               adding={adding}
               message={
-                flow.status === 'declined' || flow.status === 'error' ? flow.message : null
+                flow.status === 'declined' || flow.status === 'error' || flow.status === 'sent' ? flow.message : null
               }
+              // "Just log it": the receipt strip's Undo, and the waiting copy.
+              logged={flow.status === 'logged' ? flow.ref : null}
+              onUndo={flow.status === 'logged' ? onUndo : undefined}
+              undoing={undoing}
+              autoLogging={(flow.status === 'analysing' || flow.status === 'streaming') && !!flow.auto}
               onMealTypeChange={onMealTypeChange}
               onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
@@ -975,7 +1197,9 @@ export default function NutritionScreen() {
               style={s.inputText}
               value={text}
               onChangeText={setText}
-              placeholder="Tell Drona what you ate"
+              // "Just log it" changes what send DOES, and the placeholder is the
+              // honest always-visible signal of that: send now commits.
+              placeholder={autoLog ? 'Tell Drona what you ate, it goes straight in' : 'Tell Drona what you ate'}
               placeholderTextColor={C.textDim}
               returnKeyType="send"
               onSubmitEditing={onSend}
@@ -1007,8 +1231,9 @@ export default function NutritionScreen() {
               hitSlop={8}
               disabled={!text.trim() || parseInFlight}
               style={[s.send, { opacity: text.trim() && !parseInFlight ? 1 : 0.4 }]}
+              accessibilityLabel={autoLog ? 'Log it' : 'Send to Drona'}
             >
-              <Feather name="arrow-up" size={16} color={C.background} />
+              <Feather name={autoLog ? 'check' : 'arrow-up'} size={16} color={C.background} />
             </Pressable>
           </View>
         ) : (
@@ -1062,9 +1287,11 @@ export default function NutritionScreen() {
       <ParseSpeedSheet
         open={speedSheetOpen}
         value={parseSpeed}
+        autoLog={autoLog}
         canUsePrecise={canUsePrecise}
         onClose={() => setSpeedSheetOpen(false)}
         onPick={pickParseSpeed}
+        onAutoLogChange={pickAutoLog}
         onUpgrade={() => router.push({ pathname: '/upgrade', params: { context: 'pro_feature' } })}
       />
       <DayPickerSheet
@@ -1119,7 +1346,12 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     sectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim },
     sectionSub: { fontSize: 11, color: C.textMuted, fontVariant: ['tabular-nums'] },
 
-    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, marginTop: Spacing.sm, ...Shadow.card },
+    // The card and its Drona chip share a wrapper so the chip's Undo can be a
+    // SIBLING of the row's Pressable rather than nested inside it. marginTop
+    // moves here; the entry itself no longer sets it, or every row would gain
+    // a second gap.
+    entryWrap: { marginTop: Spacing.sm },
+    entry: { backgroundColor: C.card, borderRadius: Radius.md, borderWidth: 1, borderColor: C.borderSubtle, padding: Spacing.md, ...Shadow.card },
     raw: { fontSize: 10, color: C.textDim, marginBottom: 1 },
     entryName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: C.foreground },
     serving: { fontSize: FontSize.sm, color: C.textMuted, fontWeight: FontWeight.regular },
@@ -1130,6 +1362,16 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
 
     add: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, paddingLeft: 2 },
     addTxt: { fontSize: FontSize.sm, color: C.accentText, fontWeight: FontWeight.medium },
+
+    // "Just log it". The chip is a receipt line under the row, muted except for
+    // the Undo it exists to offer; the miss line sits where Drona's own line
+    // does, in the same register, with its two actions on the right.
+    dronaChip: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6 },
+    dronaChipTxt: { fontSize: FontSize.xs, color: C.textMuted },
+    dronaChipUndo: { fontSize: FontSize.xs, color: C.accentText, fontWeight: FontWeight.semibold },
+    lost: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingHorizontal: Spacing.xl, marginTop: Spacing.sm },
+    lostTxt: { flex: 1, fontSize: FontSize.sm, lineHeight: 18, color: C.textSecondary },
+    lostAction: { fontSize: FontSize.sm, lineHeight: 18, color: C.accentText, fontWeight: FontWeight.semibold },
 
     inputWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, backgroundColor: C.background },
     // alignItems flex-end keeps the search + send icons on the bottom line as the field grows.
