@@ -66,11 +66,12 @@ Deno.test("a changed UNIT must re-resolve, and says so with its tag", () => {
   );
 });
 
-Deno.test("THE ACCEPTED RISK: an untagged line is passed through even if it moved", () => {
-  // The cost of making the tag authoritative, pinned so nobody discovers it by
-  // surprise. The model returning null on a line it DID change means the edit
-  // is handed back untouched and silently dropped. scopeCorrection records the
-  // contradiction so it shows up in a trace rather than only in a user's day.
+Deno.test("THE ACCEPTED RISK: an unflagged line is passed through even if it moved", () => {
+  // The cost of letting the model's own flags decide, pinned so nobody
+  // discovers it by surprise. A line the model edits but leaves is_changed
+  // false on is handed back untouched and the edit is silently dropped.
+  // scopeCorrection records the contradiction so it shows up in a trace rather
+  // than only in a user's day.
   const same = unchangedInCorrection(
     ext({ name: "Roti / Chapati", quantity: 3, unit: "roti", correctsFoodName: null }),
     [ROTI],
@@ -82,7 +83,7 @@ Deno.test("THE ACCEPTED RISK: an untagged line is passed through even if it move
     new Set<string>(),
   );
   assertEquals(out.contradictions.length, 1, "and writes it down");
-  assertEquals(out.contradictions[0].includes("tag says untouched"), true, out.contradictions[0]);
+  assertEquals(out.contradictions[0].includes("flagged untouched"), true, out.contradictions[0]);
 });
 
 Deno.test("a newly stated prep is a change", () => {
@@ -230,4 +231,50 @@ Deno.test("a SWAP keeps its tag, and the swapped-out line stays replaced", () =>
   );
   assertEquals(out.unchangedCount, 0, "a re-target is a change, however tidy it looks");
   assertEquals(replaced.has("corn flakes"), true, "the swapped-out line must not be resurrected");
+});
+
+// ── The two fields are separate, and mean opposite things ───────────────────
+//
+// Sarthak's split. corrects_food_name is SWAPS ONLY ("rice, not poha"), and
+// is_changed is an EDIT to the line that is already there. They need opposite
+// handling: a swapped line is gone and must not be restored, an edited line is
+// still on the card and must stay restorable. One field doing both is what
+// deleted a breakfast.
+
+Deno.test("is_changed marks an EDIT, and the line stays restorable", () => {
+  const replaced = new Set<string>();
+  const out = scopeCorrection(
+    [ext({ name: "Poha", quantity: 2, unit: "plate", isChanged: true })],
+    [POHA],
+    replaced,
+  );
+  assertEquals(out.unchangedCount, 0, "an edit is a change");
+  assertEquals(replaced.size, 0, "an edited line must never read as deleted");
+});
+
+Deno.test("corrects_food_name marks a SWAP, and the old line stays gone", () => {
+  const CORN = prev("Corn Flakes", 1, "bowl");
+  const replaced = new Set(["corn flakes"]);
+  const out = scopeCorrection(
+    [ext({ name: "Muesli", quantity: 1, unit: "bowl", correctsFoodName: "Corn Flakes" })],
+    [CORN],
+    replaced,
+  );
+  assertEquals(out.unchangedCount, 0);
+  assertEquals(replaced.has("corn flakes"), true, "the swapped-out food must not be resurrected");
+});
+
+Deno.test("neither flag means copied back untouched", () => {
+  const replaced = new Set<string>();
+  const out = scopeCorrection(
+    [
+      ext({ name: "Poha", quantity: 1, unit: "plate" }),
+      ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", isChanged: true }),
+    ],
+    [POHA, RAJMA],
+    replaced,
+  );
+  assertEquals(out.unchangedCount, 1);
+  assertEquals(out.toResolve.map((i) => i.name), ["Rajma Chawal"]);
+  assertEquals(replaced.size, 0);
 });
