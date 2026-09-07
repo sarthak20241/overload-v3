@@ -1065,8 +1065,13 @@ const EXTRACT_TOOL = {
         type: ["string", "null"],
         enum: ["breakfast", "lunch", "dinner", "snack", null],
         description:
-          'The meal the TEXT names ("for lunch", "dinner was"). null when the text does not ' +
-          "name one; never infer it from the food or the time.",
+          'The meal the TEXT names, for the WHOLE message ("for lunch", "dinner was"). ' +
+          "A time of day the USER wrote counts as naming a meal, because they said it: " +
+          "morning is breakfast, afternoon is lunch, evening is snack, night is dinner. " +
+          "null when the text names no meal at all - then the app uses the clock, which " +
+          "is its job and not yours. Never infer a meal from the FOOD: a dosa is not " +
+          "breakfast, a biscuit is not a snack. And null here when the message names a " +
+          "meal only for SOME items; those go on the items themselves.",
       },
       requests_research: {
         type: "boolean",
@@ -1172,9 +1177,14 @@ const EXTRACT_TOOL = {
               description:
                 "The meal the text ties to THIS item, when one message covers several meals: " +
                 '"2 eggs for breakfast, dal chawal at lunch, oreos in snacks" gives eggs ' +
-                "breakfast, dal lunch, oreos snack. null when the text names no meal for this " +
-                "item, and null when the message names ONE meal for everything (that goes in " +
-                "meal_type_from_text instead). Never infer it from the food or the time of day.",
+                "breakfast, dal lunch, oreos snack.\n" +
+                "A time of day the USER wrote counts, because they said it: " +
+                'morning is breakfast, afternoon is lunch, evening is snack, night is dinner. ' +
+                'So "poha for breakfast, rajma at lunch, a banana in the evening" gives the ' +
+                'banana snack - NOT breakfast, and not whatever the clock says.\n' +
+                "null when the text ties no meal to THIS item, and null when the message " +
+                "names ONE meal for everything (that goes in meal_type_from_text instead). " +
+                "Never infer a meal from the FOOD itself.",
             },
           },
           required: ["name", "quantity", "unit"],

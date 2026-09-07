@@ -1027,9 +1027,24 @@ export const CASES: EvalCase[] = [
     //
     // maxItems is the assertion that matters. minItems alone would pass on a
     // card that quietly lost a line, which is how this reached production.
+    //
+    // The third line was "2 khakhra" for three runs and had to be changed: the
+    // model read it as "Masala Khakhara", "Khakhra roasted wheat crisps" and
+    // once "Khadhi" - a yoghurt curry, a different food entirely - all in the
+    // FIRST parse, before any correction. A case whose subject is "a correction
+    // preserves untouched lines" must not fail on how the model spells an
+    // unusual word, or its failures teach nothing. A banana is named the same
+    // way every time, and "in the evening" exercises the path that matters
+    // here: a time of day the user wrote, which is them naming the meal.
     id: "correction-keeps-untouched-lines",
-    text: "poha for breakfast, rajma chawal at lunch, 2 khakhra in the evening",
+    text: "poha for breakfast, rajma chawal at lunch, a banana in the evening",
     followUp: "make it 2 plates of rajma chawal",
+    // The hour is deliberately WRONG for the expected answer now, and that is
+    // the point: 19 reads as dinner on the clock, so the banana landing in
+    // snack can only have come from the user's own words ("in the evening").
+    // A time of day the user WROTE is them naming the meal; the clock is only
+    // for when they named nothing. Before that rule the banana inherited
+    // "breakfast" from the message-level meal and the clock never got a say.
     hour: 19,
     expectCorrection: true,
     expect: {
@@ -1038,9 +1053,7 @@ export const CASES: EvalCase[] = [
       items: [
         { nameIncludes: "poha", meal: "breakfast" },
         { nameIncludes: "rajma", meal: "lunch" },
-        // The model names this differently run to run - "Masala Khakhara",
-        // "Khakhra roasted wheat crisps" - so match the stem only.
-        { nameIncludes: "khakh", meal: "snack" },
+        { nameIncludes: "banana", meal: "snack" },
       ],
     },
   },
@@ -1052,6 +1065,8 @@ export const CASES: EvalCase[] = [
     id: "correction-keeps-untouched-lines-catalog-only",
     text: "poha for breakfast, rajma chawal at lunch",
     followUp: "make it 2 plates of rajma chawal",
+    // Both lines name their meal outright, so neither the clock nor the
+    // message-level meal decides here.
     hour: 19,
     expectCorrection: true,
     expect: {
