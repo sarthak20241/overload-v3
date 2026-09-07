@@ -67,11 +67,10 @@ Deno.test("a changed UNIT must re-resolve, and says so with its tag", () => {
 });
 
 Deno.test("THE ACCEPTED RISK: an unflagged line is passed through even if it moved", () => {
-  // The cost of letting the model's own flags decide, pinned so nobody
-  // discovers it by surprise. A line the model edits but leaves is_changed
-  // false on is handed back untouched and the edit is silently dropped.
-  // scopeCorrection records the contradiction so it shows up in a trace rather
-  // than only in a user's day.
+  // The cost of letting the model's tag decide, pinned so nobody discovers it
+  // by surprise. A line the model edits but leaves untagged is handed back
+  // untouched and the edit is silently dropped. scopeCorrection records the
+  // contradiction so it shows up in a trace rather than only in a user's day.
   const same = unchangedInCorrection(
     ext({ name: "Roti / Chapati", quantity: 3, unit: "roti", correctsFoodName: null }),
     [ROTI],
@@ -233,48 +232,78 @@ Deno.test("a SWAP keeps its tag, and the swapped-out line stays replaced", () =>
   assertEquals(replaced.has("corn flakes"), true, "the swapped-out line must not be resurrected");
 });
 
-// ── The two fields are separate, and mean opposite things ───────────────────
+// ── One tag, on every corrected line, naming the line it stands for ──────────
 //
-// Sarthak's split. corrects_food_name is SWAPS ONLY ("rice, not poha"), and
-// is_changed is an EDIT to the line that is already there. They need opposite
-// handling: a swapped line is gone and must not be restored, an edited line is
-// still on the card and must stay restorable. One field doing both is what
-// deleted a breakfast.
+// Sarthak's rule. corrects_food_name is the identity link and it goes on every
+// line the correction touched: an edit carries its own name, a swap carries the
+// old food's name, an untouched line carries nothing. Non-null is what
+// "changed" means. The link is what lets the no-drop guard tell that "Rajma
+// Masala" is the edited "Rajma Chawal" and not a second rajma.
 
-Deno.test("is_changed marks an EDIT, and the line stays restorable", () => {
-  const replaced = new Set<string>();
+Deno.test("an EDIT carries its own name and counts as changed", () => {
   const out = scopeCorrection(
-    [ext({ name: "Poha", quantity: 2, unit: "plate", isChanged: true })],
+    [ext({ name: "Poha", quantity: 2, unit: "plate", correctsFoodName: "Poha" })],
     [POHA],
-    replaced,
+    new Set(["poha"]),
   );
   assertEquals(out.unchangedCount, 0, "an edit is a change");
-  assertEquals(replaced.size, 0, "an edited line must never read as deleted");
+  assertEquals(out.toResolve.map((i) => i.name), ["Poha"]);
 });
 
-Deno.test("corrects_food_name marks a SWAP, and the old line stays gone", () => {
+Deno.test("a SWAP carries the OLD name and counts as changed", () => {
   const CORN = prev("Corn Flakes", 1, "bowl");
-  const replaced = new Set(["corn flakes"]);
   const out = scopeCorrection(
     [ext({ name: "Muesli", quantity: 1, unit: "bowl", correctsFoodName: "Corn Flakes" })],
     [CORN],
-    replaced,
+    new Set(["corn flakes"]),
   );
   assertEquals(out.unchangedCount, 0);
-  assertEquals(replaced.has("corn flakes"), true, "the swapped-out food must not be resurrected");
 });
 
-Deno.test("neither flag means copied back untouched", () => {
-  const replaced = new Set<string>();
+Deno.test("no tag means copied back untouched, and it is never in replaced", () => {
+  const replaced = new Set(["rajma chawal"]);
   const out = scopeCorrection(
     [
       ext({ name: "Poha", quantity: 1, unit: "plate" }),
-      ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", isChanged: true }),
+      ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", correctsFoodName: "Rajma Chawal" }),
     ],
     [POHA, RAJMA],
     replaced,
   );
   assertEquals(out.unchangedCount, 1);
   assertEquals(out.toResolve.map((i) => i.name), ["Rajma Chawal"]);
-  assertEquals(replaced.size, 0);
+  assertEquals(replaced.has("poha"), false);
+  assertEquals(replaced.has("rajma chawal"), true, "the edited line stays marked so its old version is not restored");
+});
+
+// ── THE DUPLICATION, found by measurement on 2026-09-07 ─────────────────────
+//
+// User edits the rajma to 2 plates. decide re-looks it up and lands on "Rajma
+// Masala", a different catalog name. The guard then looked for "Rajma Chawal",
+// did not see it, and restored it beside the new line: two rajmas, double the
+// calories. The edit's tag in `replaced` is what stops that.
+import { keepUncoveredPrevious } from "./parseMeal.ts";
+
+const asParsed = (name: string, kcal: number) => ({
+  food_id: "id-" + name, food_name: name, quantity: 2, serving_label: "plate", grams: 440,
+  kcal, protein_g: 20, carb_g: 60, fat_g: 10, fiber_g: null,
+  source: "catalog" as const, assumption: null, confidence: "high" as const,
+});
+
+Deno.test("an edited line that decide RENAMED does not get its old self restored", () => {
+  const out = keepUncoveredPrevious(
+    [asParsed("Rajma Masala", 594)],
+    [RAJMA, POHA],
+    new Set(["rajma chawal"]),
+  );
+  const names = out.map((i) => i.food_name);
+  assertEquals(names.includes("Poha"), true, "the untouched poha comes back");
+  assertEquals(names.includes("Rajma Chawal"), false, "the old rajma must NOT come back beside the new one");
+  assertEquals(out.length, 2);
+});
+
+Deno.test("without the tag the same input duplicates - the bug, pinned in reverse", () => {
+  const out = keepUncoveredPrevious([asParsed("Rajma Masala", 594)], [RAJMA, POHA], new Set());
+  assertEquals(out.map((i) => i.food_name).includes("Rajma Chawal"), true);
+  assertEquals(out.length, 3, "two rajmas: this is what the tag prevents");
 });
