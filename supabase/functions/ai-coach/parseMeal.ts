@@ -2721,6 +2721,15 @@ export function reconcileReadings(
     for (const nearest of byNearestKcal) {
       attempts.push({
         how: "one whole panel",
+        // Its own fibre too. This tier makes the same "one real page copied
+        // whole" promise as the consensus tier, so pooling the fifth number
+        // here would be the identical incoherence, left in the identical file.
+        // Flagged on review after the consensus tier was fixed and this one was
+        // not.
+        fiber_g: typeof nearest.per_100.fiber_g === "number" &&
+            Number.isFinite(nearest.per_100.fiber_g) && nearest.per_100.fiber_g >= 0
+          ? nearest.per_100.fiber_g
+          : null,
         per100: {
         // The panel's OWN energy, not kcalMid. This tier claims to copy one real
         // page whole, and it did not: taking the cross-source median here paired

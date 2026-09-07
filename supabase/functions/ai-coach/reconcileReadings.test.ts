@@ -525,3 +525,16 @@ Deno.test("a winner that printed no fibre reports null, not a borrowed figure", 
   // on the row that the page we actually used never printed.
   assertEquals(out.fiber_g, null);
 });
+
+Deno.test("tier 4 carries its own fibre too, not a pooled one", () => {
+  // Same promise as the consensus tier, so the same rule. Only two complete
+  // panels, so consensus stands down; b is impossible (140 g of macros), so the
+  // pooled tiers fail and tier 4 copies a whole. a's fibre is 1, the pooled
+  // median of [1, 8] is 4.5 - different numbers, so this cannot pass by luck.
+  const out = ok(reconcileReadings([
+    r("https://a.example/x", 500, 5, 95, 3, 1),
+    r("https://b.example/x", 505, 5, 95, 40, 8),
+  ]));
+  assertEquals(out.how, "one whole panel");
+  assertEquals(out.fiber_g, 1, "a's own fibre, not median([1, 8]) = 4.5");
+});
