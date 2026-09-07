@@ -493,18 +493,25 @@ Deno.test("agreeing zeros are agreement, not infinite disagreement", () => {
 });
 
 Deno.test("the winner's fibre travels with it, not a blend of everyone's", () => {
-  // Flagged on #147: four numbers came from one page and fibre from a median
-  // across every reading, so the row was not the "one real page" it claimed.
-  // b wins the vote here; its 2.5 g must survive, not median([2.5, 9, 9]).
+  // MY FIRST VERSION OF THIS TEST WAS FAKE and the review did the arithmetic to
+  // prove it: c won rather than the b I claimed, c's fibre was also 9, and
+  // median([9, 2.5, 9]) is 9 too - so it passed under the pooled behaviour it
+  // was named after. Third time I have written a test that agrees with whatever
+  // the code does.
+  //
+  // This one cannot. b sits exactly between a and c on all four numbers, so b is
+  // unambiguously the most central and wins. b is ALSO the only page with a
+  // different fibre, and the pooled median of [9, 2.5, 9] is 9 - so the pooled
+  // answer and the correct answer are different numbers, which is the whole
+  // point of a regression test.
   const out = ok(reconcileReadings([
     r("https://a.example/x", 540, 7, 58, 32, 9),
-    r("https://b.example/x", 542, 7.2, 58.5, 31.5, 2.5),
-    r("https://c.example/x", 541, 7.1, 58.2, 31.8, 9),
+    r("https://b.example/x", 541, 7.05, 58.1, 32.05, 2.5),
+    r("https://c.example/x", 542, 7.1, 58.2, 32.1, 9),
   ]));
   assertEquals(out.how, "the page others agree with");
-  const winners = [9, 2.5, 9];
-  assertEquals(winners.includes(out.fiber_g as number), true,
-    `fibre ${out.fiber_g} came from no single page`);
+  assertEquals(out.per100.kcal, 541, "b is the central page");
+  assertEquals(out.fiber_g, 2.5, "b's own fibre, not median([9, 2.5, 9]) = 9");
 });
 
 Deno.test("a winner that printed no fibre reports null, not a borrowed figure", () => {
