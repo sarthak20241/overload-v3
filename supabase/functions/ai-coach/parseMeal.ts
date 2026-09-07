@@ -1108,11 +1108,10 @@ const EXTRACT_TOOL = {
         description:
           "One entry per distinct food/drink. When corrects_previous is true, list EVERY " +
           "line of the previous meal - the edited ones AND the untouched ones, copied back " +
-          "exactly as they were - because the result replaces the meal wholesale and a line " +
-          "you leave out is DELETED. Mark which is which: is_changed true on a line you " +
-          "edited, corrects_food_name on a line you swapped for a different food, neither " +
-          "on a line you are copying back. A line named in removed_food_names is the one " +
-          "exception: leave it out entirely.",
+          "exactly as they were - because the result replaces the meal wholesale. Mark " +
+          "which is which: is_changed true on a line you edited, corrects_food_name on a " +
+          "line you swapped for a different food, neither on a line you are copying back. " +
+          "A line named in removed_food_names is the one exception: leave it out entirely.",
         items: {
           type: "object",
           properties: {
@@ -1925,7 +1924,7 @@ export function assignItemMeals(
 const EXTRACT_CORRECTION_RULES = `
 
 A meal the user just logged may be shown to you as previous_meal (it is on screen, not yet saved). If so, decide what the new text is doing:
-- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". List EVERY line of previous_meal - the ones you edited AND the ones you did not touch, copied back exactly as they are. A line you leave out is DELETED from the user's day, and they did not ask for that.
+- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". List EVERY line of previous_meal - the ones you edited AND the ones you did not touch, copied back exactly as they are.
   Two separate fields say what happened to each line. Most lines get NEITHER.
     is_changed: true       - you EDITED this line. Its amount, serving size or macros are different from previous_meal. The food is the same food.
     corrects_food_name: "X" - you SWAPPED this line for a different food. X is the previous line's food_name, copied exactly. Never this entry's own name.
@@ -1937,7 +1936,7 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
   Same meal, user says "it was muesli, not corn flakes" (previous_meal had corn flakes) - one line swapped:
     {"name":"muesli","quantity":1,"unit":"bowl","is_changed":false,"corrects_food_name":"corn flakes"}
   A swap sets corrects_food_name, NOT is_changed: the food itself is different, so the old line goes and the new one takes its place. Without that name the app keeps both foods.
-  An edit sets is_changed, NOT corrects_food_name: the line is still there, just different. Putting its own name in corrects_food_name tells the app the user deleted it.
+  An edit sets is_changed, NOT corrects_food_name: the line is still there, just different. corrects_food_name names a DIFFERENT line, so this entry's own name never belongs in it.
   If you copy a line back with different numbers but leave is_changed false, the app keeps the OLD numbers and the user's correction is lost.
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
