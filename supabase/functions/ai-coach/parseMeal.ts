@@ -1887,8 +1887,22 @@ export function assignItemMeals(
     // The section this line is ALREADY in, from the line itself when it kept it
     // (tryFastCorrection) or from the previous meal by name when decide rebuilt
     // it and dropped it.
+    // Gating this on correctsFoodName was a bug the moment the extract prompt
+    // stopped tagging untouched lines. A line handed back unchanged now carries
+    // corrects_food_name: null - which is the SAFER wire shape and the whole
+    // point of that change - and this lookup then skipped exactly the lines
+    // that most needed it, so an untouched line fell through to the clock and
+    // a logged day partly re-sectioned itself. Measured on the eval the same
+    // day the prompt changed: khakhara moved from Snacks to Breakfast on a
+    // correction that never mentioned it.
+    //
+    // Ask by whatever name we have, in order of how well it identifies the
+    // previous line: the line this entry REPLACES when it says so (a swap
+    // renames, so "Muesli" must inherit "Corn Flakes"' section), else the name
+    // the model extracted, else the name decide settled on. prevMealByName
+    // returns undefined on no match, so a wrong guess costs nothing.
     const carried = it.meal_type ??
-      (e?.correctsFoodName ? carriedFor?.(e.correctsFoodName, idx) : undefined);
+      carriedFor?.(e?.correctsFoodName ?? e?.name ?? it.food_name, idx);
     // Per-item beats explicit beats carried beats guess. The middle two are the
     // pair that has to stay in this order: the text saying "lunch" now outranks
     // the section a line was sitting in, while the clock never does.
@@ -3215,11 +3229,31 @@ export function scopeCorrection(
    *  allowed to bring back; a previous line missing from the final card and
    *  NOT in this list was treated as deliberately swapped out. */
   unreplaced: string[];
+  /** One line per entry judged CHANGED, showing what was compared. */
+  changed: string[];
 } {
   const passthrough = new Map<number, PreviousItem>();
+  // Why each line was judged CHANGED. "unchanged 0" is the shape that costs a
+  // line its section, and on its own it does not say which of the three
+  // compared fields disagreed - so the cause had to be guessed, twice. This
+  // prints the comparison: what the model sent against what the card holds for
+  // the same-named line ("-" when there is no line by that name at all, which
+  // is a rename rather than a mismatch).
+  const changed: string[] = [];
   extItems.forEach((it, i) => {
     const same = unchangedInCorrection(it, prevItems);
-    if (same) passthrough.set(i, same);
+    if (same) {
+      passthrough.set(i, same);
+      return;
+    }
+    const byName = prevItems.find(
+      (p) => p.food_name.trim().toLowerCase() === it.name.trim().toLowerCase(),
+    );
+    changed.push(
+      byName
+        ? `${it.name}: got ${it.quantity} "${it.unit}" vs stored ${byName.quantity} "${byName.serving_label}"`
+        : `${it.name}: no previous line by that name`,
+    );
   });
   const unreplaced: string[] = [];
   for (const p of passthrough.values()) {
@@ -3232,9 +3266,16 @@ export function scopeCorrection(
       untouched: passthrough.size,
       unchangedCount: passthrough.size,
       unreplaced,
+      changed,
     };
   }
-  return { toResolve: extItems, untouched: 0, unchangedCount: passthrough.size, unreplaced };
+  return {
+    toResolve: extItems,
+    untouched: 0,
+    unchangedCount: passthrough.size,
+    unreplaced,
+    changed,
+  };
 }
 
 export function unchangedInCorrection(
@@ -4713,6 +4754,7 @@ export async function runParseMeal(
         re_resolved: toResolve.length,
         narrowed: scoped.untouched > 0,
         unreplaced: scoped.unreplaced,
+        changed: scoped.changed,
       },
     });
   }

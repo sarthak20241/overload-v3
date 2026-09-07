@@ -410,7 +410,11 @@ async function main() {
     // another case's verdict under this case's name.
     const last = outcomes.find((o) => o.id === c.id)!;
     console.log(`${last.pass ? "PASS" : "FAIL"}  ${c.id.padEnd(24)} ${last.ms}ms  [${last.tiers.join(",")}]`);
-    if (!last.pass && env("DEBUG_STEPS") === "1" && lastSteps) {
+    // Steps print on a PASS too. DEBUG_STEPS is opt-in, and gating it on
+    // failure meant a passing case could not be inspected at all - so a prompt
+    // change could be "measured" by a green run without anyone seeing whether
+    // the model had actually followed it. A case can pass for the wrong reason.
+    if (env("DEBUG_STEPS") === "1" && lastSteps) {
       for (const st of lastSteps) {
         // The correction steps are here because a correction failure is the one
         // shape this harness could not explain: the trace said how many items
