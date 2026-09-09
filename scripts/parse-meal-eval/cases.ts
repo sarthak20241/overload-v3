@@ -1072,4 +1072,63 @@ export const CASES: EvalCase[] = [
       items: [{ nameIncludes: "paneer", nameExcludes: ["milky mist"], kcalBetween: [200, 500] }],
     },
   },
+  {
+    // A CORRECTION MUST NOT DELETE FOOD THE USER DID NOT MENTION. Reproduced on
+    // device against live v154 on 2026-09-06: this exact pair came back with
+    // two items, the poha silently gone along with its whole Breakfast
+    // section. The user said nothing about poha.
+    //
+    // maxItems is the assertion that matters. minItems alone would pass on a
+    // card that quietly lost a line, which is how this reached production.
+    //
+    // The third line was "2 khakhra" for three runs and had to be changed: the
+    // model read it as "Masala Khakhara", "Khakhra roasted wheat crisps" and
+    // once "Khadhi" - a yoghurt curry, a different food entirely - all in the
+    // FIRST parse, before any correction. A case whose subject is "a correction
+    // preserves untouched lines" must not fail on how the model spells an
+    // unusual word, or its failures teach nothing. A banana is named the same
+    // way every time, and "in the evening" exercises the path that matters
+    // here: a time of day the user wrote, which is them naming the meal.
+    id: "correction-keeps-untouched-lines",
+    text: "poha for breakfast, rajma chawal at lunch, a banana in the evening",
+    followUp: "make it 2 plates of rajma chawal",
+    // The hour is deliberately WRONG for the expected answer now, and that is
+    // the point: 19 reads as dinner on the clock, so the banana landing in
+    // snack can only have come from the user's own words ("in the evening").
+    // A time of day the user WROTE is them naming the meal; the clock is only
+    // for when they named nothing. Before that rule the banana inherited
+    // "breakfast" from the message-level meal and the clock never got a say.
+    hour: 19,
+    expectCorrection: true,
+    expect: {
+      minItems: 3,
+      maxItems: 3,
+      items: [
+        { nameIncludes: "poha", meal: "breakfast" },
+        { nameIncludes: "rajma", meal: "lunch" },
+        { nameIncludes: "banana", meal: "snack" },
+      ],
+    },
+  },
+  {
+    // The same shape with a CATALOG-ONLY meal, which is what the fast
+    // correction path requires: it bails if any previous line lacks a catalog
+    // food_id, and a FatSecret-backed khakhra is what kept it from firing in
+    // two device runs. Same contract, different road through the code.
+    id: "correction-keeps-untouched-lines-catalog-only",
+    text: "poha for breakfast, rajma chawal at lunch",
+    followUp: "make it 2 plates of rajma chawal",
+    // Both lines name their meal outright, so neither the clock nor the
+    // message-level meal decides here.
+    hour: 19,
+    expectCorrection: true,
+    expect: {
+      minItems: 2,
+      maxItems: 2,
+      items: [
+        { nameIncludes: "poha", meal: "breakfast" },
+        { nameIncludes: "rajma", meal: "lunch" },
+      ],
+    },
+  },
 ];
