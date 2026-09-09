@@ -71,9 +71,9 @@ type ParseFlow =
   // the card shows real rows with shimmering figures instead of a spinner.
   // Named rows arrive ~1.2s ahead of the finished parse; this is that window.
   | { status: 'streaming'; raw: string; rows: StreamedItem[]; auto?: boolean }
-  // "Just log it": the server wrote the diary. The card is the receipt + Undo;
-  // `ref` is what Undo deletes, `clientId` the send it belongs to.
-  | { status: 'logged'; raw: string; meal: ParsedMeal; ref: LoggedParseRef; clientId: string }
+  // There is no state for "Just log it succeeded". The write IS the answer, so
+  // the flow goes straight back to idle and the diary rows are the receipt -
+  // each one wearing "Added by Drona - Undo". See the auto branch in runParse.
   // "Just log it": the stream dropped after the request left. The server
   // finishes without us; the pending list (lib/autoLog) settles it.
   | { status: 'sent'; raw: string; message: string; clientId: string }
@@ -314,7 +314,6 @@ export default function NutritionScreen() {
     setAutoLogState(v);
     void setAutoLog(v);
   };
-  const [undoing, setUndoing] = useState(false);
   // Sends the diary never confirmed, older than lib/autoLog's PENDING_LOST_MS.
   // Each is one line in the day with Retry: never re-sent silently.
   const [lostSends, setLostSends] = useState<PendingAutoLog[]>([]);
@@ -551,12 +550,26 @@ export default function NutritionScreen() {
       return;
     }
     pushTurn('drona', res.meal.drona_line);
-    // "Just log it": the server already wrote these lines. Straight to the
-    // receipt; the diary refresh paints the rows with their chip.
+    // "Just log it": the server already wrote these lines, so there is nothing
+    // left to review and no card to show. The rows themselves are the receipt -
+    // they land in their own sections wearing "Added by Drona - Undo", which is
+    // the same undo the card's strip used to offer.
+    //
+    // A card here also read as an invitation to reply, and a reply after a
+    // WRITE is not a correction. `previous` is only sent for a meal still under
+    // review (see prevReview), so "make that 2 rotis" came back as a brand new
+    // meal and was logged a SECOND time on top of the first. Nothing on screen
+    // to answer is the honest shape of a send that is already finished.
+    //
+    // The turns go with it. They are what lets "and a dosa" attach to the meal
+    // before it, and attaching to a meal that is already in the diary is the
+    // same double-write by another route. This send is closed; the next
+    // message starts a new one.
     if (auto && res.logged) {
       markAddedByDrona(res.logged);
       reload();
-      setFlow({ status: 'logged', raw: t, meal: res.meal, ref: res.logged, clientId: auto.clientId });
+      turnsRef.current = [];
+      setFlow({ status: 'idle' });
       return;
     }
     // Asked to log, and the server sent it back for review instead. Say why
@@ -869,20 +882,6 @@ export default function NutritionScreen() {
     setFlow({ status: 'idle' });
   }, []);
 
-  /** Undo on the receipt strip: delete every row the send wrote, then put the
-   *  meal back on the review card. The user undid the WRITE, not the parse, so
-   *  the lines stay on screen to fix or Add by hand rather than vanishing. */
-  const onUndo = useCallback(async () => {
-    if (flow.status !== 'logged' || !supabase || undoing) return;
-    setUndoing(true);
-    await undoParsedMeal(supabase, flow.ref);
-    forgetAddedByDrona(flow.ref);
-    setUndoing(false);
-    reload();
-    setCardMinimized(false);
-    setFlow({ status: 'review', raw: flow.raw, meal: flow.meal, mealType: flow.meal.meal_type });
-  }, [flow, supabase, undoing, reload]);
-
   /** Undo from a diary row's "Added by Drona" chip: the whole send that row
    *  came from, which is the action being undone. Removing one line is what
    *  tapping the row already does. */
@@ -1130,16 +1129,12 @@ export default function NutritionScreen() {
               maxHeight={cardMaxHeight}
               // Fast mode's settling window: real names, shimmering numbers.
               streamingRows={flow.status === 'streaming' ? flow.rows : null}
-              meal={flow.status === 'review' || flow.status === 'logged' ? flow.meal : null}
+              meal={flow.status === 'review' ? flow.meal : null}
               mealType={flow.status === 'review' ? flow.mealType : undefined}
               adding={adding}
               message={
                 flow.status === 'declined' || flow.status === 'error' || flow.status === 'sent' ? flow.message : null
               }
-              // "Just log it": the receipt strip's Undo, and the waiting copy.
-              logged={flow.status === 'logged' ? flow.ref : null}
-              onUndo={flow.status === 'logged' ? onUndo : undefined}
-              undoing={undoing}
               autoLogging={(flow.status === 'analysing' || flow.status === 'streaming') && !!flow.auto}
               onMealTypeChange={onMealTypeChange}
               onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
