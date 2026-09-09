@@ -1018,7 +1018,7 @@ export const CASES: EvalCase[] = [
       minItems: 1, maxItems: 1,
       items: [{ nameIncludes: "paneer", nameExcludes: ["milky mist"], kcalBetween: [200, 500] }],
     },
-  },,
+  },
   {
     // A CORRECTION MUST NOT DELETE FOOD THE USER DID NOT MENTION. Reproduced on
     // device against live v154 on 2026-09-06: this exact pair came back with

@@ -1,9 +1,20 @@
 // Run with: deno test supabase/functions/ai-coach/correctionScope.test.ts
 //
-// I1. The asymmetry is the whole design: calling a CHANGED line unchanged
-// silently discards the user's edit, while calling an unchanged line changed
-// merely costs a re-resolve. Every ambiguous case below must therefore come
-// back null (= re-resolve), not a match.
+// I1 SUPERSEDED, and the old wording is kept here in one line so nobody
+// reinstates it: the file used to say "every ambiguous case must come back
+// null", because the code decided changed-ness by comparing name + amount +
+// unit and erring toward a re-resolve was free.
+//
+// It is not free any more, and it is not how the code decides. corrects_food_name
+// decides: non-null means the model says this line changed, null means it says
+// the line was copied back untouched. A line wrongly called changed is
+// re-resolved AND re-sectioned, which cost a logged day its meal grouping.
+//
+// So the asymmetry now runs the other way, and the cost is real in both
+// directions. The one case that IS still silently expensive - an edit the model
+// forgot to tag - is pinned below as "THE ACCEPTED RISK", and scopeCorrection
+// records it as a contradiction so it shows in a trace rather than only in a
+// user's day.
 
 import { assertEquals } from "jsr:@std/assert@1";
 import { unchangedInCorrection, type ExtractedItem, type PreviousItem } from "./parseMeal.ts";
@@ -306,4 +317,46 @@ Deno.test("without the tag the same input duplicates - the bug, pinned in revers
   const out = keepUncoveredPrevious([asParsed("Rajma Masala", 594)], [RAJMA, POHA], new Set());
   assertEquals(out.map((i) => i.food_name).includes("Rajma Chawal"), true);
   assertEquals(out.length, 3, "two rajmas: this is what the tag prevents");
+});
+
+// ── The fast path must survive untagged lines ───────────────────────────────
+//
+// tryFastCorrection keys each extracted line to a previous one. It read only
+// corrects_food_name, so once untouched lines started arriving with null the
+// FIRST one bailed the whole function - and the failure is invisible: no crash,
+// no wrong numbers, just the ~2s path quietly becoming the ~6s one on every
+// partial correction. Found by the Claude PR bot on #149, not by this suite,
+// because the eval asserts what the card ends up saying and never which code
+// path said it.
+import { tryFastCorrection, type ParseMealDeps } from "./parseMeal.ts";
+
+const fastDeps = {
+  getFoodPer100: (_id: string) =>
+    Promise.resolve({ kcal: 200, protein_g: 10, carb_g: 30, fat_g: 5, fiber_g: null }),
+  getFoodServings: (_id: string) => Promise.resolve([{ label: "plate", grams: 220 }]),
+} as unknown as ParseMealDeps;
+
+Deno.test("an UNTAGGED line does not bail the fast correction path", async () => {
+  const out = await tryFastCorrection(
+    fastDeps,
+    [
+      ext({ name: "Poha", quantity: 1, unit: "plate" }),                                  // untouched, no tag
+      ext({ name: "Rajma Chawal", quantity: 2, unit: "plate", correctsFoodName: "Rajma Chawal" }),
+    ],
+    [POHA, RAJMA],
+  );
+  assertEquals(out !== null, true, "null here means the fast path silently disabled itself");
+  assertEquals(out?.length, 2);
+  assertEquals(out?.map((i) => i.food_name).sort(), ["Poha", "Rajma Chawal"]);
+});
+
+Deno.test("a line matching NO previous line still bails, as it must", async () => {
+  // The bail is correct here: a food that was not on the card needs a real
+  // resolve, and the fast path has no candidates for it.
+  const out = await tryFastCorrection(
+    fastDeps,
+    [ext({ name: "Idli", quantity: 2, unit: "piece" })],
+    [POHA, RAJMA],
+  );
+  assertEquals(out, null);
 });

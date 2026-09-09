@@ -4382,7 +4382,16 @@ export async function tryFastCorrection(
   const out: ParsedItem[] = [];
 
   for (const item of extItems) {
-    const prev = item.correctsFoodName ? byName.get(item.correctsFoodName.toLowerCase()) : undefined;
+    // Fall back to the entry's OWN name when it carries no tag. Under the
+    // current contract a null tag means "copied back untouched", and this list
+    // is the FULL extract - scopeCorrection narrows a different copy - so
+    // keying only off the tag made the first untouched line bail the whole
+    // function. That silently disabled the fast path for every partial
+    // correction: no crash, no wrong data, just ~2s becoming ~6s with nothing
+    // to show it. The same fallback assignItemMeals needed, for the same
+    // reason, and missed here because the eval asserts output shape and not
+    // which path produced it. Found by the Claude PR bot on #149.
+    const prev = byName.get((item.correctsFoodName ?? item.name).toLowerCase());
     // Every line must map to a known, catalog-backed previous line.
     if (!prev || !prev.food_id) return null;
     // A changed identity ("paneer not tofu") needs a real re-resolve.
