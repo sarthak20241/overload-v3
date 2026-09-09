@@ -25,7 +25,11 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
-const CLI_TIMEOUT_MS = 180_000;
+// Overridable because the ceiling is the CLI's, not the pipeline's. A long
+// full-day message (audit-full-day-long) can sit past 180s when the CLI is
+// contended, and the harness then reports a transport timeout as a case
+// failure - which reads as a regression in parse_meal and is not one.
+const CLI_TIMEOUT_MS = Math.max(30_000, Number(process.env.EVAL_CLI_TIMEOUT_MS || "") || 180_000);
 
 interface ToolDef {
   name: string;

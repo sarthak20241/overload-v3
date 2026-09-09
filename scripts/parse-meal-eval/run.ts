@@ -162,7 +162,10 @@ const deps: ParseMealDeps = {
   anthropicApiKey: ANTHROPIC_API_KEY,
   model: MODEL,
   ...(VIA_CLI ? { fetchFn: makeClaudeCliFetch(MODEL) } : {}),
-  maxTokens: 1600,
+  // Mirrors PARSE_MEAL_MAX_TOKENS in index.ts. Keep them equal or the eval
+  // measures a decide call with a different budget than the one that ships,
+  // which is exactly how a truncation bug hides from a green suite.
+  maxTokens: 5000,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
   // FAST_GRAMMAR=on runs Lane A for real, so the eval can prove the code-named
@@ -261,6 +264,12 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
   }
   if (exp.mealType && result.parsed!.meal_type !== exp.mealType) {
     failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
+  }
+  // Whole-result exclusions. Runs before the per-item checks so a nonsense
+  // row is reported even when every named expectation is satisfied.
+  for (const bad of exp.forbidNames ?? []) {
+    const hit = items.find((i) => i.food_name.toLowerCase().includes(bad.toLowerCase()));
+    if (hit) failures.push(`no item may contain "${bad}", but got "${hit.food_name}"`);
   }
   for (const ie of exp.items ?? []) {
     // nameIncludes plus optional nameIncludesAny alternates: a "roasted

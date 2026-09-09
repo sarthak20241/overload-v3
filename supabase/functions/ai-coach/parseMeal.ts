@@ -1540,7 +1540,10 @@ async function runWebLookup(
     const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
     const result = await callAnthropicOnce(webDeps, {
       model: deps.model,
-      max_tokens: 800,
+      // 5000 like the rest of the parse path: report_labels answers for every
+      // item at once, so its output grows with the item count and the ceiling
+      // is now 50, not 12.
+      max_tokens: EXTRACT_MAX_TOKENS_FAST,
       system,
       tools: [WEB_SEARCH_TOOL, WEB_LOOKUP_TOOL],
       messages: conversation,
@@ -1714,7 +1717,9 @@ export async function runSuperLookup(
     const lastTurn = turn === WEB_LOOKUP_MAX_TURNS - 1;
     const result = await callAnthropicOnce(webDeps, {
       model: deps.model,
-      max_tokens: 1200,
+      // Same reasoning as the label lookup above: report_sources covers every
+      // item in one call, and an item now carries per-source readings.
+      max_tokens: EXTRACT_MAX_TOKENS_FAST,
       system,
       tools: [WEB_SEARCH_TOOL, SUPER_LOOKUP_TOOL],
       messages: conversation,
@@ -2068,13 +2073,70 @@ const FAST_EXTRACT_TOOL = (() => {
   return t;
 })();
 
+/** How many foods one message may log.
+ *
+ *  This was 12, written when a message was one meal, and it outlived that
+ *  assumption exactly the way the 500-character cap did. Full-day logging (I8)
+ *  is the feature both limits sit under, and a real day runs past twelve
+ *  foods: breakfast, a mid-morning snack, lunch with four or five lines,
+ *  something after the gym, dinner. Item thirteen onward was dropped in
+ *  silence, one step further down the pipeline than the character cap and with
+ *  the same result - a confident parse of part of a day.
+ *
+ *  50 is Sarthak's call and it is chosen to be past any real day rather than
+ *  tight, on the same reasoning as the character cap: tune it down from real
+ *  usage later, do not guess it tight now and lose data in the meantime. The
+ *  ceiling still exists because an unbounded list is a cost and render hole,
+ *  not because anyone should reach 50.
+ *
+ *  It is a CLAMP, not a promise: the model can still stop early on its own
+ *  output budget, which is what the max_tokens figures below are for and what
+ *  the `extract_truncated` step reports. */
+export const MAX_ITEMS_PER_PARSE = 50;
+
 /** Output budgets for the extract call. Fast items are heavy (est_ totals,
- *  label recall, meal): ~110 tokens each, 12-item ceiling, so 5000 leaves
- *  headroom. Smart items are name/brand/quantity/unit/prep/meal, a third of
- *  that. Both are caps; a two-item message emits the same ~200 tokens under
- *  either. Truncation is detected at the call site and reported honestly. */
+ *  label recall, meal) at ~110 tokens each; Smart items are name/brand/
+ *  quantity/unit/prep/meal, about a third of that.
+ *
+ *  Both are 5000 (Sarthak, with the ceiling above). Smart was 700, sized for
+ *  the old 12-item ceiling, and at 50 items that would truncate a long day
+ *  mid-JSON - the failure the `extract_truncated` guard was written for. These
+ *  are CAPS, not targets: a two-item message emits the same ~200 tokens under
+ *  700 or 5000, so nothing routine pays for the headroom. Optimise from real
+ *  usage rather than from arithmetic. */
 const EXTRACT_MAX_TOKENS_FAST = 5000;
-const EXTRACT_MAX_TOKENS_SMART = 700;
+const EXTRACT_MAX_TOKENS_SMART = 5000;
+
+/** How much of the user's own message reaches the model.
+ *
+ *  This is an INPUT cap and it was 500, written when a message was one meal.
+ *  Full-day logging (I8) made that wrong: a day of food runs past 800
+ *  characters, and everything after 500 was dropped on the floor before the
+ *  model ever saw it. The user got a confident parse of the first half of
+ *  their day and no sign that the rest existed, which is the worst shape a
+ *  limit can take. The multi-meal plan assumed this cap was trace-only; it
+ *  never was, it sits on the extract message itself.
+ *
+ *  2000 is chosen to be past any real message rather than to be tight. Input
+ *  tokens are ~4 characters each, so this is ~500 tokens, and input is not
+ *  what costs latency here - output is (see the budgets above). A cap still
+ *  exists because an uncapped field on a public endpoint is a cost hole, not
+ *  because 2000 is a number anyone should reach.
+ *
+ *  When it does bite it is now SAID, via a `user_text_clamped` trace step.
+ *  A limit that trims in silence is the bug being fixed; a higher silent
+ *  limit would only move it. */
+export const USER_TEXT_MAX_CHARS = 2000;
+
+/** Trim, then clamp, and report what was lost. `dropped` is characters cut,
+ *  0 when the message fitted - the caller uses it to decide whether there is
+ *  anything to say. Trimming happens BEFORE measuring so trailing whitespace
+ *  can never be what pushes a message over. */
+export function clampUserText(raw: string): { text: string; dropped: number } {
+  const t = raw.trim();
+  if (t.length <= USER_TEXT_MAX_CHARS) return { text: t, dropped: 0 };
+  return { text: t.slice(0, USER_TEXT_MAX_CHARS), dropped: t.length - USER_TEXT_MAX_CHARS };
+}
 
 const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
 
@@ -3710,10 +3772,12 @@ export async function verifyItems(
 }
 
 // Clamp/normalize whatever the model handed us before it touches the DB or UI.
-function sanitizeItems(raw: unknown): ParsedItem[] {
+// Exported for tests: this is the last gate before a parse reaches the diary,
+// and the item ceiling it applies is the one that silently ate a full day.
+export function sanitizeItems(raw: unknown): ParsedItem[] {
   if (!Array.isArray(raw)) return [];
   const items: ParsedItem[] = [];
-  for (const r of raw.slice(0, 12)) {
+  for (const r of raw.slice(0, MAX_ITEMS_PER_PARSE)) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
     const name = typeof o.food_name === "string" ? o.food_name.trim().slice(0, 120) : "";
@@ -4381,6 +4445,17 @@ export async function runParseMeal(
   }
 
   const tExtract0 = Date.now();
+  // The user's own words, clamped once so both message shapes below send the
+  // same thing and the trace can say when the clamp bit.
+  const userText = clampUserText(input.text);
+  if (userText.dropped > 0) {
+    steps.push({
+      iter: 0,
+      tool: "user_text_clamped",
+      input: { chars: input.text.trim().length, cap: USER_TEXT_MAX_CHARS, dropped: userText.dropped },
+      result: null,
+    });
+  }
   // THE POINT of Lane A: when it is on and it matched, the extract call does
   // not happen at all. That is the ~1.2s the sub-second budget needs back.
   const extractRes = (laneA && grammarMode === "on")
@@ -4388,11 +4463,12 @@ export async function runParseMeal(
     : await callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
-    // message costs the same under either number. Fast items carry ~110 output
-    // tokens each (est_ totals, label recall, meal), and a whole-day message
-    // (I8) is six or more of them: at 700 the sixth item was cut off mid-JSON
-    // and the parse reported "that did not look like food". Smart items are a
-    // third the size, so 700 still covers the 12-item ceiling there.
+    // message costs the same under either number. Both are 5000 now; the
+    // history is worth keeping because it is the same bug twice. At 700 a
+    // six-item day was cut off mid-JSON and the parse reported "that did not
+    // look like food" - wrong on the facts and unactionable. Fast was raised
+    // then; Smart kept 700 because it was sized against a 12-item ceiling that
+    // has since become 50. See MAX_ITEMS_PER_PARSE.
     max_tokens: fastMode ? EXTRACT_MAX_TOKENS_FAST : EXTRACT_MAX_TOKENS_SMART,
     // The correction rules only matter when a meal is on screen, so they stay
     // out of the prompt otherwise (smaller prompt, no behaviour to misfire).
@@ -4411,7 +4487,7 @@ export async function runParseMeal(
       role: "user",
       content: hasPrevious
         ? JSON.stringify({
-          text: input.text.trim().slice(0, 500),
+          text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
           recent_turns: (input.recentTurns ?? []).slice(-4).map((t) => ({
             [t.role === "user" ? "user" : "drona"]: t.text.slice(0, 240),
@@ -4426,7 +4502,7 @@ export async function runParseMeal(
             })),
           },
         })
-        : input.text.trim().slice(0, 500),
+        : userText.text,
     }],
   });
   if (extractRes && !extractRes.ok) {
@@ -4482,7 +4558,7 @@ export async function runParseMeal(
       : {}
   );
   let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
-    .slice(0, 12)
+    .slice(0, MAX_ITEMS_PER_PARSE)
     .flatMap((r: unknown): ExtractedItem[] => {
       if (!r || typeof r !== "object") return [];
       const o = r as Record<string, unknown>;
@@ -5135,7 +5211,10 @@ export async function runParseMeal(
   }
   const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
-    user_text: input.text.trim().slice(0, 500),
+    // The same clamped text extract saw. Decide reads this to place quantities
+    // and sections against the user's own words, so feeding it a shorter cut
+    // than extract got would make the two stages disagree about what was said.
+    user_text: userText.text,
     meal_type_from_text: mealFromText,
     items: resolved.map((r) => ({
       name: r.name,

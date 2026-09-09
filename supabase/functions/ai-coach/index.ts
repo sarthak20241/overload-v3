@@ -12,6 +12,7 @@ import {
   type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
+  USER_TEXT_MAX_CHARS,
 } from "./parseMeal.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import {
@@ -97,7 +98,12 @@ const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
 // eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
 // it can be killed without a redeploy if costs or quality surprise us.
 const PARSE_MEAL_MODEL = "claude-haiku-4-5";
-const PARSE_MEAL_MAX_TOKENS = 1600;
+// The DECIDE call's budget. It writes one line per item plus the Drona line,
+// so it scales with the item count, and that ceiling went from 12 to 50
+// (MAX_ITEMS_PER_PARSE). 1600 was sized for twelve; a long day would have been
+// cut off mid-JSON. 5000 matches the extract budgets - a cap, not a target, so
+// an ordinary two-item meal costs exactly what it did before.
+const PARSE_MEAL_MAX_TOKENS = 5000;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
 let PARSE_ISOLATE_REQUESTS = 0;
@@ -1894,8 +1900,12 @@ async function handleParseMealRequest(args: {
   // A meal still under review on the client. Present only for a follow-up
   // ("make it a small one"), which the extract stage classifies as a
   // correction of these lines rather than a new meal.
+  // Same cap as the user's own text: this is the message that produced the
+  // meal on screen, and it goes to the model as `previous_meal.text`. Holding
+  // it to 500 while the new message gets 2000 would cut a full-day correction
+  // off at the knees - the follow-up would be read against half a day.
   const previousText = typeof body.previous_text === "string"
-    ? body.previous_text.trim().slice(0, 500)
+    ? body.previous_text.trim().slice(0, USER_TEXT_MAX_CHARS)
     : null;
   const recentTurns: { role: "user" | "drona"; text: string }[] = Array.isArray(body.recent_turns)
     ? (body.recent_turns as Array<Record<string, unknown>>).slice(-4).flatMap((t) => {
@@ -2150,7 +2160,7 @@ async function handleParseMealRequest(args: {
             });
             void recordParseTrace(admin, {
               user_id: userId,
-              input_text: text.slice(0, 500),
+              input_text: text.slice(0, USER_TEXT_MAX_CHARS),
               meal_hint: mealHint,
               model: PARSE_MEAL_MODEL,
               outcome: result.parsed ? "meal" : "declined",
@@ -2350,7 +2360,7 @@ async function handleParseMealRequest(args: {
     ];
     void recordParseTrace(admin, {
       user_id: userId,
-      input_text: text.slice(0, 500),
+      input_text: text.slice(0, USER_TEXT_MAX_CHARS),
       meal_hint: mealHint,
       model: PARSE_MEAL_MODEL,
       outcome: result.parsed ? "meal" : "declined",
@@ -2391,7 +2401,7 @@ async function handleParseMealRequest(args: {
     });
     void recordParseTrace(admin, {
       user_id: userId,
-      input_text: text.slice(0, 500),
+      input_text: text.slice(0, USER_TEXT_MAX_CHARS),
       meal_hint: mealHint,
       model: PARSE_MEAL_MODEL,
       outcome: "error",

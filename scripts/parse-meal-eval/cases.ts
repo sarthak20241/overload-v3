@@ -49,6 +49,18 @@ export interface EvalCase {
     maxItems?: number;
     mealType?: "breakfast" | "lunch" | "dinner" | "snack";
     items?: ItemExpectation[];
+    /** Substrings that must appear in NO logged item's name.
+     *
+     *  `items[].nameExcludes` cannot express this. It first finds an item by
+     *  `nameIncludes` and then checks that ONE row, so it can only forbid a
+     *  name on a line you can already name. The failure it misses is the
+     *  interesting one: a line you cannot predict resolving to something
+     *  absurd. "2 roti with sabzi" is the case - "sabzi" is generic, the row
+     *  it lands on is legitimately variable (Aloo Sabzi, a mixed-vegetable
+     *  row, an honest estimate), but a raw fish is wrong under every reading.
+     *
+     *  Checked against EVERY item, so it needs no way to identify the line. */
+    forbidNames?: string[];
     // Set when the case only makes sense with tier 3 enabled.
     needsWebSearch?: boolean;
   };
@@ -226,6 +238,55 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 2, maxItems: 2,
       items: [{ nameIncludes: "dal" }, { nameIncludes: "rice" }],
+    },
+  },
+  {
+    // A HEAD-NOUN-FIRST Indian dish name. "bhindi" is the food (okra),
+    // "sabzi" is the generic word for a vegetable dish - it identifies
+    // nothing on its own, and it trigram-matches French rows ("Sabre",
+    // "Pâte sablée") that share the letters "sab". Observed in production:
+    // this logged as "Sabre, cru", a raw fish, at 18 g protein.
+    //
+    // The catalog is not the problem - "bhindi" alone returns Bhindi Masala
+    // and a homemade bhindi subji row. The ladder is: it searches the tail
+    // before the head, so the meaningless rung wins.
+    // The bare word, which is what a long message often compresses to. Two
+    // cases already say "rotis with sabzi" and NEITHER asserts anything about
+    // the sabzi line - they only check the roti and the buttermilk - so a
+    // sabzi resolving to a raw fish passes both in silence. That is how this
+    // survived. `sabzi` is a generic word for a vegetable dish, and the top
+    // catalog hit for it is "Sabre, cru" on the shared letters "sab".
+    id: "sabzi-alone",
+    text: "2 roti with sabzi",
+    hour: 13,
+    expect: {
+      minItems: 2,
+      items: [{ nameIncludes: "roti" }],
+      // Which row "sabzi" lands on is legitimately variable, so this asserts
+      // the thing that is wrong under every reading rather than naming a
+      // winner. An `items[].nameExcludes` cannot do this: it has to find the
+      // line by name first, and the whole problem is that this line's name is
+      // unpredictable.
+      //
+      // The check was proven to fire before this list was trusted: with "roti"
+      // temporarily added, the case failed with `no item may contain "roti",
+      // but got "Roti / Chapati"`.
+      forbidNames: ["sabre", "sablée", "sablee", "sablefish", "hummus", "pâte"],
+    },
+  },
+  {
+    id: "bhindi-sabzi",
+    text: "a katori of bhindi sabzi",
+    hour: 13,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "bhindi",
+        nameIncludesAny: ["bhindi", "okra", "ladies finger"],
+        // The specific wrong answers seen in production, plus the family they
+        // came from. A fish or a French pastry is not a vegetable dish.
+        nameExcludes: ["sabre", "sablée", "sablee", "sablefish", "hummus"],
+      }],
     },
   },
   {
@@ -882,6 +943,59 @@ export const CASES: EvalCase[] = [
         { nameIncludes: "idli", meal: "breakfast" },
         { nameIncludes: "rajma", meal: "lunch" },
         { nameIncludes: "upma", meal: "dinner" },
+      ],
+    },
+  },
+  {
+    // A LONG message, past the input cap that used to sit on the extract and
+    // decide calls. Every other case in this file is under 90 characters, so
+    // nothing here could ever reach a cap at 500: the tail of a real message
+    // was cut before the model read it and the suite stayed green.
+    //
+    // Deliberately CHATTY rather than food-dense. A full day of eating runs
+    // past twelve foods and would be clipped by the separate 12-item ceiling
+    // in sanitizeItems, which would fail this case for a reason that has
+    // nothing to do with the cap. Six foods spread over 700 characters isolate
+    // the one thing under test.
+    //
+    // The expectations name only foods from PAST character 500 - dal at 586,
+    // rice at 611, whey at 678. Every one of them was invisible to the model
+    // before this cap was raised.
+    id: "audit-long-message-tail",
+    text: "i want to log my whole day at once, it was a bit all over the place so bear with me here. first thing in the morning before my run i only managed a single banana because i was in a rush and did not want anything heavy sitting in my stomach while i was out. when i got back about an hour later i finally sat down and had a proper breakfast, which was three boiled eggs and two slices of brown bread with nothing on them. work got busy after that so lunch was pushed very late, almost four in the afternoon, and by then i just ate whatever was left in the fridge, which was one katori of dal and a small plate of rice. much later in the evening, after the gym, i had one scoop of whey protein mixed in plain water.",
+    hour: 22,
+    expect: {
+      minItems: 5,
+      items: [
+        { nameIncludes: "dal" },
+        { nameIncludes: "rice" },
+        { nameIncludes: "whey" },
+      ],
+    },
+  },
+  {
+    // A whole day in one message: fourteen-odd foods across four sections.
+    // This is the case the 12-item ceiling used to eat. It came back with
+    // exactly twelve rows, ending at the milk tea, and the whey, the paneer
+    // and the salad were gone - with a cheerful Drona line about the day and
+    // nothing to say anything had been dropped.
+    //
+    // It is the companion to audit-long-message-tail: that one holds the item
+    // count low to isolate the character cap, this one holds the message
+    // short-ish to isolate the item ceiling. Both limits sit under full-day
+    // logging and each hides the other, so the suite needs both.
+    id: "audit-full-day-many-items",
+    text: "logging my whole day: breakfast was 3 boiled eggs, 2 slices brown bread, a teaspoon of butter and a glass of toned milk. mid morning a banana and 10 almonds. lunch was 2 roti, a katori of dal, half a plate of jeera rice, a katori of bhindi sabzi and a bowl of curd. evening a cup of milk tea and two marie biscuits, then a scoop of whey after the gym. dinner was 150g paneer bhurji, 2 roti and a green salad.",
+    hour: 22,
+    expect: {
+      // Fourteen-plus foods; assert past the old ceiling rather than exactly,
+      // since how the model splits "green salad" is legitimately its call.
+      minItems: 14,
+      items: [
+        { nameIncludes: "egg", meal: "breakfast" },
+        // Everything below arrived after item twelve and used to be clipped.
+        { nameIncludes: "whey" },
+        { nameIncludes: "paneer", meal: "dinner" },
       ],
     },
   },
