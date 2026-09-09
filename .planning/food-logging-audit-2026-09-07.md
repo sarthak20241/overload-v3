@@ -324,3 +324,31 @@ Plan describes behaviour the code does not have:
    are NOT STARTED as user-facing modes and that the eval baseline was NEVER RUN.
    Both are false. Its inline DONE markers are accurate everywhere checked except
    7d's FatSecret clause and 5a's scope.
+
+---
+
+## Resolved since this audit (2026-09-09)
+
+This file is a snapshot and is left as written. Two of its findings have been
+acted on in the same branch, so read those rows against this note:
+
+- **Headline 4 / "I8 raise the 500-char cap" (was NOT STARTED).** Fixed. The
+  cap was on the user's text at THREE points, not the two found here: the
+  extract message in both shapes and the decide payload. Now one exported
+  constant at 2000, with a `user_text_clamped` trace step when it bites.
+  Measured at 500 on a 712-character message: three of six foods came back,
+  with a confident Drona line about the day.
+- **The 12-item ceiling.** Not a finding in this audit at all; it surfaced
+  when the first long-message eval case was written and came back with exactly
+  twelve rows. Raised to 50 (`MAX_ITEMS_PER_PARSE`), with the Smart extract,
+  decide, web-label and super-source budgets raised to 5000 to match, since a
+  50-item answer does not fit a budget sized for 12. Sarthak's numbers,
+  deliberately past any real day rather than tight; optimise from usage.
+
+Both were invisible to the eval suite because the longest case here was 89
+characters. `audit-long-message-tail` (712 chars, six foods) and
+`audit-full-day-many-items` (a real day, 17 foods) now cover them, and each
+isolates one limit so the other cannot mask it.
+
+The test-gap list above is otherwise unchanged, except that `sanitizeItems` is
+now exported and covered (`itemCeiling.test.ts`).

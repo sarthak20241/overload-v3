@@ -913,6 +913,32 @@ export const CASES: EvalCase[] = [
     },
   },
   {
+    // A whole day in one message: fourteen-odd foods across four sections.
+    // This is the case the 12-item ceiling used to eat. It came back with
+    // exactly twelve rows, ending at the milk tea, and the whey, the paneer
+    // and the salad were gone - with a cheerful Drona line about the day and
+    // nothing to say anything had been dropped.
+    //
+    // It is the companion to audit-long-message-tail: that one holds the item
+    // count low to isolate the character cap, this one holds the message
+    // short-ish to isolate the item ceiling. Both limits sit under full-day
+    // logging and each hides the other, so the suite needs both.
+    id: "audit-full-day-many-items",
+    text: "logging my whole day: breakfast was 3 boiled eggs, 2 slices brown bread, a teaspoon of butter and a glass of toned milk. mid morning a banana and 10 almonds. lunch was 2 roti, a katori of dal, half a plate of jeera rice, a katori of bhindi sabzi and a bowl of curd. evening a cup of milk tea and two marie biscuits, then a scoop of whey after the gym. dinner was 150g paneer bhurji, 2 roti and a green salad.",
+    hour: 22,
+    expect: {
+      // Fourteen-plus foods; assert past the old ceiling rather than exactly,
+      // since how the model splits "green salad" is legitimately its call.
+      minItems: 14,
+      items: [
+        { nameIncludes: "egg", meal: "breakfast" },
+        // Everything below arrived after item twelve and used to be clipped.
+        { nameIncludes: "whey" },
+        { nameIncludes: "paneer", meal: "dinner" },
+      ],
+    },
+  },
+  {
     // ONE meal named for everything: must go to meal_type_from_text, and
     // every line to that section - the per-item field must not fragment it.
     id: "audit-one-meal-named-twice",

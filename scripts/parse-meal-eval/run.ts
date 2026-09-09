@@ -162,7 +162,10 @@ const deps: ParseMealDeps = {
   anthropicApiKey: ANTHROPIC_API_KEY,
   model: MODEL,
   ...(VIA_CLI ? { fetchFn: makeClaudeCliFetch(MODEL) } : {}),
-  maxTokens: 1600,
+  // Mirrors PARSE_MEAL_MAX_TOKENS in index.ts. Keep them equal or the eval
+  // measures a decide call with a different budget than the one that ships,
+  // which is exactly how a truncation bug hides from a green suite.
+  maxTokens: 5000,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
   // FAST_GRAMMAR=on runs Lane A for real, so the eval can prove the code-named
