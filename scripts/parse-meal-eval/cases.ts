@@ -886,6 +886,33 @@ export const CASES: EvalCase[] = [
     },
   },
   {
+    // A LONG message, past the input cap that used to sit on the extract and
+    // decide calls. Every other case in this file is under 90 characters, so
+    // nothing here could ever reach a cap at 500: the tail of a real message
+    // was cut before the model read it and the suite stayed green.
+    //
+    // Deliberately CHATTY rather than food-dense. A full day of eating runs
+    // past twelve foods and would be clipped by the separate 12-item ceiling
+    // in sanitizeItems, which would fail this case for a reason that has
+    // nothing to do with the cap. Six foods spread over 700 characters isolate
+    // the one thing under test.
+    //
+    // The expectations name only foods from PAST character 500 - dal at 586,
+    // rice at 611, whey at 678. Every one of them was invisible to the model
+    // before this cap was raised.
+    id: "audit-long-message-tail",
+    text: "i want to log my whole day at once, it was a bit all over the place so bear with me here. first thing in the morning before my run i only managed a single banana because i was in a rush and did not want anything heavy sitting in my stomach while i was out. when i got back about an hour later i finally sat down and had a proper breakfast, which was three boiled eggs and two slices of brown bread with nothing on them. work got busy after that so lunch was pushed very late, almost four in the afternoon, and by then i just ate whatever was left in the fridge, which was one katori of dal and a small plate of rice. much later in the evening, after the gym, i had one scoop of whey protein mixed in plain water.",
+    hour: 22,
+    expect: {
+      minItems: 5,
+      items: [
+        { nameIncludes: "dal" },
+        { nameIncludes: "rice" },
+        { nameIncludes: "whey" },
+      ],
+    },
+  },
+  {
     // ONE meal named for everything: must go to meal_type_from_text, and
     // every line to that section - the per-item field must not fragment it.
     id: "audit-one-meal-named-twice",

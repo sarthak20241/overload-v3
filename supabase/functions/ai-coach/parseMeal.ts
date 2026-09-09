@@ -2076,6 +2076,37 @@ const FAST_EXTRACT_TOOL = (() => {
 const EXTRACT_MAX_TOKENS_FAST = 5000;
 const EXTRACT_MAX_TOKENS_SMART = 700;
 
+/** How much of the user's own message reaches the model.
+ *
+ *  This is an INPUT cap and it was 500, written when a message was one meal.
+ *  Full-day logging (I8) made that wrong: a day of food runs past 800
+ *  characters, and everything after 500 was dropped on the floor before the
+ *  model ever saw it. The user got a confident parse of the first half of
+ *  their day and no sign that the rest existed, which is the worst shape a
+ *  limit can take. The multi-meal plan assumed this cap was trace-only; it
+ *  never was, it sits on the extract message itself.
+ *
+ *  2000 is chosen to be past any real message rather than to be tight. Input
+ *  tokens are ~4 characters each, so this is ~500 tokens, and input is not
+ *  what costs latency here - output is (see the budgets above). A cap still
+ *  exists because an uncapped field on a public endpoint is a cost hole, not
+ *  because 2000 is a number anyone should reach.
+ *
+ *  When it does bite it is now SAID, via a `user_text_clamped` trace step.
+ *  A limit that trims in silence is the bug being fixed; a higher silent
+ *  limit would only move it. */
+export const USER_TEXT_MAX_CHARS = 2000;
+
+/** Trim, then clamp, and report what was lost. `dropped` is characters cut,
+ *  0 when the message fitted - the caller uses it to decide whether there is
+ *  anything to say. Trimming happens BEFORE measuring so trailing whitespace
+ *  can never be what pushes a message over. */
+export function clampUserText(raw: string): { text: string; dropped: number } {
+  const t = raw.trim();
+  if (t.length <= USER_TEXT_MAX_CHARS) return { text: t, dropped: 0 };
+  return { text: t.slice(0, USER_TEXT_MAX_CHARS), dropped: t.length - USER_TEXT_MAX_CHARS };
+}
+
 const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lifting app. Report what the user ate via the extract_meal tool: one item per distinct food or drink, with the quantity and unit exactly as given. Correct spelling in item names ("edameme" is "edamame", "panner" is "paneer") and expand shorthand ("tblspn" is "tbsp"). Indian context: unqualified "tea" or "chai" means milk tea, extract the name as "milk tea"; unqualified "coffee" as "milk coffee" (keep "black tea", "green tea", "black coffee" as stated).`;
 
 /** Smart only. There, nutrition is decide's job, and asking for it here would
@@ -4381,6 +4412,17 @@ export async function runParseMeal(
   }
 
   const tExtract0 = Date.now();
+  // The user's own words, clamped once so both message shapes below send the
+  // same thing and the trace can say when the clamp bit.
+  const userText = clampUserText(input.text);
+  if (userText.dropped > 0) {
+    steps.push({
+      iter: 0,
+      tool: "user_text_clamped",
+      input: { chars: input.text.trim().length, cap: USER_TEXT_MAX_CHARS, dropped: userText.dropped },
+      result: null,
+    });
+  }
   // THE POINT of Lane A: when it is on and it matched, the extract call does
   // not happen at all. That is the ~1.2s the sub-second budget needs back.
   const extractRes = (laneA && grammarMode === "on")
@@ -4411,7 +4453,7 @@ export async function runParseMeal(
       role: "user",
       content: hasPrevious
         ? JSON.stringify({
-          text: input.text.trim().slice(0, 500),
+          text: userText.text,
           // What was actually SAID, so "yes" / "no, the other one" resolve.
           recent_turns: (input.recentTurns ?? []).slice(-4).map((t) => ({
             [t.role === "user" ? "user" : "drona"]: t.text.slice(0, 240),
@@ -4426,7 +4468,7 @@ export async function runParseMeal(
             })),
           },
         })
-        : input.text.trim().slice(0, 500),
+        : userText.text,
     }],
   });
   if (extractRes && !extractRes.ok) {
@@ -5135,7 +5177,10 @@ export async function runParseMeal(
   }
   const decideSystem = buildDecideSystemPrompt(input);
   const decidePayload = {
-    user_text: input.text.trim().slice(0, 500),
+    // The same clamped text extract saw. Decide reads this to place quantities
+    // and sections against the user's own words, so feeding it a shorter cut
+    // than extract got would make the two stages disagree about what was said.
+    user_text: userText.text,
     meal_type_from_text: mealFromText,
     items: resolved.map((r) => ({
       name: r.name,
