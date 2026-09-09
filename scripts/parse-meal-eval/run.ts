@@ -265,6 +265,12 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
   if (exp.mealType && result.parsed!.meal_type !== exp.mealType) {
     failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
   }
+  // Whole-result exclusions. Runs before the per-item checks so a nonsense
+  // row is reported even when every named expectation is satisfied.
+  for (const bad of exp.forbidNames ?? []) {
+    const hit = items.find((i) => i.food_name.toLowerCase().includes(bad.toLowerCase()));
+    if (hit) failures.push(`no item may contain "${bad}", but got "${hit.food_name}"`);
+  }
   for (const ie of exp.items ?? []) {
     // nameIncludes plus optional nameIncludesAny alternates: a "roasted
     // edamame" line is equally correct as "Edamame..." or "Soybeans, mature

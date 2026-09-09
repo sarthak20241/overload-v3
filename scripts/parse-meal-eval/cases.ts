@@ -49,6 +49,18 @@ export interface EvalCase {
     maxItems?: number;
     mealType?: "breakfast" | "lunch" | "dinner" | "snack";
     items?: ItemExpectation[];
+    /** Substrings that must appear in NO logged item's name.
+     *
+     *  `items[].nameExcludes` cannot express this. It first finds an item by
+     *  `nameIncludes` and then checks that ONE row, so it can only forbid a
+     *  name on a line you can already name. The failure it misses is the
+     *  interesting one: a line you cannot predict resolving to something
+     *  absurd. "2 roti with sabzi" is the case - "sabzi" is generic, the row
+     *  it lands on is legitimately variable (Aloo Sabzi, a mixed-vegetable
+     *  row, an honest estimate), but a raw fish is wrong under every reading.
+     *
+     *  Checked against EVERY item, so it needs no way to identify the line. */
+    forbidNames?: string[];
     // Set when the case only makes sense with tier 3 enabled.
     needsWebSearch?: boolean;
   };
@@ -226,6 +238,55 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 2, maxItems: 2,
       items: [{ nameIncludes: "dal" }, { nameIncludes: "rice" }],
+    },
+  },
+  {
+    // A HEAD-NOUN-FIRST Indian dish name. "bhindi" is the food (okra),
+    // "sabzi" is the generic word for a vegetable dish - it identifies
+    // nothing on its own, and it trigram-matches French rows ("Sabre",
+    // "Pâte sablée") that share the letters "sab". Observed in production:
+    // this logged as "Sabre, cru", a raw fish, at 18 g protein.
+    //
+    // The catalog is not the problem - "bhindi" alone returns Bhindi Masala
+    // and a homemade bhindi subji row. The ladder is: it searches the tail
+    // before the head, so the meaningless rung wins.
+    // The bare word, which is what a long message often compresses to. Two
+    // cases already say "rotis with sabzi" and NEITHER asserts anything about
+    // the sabzi line - they only check the roti and the buttermilk - so a
+    // sabzi resolving to a raw fish passes both in silence. That is how this
+    // survived. `sabzi` is a generic word for a vegetable dish, and the top
+    // catalog hit for it is "Sabre, cru" on the shared letters "sab".
+    id: "sabzi-alone",
+    text: "2 roti with sabzi",
+    hour: 13,
+    expect: {
+      minItems: 2,
+      items: [{ nameIncludes: "roti" }],
+      // Which row "sabzi" lands on is legitimately variable, so this asserts
+      // the thing that is wrong under every reading rather than naming a
+      // winner. An `items[].nameExcludes` cannot do this: it has to find the
+      // line by name first, and the whole problem is that this line's name is
+      // unpredictable.
+      //
+      // The check was proven to fire before this list was trusted: with "roti"
+      // temporarily added, the case failed with `no item may contain "roti",
+      // but got "Roti / Chapati"`.
+      forbidNames: ["sabre", "sablée", "sablee", "sablefish", "hummus", "pâte"],
+    },
+  },
+  {
+    id: "bhindi-sabzi",
+    text: "a katori of bhindi sabzi",
+    hour: 13,
+    expect: {
+      minItems: 1, maxItems: 1,
+      items: [{
+        nameIncludes: "bhindi",
+        nameIncludesAny: ["bhindi", "okra", "ladies finger"],
+        // The specific wrong answers seen in production, plus the family they
+        // came from. A fish or a French pastry is not a vegetable dish.
+        nameExcludes: ["sabre", "sablée", "sablee", "sablefish", "hummus"],
+      }],
     },
   },
   {

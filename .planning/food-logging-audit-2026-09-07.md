@@ -138,7 +138,7 @@ absent from that same secrets list, which is how headline 2 was confirmed.
 | 7 canonical case + cache short-circuit assert | DONE | `tools/super-canonical-case.ts:1-18` |
 | 7 cost per parse to token_usage_log | DONE | `0113_web_search_server_tool_cost.sql:88`; `index.ts:2179`, `:2329` |
 | 7 super-tagged evals | NOT STARTED | `run.ts:334` has FAST_MODE only; no `super-*` ids in `cases.ts` |
-| 7e (3 items) | DEFERRED by the user, not audited. Note: the measurement half of the third item exists at `tools/super-probe/wobble.ts:1-23`, budget-capped at ~$0.24 |
+| 7e (3 items) | DEFERRED by the user, not audited | The measurement half of the third item exists: `tools/super-probe/wobble.ts:1-23`, budget-capped at ~$0.24 |
 
 ## Phase 8 - mode UI and routing
 
