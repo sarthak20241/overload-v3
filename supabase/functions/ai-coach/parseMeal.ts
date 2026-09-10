@@ -1065,8 +1065,13 @@ const EXTRACT_TOOL = {
         type: ["string", "null"],
         enum: ["breakfast", "lunch", "dinner", "snack", null],
         description:
-          'The meal the TEXT names ("for lunch", "dinner was"). null when the text does not ' +
-          "name one; never infer it from the food or the time.",
+          'The meal the TEXT names, for the WHOLE message ("for lunch", "dinner was"). ' +
+          "A time of day the USER wrote counts as naming a meal, because they said it: " +
+          "morning is breakfast, afternoon is lunch, evening is snack, night is dinner. " +
+          "null when the text names no meal at all - then the app uses the clock, which " +
+          "is its job and not yours. Never infer a meal from the FOOD: a dosa is not " +
+          "breakfast, a biscuit is not a snack. And null here when the message names a " +
+          "meal only for SOME items; those go on the items themselves.",
       },
       requests_research: {
         type: "boolean",
@@ -1106,18 +1111,26 @@ const EXTRACT_TOOL = {
       items: {
         type: "array",
         description:
-          "One entry per distinct food/drink. When corrects_previous is true, list the " +
-          "corrected version of EVERY line of the previous meal (unchanged ones included), " +
-          "so the result replaces it wholesale. A line named in removed_food_names is the " +
-          "one exception: leave it out entirely.",
+          "One entry per distinct food/drink. When corrects_previous is true, list EVERY " +
+          "line of the previous meal - the corrected ones AND the untouched ones, copied " +
+          "back exactly as they were - because the result replaces the meal wholesale. " +
+          "corrects_food_name on every line the correction touched, null on a line you " +
+          "are copying back. A line named in removed_food_names is the one exception: " +
+          "leave it out entirely.",
         items: {
           type: "object",
           properties: {
             corrects_food_name: {
               type: ["string", "null"],
               description:
-                "When correcting, the food_name of the previous line this entry replaces, " +
-                "copied EXACTLY. null for a brand new item.",
+                "The food_name of the previous line this entry CORRECTS, copied EXACTLY. " +
+                "Set it on every line the correction touched, whichever kind: an EDIT to the " +
+                "same food (\"make the poha half a plate\" gives the poha entry \"Poha\", " +
+                "its own name) and a SWAP to a different food (\"rice, not poha\" gives the " +
+                "rice entry \"Poha\"). null on a line you are copying back untouched, and " +
+                "null on a brand new item. This is how the app knows WHICH old line each " +
+                "corrected line stands for, even after the food is re-looked-up under " +
+                "another name.",
             },
             name: {
               type: "string",
@@ -1159,9 +1172,14 @@ const EXTRACT_TOOL = {
               description:
                 "The meal the text ties to THIS item, when one message covers several meals: " +
                 '"2 eggs for breakfast, dal chawal at lunch, oreos in snacks" gives eggs ' +
-                "breakfast, dal lunch, oreos snack. null when the text names no meal for this " +
-                "item, and null when the message names ONE meal for everything (that goes in " +
-                "meal_type_from_text instead). Never infer it from the food or the time of day.",
+                "breakfast, dal lunch, oreos snack.\n" +
+                "A time of day the USER wrote counts, because they said it: " +
+                'morning is breakfast, afternoon is lunch, evening is snack, night is dinner. ' +
+                'So "poha for breakfast, rajma at lunch, a banana in the evening" gives the ' +
+                'banana snack - NOT breakfast, and not whatever the clock says.\n' +
+                "null when the text ties no meal to THIS item, and null when the message " +
+                "names ONE meal for everything (that goes in meal_type_from_text instead). " +
+                "Never infer a meal from the FOOD itself.",
             },
           },
           required: ["name", "quantity", "unit"],
@@ -1890,8 +1908,22 @@ export function assignItemMeals(
     // The section this line is ALREADY in, from the line itself when it kept it
     // (tryFastCorrection) or from the previous meal by name when decide rebuilt
     // it and dropped it.
+    // Gating this on correctsFoodName was a bug the moment the extract prompt
+    // stopped tagging untouched lines. A line handed back unchanged now carries
+    // corrects_food_name: null - which is the SAFER wire shape and the whole
+    // point of that change - and this lookup then skipped exactly the lines
+    // that most needed it, so an untouched line fell through to the clock and
+    // a logged day partly re-sectioned itself. Measured on the eval the same
+    // day the prompt changed: khakhara moved from Snacks to Breakfast on a
+    // correction that never mentioned it.
+    //
+    // Ask by whatever name we have, in order of how well it identifies the
+    // previous line: the line this entry REPLACES when it says so (a swap
+    // renames, so "Muesli" must inherit "Corn Flakes"' section), else the name
+    // the model extracted, else the name decide settled on. prevMealByName
+    // returns undefined on no match, so a wrong guess costs nothing.
     const carried = it.meal_type ??
-      (e?.correctsFoodName ? carriedFor?.(e.correctsFoodName, idx) : undefined);
+      carriedFor?.(e?.correctsFoodName ?? e?.name ?? it.food_name, idx);
     // Per-item beats explicit beats carried beats guess. The middle two are the
     // pair that has to stay in this order: the text saying "lunch" now outranks
     // the section a line was sitting in, while the clock never does.
@@ -1902,7 +1934,17 @@ export function assignItemMeals(
 const EXTRACT_CORRECTION_RULES = `
 
 A meal the user just logged may be shown to you as previous_meal (it is on screen, not yet saved). If so, decide what the new text is doing:
-- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". Re-list EVERY line of previous_meal with the correction applied, copying each line's exact food_name into corrects_food_name (unchanged lines included, unchanged).
+- CORRECTION of that meal (set corrects_previous true): it changes a size, amount, or identity of something already there, and names no new food. "make it a small one", "that was 2", "actually paneer not tofu", "no sugar in the tea". List EVERY line of previous_meal - the ones you edited AND the ones you did not touch, copied back exactly as they are.
+  corrects_food_name says which lines the correction touched, and which old line each one stands for. Most lines get null.
+    corrects_food_name: "X"  - this entry CORRECTS previous line X. Copy X's food_name exactly. An EDIT to the same food carries its own name; a SWAP to a different food carries the OLD food's name.
+    corrects_food_name: null - you are copying this line back untouched. This is the common case.
+  previous_meal [2 slices brown bread, 1 omelette, 1 glass banana shake], user says "make the omelette 3 eggs" - one line edited, two copied back:
+    {"name":"brown bread","quantity":2,"unit":"slice","corrects_food_name":null}
+    {"name":"omelette","quantity":3,"unit":"egg","corrects_food_name":"omelette"}
+    {"name":"banana shake","quantity":1,"unit":"glass","corrects_food_name":null}
+  Same meal, user says "it was muesli, not corn flakes" (previous_meal had corn flakes) - one line swapped:
+    {"name":"muesli","quantity":1,"unit":"bowl","corrects_food_name":"corn flakes"}
+  Without corrects_food_name on a corrected line the app cannot tell it from a new food, and keeps the old line beside it. With corrects_food_name on an untouched line the app treats a line you did not change as changed.
 - ADDITION or a new meal (corrects_previous false): the text names food that is not already in previous_meal. "and a dosa", "also 2 roti". List ONLY the new food; the app keeps the existing lines.
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
 - QUESTION THAT ALSO STATES THE FIX ("that seems high, make it 100g", "is that right? it was a small one"): set corrects_previous TRUE and list the corrected items as well. The user told you the answer; do not just agree with them and change nothing.
@@ -2414,8 +2456,12 @@ export interface ExtractedItem {
   quantity: number;
   unit: string;
   prep: string | null;
-  /** When this entry corrects a line of the meal under review, that line's
-   *  food_name verbatim — the handle we re-target it by. */
+  /** The IDENTITY LINK on a corrected line: the food_name of the previous line
+   *  this entry stands for. Set on every line the correction touched - an edit
+   *  carries its own name, a swap carries the old food's name - and null on a
+   *  line copied back untouched. Non-null is what "changed" means. The link is
+   *  what lets the no-drop guard tell "Rajma Masala" is the edited "Rajma
+   *  Chawal" rather than a new food to be logged beside it. */
   correctsFoodName?: string | null;
   /** The meal the text tied to THIS item ("eggs for breakfast, dal at lunch").
    *  null when the text did not name one for it - never inferred from the
@@ -3458,6 +3504,118 @@ export function gradeNotStocked(name: string, candidates: CandidateFood[]): stri
  * name AND the same amount AND the same unit, and gives up on anything it
  * cannot line up exactly.
  */
+/**
+ * Two jobs on a correction, and keeping them in one place is what stopped them
+ * drifting apart:
+ *
+ *   1. UN-REPLACE the untouched lines. `replacedNames` is built from every
+ *      extracted line's `correctsFoodName`, so a line the model restates
+ *      unchanged names ITSELF as the thing it corrects and lands in that set.
+ *      A name in there is treated as deliberately replaced, and
+ *      keepUncoveredPrevious will then refuse to restore it if decide omits the
+ *      line. Un-marking is a CORRECTNESS contract and runs every time.
+ *
+ *   2. NARROW the re-resolve to what changed (I1). Search and rerank are not
+ *      deterministic, so re-resolving an untouched line risks repointing it.
+ *      This is an OPTIMISATION and is skipped when every line looks unchanged,
+ *      because that almost certainly means we misread the turn.
+ *
+ * Job 1 used to live inside job 2's `if`. When the branch did not fire the
+ * un-marking never ran, and an untouched line stayed marked replaced. Measured
+ * on device against v154: logging "poha for breakfast, rajma chawal at lunch,
+ * 2 khakhra in the evening" and then saying "make it 2 plates of rajma chawal"
+ * returned a card with TWO items. The poha was gone, and its whole Breakfast
+ * section with it, though the user never mentioned poha and extract had
+ * returned all three lines.
+ *
+ * `replaced` is mutated in place, which is why it is taken rather than returned.
+ */
+export function scopeCorrection(
+  extItems: ExtractedItem[],
+  prevItems: PreviousItem[],
+  replaced: Set<string>,
+): {
+  toResolve: ExtractedItem[];
+  /** How many lines the NARROWING skipped. 0 both when nothing looked
+   *  unchanged and when everything did, which is why `unchangedCount` is
+   *  reported separately - those two bails have opposite causes. */
+  untouched: number;
+  /** How many lines matched a previous line unchanged, before the narrowing
+   *  decision. Traced, because "the branch did not fire" is uninterpretable
+   *  without knowing whether the count was 0 or all of them. */
+  unchangedCount: number;
+  /** Names lifted out of `replaced`. These are the lines a restore is now
+   *  allowed to bring back; a previous line missing from the final card and
+   *  NOT in this list was treated as deliberately swapped out. */
+  unreplaced: string[];
+  /** One line per entry judged CHANGED, showing what was compared. */
+  changed: string[];
+  /** Lines the model tagged as untouched whose amount or unit moved anyway.
+   *  Never empty for a healthy prompt; each entry is a user edit we obeyed the
+   *  tag and dropped. */
+  contradictions: string[];
+} {
+  const passthrough = new Map<number, PreviousItem>();
+  // Why each line was judged CHANGED. "unchanged 0" is the shape that costs a
+  // line its section, and on its own it does not say which of the three
+  // compared fields disagreed - so the cause had to be guessed, twice. This
+  // prints the comparison: what the model sent against what the card holds for
+  // the same-named line ("-" when there is no line by that name at all, which
+  // is a rename rather than a mismatch).
+  const changed: string[] = [];
+  // The model said "untouched" on a line whose numbers moved. We OBEY the tag
+  // (that is the contract now), so this costs the user their edit - and the
+  // only reason it would ever be caught is that it is written down here.
+  // Anything appearing in this list is a prompt problem, not a code one.
+  const contradictions: string[] = [];
+  extItems.forEach((it, i) => {
+    const same = unchangedInCorrection(it, prevItems);
+    if (same) {
+      const qtyMoved = Math.abs((it.quantity || 1) - (same.quantity || 1)) >= 0.001;
+      const unitMoved = (it.unit || "serving").trim().toLowerCase().replace(/s$/, "") !==
+        (same.serving_label || "serving").trim().toLowerCase().replace(/s$/, "");
+      if (qtyMoved || unitMoved) {
+        contradictions.push(
+          `${it.name}: flagged untouched but got ${it.quantity} "${it.unit}" vs stored ${same.quantity} "${same.serving_label}"`,
+        );
+      }
+      passthrough.set(i, same);
+      return;
+    }
+    const byName = prevItems.find(
+      (p) => p.food_name.trim().toLowerCase() === it.name.trim().toLowerCase(),
+    );
+    changed.push(
+      byName
+        ? `${it.name}: got ${it.quantity} "${it.unit}" vs stored ${byName.quantity} "${byName.serving_label}"`
+        : `${it.name}: no previous line by that name`,
+    );
+  });
+  const unreplaced: string[] = [];
+  for (const p of passthrough.values()) {
+    const key = p.food_name.trim().toLowerCase();
+    if (replaced.delete(key)) unreplaced.push(p.food_name);
+  }
+  if (passthrough.size > 0 && passthrough.size < extItems.length) {
+    return {
+      toResolve: extItems.filter((_, i) => !passthrough.has(i)),
+      untouched: passthrough.size,
+      unchangedCount: passthrough.size,
+      unreplaced,
+      changed,
+      contradictions,
+    };
+  }
+  return {
+    toResolve: extItems,
+    untouched: 0,
+    unchangedCount: passthrough.size,
+    unreplaced,
+    changed,
+    contradictions,
+  };
+}
+
 export function unchangedInCorrection(
   item: ExtractedItem,
   previous: PreviousItem[],
@@ -3468,7 +3626,25 @@ export function unchangedInCorrection(
   // keeps the amount and the unit and points corrects_food_name at the old
   // line, so keying off that field alone reads it as untouched and throws the
   // swap away. The item's OWN name has to be the one already on the card.
-  if (item.correctsFoodName && norm(item.correctsFoodName) !== norm(item.name)) return null;
+  // THE TAG DECIDES, and the comparison below no longer overrules it.
+  //
+  // Sarthak's call, and the traces back it: comparing name + amount + serving
+  // label is what kept reporting untouched lines as changed. A model-chosen
+  // label ("plate") against a stored one ("serving") is a mismatch to string
+  // equality and not a change to a person, and a line wrongly called changed is
+  // re-resolved and re-sectioned - which is how a logged day lost its
+  // grouping. The model knows what it edited; it says so in this field.
+  //
+  // ANY non-null tag means changed. That covers both shapes the prompt asks
+  // for: a line correcting itself (amount, serving label or macros edited) and
+  // a swap naming a different line ("Muesli" replacing "Corn Flakes").
+  //
+  // The risk, stated plainly because it is real and accepted: if the model
+  // returns null on a line it DID change, that edit is passed through
+  // untouched and silently dropped. scopeCorrection traces exactly that
+  // contradiction - tag says untouched, numbers disagree - so it is visible in
+  // a trace rather than only in a user's day.
+  if (item.correctsFoodName) return null;
   const target = norm(item.name);
   // Scan ALL same-named lines, do not stop at the first. A meal can hold two
   // entries sharing a name and differing only in size - the "chai 75 g / chai
@@ -3477,16 +3653,24 @@ export function unchangedInCorrection(
   // duplicate is not first in the array. That is the safe direction (an extra
   // re-resolve, not lost data), but a re-resolve is exactly the
   // nondeterministic repoint I1 exists to avoid, so do not accept it needlessly.
-  for (const p of previous) {
-    if (norm(p.food_name) !== target) continue;
+  const named = previous.filter((p) => {
+    if (norm(p.food_name) !== target) return false;
     // A prep word the previous line never carried IS a change ("make the egg
-    // boiled"). Keep scanning: another same-named line may carry it.
-    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) continue;
-    const sameQty = Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001;
-    const sameUnit = unit(item.unit || "serving") === unit(p.serving_label || "serving");
-    if (sameQty && sameUnit) return p;
-  }
-  return null;
+    // boiled"), and it renames the food rather than editing it.
+    if (item.prep && !norm(p.food_name).includes(norm(item.prep))) return false;
+    return true;
+  });
+  if (named.length === 0) return null;
+  if (named.length === 1) return named[0];
+  // Amount and unit are now ONLY a tie-break, not a verdict. A meal can hold
+  // two lines sharing a name and differing in size ("chai 75 g" and "chai
+  // 150 g"), and passing the wrong one through would hand back the wrong
+  // numbers. Prefer the exact match; give up rather than guess.
+  const exact = named.find((p) =>
+    Math.abs((item.quantity || 1) - (p.quantity || 1)) < 0.001 &&
+    unit(item.unit || "serving") === unit(p.serving_label || "serving")
+  );
+  return exact ?? null;
 }
 
 /**
@@ -4262,7 +4446,16 @@ export async function tryFastCorrection(
   const out: ParsedItem[] = [];
 
   for (const item of extItems) {
-    const prev = item.correctsFoodName ? byName.get(item.correctsFoodName.toLowerCase()) : undefined;
+    // Fall back to the entry's OWN name when it carries no tag. Under the
+    // current contract a null tag means "copied back untouched", and this list
+    // is the FULL extract - scopeCorrection narrows a different copy - so
+    // keying only off the tag made the first untouched line bail the whole
+    // function. That silently disabled the fast path for every partial
+    // correction: no crash, no wrong data, just ~2s becoming ~6s with nothing
+    // to show it. The same fallback assignItemMeals needed, for the same
+    // reason, and missed here because the eval asserts output shape and not
+    // which path produced it, so only a unit test can hold this line honest.
+    const prev = byName.get((item.correctsFoodName ?? item.name).toLowerCase());
     // Every line must map to a known, catalog-backed previous line.
     if (!prev || !prev.food_id) return null;
     // A changed identity ("paneer not tofu") needs a real re-resolve.
@@ -4667,6 +4860,30 @@ export async function runParseMeal(
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Previous lines the user explicitly re-targeted. These are deliberately
   // replaced, so the no-drop guard must not resurrect them.
+  // ONLY a tag naming a DIFFERENT line counts as a replacement.
+  //
+  // "Muesli" tagged "Corn Flakes" means the corn flakes are gone and must not
+  // be restored. "Poha" tagged "Poha" means the poha line was EDITED - it is
+  // still on the card, and marking it replaced tells the no-drop guard not to
+  // bring it back if decide omits it. That is the deletion this whole thread
+  // started from.
+  //
+  // The distinction matters more now that the tag decides changed-ness on its
+  // own: the same model tagged every line on one run and only the edited line
+  // on the next, and under a name-blind rule the over-tagging run would mark
+  // every line replaced and disable the guard for the entire meal.
+  // Every previous line a corrected entry stands for, EDITS INCLUDED. This is
+  // the set keepUncoveredPrevious will not resurrect, and an edit must be in it:
+  // decide re-looks a corrected line up and may land on another catalog name
+  // ("Rajma Chawal" edited to 2 plates came back as "Rajma Masala"), and
+  // without this the guard reads the old line as missing and restores it
+  // beside the new one - the meal then has two rajmas and double the calories.
+  //
+  // Putting edits here reopens the old deletion risk only if decide OMITS an
+  // edited line, and that is closed separately: reconcileExtracted now runs on
+  // corrections too, so every changed line reaches the log from its own
+  // candidates even when decide forgets it. Untouched lines never appear here
+  // because they carry no tag, and the guard restores them verbatim.
   const replacedNames = new Set(
     extItems
       .map((i) => i.correctsFoodName?.trim().toLowerCase())
@@ -4726,7 +4943,40 @@ export async function runParseMeal(
   steps.push({
     iter: 0,
     tool: fastMode ? "estimate_meal" : "extract_meal",
-    input: { item_count: extItems.length, declined: ext.declined === true },
+    input: {
+      item_count: extItems.length,
+      declined: ext.declined === true,
+      // WHAT THE MODEL ACTUALLY SAID, on corrections only.
+      //
+      // This trace used to record item_count and nothing else, and that gap
+      // cost real time: a correction dropped a line the user never mentioned
+      // (2026-09-06, "make it 2 plates of rajma chawal" deleted the poha), and
+      // the stored trace could say only that three items went in and two came
+      // out. Every explanation of WHY had to be inferred from reading code,
+      // and the first inference was wrong.
+      //
+      // corrects_food_name is the field that decides whether a previous line
+      // is restorable or deliberately gone, so it is the one worth keeping.
+      // Correction turns only: on a fresh log it is null on every line and
+      // would be pure noise on every row of the table.
+      ...(correctsPrevious
+        ? {
+          corrects_previous: true,
+          removed: removedNames,
+          // "1 plate Poha <- Poha" - amount, unit, name, and the previous line
+          // it claims to replace ("-" when it claims none).
+          extracted: extItems.slice(0, 12).map((i) =>
+            `${i.quantity} ${i.unit} ${i.name}${
+              !i.correctsFoodName
+                ? ""
+                : i.correctsFoodName.trim().toLowerCase() === i.name.trim().toLowerCase()
+                ? " EDITED"
+                : ` REPLACES ${i.correctsFoodName}`
+            }`
+          ),
+        }
+        : {}),
+    },
   });
 
   // The user accepted the offer to go and check. This is the one path that
@@ -4905,24 +5155,26 @@ export async function runParseMeal(
   // previous version is restored verbatim by keepUncoveredPrevious below.
   let toResolve = extItems;
   if (correctsPrevious && prevItems.length > 0) {
-    const passthrough = new Map<number, PreviousItem>();
-    extItems.forEach((it, i) => {
-      const same = unchangedInCorrection(it, prevItems);
-      if (same) passthrough.set(i, same);
+    const scoped = scopeCorrection(extItems, prevItems, replacedNames);
+    toResolve = scoped.toResolve;
+    // ALWAYS emitted, including when nothing was narrowed. The absence of this
+    // step used to be the only signal that the scoping had bailed, and an
+    // absence tells you nothing about WHY - it looks identical to a turn that
+    // was never a correction. `unchanged` is the number the branch keys off, so
+    // reading 0 or extracted-count here says at a glance which bail happened.
+    steps.push({
+      iter: 1,
+      tool: "correction_scope",
+      input: {
+        extracted: extItems.length,
+        unchanged: scoped.unchangedCount,
+        re_resolved: toResolve.length,
+        narrowed: scoped.untouched > 0,
+        unreplaced: scoped.unreplaced,
+        changed: scoped.changed,
+        ...(scoped.contradictions.length > 0 ? { contradictions: scoped.contradictions } : {}),
+      },
     });
-    // If EVERYTHING looks unchanged we have almost certainly misread the turn,
-    // so resolve normally rather than hand back an identical meal.
-    if (passthrough.size > 0 && passthrough.size < extItems.length) {
-      // A passed-through line must not also be marked replaced, or the restore
-      // guard reads it as deliberately dropped and the line disappears.
-      for (const p of passthrough.values()) replacedNames.delete(p.food_name.toLowerCase());
-      toResolve = extItems.filter((_, i) => !passthrough.has(i));
-      steps.push({
-        iter: 1,
-        tool: "correction_scope",
-        input: { changed: toResolve.length, untouched: passthrough.size },
-      });
-    }
   }
   const tResolve0 = Date.now();
   // Only foods with a repeat count are staples; the recency fallback list has
@@ -5278,8 +5530,43 @@ export async function runParseMeal(
     // Enforce the correction contract on every line the user did not re-target:
     // still present (1), and if it was hand-edited, its provenance and numbers
     // survive (2, 3).
+    const beforeGuard = items.map((i) => i.food_name);
+    // The changed lines first. `resolved` holds only what was re-resolved (the
+    // untouched lines were narrowed out), so this is "every line the user
+    // corrected reaches the log, even if decide forgot to emit it" - the same
+    // guarantee a fresh parse already had, and the one that makes it safe to
+    // list edits in replacedNames above. Then the untouched lines, verbatim.
+    items = reconcileExtracted(items, resolved, candidatePer100);
     items = keepUncoveredPrevious(items, prevItems, replacedNames);
     items = preserveManual(items, prevItems, replacedNames);
+    // THE STEP THAT NAMES THE CULPRIT. A correction can lose a line in exactly
+    // two ways, and until now the trace could not tell them apart:
+    //   decide omitted it AND the guard restored it   -> harmless
+    //   decide omitted it AND the guard declined to   -> the line is GONE
+    // The guard declines when the name is in replacedNames, which is how a
+    // deliberate swap ("actually paneer not tofu") avoids resurrecting the
+    // tofu. So a name appearing in BOTH `gone` and `replaced` below is the
+    // whole diagnosis: the app believed the user threw that food away.
+    const kept = new Set(items.map((i) => i.food_name.toLowerCase()));
+    const gone = prevItems
+      .map((p) => p.food_name)
+      .filter((n) => !kept.has(n.toLowerCase()));
+    const restored = items
+      .map((i) => i.food_name)
+      .filter((n) => !beforeGuard.includes(n));
+    if (gone.length > 0 || restored.length > 0 || replacedNames.size > 0) {
+      steps.push({
+        iter: 8,
+        tool: "correction_guard",
+        input: {
+          decide_returned: beforeGuard,
+          restored,
+          gone,
+          replaced: [...replacedNames],
+          removed: removedNames,
+        },
+      });
+    }
   } else {
     // A fresh parse: every food the user named must reach the log, even if
     // decide forgot to emit one.

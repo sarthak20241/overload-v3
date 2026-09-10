@@ -350,12 +350,38 @@ async function main() {
       // Follow-up cases: replay the first parse as the meal on screen, then
       // score the follow-up — exactly what the client sends.
       if (c.followUp) {
+        // EVERY field the client sends, not a convenient subset. This used to
+        // carry five (id, name, quantity, serving_label, grams) while
+        // lib/dietData.ts sends fourteen, and the missing ones are exactly the
+        // ones a correction needs: PreviousItem's own comments say the macros
+        // are carried "so an untouched line can be handed back EXACTLY as it
+        // was", and meal_type "so a logged day does not collapse into one
+        // section".
+        //
+        // So every correction case scored on macros or sections was measuring
+        // the harness, not the pipeline: untouched lines came back 0 kcal and
+        // all in one meal, and both were this omission rather than a product
+        // bug. Found 2026-09-06 while chasing a real correction failure, and it
+        // cost a wrong diagnosis on the way.
+        //
+        // Keep this in step with the `previous_items` payload in
+        // lib/dietData.ts. A field added there and not here silently weakens
+        // every follow-up case in this file.
         const prev = (result.parsed?.items ?? []).map((i) => ({
           food_id: i.food_id,
           food_name: i.food_name,
           quantity: i.quantity,
           serving_label: i.serving_label,
           grams: i.grams,
+          kcal: i.kcal,
+          protein_g: i.protein_g,
+          carb_g: i.carb_g,
+          fat_g: i.fat_g,
+          fiber_g: i.fiber_g,
+          source: i.source,
+          assumption: i.assumption,
+          confidence: i.confidence,
+          meal_type: i.meal_type,
         }));
         result = await runParseMeal(deps, {
           ...baseInput,
@@ -393,9 +419,29 @@ async function main() {
     // another case's verdict under this case's name.
     const last = outcomes.find((o) => o.id === c.id)!;
     console.log(`${last.pass ? "PASS" : "FAIL"}  ${c.id.padEnd(24)} ${last.ms}ms  [${last.tiers.join(",")}]`);
-    if (!last.pass && env("DEBUG_STEPS") === "1" && lastSteps) {
+    // Steps print on a PASS too. DEBUG_STEPS is opt-in, and gating it on
+    // failure meant a passing case could not be inspected at all - so a prompt
+    // change could be "measured" by a green run without anyone seeing whether
+    // the model had actually followed it. A case can pass for the wrong reason.
+    if (env("DEBUG_STEPS") === "1" && lastSteps) {
       for (const st of lastSteps) {
-        if (["fast_fill", "search_foods", "lane_a_grammar"].includes(String(st.tool))) {
+        // The correction steps are here because a correction failure is the one
+        // shape this harness could not explain: the trace said how many items
+        // came out and nothing about which previous lines survived, so the
+        // cause had to be guessed from reading code. extract_meal carries what
+        // the model actually returned per line on a correction; the other two
+        // say what was narrowed and what the no-drop guard let through.
+        if (
+          [
+            "fast_fill",
+            "search_foods",
+            "lane_a_grammar",
+            "extract_meal",
+            "correction_scope",
+            "correction_guard",
+            "fast_correction",
+          ].includes(String(st.tool))
+        ) {
           console.log(`      # ${st.tool} ${JSON.stringify(st.input)} -> ${JSON.stringify(st.result ?? null)}`);
         }
       }
