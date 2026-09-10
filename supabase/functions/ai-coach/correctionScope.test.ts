@@ -325,9 +325,9 @@ Deno.test("without the tag the same input duplicates - the bug, pinned in revers
 // corrects_food_name, so once untouched lines started arriving with null the
 // FIRST one bailed the whole function - and the failure is invisible: no crash,
 // no wrong numbers, just the ~2s path quietly becoming the ~6s one on every
-// partial correction. Found by the Claude PR bot on #149, not by this suite,
-// because the eval asserts what the card ends up saying and never which code
-// path said it.
+// partial correction. The parse eval cannot catch this: it asserts what the
+// card ends up saying, and both paths say the same thing. Only a unit test
+// that calls tryFastCorrection directly can tell the two apart.
 import { tryFastCorrection, type ParseMealDeps } from "./parseMeal.ts";
 
 const fastDeps = {

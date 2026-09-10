@@ -4390,7 +4390,7 @@ export async function tryFastCorrection(
     // correction: no crash, no wrong data, just ~2s becoming ~6s with nothing
     // to show it. The same fallback assignItemMeals needed, for the same
     // reason, and missed here because the eval asserts output shape and not
-    // which path produced it. Found by the Claude PR bot on #149.
+    // which path produced it, so only a unit test can hold this line honest.
     const prev = byName.get((item.correctsFoodName ?? item.name).toLowerCase());
     // Every line must map to a known, catalog-backed previous line.
     if (!prev || !prev.food_id) return null;
