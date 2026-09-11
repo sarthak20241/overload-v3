@@ -582,25 +582,43 @@ export default function NutritionScreen() {
     // The user's own section pick outranks a guess made from the follow-up
     // text alone; without a pick we take the server's.
     const keptMealType = prevReview?.mealTypePicked ? prevReview.mealType : null;
-    // Parsed, not logged. Seed the section selector with Drona's best guess.
+    // Parsed, not logged. Seed the section selector from the LINES, the same
+    // rule onAdd, onRemoveItem, onEditSave and onMoveGroup already follow. The
+    // meal-level field is only the fallback for a line that carries none, and
+    // the two can disagree: it is the server's own guess and an older build
+    // falls back to the time-of-day hint there, while each line carries the
+    // section the parse resolved. Reading the meal-level field put a card whose
+    // lines all said dinner behind a chip row and a button reading "Add to
+    // Breakfast", and onAdd then wrote the lines to Dinner - the button lied
+    // about where the food was going. Verified on device by forcing the
+    // disagreement; the head is stamped back so a later fallback agrees too.
+    const headOf = (its: ParsedMealItem[]): MealType =>
+      its[0]?.meal_type ?? res.meal.meal_type;
     // A follow-up either CORRECTS the pending meal (replace its lines) or ADDS
     // to it (append) — appending is what keeps "and a dosa" from silently
     // dropping the samosa the user already reviewed.
     const reviewFlow: ParseFlow = (pending && !res.meal.corrects_previous)
-      ? {
-          status: 'review',
-          raw: `${pending.text}; ${t}`,
-          meal: { ...res.meal, items: [...pending.items, ...res.meal.items] },
-          mealType: keptMealType ?? res.meal.meal_type,
-          mealTypePicked: prevReview?.mealTypePicked,
-        }
-      : {
-          status: 'review',
-          raw: t,
-          meal: res.meal,
-          mealType: keptMealType ?? res.meal.meal_type,
-          mealTypePicked: prevReview?.mealTypePicked,
-        };
+      ? (() => {
+          const items = [...pending.items, ...res.meal.items];
+          const head = keptMealType ?? headOf(items);
+          return {
+            status: 'review',
+            raw: `${pending.text}; ${t}`,
+            meal: { ...res.meal, items, meal_type: head },
+            mealType: head,
+            mealTypePicked: prevReview?.mealTypePicked,
+          };
+        })()
+      : (() => {
+          const head = keptMealType ?? headOf(res.meal.items);
+          return {
+            status: 'review',
+            raw: t,
+            meal: { ...res.meal, meal_type: head },
+            mealType: head,
+            mealTypePicked: prevReview?.mealTypePicked,
+          };
+        })();
     setFlow(skippedNotice ? { ...reviewFlow, notice: skippedNotice } : reviewFlow);
     // I15: NOTHING fires after this point. The card the user is reading is the
     // card they will log. The automatic web refine that used to run here swapped
