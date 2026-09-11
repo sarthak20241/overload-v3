@@ -33,7 +33,8 @@
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA"
       },
       "ios": {
-        "resourceClass": "m-medium"
+        "resourceClass": "m-medium",
+        "image": "macos-tahoe-26.5-xcode-26.6"
       }
     }
   },
