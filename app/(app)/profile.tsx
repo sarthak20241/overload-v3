@@ -348,8 +348,16 @@ export default function ProfileScreen() {
 
   // Subscription state for the PRO chip + Plan row. After paying, this screen
   // is where people come looking for proof; it used to have none.
-  const { access: coachAccess } = useCoachAccess();
+  const { access: coachAccess, loading: coachAccessLoading } = useCoachAccess();
+  // Two different questions, and conflating them sent a trialing user to the
+  // paywall they had already converted on:
+  //   isPro          — wears the badge (paid only; a trial is not Pro yet)
+  //   hasSubscription — has something to MANAGE in the store (paid OR trialing)
   const isPro = coachAccess.state === 'paid';
+  const hasSubscription = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
+  // Until access resolves, offer nothing: 'unknown' would otherwise render as
+  // "Free plan · Upgrade" to a paying user on a cold, offline start.
+  const planUnknown = coachAccessLoading || coachAccess.state === 'unknown';
   const planLabel = (() => {
     switch (coachAccess.tier) {
       case 'monthly': return 'Monthly';
@@ -363,15 +371,17 @@ export default function ProfileScreen() {
   const renewsOn = coachAccess.expiresAt
     ? new Date(coachAccess.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
     : null;
-  const planSub = isPro
-    ? isLifetime
-      ? 'Yours forever, no renewals'
-      : renewsOn
-        ? `${planLabel} · renews ${renewsOn}`
-        : planLabel
-    : coachAccess.state === 'trialing'
-      ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
-      : '3 coach messages and 3 AI food logs a day';
+  const planSub = planUnknown
+    ? 'Checking your plan…'
+    : isPro
+      ? isLifetime
+        ? 'Yours forever, no renewals'
+        : renewsOn
+          ? `${planLabel} · renews ${renewsOn}`
+          : planLabel
+      : coachAccess.state === 'trialing'
+        ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
+        : '3 coach messages and 3 AI food logs a day';
   const openManageSubscription = () => {
     Linking.openURL(
       Platform.OS === 'android'
@@ -1078,35 +1088,58 @@ export default function ProfileScreen() {
           {!isGuest && (
             <View style={styles.section}>
               <SectionLabel icon="zap">PLAN</SectionLabel>
+              {/* Three states, and only one of them offers an upgrade:
+                    unknown   — inert while access resolves
+                    lifetime  — inert, nothing to manage or renew
+                    sub       — Manage (paid OR trialing: a trial is a live
+                                store subscription, and sending those users to
+                                the paywall asked them to buy what they own)
+                    free      — Upgrade */}
               <TouchableOpacity
                 onPress={
-                  isPro
-                    ? isLifetime ? undefined : openManageSubscription
-                    : () => router.push('/upgrade' as any)
+                  planUnknown || (hasSubscription && isLifetime)
+                    ? undefined
+                    : hasSubscription
+                      ? openManageSubscription
+                      : () => router.push('/upgrade' as any)
                 }
-                disabled={isPro && isLifetime}
+                disabled={planUnknown || (hasSubscription && isLifetime)}
                 activeOpacity={0.85}
                 style={[styles.accountBtn, { backgroundColor: C.card, borderColor: isPro ? C.primaryBorder : C.borderSubtle }]}
                 accessibilityRole="button"
-                accessibilityLabel={isPro ? 'Manage subscription' : 'Upgrade to Overload Pro'}
+                accessibilityLabel={
+                  planUnknown
+                    ? 'Checking your plan'
+                    : hasSubscription
+                      ? 'Manage subscription'
+                      : 'Upgrade to Overload Pro'
+                }
               >
                 <View style={[styles.rowIcon, { backgroundColor: isPro ? Colors.primary : `${Colors.primary}22` }]}>
                   <Feather name="zap" size={11} color={isPro ? Colors.primaryFg : C.accentText} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.infoLabel, { color: C.foreground }]}>
-                    {isPro ? 'Overload Pro' : coachAccess.state === 'trialing' ? 'Overload Pro trial' : 'Free plan'}
+                    {planUnknown
+                      ? 'Your plan'
+                      : isPro
+                        ? 'Overload Pro'
+                        : coachAccess.state === 'trialing'
+                          ? 'Overload Pro trial'
+                          : 'Free plan'}
                   </Text>
                   <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>{planSub}</Text>
                 </View>
-                {isPro ? (
+                {planUnknown ? null : hasSubscription ? (
                   isLifetime ? null : (
                     <Text style={{ fontSize: FontSize.xs, color: C.textMuted }}>Manage</Text>
                   )
                 ) : (
                   <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: C.accentText }}>Upgrade</Text>
                 )}
-                {!(isPro && isLifetime) && <Feather name="chevron-right" size={14} color={C.textMuted} />}
+                {!(planUnknown || (hasSubscription && isLifetime)) && (
+                  <Feather name="chevron-right" size={14} color={C.textMuted} />
+                )}
               </TouchableOpacity>
             </View>
           )}

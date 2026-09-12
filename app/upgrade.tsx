@@ -368,14 +368,22 @@ export default function UpgradeScreen() {
   // Everywhere else the payoff is the coach: leave a one-shot request that
   // the dashboard picks up on focus and opens the chat with a first ask.
   const fromCap = context === 'cap_chat' || context === 'cap_parse';
+  // MUST navigate to the dashboard explicitly, never finish()/router.back():
+  // consumeCoachOpen() is only read by the dashboard's focus effect, so
+  // popping back to whatever pushed /upgrade (nutrition, a routine, the
+  // profile) left the queued request to expire unread and the button did
+  // nothing at all. Only `context=milestone` happened to work, because that
+  // card lives on the dashboard.
+  const goToDashboard = useCallback(() => {
+    router.replace('/(app)');
+  }, [router]);
   const finishWithCoach = useCallback(() => {
     requestCoachOpen({
       screen: 'chat',
       prompt: 'Plan my training week around my goal.',
     });
-    if (isFunnel) router.replace('/(app)');
-    else finish();
-  }, [isFunnel, router, finish]);
+    goToDashboard();
+  }, [goToDashboard]);
 
   const advanceFromReminder = useCallback(async () => {
     // The promise needs the permission. Denial is fine: the screen never
@@ -800,7 +808,11 @@ export default function UpgradeScreen() {
               </Animated.View>
             )}
             <Text style={[u.legal, { color: C.textDim }]}>
-              Auto-renews until cancelled.{' '}
+              {/* Subscriptions only. Founding Lifetime is a non-consumable,
+                  and the trust line above already says "One payment, no
+                  renewals" — claiming it auto-renews contradicts that and is
+                  exactly the kind of billing copy App Review reads. */}
+              {selectedPlan !== 'founding_lifetime' && 'Auto-renews until cancelled. '}
               <Text style={u.legalLink} onPress={() => Linking.openURL('https://tryoverload.app/terms.html')}>
                 Terms
               </Text>
@@ -867,7 +879,7 @@ export default function UpgradeScreen() {
             </PressableScale>
             {!fromCap && (
               <TouchableOpacity
-                onPress={finish}
+                onPress={goToDashboard}
                 accessibilityRole="button"
                 accessibilityLabel="Go to my dashboard"
               >
