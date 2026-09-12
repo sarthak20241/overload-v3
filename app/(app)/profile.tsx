@@ -27,7 +27,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
-import { getLevelInfo, getTierForLevel } from '@/lib/xp';
+import { getLevelInfo, getTierForLevel, XP_PER_LEVEL } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
@@ -422,6 +422,9 @@ export default function ProfileScreen() {
     }
   })();
   const isLifetime = coachAccess.tier === 'founding_lifetime';
+  // At the cap getLevelInfo returns xpInLevel/xpNeeded = 1/1, so printing it
+  // raw would read "1 / 1 XP to 12" for a level 12 that does not exist.
+  const atMaxLevel = level >= XP_PER_LEVEL.length;
   const proDays = tierStartedAt
     ? Math.max(1, Math.floor((Date.now() - new Date(tierStartedAt).getTime()) / 86_400_000))
     : null;
@@ -439,19 +442,18 @@ export default function ProfileScreen() {
       : coachAccess.state === 'trialing'
         ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
         : '3 coach messages and 3 AI food logs a day';
-  // Two different store destinations, because Founding Lifetime is a
-  // non-consumable: it never appears under Manage Subscriptions, so sending a
-  // lifetime owner there would open a page with nothing of theirs on it.
-  // Purchase history does list one-time purchases.
-  const openStore = () => {
-    const url = isLifetime
-      ? Platform.OS === 'android'
-        ? 'https://play.google.com/store/account/orderhistory'
-        : 'https://apps.apple.com/account/billing'
-      : Platform.OS === 'android'
+  // Only ever the store's SUBSCRIPTION management page, which is the one
+  // documented universal link. Founding Lifetime is a non-consumable: it never
+  // appears there, and there is nothing to renew or cancel either, so the sheet
+  // states that instead of linking out. An earlier draft used
+  // apps.apple.com/account/billing for it, which is not a documented link and
+  // was never confirmed to open anything.
+  const openManageSubscription = () => {
+    Linking.openURL(
+      Platform.OS === 'android'
         ? 'https://play.google.com/store/account/subscriptions'
-        : 'https://apps.apple.com/account/subscriptions';
-    Linking.openURL(url).catch(() => {});
+        : 'https://apps.apple.com/account/subscriptions',
+    ).catch(() => {});
   };
   const levelProgress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
 
@@ -838,7 +840,9 @@ export default function ProfileScreen() {
                 </View>
                 <View style={{ flex: 1 }} />
                 <Text style={[styles.xpTotal, { color: C.textMuted }]}>
-                  {xpInLevel.toLocaleString()} / {xpNeeded.toLocaleString()} XP to {level + 1}
+                  {atMaxLevel
+                    ? 'max level'
+                    : `${xpInLevel.toLocaleString()} / ${xpNeeded.toLocaleString()} XP to ${level + 1}`}
                 </Text>
               </View>
               <View style={[styles.xpTrack, { backgroundColor: withAlpha(Colors.primary, '12') }]}>
@@ -1539,21 +1543,28 @@ export default function ProfileScreen() {
               <Text style={styles.planPrimaryBtnText}>Done</Text>
             </TouchableOpacity>
 
-            {/* Deliberately the quietest thing here. */}
-            <TouchableOpacity
-              onPress={() => { setPlanSheetOpen(false); openStore(); }}
-              activeOpacity={0.7}
-              style={styles.planStoreLink}
-              accessibilityRole="button"
-              accessibilityLabel={isLifetime ? 'View purchase history in the App Store' : 'Manage subscription in the App Store'}
-            >
-              <Text style={[styles.planStoreLinkText, { color: C.textMuted }]}>
-                {isLifetime
-                  ? Platform.OS === 'android' ? 'View order history in Play' : 'View purchase history in the App Store'
-                  : Platform.OS === 'android' ? 'Manage or cancel in Play' : 'Manage or cancel in the App Store'}
+            {/* Deliberately the quietest thing here. Lifetime gets a statement
+                rather than a link: there is no renewal to manage and no
+                cancellation to make, and the store's subscription page would
+                not list a non-consumable anyway. */}
+            {isLifetime ? (
+              <Text style={[styles.planStoreLinkText, { color: C.textMuted, textAlign: 'center', paddingTop: 14 }]}>
+                One-time purchase. Nothing to renew or cancel.
               </Text>
-              <Feather name="external-link" size={11} color={C.textMuted} />
-            </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                onPress={() => { setPlanSheetOpen(false); openManageSubscription(); }}
+                activeOpacity={0.7}
+                style={styles.planStoreLink}
+                accessibilityRole="button"
+                accessibilityLabel="Manage subscription in the store"
+              >
+                <Text style={[styles.planStoreLinkText, { color: C.textMuted }]}>
+                  {Platform.OS === 'android' ? 'Manage or cancel in Play' : 'Manage or cancel in the App Store'}
+                </Text>
+                <Feather name="external-link" size={11} color={C.textMuted} />
+              </TouchableOpacity>
+            )}
           </Animated.View>
         </View>
         )}
