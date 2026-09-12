@@ -26,6 +26,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { pickTransferIds } from "./transferIds.ts";
+import { decideTransfer } from "./transferDecision.ts";
 
 const REVENUECAT_WEBHOOK_SECRET = Deno.env.get("REVENUECAT_WEBHOOK_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -221,6 +222,31 @@ Deno.serve(async (req) => {
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
+/**
+ * Drop an account back to the free tier. Called on the SOURCE of a transfer:
+ * the store receipt has left that account, so its entitlement has to go with
+ * it. Recoverable by the user — Restore Purchases transfers the receipt back
+ * and this webhook moves the tier again.
+ */
+async function releaseTier(clerkUserId: string): Promise<void> {
+  const { error } = await admin
+    .from("user_profiles")
+    .update({
+      tier: "free",
+      tier_started_at: null,
+      tier_expires_at: null,
+      purchase_provider: null,
+      purchase_id: null,
+    })
+    .eq("clerk_user_id", clerkUserId);
+  if (error) throw new Error(`release of ${clerkUserId} failed: ${error.message}`);
+  console.log(`[revenuecat] released tier for ${clerkUserId} (receipt transferred away)`);
+}
+
+/**
+ * A TRANSFER MOVES a receipt between accounts; it does not clone it. See
+ * transferDecision.ts for why the naive copy was wrong in both directions.
+ */
 async function handleTransfer(event: RcEvent): Promise<void> {
   const { newClerkId, oldClerkId } = pickTransferIds(event);
 
@@ -228,50 +254,80 @@ async function handleTransfer(event: RcEvent): Promise<void> {
     console.error("[revenuecat] TRANSFER has no non-anonymous transferred_to ID");
     return;
   }
+  if (!oldClerkId) {
+    // Anonymous source: there is no row to read a tier from. The follow-up
+    // INITIAL_PURCHASE / RENEWAL carries product_id and activates the target.
+    console.log(
+      `[revenuecat] TRANSFER from (anonymous) to ${newClerkId}; ` +
+      `target will activate on its own purchase event`,
+    );
+    return;
+  }
 
-  if (oldClerkId) {
-    const { data: oldProfile } = await admin
+  const [{ data: oldProfile }, { data: newProfile }] = await Promise.all([
+    admin
       .from("user_profiles")
       .select("tier, tier_started_at, tier_expires_at, purchase_provider, purchase_id")
       .eq("clerk_user_id", oldClerkId)
-      .single();
+      .maybeSingle(),
+    admin
+      .from("user_profiles")
+      .select("tier, tier_started_at")
+      .eq("clerk_user_id", newClerkId)
+      .maybeSingle(),
+  ]);
 
-    if (oldProfile && oldProfile.tier && oldProfile.tier !== "free") {
-      const { data, error } = await admin
-        .from("user_profiles")
-        .update({
-          tier: oldProfile.tier,
-          tier_started_at: oldProfile.tier_started_at,
-          tier_expires_at: oldProfile.tier_expires_at,
-          purchase_provider: oldProfile.purchase_provider,
-          purchase_id: oldProfile.purchase_id,
-        })
-        .eq("clerk_user_id", newClerkId)
-        .select("clerk_user_id");
+  const { action, reason } = decideTransfer(oldProfile, newProfile);
+  console.log(`[revenuecat] TRANSFER ${oldClerkId} -> ${newClerkId}: ${action} — ${reason}`);
 
-      if (error) throw new Error(`transfer update failed: ${error.message}`);
-      if (!data || data.length === 0) {
-        console.error(
-          `[revenuecat] transfer matched 0 user_profiles rows for new_user=${newClerkId} — forcing retry`,
-        );
-        throw new Error(`no user_profiles row for new_user=${newClerkId}`);
-      }
+  if (action === "none") return;
 
-      await admin.rpc("mark_trial_converted", { p_clerk_user_id: newClerkId });
-      console.log(
-        `[revenuecat] transferred tier=${oldProfile.tier} from=${oldClerkId} to=${newClerkId}`,
+  if (action === "move") {
+    const { data, error } = await admin
+      .from("user_profiles")
+      .update({
+        tier: oldProfile!.tier,
+        tier_started_at: oldProfile!.tier_started_at,
+        tier_expires_at: oldProfile!.tier_expires_at,
+        purchase_provider: oldProfile!.purchase_provider,
+        purchase_id: oldProfile!.purchase_id,
+      })
+      .eq("clerk_user_id", newClerkId)
+      .select("clerk_user_id");
+
+    if (error) throw new Error(`transfer update failed: ${error.message}`);
+    if (!data || data.length === 0) {
+      // The target has no profile row yet. Throw so RevenueCat retries rather
+      // than releasing the source and losing the entitlement entirely.
+      console.error(
+        `[revenuecat] transfer matched 0 user_profiles rows for new_user=${newClerkId} — forcing retry`,
       );
-      return;
+      throw new Error(`no user_profiles row for new_user=${newClerkId}`);
     }
+
+    // Bookkeeping only, and deliberately NOT allowed to abort the handler. If
+    // it threw, RevenueCat would retry — but by then the target already holds
+    // the copied tier with a timestamp equal to the source's, so decideTransfer
+    // returns release_only and this RPC is never reached again. Throwing would
+    // therefore lose the conversion record anyway AND risk re-running the
+    // release. Log loudly instead and let the entitlement move stand.
+    const { error: convErr } = await admin.rpc("mark_trial_converted", {
+      p_clerk_user_id: newClerkId,
+    });
+    if (convErr) {
+      console.error(
+        `[revenuecat] mark_trial_converted failed for ${newClerkId} after transfer: ` +
+        `${convErr.message} — entitlement moved, conversion bookkeeping lost`,
+      );
+    }
+    console.log(
+      `[revenuecat] transferred tier=${oldProfile!.tier} from=${oldClerkId} to=${newClerkId}`,
+    );
   }
 
-  // Old user not found or was on free. The next RENEWAL event will carry
-  // product_id and will activate the tier via handleRenewal's needsActivation
-  // check. Log so we know this path was hit.
-  console.log(
-    `[revenuecat] TRANSFER: old user ${oldClerkId ?? "(anonymous)"} not found or free; ` +
-    `new user ${newClerkId} will activate on next RENEWAL`,
-  );
+  // Both "move" and "release_only" end the same way: the receipt is no longer
+  // on the source account, so neither may keep serving Pro from it.
+  await releaseTier(oldClerkId);
 }
 
 async function handleSubscriptionStart(event: RcEvent): Promise<void> {

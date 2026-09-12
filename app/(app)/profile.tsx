@@ -27,7 +27,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
-import { getLevelInfo, getTierForLevel } from '@/lib/xp';
+import { getLevelInfo, getTierForLevel, isMaxLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
@@ -74,6 +74,18 @@ function withAlpha(hex: string, alpha: string) {
 }
 
 // ─── Section header ──────────────────────────────────────────────────────────
+// What Pro actually gives you. Deliberately shorter and blunter than the
+// paywall's comparison table (app/upgrade.tsx COMPARE_CORE): that table sells
+// by contrast against the free column and needs four rows to do it, while this
+// card is read by someone who has already paid and only wants confirmation.
+// Nothing enforces parity between the two lists, so if the offer changes, both
+// have to be edited.
+const PLAN_BENEFITS = [
+  'Unlimited coach chat',
+  'Unlimited AI food logs',
+  'Personalized plans, rewritten every week',
+];
+
 function SectionLabel({
   icon, children,
 }: { icon?: React.ComponentProps<typeof Feather>['name']; children: React.ReactNode }) {
@@ -281,6 +293,9 @@ export default function ProfileScreen() {
   const [totalXP, setTotalXP] = useState(0);
   const [totalWorkouts, setTotalWorkouts] = useState(0);
   const [joinDate, setJoinDate] = useState('');
+  // When this account's paid tier began, used by the plan sheet to scope
+  // "since you went Pro". Comes free with the profile's select('*').
+  const [tierStartedAt, setTierStartedAt] = useState<string | null>(null);
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   // Coach context (Phase 0). Empty string = unset / show placeholder.
@@ -296,6 +311,11 @@ export default function ProfileScreen() {
 
   // Bug report modal
   const [bugModalOpen, setBugModalOpen] = useState(false);
+  // Plan detail sheet. Tapping the plan card opens this rather than jumping
+  // straight out to the App Store: the store page answers "how do I cancel",
+  // which is the last question a paying user has, not the first.
+  const [planSheetOpen, setPlanSheetOpen] = useState(false);
+  const [proWorkouts, setProWorkouts] = useState<number | null>(null);
   const [showWorkoutSettings, setShowWorkoutSettings] = useState(false);
   const [bugTitle, setBugTitle] = useState('');
   const [bugDescription, setBugDescription] = useState('');
@@ -315,6 +335,45 @@ export default function ProfileScreen() {
   // Transform-driven slide — Reanimated's entering/exiting would pin the sheet's
   // frame and swallow the keyboard lift below. See useSheetSlide.
   const { mounted: bugSheetMounted, slideStyle: bugSlideStyle } = useSheetSlide(bugModalOpen, 300, 200);
+  const { mounted: planSheetMounted, slideStyle: planSlideStyle } = useSheetSlide(planSheetOpen, 300, 200);
+
+  // Count workouts logged since the plan started. Fetched lazily on first open
+  // so the profile's normal load pays nothing for it, and only once per mount.
+  useEffect(() => {
+    if (!planSheetOpen || proWorkouts !== null) return;
+    const clerkId = user?.id;
+    if (!clerkId || !tierStartedAt) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { count, error } = await supabase
+          .from('workouts')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', clerkId)
+          .gte('started_at', tierStartedAt);
+        if (!cancelled && !error) setProWorkouts(count ?? 0);
+      } catch {
+        // Offline: the row just stays hidden rather than showing a zero that
+        // would read as "you have done nothing since you paid".
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [planSheetOpen, proWorkouts, user?.id, tierStartedAt, supabase]);
+
+  // Android hardware back closes the plan sheet; <Portal> has no onRequestClose.
+  useEffect(() => {
+    if (!planSheetOpen) {
+      // Forget the count on close so reopening after logging a workout in the
+      // same session refetches instead of showing the stale number.
+      setProWorkouts(null);
+      return;
+    }
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setPlanSheetOpen(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [planSheetOpen]);
   const [bugKbHeight, setBugKbHeight] = useState(0);
   useEffect(() => {
     if (!bugModalOpen) { setBugKbHeight(0); return; }
@@ -368,6 +427,10 @@ export default function ProfileScreen() {
     }
   })();
   const isLifetime = coachAccess.tier === 'founding_lifetime';
+  const atMaxLevel = isMaxLevel(level);
+  const proDays = tierStartedAt
+    ? Math.max(1, Math.floor((Date.now() - new Date(tierStartedAt).getTime()) / 86_400_000))
+    : null;
   const renewsOn = coachAccess.expiresAt
     ? new Date(coachAccess.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
     : null;
@@ -382,6 +445,12 @@ export default function ProfileScreen() {
       : coachAccess.state === 'trialing'
         ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
         : '3 coach messages and 3 AI food logs a day';
+  // Only ever the store's SUBSCRIPTION management page, which is the one
+  // documented universal link. Founding Lifetime is a non-consumable: it never
+  // appears there, and there is nothing to renew or cancel either, so the sheet
+  // states that instead of linking out. An earlier draft used
+  // apps.apple.com/account/billing for it, which is not a documented link and
+  // was never confirmed to open anything.
   const openManageSubscription = () => {
     Linking.openURL(
       Platform.OS === 'android'
@@ -445,6 +514,7 @@ export default function ProfileScreen() {
       setTotalXP(0);
       setTotalWorkouts(0);
       setJoinDate('');
+      setTierStartedAt(null);
       setCoachGoal('');
       setExperienceLevel('');
       setWeeklyTargetSessions('');
@@ -488,6 +558,7 @@ export default function ProfileScreen() {
         setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
         setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
+        setTierStartedAt((profile.tier_started_at as string | null) ?? null);
       };
       const profileQuery = clerkId
         ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
@@ -748,7 +819,6 @@ export default function ProfileScreen() {
               </View>
               {isPro && (
                 <View style={[styles.heroBadge, styles.proBadge]}>
-                  <Feather name="zap" size={9} color={Colors.primaryFg} />
                   <Text style={[styles.heroBadgeText, styles.proBadgeText]}>PRO</Text>
                 </View>
               )}
@@ -758,41 +828,130 @@ export default function ProfileScreen() {
           {/* ─── XP Card ─── */}
           <View style={styles.section}>
             <View style={[styles.xpCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              {/* Two rows, not four. The old card stacked a header, a
+                  "Level 10 → 11" row, the track, and a "% to next level"
+                  line; the level, the tier and the remaining XP all say the
+                  same thing in different words, so they now share one row
+                  with the bar underneath. */}
               <View style={styles.xpHeader}>
-                <View style={[
-                  styles.xpAvatar,
-                  {
-                    backgroundColor: withAlpha(tier.color, '20'),
-                  },
-                ]}>
+                <View style={[styles.xpAvatar, { backgroundColor: withAlpha(tier.color, '20') }]}>
                   <Text style={[styles.xpAvatarText, { color: tier.color }]}>{level}</Text>
                 </View>
-                <View style={{ marginLeft: 12, flex: 1 }}>
-                  <View style={styles.xpTitleRow}>
-                    <Text style={styles.xpIcon}>{tier.icon}</Text>
-                    <Text style={[styles.xpTitle, { color: tier.color }]}>{tier.title}</Text>
-                  </View>
-                  <Text style={[styles.xpTotal, { color: C.textMuted }]}>
-                    {totalXP.toLocaleString()} total XP
-                  </Text>
+                <View style={styles.xpTitleRow}>
+                  <Text style={styles.xpIcon}>{tier.icon}</Text>
+                  <Text style={[styles.xpTitle, { color: tier.color }]}>{tier.title}</Text>
                 </View>
-              </View>
-              <View style={styles.xpProgressRow}>
-                <Text style={[styles.xpProgressLabel, { color: C.textMuted }]}>
-                  Level {level} → {level + 1}
-                </Text>
-                <Text style={[styles.xpProgressValue, { color: C.textDim }]}>
-                  {xpInLevel} / {xpNeeded} XP
+                <View style={{ flex: 1 }} />
+                <Text style={[styles.xpTotal, { color: C.textMuted }]}>
+                  {atMaxLevel
+                    ? 'max level'
+                    : `${xpInLevel.toLocaleString()} / ${xpNeeded.toLocaleString()} XP to ${level + 1}`}
                 </Text>
               </View>
               <View style={[styles.xpTrack, { backgroundColor: withAlpha(Colors.primary, '12') }]}>
                 <Animated.View style={[styles.xpFill, { backgroundColor: Colors.primary }, progressStyle]} />
               </View>
-              <Text style={[styles.xpPercent, { color: C.textDim }]}>
-                {Math.round(levelProgress * 100)}% to next level
-              </Text>
             </View>
           </View>
+
+          {/* ─── Plan ───
+              Sits directly under the hero (Sarthak: "the plan status should be
+              above"), and it is a card rather than a settings row because it
+              answers two questions at once: what am I on, and what does that
+              give me. Tapping always does something — Manage for a live store
+              subscription, Upgrade for free — so the card is never dead. */}
+          {!isGuest && (
+            <View style={styles.section}>
+              <SectionLabel icon="award">PLAN</SectionLabel>
+              <TouchableOpacity
+                activeOpacity={planUnknown ? 1 : 0.85}
+                disabled={planUnknown}
+                onPress={
+                  planUnknown
+                    ? undefined
+                    : hasSubscription
+                      ? () => setPlanSheetOpen(true)
+                      : () => router.push('/upgrade' as any)
+                }
+                accessibilityRole="button"
+                accessibilityLabel={
+                  planUnknown
+                    ? 'Checking your plan'
+                    : hasSubscription
+                      ? 'See your plan details'
+                      : 'Upgrade to Overload Pro'
+                }
+                style={[styles.planCard, {
+                  backgroundColor: C.card,
+                  borderColor: hasSubscription ? C.primaryBorder : C.borderSubtle,
+                }]}
+              >
+                <View style={styles.planCardHead}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.planCardTitle, { color: C.foreground }]}>
+                      {planUnknown
+                        ? 'Your plan'
+                        : isPro
+                          ? 'Overload Pro'
+                          : coachAccess.state === 'trialing'
+                            ? 'Overload Pro trial'
+                            : 'Free plan'}
+                    </Text>
+                    <Text style={[styles.planCardSub, { color: C.textMuted }]}>{planSub}</Text>
+                  </View>
+                  {/* Same condition as the hero badge (paid only). A trialing
+                      user has full access but has not paid, and the card's own
+                      title already says "Overload Pro trial" — showing the chip
+                      here while the hero withheld it read as a bug. */}
+                  {isPro && (
+                    <View style={styles.planCardChip}>
+                      <Text style={styles.planCardChipText}>PRO</Text>
+                    </View>
+                  )}
+                </View>
+
+                {!planUnknown && (
+                  <>
+                    <View style={[styles.planCardRule, { backgroundColor: C.borderSubtle }]} />
+                    {!hasSubscription && (
+                      <Text style={[styles.planCardLead, { color: C.textDim }]}>WITH PRO YOU GET</Text>
+                    )}
+                    {PLAN_BENEFITS.map((line) => (
+                      <View key={line} style={styles.planBenefitRow}>
+                        <Feather
+                          name={hasSubscription ? 'check' : 'lock'}
+                          size={11}
+                          color={hasSubscription ? C.accentText : C.textDim}
+                        />
+                        <Text
+                          style={[styles.planBenefitText, {
+                            color: hasSubscription ? C.foreground : C.textMuted,
+                          }]}
+                        >
+                          {line}
+                        </Text>
+                      </View>
+                    ))}
+                    <View style={[styles.planCardRule, { backgroundColor: C.borderSubtle }]} />
+                    <View style={styles.planCardAction}>
+                      <Text
+                        style={[styles.planCardActionText, {
+                          color: hasSubscription ? C.textMuted : C.accentText,
+                        }]}
+                      >
+                        {hasSubscription ? 'See your plan details' : 'Upgrade to Pro'}
+                      </Text>
+                      <Feather
+                        name="chevron-right"
+                        size={14}
+                        color={hasSubscription ? C.textMuted : C.accentText}
+                      />
+                    </View>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* ─── Basic Information ─── */}
           <View style={styles.section}>
@@ -1084,66 +1243,6 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {/* ─── Plan ─── */}
-          {!isGuest && (
-            <View style={styles.section}>
-              <SectionLabel icon="zap">PLAN</SectionLabel>
-              {/* Three states, and only one of them offers an upgrade:
-                    unknown   — inert while access resolves
-                    lifetime  — inert, nothing to manage or renew
-                    sub       — Manage (paid OR trialing: a trial is a live
-                                store subscription, and sending those users to
-                                the paywall asked them to buy what they own)
-                    free      — Upgrade */}
-              <TouchableOpacity
-                onPress={
-                  planUnknown || (hasSubscription && isLifetime)
-                    ? undefined
-                    : hasSubscription
-                      ? openManageSubscription
-                      : () => router.push('/upgrade' as any)
-                }
-                disabled={planUnknown || (hasSubscription && isLifetime)}
-                activeOpacity={0.85}
-                style={[styles.accountBtn, { backgroundColor: C.card, borderColor: isPro ? C.primaryBorder : C.borderSubtle }]}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  planUnknown
-                    ? 'Checking your plan'
-                    : hasSubscription
-                      ? 'Manage subscription'
-                      : 'Upgrade to Overload Pro'
-                }
-              >
-                <View style={[styles.rowIcon, { backgroundColor: isPro ? Colors.primary : `${Colors.primary}22` }]}>
-                  <Feather name="zap" size={11} color={isPro ? Colors.primaryFg : C.accentText} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.infoLabel, { color: C.foreground }]}>
-                    {planUnknown
-                      ? 'Your plan'
-                      : isPro
-                        ? 'Overload Pro'
-                        : coachAccess.state === 'trialing'
-                          ? 'Overload Pro trial'
-                          : 'Free plan'}
-                  </Text>
-                  <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>{planSub}</Text>
-                </View>
-                {planUnknown ? null : hasSubscription ? (
-                  isLifetime ? null : (
-                    <Text style={{ fontSize: FontSize.xs, color: C.textMuted }}>Manage</Text>
-                  )
-                ) : (
-                  <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: C.accentText }}>Upgrade</Text>
-                )}
-                {!(planUnknown || (hasSubscription && isLifetime)) && (
-                  <Feather name="chevron-right" size={14} color={C.textMuted} />
-                )}
-              </TouchableOpacity>
-            </View>
-          )}
-
           {/* ─── Preferences ─── */}
           <View style={styles.section}>
             <SectionLabel icon="shield">PREFERENCES</SectionLabel>
@@ -1351,6 +1450,133 @@ export default function ProfileScreen() {
         onClose={() => setShowWorkoutSettings(false)}
       />
 
+      {/* ─── Plan Detail Sheet ───
+          Tapping the plan card lands here, not in the App Store. Someone who
+          just paid wants to know what they got; cancelling is the last thing
+          they want, so the store link is the quietest thing on the sheet. */}
+      <Portal>
+        {planSheetMounted && (
+        <View style={styles.modalBackdrop} pointerEvents={planSheetOpen ? 'auto' : 'none'}>
+          {planSheetOpen && (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              exiting={FadeOut.duration(150)}
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+            >
+              <Pressable style={StyleSheet.absoluteFill} onPress={() => setPlanSheetOpen(false)} />
+            </Animated.View>
+          )}
+          <Animated.View
+            style={[styles.bugSheet, planSlideStyle, {
+              backgroundColor: C.elevated,
+              borderTopColor: C.borderSubtle,
+              paddingBottom: insets.bottom + 24,
+            }]}
+          >
+            <View style={styles.bugHandle}>
+              <View style={[styles.bugHandleBar, { backgroundColor: C.handle }]} />
+            </View>
+
+            <View style={styles.bugHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <View style={[styles.bugIconWrap, { backgroundColor: C.primaryMuted }]}>
+                  <Feather name="award" size={16} color={C.accentText} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.bugTitle, { color: C.foreground }]}>
+                    {isPro ? 'Overload Pro' : 'Overload Pro trial'}
+                  </Text>
+                  <Text style={[styles.bugSubtitle, { color: C.textMuted }]}>{planSub}</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* What the plan has actually done for you. Only rows we have real
+                numbers for are rendered — a zero here would read as an
+                accusation rather than a stat. */}
+            <SectionLabel>YOUR PLAN SO FAR</SectionLabel>
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 18 }]}>
+              {proDays !== null && (
+                <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                  <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>
+                    {isLifetime ? 'Founding member for' : 'Pro for'}
+                  </Text>
+                  <Text style={[styles.planStatValue, { color: C.foreground }]}>
+                    {proDays} {proDays === 1 ? 'day' : 'days'}
+                  </Text>
+                </View>
+              )}
+              {proWorkouts !== null && (
+                <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                  <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>Workouts since then</Text>
+                  <Text style={[styles.planStatValue, { color: C.foreground }]}>{proWorkouts}</Text>
+                </View>
+              )}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>Coach messages today</Text>
+                <Text style={[styles.planStatValue, { color: C.foreground }]}>
+                  {coachAccess.messagesToday ?? 0} of unlimited
+                </Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>AI food logs today</Text>
+                <Text style={[styles.planStatValue, { color: C.foreground }]}>
+                  {coachAccess.parsesToday ?? 0} of unlimited
+                </Text>
+              </View>
+            </View>
+
+            <SectionLabel>WHAT YOU GET</SectionLabel>
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 18 }]}>
+              {PLAN_BENEFITS.map((line, i) => (
+                <View
+                  key={line}
+                  style={[styles.planBenefitRow, { paddingHorizontal: 12, paddingVertical: 9 },
+                    i > 0 && { borderTopWidth: 1, borderTopColor: C.borderSubtle }]}
+                >
+                  <Feather name="check" size={11} color={C.accentText} />
+                  <Text style={[styles.planBenefitText, { color: C.foreground }]}>{line}</Text>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setPlanSheetOpen(false)}
+              activeOpacity={0.85}
+              style={[styles.planPrimaryBtn]}
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+            >
+              <Text style={styles.planPrimaryBtnText}>Done</Text>
+            </TouchableOpacity>
+
+            {/* Deliberately the quietest thing here. Lifetime gets a statement
+                rather than a link: there is no renewal to manage and no
+                cancellation to make, and the store's subscription page would
+                not list a non-consumable anyway. */}
+            {isLifetime ? (
+              <Text style={[styles.planStoreLinkText, { color: C.textMuted, textAlign: 'center', paddingTop: 14 }]}>
+                One-time purchase. Nothing to renew or cancel.
+              </Text>
+            ) : (
+              <TouchableOpacity
+                onPress={() => { setPlanSheetOpen(false); openManageSubscription(); }}
+                activeOpacity={0.7}
+                style={styles.planStoreLink}
+                accessibilityRole="button"
+                accessibilityLabel="Manage subscription in the store"
+              >
+                <Text style={[styles.planStoreLinkText, { color: C.textMuted }]}>
+                  {Platform.OS === 'android' ? 'Manage or cancel in Play' : 'Manage or cancel in the App Store'}
+                </Text>
+                <Feather name="external-link" size={11} color={C.textMuted} />
+              </TouchableOpacity>
+            )}
+          </Animated.View>
+        </View>
+        )}
+      </Portal>
+
       {/* ─── Bug Report Bottom Sheet ───
           Rendered via the root <Portal>, not RN <Modal> — on Android
           edge-to-edge a <Modal> is a separate Dialog window inset by the
@@ -1552,6 +1778,59 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2,
   },
   heroBadgeText: { fontSize: 10, fontWeight: FontWeight.medium },
+  planCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  planCardHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  planCardTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  planCardSub: { fontSize: FontSize.xs, marginTop: 2 },
+  planCardChip: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  planCardChipText: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.8,
+    color: Colors.primaryFg,
+  },
+  planCardRule: { height: 1, marginVertical: 10 },
+  planCardLead: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  planBenefitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 },
+  planBenefitText: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  planCardAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  planStatValue: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+  planPrimaryBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planPrimaryBtnText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryFg,
+  },
+  planStoreLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingTop: 14,
+  },
+  planStoreLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  planCardActionText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   proBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1567,20 +1846,23 @@ const styles = StyleSheet.create({
   sectionLabelText: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5 },
 
   // XP Card
-  xpCard: { borderRadius: Radius.lg, borderWidth: 1, padding: Spacing.xl },
-  xpHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  xpAvatar: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  xpAvatarText: { fontSize: 18, fontWeight: FontWeight.black },
-  xpTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  // Full width like every other card, but vertically lean: one summary row
+  // plus a thin bar, no stacked restatements of the same number.
+  xpCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 12,
+  },
+  xpHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  xpAvatar: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  xpAvatarText: { fontSize: 13, fontWeight: FontWeight.black },
+  xpTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   xpIcon: { fontSize: 14 },
   xpTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  xpTotal: { fontSize: FontSize.sm, marginTop: 2 },
-  xpProgressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  xpProgressLabel: { fontSize: 11, fontWeight: FontWeight.semibold },
-  xpProgressValue: { fontSize: 11 },
-  xpTrack: { height: 10, borderRadius: 5, overflow: 'hidden', marginBottom: 6 },
-  xpFill: { height: '100%', borderRadius: 5 },
-  xpPercent: { fontSize: 10, textAlign: 'right' },
+  xpTotal: { fontSize: FontSize.xs },
+  xpTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  xpFill: { height: '100%', borderRadius: 3 },
 
   // Info card / rows
   infoCard: { borderRadius: Radius.lg, borderWidth: 1, overflow: 'hidden' },

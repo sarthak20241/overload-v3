@@ -14,7 +14,7 @@ import { metricTypeOf, supports1RM } from '@/lib/exercises';
 import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
-import { getLevelInfo, getXpForWorkout } from '@/lib/xp';
+import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
@@ -80,6 +80,7 @@ function XPBar({ xp }: { xp: number }) {
   const { C } = useTheme();
   const { level, xpInLevel, xpNeeded } = getLevelInfo(xp);
   const progress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
+  const atMaxLevel = isMaxLevel(level);
   const progressWidth = useSharedValue(0);
 
   useEffect(() => {
@@ -101,7 +102,7 @@ function XPBar({ xp }: { xp: number }) {
         </View>
       </View>
       <Text style={[styles.xpText, { color: C.textDim }]}>
-        {xpInLevel}/{xpNeeded}
+        {atMaxLevel ? 'MAX' : `${xpInLevel}/${xpNeeded}`}
       </Text>
     </View>
   );
