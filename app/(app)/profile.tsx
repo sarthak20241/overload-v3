@@ -391,12 +391,19 @@ export default function ProfileScreen() {
       : coachAccess.state === 'trialing'
         ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
         : '3 coach messages and 3 AI food logs a day';
-  const openManageSubscription = () => {
-    Linking.openURL(
-      Platform.OS === 'android'
+  // Two different store destinations, because Founding Lifetime is a
+  // non-consumable: it never appears under Manage Subscriptions, so sending a
+  // lifetime owner there would open a page with nothing of theirs on it.
+  // Purchase history does list one-time purchases.
+  const openStore = () => {
+    const url = isLifetime
+      ? Platform.OS === 'android'
+        ? 'https://play.google.com/store/account/orderhistory'
+        : 'https://apps.apple.com/account/billing'
+      : Platform.OS === 'android'
         ? 'https://play.google.com/store/account/subscriptions'
-        : 'https://apps.apple.com/account/subscriptions',
-    ).catch(() => {});
+        : 'https://apps.apple.com/account/subscriptions';
+    Linking.openURL(url).catch(() => {});
   };
   const levelProgress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
 
@@ -806,7 +813,7 @@ export default function ProfileScreen() {
                   planUnknown
                     ? undefined
                     : hasSubscription
-                      ? openManageSubscription
+                      ? openStore
                       : () => router.push('/upgrade' as any)
                 }
                 accessibilityRole="button"
@@ -814,7 +821,7 @@ export default function ProfileScreen() {
                   planUnknown
                     ? 'Checking your plan'
                     : hasSubscription
-                      ? 'Manage subscription'
+                      ? isLifetime ? 'View purchase history' : 'Manage subscription'
                       : 'Upgrade to Overload Pro'
                 }
                 style={[styles.planCard, {
@@ -872,7 +879,7 @@ export default function ProfileScreen() {
                         }]}
                       >
                         {hasSubscription
-                          ? isLifetime ? 'View in the App Store' : 'Manage subscription'
+                          ? isLifetime ? 'View purchase history' : 'Manage subscription'
                           : 'Upgrade to Pro'}
                       </Text>
                       <Feather
