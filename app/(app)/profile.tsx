@@ -74,9 +74,12 @@ function withAlpha(hex: string, alpha: string) {
 }
 
 // ─── Section header ──────────────────────────────────────────────────────────
-// What Pro actually gives you, in the same order and words the paywall's
-// comparison table uses (app/upgrade.tsx COMPARE_CORE) so the two screens
-// never disagree about what was bought.
+// What Pro actually gives you. Deliberately shorter and blunter than the
+// paywall's comparison table (app/upgrade.tsx COMPARE_CORE): that table sells
+// by contrast against the free column and needs four rows to do it, while this
+// card is read by someone who has already paid and only wants confirmation.
+// Nothing enforces parity between the two lists, so if the offer changes, both
+// have to be edited.
 const PLAN_BENEFITS = [
   'Unlimited coach chat',
   'Unlimited AI food logs',

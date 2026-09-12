@@ -305,7 +305,21 @@ async function handleTransfer(event: RcEvent): Promise<void> {
       throw new Error(`no user_profiles row for new_user=${newClerkId}`);
     }
 
-    await admin.rpc("mark_trial_converted", { p_clerk_user_id: newClerkId });
+    // Bookkeeping only, and deliberately NOT allowed to abort the handler. If
+    // it threw, RevenueCat would retry — but by then the target already holds
+    // the copied tier with a timestamp equal to the source's, so decideTransfer
+    // returns release_only and this RPC is never reached again. Throwing would
+    // therefore lose the conversion record anyway AND risk re-running the
+    // release. Log loudly instead and let the entitlement move stand.
+    const { error: convErr } = await admin.rpc("mark_trial_converted", {
+      p_clerk_user_id: newClerkId,
+    });
+    if (convErr) {
+      console.error(
+        `[revenuecat] mark_trial_converted failed for ${newClerkId} after transfer: ` +
+        `${convErr.message} — entitlement moved, conversion bookkeeping lost`,
+      );
+    }
     console.log(
       `[revenuecat] transferred tier=${oldProfile!.tier} from=${oldClerkId} to=${newClerkId}`,
     );
