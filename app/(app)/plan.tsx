@@ -110,7 +110,7 @@ export default function PlanScreen() {
   // A trial is a real store subscription with the card already taken, so it is
   // manageable and cancellable even though it has no tier yet. Without this a
   // trialing user was told there was "nothing to manage".
-  const canManageInStore = isTrialing || (isStorePurchase(access.tier) && !isLifetime);
+  const canManageInStore = isTrialing || isStorePurchase(access.tier);
   const renewsOn = access.expiresAt
     ? new Date(access.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
     : null;

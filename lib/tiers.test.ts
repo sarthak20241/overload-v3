@@ -37,15 +37,25 @@ Deno.test("an absent tier is not lifetime", () => {
   assertEquals(isLifetimeTier(""), false);
 });
 
-Deno.test("only store purchases point at a store", () => {
+Deno.test("only manageable store subscriptions point at a store", () => {
   assertEquals(isStorePurchase("monthly"), true);
   assertEquals(isStorePurchase("annual"), true);
-  assertEquals(isStorePurchase("founding_lifetime"), true);
-  // Redeemed with a code: neither App Store nor Play has a record of it, so
-  // offering to "manage or cancel" there is a dead end.
-  assertEquals(isStorePurchase("appsumo_lifetime"), false);
   assertEquals(isStorePurchase("free"), false);
   assertEquals(isStorePurchase(null), false);
+});
+
+Deno.test("no lifetime tier points at a store, however it was bought", () => {
+  // appsumo_lifetime was redeemed with a code, so no store has seen it.
+  assertEquals(isStorePurchase("appsumo_lifetime"), false);
+  // founding_lifetime DID go through the App Store, but a non-consumable never
+  // appears under Manage Subscriptions and has nothing to cancel. This must be
+  // false from the function itself, not from a caller remembering to add
+  // "&& !isLifetimeTier(...)".
+  assertEquals(isStorePurchase("founding_lifetime"), false);
+  for (const tier of DB_TIERS) {
+    if (!isLifetimeTier(tier)) continue;
+    assertEquals(isStorePurchase(tier), false, `${tier} should not point at a store`);
+  }
 });
 
 Deno.test("every paid tier the database allows has a real label", () => {

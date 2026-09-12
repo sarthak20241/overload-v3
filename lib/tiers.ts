@@ -31,16 +31,26 @@ export function isLifetimeTier(tier: string | null | undefined): boolean {
   return !!tier && LIFETIME_TIERS.has(tier);
 }
 
-/** Tiers bought through the App Store or Play, so the store can manage them. */
+/** Tiers whose money went through the App Store or Play at some point. */
 const STORE_TIERS = new Set<string>(['monthly', 'annual', 'founding_lifetime']);
 
 /**
- * True when the store is the right place to send someone. AppSumo lifetime is
- * deliberately excluded: it was redeemed with a code, so neither store has any
- * record of it.
+ * True when the store is the right place to send someone to manage or cancel.
+ *
+ * Two exclusions, and BOTH are inside this function on purpose:
+ *   - appsumo_lifetime was redeemed with a code, so neither store has ever
+ *     seen it.
+ *   - founding_lifetime WAS bought in the App Store, but it is a
+ *     non-consumable: it never appears under Manage Subscriptions and there is
+ *     nothing to renew or cancel.
+ *
+ * The lifetime check used to sit at the call site as `&& !isLifetimeTier(...)`,
+ * which is exactly the "logic spread across two places, only one of them
+ * remembers" shape this module was created to remove. A second caller would
+ * have reintroduced the bug for founding_lifetime.
  */
 export function isStorePurchase(tier: string | null | undefined): boolean {
-  return !!tier && STORE_TIERS.has(tier);
+  return !!tier && STORE_TIERS.has(tier) && !isLifetimeTier(tier);
 }
 
 /** Human label for a tier. Falls back to "Active" for anything unrecognized. */
