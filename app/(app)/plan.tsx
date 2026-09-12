@@ -327,7 +327,11 @@ const s = StyleSheet.create({
   },
   title: { fontSize: FontSize.xl, fontWeight: FontWeight.bold },
   subtitle: { fontSize: FontSize.xs, marginTop: 1 },
-  scroll: { paddingHorizontal: Spacing.xl, paddingBottom: 40 },
+  // 120, matching profile.tsx and exercises.tsx. BottomNav in (app)/_layout
+  // is absolutely positioned at 64 + insets.bottom (~98pt with a home
+  // indicator) and this route is not in hideWorkoutChrome, so a smaller pad
+  // puts the primary button and the store link behind the nav bar.
+  scroll: { paddingHorizontal: Spacing.xl, paddingBottom: 120 },
 
   hero: {
     borderRadius: Radius.lg, borderWidth: 1,
