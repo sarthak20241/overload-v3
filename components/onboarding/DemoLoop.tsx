@@ -15,14 +15,16 @@ import React from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 
-// Captured from the iOS simulator (scripted walk: log a set, strength curve,
-// type-to-log food), edited to a seamless loop. Re-capture via the workflow
-// in .planning/onboarding-redesign-plan.md when the UI changes materially.
+// A 4:5 composition cut in Palmier Pro from simulator captures: goal in, the
+// road out, log a set, the coach adjusts. Captions are burned in, so the
+// hero reads even muted. Re-capture via the workflow in
+// .planning/onboarding-redesign-plan.md when the UI changes materially.
 const DEMO = require('@/assets/onboarding/welcome-demo.mp4');
 const POSTER = require('@/assets/onboarding/welcome-demo-poster.jpg');
 
-// Capture is 604x1246 (status bar cropped off): keep that aspect.
-const ASPECT = 1246 / 604;
+// Export is 1080x1350 (4:5). The hero passes its own height and the video
+// covers it, so a shorter screen crops the dark margins, never the phone.
+const ASPECT = 1350 / 1080;
 
 type VideoModule = typeof import('expo-video');
 
@@ -56,9 +58,9 @@ function VideoLoop({ width, height }: { width: number; height: number }) {
   );
 }
 
-export function DemoLoop({ width = 200 }: { width?: number }) {
+export function DemoLoop({ width = 200, height: heightProp }: { width?: number; height?: number }) {
   const { C } = useTheme();
-  const height = Math.round(width * ASPECT);
+  const height = heightProp ?? Math.round(width * ASPECT);
 
   return (
     <View
@@ -78,7 +80,7 @@ export function DemoLoop({ width = 200 }: { width?: number }) {
 
 const d = StyleSheet.create({
   frame: {
-    borderRadius: 28,
+    borderRadius: 24,
     borderWidth: 1,
     overflow: 'hidden',
     alignSelf: 'center',

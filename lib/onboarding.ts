@@ -247,6 +247,12 @@ export function maintenanceKcal(a: OnboardingAnswers): number | null {
   return roundTo(bmr * activityFactor(a.frequency ?? 3), 25);
 }
 
+/** Maintenance split into macros: what a diet break or a hold week eats. */
+export function maintenanceTargets(a: OnboardingAnswers): DailyTargets | null {
+  const kcal = maintenanceKcal(a);
+  return kcal == null ? null : macroSplit(kcal, a);
+}
+
 /**
  * Mifflin-St Jeor BMR x activity x goal adjustment, split into the app's
  * protein-first macro framing. Needs weight and age; everything is editable on
@@ -525,7 +531,7 @@ export function buildStarterRoutines(answers: OnboardingAnswers): StarterRoutine
  */
 export async function createStarterRoutines(
   routines: StarterRoutine[],
-  opts: { isGuest: boolean; clerkId: string | null },
+  opts: { isGuest: boolean; clerkId: string | null; programPhaseId?: string | null },
 ): Promise<void> {
   const now = Date.now();
 
@@ -583,6 +589,7 @@ export async function createStarterRoutines(
       description: r.description,
       color: r.color,
       createdAtIso: new Date(now - idx * 1000).toISOString(),
+      programPhaseId: opts.programPhaseId ?? null,
       exercises: r.exercises.map((ex, i2) => ({
         def: { name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
         resolvedExerciseId: null, // resolve by name against the seeded catalog

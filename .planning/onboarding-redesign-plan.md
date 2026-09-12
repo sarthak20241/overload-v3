@@ -270,6 +270,15 @@ Goal: the emotional screens; Overload-honest, Drona-voiced.
   a few MB), played with expo-video; poster frame fallback. Tagline underneath in
   coach voice (e.g. "Every rep counted. Every step planned."), Get started + Sign in.
   Re-capture is a repeatable script so the demo stays current as the app evolves.
+  UPDATE 2026-09-12: the demo is now the HERO of the welcome screen (not a small
+  device frame) and is a 4:5 Palmier Pro composition: dark matte, phone capture
+  scaled to 78% height, four burned-in captions ("Tell me your goal." / "I map the
+  road to it." / "You log the work." / "I watch. I adjust."). Capture: record a
+  guest walk with `xcrun simctl io <udid> recordVideo`, transcode to CFR
+  (`-vf fps=30`), crop the status bar (`crop=1206:2462:0:160`), cut in the Palmier
+  project `overload-welcome-demo`, export, then `scale=720:900 crf 27` into
+  assets/onboarding/welcome-demo.mp4 (~420 KB) + a poster from ~1.0 s. The fourth
+  beat still uses the reveal's coach card; re-shoot it on a signed-in test account.
 
 - Drona interlude (one screen, after pace step): flat lime/dark Drona identity, 2-3
   lines on how the plan adapts ("I watch every rep. When you stall, I change the plan.").

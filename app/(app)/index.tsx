@@ -24,6 +24,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
+import { todayReason } from '@/lib/todayReason';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
@@ -274,7 +275,13 @@ export default function DashboardScreen() {
       return Math.max(...matches.map((w: any) => new Date(w.started_at || w.created_at || 0).getTime()));
     };
     const pick = [...routines].sort((a, b) => lastDoneAt(a) - lastDoneAt(b))[0];
-    return { kind: 'planned' as const, routine: pick };
+    // The line under the title: why this session, today. Deterministic, from
+    // the same workouts the card is already holding, so it costs one pass.
+    return {
+      kind: 'planned' as const,
+      routine: pick,
+      reason: todayReason({ routine: pick as any, workouts: workouts as any }),
+    };
   }, [routines, workouts]);
 
   // Tapping the today's-suggestion card. 'planned' opens an in-place session

@@ -36,6 +36,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -97,7 +98,14 @@ import {
   type DronaOnboardingPlan,
 } from '@/lib/onboardingDrona';
 import { getDeviceId } from '@/lib/deviceId';
-import { setPendingOnboarding } from '@/lib/pendingOnboarding';
+import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
+import {
+  buildOnboardingProgramMessage,
+  buildStarterProgram,
+  dronaProgramFromStructured,
+  requestDronaOnboardingProgram,
+} from '@/lib/onboardingProgram';
+import type { GeneratedProgram } from '@/lib/programData';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 
 const LBS_PER_KG = 2.20462;
@@ -158,6 +166,11 @@ export default function OnboardingScreen() {
   const supabaseClient = useSupabaseClient();
   const basicInfo = useBasicInfo();
   const toast = useToast();
+  // The welcome hero is the demo video: as wide as the content column, and as
+  // tall as the screen allows once the promise and the CTA have their room.
+  const { width: winW, height: winH } = useWindowDimensions();
+  const heroWidth = winW - Spacing.xxl * 2;
+  const heroHeight = Math.round(Math.min(heroWidth * (5 / 4), Math.max(240, winH * 0.46)));
 
   const [step, setStep] = useState<Step>('welcome');
   // Smart defaults (plan, psychology layer): every single-select step arrives
@@ -212,6 +225,9 @@ export default function OnboardingScreen() {
   const [buildReady, setBuildReady] = useState(false);
   const generationStarted = useRef(false);
   const finalPlan = dronaPlan?.routines ?? plan;
+  // The goal program (phases to the target date), same two-author contract:
+  // Drona's when generation succeeds, the deterministic road otherwise.
+  const [dronaProgram, setDronaProgram] = useState<GeneratedProgram | null>(null);
 
   // Live pace context for the target step: uses the DRAFT target value (not
   // yet committed to answers) so the outcome card updates as the ruler moves.
@@ -242,6 +258,30 @@ export default function OnboardingScreen() {
     }
     return computeDailyTargets(answers);
   }, [answers, weeklyRate]);
+
+  const starterProgram = useMemo(
+    () => buildStarterProgram(answers, { weeklyRateKg: weeklyRate, targets }),
+    [answers, weeklyRate, targets],
+  );
+  const finalProgram = dronaProgram ?? starterProgram;
+
+  // Reveal rows for the road: "Wk 1-7 · Deficit block · 1,625 kcal".
+  const roadRows = useMemo(() => {
+    let offset = 0;
+    return finalProgram.phases.map((ph, idx) => {
+      const start = offset + 1;
+      const end = offset + ph.duration_weeks;
+      offset = end;
+      const weeks = start === end ? `Wk ${start}` : `Wk ${start}-${end}`;
+      const meta = [
+        ph.diet.calories != null ? `${ph.diet.calories.toLocaleString()} kcal` : null,
+        ph.training_directive ?? ph.diet_directive ?? null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return { key: `${idx}-${ph.name}`, weeks, name: ph.name, meta };
+    });
+  }, [finalProgram]);
 
   const paceDate = useMemo(() => {
     if (!paceCtx || weeklyRate == null) return null;
@@ -297,9 +337,25 @@ export default function OnboardingScreen() {
           ? { kcal: targets.kcal, protein: targets.protein, carb: targets.carb, fat: targets.fat }
           : null;
 
+        const programExtras = { weeklyRateKg: weeklyRate, targets };
+        // The program lands independently of the plan: either can fail and the
+        // other still ships, each with its own deterministic floor.
+        const applyProgram = (raw: Record<string, unknown> | null) => {
+          if (!raw) return;
+          const mappedProgram = dronaProgramFromStructured(raw, answers, programExtras);
+          if (mappedProgram) setDronaProgram(mappedProgram);
+        };
+
         let input;
         if (isSignedIn && getToken) {
-          // Signed-in (re-onboarding / demo): authenticated coach path.
+          // Signed-in (re-onboarding / demo): authenticated coach path. Plan
+          // and program are two forced-tool calls, in parallel.
+          //
+          // Unlike the anonymous route these are two separate HTTP requests,
+          // so they reserve TWO of the day's coach slots (RATE_LIMIT_MAX, 30)
+          // rather than one. Onboarding runs once per account, so the cost is
+          // bounded; worth knowing before anything else starts spending them
+          // in pairs.
           const token = await getToken();
           if (!token) throw new Error('no token');
           const message = buildOnboardingIntakeMessage(answers, {
@@ -307,18 +363,30 @@ export default function OnboardingScreen() {
             direction,
             targets: targetsPayload,
           });
-          input = await requestDronaOnboardingPlan({ token, message });
+          const [planRes, programRes] = await Promise.allSettled([
+            requestDronaOnboardingPlan({ token, message }),
+            requestDronaOnboardingProgram({
+              token,
+              message: buildOnboardingProgramMessage(answers, programExtras),
+            }),
+          ]);
+          if (programRes.status === 'fulfilled') applyProgram(programRes.value);
+          if (planRes.status === 'rejected') throw planRes.reason;
+          input = planRes.value;
         } else {
           // Guest-first funnel: no account yet. Anonymous, device-rate-limited
-          // route. A 429 or any error just falls through to the deterministic
-          // plan below - the reveal never knows.
+          // route; the edge generates plan and program in one request. A 429
+          // or any error just falls through to the deterministic plan below -
+          // the reveal never knows.
           const deviceId = await getDeviceId();
           const intake = buildAnonIntake(answers, {
             weeklyRateKg: weeklyRate,
             direction,
             targets: targetsPayload,
           });
-          input = await requestAnonOnboardingPlan({ deviceId, intake });
+          const res = await requestAnonOnboardingPlan({ deviceId, intake });
+          applyProgram(res.program);
+          input = res.plan;
         }
         const mapped = dronaPlanToStarterRoutines(input);
         if (mapped) setDronaPlan(mapped);
@@ -481,7 +549,10 @@ export default function OnboardingScreen() {
         // so Profile reflects the intake immediately.
         basicInfo.setWeightUnit(weightUnit);
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
-        if (opts.createPlan) await createStarterRoutines(finalPlan, target);
+        // Program first so the routines can link to phase 1. Best-effort: a
+        // failed program save returns null and the routines still land.
+        const phaseId = opts.createPlan ? await saveOnboardingProgram(finalProgram, target) : null;
+        if (opts.createPlan) await createStarterRoutines(finalPlan, { ...target, programPhaseId: phaseId });
         await markOnboardingDone(identity);
         if (opts.createPlan) {
           void flushNow();
@@ -498,7 +569,7 @@ export default function OnboardingScreen() {
         setFinishing(false);
       }
     },
-    [answers, targets, finalPlan, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
+    [answers, targets, finalPlan, finalProgram, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
   );
 
   // Reveal CTA. A fresh visitor has no identity yet, so we stash the finished
@@ -515,6 +586,7 @@ export default function OnboardingScreen() {
             answers,
             targets,
             plan: finalPlan,
+            program: finalProgram,
             createPlan: opts.createPlan,
             dest: opts.dest,
             weightUnit,
@@ -528,7 +600,7 @@ export default function OnboardingScreen() {
       }
       await completeOnboarding(opts);
     },
-    [finishing, isFreshVisitor, answers, targets, finalPlan, weightUnit, router, completeOnboarding],
+    [finishing, isFreshVisitor, answers, targets, finalPlan, finalProgram, weightUnit, router, completeOnboarding],
   );
 
   // Onboarding is the front door now, so a fresh visitor (no identity yet)
@@ -577,28 +649,30 @@ export default function OnboardingScreen() {
                   OVER<Text style={{ color: C.accentText }}>LOAD</Text>
                 </Text>
               </Animated.View>
+
+              {/* The product demos itself, as the hero: goal in, road out,
+                  log the work, the coach adjusts. Captions live in the video. */}
+              <Animated.View entering={FadeIn.delay(120).duration(600)} style={s.demoWrap}>
+                <DemoLoop width={heroWidth} height={heroHeight} />
+              </Animated.View>
+
               <Animated.Text
-                entering={FadeInDown.delay(120).duration(500)}
+                entering={FadeInDown.delay(320).duration(500)}
                 style={[s.heroTitle, { color: C.foreground }]}
               >
-                Strength is built one set at a time.
+                Tell me your goal. I will get you there.
               </Animated.Text>
               <Animated.Text
-                entering={FadeInDown.delay(220).duration(500)}
+                entering={FadeInDown.delay(420).duration(500)}
                 style={[s.heroSub, { color: C.textSecondary }]}
               >
-                A few quick questions, and I will build your training plan and daily fuel targets around you.
+                A few quick questions. Then I plan your training and food, watch every session you log, and adjust the plan until you arrive.
               </Animated.Text>
-
-              {/* The product demos itself: real capture, no feature bullets. */}
-              <Animated.View entering={FadeInDown.delay(360).duration(500)} style={s.demoWrap}>
-                <DemoLoop width={200} />
-              </Animated.View>
             </View>
 
             <Animated.View entering={FadeInDown.delay(700).duration(450)} style={s.footer}>
               <PrimaryCta
-                label="Let's set you up"
+                label="Start with my goal"
                 onPress={() => goTo('goal')}
                 accessibilityLabel="Start setup"
               />
@@ -866,7 +940,15 @@ export default function OnboardingScreen() {
                   max={weightUnit === 'kg' ? 200 : 440}
                   step={weightUnit === 'kg' ? 0.5 : 1}
                   value={weightVal}
-                  onChange={setWeightVal}
+                  onChange={(v) => {
+                    setWeightVal(v);
+                    // The ruler keeps settling for a beat after a flick, so a
+                    // quick Continue can commit a value one tick stale. Mirror
+                    // every tick into answers so the saved number, the reveal
+                    // and the program all read the ruler's final stop.
+                    const kg = toKg(v);
+                    setAnswers((a) => ({ ...a, weightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
+                  }}
                   unitLabel={weightUnit}
                   accessibilityLabel={`Weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
                 />
@@ -890,6 +972,9 @@ export default function OnboardingScreen() {
                   onChange={(v) => {
                     targetTouched.current = true;
                     setTargetVal(v);
+                    // Same late-tick guard as the weight ruler.
+                    const kg = toKg(v);
+                    setAnswers((a) => ({ ...a, goalWeightKg: inRange(kg, MIN_WEIGHT_KG, MAX_WEIGHT_KG) ? kg : null }));
                   }}
                   unitLabel={weightUnit}
                   accessibilityLabel={`Goal weight in ${weightUnit === 'kg' ? 'kilograms' : 'pounds'}`}
@@ -987,8 +1072,8 @@ export default function OnboardingScreen() {
             <BuildMoment
               lines={[
                 'Reading your answers',
-                'Choosing your split',
-                'Balancing push and pull',
+                'Mapping the road to your goal',
+                'Picking exercises for you',
                 'Setting fuel targets',
                 'Locking your first week',
               ]}
@@ -1002,7 +1087,7 @@ export default function OnboardingScreen() {
           <QuestionStep
             stepKey="plan"
             question={revealTitle}
-            sub={`${finalPlan.length} ${finalPlan.length === 1 ? 'workout' : 'workouts'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
+            sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${finalPlan.length} ${finalPlan.length === 1 ? 'workout' : 'workouts'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
             footer={
               <>
                 <PrimaryCta
@@ -1032,6 +1117,32 @@ export default function OnboardingScreen() {
                   />
                 </Animated.View>
               )}
+
+              {/* The road: the program's phases, so the reveal shows the whole
+                  route to the goal and not just week one. */}
+              <Animated.View
+                entering={FadeInDown.delay(90).duration(400)}
+                style={[s.roadCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+              >
+                <Text style={[s.fuelEyebrow, { color: C.textMuted }]}>THE ROAD</Text>
+                <Text style={[s.roadTitle, { color: C.foreground }]}>{finalProgram.title}</Text>
+                {finalProgram.objective ? (
+                  <Text style={[s.roadObjective, { color: C.textSecondary }]}>{finalProgram.objective}</Text>
+                ) : null}
+                <View style={s.roadList}>
+                  {roadRows.map((row) => (
+                    <View key={row.key} style={s.roadRow}>
+                      <Text style={[s.roadWeeks, { color: C.accentText }]}>{row.weeks}</Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[s.roadName, { color: C.foreground }]} numberOfLines={1}>{row.name}</Text>
+                        {row.meta ? (
+                          <Text style={[s.roadMeta, { color: C.textMuted }]} numberOfLines={2}>{row.meta}</Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </Animated.View>
 
               {/* Week dots: the schedule at a glance */}
               <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.weekDots}>
@@ -1164,20 +1275,21 @@ const s = StyleSheet.create({
     fontSize: FontSize.xl,
     fontWeight: FontWeight.black,
     letterSpacing: LetterSpacing.caps,
-    marginBottom: Spacing.xxl,
+    marginBottom: Spacing.lg,
   },
   heroTitle: {
-    fontSize: FontSize.display,
+    fontSize: FontSize.xxl,
     fontWeight: FontWeight.black,
     letterSpacing: LetterSpacing.tight,
-    lineHeight: 42,
+    lineHeight: 34,
+    marginTop: Spacing.xl,
   },
   heroSub: {
-    fontSize: FontSize.lg,
-    lineHeight: 24,
-    marginTop: Spacing.lg,
+    fontSize: FontSize.md,
+    lineHeight: 22,
+    marginTop: Spacing.md,
   },
-  demoWrap: { marginTop: Spacing.xxl },
+  demoWrap: { alignSelf: 'stretch' },
 
   // Question steps
   options: { gap: Spacing.md },
@@ -1255,6 +1367,25 @@ const s = StyleSheet.create({
     padding: Spacing.lg,
     marginTop: Spacing.md,
   },
+  roadCard: {
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    marginTop: Spacing.md,
+  },
+  roadTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold, marginTop: Spacing.xs },
+  roadObjective: { fontSize: FontSize.sm, lineHeight: 19, marginTop: 4 },
+  roadList: { marginTop: Spacing.md, gap: Spacing.sm },
+  roadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
+  roadWeeks: {
+    width: 64,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    letterSpacing: LetterSpacing.eyebrow,
+    paddingTop: 2,
+  },
+  roadName: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
+  roadMeta: { fontSize: FontSize.xs, lineHeight: 16, marginTop: 1 },
   fuelEyebrow: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.bold,

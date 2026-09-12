@@ -307,7 +307,7 @@ export async function saveProgram(
   supabase: Supa,
   clerkId: string,
   program: GeneratedProgram,
-): Promise<{ programId: string }> {
+): Promise<{ programId: string; phaseIds: string[] }> {
   // A zero-phase program is not saveable: total_weeks would be 0, activeSeq
   // null, the phases insert a no-op, and the Goal & Plan screen would render a
   // program with no NOW card and no timeline. The tool schema's minItems only
@@ -410,7 +410,10 @@ export async function saveProgram(
     readiness_directive: ph.readiness_directive ?? null,
     training_block: ph.training_block ?? null,
   }));
-  const { error: phErr } = await supabase.from('coach_program_phases').insert(phaseRows);
+  const { data: phaseInserted, error: phErr } = await supabase
+    .from('coach_program_phases')
+    .insert(phaseRows)
+    .select('id, seq');
   if (phErr) {
     // A phase-less active program is worse than none: loadActiveProgram would
     // return it with an empty timeline, and reconcileActiveProgram cannot even
@@ -442,7 +445,10 @@ export async function saveProgram(
     }
   }
 
-  return { programId: prog.id };
+  const phaseIds = ((phaseInserted ?? []) as { id: string; seq: number }[])
+    .sort((x, y) => x.seq - y.seq)
+    .map((r) => r.id);
+  return { programId: prog.id, phaseIds };
 }
 
 // ── Load + reconcile (used by the Goal & Plan screen and programSync) ─────────

@@ -16,6 +16,9 @@ import { DronaMark } from '@/components/coach/DronaMark';
 export interface TodaySuggestion {
   kind: 'planned' | 'rest' | 'new';
   routine: any | null;
+  /** One line on WHY this session today (lib/todayReason). Absent until the
+   *  user has history to reason from; the card just drops the line. */
+  reason?: string | null;
 }
 
 interface Props {
@@ -25,7 +28,7 @@ interface Props {
 
 export function TodaySuggestionCard({ suggestion, onPress }: Props) {
   const { C } = useTheme();
-  const { kind, routine } = suggestion;
+  const { kind, routine, reason } = suggestion;
 
   if (kind === 'rest') {
     return (
@@ -68,6 +71,10 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
             <Text style={[s.meta, { color: C.textMuted }]} numberOfLines={1}>  ·  {exCount} ex</Text>
           ) : null}
         </View>
+        {/* The coaching, not the label: why this one, today. */}
+        {!isNew && reason ? (
+          <Text style={[s.reason, { color: C.textMuted }]} numberOfLines={2}>{reason}</Text>
+        ) : null}
       </View>
       <Feather name="chevron-right" size={IconSize.md} color={C.textMuted} />
     </PressableScale>
@@ -95,4 +102,5 @@ const s = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'baseline', marginTop: 1 },
   title: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
   meta: { fontSize: FontSize.sm },
+  reason: { fontSize: FontSize.xs, lineHeight: 16, marginTop: 3 },
 });
