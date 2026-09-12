@@ -40,7 +40,7 @@ export default function PlanScreen() {
   const { user, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
-  const { access, loading: accessLoading } = useCoachAccess();
+  const { access, loading: accessLoading, refresh: refreshAccess } = useCoachAccess();
 
   const [tierStartedAt, setTierStartedAt] = useState<string | null>(null);
   const [proWorkouts, setProWorkouts] = useState<number | null>(null);
@@ -68,7 +68,8 @@ export default function PlanScreen() {
   // much training has happened since. One round trip, on mount.
   useEffect(() => {
     const clerkId = user?.id;
-    if (!clerkId || isGuestSession) {
+    // Skip for anyone about to be bounced to /upgrade — they never see the page.
+    if (!clerkId || isGuestSession || (accessResolved && !hasSubscription)) {
       setLoadingStats(false);
       return;
     }
@@ -100,9 +101,16 @@ export default function PlanScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [user?.id, isGuestSession, supabase]);
+  }, [user?.id, isGuestSession, accessResolved, hasSubscription, supabase]);
 
-  const planLabel = tierLabel(access.tier);
+  // The access RPC only carries `tier` on the 'paid' state, never on
+  // 'trialing' (see hooks/useCoachAccess.ts), so tierLabel(undefined) would put
+  // the placeholder "Active" in the hero of a trialing user.
+  const planLabel = isTrialing ? 'Free trial' : tierLabel(access.tier);
+  // A trial is a real store subscription with the card already taken, so it is
+  // manageable and cancellable even though it has no tier yet. Without this a
+  // trialing user was told there was "nothing to manage".
+  const canManageInStore = isTrialing || (isStorePurchase(access.tier) && !isLifetime);
   const renewsOn = access.expiresAt
     ? new Date(access.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
@@ -161,13 +169,22 @@ export default function PlanScreen() {
             Your subscription is unaffected. Check your connection and try again.
           </Text>
           <TouchableOpacity
-            onPress={backToProfile}
+            onPress={() => { void refreshAccess(); }}
             activeOpacity={0.85}
             style={[s.primaryBtn, { alignSelf: 'stretch', marginTop: Spacing.xl }]}
             accessibilityRole="button"
+            accessibilityLabel="Try again"
+          >
+            <Text style={s.primaryBtnText}>Try again</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={backToProfile}
+            activeOpacity={0.7}
+            style={s.storeLink}
+            accessibilityRole="button"
             accessibilityLabel="Back"
           >
-            <Text style={s.primaryBtnText}>Back</Text>
+            <Text style={[s.storeText, { color: C.textMuted }]}>Back</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -212,7 +229,9 @@ export default function PlanScreen() {
             {isLifetime
               ? 'Yours forever. One payment, no renewals.'
               : isTrialing
-                ? `Free trial${access.daysLeft != null ? ` · ${access.daysLeft} days left` : ''}`
+                ? access.daysLeft != null
+                  ? `${access.daysLeft} days left, then billing starts`
+                  : 'Billing starts when the trial ends'
                 : renewsOn
                   ? `Renews ${renewsOn}`
                   : 'Active'}
@@ -287,7 +306,7 @@ export default function PlanScreen() {
           {/* Only offer the store when the store has a record of the purchase.
               A lifetime tier has nothing to renew, and AppSumo lifetime was
               redeemed with a code so neither store has ever seen it. */}
-          {!isStorePurchase(access.tier) || isLifetime ? (
+          {!canManageInStore ? (
             <Text style={[s.storeText, { color: C.textMuted, textAlign: 'center', paddingTop: 14 }]}>
               {isLifetime
                 ? 'One-time purchase. Nothing to renew or cancel.'
