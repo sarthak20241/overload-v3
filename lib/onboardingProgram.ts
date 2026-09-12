@@ -22,6 +22,7 @@ import {
   type OnboardingAnswers,
 } from '@/lib/onboarding';
 import { structuredToProgram, type GeneratedProgram, type ProgramDiet, type ProgramPhase } from '@/lib/programData';
+import { programNarrative } from '@/lib/programNarrative';
 import type { CoachGoal } from '@/lib/types';
 
 const REQUEST_TIMEOUT_MS = 75_000;
@@ -91,14 +92,6 @@ const TRAINING_LINE: Record<CoachGoal, string> = {
 const READINESS_LINE = 'On a low-readiness day cut the top set, keep the working volume.';
 const DELOAD_READINESS = 'Half the sets, same weights. Sleep is the work this week.';
 
-const STEADY_TITLE: Record<CoachGoal, string> = {
-  hypertrophy: '12-Week Muscle Block',
-  strength: '12-Week Strength Block',
-  fat_loss: '12-Week Lean Block',
-  endurance: '12-Week Engine Block',
-  general: '12-Week Foundation',
-};
-
 /**
  * Instant, curated phases from the intake. A cut or a gain covers the whole
  * road to the target date with a break in the middle when it is long enough;
@@ -134,18 +127,21 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
   });
 
   const phases: ProgramPhase[] = [];
-  let title: string;
-  let objective: string;
   const diff = a.weightKg && a.goalWeightKg ? Math.abs(a.goalWeightKg - a.weightKg) : 0;
   const diffLabel = diff.toFixed(1).replace(/\.0$/, '');
+  // A direction can exist before a pace does: the onboarding screen seeds the
+  // weekly rate in an effect that runs one render AFTER the target ruler flips
+  // the direction. So targetDate (and its label) are legitimately null here,
+  // and programNarrative drops the date clause rather than printing "null".
   const targetDate = dir && extras.weeklyRateKg ? projectGoalDateIso(a, extras.weeklyRateKg) : null;
   const dateLabel = targetDate
     ? new Date(targetDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     : null;
+  const { title, objective } = programNarrative({
+    direction: dir, weeks, diffLabel, goalWeightKg: a.goalWeightKg, dateLabel, goal, frequency: freq,
+  });
 
   if (dir === 'loss') {
-    title = `${weeks}-Week Cut to ${a.goalWeightKg} kg`;
-    objective = `Down ${diffLabel} kg by ${dateLabel} while your lifts keep climbing.`;
     const dietLine = 'Protein first, every meal. Log it and I hold the line.';
     if (weeks <= 4) {
       phases.push(phase('Cut', weeks, working, dietLine, TRAINING_LINE[goal]));
@@ -160,8 +156,6 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
       phases.push(phase('Hold and reassess', 1, maintenance, 'Back to maintenance. We check where you landed and set the next goal.', 'Test a top set on your main lifts. I want the numbers.'));
     }
   } else if (dir === 'gain') {
-    title = `${weeks}-Week Lean Gain to ${a.goalWeightKg} kg`;
-    objective = `Up ${diffLabel} kg by ${dateLabel}, most of it muscle.`;
     const dietLine = 'Eat the surplus on training days. Protein first, then carbs around the session.';
     if (weeks <= 5) {
       phases.push(phase('Gain block', weeks, working, dietLine, TRAINING_LINE[goal]));
@@ -172,8 +166,6 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
       phases.push(phase('Gain block 2', weeks - 1 - first, working, dietLine, TRAINING_LINE[goal]));
     }
   } else {
-    title = STEADY_TITLE[goal];
-    objective = `Twelve weeks of steady progressive overload, ${freq} days a week.`;
     const dietLine = 'Eat to the targets. Protein first. The trend is what we train.';
     phases.push(phase('Base', 4, working, dietLine, 'Learn the lifts and own the form. Add weight only when every rep is clean.'));
     phases.push(phase('Build', 7, working, dietLine, TRAINING_LINE[goal]));

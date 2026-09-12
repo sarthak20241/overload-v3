@@ -2569,8 +2569,15 @@ async function handleAnonOnboardingPlan(args: {
   const { system, tools } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
 
   // The goal PROGRAM (phases toward the target date) is generated alongside
-  // the starter plan in the same request: one quota slot, one round trip, and
-  // the two run concurrently so the build screen waits for max(), not sum().
+  // the starter plan in the same request: one round trip, and the two run
+  // concurrently so the build screen waits for max(), not sum().
+  //
+  // COST: one quota slot now buys TWO Anthropic calls, so the spend per
+  // allowed anonymous request is roughly double what it was. The per-device
+  // limits (3/day, 5/lifetime) and the global daily breaker in
+  // check_anon_plan_quota (0087) were NOT re-tuned for that; halve the global
+  // cap if the point of the breaker is a spend ceiling rather than a request
+  // ceiling.
   // The program is a bonus on top of the plan: any failure here is logged in
   // the trace and the response simply omits `program`, so the client falls
   // back to its deterministic phases and the plan still ships.
