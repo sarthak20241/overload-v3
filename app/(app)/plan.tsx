@@ -32,19 +32,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
-
-/**
- * What Pro gives you. Deliberately shorter and blunter than the paywall's
- * comparison table (app/upgrade.tsx COMPARE_CORE): that table sells by contrast
- * against a free column and needs four rows to do it, while this page is read
- * by someone who has already paid and only wants confirmation. Nothing enforces
- * parity between the two lists, so if the offer changes, both need editing.
- */
-const PLAN_BENEFITS = [
-  'Unlimited coach chat',
-  'Unlimited AI food logs',
-  'Personalized plans, rewritten every week',
-];
+import { isLifetimeTier, isStorePurchase, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 
 export default function PlanScreen() {
   const router = useRouter();
@@ -61,15 +49,20 @@ export default function PlanScreen() {
   const isPro = access.state === 'paid';
   const isTrialing = access.state === 'trialing';
   const hasSubscription = isPro || isTrialing;
-  const isLifetime = access.tier === 'founding_lifetime';
+  const isLifetime = isLifetimeTier(access.tier);
+  // 'unknown' is "we could not find out", NOT "you have no plan". useCoachAccess
+  // clears its loading flag even when the RPC failed and there was no cached
+  // value to fall back on, so treating unknown as a non-subscriber would send a
+  // paying user to the paywall on any network hiccup — the exact bug this
+  // screen claims to guard against.
+  const accessResolved = access.state !== 'unknown';
 
-  // Nobody without a plan should be standing here. Wait for both Clerk and the
-  // access RPC to settle first, or a paying user on a cold start gets bounced
-  // to the paywall they already converted on.
+  // Only redirect a CONFIRMED non-subscriber, and only once Clerk and the
+  // access RPC have both settled.
   useEffect(() => {
-    if (!clerkLoaded || accessLoading) return;
+    if (!clerkLoaded || accessLoading || !accessResolved) return;
     if (isGuestSession || !hasSubscription) router.replace('/upgrade' as any);
-  }, [clerkLoaded, accessLoading, isGuestSession, hasSubscription, router]);
+  }, [clerkLoaded, accessLoading, accessResolved, isGuestSession, hasSubscription, router]);
 
   // Two numbers the access RPC does not carry: when this tier began, and how
   // much training has happened since. One round trip, on mount.
@@ -109,15 +102,7 @@ export default function PlanScreen() {
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, supabase]);
 
-  const planLabel = (() => {
-    switch (access.tier) {
-      case 'monthly': return 'Monthly';
-      case 'annual': return 'Annual';
-      case 'founding_annual': return 'Founding Annual';
-      case 'founding_lifetime': return 'Founding Lifetime';
-      default: return 'Active';
-    }
-  })();
+  const planLabel = tierLabel(access.tier);
   const renewsOn = access.expiresAt
     ? new Date(access.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
@@ -154,11 +139,36 @@ export default function PlanScreen() {
 
   // Hold the frame while we decide whether this user belongs here, so the page
   // never flashes plan copy at someone about to be sent to the paywall.
-  if (!clerkLoaded || accessLoading || !hasSubscription) {
+  if (!clerkLoaded || accessLoading || (accessResolved && !hasSubscription)) {
     return (
       <SafeAreaView style={[s.safe, { backgroundColor: C.background }]} edges={['top']}>
         <View style={s.centerFill}>
           <ActivityIndicator color={C.foreground} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // The lookup failed and there was nothing cached. Say so and offer a way out,
+  // rather than spinning forever or guessing that they have no plan.
+  if (!accessResolved) {
+    return (
+      <SafeAreaView style={[s.safe, { backgroundColor: C.background }]} edges={['top']}>
+        <View style={s.centerFill}>
+          <Feather name="cloud-off" size={28} color={C.textMuted} />
+          <Text style={[s.errorTitle, { color: C.foreground }]}>Couldn't load your plan</Text>
+          <Text style={[s.errorBody, { color: C.textMuted }]}>
+            Your subscription is unaffected. Check your connection and try again.
+          </Text>
+          <TouchableOpacity
+            onPress={backToProfile}
+            activeOpacity={0.85}
+            style={[s.primaryBtn, { alignSelf: 'stretch', marginTop: Spacing.xl }]}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Text style={s.primaryBtnText}>Back</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
@@ -274,9 +284,14 @@ export default function PlanScreen() {
             <Text style={s.primaryBtnText}>Back to training</Text>
           </TouchableOpacity>
 
-          {isLifetime ? (
+          {/* Only offer the store when the store has a record of the purchase.
+              A lifetime tier has nothing to renew, and AppSumo lifetime was
+              redeemed with a code so neither store has ever seen it. */}
+          {!isStorePurchase(access.tier) || isLifetime ? (
             <Text style={[s.storeText, { color: C.textMuted, textAlign: 'center', paddingTop: 14 }]}>
-              One-time purchase. Nothing to renew or cancel.
+              {isLifetime
+                ? 'One-time purchase. Nothing to renew or cancel.'
+                : 'Nothing to manage here.'}
             </Text>
           ) : (
             <TouchableOpacity
@@ -389,4 +404,13 @@ const s = StyleSheet.create({
     gap: 5, paddingTop: 14,
   },
   storeText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+
+  errorTitle: {
+    fontSize: FontSize.lg, fontWeight: FontWeight.bold,
+    marginTop: Spacing.lg, textAlign: 'center',
+  },
+  errorBody: {
+    fontSize: FontSize.xs, lineHeight: 18,
+    marginTop: 6, textAlign: 'center', paddingHorizontal: Spacing.xl,
+  },
 });

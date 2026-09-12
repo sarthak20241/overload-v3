@@ -46,6 +46,7 @@ import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/local
 import { clearCoachConversations } from '@/lib/coachConversations';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
+import { isLifetimeTier, PLAN_BENEFITS, tierLabel } from '@/lib/tiers';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 
 type Gender = 'M' | 'F' | 'O';
@@ -73,18 +74,6 @@ function withAlpha(hex: string, alpha: string) {
 }
 
 // ─── Section header ──────────────────────────────────────────────────────────
-// What Pro actually gives you. Deliberately shorter and blunter than the
-// paywall's comparison table (app/upgrade.tsx COMPARE_CORE): that table sells
-// by contrast against the free column and needs four rows to do it, while this
-// card is read by someone who has already paid and only wants confirmation.
-// Nothing enforces parity between the two lists, so if the offer changes, both
-// have to be edited.
-const PLAN_BENEFITS = [
-  'Unlimited coach chat',
-  'Unlimited AI food logs',
-  'Personalized plans, rewritten every week',
-];
-
 function SectionLabel({
   icon, children,
 }: { icon?: React.ComponentProps<typeof Feather>['name']; children: React.ReactNode }) {
@@ -370,16 +359,11 @@ export default function ProfileScreen() {
   // Until access resolves, offer nothing: 'unknown' would otherwise render as
   // "Free plan · Upgrade" to a paying user on a cold, offline start.
   const planUnknown = coachAccessLoading || coachAccess.state === 'unknown';
-  const planLabel = (() => {
-    switch (coachAccess.tier) {
-      case 'monthly': return 'Monthly';
-      case 'annual': return 'Annual';
-      case 'founding_annual': return 'Founding Annual';
-      case 'founding_lifetime': return 'Founding Lifetime';
-      default: return 'Active';
-    }
-  })();
-  const isLifetime = coachAccess.tier === 'founding_lifetime';
+  const planLabel = tierLabel(coachAccess.tier);
+  // Matches the live CHECK constraint, which also allows appsumo_lifetime.
+  // Treating founding_lifetime as the only lifetime tier told an AppSumo buyer
+  // their one-time purchase renews. See lib/tiers.ts.
+  const isLifetime = isLifetimeTier(coachAccess.tier);
   const atMaxLevel = isMaxLevel(level);
   const renewsOn = coachAccess.expiresAt
     ? new Date(coachAccess.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
