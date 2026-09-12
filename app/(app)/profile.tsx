@@ -766,39 +766,27 @@ export default function ProfileScreen() {
           {/* ─── XP Card ─── */}
           <View style={styles.section}>
             <View style={[styles.xpCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+              {/* Two rows, not four. The old card stacked a header, a
+                  "Level 10 → 11" row, the track, and a "% to next level"
+                  line; the level, the tier and the remaining XP all say the
+                  same thing in different words, so they now share one row
+                  with the bar underneath. */}
               <View style={styles.xpHeader}>
-                <View style={[
-                  styles.xpAvatar,
-                  {
-                    backgroundColor: withAlpha(tier.color, '20'),
-                  },
-                ]}>
+                <View style={[styles.xpAvatar, { backgroundColor: withAlpha(tier.color, '20') }]}>
                   <Text style={[styles.xpAvatarText, { color: tier.color }]}>{level}</Text>
                 </View>
-                <View style={{ marginLeft: 12, flex: 1 }}>
-                  <View style={styles.xpTitleRow}>
-                    <Text style={styles.xpIcon}>{tier.icon}</Text>
-                    <Text style={[styles.xpTitle, { color: tier.color }]}>{tier.title}</Text>
-                  </View>
-                  <Text style={[styles.xpTotal, { color: C.textMuted }]}>
-                    {totalXP.toLocaleString()} total XP
-                  </Text>
+                <View style={styles.xpTitleRow}>
+                  <Text style={styles.xpIcon}>{tier.icon}</Text>
+                  <Text style={[styles.xpTitle, { color: tier.color }]}>{tier.title}</Text>
                 </View>
-              </View>
-              <View style={styles.xpProgressRow}>
-                <Text style={[styles.xpProgressLabel, { color: C.textMuted }]}>
-                  Level {level} → {level + 1}
-                </Text>
-                <Text style={[styles.xpProgressValue, { color: C.textDim }]}>
-                  {xpInLevel} / {xpNeeded} XP
+                <View style={{ flex: 1 }} />
+                <Text style={[styles.xpTotal, { color: C.textMuted }]}>
+                  {xpInLevel.toLocaleString()} / {xpNeeded.toLocaleString()} XP to {level + 1}
                 </Text>
               </View>
               <View style={[styles.xpTrack, { backgroundColor: withAlpha(Colors.primary, '12') }]}>
                 <Animated.View style={[styles.xpFill, { backgroundColor: Colors.primary }, progressStyle]} />
               </View>
-              <Text style={[styles.xpPercent, { color: C.textDim }]}>
-                {Math.round(levelProgress * 100)}% to next level
-              </Text>
             </View>
           </View>
 
@@ -1644,30 +1632,23 @@ const styles = StyleSheet.create({
   sectionLabelText: { fontSize: 10, fontWeight: FontWeight.semibold, letterSpacing: 1.5 },
 
   // XP Card
-  // Narrower than every other card and centred (Sarthak: "it shouldn't be as
-  // wide as it currently is"). Being the first card AND the only inset one is
-  // what makes it read as part of the identity block above it rather than as
-  // the first row of the settings list below.
+  // Full width like every other card, but vertically lean: one summary row
+  // plus a thin bar, no stacked restatements of the same number.
   xpCard: {
-    alignSelf: 'center',
-    width: '88%',
     borderRadius: Radius.lg,
     borderWidth: 1,
-    padding: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 12,
   },
-  xpHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
-  xpAvatar: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  xpAvatarText: { fontSize: 16, fontWeight: FontWeight.black },
-  xpTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  xpHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  xpAvatar: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  xpAvatarText: { fontSize: 13, fontWeight: FontWeight.black },
+  xpTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   xpIcon: { fontSize: 14 },
   xpTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  xpTotal: { fontSize: FontSize.sm, marginTop: 2 },
-  xpProgressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  xpProgressLabel: { fontSize: 11, fontWeight: FontWeight.semibold },
-  xpProgressValue: { fontSize: 11 },
-  xpTrack: { height: 10, borderRadius: 5, overflow: 'hidden', marginBottom: 6 },
-  xpFill: { height: '100%', borderRadius: 5 },
-  xpPercent: { fontSize: 10, textAlign: 'right' },
+  xpTotal: { fontSize: FontSize.xs },
+  xpTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  xpFill: { height: '100%', borderRadius: 3 },
 
   // Info card / rows
   infoCard: { borderRadius: Radius.lg, borderWidth: 1, overflow: 'hidden' },
