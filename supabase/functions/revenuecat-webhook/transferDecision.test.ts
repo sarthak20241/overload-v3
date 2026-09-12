@@ -10,6 +10,10 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { decideTransfer } from "./transferDecision.ts";
 
+// Note: "release_only" names the action handleTransfer must take, but the
+// release itself is a DB write in index.ts and is not exercised here — this
+// file only covers the decision.
+
 const AUG_LIFETIME = { tier: "founding_lifetime", tier_started_at: "2026-08-22T05:36:04.706688+00:00" };
 const SEP_MONTHLY = { tier: "monthly", tier_started_at: "2026-09-12T10:37:40.414573+00:00" };
 const FREE = { tier: "free", tier_started_at: null };
@@ -17,13 +21,6 @@ const FREE = { tier: "free", tier_started_at: null };
 Deno.test("does not paste a stale tier over a newer purchase (the 2026-09-12 bug)", () => {
   // Same Apple ID: lifetime in August on one account, monthly today on a new
   // one. INITIAL_PURCHASE set monthly, then TRANSFER arrived carrying August.
-  const { action } = decideTransfer(AUG_LIFETIME, SEP_MONTHLY);
-  assertEquals(action, "release_only");
-});
-
-Deno.test("still releases the source when the target keeps its own tier", () => {
-  // The receipt left the source, so the source must not keep access even though
-  // nothing is written to the target.
   const { action } = decideTransfer(AUG_LIFETIME, SEP_MONTHLY);
   assertEquals(action, "release_only");
 });

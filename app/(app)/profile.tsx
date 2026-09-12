@@ -27,7 +27,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
-import { getLevelInfo, getTierForLevel, XP_PER_LEVEL } from '@/lib/xp';
+import { getLevelInfo, getTierForLevel, isMaxLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
@@ -362,7 +362,12 @@ export default function ProfileScreen() {
 
   // Android hardware back closes the plan sheet; <Portal> has no onRequestClose.
   useEffect(() => {
-    if (!planSheetOpen) return;
+    if (!planSheetOpen) {
+      // Forget the count on close so reopening after logging a workout in the
+      // same session refetches instead of showing the stale number.
+      setProWorkouts(null);
+      return;
+    }
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       setPlanSheetOpen(false);
       return true;
@@ -422,9 +427,7 @@ export default function ProfileScreen() {
     }
   })();
   const isLifetime = coachAccess.tier === 'founding_lifetime';
-  // At the cap getLevelInfo returns xpInLevel/xpNeeded = 1/1, so printing it
-  // raw would read "1 / 1 XP to 12" for a level 12 that does not exist.
-  const atMaxLevel = level >= XP_PER_LEVEL.length;
+  const atMaxLevel = isMaxLevel(level);
   const proDays = tierStartedAt
     ? Math.max(1, Math.floor((Date.now() - new Date(tierStartedAt).getTime()) / 86_400_000))
     : null;
@@ -896,7 +899,11 @@ export default function ProfileScreen() {
                     </Text>
                     <Text style={[styles.planCardSub, { color: C.textMuted }]}>{planSub}</Text>
                   </View>
-                  {hasSubscription && (
+                  {/* Same condition as the hero badge (paid only). A trialing
+                      user has full access but has not paid, and the card's own
+                      title already says "Overload Pro trial" — showing the chip
+                      here while the hero withheld it read as a bug. */}
+                  {isPro && (
                     <View style={styles.planCardChip}>
                       <Text style={styles.planCardChipText}>PRO</Text>
                     </View>

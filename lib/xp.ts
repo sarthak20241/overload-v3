@@ -46,6 +46,17 @@ export function getLevelInfo(totalXp: number): { level: number; xpInLevel: numbe
   return { level: maxLevel, xpInLevel: 1, xpNeeded: 1 };
 }
 
+/**
+ * True once `level` is the last entry in XP_PER_LEVEL. Past the cap
+ * getLevelInfo clamps to xpInLevel/xpNeeded = 1/1 so the bar reads full, and
+ * every caller that prints those numbers has to suppress them — printing them
+ * raw shows "1 / 1 XP to <cap + 1>", naming a level that does not exist.
+ * Exported so the dashboard bar and the profile card cannot drift apart.
+ */
+export function isMaxLevel(level: number): boolean {
+  return level >= XP_PER_LEVEL.length;
+}
+
 export function getXpForWorkout(sets: number, volume: number): number {
   return Math.floor(sets * 2 + volume / 100);
 }

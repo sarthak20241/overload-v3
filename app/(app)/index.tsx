@@ -14,7 +14,7 @@ import { metricTypeOf, supports1RM } from '@/lib/exercises';
 import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
 import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
-import { getLevelInfo, getXpForWorkout, XP_PER_LEVEL } from '@/lib/xp';
+import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
@@ -80,9 +80,7 @@ function XPBar({ xp }: { xp: number }) {
   const { C } = useTheme();
   const { level, xpInLevel, xpNeeded } = getLevelInfo(xp);
   const progress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
-  // At the cap getLevelInfo returns 1/1 so the bar reads full; printing that
-  // raw would show a meaningless "1/1" next to a finished bar.
-  const atMaxLevel = level >= XP_PER_LEVEL.length;
+  const atMaxLevel = isMaxLevel(level);
   const progressWidth = useSharedValue(0);
 
   useEffect(() => {
