@@ -107,10 +107,17 @@ export default function PlanScreen() {
   // 'trialing' (see hooks/useCoachAccess.ts), so tierLabel(undefined) would put
   // the placeholder "Active" in the hero of a trialing user.
   const planLabel = isTrialing ? 'Free trial' : tierLabel(access.tier);
-  // A trial is a real store subscription with the card already taken, so it is
-  // manageable and cancellable even though it has no tier yet. Without this a
-  // trialing user was told there was "nothing to manage".
-  const canManageInStore = isTrialing || isStorePurchase(access.tier);
+  // days_left is extract(epoch ...) / 86400 in the RPC, so a float: 6.83 would
+  // otherwise render verbatim.
+  const trialDaysLeft = access.daysLeft != null ? Math.max(0, Math.ceil(access.daysLeft)) : null;
+  // A trial is NOT a store subscription, despite the obvious guess. Migration
+  // 0088 is explicit: state 'trialing' is only ever a LEGACY no-card server
+  // trial (coach_trials, via the deprecated start_coach_trial RPC),
+  // grandfathered until it expires and then dropping to 'free'. A card-upfront
+  // App Store intro trial sets user_profiles.tier on INITIAL_PURCHASE and
+  // arrives here as 'paid'. So a trialing user has no card on file, will not be
+  // charged, and a store link would open a page with nothing of theirs on it.
+  const canManageInStore = isStorePurchase(access.tier);
   const renewsOn = access.expiresAt
     ? new Date(access.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
@@ -229,9 +236,9 @@ export default function PlanScreen() {
             {isLifetime
               ? 'Yours forever. One payment, no renewals.'
               : isTrialing
-                ? access.daysLeft != null
-                  ? `${access.daysLeft} days left, then billing starts`
-                  : 'Billing starts when the trial ends'
+                ? trialDaysLeft != null
+                  ? `${trialDaysLeft} ${trialDaysLeft === 1 ? 'day' : 'days'} left, then the free plan`
+                  : 'Ends soon, then the free plan'
                 : renewsOn
                   ? `Renews ${renewsOn}`
                   : 'Active'}
@@ -303,14 +310,16 @@ export default function PlanScreen() {
             <Text style={s.primaryBtnText}>Back to training</Text>
           </TouchableOpacity>
 
-          {/* Only offer the store when the store has a record of the purchase.
-              A lifetime tier has nothing to renew, and AppSumo lifetime was
-              redeemed with a code so neither store has ever seen it. */}
+          {/* Only offer the store when the store can actually manage the plan.
+              See isStorePurchase: lifetime tiers have nothing to renew, AppSumo
+              was redeemed with a code, and a legacy trial has no card at all. */}
           {!canManageInStore ? (
             <Text style={[s.storeText, { color: C.textMuted, textAlign: 'center', paddingTop: 14 }]}>
               {isLifetime
                 ? 'One-time purchase. Nothing to renew or cancel.'
-                : 'Nothing to manage here.'}
+                : isTrialing
+                  ? 'No card on file. Nothing will be charged.'
+                  : 'Nothing to manage here.'}
             </Text>
           ) : (
             <TouchableOpacity

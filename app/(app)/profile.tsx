@@ -353,7 +353,12 @@ export default function ProfileScreen() {
   // Two different questions, and conflating them sent a trialing user to the
   // paywall they had already converted on:
   //   isPro          — wears the badge (paid only; a trial is not Pro yet)
-  //   hasSubscription — has something to MANAGE in the store (paid OR trialing)
+  //   hasSubscription — has a plan worth showing (paid OR trialing)
+  // NOTE: "trialing" is NOT a store subscription. Migration 0088 only returns
+  // that state for a legacy no-card server trial, which lapses to 'free' with
+  // nothing charged; a card-upfront App Store trial arrives as 'paid'. Whether
+  // the STORE can manage a plan is a separate question, answered by
+  // isStorePurchase in lib/tiers.ts.
   const isPro = coachAccess.state === 'paid';
   const hasSubscription = coachAccess.state === 'paid' || coachAccess.state === 'trialing';
   // Until access resolves, offer nothing: 'unknown' would otherwise render as
