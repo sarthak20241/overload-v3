@@ -11,9 +11,18 @@
  *             notification permission prompt (needed for the day-5 reminder
  *             this screen promises, plus rest cues later).
  *   paywall   The single reusable paywall: transparent price headline,
- *             4 benefits, trial timeline, annual (7-day intro trial,
- *             preselected, save badge) vs decoy monthly vs founding lifetime,
- *             third "No payment today", CTA, delayed soft-wall skip link.
+ *             Free → Pro table, annual (preselected, save badge) vs monthly
+ *             vs founding lifetime, trust row, refund promise, CTA, delayed
+ *             soft-wall skip link. Every trial claim on it (badge, "No
+ *             payment today", "Start my N days free") is derived from the
+ *             store product's introductory offer via freeTrialDays(), so a
+ *             plan only advertises a trial App Store Connect actually gives.
+ *   success   Shown once the tier has flipped. "You're in." plus the three
+ *             things that just unlocked, then a hand-off into the coach
+ *             ("Ask Drona to plan my week"). A toast is too small for a
+ *             payment, and it left the user hunting the app for proof.
+ *             While it's on screen the dashboard cache is warmed so the
+ *             landing has real data instead of an empty first frame.
  *
  * Entry modes:
  *   /upgrade?flow=onboarding[&dest=routines]  full 3-screen funnel, shown
@@ -76,6 +85,8 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
+import { requestCoachOpen } from '@/lib/coachLaunch';
+import { prefetchDashboard } from '@/lib/dashboardData';
 import {
   requestNotificationPermission,
   scheduleTrialReminder,
@@ -86,13 +97,21 @@ import {
   isPurchasesAvailable,
   purchaseCoachPackage,
   restorePurchases,
+  freeTrialDays,
   PurchaseCancelledError,
   PurchasesUnavailableError,
   type PlanKey,
   type RevenueCatPackage,
 } from '@/lib/revenuecat';
 
-type FunnelStep = 'warmup' | 'reminder' | 'paywall';
+type FunnelStep = 'warmup' | 'reminder' | 'paywall' | 'success';
+
+/** What the success screen needs to know about the purchase it celebrates. */
+interface PurchaseOutcome {
+  plan: PlanKey;
+  /** The entitlement carries an intro/trial period (annual, first time). */
+  onTrial: boolean;
+}
 
 // Free → Pro comparison rows. `free`/`pro` render as: string → text,
 // 'yes' → check icon, 'soon' → outlined "SOON" chip, null → dash. CORE
@@ -166,6 +185,7 @@ export default function UpgradeScreen() {
   const [purchasing, setPurchasing] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [outcome, setOutcome] = useState<PurchaseOutcome | null>(null);
   // Founding Lifetime is a distracting third option (and its ASC IAP isn't
   // provisioned yet), so it's collapsed behind a link by default. Once
   // expanded, the row inflates in place and the link disappears.
@@ -286,8 +306,11 @@ export default function UpgradeScreen() {
           return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
         });
         if (onTrial) void scheduleTrialReminder();
-        toast.success("You're in. Welcome to Overload Pro.");
-        finish();
+        // Warm the dashboard cache while the success screen is up, so the
+        // landing paints real data instead of "Level 1 · no workouts".
+        void prefetchDashboard(supabase, user?.id);
+        setOutcome({ plan: selectedPlan, onTrial });
+        setStep('success');
       } else {
         toast.info(
           "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
@@ -308,7 +331,7 @@ export default function UpgradeScreen() {
       setPurchasing(false);
       setVerifying(false);
     }
-  }, [packages, selectedPlan, purchasing, verifying, user?.id, waitForTierFlip, toast, finish]);
+  }, [packages, selectedPlan, purchasing, verifying, user?.id, waitForTierFlip, toast, finish, supabase]);
 
   const handleRestore = useCallback(async () => {
     if (restoring) return;
@@ -339,6 +362,20 @@ export default function UpgradeScreen() {
       setRestoring(false);
     }
   }, [restoring, waitForTierFlip, toast, finish]);
+
+  // Success screen. Opened from a cap-hit sheet the user was mid-task
+  // (chatting, logging food), so the only sensible next step is back to it.
+  // Everywhere else the payoff is the coach: leave a one-shot request that
+  // the dashboard picks up on focus and opens the chat with a first ask.
+  const fromCap = context === 'cap_chat' || context === 'cap_parse';
+  const finishWithCoach = useCallback(() => {
+    requestCoachOpen({
+      screen: 'chat',
+      prompt: 'Plan my training week around my goal.',
+    });
+    if (isFunnel) router.replace('/(app)');
+    else finish();
+  }, [isFunnel, router, finish]);
 
   const advanceFromReminder = useCallback(async () => {
     // The promise needs the permission. Denial is fine: the screen never
@@ -373,6 +410,23 @@ export default function UpgradeScreen() {
   const annual = packages.annual ?? null;
   const monthly = packages.monthly ?? null;
   const lifetime = packages.founding_lifetime ?? null;
+  // Trial length per plan, straight from the store (0 = no trial). Lifetime
+  // is a non-consumable and can't carry one.
+  const trialDays: Record<PlanKey, number> = {
+    annual: freeTrialDays(annual),
+    monthly: freeTrialDays(monthly),
+    founding_lifetime: 0,
+  };
+  const selectedTrial = trialDays[selectedPlan];
+  const trialBadge = (days: number) => (days > 0 ? `${days} DAYS FREE` : undefined);
+  const ctaLabel =
+    selectedTrial > 0
+      ? `Start my ${selectedTrial} days free`
+      : selectedPlan === 'annual'
+        ? 'Subscribe yearly'
+        : selectedPlan === 'monthly'
+          ? 'Subscribe monthly'
+          : 'Claim founding lifetime';
   const perMonth = annual ? perMonthLabel(annual) : null;
   const savePct =
     annual?.product?.price && monthly?.product?.price
@@ -382,10 +436,11 @@ export default function UpgradeScreen() {
     founding !== null && (founding.closed_at !== null || founding.claimed >= founding.cap);
   const foundingLeft = founding ? Math.max(0, founding.cap - founding.claimed) : null;
 
-  // Headline: outcome, not mechanic (RevenueCat 7-uses framework: "Educate
-  // and Frame Value"). Ladder's paywall proved this — "Get results, without
-  // planning workouts" beat every feature-led variant. Sub carries the trial
-  // + price mechanics so the headline stays clean.
+  // Headline: the core of the app, not a feature (RevenueCat 7-uses
+  // framework: "Educate and Frame Value"). Overload is a coach that walks you
+  // to your goal, so the default headline says exactly that. Sarthak's
+  // phrase: "always by your side". History: v5 was "Never write a training
+  // plan again." (a mechanic; the paywall must say what the app IS).
   const paywallTitle =
     context === 'milestone'
       ? 'Your next four weeks, programmed.'
@@ -393,14 +448,14 @@ export default function UpgradeScreen() {
         ? 'That one is Overload Pro.'
         : context === 'cap_chat' || context === 'cap_parse'
           ? 'A coach who never runs out.'
-          : 'Never write a training plan again.';
+          : 'Always by your side. All the way to your goal.';
   // One sentence: the ecosystem story (Sarthak's framing). Everything else
   // (what's included, trial mechanics, price) lives in exactly one dedicated
   // element below: the Free → Pro comparison table with its expandable full
   // list. History: v4 had three overlapping explainers and read overloaded;
   // v5 collapsed them into the table.
   const paywallSub =
-    'Drona watches your training, food and recovery, and steers you to your goal week by week.';
+    'Drona reads every rep and every meal, and tells you exactly what to do next.';
 
   return (
     <SafeAreaView style={[u.safeArea, { backgroundColor: C.background }]}>
@@ -620,7 +675,7 @@ export default function UpgradeScreen() {
                     <PlanRow
                       selected={selectedPlan === 'annual'}
                       highlight
-                      badge="7 DAYS FREE"
+                      badge={trialBadge(trialDays.annual)}
                       name="Annual"
                       saveTag={savePct && savePct > 0 ? `SAVE ${savePct}%` : undefined}
                       price={annual.product.priceString}
@@ -635,8 +690,14 @@ export default function UpgradeScreen() {
                     <PlanRow
                       selected={selectedPlan === 'monthly'}
                       name="Monthly"
+                      badge={trialBadge(trialDays.monthly)}
                       price={monthly.product.priceString}
-                      priceUnit="/mo · no trial"
+                      priceUnit="/mo"
+                      note={
+                        trialDays.monthly > 0
+                          ? `Free for ${trialDays.monthly} days, then billed monthly`
+                          : 'Billed monthly · no trial'
+                      }
                       onPress={() => setSelectedPlan('monthly')}
                     />
                   </Animated.View>
@@ -677,66 +738,54 @@ export default function UpgradeScreen() {
           </ScrollView>
 
           <View style={u.paywallFooter}>
-            {verifying && (
-              <View style={u.verifyingRow}>
-                <ActivityIndicator color={C.foreground} />
-                <Text style={[u.verifyingText, { color: C.foreground }]}>Verifying purchase…</Text>
-              </View>
-            )}
-            {/* Trust motif above the CTA (RC 7-uses "Build Trust" + Bloom's
-                refund transparency). Two anchors in one horizontal line: the
-                billing truth and the exit path. MUST track the selected plan:
-                only annual carries the trial, so "No payment today" on a
-                monthly/lifetime selection would be a lie (and an App Review
-                rejection waiting to happen). */}
-            <View style={u.trustRow}>
-              <View style={u.trustChip}>
-                <Feather name="check" size={11} color={C.accentText} />
-                <Text style={[u.trustText, { color: C.foreground }]}>
-                  {selectedPlan === 'annual'
-                    ? 'No payment today'
-                    : selectedPlan === 'monthly'
-                      ? 'First charge today'
-                      : 'One payment, no renewals'}
-                </Text>
-              </View>
-              <View style={[u.trustDot, { backgroundColor: C.textDim }]} />
-              <View style={u.trustChip}>
-                <Feather name="check" size={11} color={C.accentText} />
-                <Text style={[u.trustText, { color: C.foreground }]}>
-                  {selectedPlan === 'founding_lifetime'
-                    ? 'Yours forever'
-                    : 'Cancel in Settings, 2 taps'}
-                </Text>
-              </View>
-            </View>
             <Animated.View style={ctaPulseStyle}>
               <PressableScale
                 onPress={handlePurchase}
                 disabled={purchasing || verifying || loading}
-                style={[u.cta, Shadow.playBtn, (purchasing || verifying || loading) && { opacity: 0.7 }]}
+                style={[u.cta, Shadow.playBtn, loading && { opacity: 0.7 }]}
                 accessibilityRole="button"
-                accessibilityLabel={
-                  selectedPlan === 'annual'
-                    ? 'Start my 7 days free'
-                    : selectedPlan === 'monthly'
-                      ? 'Subscribe monthly'
-                      : 'Claim founding lifetime'
-                }
+                accessibilityLabel={ctaLabel}
               >
+                {/* Two waits, two honest labels. Apple's sheet + its own
+                    "You're all set" alert can take ~8s to resolve, then the
+                    webhook needs a couple more to flip the tier. A silent
+                    spinner for 10s read as broken; a re-enabled button with
+                    a caption underneath read as "tap again". */}
                 {purchasing ? (
-                  <ActivityIndicator size="small" color={Colors.primaryFg} />
+                  <>
+                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <Text style={u.ctaText}>Confirming with App Store…</Text>
+                  </>
+                ) : verifying ? (
+                  <>
+                    <ActivityIndicator size="small" color={Colors.primaryFg} />
+                    <Text style={u.ctaText}>Activating Pro…</Text>
+                  </>
                 ) : (
-                  <Text style={u.ctaText}>
-                    {selectedPlan === 'annual'
-                      ? 'Start my 7 days free'
-                      : selectedPlan === 'monthly'
-                        ? 'Subscribe monthly'
-                        : 'Claim founding lifetime'}
-                  </Text>
+                  <Text style={u.ctaText}>{ctaLabel}</Text>
                 )}
               </PressableScale>
             </Animated.View>
+            {/* One quiet trust line under the CTA (RC "Build Trust" + Bloom's
+                refund transparency). Three facts, no icons: the billing
+                truth, the exit path, the refund promise. It MUST track the
+                selected plan AND the store: "No payment today" only when the
+                selected product carries a free trial, otherwise it is a lie
+                (and an App Review rejection waiting to happen). The refund is
+                a promise Sarthak makes, not Apple: money moves through
+                Apple's refund flow, we just never argue. History: v6 had two
+                chip rows + a refund row above the CTA and read cluttered. */}
+            <Text style={[u.trustLine, { color: C.textMuted }]}>
+              {[
+                selectedTrial > 0
+                  ? 'No payment today'
+                  : selectedPlan === 'founding_lifetime'
+                    ? 'One payment, no renewals'
+                    : 'First charge today',
+                selectedPlan === 'founding_lifetime' ? 'Yours forever' : 'Cancel anytime',
+                '14-day refund',
+              ].join('   ·   ')}
+            </Text>
             {skipVisible && (
               <Animated.View entering={FadeIn.duration(400)}>
                 <TouchableOpacity
@@ -761,6 +810,71 @@ export default function UpgradeScreen() {
               </Text>
             </Text>
           </View>
+        </Animated.View>
+      )}
+
+      {step === 'success' && (
+        <Animated.View key="success" entering={FadeIn.duration(250)} style={u.stepFill}>
+          <View style={u.centerFill}>
+            <Animated.View entering={FadeInDown.duration(400)} style={u.successMark}>
+              <DronaMark size={56} state="idle" />
+            </Animated.View>
+            <Animated.Text
+              entering={FadeInDown.delay(100).duration(400)}
+              style={[u.displayTitle, { color: C.foreground, textAlign: 'center' }]}
+            >
+              You're in.
+            </Animated.Text>
+            <Animated.Text
+              entering={FadeInDown.delay(200).duration(400)}
+              style={[u.subText, { color: C.textSecondary, textAlign: 'center' }]}
+            >
+              {outcome?.plan === 'founding_lifetime'
+                ? "Founding member. Overload Pro is yours for good, and I'm yours to keep."
+                : outcome?.onTrial
+                  ? "Your 7 days start now. I'll remind you on day 5, before anything is charged."
+                  : "Overload Pro is active. Give me a week of your training and judge me on the results."}
+            </Animated.Text>
+            <Animated.View
+              entering={FadeInDown.delay(320).duration(400)}
+              style={[u.unlockCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+            >
+              {[
+                'Unlimited coach chat',
+                'Unlimited AI food logs',
+                'A plan built for you, rewritten every week',
+              ].map((line, i) => (
+                <View
+                  key={line}
+                  style={[u.unlockRow, i > 0 && { borderTopWidth: 1, borderTopColor: C.borderSubtle }]}
+                >
+                  <View style={[u.unlockIcon, { backgroundColor: C.primaryMuted }]}>
+                    <Feather name="check" size={11} color={C.accentText} />
+                  </View>
+                  <Text style={[u.unlockText, { color: C.foreground }]}>{line}</Text>
+                </View>
+              ))}
+            </Animated.View>
+          </View>
+          <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
+            <PressableScale
+              onPress={fromCap ? finish : finishWithCoach}
+              style={[u.cta, Shadow.playBtn]}
+              accessibilityRole="button"
+              accessibilityLabel={fromCap ? 'Continue' : 'Ask Drona to plan my week'}
+            >
+              <Text style={u.ctaText}>{fromCap ? 'Continue' : 'Ask Drona to plan my week'}</Text>
+            </PressableScale>
+            {!fromCap && (
+              <TouchableOpacity
+                onPress={finish}
+                accessibilityRole="button"
+                accessibilityLabel="Go to my dashboard"
+              >
+                <Text style={[u.skipText, { color: C.textDim }]}>Go to my dashboard</Text>
+              </TouchableOpacity>
+            )}
+          </Animated.View>
         </Animated.View>
       )}
     </SafeAreaView>
@@ -1047,6 +1161,16 @@ const u = StyleSheet.create({
     fontWeight: FontWeight.bold,
     letterSpacing: LetterSpacing.label,
   },
+  cmpMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingTop: Spacing.sm + 1,
+    paddingBottom: 2,
+    borderTopWidth: 1,
+  },
+  cmpMoreText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   cmpRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1074,25 +1198,31 @@ const u = StyleSheet.create({
     fontWeight: FontWeight.bold,
     letterSpacing: 0.5,
   },
-  cmpMoreBtn: {
+  // Success screen: mark, headline, one-line sub, then a three-row "what
+  // just unlocked" card. Same card grammar as the comparison table above so
+  // the beat reads as the answer to it.
+  successMark: { alignItems: 'center', marginBottom: Spacing.lg },
+  unlockCard: {
+    alignSelf: 'stretch',
+    marginTop: Spacing.xl,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.lg,
+  },
+  unlockRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingTop: Spacing.sm + 1,
-    paddingBottom: 2,
-    borderTopWidth: 1,
+    gap: Spacing.md,
+    paddingVertical: Spacing.md,
   },
-  cmpMoreText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-
-  verifyingRow: {
-    flexDirection: 'row',
+  unlockIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: Spacing.sm,
-    marginTop: Spacing.lg,
   },
-  verifyingText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  unlockText: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
 
   noPayRow: {
     flexDirection: 'row',
@@ -1103,28 +1233,12 @@ const u = StyleSheet.create({
   },
   noPayText: { fontSize: FontSize.md, fontWeight: FontWeight.bold },
 
-  // Trust motif row above the CTA. Two chips separated by a dot, replacing
-  // the previous single "No payment today" row so both trust anchors land
-  // at the moment of maximum hesitation (RC "Build Trust" tactic).
-  trustRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.md,
-  },
-  trustChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  trustText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-  // Color set inline from the theme (C.textDim): a hardcoded value here was
-  // invisible against the dark background in the sim review.
-  trustDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
+  // Single trust line under the CTA: billing truth · exit path · refund.
+  trustLine: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
+    textAlign: 'center',
+    marginTop: Spacing.md,
   },
 
   footer: {

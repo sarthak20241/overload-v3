@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing } from 'react-native-reanimated';
@@ -22,7 +22,7 @@ import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
-import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { hydrateCache, readCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
@@ -35,6 +35,9 @@ import { pendingToDashboardWorkout, pendingXp } from '@/lib/pendingAdapters';
 import { applyEditsToDashboardRows } from '@/lib/editQueue';
 import { useSync } from '@/components/SyncProvider';
 import { DronaMark } from '@/components/coach/DronaMark';
+import { fetchDashboardData } from '@/lib/dashboardData';
+import { consumeCoachOpen } from '@/lib/coachLaunch';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
 
 const ROUTINE_COLORS = Colors.routineColors;
 
@@ -194,33 +197,13 @@ export default function DashboardScreen() {
         setLoading(false);
       }
 
-      // Only fetch last 90 days to cap payload size; stats derived client-side need recent history only.
-      const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      let workoutsQ = supabase
-        .from('workouts')
-        .select('*, workout_sets(*, exercises(*))')
-        .gte('started_at', sinceIso)
-        .order('started_at', { ascending: false });
-      let profileQ = supabase.from('user_profiles').select('xp').limit(1).maybeSingle();
-      if (clerkId) {
-        workoutsQ = workoutsQ.eq('user_id', clerkId);
-        profileQ = supabase.from('user_profiles').select('xp').eq('clerk_user_id', clerkId).maybeSingle();
-      }
+      // Server read + cache write live in lib/dashboardData so the /upgrade
+      // success screen can warm the cache before this screen mounts. A
+      // failed/unauthenticated request throws and must NOT overwrite the cache
+      // (it would wipe the dashboard to empty); the catch keeps the cached view.
       try {
-        const [wRes, pRes] = await Promise.all([workoutsQ, profileQ]);
+        const { workouts: normalized, xp } = await fetchDashboardData(supabase, clerkId);
         if (cancelled) return;
-        // A failed/unauthenticated request must NOT overwrite the cache (it would
-        // wipe the dashboard to empty). Throw so the catch keeps the cached view.
-        if (wRes.error || pRes.error) throw wRes.error || pRes.error;
-        const wData = wRes.data;
-        const pData = pRes.data;
-        const normalized = ((wData as any[]) || []).map((w: any) => ({
-          ...w,
-          sets: w.workout_sets ?? w.sets ?? [],
-        }));
-        const xp = (pData as any)?.xp || 0;
-        writeCache('dashboardWorkouts', clerkId, normalized);
-        writeCache('profileXp', clerkId, xp);
         const { rows, xp: pendXp } = withPending(normalized);
         setWorkouts(rows as any[]);
         setUserXP(xp + pendXp);
@@ -443,6 +426,24 @@ export default function DashboardScreen() {
   // question. Cleared (undefined) for every other coach entry point.
   const [aiCoachPrompt, setAiCoachPrompt] = useState<string | undefined>(undefined);
 
+  // A screen that navigates here and wants the coach open (the /upgrade
+  // success screen's "Ask Drona to plan my week") leaves a one-shot request
+  // in lib/coachLaunch; pick it up whenever the dashboard gains focus.
+  useFocusEffect(
+    useCallback(() => {
+      const req = consumeCoachOpen();
+      if (!req) return;
+      setAiCoachPrompt(req.prompt);
+      setAiCoachInitialScreen(req.screen);
+      setAiCoachOpen(true);
+    }, []),
+  );
+
+  // Paid users see a PRO tag on the coach card instead of NEW: after paying,
+  // the card is the one place on the home screen that should say so.
+  const { access: coachAccess } = useCoachAccess();
+  const coachBadge = coachAccess.state === 'paid' ? 'PRO' : 'NEW';
+
   // Proactive insights — deterministic detection over the workouts already
   // loaded. Free + instant; tapping a card seeds the (paid) Coach Drona chat.
   // Proactive insights — deterministic detection over the workouts already
@@ -541,7 +542,7 @@ export default function DashboardScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Text style={[styles.aiCoachTitle, { color: C.foreground }]}>Coach Drona</Text>
                   <View style={[styles.newBadge, { backgroundColor: C.primaryMuted }]}>
-                    <Text style={[styles.newBadgeText, { color: C.accentText }]}>NEW</Text>
+                    <Text style={[styles.newBadgeText, { color: C.accentText }]}>{coachBadge}</Text>
                   </View>
                 </View>
                 <Text style={[styles.aiCoachSub, { color: C.textMuted }]}>

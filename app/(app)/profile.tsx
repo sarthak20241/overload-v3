@@ -1,7 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, ActivityIndicator, BackHandler, Pressable, Keyboard, Platform,
+  ActivityIndicator,
+  BackHandler,
+  Keyboard,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
@@ -36,6 +46,7 @@ import { useSync } from '@/components/SyncProvider';
 import { clearUserCache, hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { clearCoachConversations } from '@/lib/coachConversations';
 import { useAdminCheck } from '@/hooks/useAdminCheck';
+import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 
 type Gender = 'M' | 'F' | 'O';
@@ -334,6 +345,40 @@ export default function ProfileScreen() {
 
   const { level, xpInLevel, xpNeeded } = getLevelInfo(totalXP);
   const tier = getTierForLevel(level);
+
+  // Subscription state for the PRO chip + Plan row. After paying, this screen
+  // is where people come looking for proof; it used to have none.
+  const { access: coachAccess } = useCoachAccess();
+  const isPro = coachAccess.state === 'paid';
+  const planLabel = (() => {
+    switch (coachAccess.tier) {
+      case 'monthly': return 'Monthly';
+      case 'annual': return 'Annual';
+      case 'founding_annual': return 'Founding Annual';
+      case 'founding_lifetime': return 'Founding Lifetime';
+      default: return 'Active';
+    }
+  })();
+  const isLifetime = coachAccess.tier === 'founding_lifetime';
+  const renewsOn = coachAccess.expiresAt
+    ? new Date(coachAccess.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    : null;
+  const planSub = isPro
+    ? isLifetime
+      ? 'Yours forever, no renewals'
+      : renewsOn
+        ? `${planLabel} · renews ${renewsOn}`
+        : planLabel
+    : coachAccess.state === 'trialing'
+      ? `Pro trial · ${coachAccess.daysLeft ?? '…'} days left`
+      : '3 coach messages and 3 AI food logs a day';
+  const openManageSubscription = () => {
+    Linking.openURL(
+      Platform.OS === 'android'
+        ? 'https://play.google.com/store/account/subscriptions'
+        : 'https://apps.apple.com/account/subscriptions',
+    ).catch(() => {});
+  };
   const levelProgress = xpNeeded > 0 ? xpInLevel / xpNeeded : 0;
 
   // Goal progress derived from current weight, goal, and starting weight from log
@@ -691,6 +736,12 @@ export default function ProfileScreen() {
               }]}>
                 <Text style={[styles.heroBadgeText, { color: C.accentText }]}>{totalWorkouts} workouts</Text>
               </View>
+              {isPro && (
+                <View style={[styles.heroBadge, styles.proBadge]}>
+                  <Feather name="zap" size={9} color={Colors.primaryFg} />
+                  <Text style={[styles.heroBadgeText, styles.proBadgeText]}>PRO</Text>
+                </View>
+              )}
             </View>
           </Animated.View>
 
@@ -1022,6 +1073,43 @@ export default function ProfileScreen() {
               </View>
             </View>
           </View>
+
+          {/* ─── Plan ─── */}
+          {!isGuest && (
+            <View style={styles.section}>
+              <SectionLabel icon="zap">PLAN</SectionLabel>
+              <TouchableOpacity
+                onPress={
+                  isPro
+                    ? isLifetime ? undefined : openManageSubscription
+                    : () => router.push('/upgrade' as any)
+                }
+                disabled={isPro && isLifetime}
+                activeOpacity={0.85}
+                style={[styles.accountBtn, { backgroundColor: C.card, borderColor: isPro ? C.primaryBorder : C.borderSubtle }]}
+                accessibilityRole="button"
+                accessibilityLabel={isPro ? 'Manage subscription' : 'Upgrade to Overload Pro'}
+              >
+                <View style={[styles.rowIcon, { backgroundColor: isPro ? Colors.primary : `${Colors.primary}22` }]}>
+                  <Feather name="zap" size={11} color={isPro ? Colors.primaryFg : C.accentText} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.infoLabel, { color: C.foreground }]}>
+                    {isPro ? 'Overload Pro' : coachAccess.state === 'trialing' ? 'Overload Pro trial' : 'Free plan'}
+                  </Text>
+                  <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>{planSub}</Text>
+                </View>
+                {isPro ? (
+                  isLifetime ? null : (
+                    <Text style={{ fontSize: FontSize.xs, color: C.textMuted }}>Manage</Text>
+                  )
+                ) : (
+                  <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: C.accentText }}>Upgrade</Text>
+                )}
+                {!(isPro && isLifetime) && <Feather name="chevron-right" size={14} color={C.textMuted} />}
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* ─── Preferences ─── */}
           <View style={styles.section}>
@@ -1431,6 +1519,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2,
   },
   heroBadgeText: { fontSize: 10, fontWeight: FontWeight.medium },
+  proBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  proBadgeText: { color: Colors.primaryFg, fontWeight: FontWeight.bold, letterSpacing: 0.6 },
 
   // Sections
   section: { paddingHorizontal: Spacing.xl, marginBottom: 16 },

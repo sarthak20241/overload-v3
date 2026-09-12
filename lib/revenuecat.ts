@@ -35,9 +35,40 @@ type RCPackage = {
     priceString: string;
     price: number;
     currencyCode: string;
+    // Introductory offer attached to the product in App Store Connect / Play.
+    // A free trial is an intro price of 0. Null when the product has none.
+    introPrice?: {
+      price: number;
+      priceString: string;
+      cycles: number;
+      period: string;
+      periodUnit: string; // 'DAY' | 'WEEK' | 'MONTH' | 'YEAR'
+      periodNumberOfUnits: number;
+    } | null;
   };
 };
 export type { RCPackage as RevenueCatPackage };
+
+/**
+ * Length of the product's free trial in days, or 0 when it has none.
+ *
+ * The paywall derives every trial claim ("7 DAYS FREE", "No payment today",
+ * "Start my 7 days free") from this rather than from the plan name, so the
+ * screen can never promise a trial the store won't give. Whether a plan has
+ * a trial is decided in App Store Connect (introductory offer), not here.
+ */
+export function freeTrialDays(pkg: RCPackage | null | undefined): number {
+  const intro = pkg?.product?.introPrice;
+  if (!intro || intro.price !== 0) return 0;
+  const n = intro.periodNumberOfUnits || 0;
+  switch (String(intro.periodUnit).toUpperCase()) {
+    case 'DAY': return n;
+    case 'WEEK': return n * 7;
+    case 'MONTH': return n * 30;
+    case 'YEAR': return n * 365;
+    default: return 0;
+  }
+}
 
 export type RevenueCatOffering = {
   identifier: string;
