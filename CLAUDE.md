@@ -29,6 +29,7 @@ ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
 deno test --allow-all lib/xp.test.ts
+deno test --allow-all lib/tiers.test.ts
 ```
 
 There are no configured lint or build scripts.
