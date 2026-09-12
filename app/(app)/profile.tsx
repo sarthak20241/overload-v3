@@ -293,6 +293,9 @@ export default function ProfileScreen() {
   const [totalXP, setTotalXP] = useState(0);
   const [totalWorkouts, setTotalWorkouts] = useState(0);
   const [joinDate, setJoinDate] = useState('');
+  // When this account's paid tier began, used by the plan sheet to scope
+  // "since you went Pro". Comes free with the profile's select('*').
+  const [tierStartedAt, setTierStartedAt] = useState<string | null>(null);
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   // Coach context (Phase 0). Empty string = unset / show placeholder.
@@ -308,6 +311,11 @@ export default function ProfileScreen() {
 
   // Bug report modal
   const [bugModalOpen, setBugModalOpen] = useState(false);
+  // Plan detail sheet. Tapping the plan card opens this rather than jumping
+  // straight out to the App Store: the store page answers "how do I cancel",
+  // which is the last question a paying user has, not the first.
+  const [planSheetOpen, setPlanSheetOpen] = useState(false);
+  const [proWorkouts, setProWorkouts] = useState<number | null>(null);
   const [showWorkoutSettings, setShowWorkoutSettings] = useState(false);
   const [bugTitle, setBugTitle] = useState('');
   const [bugDescription, setBugDescription] = useState('');
@@ -327,6 +335,40 @@ export default function ProfileScreen() {
   // Transform-driven slide — Reanimated's entering/exiting would pin the sheet's
   // frame and swallow the keyboard lift below. See useSheetSlide.
   const { mounted: bugSheetMounted, slideStyle: bugSlideStyle } = useSheetSlide(bugModalOpen, 300, 200);
+  const { mounted: planSheetMounted, slideStyle: planSlideStyle } = useSheetSlide(planSheetOpen, 300, 200);
+
+  // Count workouts logged since the plan started. Fetched lazily on first open
+  // so the profile's normal load pays nothing for it, and only once per mount.
+  useEffect(() => {
+    if (!planSheetOpen || proWorkouts !== null) return;
+    const clerkId = user?.id;
+    if (!clerkId || !tierStartedAt) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { count, error } = await supabase
+          .from('workouts')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', clerkId)
+          .gte('started_at', tierStartedAt);
+        if (!cancelled && !error) setProWorkouts(count ?? 0);
+      } catch {
+        // Offline: the row just stays hidden rather than showing a zero that
+        // would read as "you have done nothing since you paid".
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [planSheetOpen, proWorkouts, user?.id, tierStartedAt, supabase]);
+
+  // Android hardware back closes the plan sheet; <Portal> has no onRequestClose.
+  useEffect(() => {
+    if (!planSheetOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setPlanSheetOpen(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [planSheetOpen]);
   const [bugKbHeight, setBugKbHeight] = useState(0);
   useEffect(() => {
     if (!bugModalOpen) { setBugKbHeight(0); return; }
@@ -380,6 +422,9 @@ export default function ProfileScreen() {
     }
   })();
   const isLifetime = coachAccess.tier === 'founding_lifetime';
+  const proDays = tierStartedAt
+    ? Math.max(1, Math.floor((Date.now() - new Date(tierStartedAt).getTime()) / 86_400_000))
+    : null;
   const renewsOn = coachAccess.expiresAt
     ? new Date(coachAccess.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
     : null;
@@ -464,6 +509,7 @@ export default function ProfileScreen() {
       setTotalXP(0);
       setTotalWorkouts(0);
       setJoinDate('');
+      setTierStartedAt(null);
       setCoachGoal('');
       setExperienceLevel('');
       setWeeklyTargetSessions('');
@@ -507,6 +553,7 @@ export default function ProfileScreen() {
         setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
         setBirthYear(profile.date_of_birth ? String(new Date(profile.date_of_birth).getFullYear()) : '');
+        setTierStartedAt((profile.tier_started_at as string | null) ?? null);
       };
       const profileQuery = clerkId
         ? supabase.from('user_profiles').select('*').eq('clerk_user_id', clerkId).maybeSingle()
@@ -816,7 +863,7 @@ export default function ProfileScreen() {
                   planUnknown
                     ? undefined
                     : hasSubscription
-                      ? openStore
+                      ? () => setPlanSheetOpen(true)
                       : () => router.push('/upgrade' as any)
                 }
                 accessibilityRole="button"
@@ -824,7 +871,7 @@ export default function ProfileScreen() {
                   planUnknown
                     ? 'Checking your plan'
                     : hasSubscription
-                      ? isLifetime ? 'View purchase history' : 'Manage subscription'
+                      ? 'See your plan details'
                       : 'Upgrade to Overload Pro'
                 }
                 style={[styles.planCard, {
@@ -881,9 +928,7 @@ export default function ProfileScreen() {
                           color: hasSubscription ? C.textMuted : C.accentText,
                         }]}
                       >
-                        {hasSubscription
-                          ? isLifetime ? 'View purchase history' : 'Manage subscription'
-                          : 'Upgrade to Pro'}
+                        {hasSubscription ? 'See your plan details' : 'Upgrade to Pro'}
                       </Text>
                       <Feather
                         name="chevron-right"
@@ -1394,6 +1439,126 @@ export default function ProfileScreen() {
         onClose={() => setShowWorkoutSettings(false)}
       />
 
+      {/* ─── Plan Detail Sheet ───
+          Tapping the plan card lands here, not in the App Store. Someone who
+          just paid wants to know what they got; cancelling is the last thing
+          they want, so the store link is the quietest thing on the sheet. */}
+      <Portal>
+        {planSheetMounted && (
+        <View style={styles.modalBackdrop} pointerEvents={planSheetOpen ? 'auto' : 'none'}>
+          {planSheetOpen && (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              exiting={FadeOut.duration(150)}
+              style={[StyleSheet.absoluteFill, { backgroundColor: C.overlay }]}
+            >
+              <Pressable style={StyleSheet.absoluteFill} onPress={() => setPlanSheetOpen(false)} />
+            </Animated.View>
+          )}
+          <Animated.View
+            style={[styles.bugSheet, planSlideStyle, {
+              backgroundColor: C.elevated,
+              borderTopColor: C.borderSubtle,
+              paddingBottom: insets.bottom + 24,
+            }]}
+          >
+            <View style={styles.bugHandle}>
+              <View style={[styles.bugHandleBar, { backgroundColor: C.handle }]} />
+            </View>
+
+            <View style={styles.bugHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <View style={[styles.bugIconWrap, { backgroundColor: C.primaryMuted }]}>
+                  <Feather name="award" size={16} color={C.accentText} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.bugTitle, { color: C.foreground }]}>
+                    {isPro ? 'Overload Pro' : 'Overload Pro trial'}
+                  </Text>
+                  <Text style={[styles.bugSubtitle, { color: C.textMuted }]}>{planSub}</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* What the plan has actually done for you. Only rows we have real
+                numbers for are rendered — a zero here would read as an
+                accusation rather than a stat. */}
+            <SectionLabel>YOUR PLAN SO FAR</SectionLabel>
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 18 }]}>
+              {proDays !== null && (
+                <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                  <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>
+                    {isLifetime ? 'Founding member for' : 'Pro for'}
+                  </Text>
+                  <Text style={[styles.planStatValue, { color: C.foreground }]}>
+                    {proDays} {proDays === 1 ? 'day' : 'days'}
+                  </Text>
+                </View>
+              )}
+              {proWorkouts !== null && (
+                <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                  <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>Workouts since then</Text>
+                  <Text style={[styles.planStatValue, { color: C.foreground }]}>{proWorkouts}</Text>
+                </View>
+              )}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>Coach messages today</Text>
+                <Text style={[styles.planStatValue, { color: C.foreground }]}>
+                  {coachAccess.messagesToday ?? 0} of unlimited
+                </Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={[styles.infoLabel, { color: C.textMuted, flex: 1 }]}>AI food logs today</Text>
+                <Text style={[styles.planStatValue, { color: C.foreground }]}>
+                  {coachAccess.parsesToday ?? 0} of unlimited
+                </Text>
+              </View>
+            </View>
+
+            <SectionLabel>WHAT YOU GET</SectionLabel>
+            <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 18 }]}>
+              {PLAN_BENEFITS.map((line, i) => (
+                <View
+                  key={line}
+                  style={[styles.planBenefitRow, { paddingHorizontal: 12, paddingVertical: 9 },
+                    i > 0 && { borderTopWidth: 1, borderTopColor: C.borderSubtle }]}
+                >
+                  <Feather name="check" size={11} color={C.accentText} />
+                  <Text style={[styles.planBenefitText, { color: C.foreground }]}>{line}</Text>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setPlanSheetOpen(false)}
+              activeOpacity={0.85}
+              style={[styles.planPrimaryBtn]}
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+            >
+              <Text style={styles.planPrimaryBtnText}>Done</Text>
+            </TouchableOpacity>
+
+            {/* Deliberately the quietest thing here. */}
+            <TouchableOpacity
+              onPress={() => { setPlanSheetOpen(false); openStore(); }}
+              activeOpacity={0.7}
+              style={styles.planStoreLink}
+              accessibilityRole="button"
+              accessibilityLabel={isLifetime ? 'View purchase history in the App Store' : 'Manage subscription in the App Store'}
+            >
+              <Text style={[styles.planStoreLinkText, { color: C.textMuted }]}>
+                {isLifetime
+                  ? Platform.OS === 'android' ? 'View order history in Play' : 'View purchase history in the App Store'
+                  : Platform.OS === 'android' ? 'Manage or cancel in Play' : 'Manage or cancel in the App Store'}
+              </Text>
+              <Feather name="external-link" size={11} color={C.textMuted} />
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+        )}
+      </Portal>
+
       {/* ─── Bug Report Bottom Sheet ───
           Rendered via the root <Portal>, not RN <Modal> — on Android
           edge-to-edge a <Modal> is a separate Dialog window inset by the
@@ -1626,6 +1791,27 @@ const styles = StyleSheet.create({
   planBenefitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 },
   planBenefitText: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
   planCardAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  planStatValue: { fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+  planPrimaryBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planPrimaryBtnText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryFg,
+  },
+  planStoreLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingTop: 14,
+  },
+  planStoreLinkText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
   planCardActionText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   proBadge: {
     flexDirection: 'row',
