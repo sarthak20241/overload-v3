@@ -8,7 +8,7 @@
 - App Store Connect subscriptions on "Overload: AI Coach & Tracker" (app id 6773063775, sub group "Overload Premium"):
   - Overload Annual (`overload_annual`): base $29.99 US, India override ₹999, other regions auto-mapped (Canada CAD $39.99, EU €34.99, Australia AUD $49.99, etc.).
   - Overload Annual intro offer: 7-day Free trial, all 175 regions, Jul 28 2026 → no end date.
-  - Overload Monthly (`overload_monthly`): base $7.99 US, India override ₹299, other regions auto-mapped (EU €8.99, Australia AUD $12.99). No intro offer.
+  - Overload Monthly (`overload_monthly`): base $7.99 US, India override ₹299, other regions auto-mapped (EU €8.99, Australia AUD $12.99). Intro offer: 7-day free trial, all 175 regions, Sep 12 2026 → no end date (added 2026-09-12; the paywall derives trial claims from the store via freeTrialDays, so no app change was needed).
   - Founding Lifetime NOT created in ASC yet — see gap below.
 - RevenueCat project "Overload: Workout Tracker" (rc project id 7ed661f5) is wired correctly:
   - Default offering has `$rc_annual`→`overload_annual`, `$rc_monthly`→`overload_monthly`.
