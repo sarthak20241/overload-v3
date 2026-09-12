@@ -74,6 +74,15 @@ function withAlpha(hex: string, alpha: string) {
 }
 
 // ─── Section header ──────────────────────────────────────────────────────────
+// What Pro actually gives you, in the same order and words the paywall's
+// comparison table uses (app/upgrade.tsx COMPARE_CORE) so the two screens
+// never disagree about what was bought.
+const PLAN_BENEFITS = [
+  'Unlimited coach chat',
+  'Unlimited AI food logs',
+  'Personalized plans, rewritten every week',
+];
+
 function SectionLabel({
   icon, children,
 }: { icon?: React.ComponentProps<typeof Feather>['name']; children: React.ReactNode }) {
@@ -748,12 +757,108 @@ export default function ProfileScreen() {
               </View>
               {isPro && (
                 <View style={[styles.heroBadge, styles.proBadge]}>
-                  <Feather name="zap" size={9} color={Colors.primaryFg} />
                   <Text style={[styles.heroBadgeText, styles.proBadgeText]}>PRO</Text>
                 </View>
               )}
             </View>
           </Animated.View>
+
+          {/* ─── Plan ───
+              Sits directly under the hero (Sarthak: "the plan status should be
+              above"), and it is a card rather than a settings row because it
+              answers two questions at once: what am I on, and what does that
+              give me. Tapping always does something — Manage for a live store
+              subscription, Upgrade for free — so the card is never dead. */}
+          {!isGuest && (
+            <View style={styles.section}>
+              <SectionLabel icon="award">PLAN</SectionLabel>
+              <TouchableOpacity
+                activeOpacity={planUnknown ? 1 : 0.85}
+                disabled={planUnknown}
+                onPress={
+                  planUnknown
+                    ? undefined
+                    : hasSubscription
+                      ? openManageSubscription
+                      : () => router.push('/upgrade' as any)
+                }
+                accessibilityRole="button"
+                accessibilityLabel={
+                  planUnknown
+                    ? 'Checking your plan'
+                    : hasSubscription
+                      ? 'Manage subscription'
+                      : 'Upgrade to Overload Pro'
+                }
+                style={[styles.planCard, {
+                  backgroundColor: C.card,
+                  borderColor: hasSubscription ? C.primaryBorder : C.borderSubtle,
+                }]}
+              >
+                <View style={styles.planCardHead}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.planCardTitle, { color: C.foreground }]}>
+                      {planUnknown
+                        ? 'Your plan'
+                        : isPro
+                          ? 'Overload Pro'
+                          : coachAccess.state === 'trialing'
+                            ? 'Overload Pro trial'
+                            : 'Free plan'}
+                    </Text>
+                    <Text style={[styles.planCardSub, { color: C.textMuted }]}>{planSub}</Text>
+                  </View>
+                  {hasSubscription && (
+                    <View style={styles.planCardChip}>
+                      <Text style={styles.planCardChipText}>PRO</Text>
+                    </View>
+                  )}
+                </View>
+
+                {!planUnknown && (
+                  <>
+                    <View style={[styles.planCardRule, { backgroundColor: C.borderSubtle }]} />
+                    {!hasSubscription && (
+                      <Text style={[styles.planCardLead, { color: C.textDim }]}>WITH PRO YOU GET</Text>
+                    )}
+                    {PLAN_BENEFITS.map((line) => (
+                      <View key={line} style={styles.planBenefitRow}>
+                        <Feather
+                          name={hasSubscription ? 'check' : 'lock'}
+                          size={11}
+                          color={hasSubscription ? C.accentText : C.textDim}
+                        />
+                        <Text
+                          style={[styles.planBenefitText, {
+                            color: hasSubscription ? C.foreground : C.textMuted,
+                          }]}
+                        >
+                          {line}
+                        </Text>
+                      </View>
+                    ))}
+                    <View style={[styles.planCardRule, { backgroundColor: C.borderSubtle }]} />
+                    <View style={styles.planCardAction}>
+                      <Text
+                        style={[styles.planCardActionText, {
+                          color: hasSubscription ? C.textMuted : C.accentText,
+                        }]}
+                      >
+                        {hasSubscription
+                          ? isLifetime ? 'View in the App Store' : 'Manage subscription'
+                          : 'Upgrade to Pro'}
+                      </Text>
+                      <Feather
+                        name="chevron-right"
+                        size={14}
+                        color={hasSubscription ? C.textMuted : C.accentText}
+                      />
+                    </View>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* ─── XP Card ─── */}
           <View style={styles.section}>
@@ -1083,66 +1188,6 @@ export default function ProfileScreen() {
               </View>
             </View>
           </View>
-
-          {/* ─── Plan ─── */}
-          {!isGuest && (
-            <View style={styles.section}>
-              <SectionLabel icon="zap">PLAN</SectionLabel>
-              {/* Three states, and only one of them offers an upgrade:
-                    unknown   — inert while access resolves
-                    lifetime  — inert, nothing to manage or renew
-                    sub       — Manage (paid OR trialing: a trial is a live
-                                store subscription, and sending those users to
-                                the paywall asked them to buy what they own)
-                    free      — Upgrade */}
-              <TouchableOpacity
-                onPress={
-                  planUnknown || (hasSubscription && isLifetime)
-                    ? undefined
-                    : hasSubscription
-                      ? openManageSubscription
-                      : () => router.push('/upgrade' as any)
-                }
-                disabled={planUnknown || (hasSubscription && isLifetime)}
-                activeOpacity={0.85}
-                style={[styles.accountBtn, { backgroundColor: C.card, borderColor: isPro ? C.primaryBorder : C.borderSubtle }]}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  planUnknown
-                    ? 'Checking your plan'
-                    : hasSubscription
-                      ? 'Manage subscription'
-                      : 'Upgrade to Overload Pro'
-                }
-              >
-                <View style={[styles.rowIcon, { backgroundColor: isPro ? Colors.primary : `${Colors.primary}22` }]}>
-                  <Feather name="zap" size={11} color={isPro ? Colors.primaryFg : C.accentText} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.infoLabel, { color: C.foreground }]}>
-                    {planUnknown
-                      ? 'Your plan'
-                      : isPro
-                        ? 'Overload Pro'
-                        : coachAccess.state === 'trialing'
-                          ? 'Overload Pro trial'
-                          : 'Free plan'}
-                  </Text>
-                  <Text style={{ fontSize: FontSize.xs, color: C.textMuted, marginTop: 2 }}>{planSub}</Text>
-                </View>
-                {planUnknown ? null : hasSubscription ? (
-                  isLifetime ? null : (
-                    <Text style={{ fontSize: FontSize.xs, color: C.textMuted }}>Manage</Text>
-                  )
-                ) : (
-                  <Text style={{ fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: C.accentText }}>Upgrade</Text>
-                )}
-                {!(planUnknown || (hasSubscription && isLifetime)) && (
-                  <Feather name="chevron-right" size={14} color={C.textMuted} />
-                )}
-              </TouchableOpacity>
-            </View>
-          )}
 
           {/* ─── Preferences ─── */}
           <View style={styles.section}>
@@ -1552,6 +1597,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2,
   },
   heroBadgeText: { fontSize: 10, fontWeight: FontWeight.medium },
+  planCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  planCardHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  planCardTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  planCardSub: { fontSize: FontSize.xs, marginTop: 2 },
+  planCardChip: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  planCardChipText: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.8,
+    color: Colors.primaryFg,
+  },
+  planCardRule: { height: 1, marginVertical: 10 },
+  planCardLead: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  planBenefitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 },
+  planBenefitText: { flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  planCardAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  planCardActionText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
   proBadge: {
     flexDirection: 'row',
     alignItems: 'center',
