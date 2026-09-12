@@ -111,9 +111,16 @@ export async function drainPendingOnboarding(target: {
 
 /**
  * Save the onboarding program under a real account and return phase 1's id
- * (so the starter routines can be linked to it). Best-effort by design: a
- * failure returns null and the routines still save unlinked. Guests get
- * nothing here; the Goal & Plan screen already needs a Clerk id.
+ * (so the starter routines can be linked to it). Guests get nothing here; the
+ * Goal & Plan screen already needs a Clerk id.
+ *
+ * Best-effort by design, and deliberately not retried. Blocking the finish
+ * line on this insert would trap the user behind a network blip holding a
+ * plan they cannot reach, which is the worse failure. The program is also
+ * the one artifact with a first-class path back: losing it lands the user on
+ * Goal & Plan's "No program yet / Build a program" empty state, one tap from
+ * the dashboard's Goal button, which rebuilds it with the coach. That is the
+ * recovery, so a silent null here costs a detour, not the feature.
  */
 export async function saveOnboardingProgram(
   program: GeneratedProgram,

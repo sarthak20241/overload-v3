@@ -350,6 +350,12 @@ export default function OnboardingScreen() {
         if (isSignedIn && getToken) {
           // Signed-in (re-onboarding / demo): authenticated coach path. Plan
           // and program are two forced-tool calls, in parallel.
+          //
+          // Unlike the anonymous route these are two separate HTTP requests,
+          // so they reserve TWO of the day's coach slots (RATE_LIMIT_MAX, 30)
+          // rather than one. Onboarding runs once per account, so the cost is
+          // bounded; worth knowing before anything else starts spending them
+          // in pairs.
           const token = await getToken();
           if (!token) throw new Error('no token');
           const message = buildOnboardingIntakeMessage(answers, {
