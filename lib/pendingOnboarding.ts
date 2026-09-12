@@ -23,6 +23,7 @@ import {
   type OnboardingAnswers,
   type StarterRoutine,
 } from '@/lib/onboarding';
+import { saveProgram, type GeneratedProgram } from '@/lib/programData';
 
 const PENDING_KEY = 'pending_onboarding_v1';
 
@@ -31,6 +32,9 @@ export interface PendingOnboarding {
   targets: DailyTargets | null;
   /** The generated (or deterministic) plan, already resolved to catalog rows. */
   plan: StarterRoutine[];
+  /** The goal program (phases to the target). Saved only under a real account;
+   *  guests have no program store. Older blobs predate the field. */
+  program?: GeneratedProgram | null;
   /** Whether to actually create the routines, or just save the profile. */
   createPlan: boolean;
   /** Where to land after the plan is drained under the resolved identity. */
@@ -94,10 +98,33 @@ export async function drainPendingOnboarding(target: {
   if (pending.goalWeightKg && pending.goalWeightKg > 0) {
     await saveBasicInfo({ goalWeight: pending.goalWeightKg });
   }
+  const phaseId = pending.createPlan && pending.program
+    ? await saveOnboardingProgram(pending.program, target)
+    : null;
   if (pending.createPlan && pending.plan.length > 0) {
-    await createStarterRoutines(pending.plan, target);
+    await createStarterRoutines(pending.plan, { ...target, programPhaseId: phaseId });
   }
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
   return pending.dest ?? '/(app)';
+}
+
+/**
+ * Save the onboarding program under a real account and return phase 1's id
+ * (so the starter routines can be linked to it). Best-effort by design: a
+ * failure returns null and the routines still save unlinked. Guests get
+ * nothing here; the Goal & Plan screen already needs a Clerk id.
+ */
+export async function saveOnboardingProgram(
+  program: GeneratedProgram,
+  target: { isGuest: boolean; clerkId: string | null; client: SupabaseClient },
+): Promise<string | null> {
+  if (target.isGuest || !target.clerkId) return null;
+  try {
+    const { phaseIds } = await saveProgram(target.client, target.clerkId, program);
+    return phaseIds[0] ?? null;
+  } catch (e) {
+    console.warn('[onboarding] program save failed; routines save unlinked', e);
+    return null;
+  }
 }

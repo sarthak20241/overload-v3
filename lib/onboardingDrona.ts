@@ -202,7 +202,7 @@ export function buildAnonIntake(
 export async function requestAnonOnboardingPlan(args: {
   deviceId: string;
   intake: AnonIntake;
-}): Promise<GeneratePlanInput> {
+}): Promise<{ plan: GeneratePlanInput; program: Record<string, unknown> | null }> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) throw new Error('Supabase not configured');
@@ -226,10 +226,15 @@ export async function requestAnonOnboardingPlan(args: {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const json = (await response.json()) as {
       structured?: { name?: string; input?: GeneratePlanInput } | null;
+      // The goal program, generated beside the plan in the same request.
+      // Absent on an older edge deploy or when its generation failed; the
+      // caller falls back to the deterministic phases either way.
+      program?: { name?: string; input?: Record<string, unknown> } | null;
     };
     const input = json.structured?.name === 'generate_plan' ? json.structured.input : null;
     if (!input) throw new Error('No structured plan in response');
-    return input;
+    const program = json.program?.name === 'generate_program' && json.program.input ? json.program.input : null;
+    return { plan: input, program };
   } finally {
     clearTimeout(timeout);
   }

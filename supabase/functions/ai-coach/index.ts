@@ -27,6 +27,16 @@ import {
 import type { PreciseCacheRow } from "./preciseCache.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
+import {
+  ANON_EXPERIENCE,
+  ANON_GENDER,
+  ANON_GOAL_LABEL,
+  type AnonIntake,
+  anonNum,
+  anonText,
+  buildAnonProgramMessage,
+  sanitizeAnonIntake,
+} from "./anonOnboarding.ts";
 
 // Auth model: Supabase third-party Clerk auth covers PostgREST/Realtime but
 // NOT Edge Functions. We deploy verify_jwt:false and verify the Clerk JWT
@@ -2432,54 +2442,8 @@ async function handleParseMealRequest(args: {
 // Attest is a deferred phase 2); its presence is logged so we can turn on
 // verification later without a client change.
 
-interface AnonIntake {
-  goal?: string;
-  experience?: string;
-  frequency?: number;
-  gender?: string;
-  ageYears?: number;
-  heightCm?: number;
-  weightKg?: number;
-  goalWeightKg?: number;
-  weeklyRateKg?: number | null;
-  direction?: "loss" | "gain" | null;
-  targets?: { kcal?: number; protein?: number; carb?: number; fat?: number } | null;
-  // Optional free text. This is the ONLY user-authored prose the unauthenticated
-  // route accepts, so it is whitespace-collapsed and hard length-capped by
-  // anonText() before interpolation, and generate_plan stays force-selected so
-  // the output can never be anything but a catalog-grounded workout plan.
-  healthNotes?: string | null;
-  routinePrefs?: string | null;
-}
-
-const ANON_GOAL_LABEL: Record<string, string> = {
-  hypertrophy: "build muscle",
-  strength: "get stronger",
-  fat_loss: "lose fat",
-  endurance: "build endurance",
-  general: "general fitness",
-};
-
-// Server-side twin of lib/onboardingDrona.buildOnboardingIntakeMessage: keep
-// the two in sync. Catalog names come from the exercises table so the model
-// grounds on real rows.
-const ANON_EXPERIENCE = new Set(["beginner", "intermediate", "advanced"]);
-const ANON_GENDER = new Set(["M", "F", "O"]);
-// Clamp a client-supplied number into a sane range, or drop it. Guards the one
-// unauthenticated route: every intake field is either enum-checked or bounded
-// before it reaches the prompt, so nothing arbitrary is ever interpolated.
-function anonNum(v: unknown, lo: number, hi: number): number | null {
-  return typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
-}
-
-// Sanitize the one free-text intake field pair: collapse all whitespace (so a
-// caller can't inject prompt structure with newlines) and hard-cap the length.
-// Returns null for empty/non-string input so the line is dropped entirely.
-function anonText(v: unknown, max: number): string | null {
-  if (typeof v !== "string") return null;
-  const t = v.replace(/\s+/g, " ").trim().slice(0, max);
-  return t.length ? t : null;
-}
+// AnonIntake, the enum sets and the anonNum/anonText bounds live in
+// anonOnboarding.ts so they are unit-tested; this file keeps the HTTP handler.
 
 function buildAnonIntakeMessage(intake: AnonIntake, catalog: string[]): string {
   const goal = intake.goal && ANON_GOAL_LABEL[intake.goal] ? ANON_GOAL_LABEL[intake.goal] : "general fitness";
@@ -2604,14 +2568,40 @@ async function handleAnonOnboardingPlan(args: {
   const message = buildAnonIntakeMessage(intake as AnonIntake, catalog);
   const { system, tools } = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_plan" });
 
-  const apiResult = await callAnthropic({
-    model: MODEL,
-    max_tokens: GENERATE_PLAN_MAX_TOKENS,
-    system,
-    tools,
-    messages: [{ role: "user", content: message }],
-    tool_choice: { type: "tool", name: "generate_plan" },
-  });
+  // The goal PROGRAM (phases toward the target date) is generated alongside
+  // the starter plan in the same request: one quota slot, one round trip, and
+  // the two run concurrently so the build screen waits for max(), not sum().
+  // The program is a bonus on top of the plan: any failure here is logged in
+  // the trace and the response simply omits `program`, so the client falls
+  // back to its deterministic phases and the plan still ships.
+  const programMessage = buildAnonProgramMessage(
+    sanitizeAnonIntake(intake as AnonIntake),
+    new Date().toISOString().slice(0, 10),
+  );
+  const programPrompt = buildSystemPrompt({ userContext: null, retrievedResearch: [], mode: "generate_program" });
+
+  const [apiResult, programResult] = await Promise.all([
+    callAnthropic({
+      model: MODEL,
+      max_tokens: GENERATE_PLAN_MAX_TOKENS,
+      system,
+      tools,
+      messages: [{ role: "user", content: message }],
+      tool_choice: { type: "tool", name: "generate_plan" },
+    }),
+    callAnthropic({
+      model: MODEL,
+      max_tokens: GENERATE_PROGRAM_MAX_TOKENS,
+      system: programPrompt.system,
+      tools: programPrompt.tools,
+      messages: [{ role: "user", content: programMessage }],
+      tool_choice: { type: "tool", name: "generate_program" },
+    }).catch((e): { ok: false; status: number; body: string } => ({
+      ok: false,
+      status: 0,
+      body: String(e?.message ?? e),
+    })),
+  ]);
   if (!apiResult.ok) {
     trace.status = "anthropic_error";
     trace.error_message = `anon_anthropic_${apiResult.status}: ${preview(apiResult.body) ?? ""}`;
@@ -2636,7 +2626,29 @@ async function handleAnonOnboardingPlan(args: {
 
   trace.status = "success";
   trace.tool_calls.push("generate_plan");
-  return respond({ structured: { name: "generate_plan", input: toolUse.input } }, 200);
+
+  let program: { name: "generate_program"; input: Record<string, unknown> } | null = null;
+  if (programResult.ok) {
+    const pUsage = programResult.data.usage ?? {};
+    trace.input_tokens = (trace.input_tokens ?? 0) + (pUsage.input_tokens ?? 0);
+    trace.output_tokens = (trace.output_tokens ?? 0) + (pUsage.output_tokens ?? 0);
+    const pBlocks: Array<{ type: string; name?: string; input?: Record<string, unknown> }> =
+      programResult.data.content ?? [];
+    const pUse = pBlocks.find((b) => b.type === "tool_use" && b.name === "generate_program");
+    if (pUse?.input) {
+      program = { name: "generate_program", input: pUse.input };
+      trace.tool_calls.push("generate_program");
+    } else {
+      trace.spans = { ...(trace.spans ?? {}), program_error: "no_tool_use" };
+    }
+  } else {
+    trace.spans = {
+      ...(trace.spans ?? {}),
+      program_error: `anthropic_${programResult.status}: ${preview(programResult.body) ?? ""}`.slice(0, 200),
+    };
+  }
+
+  return respond({ structured: { name: "generate_plan", input: toolUse.input }, program }, 200);
 }
 
 Deno.serve(async (req) => {

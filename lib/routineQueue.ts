@@ -44,6 +44,9 @@ export interface PendingRoutine {
   color: string | null;
   createdAtIso: string;
   exercises: PendingRoutineExercise[];
+  /** Program phase this routine was built for (routines.program_phase_id).
+   *  Linked best-effort after the upsert; never blocks the save. */
+  programPhaseId?: string | null;
   phase: 'queued' | 'routine_upserted' | 'done';
   attempts: number;
   nextAttemptAt: number;
@@ -223,6 +226,14 @@ async function flushPendingRoutine(
       { onConflict: 'id' },
     );
     if (error) throw error;
+    if (entry.programPhaseId) {
+      try {
+        await supabase
+          .from('routines')
+          .update({ program_phase_id: entry.programPhaseId })
+          .eq('id', entry.routineId);
+      } catch { /* linking is non-critical */ }
+    }
     phase = 'routine_upserted';
     patchRoutine(userId, entry.routineId, { phase });
   }
