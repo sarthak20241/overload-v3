@@ -404,6 +404,12 @@ export default function AppLayout() {
         <Tabs.Screen name="food-detail" options={{ href: null }} />
         <Tabs.Screen name="meal-builder" options={{ href: null }} />
         {/*
+          Plan screen — what your subscription is and what it has done for you.
+          Hidden from the bottom nav; reached from the Profile plan card. The
+          route itself sends guests and free users to /upgrade.
+        */}
+        <Tabs.Screen name="plan" options={{ href: null }} />
+        {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link
           (`/admin/research`) or the "Admin Tools" button rendered for
