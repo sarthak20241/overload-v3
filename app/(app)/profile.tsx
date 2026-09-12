@@ -842,11 +842,20 @@ export default function ProfileScreen() {
                   <Text style={[styles.xpTitle, { color: tier.color }]}>{tier.title}</Text>
                 </View>
                 <View style={{ flex: 1 }} />
-                <Text style={[styles.xpTotal, { color: C.textMuted }]}>
-                  {atMaxLevel
-                    ? 'max level'
-                    : `${xpInLevel.toLocaleString()} / ${xpNeeded.toLocaleString()} XP to ${level + 1}`}
-                </Text>
+                {/* Two numbers that answer different questions, so both earn
+                    their place: the lifetime score, and how far into this
+                    level you are. Stacked tight and right-aligned rather than
+                    given a row each. */}
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[styles.xpTotal, { color: C.textMuted }]}>
+                    {totalXP.toLocaleString()} XP
+                  </Text>
+                  <Text style={[styles.xpToNext, { color: C.textDim }]}>
+                    {atMaxLevel
+                      ? 'max level'
+                      : `${xpInLevel.toLocaleString()} / ${xpNeeded.toLocaleString()} to ${level + 1}`}
+                  </Text>
+                </View>
               </View>
               <View style={[styles.xpTrack, { backgroundColor: withAlpha(Colors.primary, '12') }]}>
                 <Animated.View style={[styles.xpFill, { backgroundColor: Colors.primary }, progressStyle]} />
@@ -1860,7 +1869,8 @@ const styles = StyleSheet.create({
   xpTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   xpIcon: { fontSize: 14 },
   xpTitle: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
-  xpTotal: { fontSize: FontSize.xs },
+  xpTotal: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  xpToNext: { fontSize: 10, marginTop: 1 },
   xpTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
   xpFill: { height: '100%', borderRadius: 3 },
 

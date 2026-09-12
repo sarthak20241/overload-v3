@@ -27,6 +27,8 @@ ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
 
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
+deno test --allow-all supabase/functions/revenuecat-webhook/
+deno test --allow-all lib/xp.test.ts
 ```
 
 There are no configured lint or build scripts.
@@ -80,7 +82,7 @@ All design tokens live in `constants/theme.ts`: colors (lime green `#c8ff00` pri
 
 ### XP/Leveling
 
-`lib/xp.ts` implements an 11-level progression system. XP formula: `(sets × 2) + (volume / 100)`. Used in the dashboard to render a level progress bar.
+`lib/xp.ts` implements a 50-level progression system (extended from 11 so every `TITLE_TIERS` title, up to Legend at level 50, is reachable). Levels 1-11 are frozen: the thresholds apply to a stored `user_profiles.xp`, so editing an early one re-levels every existing account. XP formula: `(sets × 2) + (volume / 100)`. Covered by `lib/xp.test.ts` (`deno test lib/xp.test.ts`).
 
 ### Path Aliases
 

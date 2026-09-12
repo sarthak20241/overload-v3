@@ -13,5 +13,9 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "// exclude": "Deno test files (jsr: imports, the Deno global) are never part of the Expo bundle and cannot resolve under the app's TypeScript project. They are checked by `deno test` instead.",
+  "exclude": [
+    "**/*.test.ts"
   ]
 }

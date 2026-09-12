@@ -1,5 +1,43 @@
+/**
+ * Cumulative XP needed to REACH each level: index 0 is level 1, so the last
+ * index is the cap. XP itself comes from getXpForWorkout below.
+ *
+ * Levels 1-11 are FROZEN at their original values. Changing any of them would
+ * silently move every existing user's level up or down, so new levels may only
+ * ever be appended. lib/xp.test.ts pins the prefix against a hardcoded copy: if
+ * that test fails, revert the table rather than updating the test.
+ *
+ * The table used to stop at 11, which made six of the eight TITLE_TIERS
+ * unreachable: Dedicated starts at 15 and Legend at 50, so "Regular" was the
+ * highest title anyone could ever hold, and a maxed-out user sat on a 100%
+ * bar with nothing left to earn. It now runs to 50 so every title is real.
+ *
+ * The curve continues the original shape: each level costs 250 XP more than
+ * the one before (the last frozen step was 2000, so the next is 2250), which
+ * keeps increments strictly increasing across the whole table.
+ *
+ * Pacing, at ONE consistent assumption throughout — ~90 XP a workout, four
+ * workouts a week, so ~18,700 XP a year:
+ *
+ *   Regular    L10    7,000     ~5 months
+ *   Dedicated  L15   19,500     ~1 year
+ *   Athlete    L20   38,250     ~2 years
+ *   Warrior    L30   94,500     ~5 years
+ *   Elite      L40  175,750     ~9 years
+ *   Legend     L50  282,000     ~15 years
+ *
+ * A heavier lifter earns far more per session (25 sets at 10,000 kg is 150 XP,
+ * and five sessions a week is ~39,000 a year), which roughly halves all of the
+ * above: Legend lands nearer 7 years. Quote one assumption or the other, never
+ * a mix — an earlier draft of this comment paced Legend at 7 years next to
+ * Elite at 10, which is impossible when Legend costs more than Elite.
+ */
 export const XP_PER_LEVEL = [
-  0, 283, 600, 1000, 1500, 2200, 3100, 4200, 5500, 7000, 9000,
+  0, 283, 600, 1000, 1500, 2200, 3100, 4200, 5500, 7000,
+  9000, 11250, 13750, 16500, 19500, 22750, 26250, 30000, 34000, 38250,
+  42750, 47500, 52500, 57750, 63250, 69000, 75000, 81250, 87750, 94500,
+  101500, 108750, 116250, 124000, 132000, 140250, 148750, 157500, 166500, 175750,
+  185250, 195000, 205000, 215250, 225750, 236500, 247500, 258750, 270250, 282000,
 ];
 
 export interface TitleTier {
