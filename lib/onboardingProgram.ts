@@ -23,6 +23,7 @@ import {
 } from '@/lib/onboarding';
 import { structuredToProgram, type GeneratedProgram, type ProgramDiet, type ProgramPhase } from '@/lib/programData';
 import { programNarrative } from '@/lib/programNarrative';
+import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern';
 import type { CoachGoal } from '@/lib/types';
 
 const REQUEST_TIMEOUT_MS = 75_000;
@@ -107,7 +108,15 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
   // A break or hold week eats at true maintenance (BMR x activity, no goal
   // factor and no pace delta): above a cut's numbers, below a gain's.
   const maintenance = dietOf(maintenanceTargets(a) ?? extras.targets);
-  const block = { days_per_week: freq, emphasis: EMPHASIS[goal] };
+  // Name the split from the day count and spell the week out, so the phase
+  // card can say which day is which instead of leaving the reader to guess.
+  const splitType = splitCycle(undefined, freq).join('/');
+  const block = {
+    split_type: splitType,
+    days_per_week: freq,
+    emphasis: EMPHASIS[goal],
+    week_pattern: buildWeekPattern(splitType, freq),
+  };
 
   const phase = (
     name: string,
@@ -249,6 +258,7 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
     `- start_date is ${today}. goal is "${goal}".`,
     `- 2 to 4 phases, earliest first. Put a deload or diet break where recovery calls for it.`,
     `- Every training_block has days_per_week is ${freq}. Pick the split from my goal, days, experience and notes. Do not default to one style.`,
+    `- Every training_block also has week_pattern: 7 entries, Day 1 to Day 7, "Rest" for a day off, with exactly ${freq} training days.`,
     `- objective: 1-2 sentences to me. rationale: 3-4 sentences, plain prose. One line each for the diet, training and readiness directives.`,
     `This is a fresh account with no history, so skip data-lookup tools and emit generate_program directly.`,
   ]
@@ -320,7 +330,13 @@ export function dronaProgramFromStructured(
     // mirrors into user_profiles: it must be the onboarding targets, not a
     // second set of numbers the model rounded differently.
     diet: i === 0 && pinned.calories != null ? pinned : ph.diet,
-    training_block: { ...(ph.training_block ?? {}), days_per_week: freq },
+    // days_per_week is pinned to the answer the user actually gave, so the
+    // week line has to be re-checked against it: the coach's own pattern is
+    // kept only if it still adds up, else a matching one is drawn.
+    training_block: (() => {
+      const b = { ...(ph.training_block ?? {}), days_per_week: freq };
+      return { ...b, week_pattern: weekPatternFor(b) };
+    })(),
   }));
   if (phases.some((ph) => ph.diet.calories == null)) return null;
 

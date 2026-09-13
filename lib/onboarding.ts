@@ -22,19 +22,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { isSupabaseConfigured } from '@/lib/supabase';
-import { EXERCISE_LIBRARY } from '@/lib/exercises';
-import { Colors } from '@/constants/theme';
 import {
   getGuestProfile,
   getGuestRoutines,
   getGuestWorkouts,
   updateGuestProfile,
-  addGuestRoutine,
-  type GuestRoutine,
   type GuestProfile,
 } from '@/lib/guestStore';
-import { enqueueRoutine, applyRoutineToCache, type PendingRoutine } from '@/lib/routineQueue';
-import { newClientId } from '@/lib/syncQueue';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
@@ -98,6 +92,11 @@ async function isOnboardingDone(identity: string): Promise<boolean> {
   } catch {
     return true; // unreadable storage: fail open, never trap the user
   }
+}
+
+/** Has onboarding been completed for this identity (guest or Clerk id)? */
+export function hasCompletedOnboarding(clerkId: string | null | undefined): Promise<boolean> {
+  return isOnboardingDone(onboardingIdentity(clerkId));
 }
 
 /**
@@ -386,227 +385,5 @@ export async function saveOnboardingProfile(
       .upsert(row, { onConflict: 'clerk_user_id' });
   } catch {
     /* best-effort; see docstring */
-  }
-}
-
-// ─── Starter plan generator ──────────────────────────────────────────────────
-
-export interface StarterRoutineExercise {
-  name: string;
-  muscle_group: string;
-  category: string;
-  sets: number;
-  reps_min: number;
-  reps_max: number;
-  rest_seconds: number;
-}
-
-export interface StarterRoutine {
-  name: string;
-  description: string;
-  color: string;
-  exercises: StarterRoutineExercise[];
-}
-
-interface TemplateExercise {
-  name: string;
-  compound: boolean;
-}
-
-interface Template {
-  name: string;
-  description: string;
-  exercises: TemplateExercise[];
-}
-
-// All names must exist in EXERCISE_LIBRARY so the sync queue resolves them to
-// the seeded catalog rows by name (never creating near-duplicate customs).
-const c = (name: string): TemplateExercise => ({ name, compound: true });
-const i = (name: string): TemplateExercise => ({ name, compound: false });
-
-const FULL_BODY: Template[] = [
-  {
-    name: 'Full Body A',
-    description: 'Starter plan. Alternate with Full Body B.',
-    exercises: [c('Squat'), c('Bench Press'), c('Barbell Row'), i('Lateral Raise'), i('Ab Crunch')],
-  },
-  {
-    name: 'Full Body B',
-    description: 'Starter plan. Alternate with Full Body A.',
-    exercises: [c('Romanian Deadlift'), c('Overhead Press'), c('Lat Pulldown'), i('Dumbbell Curl'), i('Hanging Leg Raise')],
-  },
-];
-
-const UPPER_LOWER: Template[] = [
-  {
-    name: 'Upper Body',
-    description: 'Starter plan. Alternate with Lower Body.',
-    exercises: [c('Bench Press'), c('Barbell Row'), c('Overhead Press'), c('Lat Pulldown'), i('Dumbbell Curl'), i('Tricep Pushdown')],
-  },
-  {
-    name: 'Lower Body',
-    description: 'Starter plan. Alternate with Upper Body.',
-    exercises: [c('Squat'), c('Romanian Deadlift'), c('Leg Press'), i('Leg Curl'), i('Calf Raise'), i('Ab Crunch')],
-  },
-];
-
-const PPL: Template[] = [
-  {
-    name: 'Push',
-    description: 'Starter plan. Rotate Push, Pull, Legs.',
-    exercises: [c('Bench Press'), c('Overhead Press'), c('Incline Dumbbell Press'), i('Lateral Raise'), i('Tricep Pushdown')],
-  },
-  {
-    name: 'Pull',
-    description: 'Starter plan. Rotate Push, Pull, Legs.',
-    exercises: [c('Deadlift'), c('Lat Pulldown'), c('Barbell Row'), i('Face Pull'), i('Dumbbell Curl')],
-  },
-  {
-    name: 'Legs',
-    description: 'Starter plan. Rotate Push, Pull, Legs.',
-    exercises: [c('Squat'), c('Romanian Deadlift'), c('Leg Press'), i('Leg Curl'), i('Calf Raise')],
-  },
-];
-
-// Rep range + rest per goal, split by compound vs isolation (strength-style
-// 4-6 rep prescriptions only make sense on compounds; isolations stay in a
-// moderate range regardless of goal).
-const PRESCRIPTION: Record<CoachGoal, { comp: [number, number, number]; iso: [number, number, number] }> = {
-  //          [reps_min, reps_max, rest_seconds]
-  strength: { comp: [4, 6, 180], iso: [8, 12, 90] },
-  hypertrophy: { comp: [6, 10, 120], iso: [10, 15, 75] },
-  fat_loss: { comp: [8, 12, 90], iso: [12, 15, 60] },
-  endurance: { comp: [12, 15, 60], iso: [15, 20, 45] },
-  general: { comp: [8, 12, 90], iso: [10, 15, 60] },
-};
-
-const SETS_BY_EXPERIENCE: Record<ExperienceLevel, { comp: number; iso: number }> = {
-  beginner: { comp: 3, iso: 2 },
-  intermediate: { comp: 3, iso: 3 },
-  advanced: { comp: 4, iso: 3 },
-};
-
-/**
- * Turn quiz answers into concrete starter routines. Pure: no writes. Unanswered
- * questions fall back to sensible defaults (general goal, 3 days, beginner
- * volume) so a skip-happy user still gets a real plan.
- */
-export function buildStarterRoutines(answers: OnboardingAnswers): StarterRoutine[] {
-  const goal: CoachGoal = answers.goal ?? 'general';
-  const experience: ExperienceLevel = answers.experience ?? 'beginner';
-  const frequency = answers.frequency ?? 3;
-
-  const templates = frequency <= 3 ? FULL_BODY : frequency === 4 ? UPPER_LOWER : PPL;
-  const rx = PRESCRIPTION[goal];
-  const sets = SETS_BY_EXPERIENCE[experience];
-
-  return templates.map((t, idx) => ({
-    name: t.name,
-    description: t.description,
-    color: Colors.routineColors[idx % Colors.routineColors.length],
-    exercises: t.exercises
-      .map((te) => {
-        const lib = EXERCISE_LIBRARY.find((e) => e.name === te.name);
-        if (!lib) return null; // defensive: template drifted from the library
-        const [reps_min, reps_max, rest_seconds] = te.compound ? rx.comp : rx.iso;
-        return {
-          name: lib.name,
-          muscle_group: lib.muscle_group,
-          category: lib.category,
-          sets: te.compound ? sets.comp : sets.iso,
-          reps_min,
-          reps_max,
-          rest_seconds,
-        };
-      })
-      .filter((e): e is StarterRoutineExercise => e !== null),
-  }));
-}
-
-/**
- * Write the starter routines through the app's normal local-first paths:
- * guest store for guests, the offline routine queue for signed-in users (the
- * queue resolves exercises to catalog rows by name once online). The caller
- * should fire useSync().flushNow() afterwards to sync immediately when online.
- */
-export async function createStarterRoutines(
-  routines: StarterRoutine[],
-  opts: { isGuest: boolean; clerkId: string | null; programPhaseId?: string | null },
-): Promise<void> {
-  const now = Date.now();
-
-  // Both write paths PREPEND (addGuestRoutine unshifts; enqueueRoutine +
-  // applyRoutineToCache put the newest entry first), so create in reverse:
-  // the last write is day A, which then leads every list. created_at is
-  // staggered the same way so the server's created_at-desc ordering agrees
-  // once the queue flushes.
-  const reversed = [...routines].map((r, idx) => ({ r, idx })).reverse();
-
-  if (opts.isGuest || !opts.clerkId) {
-    reversed.forEach(({ r, idx }) => {
-      const routineId = `guest-r-${now}-${idx}`;
-      const guestRoutine: GuestRoutine = {
-        id: routineId,
-        user_id: 'guest',
-        name: r.name,
-        description: r.description,
-        color: r.color,
-        // Stagger timestamps DESCENDING down the list so created_at-desc
-        // ordering shows day A first.
-        created_at: new Date(now - idx * 1000).toISOString(),
-        routine_exercises: r.exercises.map((ex, i2) => {
-          const exId = `guest-ex-${now}-${idx}-${i2}`;
-          return {
-            id: `gre-${now}-${idx}-${i2}`,
-            exercise_id: exId,
-            order: i2,
-            sets: ex.sets,
-            reps_min: ex.reps_min,
-            reps_max: ex.reps_max,
-            rest_seconds: ex.rest_seconds,
-            superset_group: null,
-            exercises: {
-              id: exId,
-              name: ex.name,
-              muscle_group: ex.muscle_group,
-              category: ex.category,
-            },
-          };
-        }),
-      };
-      addGuestRoutine(guestRoutine);
-    });
-    return;
-  }
-
-  const clerkId = opts.clerkId;
-  for (const { r, idx } of reversed) {
-    const entry: PendingRoutine = {
-      schema: 1,
-      routineId: newClientId(),
-      ownerId: clerkId,
-      name: r.name,
-      description: r.description,
-      color: r.color,
-      createdAtIso: new Date(now - idx * 1000).toISOString(),
-      programPhaseId: opts.programPhaseId ?? null,
-      exercises: r.exercises.map((ex, i2) => ({
-        def: { name: ex.name, muscle_group: ex.muscle_group, category: ex.category },
-        resolvedExerciseId: null, // resolve by name against the seeded catalog
-        order: i2,
-        sets: ex.sets,
-        reps_min: ex.reps_min,
-        reps_max: ex.reps_max,
-        rest_seconds: ex.rest_seconds,
-        note: null,
-        superset_group: null,
-      })),
-      phase: 'queued',
-      attempts: 0,
-      nextAttemptAt: 0,
-      createdAt: now - idx,
-    };
-    applyRoutineToCache(clerkId, entry);
-    await enqueueRoutine(clerkId, entry);
   }
 }

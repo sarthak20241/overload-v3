@@ -16,13 +16,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { saveBasicInfo } from '@/lib/bodyStats';
 import { track } from '@/lib/analytics';
 import {
-  createStarterRoutines,
   markOnboardingDone,
   onboardingIdentity,
   saveOnboardingProfile,
   type DailyTargets,
   type OnboardingAnswers,
-  type StarterRoutine,
 } from '@/lib/onboarding';
 import { saveProgram, type GeneratedProgram } from '@/lib/programData';
 
@@ -31,8 +29,8 @@ const PENDING_KEY = 'pending_onboarding_v1';
 export interface PendingOnboarding {
   answers: OnboardingAnswers;
   targets: DailyTargets | null;
-  /** The generated (or deterministic) plan, already resolved to catalog rows. */
-  plan: StarterRoutine[];
+  /** Stashed by builds that still saved a starter week. Read by nothing now. */
+  plan?: unknown;
   /** The goal program (phases to the target). Saved only under a real account;
    *  guests have no program store. Older blobs predate the field. */
   program?: GeneratedProgram | null;
@@ -99,27 +97,28 @@ export async function drainPendingOnboarding(target: {
   if (pending.goalWeightKg && pending.goalWeightKg > 0) {
     await saveBasicInfo({ goalWeight: pending.goalWeightKg });
   }
-  const phaseId = pending.createPlan && pending.program
-    ? await saveOnboardingProgram(pending.program, target)
-    : null;
-  if (pending.createPlan && pending.plan.length > 0) {
-    await createStarterRoutines(pending.plan, { ...target, programPhaseId: phaseId });
-  }
+  // The program only. Onboarding no longer saves workouts: phase 1's split is
+  // built from the Goal screen once this account exists. A blob stashed by an
+  // older build may still carry `plan`; it is ignored rather than saved.
+  if (pending.createPlan && pending.program) await saveOnboardingProgram(pending.program, target);
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
   // Closes the funnel opened by onboarding_completed{outcome:'handed_to_signup'}.
   track('onboarding_pending_drained', {
     created_plan: pending.createPlan,
-    routines: pending.plan.length,
+    // The drain saves no routines any more (phase 1 is built from the Goal
+    // screen), and a fresh blob has no `plan` at all: reading its .length
+    // threw AFTER the blob was cleared, losing the post-signup destination.
+    routines: 0,
     is_guest: target.isGuest,
   });
   return pending.dest ?? '/(app)';
 }
 
 /**
- * Save the onboarding program under a real account and return phase 1's id
- * (so the starter routines can be linked to it). Guests get nothing here; the
- * Goal & Plan screen already needs a Clerk id.
+ * Save the onboarding program under a real account and return phase 1's id.
+ * Guests get nothing here; the Goal & Plan screen already needs a Clerk id,
+ * which is why a guest's prompt asks them to sign in rather than to build.
  *
  * Best-effort by design, and deliberately not retried. Blocking the finish
  * line on this insert would trap the user behind a network blip holding a

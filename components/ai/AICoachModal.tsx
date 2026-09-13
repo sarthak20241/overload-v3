@@ -18,6 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
+import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -1667,6 +1668,11 @@ function programToText(p: GeneratedProgram): string {
       const t = [b.split_type, b.days_per_week ? `${b.days_per_week}d/wk` : null, b.emphasis]
         .filter(Boolean).join(', ');
       if (t) lines.push(`  Training: ${t}`);
+      // The schedule the user sees on the phase card. generate_program
+      // requires a week_pattern, so a recap without it forced every refine
+      // to invent a new week, even a refine that was only about calories.
+      const week = weekPatternFor(b);
+      if (week) lines.push(`  Week: ${weekPatternText(week)}`);
     }
     if (ph.training_directive) lines.push(`  Training note: ${ph.training_directive}`);
     if (ph.readiness_directive) lines.push(`  Readiness: ${ph.readiness_directive}`);
@@ -3430,27 +3436,21 @@ export function AICoachModal({
       });
       return;
     }
+    // The phase link is written IN the insert, not as a follow-up update. As a
+    // separate step it could fail after the routine had saved, and the save
+    // then reported success while the phase still had no routines, so the
+    // Goal screen and the dashboard asked to build the split again. Throwing
+    // from a follow-up would be worse: the batch Retry re-inserts the routine.
+    // One row, one write, so the routine and its link land or fail together.
+    // (It was split out once for PostgREST schema-cache lag on a then-new
+    // column; program_phase_id has been live since migration 0096.)
     const { data: routine, error } = await supabase
       .from('routines')
-      .insert({ user_id: clerkId, name: workout.name })
+      .insert({ user_id: clerkId, name: workout.name, program_phase_id: phaseId ?? null })
       .select()
       .single();
 
     if (error || !routine) throw error || new Error('Failed to create routine');
-
-    // Best-effort: link this routine to the program phase it was built for, so
-    // the Goal & Plan screen shows the phase's split as built. Done as a SEPARATE
-    // update (not part of the insert) so a transient failure on the newer
-    // program_phase_id column (e.g. PostgREST schema-cache lag) can never block
-    // the core routine save — the routine still lands, only the link is skipped.
-    if (phaseId) {
-      try {
-        await supabase
-          .from('routines')
-          .update({ program_phase_id: phaseId })
-          .eq('id', routine.id);
-      } catch { /* linking is non-critical */ }
-    }
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.

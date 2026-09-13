@@ -18,6 +18,9 @@ import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
+import { hasCompletedOnboarding } from '@/lib/onboarding';
+import { loadActiveProgram } from '@/lib/programData';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
@@ -256,6 +259,60 @@ export default function DashboardScreen() {
     })();
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+
+  // ── The phase 1 split prompt ────────────────────────────────────────────
+  // Onboarding hands out the program and stops; the week of workouts is built
+  // from the Goal screen, against a real user id.
+  //
+  // Re-read on EVERY focus, not once per identity. A fresh account can reach
+  // this screen before its program exists (the pending-onboarding drain runs
+  // beside the first render) and the paywall sits on top of it on the way
+  // here, so a one-shot read could keep "no program" or "no routines" for the
+  // life of the tab. A failed read keeps the last good state; before the first
+  // good read that is null, which reads as "say nothing".
+  const [splitState, setSplitState] = useState<
+    { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null } | null
+  >(null);
+  // The prompt is a root-Portal overlay, so it would otherwise float above the
+  // paywall. Gate it on this screen actually being the one in front.
+  const [screenFocused, setScreenFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      if (!clerkLoaded) return () => setScreenFocused(false);
+      let cancelled = false;
+      (async () => {
+        const clerkId = isGuestSession ? null : user?.id ?? null;
+        const done = await hasCompletedOnboarding(clerkId);
+        if (cancelled) return;
+        if (!done || !clerkId) {
+          setSplitState({ done, hasProgram: false, count: null, phaseId: null });
+          return;
+        }
+        try {
+          const program = await loadActiveProgram(supabase, clerkId);
+          if (cancelled) return;
+          const phase = program
+            ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? program.phases[0]
+            : null;
+          setSplitState({
+            done: true,
+            hasProgram: !!program,
+            count: phase ? phase.routines.length : null,
+            phaseId: phase?.id ?? null,
+          });
+        } catch {
+          // Offline or RLS hiccup. Keep whatever was last read: on a first
+          // load that is still null (say nothing), and on a refocus it is the
+          // last good answer, so a blip cannot yank a popup mid-read.
+        }
+      })();
+      return () => {
+        cancelled = true;
+        setScreenFocused(false);
+      };
+    }, [clerkLoaded, isGuestSession, user?.id, supabase]),
+  );
 
   // Load the active program's start date + phases for the TODAY pick. Offline-
   // first like routines: the cached shape is wrapped so "no program" (null) is
@@ -922,6 +979,18 @@ export default function DashboardScreen() {
           }
         }}
         onAskCoach={detailRoutine ? () => askCoachAboutRoutine(detailRoutine) : undefined}
+      />
+
+      {/* "Your program is ready, now let's build week one" */}
+      <BuildSplitPrompt
+        ready={splitState != null && screenFocused}
+        onboardingDone={!!splitState?.done}
+        isGuest={isGuestSession || !user?.id}
+        hasProgram={!!splitState?.hasProgram}
+        phaseRoutineCount={splitState?.count ?? null}
+        phaseId={splitState?.phaseId ?? null}
+        onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase' } })}
+        onSignIn={() => router.push('/(auth)')}
       />
 
       {/* AI Coach Modal */}

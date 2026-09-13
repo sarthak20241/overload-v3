@@ -552,8 +552,15 @@ const TRAINING_BLOCK_SCHEMA = {
     days_per_week: { type: 'integer', description: 'Training days per week.' },
     emphasis: { type: 'string', description: 'Primary emphasis this block, e.g. "chest + back volume", "squat + deadlift strength".' },
     note: { type: 'string', description: 'Optional one-line extra intent for the block. No em dashes.' },
+    week_pattern: {
+      type: 'array',
+      description: 'How ONE week of this block runs, as EXACTLY 7 entries in order Day 1 to Day 7. Numbered days, never weekday names. Use the literal "Rest" for a day off. The training entries must number exactly days_per_week. Keep each label under 18 characters, e.g. ["Push","Pull","Rest","Legs","Upper","Rest","Rest"]. When refining an existing program, copy each phase\'s current week from its "Week:" line unless the user asked to change that phase\'s schedule or days per week.',
+      items: { type: 'string' },
+      minItems: 7,
+      maxItems: 7,
+    },
   },
-  required: ['split_type', 'days_per_week'],
+  required: ['split_type', 'days_per_week', 'week_pattern'],
 };
 
 export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
