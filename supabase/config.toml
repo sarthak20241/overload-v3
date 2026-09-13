@@ -32,3 +32,17 @@ verify_jwt = false
 
 [functions.form-check]
 verify_jwt = false
+
+# RevenueCat sends its own shared secret in the Authorization header, NOT a
+# Supabase JWT, and the function checks that secret itself at the top of the
+# handler. With the default verify_jwt = true the gateway rejects every
+# webhook at the network layer with 401 and the handler never runs — purchases
+# then never flip the tier and the app shows "we're finalizing" forever.
+#
+# This block was MISSING until 2026-09-13, so a routine
+# `supabase functions deploy revenuecat-webhook` silently re-enabled
+# verification and broke the purchase path for ~13 hours. The file header of
+# index.ts said "deploy with verify_jwt:false" but nothing enforced it.
+
+[functions.revenuecat-webhook]
+verify_jwt = false
