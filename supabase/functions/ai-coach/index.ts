@@ -2492,7 +2492,7 @@ async function handleAnonOnboardingProgram(args: {
   // quota slot. The split is now built AFTER sign-up, from the Goal screen,
   // against the user's own id: the visitor sees the phase-by-phase road here,
   // and the week of workouts once there is an account to hang it on. Until
-  // then the client shows its deterministic starter week, so nothing is empty.
+  // that build runs the account has no routines; the dashboard asks for it.
   //
   // Nothing here reads the exercises catalog any more: only generate_plan
   // needed the names, and dropping it takes the biggest chunk of input tokens

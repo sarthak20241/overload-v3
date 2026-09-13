@@ -18,6 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
+import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -1667,6 +1668,11 @@ function programToText(p: GeneratedProgram): string {
       const t = [b.split_type, b.days_per_week ? `${b.days_per_week}d/wk` : null, b.emphasis]
         .filter(Boolean).join(', ');
       if (t) lines.push(`  Training: ${t}`);
+      // The schedule the user sees on the phase card. generate_program
+      // requires a week_pattern, so a recap without it forced every refine
+      // to invent a new week, even a refine that was only about calories.
+      const week = weekPatternFor(b);
+      if (week) lines.push(`  Week: ${weekPatternText(week)}`);
     }
     if (ph.training_directive) lines.push(`  Training note: ${ph.training_directive}`);
     if (ph.readiness_directive) lines.push(`  Readiness: ${ph.readiness_directive}`);

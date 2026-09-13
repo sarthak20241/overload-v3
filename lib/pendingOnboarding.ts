@@ -21,7 +21,6 @@ import {
   saveOnboardingProfile,
   type DailyTargets,
   type OnboardingAnswers,
-  type StarterRoutine,
 } from '@/lib/onboarding';
 import { saveProgram, type GeneratedProgram } from '@/lib/programData';
 
@@ -31,7 +30,7 @@ export interface PendingOnboarding {
   answers: OnboardingAnswers;
   targets: DailyTargets | null;
   /** Stashed by builds that still saved a starter week. Read by nothing now. */
-  plan?: StarterRoutine[];
+  plan?: unknown;
   /** The goal program (phases to the target). Saved only under a real account;
    *  guests have no program store. Older blobs predate the field. */
   program?: GeneratedProgram | null;
@@ -98,9 +97,6 @@ export async function drainPendingOnboarding(target: {
   if (pending.goalWeightKg && pending.goalWeightKg > 0) {
     await saveBasicInfo({ goalWeight: pending.goalWeightKg });
   }
-  // The starter week stays unlinked from phase 1: phase 1's split is the one
-  // Drona builds from the Goal screen, and the dashboard prompt that sends
-  // the new account there only reads right while the phase is still unbuilt.
   // The program only. Onboarding no longer saves workouts: phase 1's split is
   // built from the Goal screen once this account exists. A blob stashed by an
   // older build may still carry `plan`; it is ignored rather than saved.

@@ -264,8 +264,8 @@ export default function DashboardScreen() {
   // this screen before its program exists (the pending-onboarding drain runs
   // beside the first render) and the paywall sits on top of it on the way
   // here, so a one-shot read could keep "no program" or "no routines" for the
-  // life of the tab. A failed read leaves this null, which reads as "say
-  // nothing".
+  // life of the tab. A failed read keeps the last good state; before the first
+  // good read that is null, which reads as "say nothing".
   const [splitState, setSplitState] = useState<
     { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null } | null
   >(null);
@@ -298,8 +298,9 @@ export default function DashboardScreen() {
             phaseId: phase?.id ?? null,
           });
         } catch {
-          // Offline or RLS hiccup: an unknown split state must not become a nudge.
-          if (!cancelled) setSplitState(null);
+          // Offline or RLS hiccup. Keep whatever was last read: on a first
+          // load that is still null (say nothing), and on a refocus it is the
+          // last good answer, so a blip cannot yank a popup mid-read.
         }
       })();
       return () => {

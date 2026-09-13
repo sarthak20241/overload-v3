@@ -127,3 +127,13 @@ export function weekPatternFor(block: {
   if (typeof days !== 'number' || !Number.isFinite(days) || days < 1 || days > 7) return undefined;
   return normalizeWeekPattern(block.week_pattern, days) ?? buildWeekPattern(block.split_type, days);
 }
+
+/**
+ * One line of text for a week, for prompts: "Day 1 Push, Day 2 Rest, ...".
+ * The refine recap uses it so the coach sees each phase's current schedule and
+ * can keep it; without it every refine had to invent a new week, because the
+ * tool schema requires one.
+ */
+export function weekPatternText(pattern: WeekPattern): string {
+  return pattern.map((label, i) => `Day ${i + 1} ${label}`).join(', ');
+}

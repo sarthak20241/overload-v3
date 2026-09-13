@@ -9,8 +9,9 @@
  * second forced generate_plan call, which meant one onboarding bought two
  * model calls and the routines were saved before there was a user id to own
  * them. The split is now built after sign-up from the Goal screen, against the
- * real account. Until then the deterministic engine (buildStarterRoutines)
- * fills the Routines tab, so nothing is ever empty.
+ * real account. Until that build runs, the account has no routines at all:
+ * a deliberate trade, so a generic starter week never sits beside the real
+ * split looking like a second plan. The dashboard asks for the build.
  *
  * Any network error, malformed output or failed validation quietly falls back
  * to the deterministic program. The user never sees a failure state.

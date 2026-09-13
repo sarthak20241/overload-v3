@@ -13,6 +13,7 @@ import {
   shortDayLabel,
   splitCycle,
   weekPatternFor,
+  weekPatternText,
 } from "./weekPattern.ts";
 
 const training = (p: string[]) => p.filter((l) => l !== REST).length;
@@ -104,4 +105,15 @@ Deno.test("long labels are cut at a word, short ones are left alone", () => {
   assertEquals(shortDayLabel("Shoulders + Arms"), "Shoulders");
   assertEquals(shortDayLabel("Antagonistic"), "Antagoni");
   assertEquals(shortDayLabel("Upper/Lower body"), "Upper");
+});
+
+Deno.test("the refine recap spells the week out so the coach can keep it", () => {
+  // Review finding on #163: week_pattern is required in generate_program, but
+  // the refine recap never showed the model the current week, so ANY refine
+  // (even one only about calories) made it invent a new schedule. The recap
+  // line has to carry every day, in order, rest days included.
+  assertEquals(
+    weekPatternText(["Push", "Rest", "Pull", "Legs", "Rest", "Upper", "Rest"]),
+    "Day 1 Push, Day 2 Rest, Day 3 Pull, Day 4 Legs, Day 5 Rest, Day 6 Upper, Day 7 Rest",
+  );
 });
