@@ -11,8 +11,9 @@ import { DronaMark } from '@/components/coach/DronaMark';
 // The icon tile is neutral (C.muted) so it stays legible on the tinted card; the
 // lime lives in the fill, the glyph, and the "TODAY" label. The verbs (start /
 // edit / discuss) live in the session preview it opens, never in this card.
-// Four states: planned | new (lime tint, tappable), complete | rest (calm,
-// informational). A completed session is not called a rest day.
+// Four states: planned | new (lime tint, tappable), complete (calm, tappable:
+// opens DoneTodaySheet), rest (calm, not actionable). A completed session is
+// not called a rest day.
 
 export interface TodaySuggestion {
   kind: 'planned' | 'complete' | 'rest' | 'new';
@@ -34,9 +35,16 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
   const { kind, routine, reason, completedWorkout } = suggestion;
 
   if (kind === 'complete') {
+    // Calm card (no lime tint: today's work is done, nothing is asked of the
+    // user), but tappable: it opens what was done and what comes next.
     const title = completedWorkout?.name?.trim() || 'Workout complete';
     return (
-      <View style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+      <PressableScale
+        onPress={onPress}
+        style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+        accessibilityRole="button"
+        accessibilityLabel={`${title}, done for today. See the session and what is next.`}
+      >
         <View style={[s.iconWrap, { backgroundColor: C.primaryMuted }]}>
           <Feather name="check-circle" size={IconSize.sm} color={C.accentText} />
         </View>
@@ -47,7 +55,8 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
             <Text style={[s.meta, { color: C.textMuted }]} numberOfLines={1}>  ·  Done for today</Text>
           </View>
         </View>
-      </View>
+        <Feather name="chevron-right" size={IconSize.md} color={C.textMuted} />
+      </PressableScale>
     );
   }
 

@@ -13,7 +13,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { abbreviateNumber } from '@/lib/format';
 import { metricTypeOf, supports1RM } from '@/lib/exercises';
 import { setLabel, setBestValue, type DisplaySet } from '@/lib/setDisplay';
-import { getGuestWorkoutsDetailed, getGuestRoutines } from '@/lib/guestStore';
+import { getGuestWorkoutsDetailed, getGuestRoutines, getGuestProfile } from '@/lib/guestStore';
 import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
@@ -29,7 +29,9 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { todayReason } from '@/lib/todayReason';
-import { pickToday, type PickProgram } from '@/lib/todayPick';
+import { pickToday, pickUpNext, type PickProgram } from '@/lib/todayPick';
+import { DoneTodaySheet, type DoneWorkout, type UpNext } from '@/components/workout/DoneTodaySheet';
+import { groupSetsByExercise } from '@/lib/workoutSummary';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
@@ -137,6 +139,8 @@ export default function DashboardScreen() {
   const [program, setProgram] = useState<PickProgram | null>(null);
   // The session-preview sheet opened from the "today" card (planned suggestion).
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
+  // The sheet opened from the "today" card once the day's session is done.
+  const [doneSheetOpen, setDoneSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [userXP, setUserXP] = useState(0);
 
@@ -384,9 +388,47 @@ export default function DashboardScreen() {
     };
   }, [routines, workouts, program]);
 
+  // What the done-today sheet offers next: the same pick, run from tomorrow.
+  // Only worth computing once today is done.
+  const upNext = useMemo<UpNext | null>(() => {
+    if (todaySuggestion.kind !== 'complete') return null;
+    const { tomorrow, pick } = pickUpNext({ routines, workouts: workouts as any, program });
+    if (pick.kind === 'new') return { kind: 'new' };
+    if (pick.kind !== 'planned') return null;
+    return {
+      kind: 'planned',
+      routine: pick.routine,
+      reason: todayReason({ routine: pick.routine as any, workouts: workouts as any, now: tomorrow }),
+    };
+  }, [todaySuggestion.kind, routines, workouts, program]);
+
+  // The body map's silhouette. Read when the sheet opens, from the profile the
+  // Profile/Analytics screens cache; no fetch of its own, null draws the default.
+  const doneSheetGender = useMemo(() => {
+    if (!doneSheetOpen) return null;
+    if (isGuestSession || !user?.id) return getGuestProfile().gender ?? null;
+    return readCache<{ profile: { gender?: string | null } | null }>('profile', user.id)?.profile?.gender ?? null;
+  }, [doneSheetOpen, isGuestSession, user?.id]);
+
+  const closeDoneSheet = useCallback(() => setDoneSheetOpen(false), []);
+
+  const handleUpNextPress = () => {
+    track('today_up_next_tapped', { kind: upNext?.kind ?? null });
+    setDoneSheetOpen(false);
+    if (upNext?.kind === 'planned') {
+      setDetailRoutine(upNext.routine as RoutineRaw);
+    } else if (upNext?.kind === 'new') {
+      setAiCoachPrompt(undefined);
+      setAiCoachInitialScreen('workout');
+      setAiCoachSource('today_up_next');
+      setAiCoachOpen(true);
+    }
+  };
+
   // Tapping the today's-suggestion card. 'planned' opens an in-place session
   // preview (the shared routine-detail sheet) where the user can see the
   // exercises, ask Drona about it, or start it. 'new' opens the coach to build one.
+  // 'complete' opens the done-today sheet: the session, the body map, up next.
   const handleTodayPress = () => {
     track('today_suggestion_tapped', {
       kind: todaySuggestion.kind,
@@ -400,6 +442,10 @@ export default function DashboardScreen() {
       setAiCoachInitialScreen('workout');
       setAiCoachSource('today_card');
       setAiCoachOpen(true);
+      return;
+    }
+    if (todaySuggestion.kind === 'complete') {
+      setDoneSheetOpen(true);
       return;
     }
     if (todaySuggestion.kind === 'planned' && todaySuggestion.routine) {
@@ -803,30 +849,10 @@ export default function DashboardScreen() {
                   const dotColor = ROUTINE_COLORS[idx % ROUTINE_COLORS.length];
                   const delta = volumeDeltas[w.id];
 
-                    // Group sets by exercise (in order of first appearance). Carry
-                    // metric_type + every axis field so the pill reads correctly for
+                    // Sets by exercise, in session order. The raw set rows carry
+                    // metric_type + every axis field, so the pill reads correctly for
                     // duration/distance/bodyweight work (not a hardcoded weight×reps).
-                    const grouped: { name: string; metricType: string | null | undefined; sets: { weight_kg: number; reps: number; completed: boolean; duration_seconds?: number | null; distance_m?: number | null; resistance?: number | null; set_type?: string | null; is_unilateral?: boolean | null; reps_right?: number | null; weight_kg_right?: number | null }[] }[] = [];
-                    const groupIdx: Record<string, number> = {};
-                    for (const s of (w.sets || []) as any[]) {
-                      const name = s.exercises?.name || 'Unknown';
-                      if (groupIdx[name] === undefined) {
-                        groupIdx[name] = grouped.length;
-                        grouped.push({ name, metricType: s.exercises?.metric_type, sets: [] });
-                      }
-                      grouped[groupIdx[name]].sets.push({
-                        weight_kg: s.weight_kg,
-                        reps: s.reps,
-                        completed: s.completed,
-                        duration_seconds: s.duration_seconds,
-                        distance_m: s.distance_m,
-                        resistance: s.resistance,
-                        set_type: s.set_type,
-                        is_unilateral: s.is_unilateral,
-                        reps_right: s.reps_right,
-                        weight_kg_right: s.weight_kg_right,
-                      });
-                    }
+                    const grouped = groupSetsByExercise((w.sets || []) as any[]);
 
                     return (
                       <Animated.View
@@ -972,6 +998,15 @@ export default function DashboardScreen() {
           </Animated.View>
         </View>
       </ScrollView>
+
+      <DoneTodaySheet
+        visible={doneSheetOpen && todaySuggestion.kind === 'complete'}
+        workout={(todaySuggestion.completedWorkout as DoneWorkout | undefined) ?? null}
+        gender={doneSheetGender}
+        upNext={upNext}
+        onClose={closeDoneSheet}
+        onUpNextPress={handleUpNextPress}
+      />
 
       {/* Session preview — the shared routine-detail sheet, opened from the
           "today" card. Start the session, or ask Drona about it. Editing lives

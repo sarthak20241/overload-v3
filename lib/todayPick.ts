@@ -122,3 +122,17 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   )[0];
   return { kind: 'planned', routine: pick, fromProgram };
 }
+
+/**
+ * The session after today's, for the "up next" line once today is done.
+ * It is the same pick run from tomorrow: today's workout is then in the past,
+ * so its routine drops to the back of the rotation. Noon, not now + 24h, so a
+ * DST change can never land it on the wrong calendar day.
+ */
+export function pickUpNext<R extends PickRoutine>(
+  input: TodayPickInput<R>,
+): { tomorrow: Date; pick: TodayPick<R> } {
+  const now = input.now ?? new Date();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12);
+  return { tomorrow, pick: pickToday({ ...input, now: tomorrow }) };
+}

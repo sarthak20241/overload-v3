@@ -5,7 +5,7 @@
 // the pick to the current phase's split, in day order.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { currentPhaseId, pickToday, type PickProgram, type PickRoutine, type PickWorkout } from "./todayPick.ts";
+import { currentPhaseId, pickToday, pickUpNext, type PickProgram, type PickRoutine, type PickWorkout } from "./todayPick.ts";
 
 const NOW = new Date("2026-09-13T18:00:00");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86400000).toISOString();
@@ -113,4 +113,21 @@ Deno.test("current phase follows the calendar, and is null outside the program",
   assertEquals(currentPhaseId(program, new Date("2026-09-02T23:00:00")), null);
   assertEquals(currentPhaseId(program, new Date("2026-10-15T08:00:00")), null);
   assertEquals(currentPhaseId(null, NOW), null);
+});
+
+Deno.test("up next: after Day 1 today, the next session is Day 2", () => {
+  const today = { name: "Full Body A", routine_id: "d1", started_at: daysAgo(0.2), finished_at: daysAgo(0.1) };
+  const { pick, tomorrow } = pickUpNext({ routines: newestFirst, workouts: [today], program, now: NOW });
+  assertEquals(pick.kind, "planned");
+  assertEquals(pick.routine?.id, "d2");
+  assertEquals(tomorrow.getDate(), 14);
+});
+
+Deno.test("up next crosses into the next phase on its first day", () => {
+  // Phase 2 starts 2026-09-17; the evening before, up next comes from its split.
+  const eve = new Date("2026-09-16T20:00:00");
+  const today = { name: "Full Body A", routine_id: "d1", started_at: "2026-09-16T17:00:00", finished_at: "2026-09-16T18:00:00" };
+  const { pick } = pickUpNext({ routines: newestFirst, workouts: [today], program, now: eve });
+  assertEquals(pick.routine?.id, "p2");
+  assertEquals(pick.kind === "planned" && pick.fromProgram, true);
 });
