@@ -57,6 +57,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useGuestMode } from '@/lib/guestMode';
+import { track } from '@/lib/analytics';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSync } from '@/components/SyncProvider';
 import { useToast } from '@/components/ui/Toast';
@@ -183,6 +184,22 @@ export default function OnboardingScreen() {
     frequency: 3,
   });
   const [finishing, setFinishing] = useState(false);
+
+  // Analytics. One effect on `step` is the whole drop-off funnel: every beat
+  // reports itself, so PostHog can rank the steps people quit on without a
+  // call in each of the sixteen handlers.
+  const onboardingStartedAt = useRef(Date.now());
+  useEffect(() => {
+    track('onboarding_started');
+  }, []);
+  useEffect(() => {
+    track('onboarding_step_viewed', {
+      step,
+      step_index: STEP_ORDER.indexOf(step),
+      total_steps: STEP_ORDER.length,
+      seconds_since_start: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
+    });
+  }, [step]);
 
   // Body/target inputs are picker-backed numbers, prefilled with population
   // medians (smart defaults): scan and adjust, never fill from scratch.
@@ -324,6 +341,7 @@ export default function OnboardingScreen() {
   useEffect(() => {
     if (step !== 'commit' || generationStarted.current) return;
     generationStarted.current = true;
+    const genStartedAt = Date.now();
     // No cancellation on step change: the user moves commit -> build while
     // the request is in flight, and the result must still land. Post-unmount
     // setState is a no-op in React 18, so this is safe.
@@ -390,8 +408,20 @@ export default function OnboardingScreen() {
         }
         const mapped = dronaPlanToStarterRoutines(input);
         if (mapped) setDronaPlan(mapped);
+        track('onboarding_plan_generated', {
+          source: 'drona',
+          authed: !!(isSignedIn && getToken),
+          routines: mapped?.routines.length ?? 0,
+          duration_ms: Date.now() - genStartedAt,
+        });
       } catch {
         /* fall back to the deterministic plan; the reveal never knows */
+        // Tracked because a high fallback rate is invisible in the UI by
+        // design, and it is the single best predictor of a weak first plan.
+        track('onboarding_plan_failed', {
+          authed: !!(isSignedIn && getToken),
+          duration_ms: Date.now() - genStartedAt,
+        });
       } finally {
         setBuildReady(true);
       }
@@ -558,11 +588,23 @@ export default function OnboardingScreen() {
           void flushNow();
           toast.success('Your plan is ready. Your first session is on the dashboard.');
         }
+        track('onboarding_completed', {
+          created_plan: opts.createPlan,
+          goal: answers.goal ?? null,
+          experience: answers.experience ?? null,
+          days_per_week: answers.frequency ?? null,
+          routines: opts.createPlan ? finalPlan.length : 0,
+          has_injury_notes: !!answers.healthNotes,
+          has_preferences: !!answers.routinePrefs,
+          seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
+          outcome: 'saved',
+        });
         router.replace(opts.dest);
       } catch {
         // Never trap the user at the finish line, but say what happened;
         // everything here is recoverable from Profile and Routines later.
         toast.error("Couldn't save everything. You can finish setup in Profile.");
+        track('onboarding_completed', { outcome: 'save_failed', created_plan: opts.createPlan });
         await markOnboardingDone(identity);
         router.replace('/(app)');
       } finally {
@@ -591,6 +633,14 @@ export default function OnboardingScreen() {
             dest: opts.dest,
             weightUnit,
             goalWeightKg: answers.goalWeightKg ?? null,
+          });
+          track('onboarding_completed', {
+            outcome: 'handed_to_signup',
+            created_plan: opts.createPlan,
+            goal: answers.goal ?? null,
+            experience: answers.experience ?? null,
+            days_per_week: answers.frequency ?? null,
+            seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
           });
           router.replace('/(auth)');
         } finally {

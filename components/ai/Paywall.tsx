@@ -35,6 +35,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { track } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -100,6 +101,12 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
   const [restoring, setRestoring] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
 
+  // Same event as the full-screen /upgrade route, tagged by source, so both
+  // entry points land in one funnel instead of two half-funnels.
+  useEffect(() => {
+    track('paywall_viewed', { source: 'coach_sheet', purchases_available: purchasesUsable });
+  }, []);
+
   // Initial data fetch. Run offerings + founding-status in parallel.
   useEffect(() => {
     let cancelled = false;
@@ -160,6 +167,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         // app_user_id wouldn't match user_profiles.clerk_user_id and the
         // tier would never flip.
         if (user?.id) await ensureIdentity(user.id);
+        track('purchase_started', { plan, source: 'coach_sheet' });
         await purchaseCoachPackage(pkg);
         // iOS confirmed the transaction; RC webhook will tell our backend
         // to flip the tier. Poll until we see it.
@@ -167,6 +175,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         setVerifying(true);
         const flipped = await waitForTierFlip();
         if (flipped) {
+          track('purchase_completed', { plan, source: 'coach_sheet' });
           toast.success("You're in. Welcome to Coach Drona.");
           await onPurchased();
           onClose();
@@ -179,9 +188,12 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
       } catch (e) {
         if (e instanceof PurchaseCancelledError) {
           // User backed out of the Apple sheet — no toast needed.
+          track('purchase_failed', { plan, reason: 'cancelled', source: 'coach_sheet' });
         } else if (e instanceof PurchasesUnavailableError) {
+          track('purchase_failed', { plan, reason: 'unavailable', source: 'coach_sheet' });
           toast.error(e.message, { durationMs: 6000 });
         } else {
+          track('purchase_failed', { plan, reason: 'error', source: 'coach_sheet' });
           console.warn('[paywall] purchase failed:', e);
           toast.error('Purchase failed. Try again or contact support.');
         }

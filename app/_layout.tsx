@@ -21,7 +21,10 @@ import { ClerkSupabaseBridge } from '@/components/ClerkSupabaseBridge';
 import { RevenueCatBridge } from '@/components/RevenueCatBridge';
 import { SyncProvider } from '@/components/SyncProvider';
 import { ToastProvider } from '@/components/ui/Toast';
+import { AnalyticsBridge } from '@/components/AnalyticsBridge';
+import { posthog } from '@/lib/analytics';
 import { PortalProvider } from '@/components/ui/Portal';
+import { PostHogProvider } from 'posthog-react-native';
 
 // Required for OAuth flows to complete when the auth session returns.
 // Must run at app boot, before any auth screen mounts.
@@ -63,6 +66,7 @@ function AppInner() {
           */}
           <SyncProvider>
             <PortalProvider>
+              <AnalyticsBridge />
               <StatusBar style={C.statusBar} />
               <Stack screenOptions={{ headerShown: false }}>
                 <Stack.Screen name="index" options={{ headerShown: false }} />
@@ -108,15 +112,32 @@ export default function RootLayout() {
   // font for the instant before the load resolves, then re-render.
   useFonts({ SpaceGrotesk_500Medium, SpaceGrotesk_700Bold });
 
-  if (!publishableKey) {
-    return <AppContent />;
-  }
-
-  return (
+  const tree = !publishableKey ? (
+    <AppContent />
+  ) : (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
       <ClerkSupabaseBridge />
       <RevenueCatBridge />
       <AppContent />
     </ClerkProvider>
+  );
+
+  // No PostHog key configured (local dev, CI) -> no provider, no network, no
+  // session replay. `track()` is already a no-op in that case, so screens need
+  // no guards of their own.
+  //
+  // captureScreens is false because expo-router hides the NavigationContainer
+  // PostHog's tracker needs; AnalyticsBridge reports screens instead.
+  // captureTouches is false on purpose: raw tap autocapture on a set-logging
+  // screen is mostly noise, and session replay already shows the taps.
+  if (!posthog) return tree;
+
+  return (
+    <PostHogProvider
+      client={posthog}
+      autocapture={{ captureScreens: false, captureTouches: false }}
+    >
+      {tree}
+    </PostHogProvider>
   );
 }

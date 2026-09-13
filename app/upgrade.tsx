@@ -41,7 +41,7 @@
  * annual (trial) purchase we schedule the local day-5 reminder notification,
  * which the reminder screen and the timeline explicitly promised.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -79,6 +79,7 @@ import {
   Spacing,
 } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -196,6 +197,24 @@ export default function UpgradeScreen() {
   const [skipVisible, setSkipVisible] = useState(false);
   const purchasesUsable = isPurchasesAvailable();
 
+  // Paywall analytics. `context` is what sent them here (a usage cap, the
+  // coach gate, the profile card), which is the difference between "the
+  // paywall converts badly" and "one entry point converts badly".
+  const paywallOpenedAt = useRef(Date.now());
+  const paywallResolved = useRef(false);
+  useEffect(() => {
+    track('paywall_viewed', { source: isFunnel ? 'onboarding_funnel' : 'direct', context, purchases_available: purchasesUsable });
+    return () => {
+      if (paywallResolved.current) return;
+      track('paywall_dismissed', {
+        source: isFunnel ? 'onboarding_funnel' : 'direct',
+        context,
+        seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one shot per mount
+  }, []);
+
   // Gentle CTA pulse (RC conversion boosters: animated elements typically
   // lift conversion 12-18%). Calm brand = a slow 1.00 → 1.015 breath, not a
   // throb. Runs only while the paywall is idle: paused during purchase /
@@ -286,6 +305,7 @@ export default function UpgradeScreen() {
     }
     if (purchasing || verifying) return;
     setPurchasing(true);
+    track('purchase_started', { plan: selectedPlan, context, source: isFunnel ? 'onboarding_funnel' : 'direct' });
     try {
       if (user?.id) await ensureIdentity(user.id);
       const customerInfo = await purchaseCoachPackage(pkg);
@@ -309,9 +329,19 @@ export default function UpgradeScreen() {
         // Warm the dashboard cache while the success screen is up, so the
         // landing paints real data instead of "Level 1 · no workouts".
         void prefetchDashboard(supabase, user?.id);
+        paywallResolved.current = true;
+        track('purchase_completed', {
+          plan: selectedPlan,
+          on_trial: onTrial,
+          context,
+          source: isFunnel ? 'onboarding_funnel' : 'direct',
+          seconds_to_purchase: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
+        });
         setOutcome({ plan: selectedPlan, onTrial });
         setStep('success');
       } else {
+        paywallResolved.current = true;
+        track('purchase_completed', { plan: selectedPlan, on_trial: false, context, tier_flip: 'pending' });
         toast.info(
           "Purchase received. We're finalizing. Pull to refresh or relaunch in a minute.",
           { durationMs: 8000 },
@@ -321,10 +351,13 @@ export default function UpgradeScreen() {
     } catch (e) {
       if (e instanceof PurchaseCancelledError) {
         /* backed out of the payment sheet, stay put */
+        track('purchase_failed', { plan: selectedPlan, reason: 'cancelled', context });
       } else if (e instanceof PurchasesUnavailableError) {
+        track('purchase_failed', { plan: selectedPlan, reason: 'unavailable', context });
         toast.error(e.message, { durationMs: 6000 });
       } else {
         console.warn('[upgrade] purchase failed:', e);
+        track('purchase_failed', { plan: selectedPlan, reason: 'error', context });
         toast.error('Purchase failed. Try again or contact support.');
       }
     } finally {
@@ -347,6 +380,8 @@ export default function UpgradeScreen() {
         const flipped = await waitForTierFlip();
         invalidateCoachAccess();
         if (flipped) {
+          paywallResolved.current = true;
+          track('purchase_restored', { context });
           toast.success('Restored. Welcome back.');
           finish();
         } else {

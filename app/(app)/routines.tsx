@@ -27,6 +27,7 @@ import Animated, {
   useAnimatedScrollHandler,
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
+import { track } from '@/lib/analytics';
 import { haptics } from '@/lib/haptics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -887,6 +888,11 @@ function RoutineEditorSheet({
   }) => {
     const clerkId = user?.id;
     const { trimmedName, trimmedDescription, validExercises, editingId } = snapshot;
+    track('routine_created', {
+      mode: editingId ? 'edit' : 'create',
+      exercise_count: validExercises.length,
+      is_guest: isGuestSession || !clerkId,
+    });
 
     // Guest mode: no Supabase / no Clerk id — persist locally only.
     if (isGuestSession || !clerkId) {

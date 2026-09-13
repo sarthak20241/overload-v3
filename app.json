@@ -110,7 +110,8 @@
           "photosPermission": "Overload needs your videos so it can check the form on a set you already filmed. The video is analysed on your phone and never uploaded."
         }
       ],
-      "react-native-fast-tflite"
+      "react-native-fast-tflite",
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": true

@@ -14,6 +14,7 @@ import Animated, {
 import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
+import { track } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { usePreferences, REST_BETWEEN_SIDES_SECONDS } from '@/hooks/usePreferences';
 import { useWorkout } from '@/hooks/useWorkout';
@@ -1926,6 +1927,11 @@ export default function ActiveWorkoutScreen() {
   const confirmCancel = () => {
     haptics.warning();
     setShowCancelAlert(false);
+    track('workout_discarded', {
+      reason: 'cancelled',
+      duration_seconds: workout.elapsed,
+      exercise_count: workout.exercises.length,
+    });
     workout.finishWorkout();
     leaveWorkout();
   };
@@ -1949,6 +1955,11 @@ export default function ActiveWorkoutScreen() {
     // Stop the local timers before the screen reloads into the new routine.
     stopExerciseTimer();
     stopRestTimer();
+    track('workout_discarded', {
+      reason: 'switched_routine',
+      duration_seconds: workout.elapsed,
+      exercise_count: workout.exercises.length,
+    });
     workout.finishWorkout();
     setReloadKey((k) => k + 1);
   }, [stopExerciseTimer, stopRestTimer, workout.finishWorkout]);
@@ -2499,6 +2510,20 @@ export default function ActiveWorkoutScreen() {
         gender: readCache<{ profile: { gender?: string | null } | null }>('profile', user?.id)
           ?.profile?.gender ?? null,
       };
+
+      // The activation event. Fired once per saved session, from the one place
+      // both the guest and signed-in save paths pass through, using the recap
+      // numbers so the event can never disagree with what the user just saw.
+      track('workout_completed', {
+        duration_seconds: workout.elapsed,
+        set_count: allCompleted.length,
+        exercise_count: savedExercises.length,
+        volume_kg: Math.round(vol),
+        is_guest: isGuestSession,
+        from_routine: !!linkedRoutineId,
+        has_notes: !!workoutNotes,
+        backdated: startedAtMs != null,
+      });
 
       if (isGuestSession) {
         addGuestWorkout({

@@ -16,7 +16,9 @@
       "distribution": "internal",
       "channel": "preview",
       "env": {
-        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA"
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA",
+        "EXPO_PUBLIC_POSTHOG_KEY": "phc_vLgRijTpx6tmaFmyDr7VgchMuEED7aBiXXNMM8K4qnbA",
+        "EXPO_PUBLIC_POSTHOG_HOST": "https://us.i.posthog.com"
       },
       "ios": {
         "simulator": false,
@@ -30,7 +32,9 @@
       "channel": "production",
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA"
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsudHJ5b3ZlcmxvYWQuYXBwJA",
+        "EXPO_PUBLIC_POSTHOG_KEY": "phc_vLgRijTpx6tmaFmyDr7VgchMuEED7aBiXXNMM8K4qnbA",
+        "EXPO_PUBLIC_POSTHOG_HOST": "https://us.i.posthog.com"
       },
       "ios": {
         "resourceClass": "m-medium",

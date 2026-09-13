@@ -21,6 +21,7 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors';
 import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
+import { track } from '@/lib/analytics';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -1084,6 +1085,9 @@ export async function logParsedMeal(
   supabase: Supa,
   meal: ParsedMeal,
   date: Date = getLogDate(),
+  /** How the user got here. Food detail reuses this writer for a single
+   *  catalog item, which is a search log, not an AI parse. */
+  via: 'ai' | 'search' = 'ai',
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
   const done: LoggedSectionRef[] = [];
   for (const section of sectionsOf(meal)) {
@@ -1095,6 +1099,12 @@ export async function logParsedMeal(
     }
     done.push(r.ref);
   }
+  track('meal_logged', {
+    method: via,
+    item_count: meal.items.length,
+    kcal: Math.round(meal.items.reduce((t, it) => t + (it.kcal ?? 0), 0)),
+    meal_type: meal.meal_type ?? null,
+  });
   return { ref: { sections: done } };
 }
 
@@ -1492,6 +1502,15 @@ export async function logSavedMeal(
     }));
   }
   const { error } = await supabase.from('meal_entries').insert(rows);
+  if (!error) {
+    track('meal_logged', {
+      method: 'saved',
+      item_count: rows.length,
+      kcal: Math.round(saved.kcal * (saved.kind === 'recipe' && saved.servings > 0 ? servings / saved.servings : servings)),
+      meal_type: mealType,
+      saved_kind: saved.kind,
+    });
+  }
   if (error) {
     if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
     return { error: error.message };
@@ -1648,5 +1667,8 @@ export async function logFood(
     sat_fat_g: scaleExt(food.sat_fat_g), sodium_mg: scaleExt(food.sodium_mg, true),
     position: count ?? 0,
   });
+  if (!error) {
+    track('meal_logged', { method: 'search', item_count: 1, kcal: r0(n.kcal), meal_type: mealType });
+  }
   return { error: error?.message };
 }
