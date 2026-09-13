@@ -1,7 +1,8 @@
 // daily-suggestion: each user's TODAY pick, made at their local 00:00.
 //
 // Two callers:
-//   cron  pg_cron posts {"mode":"cron"} every 15 minutes with x-cron-secret.
+//   cron  pg_cron posts {"mode":"cron"} every 15 minutes with x-cron-secret,
+//         checked against the database (daily_suggestion_cron_ok, 0117).
 //         Every real time zone's midnight lands on a quarter hour, so each user
 //         whose day just began gets a row within that run. A missed run heals
 //         on the next: any user with no row for their current day is filled.
@@ -21,7 +22,6 @@ import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const CRON_SECRET = Deno.env.get("DAILY_SUGGESTION_CRON_SECRET");
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER");
 if (!CLERK_ISSUER) {
   throw new Error("CLERK_ISSUER env var is required (see ai-coach/index.ts).");
@@ -32,6 +32,7 @@ const WORKOUT_WINDOW_DAYS = 200;
 /** Saved picks older than this are deleted by the cron run. */
 const KEEP_DAYS = 30;
 const CRON_CONCURRENCY = 4;
+const USER_PAGE = 1000;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -103,21 +104,34 @@ async function generate(
 async function runCron(): Promise<Response> {
   const db = admin();
   const now = new Date();
-  const { data: users, error } = await db.from("user_profiles")
-    .select("clerk_user_id, timezone").not("timezone", "is", null);
-  if (error) return json({ error: error.message }, 500);
+  // PostgREST caps a read at 1000 rows: page through, or users past the first
+  // thousand silently never get a midnight pick.
+  const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
+  for (let from = 0; ; from += USER_PAGE) {
+    const { data, error } = await db.from("user_profiles")
+      .select("clerk_user_id, timezone").not("timezone", "is", null)
+      .order("clerk_user_id", { ascending: true })
+      .range(from, from + USER_PAGE - 1);
+    if (error) return json({ error: error.message }, 500);
+    users.push(...(data ?? []));
+    if (!data || data.length < USER_PAGE) break;
+  }
 
-  const todays = (users ?? [])
+  const todays = users
     .filter((u) => u.clerk_user_id && isTimeZone(u.timezone))
-    .map((u) => ({ userId: u.clerk_user_id as string, tz: u.timezone as string, day: wallClock(now, u.timezone)!.slice(0, 10) }));
+    .map((u) => ({ userId: u.clerk_user_id as string, tz: u.timezone as string, day: wallClock(now, u.timezone as string)!.slice(0, 10) }));
 
   // Who already has a pick for their current day (made by the app, or an earlier run).
   const days = [...new Set(todays.map((t) => t.day))];
   const have = new Set<string>();
   if (days.length > 0) {
-    const { data: rows, error: rowsErr } = await db.from("daily_suggestions").select("user_id, day").in("day", days);
-    if (rowsErr) return json({ error: rowsErr.message }, 500);
-    for (const r of rows ?? []) have.add(`${r.user_id}|${r.day}`);
+    for (let from = 0; ; from += USER_PAGE) {
+      const { data: rows, error: rowsErr } = await db.from("daily_suggestions").select("user_id, day")
+        .in("day", days).order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1);
+      if (rowsErr) return json({ error: rowsErr.message }, 500);
+      for (const r of rows ?? []) have.add(`${r.user_id}|${r.day}`);
+      if (!rows || rows.length < USER_PAGE) break;
+    }
   }
   const due = todays.filter((t) => !have.has(`${t.userId}|${t.day}`));
 
@@ -166,7 +180,9 @@ Deno.serve(async (req) => {
     // empty body
   }
   if (body.mode === "cron") {
-    if (!CRON_SECRET || req.headers.get("x-cron-secret") !== CRON_SECRET) return json({ error: "Unauthorized" }, 401);
+    const secret = req.headers.get("x-cron-secret") ?? "";
+    const { data: ok, error } = await admin().rpc("daily_suggestion_cron_ok", { p_secret: secret });
+    if (error || ok !== true) return json({ error: "Unauthorized" }, 401);
     return await runCron();
   }
   return await runApp(req, body);

@@ -50,9 +50,10 @@ create policy "own daily suggestions select" on public.daily_suggestions
 -- why there is no default URL). To enable:
 --   insert into private.runtime_config (key, value) values
 --     ('daily_suggestion_url', 'https://<ref>.supabase.co/functions/v1/daily-suggestion'),
---     ('daily_suggestion_cron_secret', '<same value as the DAILY_SUGGESTION_CRON_SECRET function secret>');
+--     ('daily_suggestion_cron_secret', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''));
 --   -- then re-run the DO block below.
--- The secret is read from the table at run time, so rotating it needs no reschedule.
+-- The secret is read from the table at run time (and checked by the function
+-- through daily_suggestion_cron_ok, 0117), so rotating it needs no reschedule.
 do $$
 declare
   fn_url text;
