@@ -26,6 +26,8 @@ export interface PickWorkout {
   name?: string | null;
   routine_id?: string | null;
   started_at?: string | null;
+  /** Null on a legacy row, or while a finished workout is still syncing. */
+  finished_at?: string | null;
   created_at?: string | null;
 }
 
@@ -37,6 +39,7 @@ export interface PickProgram {
 
 export type TodayPick<R extends PickRoutine> =
   | { kind: 'rest'; routine: null; fromProgram: false }
+  | { kind: 'complete'; routine: null; completedWorkout: PickWorkout; fromProgram: false }
   | { kind: 'new'; routine: null; fromProgram: false }
   | { kind: 'planned'; routine: R; fromProgram: boolean };
 
@@ -81,8 +84,17 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   const routines = input.routines ?? [];
 
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  if (workouts.some((w) => ms(w.started_at || w.created_at) >= startOfToday)) {
-    return { kind: 'rest', routine: null, fromProgram: false };
+  // "Done today" means FINISHED today: a session that ran past midnight still
+  // counts. Rows without finished_at fall back to when they started.
+  const doneAt = (w: PickWorkout) => ms(w.finished_at || w.started_at || w.created_at);
+  const completedWorkout = workouts.reduce<PickWorkout | null>((latest, workout) => {
+    const at = doneAt(workout);
+    if (at < startOfToday) return latest;
+    const latestAt = latest ? doneAt(latest) : -1;
+    return at > latestAt ? workout : latest;
+  }, null);
+  if (completedWorkout) {
+    return { kind: 'complete', routine: null, completedWorkout, fromProgram: false };
   }
   if (routines.length === 0) return { kind: 'new', routine: null, fromProgram: false };
 

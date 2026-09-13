@@ -72,9 +72,30 @@ Deno.test("no program, nothing done: the list's own order wins the tie", () => {
   assertEquals(pick.routine?.id, "p2");
 });
 
-Deno.test("trained today means rest, program or not", () => {
-  const workouts = [{ name: "Arms", started_at: new Date("2026-09-13T07:00:00").toISOString() }];
-  assertEquals(pickToday({ routines: newestFirst, workouts, program, now: NOW }).kind, "rest");
+Deno.test("a completed workout shows the most recent session done today", () => {
+  const workouts = [
+    { name: "Lower", started_at: new Date("2026-09-13T07:00:00").toISOString() },
+    { name: "Arms", started_at: new Date("2026-09-13T12:00:00").toISOString() },
+  ];
+  const pick = pickToday({ routines: newestFirst, workouts, program, now: NOW });
+  assertEquals(pick.kind, "complete");
+  if (pick.kind !== "complete") throw new Error("Expected today's workout to be complete");
+  assertEquals(pick.completedWorkout?.name, "Arms");
+});
+
+Deno.test("a session that ran past midnight counts as done today", () => {
+  const late = {
+    name: "Late Push",
+    started_at: new Date("2026-09-12T23:40:00").toISOString(),
+    finished_at: new Date("2026-09-13T00:35:00").toISOString(),
+  };
+  const pick = pickToday({ routines: newestFirst, workouts: [late], program, now: NOW });
+  assertEquals(pick.kind, "complete");
+});
+
+Deno.test("yesterday's session is not today's, even without finished_at", () => {
+  const legacy = { name: "Arms", started_at: new Date("2026-09-12T20:00:00").toISOString(), finished_at: null };
+  assertEquals(pickToday({ routines: newestFirst, workouts: [legacy], program, now: NOW }).kind, "planned");
 });
 
 Deno.test("no routines means build one", () => {

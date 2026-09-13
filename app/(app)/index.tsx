@@ -358,12 +358,21 @@ export default function DashboardScreen() {
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
-  //   rest    -> already trained today, recover
+  //   complete -> show the most recent session finished today
+  //   rest     -> reserved for a future, explicit rest-day rule
   //   planned -> the most due routine. With a program, only the current
   //              phase's split counts, in day order. Else every routine.
   //   new     -> no routines yet, offer to build one
   const todaySuggestion = useMemo(() => {
     const pick = pickToday({ routines, workouts: workouts as any, program });
+    if (pick.kind === 'complete') {
+      return {
+        kind: 'complete' as const,
+        routine: null as any,
+        completedWorkout: pick.completedWorkout,
+        fromProgram: false,
+      };
+    }
     if (pick.kind !== 'planned') return { kind: pick.kind, routine: null as any, fromProgram: false };
     // The line under the title: why this session, today. Deterministic, from
     // the same workouts the card is already holding, so it costs one pass.
