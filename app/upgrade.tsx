@@ -18,9 +18,10 @@
  *             store product's introductory offer via freeTrialDays(), so a
  *             plan only advertises a trial App Store Connect actually gives.
  *   success   Shown once the tier has flipped. "You're in." plus the three
- *             things that just unlocked, then a hand-off into the coach
- *             ("Ask Drona to plan my week"). A toast is too small for a
- *             payment, and it left the user hunting the app for proof.
+ *             things that just unlocked, then one Continue straight to the
+ *             dashboard, where the phase 1 split prompt takes over. A toast
+ *             is too small for a payment, and it left the user hunting the
+ *             app for proof.
  *             While it's on screen the dashboard cache is warmed so the
  *             landing has real data instead of an empty first frame.
  *
@@ -86,7 +87,6 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { invalidateCoachAccess } from '@/hooks/useCoachAccess';
-import { requestCoachOpen } from '@/lib/coachLaunch';
 import { prefetchDashboard } from '@/lib/dashboardData';
 import {
   requestNotificationPermission,
@@ -415,25 +415,14 @@ export default function UpgradeScreen() {
 
   // Success screen. Opened from a cap-hit sheet the user was mid-task
   // (chatting, logging food), so the only sensible next step is back to it.
-  // Everywhere else the payoff is the coach: leave a one-shot request that
-  // the dashboard picks up on focus and opens the chat with a first ask.
+  // Everywhere else it lands on the dashboard, never finish(): the onboarding
+  // funnel's next beat is the phase 1 split prompt, which only the dashboard
+  // shows. A coach chat opened on top of it ("plan my week") buried that
+  // prompt and asked for a week the split popup builds anyway.
   const fromCap = context === 'cap_chat' || context === 'cap_parse';
-  // MUST navigate to the dashboard explicitly, never finish()/router.back():
-  // consumeCoachOpen() is only read by the dashboard's focus effect, so
-  // popping back to whatever pushed /upgrade (nutrition, a routine, the
-  // profile) left the queued request to expire unread and the button did
-  // nothing at all. Only `context=milestone` happened to work, because that
-  // card lives on the dashboard.
   const goToDashboard = useCallback(() => {
     router.replace('/(app)');
   }, [router]);
-  const finishWithCoach = useCallback(() => {
-    requestCoachOpen({
-      screen: 'chat',
-      prompt: 'Plan my training week around my goal.',
-    });
-    goToDashboard();
-  }, [goToDashboard]);
 
   const advanceFromReminder = useCallback(async () => {
     // The promise needs the permission. Denial is fine: the screen never
@@ -924,22 +913,13 @@ export default function UpgradeScreen() {
           </View>
           <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
             <PressableScale
-              onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'coach' }); (fromCap ? finish : finishWithCoach)(); }}
+              onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'dashboard' }); (fromCap ? finish : goToDashboard)(); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
-              accessibilityLabel={fromCap ? 'Continue' : 'Ask Drona to plan my week'}
+              accessibilityLabel="Continue"
             >
-              <Text style={u.ctaText}>{fromCap ? 'Continue' : 'Ask Drona to plan my week'}</Text>
+              <Text style={u.ctaText}>Continue</Text>
             </PressableScale>
-            {!fromCap && (
-              <TouchableOpacity
-                onPress={() => { track('paywall_success_cta', { destination: 'dashboard' }); goToDashboard(); }}
-                accessibilityRole="button"
-                accessibilityLabel="Go to my dashboard"
-              >
-                <Text style={[u.skipText, { color: C.textDim }]}>Go to my dashboard</Text>
-              </TouchableOpacity>
-            )}
           </Animated.View>
         </Animated.View>
       )}

@@ -635,9 +635,8 @@ export default function DashboardScreen() {
   // question. Cleared (undefined) for every other coach entry point.
   const [aiCoachPrompt, setAiCoachPrompt] = useState<string | undefined>(undefined);
 
-  // A screen that navigates here and wants the coach open (the /upgrade
-  // success screen's "Ask Drona to plan my week") leaves a one-shot request
-  // in lib/coachLaunch; pick it up whenever the dashboard gains focus.
+  // A screen that navigates here and wants the coach open leaves a one-shot
+  // request in lib/coachLaunch; pick it up whenever the dashboard gains focus.
   useFocusEffect(
     useCallback(() => {
       const req = consumeCoachOpen();

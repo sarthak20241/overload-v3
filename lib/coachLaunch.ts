@@ -2,8 +2,7 @@
  * One-shot "open Coach Drona when the dashboard shows up" hand-off.
  *
  * The coach sheet lives in local state on the dashboard, so a screen that is
- * about to navigate there (the /upgrade success screen: "Ask Drona to plan my
- * week") cannot open it directly. It leaves a request here; the dashboard
+ * about to navigate there cannot open it directly. It leaves a request here; the dashboard
  * consumes it the next time it gains focus.
  *
  * Requests expire after a short window so a request that never found the
