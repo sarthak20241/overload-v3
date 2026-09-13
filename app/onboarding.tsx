@@ -297,11 +297,13 @@ export default function OnboardingScreen() {
         ph.diet.carb_g != null ? { label: 'CARBS', value: `${ph.diet.carb_g}g` } : null,
         ph.diet.fat_g != null ? { label: 'FAT', value: `${ph.diet.fat_g}g` } : null,
       ].filter(Boolean) as Array<{ label: string; value: string }>;
+      // Same three icons the Goal screen uses, so a phase reads the same here
+      // as it will there once it is saved.
       const directives = [
-        { label: 'DIET', text: ph.diet_directive ?? null },
-        { label: 'TRAINING', text: ph.training_directive ?? null },
-        { label: 'RECOVERY', text: ph.readiness_directive ?? null },
-      ].filter((d) => !!d.text) as Array<{ label: string; text: string }>;
+        { icon: 'zap' as const, label: 'DIET', text: ph.diet_directive ?? null },
+        { icon: 'activity' as const, label: 'TRAINING', text: ph.training_directive ?? null },
+        { icon: 'moon' as const, label: 'RECOVERY', text: ph.readiness_directive ?? null },
+      ].filter((d) => !!d.text) as Array<{ icon: 'zap' | 'activity' | 'moon'; label: string; text: string }>;
       return {
         key: `${idx}-${ph.name}`,
         weeks,
@@ -1289,9 +1291,14 @@ export default function OnboardingScreen() {
                             )}
 
                             {row.directives.map((d) => (
-                              <View key={d.label} style={{ marginTop: Spacing.md }}>
-                                <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>{d.label}</Text>
-                                <Text style={[s.roadDetailText, { color: C.textSecondary }]}>{d.text}</Text>
+                              <View key={d.label} style={s.roadDirectiveRow}>
+                                <View style={[s.roadDirectiveIcon, { backgroundColor: C.primaryMuted }]}>
+                                  <Feather name={d.icon} size={12} color={C.accentText} />
+                                </View>
+                                <View style={{ flex: 1, minWidth: 0 }}>
+                                  <Text style={[s.roadDetailLabel, { color: C.textMuted }]}>{d.label}</Text>
+                                  <Text style={[s.roadDetailText, { color: C.textSecondary }]}>{d.text}</Text>
+                                </View>
                               </View>
                             ))}
                           </Animated.View>
@@ -1544,7 +1551,9 @@ const s = StyleSheet.create({
   },
   roadName: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
   roadMeta: { fontSize: FontSize.xs, lineHeight: 16, marginTop: 1 },
-  roadDetail: { marginTop: Spacing.sm, paddingLeft: 64 },
+  roadDetail: { marginTop: Spacing.sm },
+  roadDirectiveRow: { flexDirection: 'row', gap: 10, marginTop: Spacing.md, alignItems: 'flex-start' },
+  roadDirectiveIcon: { width: 24, height: 24, borderRadius: 7, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   roadChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   roadChip: {
     borderRadius: Radius.md,
@@ -1557,7 +1566,7 @@ const s = StyleSheet.create({
   roadChipValue: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   roadChipLabel: { fontSize: 8, fontWeight: FontWeight.semibold, letterSpacing: 0.7 },
   roadDetailLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.8, marginBottom: 3 },
-  roadDetailText: { fontSize: FontSize.xs, lineHeight: 18 },
+  roadDetailText: { fontSize: FontSize.sm, lineHeight: 19 },
   roadWeekStrip: { flexDirection: 'row', marginTop: 4 },
   roadWeekRule: { position: 'absolute', left: 12, right: 12, top: 4, height: StyleSheet.hairlineWidth },
   roadWeekCell: { flex: 1, alignItems: 'center', gap: 3 },

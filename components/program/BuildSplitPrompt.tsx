@@ -128,12 +128,14 @@ export function BuildSplitPrompt(props: Props) {
             entering={ZoomIn.duration(240)}
             style={[styles.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }]}
           >
-            <View style={[styles.mark, { backgroundColor: C.muted }]}>
-              <DronaMark size={16} state="static" />
+            <View style={styles.head}>
+              <View style={[styles.mark, { backgroundColor: C.muted }]}>
+                <DronaMark size={12} state="static" />
+              </View>
+              <Text style={[styles.title, { color: C.foreground }]}>
+                {action === 'signin' ? 'Save your program' : 'Your program is ready'}
+              </Text>
             </View>
-            <Text style={[styles.title, { color: C.foreground }]}>
-              {action === 'signin' ? 'Save your program' : 'Your program is ready'}
-            </Text>
             <Text style={[styles.body, { color: C.mutedFg }]}>
               {action === 'signin'
                 ? 'I mapped out every phase for you, but without an account it will not be here tomorrow. Sign in and I will keep it, then build your first week.'
@@ -150,7 +152,7 @@ export function BuildSplitPrompt(props: Props) {
               <Text style={[styles.primaryText, { color: Colors.primaryFg }]}>
                 {action === 'signin' ? 'Sign in to save it' : 'Build phase 1'}
               </Text>
-              <Feather name="arrow-right" size={14} color={Colors.primaryFg} />
+              <Feather name="arrow-right" size={13} color={Colors.primaryFg} />
             </Pressable>
             <Pressable onPress={later} style={styles.later} hitSlop={8}>
               <Text style={[styles.laterText, { color: C.mutedFg }]}>Not now</Text>
@@ -162,27 +164,31 @@ export function BuildSplitPrompt(props: Props) {
   );
 }
 
+// Deliberately small. This interrupts a screen the user just arrived at, so it
+// asks for a glance, not a page: the mark sits on the title line rather than
+// above it, and the card is narrower than the phone.
 const styles = StyleSheet.create({
   backdrop: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
   card: {
     width: '100%',
-    maxWidth: 360,
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing.lg,
-  },
-  mark: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  title: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, marginBottom: 6 },
-  body: { fontSize: FontSize.sm, lineHeight: 20, marginBottom: 18 },
-  primary: {
-    height: 46,
+    maxWidth: 310,
     borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing.md,
+  },
+  head: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  mark: { width: 22, height: 22, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  body: { fontSize: FontSize.xs, lineHeight: 17, marginBottom: 14 },
+  primary: {
+    height: 40,
+    borderRadius: Radius.md,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 7,
   },
   primaryText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  later: { alignSelf: 'center', paddingVertical: 12, paddingHorizontal: 16 },
-  laterText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  later: { alignSelf: 'center', paddingVertical: 9, paddingHorizontal: 16 },
+  laterText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
 });
