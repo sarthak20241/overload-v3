@@ -4,6 +4,7 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { useWorkout } from '@/hooks/useWorkout';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { Colors } from '@/constants/theme';
+import { track } from '@/lib/analytics';
 import {
   getActiveWorkoutSnapshot,
   clearActiveWorkout,
@@ -37,6 +38,12 @@ export function ResumeWorkoutPrompt() {
       clearActiveWorkout();
       return;
     }
+    track('workout_resume_prompted', {
+      exercise_count: saved.exercises.length,
+      completed_sets: saved.exercises.reduce((n, ex) => n + ex.sets.filter((s) => s.completed).length, 0),
+      gap_seconds: Math.max(0, Math.round((Date.now() - saved.savedAt) / 1000)),
+      is_guest: saved.isGuestSession,
+    });
     setSnap(saved);
   }, []);
 
@@ -59,6 +66,14 @@ export function ResumeWorkoutPrompt() {
   };
 
   const discard = () => {
+    // The third discard path (next to cancel and switched_routine): same event
+    // name so every abandonment shows in one funnel.
+    track('workout_discarded', {
+      reason: 'resume_prompt',
+      duration_seconds: snap.pausedElapsedSeconds,
+      exercise_count: exerciseCount,
+      completed_sets: setCount,
+    });
     clearActiveWorkout();
     setSnap(null);
   };

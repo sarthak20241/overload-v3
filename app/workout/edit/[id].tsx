@@ -8,6 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track, trackError } from '@/lib/analytics';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -485,6 +486,14 @@ export default function EditWorkoutScreen() {
     const cleanName = name.trim() || 'Workout';
     const cleanNotes = notes.trim() ? notes.trim() : null;
 
+    // Sent from each success path below, never before the write.
+    const editedProps = {
+      backend,
+      exercise_count: cleaned.length,
+      set_count: allSets.length,
+      volume_kg: newVolume,
+      has_notes: !!cleanNotes,
+    };
     setSaving(true);
     try {
       if (backend === 'guest') {
@@ -511,10 +520,12 @@ export default function EditWorkoutScreen() {
           })),
         };
         if (!updateGuestWorkout(updated)) {
+          track('workout_edit_failed', { backend });
           toast.error("Couldn't save changes");
           setSaving(false);
           return;
         }
+        track('workout_edited', editedProps);
         toast.success('Workout updated');
         leave();
         return;
@@ -560,6 +571,7 @@ export default function EditWorkoutScreen() {
           leave();
           return;
         }
+        track('workout_edited', editedProps);
         toast.success('Workout updated');
         void flushNow();
         leave();
@@ -577,10 +589,13 @@ export default function EditWorkoutScreen() {
         baseSetCount: base.setCount,
         baseVolumeKg: base.volume,
       });
+      track('workout_edited', editedProps);
       toast.success('Workout updated');
       void flushNow();
       leave();
-    } catch {
+    } catch (e) {
+      trackError(e, { where: 'workout_edit_save', backend });
+      track('workout_edit_failed', { backend });
       setSaving(false);
       toast.error("Couldn't save changes");
     }

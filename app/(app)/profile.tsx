@@ -23,6 +23,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track, flushAnalytics } from '@/lib/analytics';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
@@ -579,6 +580,7 @@ export default function ProfileScreen() {
         : [...weightLog, entry];
       setWeightLog(updated);
       await saveWeightLog(updated);
+      track('weight_logged', { source: 'profile', unit: weightUnit, replaced_today: !!latest && latest.date.slice(0, 10) === today });
       flashLogged('weight');
     }, 900);
   };
@@ -596,6 +598,7 @@ export default function ProfileScreen() {
         : [...bodyFatLog, entry];
       setBodyFatLog(updated);
       await saveBodyFatLog(updated);
+      track('body_fat_logged', { source: 'profile', replaced_today: !!latest && latest.date.slice(0, 10) === today });
       flashLogged('bodyFat');
     }, 900);
   };
@@ -604,6 +607,10 @@ export default function ProfileScreen() {
 
   const confirmSignOut = async () => {
     setShowSignOutAlert(false);
+    // Before the Clerk session drops: AnalyticsBridge resets the person the
+    // moment isSignedIn flips, so anything sent after that lands on a stranger.
+    track('signed_out', { is_guest: isGuestSession });
+    await flushAnalytics();
     await signOut();
     router.replace('/(auth)');
   };
@@ -624,6 +631,12 @@ export default function ProfileScreen() {
         try { await (user as any).delete(); } catch { /* already deleted */ }
       } else {
         await clerkSignOut();
+      }
+      // Only after the wipe succeeded, and only for a real account: a guest
+      // reaching this button just signs out.
+      if (!isGuestSession && user?.id) {
+        track('account_deleted');
+        await flushAnalytics();
       }
       router.replace('/(auth)');
     } catch (err: any) {
@@ -951,7 +964,7 @@ export default function ProfileScreen() {
                   <MiniSegmented
                     options={['kg', 'lbs'] as WeightUnit[]}
                     value={weightUnit}
-                    onChange={(v) => setWeightUnit(v)}
+                    onChange={(v) => { if (v !== weightUnit) track('units_changed', { unit: v, surface: 'basic_info' }); setWeightUnit(v); }}
                   />
                 </View>
               </View>
@@ -1056,6 +1069,7 @@ export default function ProfileScreen() {
                     <TouchableOpacity
                       key={opt.value}
                       onPress={() => {
+                        if (opt.value !== coachGoal) track('profile_field_changed', { field: 'goal', value: opt.value });
                         setCoachGoal(opt.value);
                         persistField({ goal: opt.value });
                       }}
@@ -1092,6 +1106,7 @@ export default function ProfileScreen() {
                       <TouchableOpacity
                         key={opt.value}
                         onPress={() => {
+                          if (opt.value !== experienceLevel) track('profile_field_changed', { field: 'experience_level', value: opt.value });
                           setExperienceLevel(opt.value);
                           persistField({ experience_level: opt.value });
                         }}
@@ -1189,7 +1204,7 @@ export default function ProfileScreen() {
                 <MiniSegmented
                   options={['dark', 'light'] as const}
                   value={mode}
-                  onChange={(v) => { if (v !== mode) toggleTheme(); }}
+                  onChange={(v) => { if (v !== mode) { track('theme_changed', { mode: v }); toggleTheme(); } }}
                   renderOption={(opt, active) => (
                     <Feather
                       name={opt === 'dark' ? 'moon' : 'sun'}
@@ -1209,7 +1224,7 @@ export default function ProfileScreen() {
                 <MiniSegmented
                   options={['kg', 'lbs'] as WeightUnit[]}
                   value={weightUnit}
-                  onChange={setWeightUnit}
+                  onChange={(v) => { if (v !== weightUnit) track('units_changed', { unit: v, surface: 'preferences' }); setWeightUnit(v); }}
                 />
               </View>
 

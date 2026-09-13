@@ -14,6 +14,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { saveBasicInfo } from '@/lib/bodyStats';
+import { track } from '@/lib/analytics';
 import {
   createStarterRoutines,
   markOnboardingDone,
@@ -106,6 +107,12 @@ export async function drainPendingOnboarding(target: {
   }
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
+  // Closes the funnel opened by onboarding_completed{outcome:'handed_to_signup'}.
+  track('onboarding_pending_drained', {
+    created_plan: pending.createPlan,
+    routines: pending.plan.length,
+    is_guest: target.isGuest,
+  });
   return pending.dest ?? '/(app)';
 }
 

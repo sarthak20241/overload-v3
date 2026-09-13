@@ -4,6 +4,7 @@ import { Redirect } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { hasClerkKey, useClerkUser } from '@/hooks/useClerkUser';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 
 // Catches the OAuth deep link (exp://.../--/sso-callback in Expo Go,
 // overload://sso-callback in dev/prod builds). On Android the deep link
@@ -34,14 +35,20 @@ function ClerkSSOCallback() {
     if (activatedRef.current) return;
     if (signInSessionId && signInState?.setActive) {
       activatedRef.current = true;
-      signInState.setActive({ session: signInSessionId }).catch((e: any) => {
-        console.warn('[sso-callback] setActive(signIn) failed', e);
-      });
+      signInState.setActive({ session: signInSessionId })
+        .then(() => track('signed_in', { method: 'oauth_callback', flow: 'sign_in' }))
+        .catch((e: any) => {
+          track('auth_failed', { method: 'oauth_callback', reason: 'set_active_failed' });
+          console.warn('[sso-callback] setActive(signIn) failed', e);
+        });
     } else if (signUpSessionId && signUpState?.setActive) {
       activatedRef.current = true;
-      signUpState.setActive({ session: signUpSessionId }).catch((e: any) => {
-        console.warn('[sso-callback] setActive(signUp) failed', e);
-      });
+      signUpState.setActive({ session: signUpSessionId })
+        .then(() => track('signed_up', { method: 'oauth_callback', email_verification: false }))
+        .catch((e: any) => {
+          track('auth_failed', { method: 'oauth_callback', reason: 'set_active_failed' });
+          console.warn('[sso-callback] setActive(signUp) failed', e);
+        });
     }
   }, [signInSessionId, signUpSessionId, signInState, signUpState]);
 
@@ -49,7 +56,7 @@ function ClerkSSOCallback() {
   // once Clerk processes the redirect, so this is just a guard against an
   // indefinite spinner if nothing ever arrives.
   useEffect(() => {
-    const t = setTimeout(() => setGiveUp(true), 12000);
+    const t = setTimeout(() => { track('auth_failed', { method: 'oauth_callback', reason: 'timed_out' }); setGiveUp(true); }, 12000);
     return () => clearTimeout(t);
   }, []);
 

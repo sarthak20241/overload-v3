@@ -29,6 +29,7 @@ import { Feather } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness, loadReadinessHistory, runHealthSyncAndReadiness } from '@/lib/readinessSync';
@@ -273,6 +274,10 @@ export default function HealthScreen() {
     try {
       if (reauth) {
         const ok = await requestHealthAuthorization();
+        // iOS resolves true when the sheet was handled, not when read was
+        // granted, so 'granted' means "prompt completed". A later sync with
+        // written > 0 is the real proof.
+        track('health_connect_result', { outcome: ok ? 'prompt_completed' : 'unavailable_or_denied', platform: Platform.OS });
         if (!ok) {
           setStatus({ kind: 'unavailable' });
           return;
@@ -281,9 +286,11 @@ export default function HealthScreen() {
         await markHealthConnected(userId);
       }
       const { synced } = await runHealthSyncAndReadiness(supabase, userId);
+      track('health_sync_run', { trigger: reauth ? 'connect' : 'manual', written: synced });
       setStatus({ kind: 'done', written: synced });
       await load();
     } catch (e) {
+      track('health_sync_failed', { reauth });
       setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'Something went wrong.' });
     }
   }
@@ -305,6 +312,13 @@ export default function HealthScreen() {
     setSaving(true);
     try {
       await logSleepForToday(supabase, userId, { minutes, quality });
+      // Bucketed, not raw: a sleep duration is health data. The bucket is
+      // enough to see whether people log short or long nights.
+      track('sleep_logged', {
+        hours_bucket: minutes < 360 ? 'under_6' : minutes < 420 ? '6_to_7' : minutes < 480 ? '7_to_8' : '8_plus',
+        has_quality: quality != null,
+        source: 'manual',
+      });
       haptics.success();
       setSheetOpen(false);
       setStatus({ kind: 'logged' });

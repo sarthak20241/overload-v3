@@ -27,7 +27,8 @@
  * modal level so the access state is a single source of truth across the
  * close→reopen lifecycle.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { track } from '@/lib/analytics';
 import {
   View, Text, TouchableOpacity, ScrollView, ActivityIndicator, StyleSheet,
 } from 'react-native';
@@ -117,6 +118,14 @@ export interface CoachAccessGateProps {
  */
 export function CoachAccessGate(props: CoachAccessGateProps): React.ReactElement | null {
   const screen = pickScreen(props.access, props.loading);
+  const lastGate = useRef<string | null>(null);
+  // Which wall a user is looking at. Deduped per gate screen so a re-render
+  // of the same wall is not a second view.
+  useEffect(() => {
+    if (screen === 'allow' || screen === lastGate.current) return;
+    lastGate.current = screen;
+    track('coach_gate_viewed', { gate_screen: screen, access_state: props.access.state });
+  }, [screen, props.access.state]);
   if (screen === 'allow') return null;
 
   return <GateBody screen={screen} {...props} />;
@@ -171,6 +180,7 @@ function GateBody({
       if (rpcErr) throw rpcErr;
       // RPC contract: { ok: boolean, reason?: string, ... }
       const ok = (data as any)?.ok === true;
+      track('trial_started', { outcome: ok ? 'ok' : String((data as any)?.reason ?? 'unknown') });
       if (!ok) {
         const reason = (data as any)?.reason ?? 'unknown';
         // 'already_trialed' shouldn't be possible here (we only show the
@@ -189,6 +199,7 @@ function GateBody({
       }
       await refresh();
     } catch {
+      track('trial_started', { outcome: 'error' });
       setError("Couldn't start your trial. Check your connection.");
     } finally {
       setStarting(false);

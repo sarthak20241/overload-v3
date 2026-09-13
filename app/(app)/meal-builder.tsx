@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { useSupabaseClient } from '@/lib/supabase';
 import {
@@ -216,6 +217,7 @@ export default function MealBuilderScreen() {
       : await createSavedMeal(supabase, { name, kind: 'meal', servings: 1, serving_label: null, items });
     setSaving(false);
     if (res.error) { haptics.warning(); return; }
+    track('saved_meal_saved', { mode: isEdit ? 'update' : 'create', source: 'builder', item_count: items.length, kcal: Math.round(total.kcal) });
     haptics.success();
     router.navigate(isEdit ? '/food-search' : '/nutrition');
   };
@@ -231,7 +233,7 @@ export default function MealBuilderScreen() {
       kcal: total.kcal, protein_g: total.p, carb_g: total.c, fat_g: total.f,
       items: items.map(parsedToSavedItem), created_at: saved?.created_at ?? '',
     };
-    const { error } = await logSavedMeal(supabase, snapshot, targetMeal, 1);
+    const { error } = await logSavedMeal(supabase, snapshot, targetMeal, 1, undefined, 'builder');
     setSaving(false);
     if (error) { haptics.warning(); return; }
     haptics.success();

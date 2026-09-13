@@ -200,6 +200,52 @@ export async function ensureIdentity(userId: string): Promise<void> {
   }
 }
 
+/**
+ * Subscribe to entitlement changes: renewals, expiries, cancellations and
+ * store-side restores all arrive here, none of which the paywall can see.
+ * The SDK replays the current CustomerInfo on subscribe and on every app
+ * open, so the callback is deduped on a fingerprint of the active
+ * entitlements and only fires when something actually changed.
+ */
+export function watchCustomerInfo(
+  onChange: (info: { activeEntitlements: string[]; willRenew: boolean | null; periodType: string | null; isFirst: boolean }) => void,
+): () => void {
+  const P = loadPurchases();
+  if (!P || !ensureConfigured() || typeof P.addCustomerInfoUpdateListener !== 'function') return () => {};
+  let last: string | null = null;
+  const listener = (info: any) => {
+    try {
+      const active = Object.values(info?.entitlements?.active ?? {}) as any[];
+      // One canonical record per entitlement, sorted by id, so record order
+      // never reads as a change and a renewal flag flip always does.
+      const state = active
+        .map((e) => ({
+          id: String(e?.identifier ?? e?.productIdentifier ?? ''),
+          expirationDate: String(e?.expirationDate ?? ''),
+          willRenew: !!e?.willRenew,
+          periodType: e?.periodType ? String(e.periodType) : null,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const key = JSON.stringify(state);
+      if (key === last) return;
+      const isFirst = last === null;
+      last = key;
+      onChange({
+        activeEntitlements: state.map((s) => s.id),
+        willRenew: state.length ? state.some((s) => s.willRenew) : null,
+        periodType: state[0]?.periodType ?? null,
+        isFirst,
+      });
+    } catch {
+      /* analytics only */
+    }
+  };
+  P.addCustomerInfoUpdateListener(listener);
+  return () => {
+    try { P.removeCustomerInfoUpdateListener?.(listener); } catch { /* already gone */ }
+  };
+}
+
 /** Revert to an anonymous id on sign-out. */
 export async function logOutRevenueCat(): Promise<void> {
   const P = loadPurchases();

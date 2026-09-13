@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
@@ -86,6 +87,7 @@ export function SaveMealSheet({ open, items, onClose, onSaved }: Props) {
     });
     setBusy(false);
     if (error) { haptics.warning(); return; }
+    track('saved_meal_saved', { mode: 'create', source: 'parse_card', item_count: items.length, kcal: Math.round(total.kcal) });
     onSaved();
   };
 

@@ -27,7 +27,7 @@ import Animated, {
   useAnimatedScrollHandler,
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
-import { track } from '@/lib/analytics';
+import { track, trackError, markWorkoutSource } from '@/lib/analytics';
 import { haptics } from '@/lib/haptics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -992,7 +992,9 @@ function RoutineEditorSheet({
         toast.success(snapshot.editingId ? 'Routine updated' : 'Routine saved');
         onSaved();
       })
-      .catch(() => {
+      .catch((e) => {
+        trackError(e, { where: 'routine_save' });
+        track('routine_save_failed', { mode: snapshot.editingId ? 'edit' : 'create' });
         toast.error(`Couldn't save “${snapshot.trimmedName}”`, {
           action: { label: 'Retry', onPress: () => runSave(snapshot) },
         });
@@ -1405,6 +1407,7 @@ export default function RoutinesScreen() {
   const [menuRoutine, setMenuRoutine] = useState<RoutineRaw | null>(null);
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
+  const [aiCoachSource, setAiCoachSource] = useState('routines');
 
   const fetchRoutines = useCallback(async () => {
     const clerkId = user?.id;
@@ -1466,6 +1469,7 @@ export default function RoutinesScreen() {
       // Persist the delete in the guest store so it stays gone after the next
       // fetchRoutines() (which reads from getGuestRoutines).
       removeGuestRoutine(id);
+      track('routine_deleted', { is_guest: true, exercise_count: target.routine_exercises?.length ?? 0 });
       toast.success(`Deleted “${target.name}”`);
       return;
     }
@@ -1475,6 +1479,9 @@ export default function RoutinesScreen() {
       if (user?.id) q = q.eq('user_id', user.id);
       const { error } = await q;
       if (error) throw error;
+      // After the row is gone: a failed delete is rolled back below and must
+      // not count. Retry re-enters handleDelete but only reaches here once.
+      track('routine_deleted', { is_guest: false, exercise_count: target.routine_exercises?.length ?? 0 });
       toast.success(`Deleted “${target.name}”`);
     } catch {
       setRoutines(previous);
@@ -1521,7 +1528,7 @@ export default function RoutinesScreen() {
             <Feather name="book-open" size={14} color={C.foreground} />
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={() => setAiCoachOpen(true)}
+            onPress={() => { setAiCoachSource('routines_header'); setAiCoachOpen(true); }}
             style={[styles.aiBtn, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}
           >
             <DronaMark size={13} color={C.accentText} state="static" />
@@ -1556,7 +1563,7 @@ export default function RoutinesScreen() {
         {loading ? (
           <ActivityIndicator color={Colors.primary} style={styles.loader} />
         ) : routines.length === 0 ? (
-          <EmptyState onAdd={openCreate} onAI={() => setAiCoachOpen(true)} />
+          <EmptyState onAdd={openCreate} onAI={() => { setAiCoachSource('routines_empty'); setAiCoachOpen(true); }} />
         ) : (
           routines.map((routine, idx) => (
             <RoutineCard
@@ -1564,7 +1571,7 @@ export default function RoutinesScreen() {
               routine={routine}
               colorIndex={idx}
               onPress={() => setDetailRoutine(routine)}
-              onPlay={() => router.push(`/workout/${routine.id}` as any)}
+              onPlay={() => { markWorkoutSource('routine_card'); router.push(`/workout/${routine.id}` as any); }}
               onMenu={() => setMenuRoutine(routine)}
             />
           ))
@@ -1578,6 +1585,7 @@ export default function RoutinesScreen() {
         onStartWorkout={() => {
           if (detailRoutine) {
             setDetailRoutine(null);
+            markWorkoutSource('routine_detail');
             router.push(`/workout/${detailRoutine.id}` as any);
           }
         }}
@@ -1610,6 +1618,7 @@ export default function RoutinesScreen() {
       <AICoachModal
         visible={aiCoachOpen}
         onClose={() => setAiCoachOpen(false)}
+        source={aiCoachSource}
         onRoutineCreated={() => fetchRoutines()}
       />
     </SafeAreaView>

@@ -10,15 +10,18 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useTheme } from '@/hooks/useTheme';
 import { captureAndShare } from '@/lib/share/captureAndShare';
+import { track } from '@/lib/analytics';
 import { Spacing, FontSize, FontWeight } from '@/constants/theme';
 
 interface Props {
   visible: boolean;
   onClose: () => void;
   card: ReactElement;
+  /** Which surface opened the sheet; the three callers are one event otherwise. */
+  source: 'workout_recap' | 'history' | 'body_heatmap';
 }
 
-export function ShareSheet({ visible, onClose, card }: Props) {
+export function ShareSheet({ visible, onClose, card, source }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -33,15 +36,18 @@ export function ShareSheet({ visible, onClose, card }: Props) {
   const handleShare = useCallback(async () => {
     if (sharing) return;
     setSharing(true);
+    track('share_started', { source });
     try {
       const ok = await captureAndShare(captureRef);
+      track(ok ? 'share_completed' : 'share_failed', { source, reason: ok ? null : 'unavailable' });
       if (!ok) Alert.alert('Sharing unavailable', 'This device does not support sharing.');
     } catch {
+      track('share_failed', { source, reason: 'error' });
       Alert.alert('Share failed', 'Something went wrong while sharing.');
     } finally {
       setSharing(false);
     }
-  }, [sharing]);
+  }, [sharing, source]);
 
   if (!mounted) return null;
 

@@ -225,7 +225,7 @@ function MessageContent({
         out.push(
           <Text
             key={key++}
-            onPress={cite?.url ? () => Linking.openURL(cite.url!).catch(() => {}) : undefined}
+            onPress={cite?.url ? () => { track('coach_citation_tapped', { source: 'inline' }); Linking.openURL(cite.url!).catch(() => {}); } : undefined}
             style={{
               color: C.accentText,
               fontWeight: FontWeight.semibold,
@@ -304,7 +304,7 @@ function CitationList({ citations }: { citations: Citation[] }) {
         return (
           <Pressable
             key={c.id}
-            onPress={() => { if (c.url) Linking.openURL(c.url).catch(() => {}); }}
+            onPress={() => { if (c.url) { track('coach_citation_tapped', { source: 'pill' }); Linking.openURL(c.url).catch(() => {}); } }}
             style={({ pressed }) => [
               s.citationPill,
               { backgroundColor: C.muted, opacity: pressed ? 0.55 : 1 },
@@ -1016,6 +1016,9 @@ function ChatScreen({
     };
   }, []);
 
+  // Set by a suggestion chip right before it calls handleSend; anything else
+  // that passes an override (auto review, insight prompt) reads as 'auto'.
+  const sendTriggerRef = useRef<'chip' | 'auto'>('auto');
   const handleSend = useCallback(async (override?: string) => {
     const text = (override ?? input).trim();
     if (!text || loading) return;
@@ -1039,8 +1042,11 @@ function ChatScreen({
       chars: text.length,
       turn: messages.filter((m) => m.role === 'user').length + 1,
       mode: workoutContext ? 'live_workout' : 'chat',
-      suggested: override != null,
+      // Chips, the auto-review and insight prompts all arrive as `override`;
+      // the ref tells them apart. 'typed' is the user's own words.
+      trigger: override == null ? 'typed' : sendTriggerRef.current,
     });
+    sendTriggerRef.current = 'auto';
 
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
@@ -1130,6 +1136,7 @@ function ChatScreen({
           const edit = parseCoachWorkoutEdit(input);
           if (!edit) return;
           handledEdit = true;
+          track('coach_workout_edit_proposed', { ops_count: edit.operations.length });
           setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
           return;
         }
@@ -1179,7 +1186,10 @@ function ChatScreen({
         // `structured` event was missed, the same payload rides the done event.
         if (canEditWorkout && !handledEdit && structured?.name === 'edit_active_workout') {
           const edit = parseCoachWorkoutEdit(structured.input);
-          if (edit) setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+          if (edit) {
+            track('coach_workout_edit_proposed', { ops_count: edit.operations.length });
+            setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+          }
         }
         typewriter.finish(() => {
           // Attach citations only AFTER the typewriter has finished animating
@@ -1258,6 +1268,11 @@ function ChatScreen({
         carb_g: submitted.carb_g,
         fat_g: submitted.fat_g,
       });
+      track('coach_targets_applied', {
+        calories: submitted.calories ?? null,
+        protein_g: submitted.protein_g ?? null,
+        has_rationale: !!submitted.rationale,
+      });
       toast.success('Targets updated');
       setTargetProposal((cur) => (cur === submitted ? null : cur));
     } catch (e) {
@@ -1329,7 +1344,7 @@ function ChatScreen({
             clear, so it doesn't clutter an empty greeting. */}
         {!workoutContext && messages.length > 1 && (
           <TouchableOpacity
-            onPress={startNewChat}
+            onPress={() => { track('coach_new_chat_started', { messages_count: messages.length }); startNewChat(); }}
             style={[s.newChatBtn, { backgroundColor: C.muted }]}
             accessibilityLabel="Start a new chat"
             hitSlop={8}
@@ -1415,7 +1430,7 @@ function ChatScreen({
           {workoutCoachSuggestions(workoutContext).map((sugg) => (
             <TouchableOpacity
               key={sugg}
-              onPress={() => handleSend(sugg)}
+              onPress={() => { sendTriggerRef.current = 'chip'; handleSend(sugg); }}
               style={[s.suggestionChip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}
               activeOpacity={0.7}
             >
@@ -1467,7 +1482,7 @@ function ChatScreen({
           )}
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
             <TouchableOpacity
-              onPress={() => setTargetProposal(null)}
+              onPress={() => { track('coach_targets_dismissed'); setTargetProposal(null); }}
               disabled={applyingTargets}
               style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: Radius.lg, backgroundColor: C.muted }}
             >
@@ -3174,9 +3189,12 @@ export function AICoachModal({
   linkRoutinesToPhaseId,
   workoutContext,
   onApplyWorkoutEdit,
+  source,
 }: {
   visible: boolean;
   onClose: () => void;
+  /** Which surface opened the sheet (dashboard hero, insight, in-workout...). Analytics only. */
+  source?: string;
   onRoutineCreated?: () => void;
   // Fires AFTER saveProgram resolves, not at close. The Apply flow closes the
   // modal first and persists in the background, so a caller that refetches in
@@ -3236,8 +3254,20 @@ export function AICoachModal({
     if (visible) void refreshAccess();
   }, [visible, refreshAccess]);
 
+  const coachOpenedAt = useRef(Date.now());
   useEffect(() => {
-    if (visible) track('coach_opened');
+    if (!visible) return;
+    coachOpenedAt.current = Date.now();
+    track('coach_opened', {
+      source: source ?? 'unknown',
+      initial_screen: initialScreen,
+      has_workout_context: !!workoutContext,
+      workout_kind: workoutContext?.kind ?? null,
+      has_initial_prompt: !!initialPrompt,
+      has_plan_seed: !!planSeed,
+      access_state: access.state,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per open
   }, [visible]);
   // Sub-frame double-tap guard — modal closes immediately on save, so the
   // visible-button block goes away fast, but the close animation leaves a tiny
@@ -3290,6 +3320,10 @@ export function AICoachModal({
   const router = useRouter();
 
   const handleClose = () => {
+    track('coach_closed', {
+      screen,
+      seconds_open: Math.round((Date.now() - coachOpenedAt.current) / 1000),
+    });
     setScreen('menu');
     onClose();
   };
@@ -3313,6 +3347,9 @@ export function AICoachModal({
   const handleRequestUpgrade = (
     context: 'cap_chat' | 'cap_parse' | 'milestone' | 'pro_feature',
   ) => {
+    // The one funnel for the cap banner, the free meter, the Pro-gated menu
+    // items and the generator 402s.
+    track('upgrade_prompt_tapped', { feature: 'coach', context, screen });
     handleClose();
     router.push({ pathname: '/upgrade', params: { context } });
   };
@@ -3466,6 +3503,7 @@ export function AICoachModal({
     inFlightRef.current = true;
     // Captured before handleClose() for the same reason as handleSaveRoutines.
     const phaseId = linkRoutinesToPhaseId;
+    track('coach_routines_saved', { count: 1, linked_to_phase: !!phaseId, is_retry: false, exercise_count: workout.exercises?.length ?? null });
     handleClose();
     toast.info(`Saving “${workout.name}”…`);
     insertRoutineToBackend(workout, phaseId)
@@ -3490,6 +3528,7 @@ export function AICoachModal({
   const handleSaveRoutines = (workouts: GeneratedWorkout[], isRetry = false) => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    track('coach_routines_saved', { count: workouts.length, linked_to_phase: !!linkRoutinesToPhaseId, is_retry: isRetry });
     // Capture the phase BEFORE handleClose(): closing tells the Goal & Plan
     // screen to reset its buildPhaseId, and reading the prop after that is a
     // staleness question we should not have to reason about.
@@ -3579,6 +3618,11 @@ export function AICoachModal({
       return;
     }
     inFlightRef.current = true;
+    track('coach_program_applied', {
+      phases: program.phases?.length ?? null,
+      has_target_weight: program.target_weight_kg != null,
+      has_target_date: !!program.target_date,
+    });
     handleClose();
     toast.info('Setting up your program…');
     saveProgram(supabase, clerkId, program)
@@ -3754,6 +3798,7 @@ export function AICoachModal({
                     // are Pro, so those menu items open the paywall with the
                     // Pro-feature headline (not the "ran out of messages"
                     // headline — the user hasn't hit any cap here).
+                    track('coach_menu_option_selected', { option: next, access_state: access.state, blocked: access.state === 'free' && next !== 'chat' });
                     if (access.state === 'free' && next !== 'chat') {
                       handleRequestUpgrade('pro_feature');
                       return;

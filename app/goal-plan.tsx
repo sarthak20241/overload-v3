@@ -16,7 +16,8 @@
  * split" opens the plan generator seeded to that phase (cadence comes from the
  * phase's training directive). Fully theme-aware, coach-voice copy.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { track, markWorkoutSource } from '@/lib/analytics';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -83,6 +84,7 @@ export default function GoalPlanScreen() {
   // sees the session and chooses to start, instead of starting on tap.
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
   const [ending, setEnding] = useState(false);
+  const viewedRef = useRef(false);
 
   const openRoutinePreview = useCallback(async (routineId: string) => {
     if (!supabase) return;
@@ -103,7 +105,18 @@ export default function GoalPlanScreen() {
   const load = useCallback(async () => {
     if (!supabase || !clerkId) { setProgram(null); setLoading(false); return; }
     try {
-      setProgram(await loadActiveProgram(supabase, clerkId));
+      const p = await loadActiveProgram(supabase, clerkId);
+      setProgram(p);
+      // Once per screen visit, not per focus refetch.
+      if (!viewedRef.current) {
+        viewedRef.current = true;
+        track('program_viewed', {
+          has_program: !!p,
+          phases: p?.phases.length ?? 0,
+          current_phase_seq: p?.currentPhaseSeq ?? null,
+          total_weeks: p?.total_weeks ?? null,
+        });
+      }
     } catch {
       /* keep whatever we had */
     } finally {
@@ -128,6 +141,7 @@ export default function GoalPlanScreen() {
       note: `Build the training split for the "${ph.name}" phase of my current program${desc ? `: ${desc}` : ''}.${ph.training_directive ? ` ${ph.training_directive}` : ''} Follow that exact split and cadence.`,
     });
     setBuildPhaseId(ph.id);
+    track('program_split_build_started', { phase_seq: ph.seq, has_training_block: !!b });
     setCoachOpen(true);
   }, []);
 
@@ -148,6 +162,10 @@ export default function GoalPlanScreen() {
             setEnding(true);
             try {
               await endActiveProgram(supabase, clerkId);
+              track('program_ended', {
+                phases: program?.phases.length ?? null,
+                current_phase_seq: program?.currentPhaseSeq ?? null,
+              });
               await load();
             } catch {
               Alert.alert('That did not go through', 'Check your connection and try again.');
@@ -158,7 +176,7 @@ export default function GoalPlanScreen() {
         },
       ],
     );
-  }, [supabase, clerkId, ending, load]);
+  }, [supabase, clerkId, ending, load, program]);
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
 
@@ -467,7 +485,7 @@ export default function GoalPlanScreen() {
                     {/* Row content */}
                     <View style={[styles.railContent, !isLast && styles.railContentSpacing]}>
                       <Pressable
-                        onPress={() => setExpandedSeq(expanded ? null : ph.seq)}
+                        onPress={() => { if (!expanded) track('program_phase_expanded', { seq: ph.seq }); setExpandedSeq(expanded ? null : ph.seq); }}
                         style={styles.railHead}
                         accessibilityRole="button"
                         accessibilityLabel={`${ph.name}, ${expanded ? 'collapse' : 'expand'}`}
@@ -538,12 +556,16 @@ export default function GoalPlanScreen() {
         onStartWorkout={() => {
           const id = detailRoutine?.id;
           setDetailRoutine(null);
-          if (id) router.push(`/workout/${id}` as any);
+          if (id) {
+            markWorkoutSource('program');
+            router.push(`/workout/${id}` as any);
+          }
         }}
       />
 
       <AICoachModal
         visible={coachOpen}
+        source="goal_plan"
         onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); load(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}

@@ -15,6 +15,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import {
   EXERCISE_LIBRARY, MUSCLE_GROUPS, CATEGORIES, searchExercises,
   METRIC_TYPES, metricTypeDef, metricTypeOf, DEFAULT_METRIC_TYPE,
@@ -308,6 +309,13 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
   }, [search, muscleFilter, library]);
 
   const handleSelectExercise = (ex: ExerciseDef) => {
+    track('exercise_selected', {
+      muscle_group: ex.muscle_group ?? null,
+      metric_type: ex.metric_type ?? null,
+      search_active: search.trim().length > 0,
+      filter_active: !!muscleFilter,
+      result_count: filtered.length,
+    });
     onSelect(ex);
   };
 
@@ -341,6 +349,14 @@ export function ExercisePickerSheet({ visible, onClose, onSelect, selectedNames 
     // would shadow the catalog row with a possibly different metric_type and
     // race the backend's name-uniqueness on insert.
     const existing = library.find(e => e.name.toLowerCase() === key);
+    track('custom_exercise_created', {
+      source: 'picker',
+      was_existing: !!existing,
+      muscle_group: existing?.muscle_group ?? customMuscle,
+      metric_type: existing?.metric_type ?? customType,
+      sets,
+      is_guest: isGuest,
+    });
     if (existing) {
       onSelect(existing, details);
       return;

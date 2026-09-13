@@ -18,6 +18,7 @@ import { router, useFocusEffect } from 'expo-router';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
+import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
@@ -98,7 +99,12 @@ export default function FoodSearchScreen() {
       if (!cancelled && bundled.length > 0) { setResults(bundled); setSearching(false); }
       try {
         const r = await searchCatalog(supabase, qq);
-        if (!cancelled) setResults(r);
+        if (!cancelled) {
+          setResults(r);
+          // Once per settled query, never the query itself. Zero-result
+          // searches are the catalog's gap list.
+          track('food_searched', { query_length: qq.length, result_count: r.length, bundled_count: bundled.length, tab });
+        }
       } finally {
         // Always clear the spinner, even if searchCatalog rejects — otherwise
         // the search stays stuck "searching…" for the rest of the session.
@@ -117,6 +123,7 @@ export default function FoodSearchScreen() {
 
   function openDetail(food: PickerFood) {
     Keyboard.dismiss();
+    track('food_picked', { action: 'open_detail', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id });
     setLogMeal(meal); // detail reads the target meal from the store on focus
     router.push({
       pathname: '/food-detail',
@@ -141,8 +148,14 @@ export default function FoodSearchScreen() {
     if (!q || !supabase || aiBusy) return;
     Keyboard.dismiss();
     setAiBusy(true); setAiError(null);
+    const askedAt = Date.now();
+    track('ask_drona_tapped', { query_length: q.length, result_count: results.length, meal });
     const res = await parseMeal(supabase, { text: q, mealHint: meal });
     setAiBusy(false);
+    track('ask_drona_result', {
+      outcome: res.kind === 'parsed' ? (res.meal.items.length ? 'found' : 'empty') : res.kind,
+      latency_ms: Date.now() - askedAt,
+    });
     if (res.kind === 'declined') { setAiError(res.message); haptics.warning(); return; }
     // Same paywall as the diet screen: the free tier's daily logs ran out, so
     // open the upgrade screen instead of an error line blaming the app.
@@ -200,6 +213,7 @@ export default function FoodSearchScreen() {
   async function quickAdd(food: PickerFood, key: string) {
     if (!supabase || busyKey) return;
     setBusyKey(key);
+    track('food_picked', { action: 'quick_add', from: showingRecents ? 'recents' : 'results', meal, has_food_id: !!food.id });
     try {
       const ds = defaultServing(food);
       const { error } = await logFood(supabase, {
@@ -229,7 +243,7 @@ export default function FoodSearchScreen() {
     if (!supabase || busyKey) return;
     setBusyKey(key);
     try {
-      const { error } = await logSavedMeal(supabase, m, meal, 1);
+      const { error } = await logSavedMeal(supabase, m, meal, 1, undefined, 'search_tab');
       if (error) { haptics.warning(); return; }
       haptics.success();
       router.navigate('/nutrition');
