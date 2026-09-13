@@ -203,3 +203,89 @@ Deno.test("up next: after today's Day 1, tomorrow is a rest day", () => {
   assertEquals(pick.kind, "rest");
   if (pick.kind === "rest") assertEquals(localDay(pick.resumesOn), "2026-09-15");
 });
+
+// ── The day's saved pick (made by the server at local 00:00) ──
+import { resolveToday, planKey, latestWorkoutBeforeDay, suggestionBasis, type SavedPick } from "./todayPick.ts";
+
+const withId: PickProgram = { ...weekly, id: "prog-1" };
+const basisNow = (routines: PickRoutine[], workouts: PickWorkout[], prog: PickProgram | null = withId, now = NOW) =>
+  suggestionBasis(planKey(prog, routines, now), latestWorkoutBeforeDay(workouts, now));
+const saved = (over: Partial<SavedPick> = {}): SavedPick => ({
+  day: "2026-09-13", kind: "planned", routine_id: "d2", resumes_on: null, scheduled: true,
+  basis: basisNow(newestFirst, []), ...over,
+});
+const view = (over: Partial<Parameters<typeof resolveToday>[0]> = {}) =>
+  resolveToday({ routines: newestFirst, workouts: [], program: withId, now: NOW, saved: saved(), dataReady: true, requesting: false, ...over });
+
+Deno.test("saved: a current saved pick is shown as is, even where the phone would pick otherwise", () => {
+  // The phone's own rule says Day 1 here; the server's saved pick says Day 2.
+  const r = view();
+  assertEquals(r.view.routine?.id, "d2");
+  assertEquals(r.needsRequest, false);
+});
+
+Deno.test("saved: no pick for today yet asks for one and, while asking, says it is preparing", () => {
+  const asking = view({ saved: null, requesting: true });
+  assertEquals(asking.view.kind, "preparing");
+  assertEquals(asking.needsRequest, true);
+});
+
+Deno.test("saved: yesterday's saved pick is not today's", () => {
+  const r = view({ saved: saved({ day: "2026-09-12" }) });
+  assertEquals(r.needsRequest, true);
+  assertEquals(r.view.routine?.id, "d1"); // the phone's own pick, until the server answers
+});
+
+Deno.test("saved: a split built after the pick was made asks again", () => {
+  const before = saved({ kind: "planned", routine_id: "old", basis: basisNow([old], []) });
+  const r = view({ saved: before });
+  assertEquals(r.needsRequest, true);
+});
+
+Deno.test("saved: a workout from before today that synced late asks again", () => {
+  const late = [on(day1, "2026-09-12")];
+  const r = view({ workouts: late });
+  assertEquals(r.basis === saved().basis, false);
+  assertEquals(r.needsRequest, true);
+});
+
+Deno.test("saved: a session finished today shows done and asks for nothing", () => {
+  const r = view({ workouts: [on(day1, "2026-09-13")], saved: null });
+  assertEquals(r.view.kind, "complete");
+  assertEquals(r.needsRequest, false);
+});
+
+Deno.test("saved: before the server reads settle, a saved pick is trusted and nothing is asked", () => {
+  const r = view({ dataReady: false, saved: saved({ basis: "from-a-stale-cache" }) });
+  assertEquals(r.view.routine?.id, "d2");
+  assertEquals(r.needsRequest, false);
+  const none = view({ dataReady: false, saved: null });
+  assertEquals(none.needsRequest, false);
+});
+
+Deno.test("saved: a rest day comes back with its next session and date", () => {
+  const r = view({ saved: saved({ kind: "rest", routine_id: "d3", resumes_on: "2026-09-15" }) });
+  assertEquals(r.view.kind, "rest");
+  if (r.view.kind === "rest") {
+    assertEquals(r.view.next.id, "d3");
+    assertEquals(localDay(r.view.resumesOn), "2026-09-15");
+  }
+});
+
+Deno.test("saved: a saved routine that was deleted asks again and shows the phone's pick meanwhile", () => {
+  const r = view({ saved: saved({ routine_id: "gone" }) });
+  assertEquals(r.needsRequest, true);
+  assertEquals(r.view.kind, "planned");
+});
+
+Deno.test("saved: 'build one' is not shown once routines exist", () => {
+  const r = view({ saved: saved({ kind: "new", routine_id: null }) });
+  assertEquals(r.view.kind, "planned");
+  assertEquals(r.needsRequest, true);
+});
+
+Deno.test("saved: when the server cannot be reached the card still shows the phone's pick", () => {
+  const r = view({ saved: null, requesting: false });
+  assertEquals(r.view.kind, "planned");
+  assertEquals(r.view.routine?.id, "d1");
+});

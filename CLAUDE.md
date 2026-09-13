@@ -28,6 +28,7 @@ ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/
+deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared by app + daily-suggestion
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 ```

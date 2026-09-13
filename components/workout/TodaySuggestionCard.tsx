@@ -11,12 +11,13 @@ import { DronaMark } from '@/components/coach/DronaMark';
 // The icon tile is neutral (C.muted) so it stays legible on the tinted card; the
 // lime lives in the fill, the glyph, and the "TODAY" label. The verbs (start /
 // edit / discuss) live in the session preview it opens, never in this card.
-// Four states: planned | new (lime tint, tappable), complete (calm, tappable:
+// Five states: preparing (calm, the server is making today's pick), planned |
+// new (lime tint, tappable), complete (calm, tappable:
 // opens DoneTodaySheet), rest (calm, tappable: previews the next session). Rest
 // comes only from the phase's week pattern; a completed session is not a rest day.
 
 export interface TodaySuggestion {
-  kind: 'planned' | 'complete' | 'rest' | 'new';
+  kind: 'planned' | 'complete' | 'rest' | 'new' | 'preparing';
   routine: any | null;
   /** On a rest day, the session due after it (previewed on tap). */
   next?: any | null;
@@ -35,6 +36,26 @@ interface Props {
 export function TodaySuggestionCard({ suggestion, onPress }: Props) {
   const { C } = useTheme();
   const { kind, routine, reason, completedWorkout, next } = suggestion;
+
+  if (kind === 'preparing') {
+    // The day's pick is being made on the server (it was not ready yet, or the
+    // plan just changed). Calm and not tappable; it resolves in a second or two.
+    return (
+      <View
+        style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+        accessibilityLabel="Just a moment. Setting up today's session."
+      >
+        <View style={[s.iconWrap, { backgroundColor: C.muted }]}>
+          <DronaMark size={IconSize.sm} color={C.accentText} state="thinking" />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={[s.eyebrow, { color: C.textMuted }]}>TODAY</Text>
+          <Text style={[s.title, { color: C.foreground, marginTop: 1 }]}>Just a moment</Text>
+          <Text style={[s.reason, { color: C.textMuted }]} numberOfLines={1}>Setting up today's session.</Text>
+        </View>
+      </View>
+    );
+  }
 
   if (kind === 'complete') {
     // Calm card (no lime tint: today's work is done, nothing is asked of the

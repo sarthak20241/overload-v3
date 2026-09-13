@@ -33,6 +33,11 @@ verify_jwt = false
 [functions.form-check]
 verify_jwt = false
 
+# daily-suggestion: the app calls it with a Clerk JWT (verified in the handler),
+# pg_cron calls it with x-cron-secret. Neither carries a Supabase JWT.
+[functions.daily-suggestion]
+verify_jwt = false
+
 # RevenueCat sends its own shared secret in the Authorization header, NOT a
 # Supabase JWT, and the function checks that secret itself at the top of the
 # handler. With the default verify_jwt = true the gateway rejects every

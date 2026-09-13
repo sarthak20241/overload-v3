@@ -127,6 +127,7 @@ export type AnalyticsEvent =
   | 'routine_sync_answered'
   | 'today_suggestion_tapped'
   | 'today_up_next_tapped'
+  | 'today_suggestion_requested'
   | 'history_workout_edit_opened'
   | 'history_workout_deleted'
   | 'share_started'
