@@ -128,8 +128,13 @@ export async function clearUserRoutineQueue(userId: string): Promise<void> {
 
 // --- read-side helpers (optimistic display) ---
 
-/** Shape a pending routine into a 'routines' cache row (matches the server select). */
-export function pendingRoutineToCacheRow(p: PendingRoutine): any {
+/**
+ * Shape a pending routine into a 'routines' cache row (matches the server select).
+ * `prev` is the row it replaces, if any. An edit carries no programPhaseId, so
+ * the row keeps the phase link it already had; losing it would drop a program
+ * routine out of the dashboard's TODAY pick until the next server read.
+ */
+export function pendingRoutineToCacheRow(p: PendingRoutine, prev?: { program_phase_id?: string | null } | null): any {
   return {
     id: p.routineId,
     user_id: p.ownerId,
@@ -137,6 +142,7 @@ export function pendingRoutineToCacheRow(p: PendingRoutine): any {
     description: p.description,
     color: p.color ?? undefined,
     created_at: p.createdAtIso,
+    program_phase_id: p.programPhaseId ?? prev?.program_phase_id ?? null,
     _pendingSync: true,
     routine_exercises: p.exercises.map((ex, i) => {
       // Unresolved exercises get a temp- id so that starting this routine and
@@ -177,11 +183,11 @@ export function mergePendingRoutines(serverRoutines: any[], userId: string | nul
   const byId = new Map(pending.map((p) => [p.routineId, p]));
   const serverIds = new Set(serverRoutines.map((r) => r.id));
   const merged = serverRoutines.map((r) =>
-    byId.has(r.id) ? pendingRoutineToCacheRow(byId.get(r.id)!) : r,
+    byId.has(r.id) ? pendingRoutineToCacheRow(byId.get(r.id)!, r) : r,
   );
   const creates = pending
     .filter((p) => !serverIds.has(p.routineId))
-    .map(pendingRoutineToCacheRow);
+    .map((p) => pendingRoutineToCacheRow(p));
   return [...creates, ...merged];
 }
 
@@ -191,8 +197,9 @@ export function mergePendingRoutines(serverRoutines: any[], userId: string | nul
  */
 export function applyRoutineToCache(userId: string, entry: PendingRoutine): void {
   const existing = readCache<any[]>('routines', userId) ?? [];
+  const prev = existing.find((r) => r.id === entry.routineId);
   const without = existing.filter((r) => r.id !== entry.routineId);
-  writeCache('routines', userId, [pendingRoutineToCacheRow(entry), ...without]);
+  writeCache('routines', userId, [pendingRoutineToCacheRow(entry, prev), ...without]);
 }
 
 // --- flush engine ---
