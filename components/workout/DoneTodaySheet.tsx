@@ -19,8 +19,9 @@ import { Spacing, Radius, FontSize, FontWeight, IconSize } from '@/constants/the
 
 // Opened from the TODAY card once the day's session is done: where it landed
 // on the body, what was actually done, and what comes next. Read-only except
-// "up next", pinned under the scroll, which hands off to the same session
-// preview the TODAY card opens.
+// the last row, pinned under the scroll: "tomorrow" when the phase's week
+// pattern decides it (a session or a rest day), "up next" when nothing does.
+// It hands off to the same session preview the TODAY card opens.
 
 export interface DoneWorkout {
   name?: string | null;
@@ -29,8 +30,13 @@ export interface DoneWorkout {
   sets?: SummarySet[] | null;
 }
 
+type UpNextRoutine = { name?: string | null; routine_exercises?: unknown[] | null };
+
 export type UpNext =
-  | { kind: 'planned'; routine: { name?: string | null; routine_exercises?: unknown[] | null }; reason?: string | null }
+  /** `tomorrow`: the week pattern put this session on tomorrow itself. */
+  | { kind: 'planned'; routine: UpNextRoutine; tomorrow: boolean; reason?: string | null }
+  /** Tomorrow is a rest day in the phase's week; `next` is the session after it. */
+  | { kind: 'rest'; next: UpNextRoutine; reason: string }
   | { kind: 'new' };
 
 interface Props {
@@ -78,6 +84,12 @@ export function DoneTodaySheet({ workout, visible, gender, upNext, onClose, onUp
   ].filter(Boolean).join('  ·  ');
 
   const upNextCount = upNext?.kind === 'planned' ? upNext.routine.routine_exercises?.length ?? 0 : 0;
+  const upNextLabel = upNext?.kind === 'rest' || (upNext?.kind === 'planned' && upNext.tomorrow) ? 'TOMORROW' : 'UP NEXT';
+  const upNextTitle = upNext?.kind === 'new'
+    ? 'Build your next session'
+    : upNext?.kind === 'rest'
+      ? 'Rest day'
+      : upNext?.routine.name || 'Next session';
 
   return (
     <Portal>
@@ -180,14 +192,21 @@ export function DoneTodaySheet({ workout, visible, gender, upNext, onClose, onUp
           {/* Pinned under the scroll, so the one action never needs a scroll to reach. */}
           {upNext ? (
             <View style={[s.footer, { borderTopColor: C.borderSubtle }]}>
-              <Text style={[s.sectionLabel, { color: C.textMuted }]}>UP NEXT</Text>
+              <Text style={[s.sectionLabel, { color: C.textMuted }]}>{upNextLabel}</Text>
               <PressableScale
                 onPress={onUpNextPress}
-                style={[s.upNext, { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder }]}
+                style={[
+                  s.upNext,
+                  upNext.kind === 'rest'
+                    ? { backgroundColor: C.card, borderColor: C.borderSubtle }
+                    : { backgroundColor: C.primaryMuted, borderColor: C.primaryBorder },
+                ]}
               >
                 <View style={[s.upNextIcon, { backgroundColor: C.muted }]}>
                   {upNext.kind === 'new' ? (
                     <DronaMark size={IconSize.sm} color={C.accentText} state="static" />
+                  ) : upNext.kind === 'rest' ? (
+                    <Feather name="moon" size={IconSize.sm} color={C.textMuted} />
                   ) : (
                     <Feather name="play" size={IconSize.sm} color={C.accentText} />
                   )}
@@ -195,13 +214,13 @@ export function DoneTodaySheet({ workout, visible, gender, upNext, onClose, onUp
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <View style={s.upNextTitleRow}>
                     <Text style={[s.upNextTitle, { color: C.foreground, flexShrink: 1 }]} numberOfLines={1}>
-                      {upNext.kind === 'new' ? 'Build your next session' : upNext.routine.name || 'Next session'}
+                      {upNextTitle}
                     </Text>
                     {upNextCount > 0 ? (
                       <Text style={[s.upNextMeta, { color: C.textMuted }]}>  ·  {upNextCount} ex</Text>
                     ) : null}
                   </View>
-                  {upNext.kind === 'planned' && upNext.reason ? (
+                  {upNext.kind !== 'new' && upNext.reason ? (
                     <Text style={[s.upNextReason, { color: C.textMuted }]} numberOfLines={2}>{upNext.reason}</Text>
                   ) : null}
                 </View>

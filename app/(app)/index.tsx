@@ -32,6 +32,7 @@ import { todayReason } from '@/lib/todayReason';
 import { pickToday, pickUpNext, type PickProgram } from '@/lib/todayPick';
 import { DoneTodaySheet, type DoneWorkout, type UpNext } from '@/components/workout/DoneTodaySheet';
 import { groupSetsByExercise } from '@/lib/workoutSummary';
+import { weekPatternFor } from '@/lib/weekPattern';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
@@ -53,6 +54,15 @@ function formatDuration(sec: number) {
   const m = Math.floor(sec / 60);
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** "tomorrow", or "on Tuesday" for a day further out. Local calendar days. */
+function whenFrom(day: Date, from: Date) {
+  const n = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((n(day) - n(from)) / 86400000);
+  if (diff <= 0) return 'today';
+  if (diff === 1) return 'tomorrow';
+  return `on ${day.toLocaleDateString('en-US', { weekday: 'long' })}`;
 }
 
 function formatDate(iso: string) {
@@ -345,11 +355,18 @@ export default function DashboardScreen() {
         if (prog) {
           const { data: phases, error: phErr } = await supabase
             .from('coach_program_phases')
-            .select('id, duration_weeks, start_offset_weeks')
+            .select('id, duration_weeks, start_offset_weeks, training_block')
             .eq('program_id', prog.id)
             .order('seq', { ascending: true });
           if (phErr) throw phErr;
-          next = { start_date: String(prog.start_date), phases: (phases as PickProgram['phases']) ?? [] };
+          // The week pattern is resolved here (coach's if it holds up, else the
+          // one built from days_per_week) so lib/todayPick stays import-free.
+          next = {
+            start_date: String(prog.start_date),
+            phases: ((phases ?? []) as Array<PickProgram['phases'][number] & { training_block?: any }>).map(
+              ({ training_block, ...ph }) => ({ ...ph, week_pattern: weekPatternFor(training_block) ?? null }),
+            ),
+          };
         }
         if (cancelled) return;
         setProgram(next);
@@ -363,10 +380,10 @@ export default function DashboardScreen() {
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
   //   complete -> show the most recent session finished today
-  //   rest     -> reserved for a future, explicit rest-day rule
-  //   planned -> the most due routine. With a program, only the current
-  //              phase's split counts, in day order. Else every routine.
-  //   new     -> no routines yet, offer to build one
+  //   rest     -> a rest day in the phase's week pattern; names the next session
+  //   planned  -> the most due routine. With a program, only the current
+  //               phase's split counts, in day order. Else every routine.
+  //   new      -> no routines yet, offer to build one
   const todaySuggestion = useMemo(() => {
     const pick = pickToday({ routines, workouts: workouts as any, program });
     if (pick.kind === 'complete') {
@@ -375,6 +392,16 @@ export default function DashboardScreen() {
         routine: null as any,
         completedWorkout: pick.completedWorkout,
         fromProgram: false,
+      };
+    }
+    if (pick.kind === 'rest') {
+      const name = pick.next.name?.trim() || 'Your next session';
+      return {
+        kind: 'rest' as const,
+        routine: null as any,
+        next: pick.next,
+        fromProgram: true,
+        reason: `Recovery is part of the plan. ${name} is up ${whenFrom(pick.resumesOn, new Date())}.`,
       };
     }
     if (pick.kind !== 'planned') return { kind: pick.kind, routine: null as any, fromProgram: false };
@@ -389,15 +416,25 @@ export default function DashboardScreen() {
   }, [routines, workouts, program]);
 
   // What the done-today sheet offers next: the same pick, run from tomorrow.
-  // Only worth computing once today is done.
+  // Only worth computing once today is done. With a week pattern it is really
+  // tomorrow (a session or a rest day); without one it is just the next session.
   const upNext = useMemo<UpNext | null>(() => {
     if (todaySuggestion.kind !== 'complete') return null;
     const { tomorrow, pick } = pickUpNext({ routines, workouts: workouts as any, program });
     if (pick.kind === 'new') return { kind: 'new' };
+    if (pick.kind === 'rest') {
+      const name = pick.next.name?.trim() || 'Your next session';
+      return {
+        kind: 'rest',
+        next: pick.next,
+        reason: `${name} follows ${whenFrom(pick.resumesOn, tomorrow)}.`,
+      };
+    }
     if (pick.kind !== 'planned') return null;
     return {
       kind: 'planned',
       routine: pick.routine,
+      tomorrow: pick.scheduled,
       reason: todayReason({ routine: pick.routine as any, workouts: workouts as any, now: tomorrow }),
     };
   }, [todaySuggestion.kind, routines, workouts, program]);
@@ -417,6 +454,8 @@ export default function DashboardScreen() {
     setDoneSheetOpen(false);
     if (upNext?.kind === 'planned') {
       setDetailRoutine(upNext.routine as RoutineRaw);
+    } else if (upNext?.kind === 'rest') {
+      setDetailRoutine(upNext.next as RoutineRaw);
     } else if (upNext?.kind === 'new') {
       setAiCoachPrompt(undefined);
       setAiCoachInitialScreen('workout');
@@ -429,6 +468,7 @@ export default function DashboardScreen() {
   // preview (the shared routine-detail sheet) where the user can see the
   // exercises, ask Drona about it, or start it. 'new' opens the coach to build one.
   // 'complete' opens the done-today sheet: the session, the body map, up next.
+  // 'rest' previews the session that follows the rest, for anyone who wants it early.
   const handleTodayPress = () => {
     track('today_suggestion_tapped', {
       kind: todaySuggestion.kind,
@@ -446,6 +486,10 @@ export default function DashboardScreen() {
     }
     if (todaySuggestion.kind === 'complete') {
       setDoneSheetOpen(true);
+      return;
+    }
+    if (todaySuggestion.kind === 'rest' && todaySuggestion.next) {
+      setDetailRoutine(todaySuggestion.next as RoutineRaw);
       return;
     }
     if (todaySuggestion.kind === 'planned' && todaySuggestion.routine) {

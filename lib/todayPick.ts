@@ -12,6 +12,12 @@
  * Day 1 first. So a fresh split opens on Day 1, and a skipped day stays due
  * instead of being jumped.
  *
+ * Rest days come from the phase's week pattern (Day 1..Day 7, "Rest" for a day
+ * off), and the pattern follows the user, not the calendar. The n-th session of
+ * the phase sits on the n-th training day of the pattern; the rest days after
+ * that training day must pass before the next session is due. A missed day
+ * never piles up: once the rest has passed, the session simply stays due.
+ *
  * Pure: no imports, no React, no network. Unit-tested in todayPick.test.ts.
  */
 
@@ -34,14 +40,25 @@ export interface PickWorkout {
 /** The persisted program shape the pick needs: when it started, and its phases. */
 export interface PickProgram {
   start_date: string; // YYYY-MM-DD, local
-  phases: { id: string; duration_weeks: number; start_offset_weeks: number }[];
+  phases: {
+    id: string;
+    duration_weeks: number;
+    start_offset_weeks: number;
+    /** 7 labels, Day 1 first, "Rest" for a day off. Already normalized by the
+     *  caller (lib/weekPattern weekPatternFor); absent = no rest days known. */
+    week_pattern?: string[] | null;
+  }[];
 }
 
+export const REST_LABEL = 'Rest';
+
 export type TodayPick<R extends PickRoutine> =
-  | { kind: 'rest'; routine: null; fromProgram: false }
+  /** A rest day in the phase's week. `next` is the session due after it, on `resumesOn`. */
+  | { kind: 'rest'; routine: null; fromProgram: true; next: R; resumesOn: Date }
   | { kind: 'complete'; routine: null; completedWorkout: PickWorkout; fromProgram: false }
   | { kind: 'new'; routine: null; fromProgram: false }
-  | { kind: 'planned'; routine: R; fromProgram: boolean };
+  /** `scheduled`: a week pattern was applied, so this session is due on this very day. */
+  | { kind: 'planned'; routine: R; fromProgram: boolean; scheduled: boolean };
 
 export interface TodayPickInput<R extends PickRoutine> {
   routines: R[] | null | undefined;
@@ -65,18 +82,30 @@ function daysSince(startISO: string, now: Date): number | null {
   return Math.round((today - start) / 86_400_000);
 }
 
-/** The id of the phase today falls in, or null (not started, ended, or no program). */
-export function currentPhaseId(program: PickProgram | null | undefined, now: Date = new Date()): string | null {
+/** The phase today falls in, or null (not started, ended, or no program). */
+function currentPhase(program: PickProgram | null | undefined, now: Date) {
   if (!program) return null;
   const days = daysSince(program.start_date, now);
   if (days == null || days < 0) return null;
   for (const ph of program.phases) {
     if (days >= ph.start_offset_weeks * 7 && days < (ph.start_offset_weeks + ph.duration_weeks) * 7) {
-      return ph.id;
+      return ph;
     }
   }
   return null;
 }
+
+/** The id of the phase today falls in, or null (not started, ended, or no program). */
+export function currentPhaseId(program: PickProgram | null | undefined, now: Date = new Date()): string | null {
+  return currentPhase(program, now)?.id ?? null;
+}
+
+/** A local calendar day as a whole number, so day arithmetic never meets DST. */
+const dayNumber = (d: Date) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000);
+const fromDayNumber = (n: number) => {
+  const u = new Date(n * 86_400_000);
+  return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), 12);
+};
 
 export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): TodayPick<R> {
   const now = input.now ?? new Date();
@@ -98,18 +127,20 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   }
   if (routines.length === 0) return { kind: 'new', routine: null, fromProgram: false };
 
-  const phaseId = currentPhaseId(input.program, now);
-  const phaseRoutines = phaseId ? routines.filter((r) => r.program_phase_id === phaseId) : [];
+  const phase = currentPhase(input.program, now);
+  const phaseRoutines = phase ? routines.filter((r) => r.program_phase_id === phase.id) : [];
   const fromProgram = phaseRoutines.length > 0;
   const candidates = fromProgram ? phaseRoutines : routines;
 
-  const lastDoneAt = (r: R) => {
+  const isSessionOf = (w: PickWorkout, r: R) => {
     const name = (r.name ?? '').trim().toLowerCase();
+    return (!!w.routine_id && w.routine_id === r.id)
+      || (!!name && (w.name ?? '').trim().toLowerCase() === name);
+  };
+  const lastDoneAt = (r: R) => {
     let last = 0; // never done -> most due
     for (const w of workouts) {
-      const matches = (w.routine_id && w.routine_id === r.id)
-        || (!!name && (w.name ?? '').trim().toLowerCase() === name);
-      if (matches) last = Math.max(last, ms(w.started_at || w.created_at));
+      if (isSessionOf(w, r)) last = Math.max(last, ms(w.started_at || w.created_at));
     }
     return last;
   };
@@ -120,7 +151,40 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
     (a, b) => lastDoneAt(a) - lastDoneAt(b)
       || (fromProgram ? ms(a.created_at) - ms(b.created_at) : 0),
   )[0];
-  return { kind: 'planned', routine: pick, fromProgram };
+
+  // Rest days: only for a built split with a usable week pattern.
+  const pattern = fromProgram && phase?.week_pattern?.length === 7 ? phase.week_pattern : null;
+  const trainingSlots = pattern ? pattern.flatMap((label, i) => (label === REST_LABEL ? [] : [i])) : [];
+  if (!pattern || trainingSlots.length === 0 || !input.program) {
+    return { kind: 'planned', routine: pick, fromProgram, scheduled: false };
+  }
+
+  // This phase's sessions so far, oldest first.
+  // (currentPhase found a phase, so the start date parsed.)
+  const programStartDay = dayNumber(now) - (daysSince(input.program.start_date, now) ?? 0);
+  const phaseStartDay = programStartDay + phase!.start_offset_weeks * 7;
+  const sessions = workouts
+    .filter((w) => phaseRoutines.some((r) => isSessionOf(w, r)))
+    .map((w) => doneAt(w))
+    .filter((t) => t > 0 && dayNumber(new Date(t)) >= phaseStartDay)
+    .sort((a, b) => a - b);
+  if (sessions.length === 0) {
+    return { kind: 'planned', routine: pick, fromProgram, scheduled: true };
+  }
+
+  // The last session sat on training slot k; the next one is k + 1 (wrapping
+  // into the next week). The days between them in the pattern are rest.
+  const T = trainingSlots.length;
+  const k = (sessions.length - 1) % T;
+  const here = trainingSlots[k];
+  const there = trainingSlots[(k + 1) % T];
+  const restDays = T === 1 ? 6 : (there - here - 1 + 7) % 7;
+  const dueDay = dayNumber(new Date(sessions[sessions.length - 1])) + restDays + 1;
+
+  if (dayNumber(now) < dueDay) {
+    return { kind: 'rest', routine: null, fromProgram: true, next: pick, resumesOn: fromDayNumber(dueDay) };
+  }
+  return { kind: 'planned', routine: pick, fromProgram, scheduled: true };
 }
 
 /**
