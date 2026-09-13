@@ -37,6 +37,7 @@ export interface PickProgram {
 
 export type TodayPick<R extends PickRoutine> =
   | { kind: 'rest'; routine: null; fromProgram: false }
+  | { kind: 'complete'; routine: null; completedWorkout: PickWorkout; fromProgram: false }
   | { kind: 'new'; routine: null; fromProgram: false }
   | { kind: 'planned'; routine: R; fromProgram: boolean };
 
@@ -81,8 +82,14 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   const routines = input.routines ?? [];
 
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  if (workouts.some((w) => ms(w.started_at || w.created_at) >= startOfToday)) {
-    return { kind: 'rest', routine: null, fromProgram: false };
+  const completedWorkout = workouts.reduce<PickWorkout | null>((latest, workout) => {
+    const at = ms(workout.started_at || workout.created_at);
+    if (at < startOfToday) return latest;
+    const latestAt = latest ? ms(latest.started_at || latest.created_at) : -1;
+    return at > latestAt ? workout : latest;
+  }, null);
+  if (completedWorkout) {
+    return { kind: 'complete', routine: null, completedWorkout, fromProgram: false };
   }
   if (routines.length === 0) return { kind: 'new', routine: null, fromProgram: false };
 
