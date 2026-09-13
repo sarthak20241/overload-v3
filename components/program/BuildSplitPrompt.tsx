@@ -132,11 +132,11 @@ export function BuildSplitPrompt(props: Props) {
               <DronaMark size={16} state="static" />
             </View>
             <Text style={[styles.title, { color: C.foreground }]}>
-              {action === 'signin' ? 'Your program is waiting' : 'Your program is ready'}
+              {action === 'signin' ? 'Save your program' : 'Your program is ready'}
             </Text>
             <Text style={[styles.body, { color: C.mutedFg }]}>
               {action === 'signin'
-                ? 'I have your phases mapped out. Sign in and I will save them to your account, then build the workouts for phase one.'
+                ? 'I mapped out every phase for you, but without an account it will not be here tomorrow. Sign in and I will keep it, then build your first week.'
                 : 'I have your phases mapped out. Now let me build the actual workouts for phase one, so you know exactly what to do on day one.'}
             </Text>
 
