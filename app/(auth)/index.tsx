@@ -9,6 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
+import { track } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
@@ -230,6 +231,7 @@ export default function AuthScreen() {
           throw new Error(`Sign-in couldn't complete (status: ${result.status}). Please try again.`);
         }
         await setSignInActive!({ session: result.createdSessionId });
+        track('signed_in', { method: 'password' });
         router.replace('/(app)');
       } else if (mode === 'register') {
         if (!name.trim()) throw new Error('Please enter your name');
@@ -241,9 +243,11 @@ export default function AuthScreen() {
         const parts = name.trim().split(/\s+/);
         const firstName = parts[0];
         const lastName = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
+        track('signup_started', { method: 'email' });
         const result = await signUp!.create({ emailAddress: email, password, firstName, lastName });
         if (result.status === 'complete' && result.createdSessionId) {
           await setSignUpActive!({ session: result.createdSessionId });
+          track('signed_up', { method: 'email', email_verification: false });
           router.replace('/(app)');
         } else {
           // Email verification required — send code and switch to verify mode.
@@ -258,6 +262,7 @@ export default function AuthScreen() {
           throw new Error('Verification failed. Please check the code and try again.');
         }
         await setSignUpActive!({ session: result.createdSessionId });
+        track('signed_up', { method: 'email', email_verification: true });
         router.replace('/(app)');
       } else if (mode === 'forgot') {
         // Step 1 of Clerk's reset_password_email_code flow: create the
@@ -307,6 +312,7 @@ export default function AuthScreen() {
         router.replace('/(app)');
       }
     } catch (err: any) {
+      track('auth_failed', { method: mode, reason: err?.errors?.[0]?.code ?? 'unknown' });
       setError(err.errors?.[0]?.longMessage || err.message || 'Something went wrong');
     } finally {
       setLoading(false);
@@ -366,6 +372,7 @@ export default function AuthScreen() {
       });
       if (createdSessionId && setActive) {
         await setActive({ session: createdSessionId });
+        track('signed_in', { method: 'apple' });
         router.replace('/(app)');
         return;
       }
@@ -385,6 +392,7 @@ export default function AuthScreen() {
       }
       setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
     } catch (err: any) {
+      track('auth_failed', { method: 'apple', reason: err?.errors?.[0]?.code ?? 'unknown' });
       setError(err.errors?.[0]?.longMessage || err.message || 'Apple sign-in failed');
     } finally {
       setAppleLoading(false);
@@ -409,6 +417,7 @@ export default function AuthScreen() {
       });
       if (createdSessionId && setActive) {
         await setActive({ session: createdSessionId });
+        track('signed_in', { method: 'google' });
         router.replace('/(app)');
         return;
       }
@@ -433,6 +442,7 @@ export default function AuthScreen() {
       // always means the redirect URL isn't on Clerk's allowlist.
       setError('Sign-in returned but no session was created. Add the redirect URL to your Clerk allowlist.');
     } catch (err: any) {
+      track('auth_failed', { method: 'google', reason: err?.errors?.[0]?.code ?? 'unknown' });
       setError(err.errors?.[0]?.longMessage || err.message || 'Google sign-in failed');
     } finally {
       setGoogleLoading(false);

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, useMemo, ReactNode, Dispatch, SetStateAction } from 'react';
 import { AppState } from 'react-native';
 import type { ActiveWorkoutExercise } from '@/lib/types';
+import { track } from '@/lib/analytics';
 import {
   persistActiveWorkout,
   clearActiveWorkout,
@@ -158,6 +159,14 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
     setElapsed(0);
     setIsPaused(false);
     setIsActive(true);
+    // Every entry point (routine card, today's pick, freestyle, resume from
+    // history) funnels through here, so this is the one honest "a session
+    // began" signal.
+    track('workout_started', {
+      exercise_count: exs.length,
+      is_guest: !!meta?.isGuestSession,
+      from_routine: !!id,
+    });
   }, []);
 
   // Rebuild the WorkoutContext from a persisted snapshot. Restoring the timer

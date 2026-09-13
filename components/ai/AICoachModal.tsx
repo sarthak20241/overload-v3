@@ -18,6 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
+import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser, hasClerkKey } from '@/hooks/useClerkUser';
@@ -1033,6 +1034,13 @@ function ChatScreen({
     setMessages(prev => [...prev, userMsg, placeholder]);
     setInput('');
     setLoading(true);
+    const askedAt = Date.now();
+    track('coach_message_sent', {
+      chars: text.length,
+      turn: messages.filter((m) => m.role === 'user').length + 1,
+      mode: workoutContext ? 'live_workout' : 'chat',
+      suggested: override != null,
+    });
 
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
@@ -1185,9 +1193,15 @@ function ChatScreen({
           setLoading(false);
           streamRef.current = null;
         });
+        track('coach_response_received', {
+          latency_ms: Date.now() - askedAt,
+          citations: citations?.length ?? 0,
+          mode: workoutContext ? 'live_workout' : 'chat',
+        });
       },
       onError: (errStr) => {
         typewriter.fail(errStr);
+        track('coach_failed', { latency_ms: Date.now() - askedAt, mode: workoutContext ? 'live_workout' : 'chat' });
         setLoading(false);
         streamRef.current = null;
       },
@@ -1202,6 +1216,9 @@ function ChatScreen({
             ? "That's my three for today. Free coaching resets tomorrow. Or go unlimited and I'll answer everything, and reprogram your week as you train."
             : 'Full plan generation is an Overload Pro feature. Your current plan is yours to keep; fresh programming is my paid work.',
         );
+        // The moment a free user hits the wall. Paired with paywall_viewed
+        // this is the whole "does the cap actually sell Pro?" question.
+        track('limit_reached', { feature: 'coach', kind });
         setCapHit(kind);
         setLoading(false);
         streamRef.current = null;
@@ -3218,6 +3235,10 @@ export function AICoachModal({
   useEffect(() => {
     if (visible) void refreshAccess();
   }, [visible, refreshAccess]);
+
+  useEffect(() => {
+    if (visible) track('coach_opened');
+  }, [visible]);
   // Sub-frame double-tap guard — modal closes immediately on save, so the
   // visible-button block goes away fast, but the close animation leaves a tiny
   // window where a second tap could fire before React re-renders.

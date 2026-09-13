@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import {
   Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow,
 } from '@/constants/theme';
@@ -479,6 +480,13 @@ export default function NutritionScreen() {
     // change "2" to "3" would buy the same web searches a second time and slow
     // down the one interaction that has to feel instant.
     const precise = tier === 'precise' && !pending;
+    const parseStartedAt = Date.now();
+    track('meal_parse_started', {
+      tier,
+      auto_log: !!auto,
+      is_correction: !!pending,
+      chars: t.length,
+    });
     const res = pending || tier !== 'quick'
       ? await parseMeal(supabase, { ...args, ...(precise ? { speed: 'super' as const } : {}) })
       : await parseMealStreaming(supabase, args, (rows) => {
@@ -531,6 +539,7 @@ export default function NutritionScreen() {
     // and hid the upgrade entirely. Say what actually happened, keep their text
     // so nothing is lost, and open the same paywall the coach chat opens.
     if (res.kind === 'cap') {
+      track('limit_reached', { feature: 'meal_parse', kind: res.scope, used: res.used ?? null, limit: res.limit ?? null });
       const capLine = capNotice(res);
       pushTurn('drona', capLine);
       if (prevReview) setFlow({ ...prevReview, notice: capLine, proposal: null });
@@ -539,6 +548,7 @@ export default function NutritionScreen() {
       return;
     }
     if (res.kind === 'error') {
+      track('meal_parse_failed', { tier, duration_ms: Date.now() - parseStartedAt, auto_log: !!auto });
       // Clear any standing proposal: it answered the previous message, and
       // leaving it up would attach "use these numbers" to an error the user
       // just got for something else entirely.
@@ -698,6 +708,7 @@ export default function NutritionScreen() {
       // one. Falling through to the updater's `return cur` was silent — the
       // spinner just cleared and the tap looked like it did nothing.
       if (res.kind === 'cap') {
+        track('limit_reached', { feature: 'meal_parse', kind: res.scope, used: res.used ?? null, limit: res.limit ?? null });
         const capLine = capNotice(res);
         // The state update is guarded; the NAVIGATION has to be guarded by the
         // same test. A check the user abandoned (they discarded the card, or

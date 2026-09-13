@@ -124,7 +124,7 @@ export default function FoodDetailScreen() {
           confidence: aiSource === 'estimate' ? 'low' : aiSource === 'web' ? 'medium' : 'high',
           meal_type: meal,
         };
-        ({ error } = await logParsedMeal(supabase, { meal_type: meal, items: [item], drona_line: '' }));
+        ({ error } = await logParsedMeal(supabase, { meal_type: meal, items: [item], drona_line: '' }, undefined, 'search'));
       } else {
         ({ error } = await logFood(supabase, {
           mealType: meal,
