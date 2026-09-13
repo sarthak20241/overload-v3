@@ -9,6 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
+import { PostHogMaskView } from 'posthog-react-native';
 import { track } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -490,389 +491,393 @@ export default function AuthScreen() {
             </Text>
           </Animated.View>
 
-          {/* Card */}
-          <Animated.View
-            entering={FadeInDown.delay(100).duration(500)}
-            style={[
-              styles.card,
-              {
-                backgroundColor: C.elevated,
-                borderColor: C.borderLight,
-              },
-            ]}
-          >
-            {/* Mode tabs */}
-            {(mode === 'login' || mode === 'register') && (
-              <View style={[styles.tabs, { backgroundColor: C.muted }]}>
-                {(['login', 'register'] as Mode[]).map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    onPress={() => { setMode(m); setError(''); setMethodHint(''); }}
-                    style={[
-                      styles.tab,
-                      mode === m && { backgroundColor: Colors.primary },
-                    ]}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[
-                      styles.tabText,
-                      { color: mode === m ? Colors.primaryFg : C.textSecondary },
-                    ]}>
-                      {m === 'login' ? 'Sign In' : 'Register'}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-
-            {/* Forgot header */}
-            {mode === 'forgot' && (
-              <View style={{ marginBottom: Spacing.xxl }}>
-                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Reset Password</Text>
-                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
-                  We'll email you a 6-digit reset code
-                </Text>
-              </View>
-            )}
-
-            {/* Reset header (enter code + new password) */}
-            {mode === 'reset' && (
-              <View style={{ marginBottom: Spacing.xxl }}>
-                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Set a New Password</Text>
-                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
-                  Enter the 6-digit code we sent to {email || 'your email'} and choose a new password
-                </Text>
-              </View>
-            )}
-
-            {/* Verify header */}
-            {mode === 'verify' && (
-              <View style={{ marginBottom: Spacing.xxl }}>
-                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Verify Your Email</Text>
-                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
-                  Enter the 6-digit code we sent to {email || 'your email'}
-                </Text>
-              </View>
-            )}
-
-            {/* MFA header (second factor after a password login) */}
-            {mode === 'mfa' && (
-              <View style={{ marginBottom: Spacing.xxl }}>
-                <Text style={[styles.sectionTitle, { color: C.foreground }]}>Two-Step Verification</Text>
-                <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
-                  {secondFactorStrategy === 'totp'
-                    ? 'Enter the 6-digit code from your authenticator app'
-                    : secondFactorStrategy === 'phone_code'
-                    ? `Enter the code we texted to ${mfaPhoneHint || 'your phone'}`
-                    : 'Enter one of your backup codes'}
-                </Text>
-              </View>
-            )}
-
-            {/* Apple — iOS only. App Store Review Guideline 4.8 requires
-                Sign in with Apple whenever another third-party social login
-                (Google here) is offered on iOS. */}
-            {(mode === 'login' || mode === 'register') && hasClerkKey && Platform.OS === 'ios' && (
-              <TouchableOpacity
-                onPress={handleApple}
-                disabled={authBusy}
-                style={[
-                  styles.appleBtn,
-                  { backgroundColor: Colors.appleBg, borderColor: Colors.appleBg },
-                  // Dim only when *another* auth flow holds the lock — keep
-                  // this button fully opaque while it's the one in flight so
-                  // its spinner reads naturally against the Apple black.
-                  authBusy && !appleLoading && { opacity: 0.5 },
-                ]}
-                activeOpacity={0.7}
-              >
-                {appleLoading ? (
-                  <ActivityIndicator size="small" color={Colors.appleFg} />
-                ) : (
-                  <>
-                    {/* Exception to the project's Feather-icons-at-24px convention.
-                        Feather has no Apple-logo glyph (it's a UI-primitive set,
-                        not a brand-icon set), and Apple HIG mandates the official
-                        Apple logo on the Sign in with Apple button — substituting
-                        any other shape would violate the button's brand contract.
-                        Size 18 keeps the logo proportional to the 14pt button
-                        label per HIG; 24 would visually overpower the text. */}
-                    <Ionicons name="logo-apple" size={18} color={Colors.appleFg} style={{ marginTop: -2 }} />
-                    <Text style={[styles.appleText, { color: Colors.appleFg }]}>
-                      Continue with Apple
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            )}
-
-            {/* Google */}
-            {(mode === 'login' || mode === 'register') && hasClerkKey && (
-              <TouchableOpacity
-                onPress={handleGoogle}
-                disabled={authBusy}
-                style={[
-                  styles.googleBtn,
-                  {
-                    borderColor: C.border,
-                    // Solid muted fill (not the near-transparent glowBg) so
-                    // the Google button has the same visual weight as the
-                    // solid-black Apple button — keeps the two SSO options
-                    // looking like a unified pair instead of one solid,
-                    // one ghost. Theme-aware on purpose: the app renders in
-                    // dark mode (useTheme defaults to 'dark'), and the label
-                    // uses C.foreground — pinning the fill to a light token
-                    // here produces white-on-cream text.
-                    backgroundColor: C.muted,
-                  },
-                  // Dim only when *another* auth flow holds the lock —
-                  // mirrors the Apple button so the visual cue is consistent.
-                  authBusy && !googleLoading && { opacity: 0.5 },
-                ]}
-                activeOpacity={0.7}
-              >
-                {googleLoading ? (
-                  <ActivityIndicator size="small" color={C.textMuted} />
-                ) : (
-                  <>
-                    <GoogleIcon />
-                    <Text style={[styles.googleText, { color: C.foreground }]}>
-                      Continue with Google
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            )}
-
-            {/* Divider */}
-            {(mode === 'login' || mode === 'register') && hasClerkKey && (
-              <View style={styles.divider}>
-                <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
-                <Text style={[styles.dividerText, { color: C.textMuted }]}>OR</Text>
-                <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
-              </View>
-            )}
-
-            {/* Name input (register) */}
-            {mode === 'register' && (
-              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                <Feather name="user" size={15} color={C.textMuted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder="Your name"
-                  placeholderTextColor={C.textMuted}
-                  value={name}
-                  onChangeText={setName}
-                  textContentType="name"
-                  autoComplete="name"
-                  accessibilityLabel="Your name"
-                  style={[styles.input, { color: C.foreground }]}
-                />
-              </View>
-            )}
-
-            {/* Email */}
-            {mode !== 'verify' && mode !== 'reset' && mode !== 'mfa' && (
-              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder="Email address"
-                  placeholderTextColor={C.textMuted}
-                  value={email}
-                  onChangeText={(t) => { setEmail(t); if (methodHint) setMethodHint(''); }}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  textContentType="emailAddress"
-                  autoComplete="email"
-                  accessibilityLabel="Email address"
-                  style={[styles.input, { color: C.foreground }]}
-                />
-              </View>
-            )}
-
-            {/* Verification code (reset) — shown above the new password so the
-                step reads top-to-bottom: code first, then the new password. */}
-            {mode === 'reset' && (
-              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder="123456"
-                  placeholderTextColor={C.textMuted}
-                  value={code}
-                  onChangeText={setCode}
-                  keyboardType="number-pad"
-                  autoCapitalize="none"
-                  maxLength={6}
-                  textContentType="oneTimeCode"
-                  autoComplete="sms-otp"
-                  accessibilityLabel="Reset code"
-                  style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
-                />
-              </View>
-            )}
-
-            {/* Password */}
-            {(mode === 'login' || mode === 'register' || mode === 'reset') && (
-              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                <Feather name="lock" size={15} color={C.textMuted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={mode === 'reset' ? 'New password' : 'Password'}
-                  placeholderTextColor={C.textMuted}
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry={!showPass}
-                  textContentType={mode === 'register' || mode === 'reset' ? 'newPassword' : 'password'}
-                  autoComplete={mode === 'register' || mode === 'reset' ? 'password-new' : 'password'}
-                  accessibilityLabel={mode === 'reset' ? 'New password' : 'Password'}
-                  style={[styles.input, { color: C.foreground }]}
-                />
-                <TouchableOpacity onPress={() => setShowPass(!showPass)} style={styles.eyeBtn}>
-                  <Feather name={showPass ? 'eye-off' : 'eye'} size={15} color={C.textMuted} />
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Verification code */}
-            {mode === 'verify' && (
-              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder="123456"
-                  placeholderTextColor={C.textMuted}
-                  value={code}
-                  onChangeText={setCode}
-                  keyboardType="number-pad"
-                  autoCapitalize="none"
-                  maxLength={6}
-                  textContentType="oneTimeCode"
-                  autoComplete="sms-otp"
-                  accessibilityLabel="Verification code"
-                  style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
-                />
-              </View>
-            )}
-
-            {/* MFA code (second factor). Backup codes are alphanumeric, so only
-                the TOTP / SMS strategies get the numeric 6-digit treatment. */}
-            {mode === 'mfa' && (
-              <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
-                <Feather name="shield" size={15} color={C.textMuted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={secondFactorStrategy === 'backup_code' ? 'Backup code' : '123456'}
-                  placeholderTextColor={C.textMuted}
-                  value={code}
-                  onChangeText={setCode}
-                  keyboardType={secondFactorStrategy === 'backup_code' ? 'default' : 'number-pad'}
-                  autoCapitalize="none"
-                  maxLength={secondFactorStrategy === 'backup_code' ? undefined : 6}
-                  textContentType="oneTimeCode"
-                  autoComplete="one-time-code"
-                  accessibilityLabel="Authentication code"
-                  style={[styles.input, { color: C.foreground, letterSpacing: secondFactorStrategy === 'backup_code' ? 0 : 4 }]}
-                />
-              </View>
-            )}
-
-            {/* Method nudge (e.g. "this email uses Google") — informational,
-                only on the Sign In screen and only when no hard error is
-                competing for attention. Gated to login so it can't bleed onto
-                the reset / 2FA screens. */}
-            {mode === 'login' && !!methodHint && !error && (
-              <View style={styles.infoBox}>
-                <Feather name="info" size={14} color="#60a5fa" />
-                <Text style={styles.infoText}>{methodHint}</Text>
-              </View>
-            )}
-
-            {/* Error */}
-            {!!error && (
-              <View style={styles.errorBox}>
-                <Feather name="alert-circle" size={14} color="#f87171" />
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            )}
-
-            {/* Forgot link */}
-            {mode === 'login' && (
-              <TouchableOpacity
-                onPress={() => { setMode('forgot'); setError(''); }}
-                style={{ alignSelf: 'flex-end', marginBottom: 4 }}
-              >
-                <Text style={[styles.forgotText, { color: C.mutedFg }]}>Forgot password?</Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Submit button */}
-            <TouchableOpacity
-              onPress={handleSubmit}
-              disabled={authBusy}
-              style={[styles.submitBtn, authBusy && { opacity: 0.6 }]}
-              activeOpacity={0.85}
+          {/* Card. Everything in it can carry an email, a name or a sign-in
+              code, so session replay paints it over. The rest of the app's
+              text stays readable in replays (see lib/analytics.ts). */}
+          <PostHogMaskView>
+            <Animated.View
+              entering={FadeInDown.delay(100).duration(500)}
+              style={[
+                styles.card,
+                {
+                  backgroundColor: C.elevated,
+                  borderColor: C.borderLight,
+                },
+              ]}
             >
-              {loading ? (
-                <ActivityIndicator size="small" color={Colors.primaryFg} />
-              ) : (
-                <>
-                  <Text style={styles.submitText}>
-                    {mode === 'login' ? 'Sign In'
-                      : mode === 'register' ? 'Create Account'
-                      : mode === 'verify' ? 'Verify Email'
-                      : mode === 'reset' ? 'Reset Password'
-                      : mode === 'mfa' ? 'Verify'
-                      : 'Send Reset Code'}
-                  </Text>
-                  <Feather name="arrow-right" size={15} color={Colors.primaryFg} />
-                </>
+              {/* Mode tabs */}
+              {(mode === 'login' || mode === 'register') && (
+                <View style={[styles.tabs, { backgroundColor: C.muted }]}>
+                  {(['login', 'register'] as Mode[]).map((m) => (
+                    <TouchableOpacity
+                      key={m}
+                      onPress={() => { setMode(m); setError(''); setMethodHint(''); }}
+                      style={[
+                        styles.tab,
+                        mode === m && { backgroundColor: Colors.primary },
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[
+                        styles.tabText,
+                        { color: mode === m ? Colors.primaryFg : C.textSecondary },
+                      ]}>
+                        {m === 'login' ? 'Sign In' : 'Register'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               )}
-            </TouchableOpacity>
 
-            {/* Verify: resend + cancel */}
-            {mode === 'verify' && (
-              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
-                <TouchableOpacity onPress={handleResendCode}>
-                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setMode('register'); setError(''); setCode(''); }}>
-                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+              {/* Forgot header */}
+              {mode === 'forgot' && (
+                <View style={{ marginBottom: Spacing.xxl }}>
+                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Reset Password</Text>
+                  <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                    We'll email you a 6-digit reset code
+                  </Text>
+                </View>
+              )}
 
-            {/* Reset: resend code + back to login */}
-            {mode === 'reset' && (
-              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
-                <TouchableOpacity onPress={handleResendResetCode}>
-                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); }}>
-                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+              {/* Reset header (enter code + new password) */}
+              {mode === 'reset' && (
+                <View style={{ marginBottom: Spacing.xxl }}>
+                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Set a New Password</Text>
+                  <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                    Enter the 6-digit code we sent to {email || 'your email'} and choose a new password
+                  </Text>
+                </View>
+              )}
 
-            {/* MFA: resend (SMS only) + back to login */}
-            {mode === 'mfa' && (
-              <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
-                {secondFactorStrategy === 'phone_code' && (
-                  <TouchableOpacity onPress={handleResendMfaCode}>
+              {/* Verify header */}
+              {mode === 'verify' && (
+                <View style={{ marginBottom: Spacing.xxl }}>
+                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Verify Your Email</Text>
+                  <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                    Enter the 6-digit code we sent to {email || 'your email'}
+                  </Text>
+                </View>
+              )}
+
+              {/* MFA header (second factor after a password login) */}
+              {mode === 'mfa' && (
+                <View style={{ marginBottom: Spacing.xxl }}>
+                  <Text style={[styles.sectionTitle, { color: C.foreground }]}>Two-Step Verification</Text>
+                  <Text style={[styles.sectionSub, { color: C.mutedFg }]}>
+                    {secondFactorStrategy === 'totp'
+                      ? 'Enter the 6-digit code from your authenticator app'
+                      : secondFactorStrategy === 'phone_code'
+                      ? `Enter the code we texted to ${mfaPhoneHint || 'your phone'}`
+                      : 'Enter one of your backup codes'}
+                  </Text>
+                </View>
+              )}
+
+              {/* Apple — iOS only. App Store Review Guideline 4.8 requires
+                  Sign in with Apple whenever another third-party social login
+                  (Google here) is offered on iOS. */}
+              {(mode === 'login' || mode === 'register') && hasClerkKey && Platform.OS === 'ios' && (
+                <TouchableOpacity
+                  onPress={handleApple}
+                  disabled={authBusy}
+                  style={[
+                    styles.appleBtn,
+                    { backgroundColor: Colors.appleBg, borderColor: Colors.appleBg },
+                    // Dim only when *another* auth flow holds the lock — keep
+                    // this button fully opaque while it's the one in flight so
+                    // its spinner reads naturally against the Apple black.
+                    authBusy && !appleLoading && { opacity: 0.5 },
+                  ]}
+                  activeOpacity={0.7}
+                >
+                  {appleLoading ? (
+                    <ActivityIndicator size="small" color={Colors.appleFg} />
+                  ) : (
+                    <>
+                      {/* Exception to the project's Feather-icons-at-24px convention.
+                          Feather has no Apple-logo glyph (it's a UI-primitive set,
+                          not a brand-icon set), and Apple HIG mandates the official
+                          Apple logo on the Sign in with Apple button — substituting
+                          any other shape would violate the button's brand contract.
+                          Size 18 keeps the logo proportional to the 14pt button
+                          label per HIG; 24 would visually overpower the text. */}
+                      <Ionicons name="logo-apple" size={18} color={Colors.appleFg} style={{ marginTop: -2 }} />
+                      <Text style={[styles.appleText, { color: Colors.appleFg }]}>
+                        Continue with Apple
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+
+              {/* Google */}
+              {(mode === 'login' || mode === 'register') && hasClerkKey && (
+                <TouchableOpacity
+                  onPress={handleGoogle}
+                  disabled={authBusy}
+                  style={[
+                    styles.googleBtn,
+                    {
+                      borderColor: C.border,
+                      // Solid muted fill (not the near-transparent glowBg) so
+                      // the Google button has the same visual weight as the
+                      // solid-black Apple button — keeps the two SSO options
+                      // looking like a unified pair instead of one solid,
+                      // one ghost. Theme-aware on purpose: the app renders in
+                      // dark mode (useTheme defaults to 'dark'), and the label
+                      // uses C.foreground — pinning the fill to a light token
+                      // here produces white-on-cream text.
+                      backgroundColor: C.muted,
+                    },
+                    // Dim only when *another* auth flow holds the lock —
+                    // mirrors the Apple button so the visual cue is consistent.
+                    authBusy && !googleLoading && { opacity: 0.5 },
+                  ]}
+                  activeOpacity={0.7}
+                >
+                  {googleLoading ? (
+                    <ActivityIndicator size="small" color={C.textMuted} />
+                  ) : (
+                    <>
+                      <GoogleIcon />
+                      <Text style={[styles.googleText, { color: C.foreground }]}>
+                        Continue with Google
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+
+              {/* Divider */}
+              {(mode === 'login' || mode === 'register') && hasClerkKey && (
+                <View style={styles.divider}>
+                  <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
+                  <Text style={[styles.dividerText, { color: C.textMuted }]}>OR</Text>
+                  <View style={[styles.dividerLine, { backgroundColor: C.borderLight }]} />
+                </View>
+              )}
+
+              {/* Name input (register) */}
+              {mode === 'register' && (
+                <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                  <Feather name="user" size={15} color={C.textMuted} style={styles.inputIcon} />
+                  <TextInput
+                    placeholder="Your name"
+                    placeholderTextColor={C.textMuted}
+                    value={name}
+                    onChangeText={setName}
+                    textContentType="name"
+                    autoComplete="name"
+                    accessibilityLabel="Your name"
+                    style={[styles.input, { color: C.foreground }]}
+                  />
+                </View>
+              )}
+
+              {/* Email */}
+              {mode !== 'verify' && mode !== 'reset' && mode !== 'mfa' && (
+                <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                  <Feather name="mail" size={15} color={C.textMuted} style={styles.inputIcon} />
+                  <TextInput
+                    placeholder="Email address"
+                    placeholderTextColor={C.textMuted}
+                    value={email}
+                    onChangeText={(t) => { setEmail(t); if (methodHint) setMethodHint(''); }}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    textContentType="emailAddress"
+                    autoComplete="email"
+                    accessibilityLabel="Email address"
+                    style={[styles.input, { color: C.foreground }]}
+                  />
+                </View>
+              )}
+
+              {/* Verification code (reset) — shown above the new password so the
+                  step reads top-to-bottom: code first, then the new password. */}
+              {mode === 'reset' && (
+                <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                  <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
+                  <TextInput
+                    placeholder="123456"
+                    placeholderTextColor={C.textMuted}
+                    value={code}
+                    onChangeText={setCode}
+                    keyboardType="number-pad"
+                    autoCapitalize="none"
+                    maxLength={6}
+                    textContentType="oneTimeCode"
+                    autoComplete="sms-otp"
+                    accessibilityLabel="Reset code"
+                    style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
+                  />
+                </View>
+              )}
+
+              {/* Password */}
+              {(mode === 'login' || mode === 'register' || mode === 'reset') && (
+                <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                  <Feather name="lock" size={15} color={C.textMuted} style={styles.inputIcon} />
+                  <TextInput
+                    placeholder={mode === 'reset' ? 'New password' : 'Password'}
+                    placeholderTextColor={C.textMuted}
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPass}
+                    textContentType={mode === 'register' || mode === 'reset' ? 'newPassword' : 'password'}
+                    autoComplete={mode === 'register' || mode === 'reset' ? 'password-new' : 'password'}
+                    accessibilityLabel={mode === 'reset' ? 'New password' : 'Password'}
+                    style={[styles.input, { color: C.foreground }]}
+                  />
+                  <TouchableOpacity onPress={() => setShowPass(!showPass)} style={styles.eyeBtn}>
+                    <Feather name={showPass ? 'eye-off' : 'eye'} size={15} color={C.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Verification code */}
+              {mode === 'verify' && (
+                <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                  <Feather name="key" size={15} color={C.textMuted} style={styles.inputIcon} />
+                  <TextInput
+                    placeholder="123456"
+                    placeholderTextColor={C.textMuted}
+                    value={code}
+                    onChangeText={setCode}
+                    keyboardType="number-pad"
+                    autoCapitalize="none"
+                    maxLength={6}
+                    textContentType="oneTimeCode"
+                    autoComplete="sms-otp"
+                    accessibilityLabel="Verification code"
+                    style={[styles.input, { color: C.foreground, letterSpacing: 4 }]}
+                  />
+                </View>
+              )}
+
+              {/* MFA code (second factor). Backup codes are alphanumeric, so only
+                  the TOTP / SMS strategies get the numeric 6-digit treatment. */}
+              {mode === 'mfa' && (
+                <View style={[styles.inputWrap, { backgroundColor: C.muted, borderColor: C.border }]}>
+                  <Feather name="shield" size={15} color={C.textMuted} style={styles.inputIcon} />
+                  <TextInput
+                    placeholder={secondFactorStrategy === 'backup_code' ? 'Backup code' : '123456'}
+                    placeholderTextColor={C.textMuted}
+                    value={code}
+                    onChangeText={setCode}
+                    keyboardType={secondFactorStrategy === 'backup_code' ? 'default' : 'number-pad'}
+                    autoCapitalize="none"
+                    maxLength={secondFactorStrategy === 'backup_code' ? undefined : 6}
+                    textContentType="oneTimeCode"
+                    autoComplete="one-time-code"
+                    accessibilityLabel="Authentication code"
+                    style={[styles.input, { color: C.foreground, letterSpacing: secondFactorStrategy === 'backup_code' ? 0 : 4 }]}
+                  />
+                </View>
+              )}
+
+              {/* Method nudge (e.g. "this email uses Google") — informational,
+                  only on the Sign In screen and only when no hard error is
+                  competing for attention. Gated to login so it can't bleed onto
+                  the reset / 2FA screens. */}
+              {mode === 'login' && !!methodHint && !error && (
+                <View style={styles.infoBox}>
+                  <Feather name="info" size={14} color="#60a5fa" />
+                  <Text style={styles.infoText}>{methodHint}</Text>
+                </View>
+              )}
+
+              {/* Error */}
+              {!!error && (
+                <View style={styles.errorBox}>
+                  <Feather name="alert-circle" size={14} color="#f87171" />
+                  <Text style={styles.errorText}>{error}</Text>
+                </View>
+              )}
+
+              {/* Forgot link */}
+              {mode === 'login' && (
+                <TouchableOpacity
+                  onPress={() => { setMode('forgot'); setError(''); }}
+                  style={{ alignSelf: 'flex-end', marginBottom: 4 }}
+                >
+                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Forgot password?</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Submit button */}
+              <TouchableOpacity
+                onPress={handleSubmit}
+                disabled={authBusy}
+                style={[styles.submitBtn, authBusy && { opacity: 0.6 }]}
+                activeOpacity={0.85}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color={Colors.primaryFg} />
+                ) : (
+                  <>
+                    <Text style={styles.submitText}>
+                      {mode === 'login' ? 'Sign In'
+                        : mode === 'register' ? 'Create Account'
+                        : mode === 'verify' ? 'Verify Email'
+                        : mode === 'reset' ? 'Reset Password'
+                        : mode === 'mfa' ? 'Verify'
+                        : 'Send Reset Code'}
+                    </Text>
+                    <Feather name="arrow-right" size={15} color={Colors.primaryFg} />
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {/* Verify: resend + cancel */}
+              {mode === 'verify' && (
+                <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                  <TouchableOpacity onPress={handleResendCode}>
                     <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
                   </TouchableOpacity>
-                )}
-                <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); setPassword(''); }}>
-                  <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+                  <TouchableOpacity onPress={() => { setMode('register'); setError(''); setCode(''); }}>
+                    <Text style={[styles.forgotText, { color: C.textMuted }]}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
 
-            {/* Back to login */}
-            {mode === 'forgot' && (
-              <TouchableOpacity
-                onPress={() => { setMode('login'); setError(''); }}
-                style={{ alignItems: 'center', marginTop: Spacing.md }}
-              >
-                <Text style={[styles.forgotText, { color: C.mutedFg }]}>Back to Sign In</Text>
-              </TouchableOpacity>
-            )}
-          </Animated.View>
+              {/* Reset: resend code + back to login */}
+              {mode === 'reset' && (
+                <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                  <TouchableOpacity onPress={handleResendResetCode}>
+                    <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); }}>
+                    <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* MFA: resend (SMS only) + back to login */}
+              {mode === 'mfa' && (
+                <View style={{ alignItems: 'center', marginTop: Spacing.md, gap: Spacing.sm }}>
+                  {secondFactorStrategy === 'phone_code' && (
+                    <TouchableOpacity onPress={handleResendMfaCode}>
+                      <Text style={[styles.forgotText, { color: C.mutedFg }]}>Resend code</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={() => { setMode('login'); setError(''); setCode(''); setPassword(''); }}>
+                    <Text style={[styles.forgotText, { color: C.textMuted }]}>Back to Sign In</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Back to login */}
+              {mode === 'forgot' && (
+                <TouchableOpacity
+                  onPress={() => { setMode('login'); setError(''); }}
+                  style={{ alignItems: 'center', marginTop: Spacing.md }}
+                >
+                  <Text style={[styles.forgotText, { color: C.mutedFg }]}>Back to Sign In</Text>
+                </TouchableOpacity>
+              )}
+            </Animated.View>
+          </PostHogMaskView>
 
           {/* Guest */}
           {(mode === 'login' || mode === 'register') && (
