@@ -542,11 +542,15 @@ export async function loadActiveProgram(
   const phaseIds = phases.map((ph) => ph.id);
   const routinesByPhase = new Map<string, PhaseRoutine[]>();
   if (phaseIds.length > 0) {
-    const { data: rts } = await supabase
+    const { data: rts, error: rtsErr } = await supabase
       .from('routines')
       .select('id, name, program_phase_id, created_at')
       .in('program_phase_id', phaseIds)
       .order('created_at', { ascending: true });
+    // Same rule as the program and phase reads above. Swallowing this turned a
+    // failed read into "this phase has no routines", which asks the user to
+    // build a split that already exists, and a rebuild unlinks the real one.
+    if (rtsErr) throw rtsErr;
     for (const r of (rts ?? []) as Array<{ id: string; name: string; program_phase_id: string }>) {
       const list = routinesByPhase.get(r.program_phase_id) ?? [];
       list.push({ id: r.id, name: r.name });

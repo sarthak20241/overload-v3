@@ -54,6 +54,7 @@ export function BuildSplitPrompt(props: Props) {
   useEffect(() => {
     let alive = true;
     setLoaded(false);
+    setDismissedAt(null);
     // A different phase is a different question; a Build tap on the old one
     // says nothing about it.
     setAnswered(false);

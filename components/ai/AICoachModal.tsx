@@ -3436,43 +3436,21 @@ export function AICoachModal({
       });
       return;
     }
+    // The phase link is written IN the insert, not as a follow-up update. As a
+    // separate step it could fail after the routine had saved, and the save
+    // then reported success while the phase still had no routines, so the
+    // Goal screen and the dashboard asked to build the split again. Throwing
+    // from a follow-up would be worse: the batch Retry re-inserts the routine.
+    // One row, one write, so the routine and its link land or fail together.
+    // (It was split out once for PostgREST schema-cache lag on a then-new
+    // column; program_phase_id has been live since migration 0096.)
     const { data: routine, error } = await supabase
       .from('routines')
-      .insert({ user_id: clerkId, name: workout.name })
+      .insert({ user_id: clerkId, name: workout.name, program_phase_id: phaseId ?? null })
       .select()
       .single();
 
     if (error || !routine) throw error || new Error('Failed to create routine');
-
-    // Best-effort: link this routine to the program phase it was built for, so
-    // the Goal & Plan screen shows the phase's split as built. Done as a SEPARATE
-    // update (not part of the insert) so a transient failure on the newer
-    // program_phase_id column (e.g. PostgREST schema-cache lag) can never block
-    // the core routine save — the routine still lands, only the link is skipped.
-    if (phaseId) {
-      // supabase-js RESOLVES with { error } rather than throwing, so the old
-      // bare try/catch here caught nothing: a refused link left the routine
-      // saved but orphaned from its phase with no trace anywhere, which reads
-      // on the Goal screen exactly like "the split was never built". Still
-      // non-critical (the routine is saved), but never silent.
-      try {
-        const { data: linked, error: linkErr } = await supabase
-          .from('routines')
-          .update({ program_phase_id: phaseId })
-          .eq('id', routine.id)
-          .select('id');
-        if (linkErr || !linked?.length) {
-          console.warn(
-            '[routine-save] phase link failed:',
-            linkErr?.message ?? 'no row updated',
-            linkErr?.code ?? '',
-            { routine: routine.id, phase: phaseId },
-          );
-        }
-      } catch (e: any) {
-        console.warn('[routine-save] phase link threw:', e?.message ?? e);
-      }
-    }
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
     // Drops save time from N*(2-3) sequential round trips to ~3 round trips total.
