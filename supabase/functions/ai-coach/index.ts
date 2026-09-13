@@ -2572,12 +2572,24 @@ async function handleAnonOnboardingPlan(args: {
   // the starter plan in the same request: one round trip, and the two run
   // concurrently so the build screen waits for max(), not sum().
   //
-  // COST: one quota slot now buys TWO Anthropic calls, so the spend per
-  // allowed anonymous request is roughly double what it was. The per-device
-  // limits (3/day, 5/lifetime) and the global daily breaker in
-  // check_anon_plan_quota (0087) were NOT re-tuned for that; halve the global
-  // cap if the point of the breaker is a spend ceiling rather than a request
-  // ceiling.
+  // COST, measured on Sonnet 4.6 from coach_traces (not estimated): a slot
+  // buys two calls, and an anonymous signup went from ~$0.039 to ~$0.071, so
+  // 1.8x rather than the 2x the call count suggests. Input barely moved
+  // (7.2k -> 8.0k tokens) because only the PLAN prompt carries the exercise
+  // catalog; the program prompt is ~800 tokens and emits no exercise lists.
+  // Nearly all of the delta is output (1.2k -> 3.1k): four phases, each with
+  // diet targets and three directives.
+  //
+  // The limits in check_anon_plan_quota (0087) are deliberately LEFT AS THEY
+  // ARE: 500/day worst case moves from ~$20 to ~$36, and that breaker exists
+  // to bound abuse, not to be a budget. Decided 2026-09-13, so this is a
+  // settled trade and not an oversight to go fixing.
+  //
+  // Both calls are required. generate_plan emits the workouts (catalog-bound
+  // exercises, sets, reps); generate_program emits the road (phases, dated
+  // targets, directives) and its schema forbids exercise lists. tool_choice
+  // forces exactly one tool per request, so one call cannot produce both, and
+  // a user needs both to have something to do today AND a goal to walk to.
   // The program is a bonus on top of the plan: any failure here is logged in
   // the trace and the response simply omits `program`, so the client falls
   // back to its deterministic phases and the plan still ships.
