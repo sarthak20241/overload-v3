@@ -17,6 +17,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
+import { normalizeWeekPattern } from '@/lib/weekPattern';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -31,6 +32,8 @@ export interface ProgramTrainingBlock {
   days_per_week?: number;
   emphasis?: string;
   note?: string;
+  /** One week of this block, 7 entries, Day 1 first. "Rest" marks a day off. */
+  week_pattern?: string[];
 }
 
 export interface ProgramPhase {
@@ -141,6 +144,9 @@ function normalizeBlock(v: unknown): ProgramTrainingBlock | undefined {
     days_per_week: intOrUndef(b.days_per_week),
     emphasis: strOrUndef(b.emphasis),
     note: strOrUndef(b.note),
+    // Kept only when it agrees with days_per_week; otherwise the card would
+    // print two different week lengths side by side.
+    week_pattern: normalizeWeekPattern(b.week_pattern, intOrUndef(b.days_per_week) ?? 0),
   };
 }
 

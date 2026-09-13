@@ -1,0 +1,188 @@
+/**
+ * "Your program is ready. Now let's build week one."
+ *
+ * Onboarding hands out the PROGRAM (the phase-by-phase road) and stops there.
+ * The concrete week of workouts is built afterwards by Drona, from the Goal
+ * screen, so it is written against a real user id instead of a guest blob.
+ * This is the one nudge that closes that gap.
+ *
+ * A centred popup, not a bottom sheet: a sheet reads as "a drawer you opened",
+ * and nobody opened this. Rendered through the root <Portal> rather than RN's
+ * <Modal> for the Android edge-to-edge reason documented there.
+ *
+ * The decision of WHETHER to show is in lib/splitPrompt (pure, tested); this
+ * file owns the storage and the words.
+ */
+import { useCallback, useEffect, useState } from 'react';
+import { View, Text, Pressable, BackHandler, StyleSheet } from 'react-native';
+import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Feather } from '@expo/vector-icons';
+import { Portal } from '@/components/ui/Portal';
+import { DronaMark } from '@/components/coach/DronaMark';
+import { useTheme } from '@/hooks/useTheme';
+import { splitPromptFor, type SplitPromptAction } from '@/lib/splitPrompt';
+import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+
+const DISMISS_KEY = 'overload:split_prompt_dismissed_at';
+/** Set once the ask has been answered for good, so it never returns. */
+const DONE_KEY = 'overload:split_prompt_done';
+
+export async function markSplitPromptDone(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(DONE_KEY, '1');
+  } catch {
+    /* a prompt that shows once more is not worth failing a navigation over */
+  }
+}
+
+interface Props {
+  /** False while auth or the program query is still settling. */
+  ready: boolean;
+  onboardingDone: boolean;
+  isGuest: boolean;
+  hasProgram: boolean;
+  /** Routines linked to the current phase; null until loaded. */
+  phaseRoutineCount: number | null;
+  /** Signed in: open the Goal screen on phase 1's build flow. */
+  onBuild: () => void;
+  /** Guest: send them to sign-in so the program has somewhere to land. */
+  onSignIn: () => void;
+}
+
+export function BuildSplitPrompt(props: Props) {
+  const { C } = useTheme();
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [answered, setAnswered] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [raw, done] = await Promise.all([
+          AsyncStorage.getItem(DISMISS_KEY),
+          AsyncStorage.getItem(DONE_KEY),
+        ]);
+        if (!alive) return;
+        const n = raw ? parseInt(raw, 10) : NaN;
+        setDismissedAt(Number.isFinite(n) ? n : null);
+        setAnswered(done === '1');
+      } catch {
+        /* no stored answer reads the same as never asked */
+      } finally {
+        if (alive) setLoaded(true);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const action: SplitPromptAction = answered
+    ? null
+    : splitPromptFor({
+        ready: props.ready && loaded,
+        onboardingDone: props.onboardingDone,
+        isGuest: props.isGuest,
+        hasProgram: props.hasProgram,
+        phaseRoutineCount: props.phaseRoutineCount,
+        dismissedAt,
+        nowMs: Date.now(),
+      });
+  const visible = action != null;
+
+  const later = useCallback(() => {
+    const now = Date.now();
+    setDismissedAt(now);
+    AsyncStorage.setItem(DISMISS_KEY, String(now)).catch(() => {});
+  }, []);
+
+  // <Portal> has no onRequestClose, so route the Android hardware back button.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      later();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, later]);
+
+  const go = useCallback(() => {
+    setAnswered(true);
+    void markSplitPromptDone();
+    if (action === 'signin') props.onSignIn();
+    else props.onBuild();
+  }, [action, props]);
+
+  return (
+    <Portal>
+      {visible && (
+        <Animated.View
+          entering={FadeIn.duration(220)}
+          exiting={FadeOut.duration(150)}
+          style={[styles.backdrop, { backgroundColor: C.overlay }]}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={later} />
+          <Animated.View
+            entering={ZoomIn.duration(240)}
+            style={[styles.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }]}
+          >
+            <View style={[styles.mark, { backgroundColor: C.muted }]}>
+              <DronaMark size={16} state="static" />
+            </View>
+            <Text style={[styles.title, { color: C.foreground }]}>
+              {action === 'signin' ? 'Your program is waiting' : 'Your program is ready'}
+            </Text>
+            <Text style={[styles.body, { color: C.mutedFg }]}>
+              {action === 'signin'
+                ? 'I have your phases mapped out. Sign in and I will save them to your account, then build the workouts for phase one.'
+                : 'I have your phases mapped out. Now let me build the actual workouts for phase one, so you know exactly what to do on day one.'}
+            </Text>
+
+            <Pressable
+              onPress={go}
+              style={({ pressed }) => [
+                styles.primary,
+                { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 },
+              ]}
+            >
+              <Text style={[styles.primaryText, { color: Colors.primaryFg }]}>
+                {action === 'signin' ? 'Sign in to save it' : 'Build phase 1'}
+              </Text>
+              <Feather name="arrow-right" size={14} color={Colors.primaryFg} />
+            </Pressable>
+            <Pressable onPress={later} style={styles.later} hitSlop={8}>
+              <Text style={[styles.laterText, { color: C.mutedFg }]}>Not now</Text>
+            </Pressable>
+          </Animated.View>
+        </Animated.View>
+      )}
+    </Portal>
+  );
+}
+
+const styles = StyleSheet.create({
+  backdrop: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
+  card: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing.lg,
+  },
+  mark: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  title: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, marginBottom: 6 },
+  body: { fontSize: FontSize.sm, lineHeight: 20, marginBottom: 18 },
+  primary: {
+    height: 46,
+    borderRadius: Radius.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  primaryText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  later: { alignSelf: 'center', paddingVertical: 12, paddingHorizontal: 16 },
+  laterText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+});

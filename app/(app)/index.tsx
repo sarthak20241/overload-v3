@@ -17,6 +17,9 @@ import type { Workout } from '@/lib/types';
 import { getLevelInfo, getXpForWorkout, isMaxLevel } from '@/lib/xp';
 import { ReadinessCard } from '@/components/ui/ReadinessCard';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { BuildSplitPrompt } from '@/components/program/BuildSplitPrompt';
+import { hasCompletedOnboarding } from '@/lib/onboarding';
+import { loadActiveProgram } from '@/lib/programData';
 import { InsightsStrip } from '@/components/insights/InsightsStrip';
 import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
@@ -251,6 +254,50 @@ export default function DashboardScreen() {
     })();
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+
+  // ── The phase 1 split prompt ────────────────────────────────────────────
+  // Onboarding hands out the program and stops; the week of workouts is built
+  // here, afterwards, against a real user id. Read once per identity: the
+  // answer only changes when they act on it, and the popup itself remembers
+  // that. A failed read leaves this null, which reads as "say nothing".
+  const [splitState, setSplitState] = useState<
+    { done: boolean; hasProgram: boolean; count: number | null } | null
+  >(null);
+  // The prompt is a root-Portal overlay, so it would otherwise float above the
+  // paywall that a fresh iOS account hits on the way here. Gate it on this
+  // screen actually being the one in front.
+  const [screenFocused, setScreenFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, []),
+  );
+  useEffect(() => {
+    if (!clerkLoaded) return;
+    let cancelled = false;
+    (async () => {
+      const clerkId = isGuestSession ? null : user?.id ?? null;
+      const done = await hasCompletedOnboarding(clerkId);
+      if (cancelled) return;
+      if (!done || !clerkId) {
+        setSplitState({ done, hasProgram: false, count: null });
+        return;
+      }
+      try {
+        const program = await loadActiveProgram(supabase, clerkId);
+        if (cancelled) return;
+        const phase = program
+          ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? program.phases[0]
+          : null;
+        setSplitState({ done: true, hasProgram: !!program, count: phase ? phase.routines.length : null });
+      } catch {
+        // Offline or RLS hiccup: an unknown split state must not become a nudge.
+        if (!cancelled) setSplitState(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [clerkLoaded, isGuestSession, user?.id, supabase]);
 
   // Today's suggestion (Element 2). Simple, no-AI heuristic for the polish; the
   // real adaptive "coach plans your path" pick is the separate feature workstream.
@@ -871,6 +918,17 @@ export default function DashboardScreen() {
           if (r) router.push(`/workout/${r.id}` as any);
         }}
         onAskCoach={detailRoutine ? () => askCoachAboutRoutine(detailRoutine) : undefined}
+      />
+
+      {/* "Your program is ready, now let's build week one" */}
+      <BuildSplitPrompt
+        ready={splitState != null && screenFocused}
+        onboardingDone={!!splitState?.done}
+        isGuest={isGuestSession || !user?.id}
+        hasProgram={!!splitState?.hasProgram}
+        phaseRoutineCount={splitState?.count ?? null}
+        onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase' } })}
+        onSignIn={() => router.push('/(auth)')}
       />
 
       {/* AI Coach Modal */}

@@ -98,11 +98,12 @@ export async function drainPendingOnboarding(target: {
   if (pending.goalWeightKg && pending.goalWeightKg > 0) {
     await saveBasicInfo({ goalWeight: pending.goalWeightKg });
   }
-  const phaseId = pending.createPlan && pending.program
-    ? await saveOnboardingProgram(pending.program, target)
-    : null;
+  // The starter week stays unlinked from phase 1: phase 1's split is the one
+  // Drona builds from the Goal screen, and the dashboard prompt that sends
+  // the new account there only reads right while the phase is still unbuilt.
+  if (pending.createPlan && pending.program) await saveOnboardingProgram(pending.program, target);
   if (pending.createPlan && pending.plan.length > 0) {
-    await createStarterRoutines(pending.plan, { ...target, programPhaseId: phaseId });
+    await createStarterRoutines(pending.plan, { ...target, programPhaseId: null });
   }
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
@@ -110,9 +111,9 @@ export async function drainPendingOnboarding(target: {
 }
 
 /**
- * Save the onboarding program under a real account and return phase 1's id
- * (so the starter routines can be linked to it). Guests get nothing here; the
- * Goal & Plan screen already needs a Clerk id.
+ * Save the onboarding program under a real account and return phase 1's id.
+ * Guests get nothing here; the Goal & Plan screen already needs a Clerk id,
+ * which is why a guest's prompt asks them to sign in rather than to build.
  *
  * Best-effort by design, and deliberately not retried. Blocking the finish
  * line on this insert would trap the user behind a network blip holding a

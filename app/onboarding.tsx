@@ -90,14 +90,7 @@ import {
   markOnboardingDone,
   onboardingIdentity,
 } from '@/lib/onboarding';
-import {
-  buildAnonIntake,
-  buildOnboardingIntakeMessage,
-  dronaPlanToStarterRoutines,
-  requestAnonOnboardingPlan,
-  requestDronaOnboardingPlan,
-  type DronaOnboardingPlan,
-} from '@/lib/onboardingDrona';
+import { buildAnonIntake, requestAnonOnboardingProgram } from '@/lib/onboardingDrona';
 import { getDeviceId } from '@/lib/deviceId';
 import { setPendingOnboarding, saveOnboardingProgram } from '@/lib/pendingOnboarding';
 import {
@@ -231,17 +224,16 @@ export default function OnboardingScreen() {
     [weightUnit],
   );
 
-  // Deterministic engine: instant, curated, always available. It is the
-  // fallback and the floor of quality; Drona's generated plan replaces it
-  // when generation succeeds (Phase 3b).
-  const plan = useMemo(() => buildStarterRoutines(answers), [answers]);
+  // Deterministic engine: instant, curated, always available. This IS the
+  // starter week now. Onboarding no longer asks Drona for a week of workouts:
+  // that split is built after sign-up from the Goal screen, against the real
+  // account, so this fills the Routines tab in the meantime.
+  const finalPlan = useMemo(() => buildStarterRoutines(answers), [answers]);
 
   // Drona generation state. `buildReady` gates BuildMoment's final tick, so
   // the build screen elastically holds the thinking state while the LLM runs.
-  const [dronaPlan, setDronaPlan] = useState<DronaOnboardingPlan | null>(null);
   const [buildReady, setBuildReady] = useState(false);
   const generationStarted = useRef(false);
-  const finalPlan = dronaPlan?.routines ?? plan;
   // The goal program (phases to the target date), same two-author contract:
   // Drona's when generation succeeds, the deterministic road otherwise.
   const [dronaProgram, setDronaProgram] = useState<GeneratedProgram | null>(null);
@@ -356,66 +348,55 @@ export default function OnboardingScreen() {
           : null;
 
         const programExtras = { weeklyRateKg: weeklyRate, targets };
-        // The program lands independently of the plan: either can fail and the
-        // other still ships, each with its own deterministic floor.
-        const applyProgram = (raw: Record<string, unknown> | null) => {
-          if (!raw) return;
+        // Drona's program replaces the deterministic road when it arrives.
+        // Returns the phase count so the generated event can report what
+        // actually landed rather than what was asked for.
+        const applyProgram = (raw: Record<string, unknown> | null): number => {
+          if (!raw) return 0;
           const mappedProgram = dronaProgramFromStructured(raw, answers, programExtras);
-          if (mappedProgram) setDronaProgram(mappedProgram);
+          if (!mappedProgram) return 0;
+          setDronaProgram(mappedProgram);
+          return mappedProgram.phases.length;
         };
 
-        let input;
+        // ONE forced-tool call, and it is the program. The week of workouts
+        // is no longer generated here: it is built after sign-up from the Goal
+        // screen, so it lands against a real user id instead of a guest blob.
+        let phases = 0;
         if (isSignedIn && getToken) {
-          // Signed-in (re-onboarding / demo): authenticated coach path. Plan
-          // and program are two forced-tool calls, in parallel.
-          //
-          // Unlike the anonymous route these are two separate HTTP requests,
-          // so they reserve TWO of the day's coach slots (RATE_LIMIT_MAX, 30)
-          // rather than one. Onboarding runs once per account, so the cost is
-          // bounded; worth knowing before anything else starts spending them
-          // in pairs.
+          // Signed-in (re-onboarding / demo): authenticated coach path. One
+          // request, so it reserves one of the day's coach slots.
           const token = await getToken();
           if (!token) throw new Error('no token');
-          const message = buildOnboardingIntakeMessage(answers, {
-            weeklyRateKg: weeklyRate,
-            direction,
-            targets: targetsPayload,
-          });
-          const [planRes, programRes] = await Promise.allSettled([
-            requestDronaOnboardingPlan({ token, message }),
-            requestDronaOnboardingProgram({
+          phases = applyProgram(
+            await requestDronaOnboardingProgram({
               token,
               message: buildOnboardingProgramMessage(answers, programExtras),
             }),
-          ]);
-          if (programRes.status === 'fulfilled') applyProgram(programRes.value);
-          if (planRes.status === 'rejected') throw planRes.reason;
-          input = planRes.value;
+          );
         } else {
           // Guest-first funnel: no account yet. Anonymous, device-rate-limited
-          // route; the edge generates plan and program in one request. A 429
-          // or any error just falls through to the deterministic plan below -
-          // the reveal never knows.
+          // route. A 429 or any error just falls through to the deterministic
+          // program below; the reveal never knows.
           const deviceId = await getDeviceId();
           const intake = buildAnonIntake(answers, {
             weeklyRateKg: weeklyRate,
             direction,
             targets: targetsPayload,
           });
-          const res = await requestAnonOnboardingPlan({ deviceId, intake });
-          applyProgram(res.program);
-          input = res.plan;
+          phases = applyProgram(await requestAnonOnboardingProgram({ deviceId, intake }));
         }
-        const mapped = dronaPlanToStarterRoutines(input);
-        if (mapped) setDronaPlan(mapped);
+        // Event names kept as they are so the existing funnel still lines
+        // up; what onboarding generates is now the program, so it reports
+        // phases where it used to report routines.
         track('onboarding_plan_generated', {
           source: 'drona',
           authed: !!(isSignedIn && getToken),
-          routines: mapped?.routines.length ?? 0,
+          phases,
           duration_ms: Date.now() - genStartedAt,
         });
       } catch {
-        /* fall back to the deterministic plan; the reveal never knows */
+        /* fall back to the deterministic program; the reveal never knows */
         // Tracked because a high fallback rate is invisible in the UI by
         // design, and it is the single best predictor of a weak first plan.
         track('onboarding_plan_failed', {
@@ -579,10 +560,15 @@ export default function OnboardingScreen() {
         // so Profile reflects the intake immediately.
         basicInfo.setWeightUnit(weightUnit);
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
-        // Program first so the routines can link to phase 1. Best-effort: a
-        // failed program save returns null and the routines still land.
-        const phaseId = opts.createPlan ? await saveOnboardingProgram(finalProgram, target) : null;
-        if (opts.createPlan) await createStarterRoutines(finalPlan, { ...target, programPhaseId: phaseId });
+        // The starter week is deliberately NOT linked to phase 1. Phase 1's
+        // split is the one Drona builds from the Goal screen after sign-up,
+        // and the dashboard prompt that sends them there only makes sense
+        // while the phase still reads as unbuilt. Best-effort either way: a
+        // failed program save still lets the routines land.
+        if (opts.createPlan) {
+          await saveOnboardingProgram(finalProgram, target);
+          await createStarterRoutines(finalPlan, { ...target, programPhaseId: null });
+        }
         await markOnboardingDone(identity);
         if (opts.createPlan) {
           void flushNow();
@@ -1298,7 +1284,7 @@ export default function OnboardingScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[s.coachText, { color: C.foreground }]}>
-                    {dronaPlan?.rationale ??
+                    {dronaProgram?.rationale ??
                       `Log every session, even the rough ones. I read your sets, watch the trend, and tell you when to add weight. ${targets ? 'Eat to your targets, show' : 'Show'} up ${answers.frequency ?? 3} days a week and the numbers take care of themselves.`}
                   </Text>
                   <Text style={[s.coachSig, { color: C.accentText }]}>COACH DRONA</Text>

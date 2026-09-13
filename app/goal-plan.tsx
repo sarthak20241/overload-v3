@@ -16,11 +16,11 @@
  * split" opens the plan generator seeded to that phase (cadence comes from the
  * phase's training directive). Fully theme-aware, coach-voice copy.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -33,6 +33,7 @@ import {
   type ActiveProgram,
   type ActiveProgramPhaseRow,
 } from '@/lib/programData';
+import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { Colors, Spacing, Radius, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
@@ -63,6 +64,10 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 export default function GoalPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  // ?build=phase arrives from the dashboard prompt that sends a fresh account
+  // straight here to build phase 1. It fires once, after the program loads.
+  const { build: buildParam } = useLocalSearchParams<{ build?: string }>();
+  const autoBuildFired = useRef(false);
   const { C } = useTheme();
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
@@ -179,6 +184,59 @@ export default function GoalPlanScreen() {
     ? program.phases[program.currentPhaseSeq]
     : null;
 
+  // Open the build flow for the user the dashboard sent here, but only while
+  // that phase really has no split: arriving on a built phase should just show
+  // it, and the focus reload must not reopen the coach a second time.
+  useEffect(() => {
+    if (buildParam !== 'phase' || autoBuildFired.current) return;
+    const phase = currentPhase ?? program?.phases[0] ?? null;
+    if (!phase) return;
+    autoBuildFired.current = true;
+    if (phase.routines.length === 0) buildSplitFor(phase);
+  }, [buildParam, currentPhase, program, buildSplitFor]);
+
+  // ── The week, as one line ──────────────────────────────────────────────────
+  // A phase used to say only "Push/Pull/Legs, 5 days a week", which leaves the
+  // reader to invent the week themselves. Days are numbered, not named: "Day 1"
+  // survives a missed Monday.
+  const renderWeekStrip = (ph: ActiveProgramPhaseRow) => {
+    const week = weekPatternFor(ph.training_block);
+    if (!week) return null;
+    return (
+      <View style={styles.weekBlock}>
+        <Text style={[styles.directiveLabel, { color: C.mutedFg }]}>YOUR WEEK</Text>
+        <View style={styles.weekStrip}>
+          <View style={[styles.weekRule, { backgroundColor: C.border }]} />
+          {week.map((label, i) => {
+            const rest = label === REST;
+            return (
+              <View key={i} style={styles.weekCell}>
+                <View
+                  style={[
+                    styles.weekDot,
+                    rest
+                      ? { backgroundColor: C.background, borderColor: C.border }
+                      : { backgroundColor: C.accentText, borderColor: C.accentText },
+                  ]}
+                />
+                <Text style={[styles.weekDay, { color: C.mutedFg }]}>D{i + 1}</Text>
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.weekLabel,
+                    { color: rest ? C.mutedFg : C.foreground, fontWeight: rest ? FontWeight.medium : FontWeight.semibold },
+                  ]}
+                >
+                  {shortDayLabel(label)}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
+
   // ── Shared detail block: targets + directives + split ──────────────────────
   const renderPhaseDetail = (ph: ActiveProgramPhaseRow, opts?: { compact?: boolean }) => {
     const directives: Array<{ icon: 'zap' | 'activity' | 'moon'; label: string; text: string | null }> = [
@@ -222,6 +280,8 @@ export default function GoalPlanScreen() {
             </View>
           )}
         </View>
+
+        {renderWeekStrip(ph)}
 
         {/* Directives as labeled icon rows, one story line each. */}
         {directives.filter((d) => d.text).map((d) => (
@@ -619,6 +679,15 @@ const styles = StyleSheet.create({
   directiveIcon: { width: 24, height: 24, borderRadius: 7, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   directiveLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.8, marginBottom: 2 },
   directiveText: { fontSize: FontSize.sm, lineHeight: 19 },
+
+  weekBlock: { marginTop: 14 },
+  weekStrip: { flexDirection: 'row', marginTop: 8 },
+  // The rule runs behind the dots so the seven days read as one line.
+  weekRule: { position: 'absolute', left: 14, right: 14, top: 4, height: StyleSheet.hairlineWidth },
+  weekCell: { flex: 1, alignItems: 'center', gap: 3 },
+  weekDot: { width: 9, height: 9, borderRadius: 5, borderWidth: 1 },
+  weekDay: { fontSize: 8.5, fontWeight: FontWeight.semibold, letterSpacing: 0.4 },
+  weekLabel: { fontSize: 9.5, textAlign: 'center' },
 
   builtWrap: { marginTop: 14, gap: 6 },
   builtHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },

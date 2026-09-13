@@ -100,6 +100,11 @@ async function isOnboardingDone(identity: string): Promise<boolean> {
   }
 }
 
+/** Has onboarding been completed for this identity (guest or Clerk id)? */
+export function hasCompletedOnboarding(clerkId: string | null | undefined): Promise<boolean> {
+  return isOnboardingDone(onboardingIdentity(clerkId));
+}
+
 /**
  * Has onboarding ever been completed on THIS device as a guest? Used by the
  * entry router to tell a truly-fresh install (→ onboarding first) apart from a

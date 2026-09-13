@@ -151,6 +151,7 @@ export function buildAnonProgramMessage(s: SanitizedIntake, todayISO: string): s
     `- start_date is ${todayISO}. goal is "${s.goalKey}".`,
     `- 2 to 4 phases, earliest first. Put a deload or diet break where recovery calls for it.`,
     `- Every training_block has days_per_week is ${s.frequency}. Pick the split from my goal, days, experience and notes. Do not default to one style.`,
+    `- Every training_block also has week_pattern: 7 entries, Day 1 to Day 7, "Rest" for a day off, with exactly ${s.frequency} training days.`,
     `- objective: 1-2 sentences to me. rationale: 3-4 sentences, plain prose. One line each for the diet, training and readiness directives.`,
     `This is a fresh account with no history, so skip data-lookup tools and emit generate_program directly.`,
   ]
