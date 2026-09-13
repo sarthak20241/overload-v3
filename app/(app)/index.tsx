@@ -29,7 +29,8 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { todayReason } from '@/lib/todayReason';
-import { pickUpNext, dailyPick, type DailyPickMemo, type PickProgram } from '@/lib/todayPick';
+import { pickUpNext, resolveToday, type PickProgram } from '@/lib/todayPick';
+import { deviceTimeZone, localDayISO, readSavedSuggestion, requestSuggestion, type SavedSuggestion } from '@/lib/dailySuggestion';
 import { DoneTodaySheet, type DoneWorkout, type UpNext } from '@/components/workout/DoneTodaySheet';
 import { groupSetsByExercise } from '@/lib/workoutSummary';
 import { weekPatternFor } from '@/lib/weekPattern';
@@ -409,47 +410,88 @@ export default function DashboardScreen() {
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
 
-  // The day's pick is held for the day (lib/todayPick dailyPick), per user on
-  // this device. It is re-picked only when the plan changes: a new day, a new
-  // program or phase, the phase's split built or rebuilt, or the routine gone.
-  const pickIdentity = isGuestSession || !user?.id ? 'guest' : user.id;
-  const [dayMemo, setDayMemo] = useState<DailyPickMemo | null>(null);
-  const [memoLoaded, setMemoLoaded] = useState(false);
+  // The day's saved TODAY pick. The daily-suggestion function makes it at the
+  // user's local 00:00 so it is ready before the app opens. If it is missing,
+  // or was made from a plan that has since changed (a new program, a split just
+  // built, a workout that synced late), the app asks for a new one and the card
+  // says it is setting up. Offline or on any failure, the phone picks itself.
+  const [savedPick, setSavedPick] = useState<SavedSuggestion | null>(null);
+  const [savedRead, setSavedRead] = useState(false);
+  const [requestingPick, setRequestingPick] = useState(false);
+  const requestedBases = useRef(new Set<string>());
   useEffect(() => {
     if (!clerkLoaded) return;
+    const clerkId = user?.id;
+    if (isGuestSession || !clerkId) {
+      setSavedPick(null);
+      setSavedRead(true);
+      return;
+    }
     let cancelled = false;
-    setMemoLoaded(false);
+    const day = localDayISO();
     (async () => {
-      await hydrateCache(pickIdentity);
+      await hydrateCache(clerkId);
+      const cached = readCache<{ row: SavedSuggestion | null }>('todayPick', clerkId);
+      if (!cancelled && cached?.row?.day === day) setSavedPick(cached.row);
+      const row = await readSavedSuggestion(supabase, clerkId, day);
       if (cancelled) return;
-      setDayMemo(readCache<DailyPickMemo>('todayPick', pickIdentity));
-      setMemoLoaded(true);
+      if (row !== undefined) {
+        setSavedPick(row);
+        writeCache('todayPick', clerkId, { row });
+      }
+      setSavedRead(true);
     })();
     return () => { cancelled = true; };
-  }, [clerkLoaded, pickIdentity]);
+  }, [user?.id, isGuestSession, clerkLoaded, focusTick]);
 
-  const pickReady = memoLoaded && settled.workouts && settled.routines && settled.program;
-  // Always read through the memo, so a held pick shows from the first paint;
-  // only SAVE once every input has had its server read.
-  const daily = useMemo(
-    () => dailyPick({ routines, workouts: workouts as any, program, memo: dayMemo }),
-    [routines, workouts, program, dayMemo],
+  const signedIn = !isGuestSession && !!user?.id;
+  const today = useMemo(
+    () => resolveToday({
+      routines,
+      workouts: workouts as any,
+      program,
+      saved: signedIn ? savedPick : null,
+      dataReady: signedIn && savedRead && settled.workouts && settled.routines && settled.program,
+      requesting: requestingPick,
+    }),
+    [routines, workouts, program, savedPick, signedIn, savedRead, settled, requestingPick],
   );
+
   useEffect(() => {
-    if (!pickReady || !daily.memo || daily.memo === dayMemo) return;
-    if (JSON.stringify(daily.memo) === JSON.stringify(dayMemo)) return;
-    setDayMemo(daily.memo);
-    writeCache('todayPick', pickIdentity, daily.memo);
-  }, [pickReady, daily.memo, dayMemo, pickIdentity]);
+    const clerkId = user?.id;
+    const tz = deviceTimeZone();
+    if (!today.needsRequest || !clerkId || !tz || requestingPick) return;
+    const day = localDayISO();
+    const key = `${day}|${today.basis}`;
+    // Once per day and basis: if the server's answer still differs (a workout
+    // not synced yet), the phone's own pick stands instead of asking in a loop.
+    if (requestedBases.current.has(key)) return;
+    requestedBases.current.add(key);
+    const reason = savedPick?.day === day ? 'stale' : 'missing';
+    setRequestingPick(true);
+    requestSuggestion(tz)
+      .then((row) => {
+        track('today_suggestion_requested', { reason, ok: !!row });
+        if (row && row.day === day) {
+          setSavedPick(row);
+          writeCache('todayPick', clerkId, { row });
+        }
+      })
+      .finally(() => setRequestingPick(false));
+  }, [today.needsRequest, today.basis, user?.id, requestingPick, savedPick]);
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
+  //   preparing -> no saved pick yet and the server is making it
   //   complete -> show the most recent session finished today
   //   rest     -> a rest day in the phase's week pattern; names the next session
   //   planned  -> the most due routine. With a program, only the current
   //               phase's split counts, in day order. Else every routine.
   //   new      -> no routines yet, offer to build one
   const todaySuggestion = useMemo(() => {
-    const pick = daily.pick;
+    const pick = today.view;
+    if (pick.kind === 'preparing') {
+      return { kind: 'preparing' as const, routine: null as any, fromProgram: false };
+    }
     if (pick.kind === 'complete') {
       return {
         kind: 'complete' as const,
@@ -477,7 +519,7 @@ export default function DashboardScreen() {
       fromProgram: pick.fromProgram,
       reason: todayReason({ routine: pick.routine as any, workouts: workouts as any }),
     };
-  }, [daily.pick, workouts]);
+  }, [today.view, workouts]);
 
   // What the done-today sheet offers next: the same pick, run from tomorrow.
   // Only worth computing once today is done. With a week pattern it is really

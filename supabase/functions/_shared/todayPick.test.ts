@@ -204,88 +204,88 @@ Deno.test("up next: after today's Day 1, tomorrow is a rest day", () => {
   if (pick.kind === "rest") assertEquals(localDay(pick.resumesOn), "2026-09-15");
 });
 
-// ── The day's pick is held for the day, re-picked only when the plan changes ──
-import { dailyPick, type DailyPickMemo } from "./todayPick.ts";
+// ── The day's saved pick (made by the server at local 00:00) ──
+import { resolveToday, planKey, latestWorkoutBeforeDay, suggestionBasis, type SavedPick } from "./todayPick.ts";
 
 const withId: PickProgram = { ...weekly, id: "prog-1" };
-const firstOpen = (over: Partial<Parameters<typeof dailyPick>[0]> = {}) =>
-  dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo: null, ...over });
+const basisNow = (routines: PickRoutine[], workouts: PickWorkout[], prog: PickProgram | null = withId, now = NOW) =>
+  suggestionBasis(planKey(prog, routines, now), latestWorkoutBeforeDay(workouts, now));
+const saved = (over: Partial<SavedPick> = {}): SavedPick => ({
+  day: "2026-09-13", kind: "planned", routine_id: "d2", resumes_on: null, scheduled: true,
+  basis: basisNow(newestFirst, []), ...over,
+});
+const view = (over: Partial<Parameters<typeof resolveToday>[0]> = {}) =>
+  resolveToday({ routines: newestFirst, workouts: [], program: withId, now: NOW, saved: saved(), dataReady: true, requesting: false, ...over });
 
-Deno.test("daily: the first open of the day picks and saves it", () => {
-  const { pick, memo } = firstOpen();
-  assertEquals(pick.routine?.id, "d1");
-  assertEquals(memo?.day, "2026-09-13");
-  assertEquals(memo?.routineId, "d1");
+Deno.test("saved: a current saved pick is shown as is, even where the phone would pick otherwise", () => {
+  // The phone's own rule says Day 1 here; the server's saved pick says Day 2.
+  const r = view();
+  assertEquals(r.view.routine?.id, "d2");
+  assertEquals(r.needsRequest, false);
 });
 
-Deno.test("daily: later the same day, the saved pick holds even if the rule would now say otherwise", () => {
-  const { memo } = firstOpen();
-  // A Day 1 session from 5 days ago syncs in from another device. Fresh, the rule
-  // would now offer Day 2; the card keeps Day 1 for the rest of today.
-  const later = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-08")], program: withId, now: new Date("2026-09-13T21:00:00"), memo });
-  assertEquals(later.pick.routine?.id, "d1");
-  assertEquals(later.memo, memo);
+Deno.test("saved: no pick for today yet asks for one and, while asking, says it is preparing", () => {
+  const asking = view({ saved: null, requesting: true });
+  assertEquals(asking.view.kind, "preparing");
+  assertEquals(asking.needsRequest, true);
 });
 
-Deno.test("daily: a new day picks again", () => {
-  const { memo } = firstOpen();
-  const tomorrow = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-08")], program: withId, now: new Date("2026-09-14T07:00:00"), memo });
-  assertEquals(tomorrow.pick.routine?.id, "d2");
-  assertEquals(tomorrow.memo?.day, "2026-09-14");
+Deno.test("saved: yesterday's saved pick is not today's", () => {
+  const r = view({ saved: saved({ day: "2026-09-12" }) });
+  assertEquals(r.needsRequest, true);
+  assertEquals(r.view.routine?.id, "d1"); // the phone's own pick, until the server answers
 });
 
-Deno.test("daily: a new program picks again the same day", () => {
-  const { memo } = firstOpen({ program: { ...withId, id: "old-prog" }, routines: [old] });
-  assertEquals(memo?.routineId, "old");
-  const after = dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo });
-  assertEquals(after.pick.routine?.id, "d1");
+Deno.test("saved: a split built after the pick was made asks again", () => {
+  const before = saved({ kind: "planned", routine_id: "old", basis: basisNow([old], []) });
+  const r = view({ saved: before });
+  assertEquals(r.needsRequest, true);
 });
 
-Deno.test("daily: building the phase's split picks again the same day", () => {
-  // Program saved, split not built yet: falls back to every routine.
-  const before = firstOpen({ routines: [old] });
-  assertEquals(before.pick.routine?.id, "old");
-  const built = dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo: before.memo });
-  assertEquals(built.pick.routine?.id, "d1");
-  assertEquals(built.pick.kind === "planned" && built.pick.fromProgram, true);
+Deno.test("saved: a workout from before today that synced late asks again", () => {
+  const late = [on(day1, "2026-09-12")];
+  const r = view({ workouts: late });
+  assertEquals(r.basis === saved().basis, false);
+  assertEquals(r.needsRequest, true);
 });
 
-Deno.test("daily: a deleted routine is not held", () => {
-  const { memo } = firstOpen();
-  const after = dailyPick({ routines: [nextPhase, day3, day2, old], workouts: [], program: withId, now: NOW, memo: { ...memo!, plan: "no-program" } });
-  assertEquals(after.pick.kind, "planned");
-  // Plan key moved too (the split lost d1); either way d1 is never offered.
-  assertEquals(after.pick.routine?.id === "d1", false);
+Deno.test("saved: a session finished today shows done and asks for nothing", () => {
+  const r = view({ workouts: [on(day1, "2026-09-13")], saved: null });
+  assertEquals(r.view.kind, "complete");
+  assertEquals(r.needsRequest, false);
 });
 
-Deno.test("daily: a held routine that vanished without the plan changing is re-picked", () => {
-  const memo: DailyPickMemo = { day: "2026-09-13", plan: "no-program", kind: "planned", routineId: "gone" };
-  const after = dailyPick({ routines: [old], workouts: [], program: null, now: NOW, memo });
-  assertEquals(after.pick.routine?.id, "old");
-  assertEquals(after.memo?.routineId, "old");
+Deno.test("saved: before the server reads settle, a saved pick is trusted and nothing is asked", () => {
+  const r = view({ dataReady: false, saved: saved({ basis: "from-a-stale-cache" }) });
+  assertEquals(r.view.routine?.id, "d2");
+  assertEquals(r.needsRequest, false);
+  const none = view({ dataReady: false, saved: null });
+  assertEquals(none.needsRequest, false);
 });
 
-Deno.test("daily: finishing a workout shows done and keeps the day's memo", () => {
-  const { memo } = firstOpen();
-  const done = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-13")], program: withId, now: NOW, memo });
-  assertEquals(done.pick.kind, "complete");
-  assertEquals(done.memo, memo);
-});
-
-Deno.test("daily: a rest day is held with its next session and date", () => {
-  const first = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-12")], program: withId, now: new Date("2026-09-13T07:00:00"), memo: null });
-  assertEquals(first.pick.kind, "rest");
-  const later = dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo: first.memo });
-  assertEquals(later.pick.kind, "rest");
-  if (later.pick.kind === "rest") {
-    assertEquals(later.pick.next.id, "d2");
-    assertEquals(localDay(later.pick.resumesOn), "2026-09-14");
+Deno.test("saved: a rest day comes back with its next session and date", () => {
+  const r = view({ saved: saved({ kind: "rest", routine_id: "d3", resumes_on: "2026-09-15" }) });
+  assertEquals(r.view.kind, "rest");
+  if (r.view.kind === "rest") {
+    assertEquals(r.view.next.id, "d3");
+    assertEquals(localDay(r.view.resumesOn), "2026-09-15");
   }
 });
 
-Deno.test("daily: 'build one' is not held once routines exist", () => {
-  const empty = dailyPick({ routines: [], workouts: [], program: null, now: NOW, memo: null });
-  assertEquals(empty.pick.kind, "new");
-  const made = dailyPick({ routines: [old], workouts: [], program: null, now: NOW, memo: empty.memo });
-  assertEquals(made.pick.routine?.id, "old");
+Deno.test("saved: a saved routine that was deleted asks again and shows the phone's pick meanwhile", () => {
+  const r = view({ saved: saved({ routine_id: "gone" }) });
+  assertEquals(r.needsRequest, true);
+  assertEquals(r.view.kind, "planned");
+});
+
+Deno.test("saved: 'build one' is not shown once routines exist", () => {
+  const r = view({ saved: saved({ kind: "new", routine_id: null }) });
+  assertEquals(r.view.kind, "planned");
+  assertEquals(r.needsRequest, true);
+});
+
+Deno.test("saved: when the server cannot be reached the card still shows the phone's pick", () => {
+  const r = view({ saved: null, requesting: false });
+  assertEquals(r.view.kind, "planned");
+  assertEquals(r.view.routine?.id, "d1");
 });
