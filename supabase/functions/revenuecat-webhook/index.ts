@@ -27,6 +27,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { pickTransferIds } from "./transferIds.ts";
 import { decideTransfer } from "./transferDecision.ts";
+import { effectiveProductId } from "./eventProduct.ts";
 
 const REVENUECAT_WEBHOOK_SECRET = Deno.env.get("REVENUECAT_WEBHOOK_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -100,6 +101,9 @@ interface RcEvent {
   app_user_id?: string;          // = our clerk_user_id when SDK is logged in
   original_app_user_id?: string;
   product_id?: string;
+  // On PRODUCT_CHANGE this is the product switched TO; `product_id` is the one
+  // switched FROM. See eventProduct.ts.
+  new_product_id?: string;
   store?: string;                 // "APP_STORE" | "PLAY_STORE" | ...
   environment?: "PRODUCTION" | "SANDBOX";
   purchased_at_ms?: number;
@@ -146,8 +150,14 @@ Deno.serve(async (req) => {
     return new Response("Missing event", { status: 400 });
   }
 
+  // On a PRODUCT_CHANGE, product_id is the plan being LEFT, so log both — a
+  // trace showing only the old plan is exactly what made this event type hard
+  // to read when the switch bug was being diagnosed.
+  const loggedProduct = event.new_product_id && event.new_product_id !== event.product_id
+    ? `${event.product_id}->${event.new_product_id}`
+    : event.product_id;
   console.log(
-    `[revenuecat] type=${event.type} user=${event.app_user_id} product=${event.product_id} env=${event.environment}`,
+    `[revenuecat] type=${event.type} user=${event.app_user_id} product=${loggedProduct} env=${event.environment}`,
   );
 
   // Sandbox events arrive when the app is connected to test products
@@ -331,9 +341,12 @@ async function handleTransfer(event: RcEvent): Promise<void> {
 }
 
 async function handleSubscriptionStart(event: RcEvent): Promise<void> {
-  const tier = productIdToTier(event.product_id);
+  // NOT event.product_id: on a PRODUCT_CHANGE that is the plan being LEFT.
+  // See eventProduct.ts for why reading the wrong one costs real money.
+  const productId = effectiveProductId(event);
+  const tier = productIdToTier(productId);
   if (!tier) {
-    console.error(`[revenuecat] unknown product_id on ${event.type}: ${event.product_id}`);
+    console.error(`[revenuecat] unknown product on ${event.type}: ${productId}`);
     return;
   }
   if (tier === "founding_lifetime") {
