@@ -39,6 +39,8 @@ export interface PickWorkout {
 
 /** The persisted program shape the pick needs: when it started, and its phases. */
 export interface PickProgram {
+  /** The program row id. A new program is a new plan, so it re-picks the day. */
+  id?: string;
   start_date: string; // YYYY-MM-DD, local
   phases: {
     id: string;
@@ -199,4 +201,97 @@ export function pickUpNext<R extends PickRoutine>(
   const now = input.now ?? new Date();
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12);
   return { tomorrow, pick: pickToday({ ...input, now: tomorrow }) };
+}
+
+// ── The day's pick, held for the day ─────────────────────────────────────────
+// The TODAY card should not change its mind every time the home screen loads.
+// The first pick of the day is saved and shown all day. It is re-picked only
+// when the plan behind it changes: a new day, a new program, a new phase, a
+// split built or rebuilt for the phase, or the saved routine gone. A session
+// finished today still shows as done; that is status, not a new pick.
+
+/** What is saved for the day. Plain JSON, so it survives a restart. */
+export interface DailyPickMemo {
+  /** Local calendar day, YYYY-MM-DD. */
+  day: string;
+  /** The plan the pick was made against (see planKey). */
+  plan: string;
+  kind: 'planned' | 'rest' | 'new';
+  /** planned: the routine. rest: the session due after the rest. */
+  routineId: string | null;
+  scheduled?: boolean;
+  /** rest only: local YYYY-MM-DD the next session is due. */
+  resumesOn?: string | null;
+}
+
+const localISO = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const atNoon = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d, 12);
+};
+
+/**
+ * The plan a day's pick depends on: which program, which phase today falls
+ * in, and which routines make up that phase's split. Any change here is a
+ * trigger to pick again.
+ */
+export function planKey<R extends PickRoutine>(
+  program: PickProgram | null | undefined,
+  routines: R[] | null | undefined,
+  now: Date,
+): string {
+  const phase = currentPhase(program, now);
+  if (!program || !phase) return 'no-program';
+  const split = (routines ?? [])
+    .filter((r) => r.program_phase_id === phase.id)
+    .map((r) => r.id)
+    .sort()
+    .join(',');
+  return `${program.id ?? program.start_date}|${phase.id}|${split}`;
+}
+
+/**
+ * Today's pick, held for the day. Returns the pick to show and the memo to
+ * save (the same object back when nothing changed, so callers can skip a
+ * write by identity).
+ */
+export function dailyPick<R extends PickRoutine>(
+  input: TodayPickInput<R> & { memo: DailyPickMemo | null | undefined },
+): { pick: TodayPick<R>; memo: DailyPickMemo | null } {
+  const now = input.now ?? new Date();
+  const routines = input.routines ?? [];
+  const fresh = pickToday({ ...input, now });
+  const memo = input.memo ?? null;
+
+  // Done today wins, and leaves the day's memo alone (if the workout is
+  // deleted, the day's pick comes back as it was).
+  if (fresh.kind === 'complete') return { pick: fresh, memo };
+
+  const day = localISO(now);
+  const plan = planKey(input.program, routines, now);
+  const phaseId = currentPhaseId(input.program, now);
+
+  if (memo && memo.day === day && memo.plan === plan) {
+    if (memo.kind === 'new' && routines.length === 0) {
+      return { pick: { kind: 'new', routine: null, fromProgram: false }, memo };
+    }
+    const held = memo.routineId ? routines.find((r) => r.id === memo.routineId) : undefined;
+    if (held && memo.kind === 'planned') {
+      const fromProgram = !!phaseId && held.program_phase_id === phaseId;
+      return { pick: { kind: 'planned', routine: held, fromProgram, scheduled: !!memo.scheduled }, memo };
+    }
+    if (held && memo.kind === 'rest' && memo.resumesOn) {
+      return { pick: { kind: 'rest', routine: null, fromProgram: true, next: held, resumesOn: atNoon(memo.resumesOn) }, memo };
+    }
+    // Held routine gone, or "new" with routines now saved: fall through and pick again.
+  }
+
+  const next: DailyPickMemo =
+    fresh.kind === 'planned'
+      ? { day, plan, kind: 'planned', routineId: fresh.routine.id, scheduled: fresh.scheduled }
+      : fresh.kind === 'rest'
+        ? { day, plan, kind: 'rest', routineId: fresh.next.id, resumesOn: localISO(fresh.resumesOn) }
+        : { day, plan, kind: 'new', routineId: null };
+  return { pick: fresh, memo: next };
 }

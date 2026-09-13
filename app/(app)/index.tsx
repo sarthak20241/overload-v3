@@ -29,7 +29,7 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { todayReason } from '@/lib/todayReason';
-import { pickToday, pickUpNext, type PickProgram } from '@/lib/todayPick';
+import { pickUpNext, dailyPick, type DailyPickMemo, type PickProgram } from '@/lib/todayPick';
 import { DoneTodaySheet, type DoneWorkout, type UpNext } from '@/components/workout/DoneTodaySheet';
 import { groupSetsByExercise } from '@/lib/workoutSummary';
 import { weekPatternFor } from '@/lib/weekPattern';
@@ -152,6 +152,13 @@ export default function DashboardScreen() {
   // The sheet opened from the "today" card once the day's session is done.
   const [doneSheetOpen, setDoneSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Whether each input to the day's TODAY pick has had its SERVER read settle
+  // (or failed offline) on this mount. The day's pick is only saved once all
+  // three have: a pick saved from a stale cache would be held all day.
+  const [settled, setSettled] = useState({ workouts: false, routines: false, program: false });
+  const markSettled = useCallback((key: 'workouts' | 'routines' | 'program') => {
+    setSettled((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  }, []);
   const [userXP, setUserXP] = useState(0);
 
   const hour = new Date().getHours();
@@ -172,6 +179,7 @@ export default function DashboardScreen() {
         (xp, w) => xp + getXpForWorkout(w.workout_sets.length, w.total_volume_kg), 0
       ));
       setLoading(false);
+      markSettled('workouts');
       return;
     }
     const clerkId = user?.id;
@@ -236,6 +244,7 @@ export default function DashboardScreen() {
         // Offline / fetch failed — keep whatever the cache painted; never hang.
         if (!cancelled) setLoading(false);
       }
+      if (!cancelled) markSettled('workouts');
     })();
 
     return () => {
@@ -269,6 +278,7 @@ export default function DashboardScreen() {
     const clerkId = user?.id;
     if (isGuestSession || !clerkId) {
       setRoutines(getGuestRoutines() as any[]);
+      markSettled('routines');
       return;
     }
     let cancelled = false;
@@ -287,6 +297,7 @@ export default function DashboardScreen() {
       } catch {
         // Offline — keep the cached routines.
       }
+      if (!cancelled) markSettled('routines');
     })();
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
@@ -353,6 +364,7 @@ export default function DashboardScreen() {
     const clerkId = user?.id;
     if (isGuestSession || !clerkId) {
       setProgram(null);
+      markSettled('program');
       return;
     }
     let cancelled = false;
@@ -379,6 +391,7 @@ export default function DashboardScreen() {
           // The week pattern is resolved here (coach's if it holds up, else the
           // one built from days_per_week) so lib/todayPick stays import-free.
           next = {
+            id: String(prog.id),
             start_date: String(prog.start_date),
             phases: ((phases ?? []) as Array<PickProgram['phases'][number] & { training_block?: any }>).map(
               ({ training_block, ...ph }) => ({ ...ph, week_pattern: weekPatternFor(training_block) ?? null }),
@@ -391,9 +404,43 @@ export default function DashboardScreen() {
       } catch {
         // Offline: keep the cached program.
       }
+      if (!cancelled) markSettled('program');
     })();
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
+
+  // The day's pick is held for the day (lib/todayPick dailyPick), per user on
+  // this device. It is re-picked only when the plan changes: a new day, a new
+  // program or phase, the phase's split built or rebuilt, or the routine gone.
+  const pickIdentity = isGuestSession || !user?.id ? 'guest' : user.id;
+  const [dayMemo, setDayMemo] = useState<DailyPickMemo | null>(null);
+  const [memoLoaded, setMemoLoaded] = useState(false);
+  useEffect(() => {
+    if (!clerkLoaded) return;
+    let cancelled = false;
+    setMemoLoaded(false);
+    (async () => {
+      await hydrateCache(pickIdentity);
+      if (cancelled) return;
+      setDayMemo(readCache<DailyPickMemo>('todayPick', pickIdentity));
+      setMemoLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, [clerkLoaded, pickIdentity]);
+
+  const pickReady = memoLoaded && settled.workouts && settled.routines && settled.program;
+  // Always read through the memo, so a held pick shows from the first paint;
+  // only SAVE once every input has had its server read.
+  const daily = useMemo(
+    () => dailyPick({ routines, workouts: workouts as any, program, memo: dayMemo }),
+    [routines, workouts, program, dayMemo],
+  );
+  useEffect(() => {
+    if (!pickReady || !daily.memo || daily.memo === dayMemo) return;
+    if (JSON.stringify(daily.memo) === JSON.stringify(dayMemo)) return;
+    setDayMemo(daily.memo);
+    writeCache('todayPick', pickIdentity, daily.memo);
+  }, [pickReady, daily.memo, dayMemo, pickIdentity]);
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
   //   complete -> show the most recent session finished today
@@ -402,7 +449,7 @@ export default function DashboardScreen() {
   //               phase's split counts, in day order. Else every routine.
   //   new      -> no routines yet, offer to build one
   const todaySuggestion = useMemo(() => {
-    const pick = pickToday({ routines, workouts: workouts as any, program });
+    const pick = daily.pick;
     if (pick.kind === 'complete') {
       return {
         kind: 'complete' as const,
@@ -430,7 +477,7 @@ export default function DashboardScreen() {
       fromProgram: pick.fromProgram,
       reason: todayReason({ routine: pick.routine as any, workouts: workouts as any }),
     };
-  }, [routines, workouts, program]);
+  }, [daily.pick, workouts]);
 
   // What the done-today sheet offers next: the same pick, run from tomorrow.
   // Only worth computing once today is done. With a week pattern it is really

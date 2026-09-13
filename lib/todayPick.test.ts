@@ -203,3 +203,89 @@ Deno.test("up next: after today's Day 1, tomorrow is a rest day", () => {
   assertEquals(pick.kind, "rest");
   if (pick.kind === "rest") assertEquals(localDay(pick.resumesOn), "2026-09-15");
 });
+
+// ── The day's pick is held for the day, re-picked only when the plan changes ──
+import { dailyPick, type DailyPickMemo } from "./todayPick.ts";
+
+const withId: PickProgram = { ...weekly, id: "prog-1" };
+const firstOpen = (over: Partial<Parameters<typeof dailyPick>[0]> = {}) =>
+  dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo: null, ...over });
+
+Deno.test("daily: the first open of the day picks and saves it", () => {
+  const { pick, memo } = firstOpen();
+  assertEquals(pick.routine?.id, "d1");
+  assertEquals(memo?.day, "2026-09-13");
+  assertEquals(memo?.routineId, "d1");
+});
+
+Deno.test("daily: later the same day, the saved pick holds even if the rule would now say otherwise", () => {
+  const { memo } = firstOpen();
+  // A Day 1 session from 5 days ago syncs in from another device. Fresh, the rule
+  // would now offer Day 2; the card keeps Day 1 for the rest of today.
+  const later = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-08")], program: withId, now: new Date("2026-09-13T21:00:00"), memo });
+  assertEquals(later.pick.routine?.id, "d1");
+  assertEquals(later.memo, memo);
+});
+
+Deno.test("daily: a new day picks again", () => {
+  const { memo } = firstOpen();
+  const tomorrow = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-08")], program: withId, now: new Date("2026-09-14T07:00:00"), memo });
+  assertEquals(tomorrow.pick.routine?.id, "d2");
+  assertEquals(tomorrow.memo?.day, "2026-09-14");
+});
+
+Deno.test("daily: a new program picks again the same day", () => {
+  const { memo } = firstOpen({ program: { ...withId, id: "old-prog" }, routines: [old] });
+  assertEquals(memo?.routineId, "old");
+  const after = dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo });
+  assertEquals(after.pick.routine?.id, "d1");
+});
+
+Deno.test("daily: building the phase's split picks again the same day", () => {
+  // Program saved, split not built yet: falls back to every routine.
+  const before = firstOpen({ routines: [old] });
+  assertEquals(before.pick.routine?.id, "old");
+  const built = dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo: before.memo });
+  assertEquals(built.pick.routine?.id, "d1");
+  assertEquals(built.pick.kind === "planned" && built.pick.fromProgram, true);
+});
+
+Deno.test("daily: a deleted routine is not held", () => {
+  const { memo } = firstOpen();
+  const after = dailyPick({ routines: [nextPhase, day3, day2, old], workouts: [], program: withId, now: NOW, memo: { ...memo!, plan: "no-program" } });
+  assertEquals(after.pick.kind, "planned");
+  // Plan key moved too (the split lost d1); either way d1 is never offered.
+  assertEquals(after.pick.routine?.id === "d1", false);
+});
+
+Deno.test("daily: a held routine that vanished without the plan changing is re-picked", () => {
+  const memo: DailyPickMemo = { day: "2026-09-13", plan: "no-program", kind: "planned", routineId: "gone" };
+  const after = dailyPick({ routines: [old], workouts: [], program: null, now: NOW, memo });
+  assertEquals(after.pick.routine?.id, "old");
+  assertEquals(after.memo?.routineId, "old");
+});
+
+Deno.test("daily: finishing a workout shows done and keeps the day's memo", () => {
+  const { memo } = firstOpen();
+  const done = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-13")], program: withId, now: NOW, memo });
+  assertEquals(done.pick.kind, "complete");
+  assertEquals(done.memo, memo);
+});
+
+Deno.test("daily: a rest day is held with its next session and date", () => {
+  const first = dailyPick({ routines: newestFirst, workouts: [on(day1, "2026-09-12")], program: withId, now: new Date("2026-09-13T07:00:00"), memo: null });
+  assertEquals(first.pick.kind, "rest");
+  const later = dailyPick({ routines: newestFirst, workouts: [], program: withId, now: NOW, memo: first.memo });
+  assertEquals(later.pick.kind, "rest");
+  if (later.pick.kind === "rest") {
+    assertEquals(later.pick.next.id, "d2");
+    assertEquals(localDay(later.pick.resumesOn), "2026-09-14");
+  }
+});
+
+Deno.test("daily: 'build one' is not held once routines exist", () => {
+  const empty = dailyPick({ routines: [], workouts: [], program: null, now: NOW, memo: null });
+  assertEquals(empty.pick.kind, "new");
+  const made = dailyPick({ routines: [old], workouts: [], program: null, now: NOW, memo: empty.memo });
+  assertEquals(made.pick.routine?.id, "old");
+});
