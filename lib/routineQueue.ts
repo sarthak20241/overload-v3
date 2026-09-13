@@ -191,8 +191,16 @@ export function mergePendingRoutines(serverRoutines: any[], userId: string | nul
  */
 export function applyRoutineToCache(userId: string, entry: PendingRoutine): void {
   const existing = readCache<any[]>('routines', userId) ?? [];
+  const prev = existing.find((r) => r.id === entry.routineId);
   const without = existing.filter((r) => r.id !== entry.routineId);
-  writeCache('routines', userId, [pendingRoutineToCacheRow(entry), ...without]);
+  // Keep the phase link on the cached row, so the dashboard's TODAY pick still
+  // sees a program routine offline. An edit carries no programPhaseId, so it
+  // inherits the link the row already had.
+  const row = {
+    ...pendingRoutineToCacheRow(entry),
+    program_phase_id: entry.programPhaseId ?? prev?.program_phase_id ?? null,
+  };
+  writeCache('routines', userId, [row, ...without]);
 }
 
 // --- flush engine ---

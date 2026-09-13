@@ -23,9 +23,10 @@ import { MilestoneUpsellCard } from '@/components/insights/MilestoneUpsellCard';
 import { detectInsights } from '@/lib/insights';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
-import { hydrateCache, readCache } from '@/lib/localCache';
+import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { todayReason } from '@/lib/todayReason';
+import { pickToday, type PickProgram } from '@/lib/todayPick';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
@@ -128,6 +129,9 @@ export default function DashboardScreen() {
   const { pendingCount } = useSync();
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [routines, setRoutines] = useState<any[]>([]);
+  // The active coach program, just enough to know today's phase. The TODAY
+  // card picks from that phase's split. null = no program (or a guest).
+  const [program, setProgram] = useState<PickProgram | null>(null);
   // The session-preview sheet opened from the "today" card (planned suggestion).
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
   const [loading, setLoading] = useState(true);
@@ -253,37 +257,66 @@ export default function DashboardScreen() {
     return () => { cancelled = true; };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
 
-  // Today's suggestion (Element 2). Simple, no-AI heuristic for the polish; the
-  // real adaptive "coach plans your path" pick is the separate feature workstream.
+  // Load the active program's start date + phases for the TODAY pick. Offline-
+  // first like routines: the cached shape is wrapped so "no program" (null) is
+  // told apart from "nothing cached yet". A failed read keeps what we had.
+  useEffect(() => {
+    if (!clerkLoaded) return;
+    const clerkId = user?.id;
+    if (isGuestSession || !clerkId) {
+      setProgram(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      await hydrateCache(clerkId);
+      const cached = readCache<{ program: PickProgram | null }>('activeProgram', clerkId);
+      if (cached && !cancelled) setProgram(cached.program);
+      try {
+        const { data: prog, error: progErr } = await supabase
+          .from('coach_programs')
+          .select('id, start_date')
+          .eq('user_id', clerkId)
+          .eq('status', 'active')
+          .maybeSingle();
+        if (progErr) throw progErr;
+        let next: PickProgram | null = null;
+        if (prog) {
+          const { data: phases, error: phErr } = await supabase
+            .from('coach_program_phases')
+            .select('id, duration_weeks, start_offset_weeks')
+            .eq('program_id', prog.id)
+            .order('seq', { ascending: true });
+          if (phErr) throw phErr;
+          next = { start_date: String(prog.start_date), phases: (phases as PickProgram['phases']) ?? [] };
+        }
+        if (cancelled) return;
+        setProgram(next);
+        writeCache('activeProgram', clerkId, { program: next });
+      } catch {
+        // Offline: keep the cached program.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+
+  // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
   //   rest    -> already trained today, recover
-  //   planned -> the routine done least recently (the most "due")
+  //   planned -> the most due routine. With a program, only the current
+  //              phase's split counts, in day order. Else every routine.
   //   new     -> no routines yet, offer to build one
   const todaySuggestion = useMemo(() => {
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const trainedToday = workouts.some((w: any) => {
-      const t = new Date(w.started_at || w.created_at || 0).getTime();
-      return t >= startOfToday.getTime();
-    });
-    if (trainedToday) return { kind: 'rest' as const, routine: null as any };
-    if (!routines || routines.length === 0) return { kind: 'new' as const, routine: null as any };
-    const lastDoneAt = (r: any) => {
-      const matches = workouts.filter((w: any) =>
-        (w.routine_id && w.routine_id === r.id) ||
-        (w.name && r.name && String(w.name).toLowerCase() === String(r.name).toLowerCase()),
-      );
-      if (matches.length === 0) return 0; // never done -> most due
-      return Math.max(...matches.map((w: any) => new Date(w.started_at || w.created_at || 0).getTime()));
-    };
-    const pick = [...routines].sort((a, b) => lastDoneAt(a) - lastDoneAt(b))[0];
+    const pick = pickToday({ routines, workouts: workouts as any, program });
+    if (pick.kind !== 'planned') return { kind: pick.kind, routine: null as any, fromProgram: false };
     // The line under the title: why this session, today. Deterministic, from
     // the same workouts the card is already holding, so it costs one pass.
     return {
       kind: 'planned' as const,
-      routine: pick,
-      reason: todayReason({ routine: pick as any, workouts: workouts as any }),
+      routine: pick.routine,
+      fromProgram: pick.fromProgram,
+      reason: todayReason({ routine: pick.routine as any, workouts: workouts as any }),
     };
-  }, [routines, workouts]);
+  }, [routines, workouts, program]);
 
   // Tapping the today's-suggestion card. 'planned' opens an in-place session
   // preview (the shared routine-detail sheet) where the user can see the
@@ -292,6 +325,7 @@ export default function DashboardScreen() {
     track('today_suggestion_tapped', {
       kind: todaySuggestion.kind,
       has_reason: !!todaySuggestion.reason,
+      from_program: todaySuggestion.fromProgram,
       routine_count: routines.length,
       workout_count: workouts.length,
     });
