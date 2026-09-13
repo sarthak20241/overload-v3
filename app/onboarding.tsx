@@ -727,7 +727,9 @@ export default function OnboardingScreen() {
                 entering={FadeInDown.delay(320).duration(500)}
                 style={[s.heroTitle, { color: C.foreground }]}
               >
-                Say where you want to be. I handle the rest.
+                {/* A hard break: the two clauses are the two halves of the deal, and
+                    a natural wrap left a lone "I" hanging at the end of line one. */}
+                Say where you want to be.{'\n'}I handle the rest.
               </Animated.Text>
               <Animated.Text
                 entering={FadeInDown.delay(420).duration(500)}
