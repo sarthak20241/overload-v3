@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
@@ -243,6 +243,23 @@ export default function DashboardScreen() {
     };
   }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
 
+  // Bumped each time the dashboard comes BACK into focus, so routines and the
+  // program reload after another screen changed them. The Goal screen builds a
+  // phase's split with direct inserts that never touch the sync queue, so
+  // pendingCount never moves and the TODAY card kept offering an old routine
+  // until the app restarted. The first focus is the mount, which already loads.
+  const [focusTick, setFocusTick] = useState(0);
+  const hasFocusedOnce = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!hasFocusedOnce.current) {
+        hasFocusedOnce.current = true;
+        return;
+      }
+      setFocusTick((t) => t + 1);
+    }, []),
+  );
+
   // Load the user's saved routines so the "today's suggestion" card can pick a
   // planned session. Offline-first like the workouts fetch above, but READ-ONLY
   // on the shared 'routines' cache: routines.tsx owns the canonical (pending-
@@ -272,7 +289,7 @@ export default function DashboardScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+  }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
 
   // ── The phase 1 split prompt ────────────────────────────────────────────
   // Onboarding hands out the program and stops; the week of workouts is built
@@ -376,7 +393,7 @@ export default function DashboardScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [user?.id, isGuestSession, clerkLoaded, pendingCount]);
+  }, [user?.id, isGuestSession, clerkLoaded, pendingCount, focusTick]);
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
   //   complete -> show the most recent session finished today
