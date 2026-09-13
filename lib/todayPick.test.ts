@@ -83,6 +83,21 @@ Deno.test("a completed workout shows the most recent session done today", () => 
   assertEquals(pick.completedWorkout?.name, "Arms");
 });
 
+Deno.test("a session that ran past midnight counts as done today", () => {
+  const late = {
+    name: "Late Push",
+    started_at: new Date("2026-09-12T23:40:00").toISOString(),
+    finished_at: new Date("2026-09-13T00:35:00").toISOString(),
+  };
+  const pick = pickToday({ routines: newestFirst, workouts: [late], program, now: NOW });
+  assertEquals(pick.kind, "complete");
+});
+
+Deno.test("yesterday's session is not today's, even without finished_at", () => {
+  const legacy = { name: "Arms", started_at: new Date("2026-09-12T20:00:00").toISOString(), finished_at: null };
+  assertEquals(pickToday({ routines: newestFirst, workouts: [legacy], program, now: NOW }).kind, "planned");
+});
+
 Deno.test("no routines means build one", () => {
   assertEquals(pickToday({ routines: [], workouts: [], program, now: NOW }).kind, "new");
 });
