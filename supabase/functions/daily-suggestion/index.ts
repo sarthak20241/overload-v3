@@ -53,6 +53,25 @@ async function clerkUserId(authHeader: string | null): Promise<string | null> {
   }
 }
 
+/**
+ * Retry a PostgREST call that came back with an error. The API layer answers
+ * the odd plain read with a 504 in well under its own timeout (seen twice on
+ * 2026-09-13 on single-row reads, with nothing in the Postgres log), and one
+ * bad answer used to sink the whole midnight run. Every call retried here is a
+ * read or an idempotent upsert, so a repeat is safe.
+ */
+async function retried<T extends { error: { message: string } | null }>(
+  call: () => PromiseLike<T>,
+  attempts = 3,
+): Promise<T> {
+  let result = await call();
+  for (let i = 1; i < attempts && result.error; i += 1) {
+    await new Promise((r) => setTimeout(r, 400 * i * i));
+    result = await call();
+  }
+  return result;
+}
+
 const admin = () =>
   createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
@@ -66,10 +85,10 @@ async function generate(
 ): Promise<{ row: SuggestionRow | null; saved: boolean; error?: string }> {
   const since = new Date(now.getTime() - WORKOUT_WINDOW_DAYS * 86_400_000).toISOString();
   const [routinesRes, workoutsRes, programRes] = await Promise.all([
-    db.from("routines").select("id, name, created_at, program_phase_id").eq("user_id", userId),
-    db.from("workouts").select("name, routine_id, started_at, finished_at, created_at")
-      .eq("user_id", userId).gte("started_at", since),
-    db.from("coach_programs").select("id, start_date").eq("user_id", userId).eq("status", "active").maybeSingle(),
+    retried(() => db.from("routines").select("id, name, created_at, program_phase_id").eq("user_id", userId)),
+    retried(() => db.from("workouts").select("name, routine_id, started_at, finished_at, created_at")
+      .eq("user_id", userId).gte("started_at", since)),
+    retried(() => db.from("coach_programs").select("id, start_date").eq("user_id", userId).eq("status", "active").maybeSingle()),
   ]);
   // supabase-js resolves with { error } rather than throwing: never build a
   // pick from a half-read, it would be saved and held all day.
@@ -78,9 +97,10 @@ async function generate(
 
   let program: SuggestionProgram | null = null;
   if (programRes.data) {
-    const phasesRes = await db.from("coach_program_phases")
+    const programId = programRes.data.id;
+    const phasesRes = await retried(() => db.from("coach_program_phases")
       .select("id, duration_weeks, start_offset_weeks, training_block")
-      .eq("program_id", programRes.data.id).order("seq", { ascending: true });
+      .eq("program_id", programId).order("seq", { ascending: true }));
     if (phasesRes.error) return { row: null, saved: false, error: phasesRes.error.message };
     program = { id: programRes.data.id, start_date: String(programRes.data.start_date), phases: phasesRes.data ?? [] };
   }
@@ -94,10 +114,10 @@ async function generate(
   });
   if (!row) return { row: null, saved: false, error: "unknown time zone" };
 
-  const { error: upErr } = await db.from("daily_suggestions").upsert(
+  const { error: upErr } = await retried(() => db.from("daily_suggestions").upsert(
     { user_id: userId, ...row, source, updated_at: new Date().toISOString() },
     { onConflict: "user_id,day" },
-  );
+  ));
   return { row, saved: !upErr, error: upErr?.message };
 }
 
@@ -108,11 +128,11 @@ async function runCron(): Promise<Response> {
   // thousand silently never get a midnight pick.
   const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
   for (let from = 0; ; from += USER_PAGE) {
-    const { data, error } = await db.from("user_profiles")
+    const { data, error } = await retried(() => db.from("user_profiles")
       .select("clerk_user_id, timezone").not("timezone", "is", null)
       .order("clerk_user_id", { ascending: true })
-      .range(from, from + USER_PAGE - 1);
-    if (error) return json({ error: error.message }, 500);
+      .range(from, from + USER_PAGE - 1));
+    if (error) return json({ error: error.message, stage: "users" }, 500);
     users.push(...(data ?? []));
     if (!data || data.length < USER_PAGE) break;
   }
@@ -126,9 +146,9 @@ async function runCron(): Promise<Response> {
   const have = new Set<string>();
   if (days.length > 0) {
     for (let from = 0; ; from += USER_PAGE) {
-      const { data: rows, error: rowsErr } = await db.from("daily_suggestions").select("user_id, day")
-        .in("day", days).order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1);
-      if (rowsErr) return json({ error: rowsErr.message }, 500);
+      const { data: rows, error: rowsErr } = await retried(() => db.from("daily_suggestions").select("user_id, day")
+        .in("day", days).order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1));
+      if (rowsErr) return json({ error: rowsErr.message, stage: "existing" }, 500);
       for (const r of rows ?? []) have.add(`${r.user_id}|${r.day}`);
       if (!rows || rows.length < USER_PAGE) break;
     }
@@ -181,7 +201,7 @@ Deno.serve(async (req) => {
   }
   if (body.mode === "cron") {
     const secret = req.headers.get("x-cron-secret") ?? "";
-    const { data: ok, error } = await admin().rpc("daily_suggestion_cron_ok", { p_secret: secret });
+    const { data: ok, error } = await retried(() => admin().rpc("daily_suggestion_cron_ok", { p_secret: secret }));
     if (error || ok !== true) return json({ error: "Unauthorized" }, 401);
     return await runCron();
   }
