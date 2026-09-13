@@ -809,7 +809,11 @@ export default function NutritionScreen() {
     setFlow((f): ParseFlow => {
       if (f.status !== 'review') return f;
         const items = f.meal.items.filter((_, idx) => idx !== i);
-      if (items.length === 0) return { status: 'idle' };
+      if (items.length === 0) {
+        // The card is gone; its edit count must not leak into the next one.
+        editCountRef.current = 0;
+        return { status: 'idle' };
+      }
       // Removing the last line of a section collapses the card, exactly as a
       // group move does, so the head is recomputed here for the same reason:
       // a stale card-level section is what onAdd falls back to for any line

@@ -1298,7 +1298,7 @@ function RoutineMenuModal({
         message={`Are you sure you want to delete "${routineName}"? This cannot be undone.`}
         buttons={[
           { text: 'Cancel', onPress: () => { setShowDeleteConfirm(false); onClose(); } },
-          { text: 'Delete', style: 'destructive', onPress: () => { track('routine_deleted'); setShowDeleteConfirm(false); onClose(); onDelete(); } },
+          { text: 'Delete', style: 'destructive', onPress: () => { setShowDeleteConfirm(false); onClose(); onDelete(); } },
         ]}
         onClose={() => { setShowDeleteConfirm(false); onClose(); }}
       />
@@ -1469,6 +1469,7 @@ export default function RoutinesScreen() {
       // Persist the delete in the guest store so it stays gone after the next
       // fetchRoutines() (which reads from getGuestRoutines).
       removeGuestRoutine(id);
+      track('routine_deleted', { is_guest: true, exercise_count: target.routine_exercises?.length ?? 0 });
       toast.success(`Deleted “${target.name}”`);
       return;
     }
@@ -1478,6 +1479,9 @@ export default function RoutinesScreen() {
       if (user?.id) q = q.eq('user_id', user.id);
       const { error } = await q;
       if (error) throw error;
+      // After the row is gone: a failed delete is rolled back below and must
+      // not count. Retry re-enters handleDelete but only reaches here once.
+      track('routine_deleted', { is_guest: false, exercise_count: target.routine_exercises?.length ?? 0 });
       toast.success(`Deleted “${target.name}”`);
     } catch {
       setRoutines(previous);

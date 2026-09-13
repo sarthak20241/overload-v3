@@ -80,6 +80,9 @@ export function AnalyticsBridge() {
       if (identified.current) {
         resetAnalytics();
         identified.current = null;
+        // reset() wipes super properties too, and the guest effect above will
+        // not re-run unless the flag flips, so put it back here.
+        registerSuperProps({ is_guest: isGuestSession });
       }
       return;
     }
@@ -91,7 +94,7 @@ export function AnalyticsBridge() {
       name: user.fullName ?? undefined,
       signed_up_at: user.createdAt ? new Date(user.createdAt).toISOString() : undefined,
     });
-  }, [isLoaded, isSignedIn, user?.id]);
+  }, [isLoaded, isSignedIn, user?.id, isGuestSession]);
 
   // ── Person properties from the profile row ───────────────────────────────
   // Tier, level and goal are what every question gets sliced by ("do paying

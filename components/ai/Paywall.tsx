@@ -232,6 +232,8 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
       if (hasActive) {
         const flipped = await waitForTierFlip();
         if (flipped) {
+          paywallResolved.current = true;
+          track('purchase_restored', { source: 'coach_sheet' });
           toast.success('Restored. Welcome back.');
           await onPurchased();
           onClose();

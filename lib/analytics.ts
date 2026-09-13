@@ -274,10 +274,15 @@ export function resetAnalytics(): void {
   } catch {}
 }
 
-/** Push buffered events now (before a screen that may kill the app). */
-export function flushAnalytics(): void {
+/**
+ * Push buffered events now. Await it before a sign-out or account delete:
+ * the bridge resets the person the moment the session drops, so anything
+ * still in the queue after that would land on a stranger. Best effort;
+ * resolves either way.
+ */
+export async function flushAnalytics(): Promise<void> {
   try {
-    void posthog?.flush();
+    await posthog?.flush();
   } catch {}
 }
 

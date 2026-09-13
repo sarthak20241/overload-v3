@@ -843,6 +843,7 @@ export default function HistoryScreen() {
         toast.error("Couldn't delete workout");
         return;
       }
+      track('history_workout_deleted', { backend: 'guest' });
       toast.success('Workout deleted');
       return;
     }
@@ -852,6 +853,7 @@ export default function HistoryScreen() {
     const clerkId = user?.id;
     if (clerkId && getPendingWorkouts(clerkId).some((e) => e.clientId === id)) {
       removePendingWorkout(clerkId, id);
+      track('history_workout_deleted', { backend: 'pending' });
       toast.success('Workout deleted');
       return;
     }
@@ -880,6 +882,9 @@ export default function HistoryScreen() {
       // Prune it from the persisted workout caches so an offline reopen of
       // history/dashboard/analytics doesn't resurrect the deleted workout.
       evictWorkoutFromCaches(user?.id, id);
+      // After the row is gone, so a failed delete (rolled back above) never
+      // counts. Retry re-enters this function but only reaches here once.
+      track('history_workout_deleted', { backend: 'synced' });
       toast.success('Workout deleted');
     } catch {
       setWorkouts(previous);
@@ -892,9 +897,6 @@ export default function HistoryScreen() {
   const confirmDelete = () => {
     const id = deleteId;
     if (!id) return;
-    // Tracked at the confirm, not in performDelete: the toast's Retry re-enters
-    // performDelete and would double-count.
-    track('history_workout_deleted', { is_guest: isGuestSession });
     setDeleteId(null);
     performDelete(id);
   };

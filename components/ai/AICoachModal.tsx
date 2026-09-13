@@ -1136,6 +1136,7 @@ function ChatScreen({
           const edit = parseCoachWorkoutEdit(input);
           if (!edit) return;
           handledEdit = true;
+          track('coach_workout_edit_proposed', { ops_count: edit.operations.length });
           setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
           return;
         }

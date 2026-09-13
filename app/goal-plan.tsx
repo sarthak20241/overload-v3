@@ -176,7 +176,7 @@ export default function GoalPlanScreen() {
         },
       ],
     );
-  }, [supabase, clerkId, ending, load]);
+  }, [supabase, clerkId, ending, load, program]);
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
 

@@ -790,8 +790,13 @@ export default function ActiveWorkoutScreen() {
 
   // Rest timer. overrideTarget (seconds) drives a shorter inter-side rest for
   // unilateral sets; omit it for the normal between-sets rest (restSeconds).
-  const startRestTimer = useCallback((overrideTarget?: number | null) => {
-    track('rest_started', { kind: overrideTarget != null ? 'between_sides' : 'between_sets', target_seconds: overrideTarget ?? null });
+  // `target` is analytics only: the real target is derived from state (see
+  // restTarget), which this callback cannot read without going stale.
+  const startRestTimer = useCallback((overrideTarget?: number | null, target?: { kind: 'superset_round' | 'between_sets'; seconds: number | null }) => {
+    track('rest_started', {
+      kind: overrideTarget != null ? 'between_sides' : (target?.kind ?? 'between_sets'),
+      target_seconds: overrideTarget ?? target?.seconds ?? null,
+    });
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     lastSetTimeRef.current = Date.now();
     setRestOverrideTarget(overrideTarget ?? null);
@@ -1384,12 +1389,12 @@ export default function ActiveWorkoutScreen() {
       // the group so manual navigation OUT of the group tears it down.
       setRestGroupTarget(step.restTarget);
       setRestGroupId(updated[currentIdx]?.supersetGroup ?? null);
-      startRestTimer();
+      startRestTimer(undefined, { kind: 'superset_round', seconds: step.restTarget });
     } else {
       // Solo or whole group finished: the normal between-sets rest.
       setRestGroupTarget(null);
       setRestGroupId(null);
-      startRestTimer();
+      startRestTimer(undefined, { kind: 'between_sets', seconds: currentEx.restSeconds ?? null });
     }
 
     // Zero the duration stopwatch + field so the next set times from scratch. Done
@@ -2036,6 +2041,8 @@ export default function ActiveWorkoutScreen() {
       exercise_count: workout.exercises.length,
     });
     workout.finishWorkout();
+    // The screen reloads in place, so the PR counter does not reset by unmount.
+    prCountRef.current = 0;
     setReloadKey((k) => k + 1);
   }, [stopExerciseTimer, stopRestTimer, workout.finishWorkout]);
 

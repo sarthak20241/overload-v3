@@ -216,15 +216,24 @@ export function watchCustomerInfo(
   const listener = (info: any) => {
     try {
       const active = Object.values(info?.entitlements?.active ?? {}) as any[];
-      const ids = active.map((e) => String(e?.identifier ?? e?.productIdentifier ?? '')).sort();
-      const key = ids.join('|') + ':' + active.map((e) => String(e?.expirationDate ?? '')).join('|');
+      // One canonical record per entitlement, sorted by id, so record order
+      // never reads as a change and a renewal flag flip always does.
+      const state = active
+        .map((e) => ({
+          id: String(e?.identifier ?? e?.productIdentifier ?? ''),
+          expirationDate: String(e?.expirationDate ?? ''),
+          willRenew: !!e?.willRenew,
+          periodType: e?.periodType ? String(e.periodType) : null,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const key = JSON.stringify(state);
       if (key === last) return;
       const isFirst = last === null;
       last = key;
       onChange({
-        activeEntitlements: ids,
-        willRenew: active.length ? active.some((e) => !!e?.willRenew) : null,
-        periodType: active[0]?.periodType ? String(active[0].periodType) : null,
+        activeEntitlements: state.map((s) => s.id),
+        willRenew: state.length ? state.some((s) => s.willRenew) : null,
+        periodType: state[0]?.periodType ?? null,
         isFirst,
       });
     } catch {
