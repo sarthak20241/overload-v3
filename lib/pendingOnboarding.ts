@@ -15,7 +15,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { saveBasicInfo } from '@/lib/bodyStats';
 import {
-  createStarterRoutines,
   markOnboardingDone,
   onboardingIdentity,
   saveOnboardingProfile,
@@ -30,8 +29,8 @@ const PENDING_KEY = 'pending_onboarding_v1';
 export interface PendingOnboarding {
   answers: OnboardingAnswers;
   targets: DailyTargets | null;
-  /** The generated (or deterministic) plan, already resolved to catalog rows. */
-  plan: StarterRoutine[];
+  /** Stashed by builds that still saved a starter week. Read by nothing now. */
+  plan?: StarterRoutine[];
   /** The goal program (phases to the target). Saved only under a real account;
    *  guests have no program store. Older blobs predate the field. */
   program?: GeneratedProgram | null;
@@ -101,10 +100,10 @@ export async function drainPendingOnboarding(target: {
   // The starter week stays unlinked from phase 1: phase 1's split is the one
   // Drona builds from the Goal screen, and the dashboard prompt that sends
   // the new account there only reads right while the phase is still unbuilt.
+  // The program only. Onboarding no longer saves workouts: phase 1's split is
+  // built from the Goal screen once this account exists. A blob stashed by an
+  // older build may still carry `plan`; it is ignored rather than saved.
   if (pending.createPlan && pending.program) await saveOnboardingProgram(pending.program, target);
-  if (pending.createPlan && pending.plan.length > 0) {
-    await createStarterRoutines(pending.plan, { ...target, programPhaseId: null });
-  }
   await markOnboardingDone(identity);
   await clearPendingOnboarding();
   return pending.dest ?? '/(app)';

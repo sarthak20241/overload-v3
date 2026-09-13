@@ -81,12 +81,10 @@ import { DemoLoop } from '@/components/onboarding/DemoLoop';
 import {
   EMPTY_ANSWERS,
   type OnboardingAnswers,
-  buildStarterRoutines,
   computeDailyTargets,
   paceAdjustedTargets,
   paceBounds,
   projectGoalDateIso,
-  createStarterRoutines,
   saveOnboardingProfile,
   markOnboardingDone,
   onboardingIdentity,
@@ -226,11 +224,10 @@ export default function OnboardingScreen() {
     [weightUnit],
   );
 
-  // Deterministic engine: instant, curated, always available. This IS the
-  // starter week now. Onboarding no longer asks Drona for a week of workouts:
-  // that split is built after sign-up from the Goal screen, against the real
-  // account, so this fills the Routines tab in the meantime.
-  const finalPlan = useMemo(() => buildStarterRoutines(answers), [answers]);
+  // Onboarding hands out the program and no workouts at all. Phase 1's split
+  // is built by Drona after sign-up, from the Goal screen, against the real
+  // account; a generic starter week saved here would sit in the Routines tab
+  // beside that split looking like a second plan nobody asked for.
 
   // Drona generation state. `buildReady` gates BuildMoment's final tick, so
   // the build screen elastically holds the thinking state while the LLM runs.
@@ -440,19 +437,6 @@ export default function OnboardingScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on commit entry
   }, [step]);
 
-  // The weekly rhythm, said out loud. With fewer workouts than training days
-  // ("3 days but only Full Body A and B?"), spell out the rotation so the plan
-  // never reads like it shrank.
-  const rhythmNote = useMemo(() => {
-    const freq = answers.frequency ?? 3;
-    if (finalPlan.length === 0 || finalPlan.length >= freq) return null;
-    const week = Array.from({ length: freq }, (_, idx) => finalPlan[idx % finalPlan.length].name);
-    const short = (n: string) => n.replace('Full Body ', '');
-    const seq = week.map(short).join(', ');
-    return finalPlan.length === 2
-      ? `${freq} sessions from ${finalPlan.length} workouts: this week goes ${seq}. Next week flips.`
-      : `${freq} sessions from ${finalPlan.length} workouts: rotate ${seq}, and keep rolling.`;
-  }, [answers.frequency, finalPlan]);
   const identity = onboardingIdentity(isSignedIn ? user?.id ?? null : null);
 
   const goTo = useCallback((next: Step) => {
@@ -590,26 +574,20 @@ export default function OnboardingScreen() {
         // so Profile reflects the intake immediately.
         basicInfo.setWeightUnit(weightUnit);
         if (answers.goalWeightKg && answers.goalWeightKg > 0) basicInfo.setGoalWeight(answers.goalWeightKg);
-        // The starter week is deliberately NOT linked to phase 1. Phase 1's
-        // split is the one Drona builds from the Goal screen after sign-up,
-        // and the dashboard prompt that sends them there only makes sense
-        // while the phase still reads as unbuilt. Best-effort either way: a
-        // failed program save still lets the routines land.
-        if (opts.createPlan) {
-          await saveOnboardingProgram(finalProgram, target);
-          await createStarterRoutines(finalPlan, { ...target, programPhaseId: null });
-        }
+        // The program only. The workouts come from the Goal screen's build,
+        // which the dashboard prompts for next.
+        if (opts.createPlan) await saveOnboardingProgram(finalProgram, target);
         await markOnboardingDone(identity);
         if (opts.createPlan) {
           void flushNow();
-          toast.success('Your plan is ready. Your first session is on the dashboard.');
+          toast.success('Your program is saved. Next, we build your phase 1 workouts.');
         }
         track('onboarding_completed', {
           created_plan: opts.createPlan,
           goal: answers.goal ?? null,
           experience: answers.experience ?? null,
           days_per_week: answers.frequency ?? null,
-          routines: opts.createPlan ? finalPlan.length : 0,
+          routines: 0,
           has_injury_notes: !!answers.healthNotes,
           has_preferences: !!answers.routinePrefs,
           seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
@@ -627,7 +605,7 @@ export default function OnboardingScreen() {
         setFinishing(false);
       }
     },
-    [answers, targets, finalPlan, finalProgram, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
+    [answers, targets, finalProgram, finishing, isSignedIn, user?.id, identity, router, toast, flushNow, supabaseClient, basicInfo, weightUnit],
   );
 
   // Reveal CTA. A fresh visitor has no identity yet, so we stash the finished
@@ -643,7 +621,6 @@ export default function OnboardingScreen() {
           await setPendingOnboarding({
             answers,
             targets,
-            plan: finalPlan,
             program: finalProgram,
             createPlan: opts.createPlan,
             dest: opts.dest,
@@ -666,7 +643,7 @@ export default function OnboardingScreen() {
       }
       await completeOnboarding(opts);
     },
-    [finishing, isFreshVisitor, answers, targets, finalPlan, finalProgram, weightUnit, router, completeOnboarding],
+    [finishing, isFreshVisitor, answers, targets, finalProgram, weightUnit, router, completeOnboarding],
   );
 
   // Onboarding is the front door now, so a fresh visitor (no identity yet)
@@ -1153,7 +1130,7 @@ export default function OnboardingScreen() {
           <QuestionStep
             stepKey="plan"
             question={revealTitle}
-            sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${finalPlan.length} ${finalPlan.length === 1 ? 'workout' : 'workouts'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Every detail is editable.`}
+            sub={`${finalProgram.phases.length} ${finalProgram.phases.length === 1 ? 'phase' : 'phases'}, ${answers.frequency ?? 3} days a week${targets ? ', with daily fuel targets' : ''}. Tap a phase to see its week.`}
             footer={
               <>
                 <PrimaryCta
@@ -1309,55 +1286,6 @@ export default function OnboardingScreen() {
                 </View>
               </Animated.View>
 
-              {/* Week dots: the schedule at a glance */}
-              <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.weekDots}>
-                {Array.from({ length: 7 }, (_, idx) => (
-                  <View
-                    key={idx}
-                    style={[
-                      s.weekDot,
-                      {
-                        backgroundColor: idx < (answers.frequency ?? 3) ? C.accentText : C.muted,
-                      },
-                    ]}
-                  />
-                ))}
-                <Text style={[s.weekDotsLabel, { color: C.textMuted }]}>
-                  {answers.frequency ?? 3} training days
-                </Text>
-              </Animated.View>
-
-              <View style={s.planCards}>
-                {finalPlan.map((r, idx) => {
-                  const names = r.exercises.map((e) => e.name);
-                  const preview =
-                    names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '');
-                  return (
-                    <Animated.View
-                      key={r.name}
-                      entering={FadeInDown.delay(180 + idx * 80).duration(400)}
-                      style={[s.planCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
-                    >
-                      <View style={[s.planDot, { backgroundColor: r.color }]} />
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={[s.planName, { color: C.foreground }]}>{r.name}</Text>
-                        <Text style={[s.planMeta, { color: C.textMuted }]} numberOfLines={1}>
-                          {r.exercises.length} exercises · {preview}
-                        </Text>
-                      </View>
-                    </Animated.View>
-                  );
-                })}
-                {rhythmNote && (
-                  <Animated.Text
-                    entering={FadeInDown.delay(300).duration(400)}
-                    style={[s.rhythmNote, { color: C.textMuted }]}
-                  >
-                    {rhythmNote}
-                  </Animated.Text>
-                )}
-              </View>
-
               {/* Daily fuel targets: the diet half of the intake payoff */}
               {targets ? (
                 <Animated.View
@@ -1504,28 +1432,6 @@ const s = StyleSheet.create({
   paceCardLine: { fontSize: FontSize.sm, textAlign: 'center', marginTop: 2 },
 
   // Plan
-  weekDots: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: Spacing.xl,
-  },
-  weekDot: { width: 8, height: 8, borderRadius: 4 },
-  weekDotsLabel: { fontSize: FontSize.sm, marginLeft: Spacing.sm },
-  planCards: { gap: Spacing.md },
-  planCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
-  },
-  planDot: { width: 8, height: 8, borderRadius: 4 },
-  planName: { fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  planMeta: { fontSize: FontSize.sm, marginTop: 2 },
-  rhythmNote: { fontSize: FontSize.sm, lineHeight: 19, paddingHorizontal: Spacing.xs },
   fuelCard: {
     borderRadius: Radius.xl,
     borderWidth: 1,

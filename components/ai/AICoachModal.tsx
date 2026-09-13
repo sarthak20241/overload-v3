@@ -3407,12 +3407,28 @@ export function AICoachModal({
     // program_phase_id column (e.g. PostgREST schema-cache lag) can never block
     // the core routine save — the routine still lands, only the link is skipped.
     if (phaseId) {
+      // supabase-js RESOLVES with { error } rather than throwing, so the old
+      // bare try/catch here caught nothing: a refused link left the routine
+      // saved but orphaned from its phase with no trace anywhere, which reads
+      // on the Goal screen exactly like "the split was never built". Still
+      // non-critical (the routine is saved), but never silent.
       try {
-        await supabase
+        const { data: linked, error: linkErr } = await supabase
           .from('routines')
           .update({ program_phase_id: phaseId })
-          .eq('id', routine.id);
-      } catch { /* linking is non-critical */ }
+          .eq('id', routine.id)
+          .select('id');
+        if (linkErr || !linked?.length) {
+          console.warn(
+            '[routine-save] phase link failed:',
+            linkErr?.message ?? 'no row updated',
+            linkErr?.code ?? '',
+            { routine: routine.id, phase: phaseId },
+          );
+        }
+      } catch (e: any) {
+        console.warn('[routine-save] phase link threw:', e?.message ?? e);
+      }
     }
 
     // Resolve all exercises in parallel — each one does select + optional insert + link insert.
