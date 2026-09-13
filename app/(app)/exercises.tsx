@@ -28,7 +28,6 @@ import { Feather } from '@expo/vector-icons';
 import Animated from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { canCheckForm } from '@/lib/form/resolve';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -411,20 +410,9 @@ export default function ExerciseLibraryScreen() {
           {ex.muscle_group} · {ex.category}
         </Text>
       </View>
-      {/* Form check. Hidden for exercises a phone camera cannot judge (cardio,
-          machine isolation, static holds) rather than shown and then refused. */}
-      {canCheckForm({ id: ex.id, name: ex.name, movement_pattern: ex.movement_pattern }) && (
-        <TouchableOpacity
-          onPress={() =>
-            router.push({ pathname: '/form-check', params: { exerciseId: ex.id, name: ex.name } })
-          }
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          style={styles.formCheckBtn}
-          accessibilityLabel={`Check my form on ${ex.name}`}
-        >
-          <Feather name="video" size={14} color={C.accentText} />
-        </TouchableOpacity>
-      )}
+      {/* Form check entry point is switched off until the feature works end to
+          end on device. The screen and lib/form/* stay in place; only the way in
+          is removed, so re-enabling is putting this button back. */}
       {isCustom && <Feather name="edit-2" size={14} color={C.textMuted} />}
     </TouchableOpacity>
   );
@@ -750,7 +738,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, gap: 10 },
-  formCheckBtn: { paddingHorizontal: 6, paddingVertical: 4 },
   rowNameLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowName: { fontSize: FontSize.base, fontWeight: FontWeight.medium, flexShrink: 1 },
   rowMeta: { fontSize: FontSize.sm, marginTop: 2 },
