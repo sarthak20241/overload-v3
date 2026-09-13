@@ -150,8 +150,14 @@ Deno.serve(async (req) => {
     return new Response("Missing event", { status: 400 });
   }
 
+  // On a PRODUCT_CHANGE, product_id is the plan being LEFT, so log both — a
+  // trace showing only the old plan is exactly what made this event type hard
+  // to read when the switch bug was being diagnosed.
+  const loggedProduct = event.new_product_id && event.new_product_id !== event.product_id
+    ? `${event.product_id}->${event.new_product_id}`
+    : event.product_id;
   console.log(
-    `[revenuecat] type=${event.type} user=${event.app_user_id} product=${event.product_id} env=${event.environment}`,
+    `[revenuecat] type=${event.type} user=${event.app_user_id} product=${loggedProduct} env=${event.environment}`,
   );
 
   // Sandbox events arrive when the app is connected to test products
