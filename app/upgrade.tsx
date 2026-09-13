@@ -390,6 +390,9 @@ export default function UpgradeScreen() {
         invalidateCoachAccess();
         if (flipped) {
           paywallResolved.current = true;
+          // The exact tier is not known here (a restore carries no plan), but
+          // 'free' is now wrong. The bridge's next profile read sets the name.
+          setUserProps({ tier: 'restored', has_active_entitlement: true });
           track('purchase_restored', { context });
           toast.success('Restored. Welcome back.');
           finish();

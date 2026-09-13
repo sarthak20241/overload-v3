@@ -233,6 +233,7 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         const flipped = await waitForTierFlip();
         if (flipped) {
           paywallResolved.current = true;
+          setUserProps({ tier: 'restored', has_active_entitlement: true });
           track('purchase_restored', { source: 'coach_sheet' });
           toast.success('Restored. Welcome back.');
           await onPurchased();
