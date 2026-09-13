@@ -18,6 +18,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 import { normalizeWeekPattern } from '@/lib/weekPattern';
+import { track } from '@/lib/analytics';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -623,10 +624,11 @@ export async function reconcileActiveProgram(
         >= (active.phases[active.phases.length - 1].start_offset_weeks
             + active.phases[active.phases.length - 1].duration_weeks) * 7;
     if (endReached) {
-      await supabase
+      const { error } = await supabase
         .from('coach_programs')
         .update({ status: 'completed', updated_at: new Date().toISOString() })
         .eq('id', active.id);
+      if (!error) track('program_completed', { phases: active.phases.length, total_weeks: active.total_weeks ?? null });
     }
     return null;
   }
@@ -641,9 +643,19 @@ export async function reconcileActiveProgram(
     carb_g: phase.diet_carb_g ?? undefined,
     fat_g: phase.diet_fat_g ?? undefined,
   });
-  await supabase
+  const { error: cursorError } = await supabase
     .from('coach_programs')
     .update({ applied_phase_seq: active.currentPhaseSeq, updated_at: new Date().toISOString() })
     .eq('id', active.id);
+  // System event, not a tap: the program rolled into its next phase and the
+  // diet targets were rewritten. Only once the cursor write landed, or the
+  // next reconcile will do this again and count it twice.
+  if (!cursorError) {
+    track('program_phase_advanced', {
+      from_seq: active.applied_phase_seq,
+      to_seq: active.currentPhaseSeq,
+      phases: active.phases.length,
+    });
+  }
   return active.currentPhaseSeq;
 }

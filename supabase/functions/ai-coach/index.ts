@@ -2443,7 +2443,7 @@ async function handleParseMealRequest(args: {
 // handler.
 
 
-async function handleAnonOnboardingPlan(args: {
+async function handleAnonOnboardingProgram(args: {
   admin: any;
   body: Record<string, unknown>;
   req: Request;
@@ -2603,8 +2603,10 @@ Deno.serve(async (req) => {
     } catch {
       /* fall through to 401 */
     }
+    // The wire name stays "onboarding_plan": every installed client sends it,
+    // and renaming it would 400 them. What it returns is the program.
     if (anonBody && anonBody.mode === "onboarding_plan") {
-      return handleAnonOnboardingPlan({ admin, body: anonBody, req, trace, startedAtMs, respond });
+      return handleAnonOnboardingProgram({ admin, body: anonBody, req, trace, startedAtMs, respond });
     }
     trace.status = "unauthorized";
     trace.error_message = auth.reason;

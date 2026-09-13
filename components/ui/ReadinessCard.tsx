@@ -20,6 +20,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { loadReadiness } from '@/lib/readinessSync';
@@ -135,7 +136,10 @@ export function ReadinessCard() {
 
   return (
     <Pressable
-      onPress={() => router.push(hasScore || failed ? '/health' : { pathname: '/health', params: { log: '1' } })}
+      onPress={() => {
+        track('readiness_card_tapped', { destination: hasScore || failed ? 'hub' : 'sleep_log', has_score: !!hasScore });
+        router.push(hasScore || failed ? '/health' : { pathname: '/health', params: { log: '1' } });
+      }}
       style={[styles.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
     >
       <View style={[styles.glow, { backgroundColor: accent, opacity: 0.04 }]} />

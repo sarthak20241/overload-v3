@@ -8,6 +8,7 @@ import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, withRepeat, Easing } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track, markWorkoutSource } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { abbreviateNumber } from '@/lib/format';
 import { metricTypeOf, supports1RM } from '@/lib/exercises';
@@ -344,9 +345,16 @@ export default function DashboardScreen() {
   // preview (the shared routine-detail sheet) where the user can see the
   // exercises, ask Drona about it, or start it. 'new' opens the coach to build one.
   const handleTodayPress = () => {
+    track('today_suggestion_tapped', {
+      kind: todaySuggestion.kind,
+      has_reason: !!todaySuggestion.reason,
+      routine_count: routines.length,
+      workout_count: workouts.length,
+    });
     if (todaySuggestion.kind === 'new') {
       setAiCoachPrompt(undefined);
       setAiCoachInitialScreen('workout');
+      setAiCoachSource('today_card');
       setAiCoachOpen(true);
       return;
     }
@@ -359,6 +367,7 @@ export default function DashboardScreen() {
   // user asking; the coach already has the user's training as server-side context.
   const askCoachAboutRoutine = (routine: RoutineRaw) => {
     setDetailRoutine(null);
+    setAiCoachSource('routine_preview');
     setAiCoachPrompt(`Walk me through my ${routine.name} session and what I should focus on today.`);
     setAiCoachInitialScreen('chat');
     setAiCoachOpen(true);
@@ -475,6 +484,8 @@ export default function DashboardScreen() {
 
   // AI Coach state
   const [aiCoachOpen, setAiCoachOpen] = useState(false);
+  // Which dashboard surface opened the coach; reported on coach_opened.
+  const [aiCoachSource, setAiCoachSource] = useState('dashboard');
   const [aiCoachInitialScreen, setAiCoachInitialScreen] = useState<'menu' | 'chat' | 'plan' | 'workout'>('menu');
   // A slow, subtle "breathing" on the coach's bolt — the coach is present and alive.
   const boltScale = useSharedValue(1);
@@ -499,6 +510,7 @@ export default function DashboardScreen() {
       if (!req) return;
       setAiCoachPrompt(req.prompt);
       setAiCoachInitialScreen(req.screen);
+      setAiCoachSource('launch_request');
       setAiCoachOpen(true);
     }, []),
   );
@@ -590,7 +602,7 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TouchableOpacity
             activeOpacity={0.85}
-            onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen('menu'); setAiCoachOpen(true); }}
+            onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen('menu'); setAiCoachSource('hero_card'); setAiCoachOpen(true); }}
             style={[styles.aiCoachCard, { backgroundColor: C.card, borderColor: aiBorderColor }]}
           >
             <View style={styles.aiCoachRow}>
@@ -629,7 +641,7 @@ export default function DashboardScreen() {
               ]).map(({ icon, label, screen }) => (
                 <TouchableOpacity
                   key={label}
-                  onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen(screen); setAiCoachOpen(true); }}
+                  onPress={() => { setAiCoachPrompt(undefined); setAiCoachInitialScreen(screen); setAiCoachSource('quick_chip'); setAiCoachOpen(true); }}
                   style={[styles.aiChip, { backgroundColor: aiChipBg, borderColor: aiChipBorder }]}
                   activeOpacity={0.7}
                 >
@@ -683,8 +695,10 @@ export default function DashboardScreen() {
         <InsightsStrip
           insights={insights}
           onAsk={(insight) => {
+            track('insight_tapped', { insight_kind: insight.id.split(':')[0], priority: insight.priority });
             setAiCoachPrompt(insight.coachPrompt);
             setAiCoachInitialScreen('chat');
+            setAiCoachSource('insight');
             setAiCoachOpen(true);
           }}
         />
@@ -924,7 +938,10 @@ export default function DashboardScreen() {
         onStartWorkout={() => {
           const r = detailRoutine;
           setDetailRoutine(null);
-          if (r) router.push(`/workout/${r.id}` as any);
+          if (r) {
+            markWorkoutSource('today_card');
+            router.push(`/workout/${r.id}` as any);
+          }
         }}
         onAskCoach={detailRoutine ? () => askCoachAboutRoutine(detailRoutine) : undefined}
       />
@@ -945,6 +962,7 @@ export default function DashboardScreen() {
       <AICoachModal
         visible={aiCoachOpen}
         onClose={() => setAiCoachOpen(false)}
+        source={aiCoachSource}
         initialScreen={aiCoachInitialScreen}
         initialPrompt={aiCoachPrompt}
         onRoutineCreated={() => {}}

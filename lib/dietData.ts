@@ -1087,7 +1087,7 @@ export async function logParsedMeal(
   date: Date = getLogDate(),
   /** How the user got here. Food detail reuses this writer for a single
    *  catalog item, which is a search log, not an AI parse. */
-  via: 'ai' | 'search' = 'ai',
+  via: 'ai' | 'search' | 'drona_search' = 'ai',
 ): Promise<{ ref?: LoggedParseRef; error?: string }> {
   const done: LoggedSectionRef[] = [];
   for (const section of sectionsOf(meal)) {
@@ -1104,6 +1104,7 @@ export async function logParsedMeal(
     item_count: meal.items.length,
     kcal: Math.round(meal.items.reduce((t, it) => t + (it.kcal ?? 0), 0)),
     meal_type: meal.meal_type ?? null,
+    section_count: done.length,
   });
   return { ref: { sections: done } };
 }
@@ -1471,6 +1472,9 @@ export async function logSavedMeal(
   mealType: MealType,
   servings = 1,
   date: Date = getLogDate(),
+  /** Which surface logged it. The builder can log a meal that was never saved,
+   *  which is a different behaviour from re-logging a saved one. */
+  source: 'search_tab' | 'saved_sheet' | 'builder' = 'search_tab',
 ): Promise<{ error?: string }> {
   const m = await findOrCreateMeal(supabase, mealType, date);
   if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
@@ -1509,6 +1513,8 @@ export async function logSavedMeal(
       kcal: Math.round(saved.kcal * (saved.kind === 'recipe' && saved.servings > 0 ? servings / saved.servings : servings)),
       meal_type: mealType,
       saved_kind: saved.kind,
+      source,
+      is_saved: !!saved.id,
     });
   }
   if (error) {

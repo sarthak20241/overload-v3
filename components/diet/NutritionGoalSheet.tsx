@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
@@ -173,6 +174,12 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
     const { error } = await saveNutritionTargets(supabase, clerkId, next);
     setBusy(false);
     if (error) { haptics.warning(); return; }
+    track('nutrition_targets_edited', {
+      kcal: next.kcal,
+      kcal_delta: next.kcal - initial.kcal,
+      protein_delta: next.protein - initial.protein,
+      clamped: kcal !== parseInt(vals.kcal, 10),
+    });
     onSaved(next);
   };
 

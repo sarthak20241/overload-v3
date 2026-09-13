@@ -12,6 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
@@ -915,6 +916,11 @@ function BodyMeasurementsCard({ chartWidth }: { chartWidth: number }) {
   const toggleUnit = () => update({ ...data, unit: data.unit === 'cm' ? 'in' : 'cm' });
 
   const addEntry = (entry: MeasurementEntry) => {
+    track('measurements_logged', {
+      field_count: Object.values(entry).filter((v) => typeof v === 'number').length,
+      unit: data.unit,
+      entry_count_after: data.entries.length + 1,
+    });
     const entries = [entry, ...data.entries].sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     );
@@ -1426,6 +1432,7 @@ export default function AnalyticsScreen() {
   const addWeight = async (v: number) => {
     const today = new Date().toISOString().slice(0, 10);
     const filtered = weightLog.filter((e) => e.date.slice(0, 10) !== today);
+    track('weight_logged', { source: 'analytics', replaced_today: filtered.length !== weightLog.length, entry_count_after: filtered.length + 1 });
     const next = [...filtered, { date: new Date().toISOString(), weight: v }].sort(
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
     );
@@ -1442,6 +1449,7 @@ export default function AnalyticsScreen() {
   const addBodyFat = async (v: number) => {
     const today = new Date().toISOString().slice(0, 10);
     const filtered = bodyFatLog.filter((e) => e.date.slice(0, 10) !== today);
+    track('body_fat_logged', { source: 'analytics', replaced_today: filtered.length !== bodyFatLog.length, entry_count_after: filtered.length + 1 });
     const next = [...filtered, { date: new Date().toISOString(), bodyFat: v }].sort(
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
     );
@@ -1880,6 +1888,7 @@ export default function AnalyticsScreen() {
         onSave={addBodyFat}
       />
       <ShareSheet
+        source="body_heatmap"
         visible={shareBodyOpen}
         onClose={() => setShareBodyOpen(false)}
         card={

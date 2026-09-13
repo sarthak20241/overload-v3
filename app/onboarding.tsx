@@ -185,13 +185,29 @@ export default function OnboardingScreen() {
   useEffect(() => {
     track('onboarding_started');
   }, []);
+  const stepEnteredAt = useRef(Date.now());
   useEffect(() => {
+    stepEnteredAt.current = Date.now();
     track('onboarding_step_viewed', {
       step,
       step_index: STEP_ORDER.indexOf(step),
       total_steps: STEP_ORDER.length,
       seconds_since_start: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
     });
+  }, [step]);
+  // Forward vs back, from the two functions every step change flows through
+  // (goTo for CTAs and the chevron, selectAndAdvance for single-select beats).
+  const reportStepChange = useCallback((next: Step, method: 'cta' | 'auto_advance') => {
+    const from = STEP_ORDER.indexOf(step);
+    const to = STEP_ORDER.indexOf(next);
+    if (to === from) return;
+    const props = {
+      step,
+      step_index: from,
+      seconds_on_step: Math.round((Date.now() - stepEnteredAt.current) / 1000),
+    };
+    if (to > from) track('onboarding_step_completed', { ...props, next_step: next, method });
+    else track('onboarding_back', { ...props, prev_step: next });
   }, [step]);
 
   // Body/target inputs are picker-backed numbers, prefilled with population
@@ -444,8 +460,9 @@ export default function OnboardingScreen() {
       clearTimeout(advanceTimer.current);
       advanceTimer.current = null;
     }
+    reportStepChange(next, 'cta');
     setStep(next);
-  }, []);
+  }, [reportStepChange]);
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const nextStep = STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)];
@@ -476,10 +493,11 @@ export default function OnboardingScreen() {
       const next = nextStep;
       advanceTimer.current = setTimeout(() => {
         advanceTimer.current = null;
+        reportStepChange(next, 'auto_advance');
         setStep(next);
       }, 320);
     },
-    [nextStep],
+    [nextStep, reportStepChange],
   );
 
   const toggleWeightUnit = useCallback(() => {
@@ -652,6 +670,12 @@ export default function OnboardingScreen() {
   // returns to the app.
   const skipEverything = useCallback(async () => {
     if (finishing) return;
+    track('onboarding_skipped', {
+      step,
+      step_index: STEP_ORDER.indexOf(step),
+      is_fresh_visitor: isFreshVisitor,
+      seconds_total: Math.round((Date.now() - onboardingStartedAt.current) / 1000),
+    });
     if (isFreshVisitor) {
       router.replace('/(auth)');
       return;
@@ -663,7 +687,7 @@ export default function OnboardingScreen() {
     } finally {
       setFinishing(false);
     }
-  }, [finishing, isFreshVisitor, identity, router]);
+  }, [finishing, isFreshVisitor, identity, router, step]);
 
   // Placed after every hook (rules of hooks). No auth bounce: onboarding is
   // the front door, so fresh visitors (neither signed-in nor guest) view it

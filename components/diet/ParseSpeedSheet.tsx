@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
 import type { ParseSpeed } from '@/lib/parseSpeed';
@@ -99,8 +100,10 @@ export function ParseSpeedSheet({
                   onPress={() => {
                     haptics.tick();
                     onClose();
-                    if (locked) onUpgrade();
-                    else onPick(o.key);
+                    if (locked) {
+                      track('upgrade_prompt_tapped', { feature: 'parse_tier', tier: o.key });
+                      onUpgrade();
+                    } else onPick(o.key);
                   }}
                   accessibilityRole={locked ? 'button' : 'radio'}
                   accessibilityState={locked ? { disabled: false } : { selected: sel }}

@@ -24,6 +24,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { track } from '@/lib/analytics';
 import { Feather } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
@@ -61,7 +62,12 @@ export default function PlanScreen() {
   // access RPC have both settled.
   useEffect(() => {
     if (!clerkLoaded || accessLoading || !accessResolved) return;
-    if (isGuestSession || !hasSubscription) router.replace('/upgrade' as any);
+    if (isGuestSession || !hasSubscription) {
+      track('plan_detail_bounced', { reason: isGuestSession ? 'guest' : 'no_subscription' });
+      router.replace('/upgrade' as any);
+    } else {
+      track('plan_detail_viewed', { access_state: access.state });
+    }
   }, [clerkLoaded, accessLoading, accessResolved, isGuestSession, hasSubscription, router]);
 
   // Two numbers the access RPC does not carry: when this tier began, and how
@@ -145,6 +151,7 @@ export default function PlanScreen() {
   // appears there and has nothing to renew or cancel, so it gets a statement
   // instead of a link.
   const openManageSubscription = useCallback(() => {
+    track('manage_subscription_opened', { platform: Platform.OS });
     Linking.openURL(
       Platform.OS === 'android'
         ? 'https://play.google.com/store/account/subscriptions'

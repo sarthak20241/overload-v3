@@ -790,7 +790,13 @@ export default function ActiveWorkoutScreen() {
 
   // Rest timer. overrideTarget (seconds) drives a shorter inter-side rest for
   // unilateral sets; omit it for the normal between-sets rest (restSeconds).
-  const startRestTimer = useCallback((overrideTarget?: number | null) => {
+  // `target` is analytics only: the real target is derived from state (see
+  // restTarget), which this callback cannot read without going stale.
+  const startRestTimer = useCallback((overrideTarget?: number | null, target?: { kind: 'superset_round' | 'between_sets'; seconds: number | null }) => {
+    track('rest_started', {
+      kind: overrideTarget != null ? 'between_sides' : (target?.kind ?? 'between_sets'),
+      target_seconds: overrideTarget ?? target?.seconds ?? null,
+    });
     if (restTimerRef.current) clearInterval(restTimerRef.current);
     lastSetTimeRef.current = Date.now();
     setRestOverrideTarget(overrideTarget ?? null);
@@ -1213,6 +1219,14 @@ export default function ActiveWorkoutScreen() {
   // Start exercise
   const handleStartExercise = () => {
     haptics.tap();
+    track('exercise_started', {
+      exercise_index: currentIdx,
+      in_superset: (exercises[currentIdx]?.supersetGroup ?? null) != null,
+      had_previous_performance: (currentEx?.previousSets?.length ?? 0) > 0,
+      target_sets: currentEx?.sets.length ?? 0,
+      metric_type: currentEx ? metricTypeOf(currentEx.exercise) : null,
+      muscle_group: currentEx?.exercise.muscle_group ?? null,
+    });
     // An exercise added mid-workout resolves its previous performance in the
     // background. The preview updates when that finishes, but the logger inputs
     // are separate local state, so seed the first editable set at the start gate.
@@ -1267,6 +1281,7 @@ export default function ActiveWorkoutScreen() {
     const isPR = prWeight > 0 && countsAsWorkingSet(activeSetType)
       && hasPriorData && prWeight > prevBest;
     if (isPR && !enteringFirstSide) {
+      prCountRef.current += 1;
       haptics.success();
       setPrCelebrate(true);
       setTimeout(() => setPrCelebrate(false), 2200);
@@ -1334,6 +1349,25 @@ export default function ActiveWorkoutScreen() {
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
 
+    // The core loop's heartbeat. Placed after the unilateral first-side early
+    // return above, so one L+R round is one event, not two.
+    track('set_logged', {
+      set_type: activeSetType,
+      set_index: incompleteIdx !== -1 ? incompleteIdx : ex.sets.length - 1,
+      was_extra_set: incompleteIdx === -1,
+      is_pr: isPR,
+      is_unilateral: activeUnilateral,
+      has_rpe: sessionRpe != null,
+      weight_kg: weight,
+      reps,
+      duration_seconds: durationSecs || null,
+      metric_type: metricTypeOf(currentEx.exercise),
+      muscle_group: currentEx.exercise.muscle_group ?? null,
+      in_superset: currentEx.supersetGroup != null,
+      exercise_index: currentIdx,
+      workout_elapsed_seconds: workout.elapsed,
+    });
+
     // Next unilateral set starts fresh on the configured first side.
     if (activeUnilateral) {
       setPendingFirst(null);
@@ -1355,12 +1389,12 @@ export default function ActiveWorkoutScreen() {
       // the group so manual navigation OUT of the group tears it down.
       setRestGroupTarget(step.restTarget);
       setRestGroupId(updated[currentIdx]?.supersetGroup ?? null);
-      startRestTimer();
+      startRestTimer(undefined, { kind: 'superset_round', seconds: step.restTarget });
     } else {
       // Solo or whole group finished: the normal between-sets rest.
       setRestGroupTarget(null);
       setRestGroupId(null);
-      startRestTimer();
+      startRestTimer(undefined, { kind: 'between_sets', seconds: currentEx.restSeconds ?? null });
     }
 
     // Zero the duration stopwatch + field so the next set times from scratch. Done
@@ -1395,6 +1429,11 @@ export default function ActiveWorkoutScreen() {
   // Finish current exercise
   const handleFinishExercise = () => {
     haptics.success();
+    track('exercise_finished', {
+      exercise_index: currentIdx,
+      sets_completed: currentEx?.sets.filter((s) => s.completed).length ?? 0,
+      exercise_count: exercises.length,
+    });
     setExerciseFinished(prev => {
       const next = [...prev];
       next[currentIdx] = true;
@@ -1413,6 +1452,7 @@ export default function ActiveWorkoutScreen() {
   // set" without having to log a set just to clear the running rest timer.
   const handleSkipRest = () => {
     haptics.tap();
+    track('rest_skipped', { rest_elapsed_seconds: restTimer });
     stopRestTimer();
   };
 
@@ -1421,6 +1461,11 @@ export default function ActiveWorkoutScreen() {
     haptics.tap();
     const updated = [...exercises];
     const ex = { ...updated[currentIdx] };
+    track('set_deleted', {
+      set_index: setIdx,
+      set_type: ex.sets[setIdx]?.set_type ?? null,
+      was_completed: !!ex.sets[setIdx]?.completed,
+    });
     ex.sets = ex.sets.filter((_, i) => i !== setIdx);
     updated[currentIdx] = ex;
     workout.updateExercises(updated);
@@ -1484,6 +1529,13 @@ export default function ActiveWorkoutScreen() {
   // Add exercise from library
   const addExercise = (ex: ExerciseDef) => {
     haptics.tap();
+    track('exercise_added', {
+      source: 'library',
+      position: exercises.length,
+      muscle_group: ex.muscle_group ?? null,
+      metric_type: ex.metric_type ?? null,
+      workout_elapsed_seconds: workout.elapsed,
+    });
     // Optimistic: add immediately with a temp id and default sets, close modal.
     // Real exercise row + previous-set defaults are fetched in the background
     // by reconcileExerciseRow.
@@ -1509,6 +1561,13 @@ export default function ActiveWorkoutScreen() {
   // Create a custom exercise (def + set/rep/rest targets from the picker's
   // custom form) and add it to the workout
   const addCustomExercise = (def: ExerciseDef, details: CustomExerciseDetails) => {
+    track('custom_exercise_created', {
+      source: 'in_workout',
+      muscle_group: def.muscle_group ?? null,
+      metric_type: def.metric_type ?? null,
+      sets: details.sets,
+      is_guest: isGuestSession,
+    });
     // Optimistic: temp id + default sets, close modal instantly. Reconcile fetches
     // the real exercise row and previous-set defaults in the background.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1624,6 +1683,11 @@ export default function ActiveWorkoutScreen() {
   const removeExercise = () => {
     if (exercises.length === 0) return;
     haptics.warning();
+    track('exercise_removed', {
+      exercise_index: currentIdx,
+      had_completed_sets: !!exercises[currentIdx]?.sets.some((s) => s.completed),
+      remaining_count: exercises.length - 1,
+    });
     // Stop the local exercise/rest timers before the list shifts, so they don't
     // leak into whatever exercise slides into this index.
     stopExerciseTimer();
@@ -1805,6 +1869,11 @@ export default function ActiveWorkoutScreen() {
   // they're now looking at. Anything refused stays in the chat card instead.
   const handleCoachWorkoutEdit = useCallback((ops: CoachWorkoutEditOp[]): CoachEditApplyResult => {
     const result = applyCoachWorkoutEdit(ops);
+    track('coach_workout_edit_applied', {
+      ops_count: ops.length,
+      applied: result.applied,
+      skipped: result.skipped.length,
+    });
     if (result.applied > 0) {
       toast.success(result.applied === 1 ? 'Workout updated' : `${result.applied} changes applied`);
     }
@@ -1831,6 +1900,11 @@ export default function ActiveWorkoutScreen() {
     const res = groupWithPartners(exercises, currentIdx, picked);
     if (res.items === exercises) return; // no valid picks
     haptics.selection();
+    track('superset_created', {
+      partner_count: picked.length,
+      extended_existing: currentEx?.supersetGroup != null,
+      mid_workout: !!exerciseStarted[currentIdx],
+    });
     const map = res.indexMap;
     const remap = <V,>(arr: V[]): V[] => {
       const out = arr.slice();
@@ -1881,6 +1955,7 @@ export default function ActiveWorkoutScreen() {
     if (currentEx?.supersetGroup == null) return;
     clearGroupRest();
     const g = currentEx.supersetGroup;
+    track('superset_broken', { group_size: exercises.filter((e) => e.supersetGroup === g).length });
     // Members that grouping auto-started but the user never trained (zero completed
     // sets) go back behind the Start gate; the open exercise keeps its state. Read
     // membership BEFORE dissolveGroupAt nulls the group ids.
@@ -1913,6 +1988,11 @@ export default function ActiveWorkoutScreen() {
   // mini workout bar is the way back in.
   const handleMinimize = () => {
     Keyboard.dismiss();
+    track('workout_minimized', {
+      elapsed_seconds: workout.elapsed,
+      completed_sets: exercises.reduce((n, e) => n + e.sets.filter((s) => s.completed).length, 0),
+      exercise_index: currentIdx,
+    });
     // This unmounts the screen and every draft living in it, and an in-app
     // navigation fires no AppState transition, so the debounced write is the only
     // thing that would have saved the last ~800ms of typing. Reopening inside that
@@ -1961,6 +2041,8 @@ export default function ActiveWorkoutScreen() {
       exercise_count: workout.exercises.length,
     });
     workout.finishWorkout();
+    // The screen reloads in place, so the PR counter does not reset by unmount.
+    prCountRef.current = 0;
     setReloadKey((k) => k + 1);
   }, [stopExerciseTimer, stopRestTimer, workout.finishWorkout]);
 
@@ -1996,6 +2078,14 @@ export default function ActiveWorkoutScreen() {
     // hurt, logged nothing" is a real session and blocking it would throw the
     // notes away at the last step.
     const hasNotes = exercises.some(e => !!e.sessionNote?.trim());
+    // The finish INTENT. blocked_no_sets is a real funnel drop: they tapped
+    // finish with nothing logged and got sent back.
+    track('workout_finish_opened', {
+      set_count: count,
+      has_notes: hasNotes,
+      blocked_no_sets: count === 0 && !hasNotes,
+      elapsed_seconds: workout.elapsed,
+    });
     if (count === 0 && !hasNotes) {
       setShowNoSetsAlert(true);
       return;
@@ -2026,6 +2116,7 @@ export default function ActiveWorkoutScreen() {
   const createRoutineFromSession = async (name: string): Promise<string | null> => {
     const performed = exercises.filter(e => e.sets.some(s => s.completed));
     if (performed.length === 0) return null;
+    track('routine_created', { mode: 'create', source: 'workout_finish', exercise_count: performed.length, is_guest: isGuestSession });
     const buildRow = (ex: ActiveWorkoutExercise) => {
       const reps = ex.sets.filter(s => s.completed).map(s => s.reps);
       return {
@@ -2387,6 +2478,11 @@ export default function ActiveWorkoutScreen() {
   const leaveAfterFinish = useCallback(() => {
     const recap = pendingRecapRef.current;
     if (recap && isShareAvailable()) {
+      track('workout_share_opened', {
+        set_count: recap.setCount,
+        exercise_count: recap.exerciseCount,
+        duration_seconds: recap.durationSeconds,
+      });
       setShareRecap(recap);
       return;
     }
@@ -2403,12 +2499,14 @@ export default function ActiveWorkoutScreen() {
   const confirmRoutineSync = () => {
     const offer = routineSync;
     if (!offer) return;
+    track('routine_sync_answered', { accepted: true });
     setRoutineSync(null);
     leaveAfterFinish();
     runRoutineSync(offer);
   };
 
   const declineRoutineSync = () => {
+    track('routine_sync_answered', { accepted: false });
     setRoutineSync(null);
     leaveAfterFinish();
   };
@@ -2427,6 +2525,9 @@ export default function ActiveWorkoutScreen() {
   };
 
   const finishingRef = useRef(false);
+  // PRs hit this session, reported on workout_completed. Screen-local: the
+  // screen unmounts after a finish, so it resets with the next session.
+  const prCountRef = useRef(0);
   const confirmFinish = async (opts?: { name?: string; notes?: string; routineNameToSave?: string; startedAtIso?: string }) => {
     // Synchronous re-entry guard: setSaving is async, so a fast double-tap on
     // the confirm alert's Finish button (which has no disabled state during its
@@ -2523,6 +2624,8 @@ export default function ActiveWorkoutScreen() {
         from_routine: !!linkedRoutineId,
         has_notes: !!workoutNotes,
         backdated: startedAtMs != null,
+        pr_count: prCountRef.current,
+        superset_count: new Set(savedExercises.map((e) => e.supersetGroup).filter((g) => g != null)).size,
       });
 
       if (isGuestSession) {
@@ -3338,7 +3441,12 @@ export default function ActiveWorkoutScreen() {
                     <View style={styles.stickyNoteEditorHead}>
                       <Text style={[styles.stickyNoteEditorLabel, { color: C.textDim }]}>{n.label}</Text>
                       <TouchableOpacity
-                        onPress={() => { haptics.selection(); Keyboard.dismiss(); setEditingNote(null); }}
+                        onPress={() => {
+                          haptics.selection();
+                          Keyboard.dismiss();
+                          track('exercise_note_saved', { kind: n.kind, char_count: n.value.trim().length });
+                          setEditingNote(null);
+                        }}
                         style={styles.stickyNoteDone}
                         hitSlop={10}
                         accessibilityRole="button"
@@ -3460,7 +3568,7 @@ export default function ActiveWorkoutScreen() {
               the lock screen already does that better. */}
           {prefs.musicApp !== 'off' && (
             <TouchableOpacity
-              onPress={() => { haptics.selection(); void openMusicApp(prefs.musicApp); }}
+              onPress={() => { haptics.selection(); track('music_app_opened', { app: prefs.musicApp, workout_elapsed_seconds: workout.elapsed }); void openMusicApp(prefs.musicApp); }}
               style={[styles.topRoundBtn, { backgroundColor: C.muted }]}
               hitSlop={8}
               accessibilityRole="button"
@@ -3713,6 +3821,7 @@ export default function ActiveWorkoutScreen() {
         canRemove={setTypeSheetIdx !== null && setTypeSheetIdx >= 0}
         onSelect={(t) => {
           if (setTypeSheetIdx === null) return;
+          track('set_type_changed', { to_type: t, scope: setTypeSheetIdx < 0 ? 'active_set' : 'logged_set' });
           if (setTypeSheetIdx < 0) { setActiveSetType(t); return; }
           const idx = setTypeSheetIdx;
           workout.updateExercises(prev => prev.map((e, ei) =>
@@ -4049,6 +4158,7 @@ export default function ActiveWorkoutScreen() {
           it (share or dismiss) is what actually lands the user on history. */}
       {shareRecap && (
         <ShareSheet
+          source="workout_recap"
           visible={!!shareRecap}
           onClose={dismissShareRecap}
           card={
@@ -4112,6 +4222,7 @@ export default function ActiveWorkoutScreen() {
       <AICoachModal
         visible={coachOpen}
         onClose={() => setCoachOpen(false)}
+        source="in_workout"
         initialScreen="chat"
         workoutContext={coachContext}
         onApplyWorkoutEdit={handleCoachWorkoutEdit}

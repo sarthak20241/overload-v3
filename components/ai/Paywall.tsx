@@ -27,7 +27,7 @@
  * and show a friendly "Need a dev build" toast — the layout still renders,
  * which is good enough to iterate on visuals.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, ActivityIndicator,
   StyleSheet, Linking,
@@ -35,7 +35,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { track } from '@/lib/analytics';
+import { track, setUserProps } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -103,8 +103,18 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
 
   // Same event as the full-screen /upgrade route, tagged by source, so both
   // entry points land in one funnel instead of two half-funnels.
+  const paywallOpenedAt = useRef(Date.now());
+  const paywallResolved = useRef(false);
   useEffect(() => {
     track('paywall_viewed', { source: 'coach_sheet', purchases_available: purchasesUsable });
+    return () => {
+      if (paywallResolved.current) return;
+      track('paywall_dismissed', {
+        source: 'coach_sheet',
+        seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000),
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one shot per mount
   }, []);
 
   // Initial data fetch. Run offerings + founding-status in parallel.
@@ -175,7 +185,9 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
         setVerifying(true);
         const flipped = await waitForTierFlip();
         if (flipped) {
+          paywallResolved.current = true;
           track('purchase_completed', { plan, source: 'coach_sheet' });
+          setUserProps({ tier: plan });
           toast.success("You're in. Welcome to Coach Drona.");
           await onPurchased();
           onClose();
@@ -220,6 +232,9 @@ export function Paywall({ supabase, onClose, onPurchased }: PaywallProps) {
       if (hasActive) {
         const flipped = await waitForTierFlip();
         if (flipped) {
+          paywallResolved.current = true;
+          setUserProps({ tier: 'restored', has_active_entitlement: true });
+          track('purchase_restored', { source: 'coach_sheet' });
           toast.success('Restored. Welcome back.');
           await onPurchased();
           onClose();

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSync } from '@/components/SyncProvider';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { FontSize, FontWeight, Spacing } from '@/constants/theme';
 
 /**
@@ -21,12 +22,20 @@ export function OfflineBanner() {
   const insets = useSafeAreaInsets();
   const [visible, setVisible] = useState(false);
 
+  // Only the 0 -> N transition is a "shown"; a count change while the banner
+  // is already up just extends it.
+  const wasShowing = useRef(false);
   useEffect(() => {
     if (pendingCount <= 0) {
+      wasShowing.current = false;
       setVisible(false);
       return;
     }
     setVisible(true);
+    if (!wasShowing.current) {
+      wasShowing.current = true;
+      track('offline_banner_shown', { pending_count: pendingCount });
+    }
     const t = setTimeout(() => setVisible(false), VISIBLE_MS);
     return () => clearTimeout(t);
   }, [pendingCount]);

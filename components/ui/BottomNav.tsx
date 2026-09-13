@@ -9,6 +9,7 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { useWorkout } from '@/hooks/useWorkout';
 import { haptics } from '@/lib/haptics';
 import { useEffect } from 'react';
@@ -104,13 +105,20 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
     return pathname.includes(route.replace('/(app)/', ''));
   };
 
+  // Three taps return to a minimized session (center button, mini-bar body,
+  // Return chip). One handler so the event fires once with a source.
+  const reopenWorkout = (source: 'center_button' | 'mini_bar' | 'return_button') => {
+    track('workout_reopened', { source, elapsed_seconds: workout.elapsed, is_paused: workout.isPaused });
+    router.push(`/workout/${workout.routineId}` as any);
+  };
+
   const handleCenterPress = () => {
     if (!workout.isActive) {
       onOpenModal?.();
     } else if (isOnWorkout) {
       workout.togglePause();
     } else {
-      router.push(`/workout/${workout.routineId}` as any);
+      reopenWorkout('center_button');
     }
   };
 
@@ -188,7 +196,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
 
             {/* Info — tap to navigate */}
             <TouchableOpacity
-              onPress={() => router.push(`/workout/${workout.routineId}` as any)}
+              onPress={() => reopenWorkout('mini_bar')}
               style={{ flex: 1, minWidth: 0 }}
               activeOpacity={0.8}
             >
@@ -219,7 +227,7 @@ export function BottomNav({ onOpenModal }: BottomNavProps) {
 
             {/* Return button */}
             <TouchableOpacity
-              onPress={() => router.push(`/workout/${workout.routineId}` as any)}
+              onPress={() => reopenWorkout('return_button')}
               style={[styles.returnBtn, { backgroundColor: Colors.primary }]}
             >
               <Text style={[styles.returnText, { color: Colors.primaryFg }]}>Return</Text>

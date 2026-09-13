@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
@@ -152,6 +153,12 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
       const { error } = await moveEntry(supabase, e, section);
       if (error) { setBusy(false); haptics.warning(); return; }
     }
+    track('meal_entry_updated', {
+      rescaled: qtySave !== e.quantity,
+      moved: section !== e.meal_type,
+      from_meal: e.meal_type,
+      to_meal: section,
+    });
     onSaved();
   };
 
@@ -161,6 +168,7 @@ export function EntryEditSheet({ entry, onClose, onSaved }: Props) {
     haptics.warning();
     const { error } = await deleteMealEntry(supabase, e);
     if (error) { setBusy(false); haptics.warning(); return; }
+    track('meal_entry_deleted', { meal_type: e.meal_type, kcal: Math.round(e.kcal) });
     onSaved();
   };
 

@@ -13,7 +13,8 @@ import { track } from '@/lib/analytics';
 import { useTheme } from '@/hooks/useTheme';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import * as WebBrowser from 'expo-web-browser';
-import { setGuestMode } from '@/lib/guestMode';
+import { setGuestMode, getGuestMode } from '@/lib/guestMode';
+import { getGuestWorkouts, getGuestRoutines } from '@/lib/guestStore';
 
 function useWarmUpBrowser() {
   useEffect(() => {
@@ -118,8 +119,18 @@ export default function AuthScreen() {
   // live session.
   useEffect(() => {
     if (clerkLoaded && isSignedIn) {
-      // A real session takes precedence over any lingering guest flag.
-      void setGuestMode(false);
+      // A real session takes precedence over any lingering guest flag. If it
+      // WAS set, this is a guest becoming an account: the conversion metric,
+      // with the local data volume that was at stake.
+      void getGuestMode().then((wasGuest) => {
+        if (wasGuest) {
+          track('guest_converted', {
+            guest_workout_count: getGuestWorkouts().length,
+            guest_routine_count: getGuestRoutines().length,
+          });
+        }
+        return setGuestMode(false);
+      });
       router.replace('/(app)');
     }
   }, [clerkLoaded, isSignedIn, router]);
@@ -867,6 +878,7 @@ export default function AuthScreen() {
           {(mode === 'login' || mode === 'register') && (
             <Animated.View entering={FadeInDown.delay(200).duration(500)} style={{ alignItems: 'center', marginTop: Spacing.lg }}>
               <TouchableOpacity onPress={async () => {
+                track('guest_mode_entered', { mode });
                 await setGuestMode(true);
                 router.replace('/(app)');
               }}>

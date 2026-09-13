@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { haptics } from '@/lib/haptics';
 import { listSavedMeals, logSavedMeal, deleteSavedMeal, type SavedMeal } from '@/lib/dietData';
@@ -57,7 +58,7 @@ export function SavedMealsSheet({ open, defaultMeal, mealLabel, onClose, onLogge
     if (!supabase || busyId) return;
     setBusyId(m.id);
     haptics.success();
-    const { error } = await logSavedMeal(supabase, m, defaultMeal, 1);
+    const { error } = await logSavedMeal(supabase, m, defaultMeal, 1, undefined, 'saved_sheet');
     setBusyId(null);
     if (error) { haptics.warning(); return; }
     onLogged();
@@ -72,6 +73,7 @@ export function SavedMealsSheet({ open, defaultMeal, mealLabel, onClose, onLogge
     const { error } = await deleteSavedMeal(supabase, m.id);
     setBusyId(null);
     if (error) { haptics.warning(); return; } // don't reload; the row would just reappear
+    track('saved_meal_deleted', { kind: m.kind, item_count: m.items.length });
     void load();
   };
 
