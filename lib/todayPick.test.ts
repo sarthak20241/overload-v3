@@ -5,7 +5,7 @@
 // the pick to the current phase's split, in day order.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { currentPhaseId, pickToday, type PickProgram, type PickRoutine, type PickWorkout } from "./todayPick.ts";
+import { currentPhaseId, pickToday, pickUpNext, type PickProgram, type PickRoutine, type PickWorkout } from "./todayPick.ts";
 
 const NOW = new Date("2026-09-13T18:00:00");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86400000).toISOString();
@@ -113,4 +113,93 @@ Deno.test("current phase follows the calendar, and is null outside the program",
   assertEquals(currentPhaseId(program, new Date("2026-09-02T23:00:00")), null);
   assertEquals(currentPhaseId(program, new Date("2026-10-15T08:00:00")), null);
   assertEquals(currentPhaseId(null, NOW), null);
+});
+
+Deno.test("up next: after Day 1 today, the next session is Day 2", () => {
+  const today = { name: "Full Body A", routine_id: "d1", started_at: daysAgo(0.2), finished_at: daysAgo(0.1) };
+  const { pick, tomorrow } = pickUpNext({ routines: newestFirst, workouts: [today], program, now: NOW });
+  assertEquals(pick.kind, "planned");
+  assertEquals(pick.routine?.id, "d2");
+  assertEquals(tomorrow.getDate(), 14);
+});
+
+Deno.test("up next crosses into the next phase on its first day", () => {
+  // Phase 2 starts 2026-09-17; the evening before, up next comes from its split.
+  const eve = new Date("2026-09-16T20:00:00");
+  const today = { name: "Full Body A", routine_id: "d1", started_at: "2026-09-16T17:00:00", finished_at: "2026-09-16T18:00:00" };
+  const { pick } = pickUpNext({ routines: newestFirst, workouts: [today], program, now: eve });
+  assertEquals(pick.routine?.id, "p2");
+  assertEquals(pick.kind === "planned" && pick.fromProgram, true);
+});
+
+// ── Rest days from the phase's week pattern (follows the user, not the calendar) ──
+// Pattern: Day 1 train, Day 2 rest, Day 3 train, Day 4-5 rest, Day 6 train, Day 7 rest.
+const FB = "Full Body";
+const weekly: PickProgram = {
+  ...program,
+  phases: [{ ...program.phases[0], week_pattern: [FB, "Rest", FB, "Rest", "Rest", FB, "Rest"] }, program.phases[1]],
+};
+const on = (r: PickRoutine, isoDay: string) => ({
+  name: r.name, routine_id: r.id, started_at: `${isoDay}T08:00:00`, finished_at: `${isoDay}T09:00:00`,
+});
+const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+Deno.test("rest: the day after Day 1 is a rest day, and Day 2's session is due after it", () => {
+  const pick = pickToday({ routines: newestFirst, workouts: [on(day1, "2026-09-12")], program: weekly, now: NOW });
+  assertEquals(pick.kind, "rest");
+  if (pick.kind !== "rest") return;
+  assertEquals(pick.next.id, "d2");
+  assertEquals(localDay(pick.resumesOn), "2026-09-14");
+});
+
+Deno.test("rest: once the rest day has passed, the next session is due", () => {
+  const pick = pickToday({ routines: newestFirst, workouts: [on(day1, "2026-09-11")], program: weekly, now: NOW });
+  assertEquals(pick.kind, "planned");
+  assertEquals(pick.routine?.id, "d2");
+  assertEquals(pick.kind === "planned" && pick.scheduled, true);
+});
+
+Deno.test("rest: the gap comes from the slot the last session sat on (two rest days after Day 3)", () => {
+  const due = pickToday({ routines: newestFirst, workouts: [on(day1, "2026-09-08"), on(day2, "2026-09-10")], program: weekly, now: NOW });
+  assertEquals(due.kind, "planned");
+  assertEquals(due.routine?.id, "d3");
+  const resting = pickToday({ routines: newestFirst, workouts: [on(day1, "2026-09-09"), on(day2, "2026-09-11")], program: weekly, now: NOW });
+  assertEquals(resting.kind, "rest");
+});
+
+Deno.test("rest: a missed day never piles up, the session just stays due", () => {
+  const pick = pickToday({ routines: newestFirst, workouts: [on(day1, "2026-09-05")], program: weekly, now: NOW });
+  assertEquals(pick.kind, "planned");
+  assertEquals(pick.routine?.id, "d2");
+});
+
+Deno.test("rest: the week wraps, Day 6 is followed by Day 7 rest, then Day 1 again", () => {
+  const workouts = [on(day1, "2026-09-08"), on(day2, "2026-09-10"), on(day3, "2026-09-12")];
+  const pick = pickToday({ routines: newestFirst, workouts, program: weekly, now: NOW });
+  assertEquals(pick.kind, "rest");
+  if (pick.kind === "rest") assertEquals(pick.next.id, "d1");
+});
+
+Deno.test("rest: sessions from before the phase started do not count", () => {
+  // Phase 2 opens 2026-09-17. An "Upper" logged the evening before belongs to
+  // phase 1's calendar, so phase 2 opens with its first session due, not a rest.
+  const both: PickProgram = {
+    ...weekly,
+    phases: [weekly.phases[0], { ...program.phases[1], week_pattern: weekly.phases[0].week_pattern }],
+  };
+  const pick = pickToday({ routines: newestFirst, workouts: [on(nextPhase, "2026-09-16")], program: both, now: new Date("2026-09-17T18:00:00") });
+  assertEquals(pick.kind, "planned");
+  assertEquals(pick.routine?.id, "p2");
+});
+
+Deno.test("rest: no week pattern means no rest days are invented", () => {
+  const pick = pickToday({ routines: newestFirst, workouts: [on(day1, "2026-09-12")], program, now: NOW });
+  assertEquals(pick.kind, "planned");
+  assertEquals(pick.kind === "planned" && pick.scheduled, false);
+});
+
+Deno.test("up next: after today's Day 1, tomorrow is a rest day", () => {
+  const { pick } = pickUpNext({ routines: newestFirst, workouts: [on(day1, "2026-09-13")], program: weekly, now: NOW });
+  assertEquals(pick.kind, "rest");
+  if (pick.kind === "rest") assertEquals(localDay(pick.resumesOn), "2026-09-15");
 });

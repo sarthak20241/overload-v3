@@ -11,12 +11,15 @@ import { DronaMark } from '@/components/coach/DronaMark';
 // The icon tile is neutral (C.muted) so it stays legible on the tinted card; the
 // lime lives in the fill, the glyph, and the "TODAY" label. The verbs (start /
 // edit / discuss) live in the session preview it opens, never in this card.
-// Four states: planned | new (lime tint, tappable), complete | rest (calm,
-// informational). A completed session is not called a rest day.
+// Four states: planned | new (lime tint, tappable), complete (calm, tappable:
+// opens DoneTodaySheet), rest (calm, tappable: previews the next session). Rest
+// comes only from the phase's week pattern; a completed session is not a rest day.
 
 export interface TodaySuggestion {
   kind: 'planned' | 'complete' | 'rest' | 'new';
   routine: any | null;
+  /** On a rest day, the session due after it (previewed on tap). */
+  next?: any | null;
   /** The most recent workout recorded today, shown once the day is complete. */
   completedWorkout?: { name?: string | null } | null;
   /** One line on WHY this session today (lib/todayReason). Absent until the
@@ -31,12 +34,19 @@ interface Props {
 
 export function TodaySuggestionCard({ suggestion, onPress }: Props) {
   const { C } = useTheme();
-  const { kind, routine, reason, completedWorkout } = suggestion;
+  const { kind, routine, reason, completedWorkout, next } = suggestion;
 
   if (kind === 'complete') {
+    // Calm card (no lime tint: today's work is done, nothing is asked of the
+    // user), but tappable: it opens what was done and what comes next.
     const title = completedWorkout?.name?.trim() || 'Workout complete';
     return (
-      <View style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+      <PressableScale
+        onPress={onPress}
+        style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+        accessibilityRole="button"
+        accessibilityLabel={`${title}, done for today. See the session and what is next.`}
+      >
         <View style={[s.iconWrap, { backgroundColor: C.primaryMuted }]}>
           <Feather name="check-circle" size={IconSize.sm} color={C.accentText} />
         </View>
@@ -47,13 +57,16 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
             <Text style={[s.meta, { color: C.textMuted }]} numberOfLines={1}>  ·  Done for today</Text>
           </View>
         </View>
-      </View>
+        <Feather name="chevron-right" size={IconSize.md} color={C.textMuted} />
+      </PressableScale>
     );
   }
 
   if (kind === 'rest') {
-    return (
-      <View style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>
+    // Calm, like a finished day: nothing is asked of the user. Tapping previews
+    // the session after the rest, for anyone who wants to see it or go early.
+    const content = (
+      <>
         <View style={[s.iconWrap, { backgroundColor: C.muted }]}>
           <Feather name="moon" size={IconSize.sm} color={C.textMuted} />
         </View>
@@ -63,8 +76,25 @@ export function TodaySuggestionCard({ suggestion, onPress }: Props) {
             <Text style={[s.title, { color: C.foreground }]}>Rest day</Text>
             <Text style={[s.meta, { color: C.textMuted }]}>  ·  recover</Text>
           </View>
+          {reason ? (
+            <Text style={[s.reason, { color: C.textMuted }]} numberOfLines={2}>{reason}</Text>
+          ) : null}
         </View>
-      </View>
+      </>
+    );
+    if (!next) {
+      return <View style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}>{content}</View>;
+    }
+    return (
+      <PressableScale
+        onPress={onPress}
+        style={[s.card, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Rest day. ${reason ?? ''}`}
+      >
+        {content}
+        <Feather name="chevron-right" size={IconSize.md} color={C.textMuted} />
+      </PressableScale>
     );
   }
 
