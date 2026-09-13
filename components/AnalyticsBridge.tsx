@@ -11,11 +11,16 @@
  * (`workout/7f3c…`), so one screen is one row in the dashboard instead of one
  * row per workout.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { usePathname, useSegments } from 'expo-router';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
-import { screen, identifyUser, resetAnalytics, setUserProps, analyticsEnabled } from '@/lib/analytics';
+import { useIsGuestSession } from '@/lib/guestMode';
+import { screen, identifyUser, resetAnalytics, setUserProps, registerSuperProps, analyticsEnabled } from '@/lib/analytics';
+
+/** Person props re-read from user_profiles at most this often on foreground. */
+const PROFILE_REFRESH_MS = 10 * 60 * 1000;
 
 /** `['(app)', 'index']` -> `app/index`. Groups stay, ids stay as `[id]`. */
 function routeName(segments: string[], pathname: string): string {
@@ -29,8 +34,32 @@ export function AnalyticsBridge() {
   const { user, isSignedIn, isLoaded } = useClerkUser();
   const supabase = useSupabaseClient();
 
+  const isGuestSession = useIsGuestSession();
+
   const lastScreen = useRef<string | null>(null);
   const identified = useRef<string | null>(null);
+
+  // ── Super property: guest or not ─────────────────────────────────────────
+  // Rides on every event, so any insight can split guests from accounts
+  // without each call site remembering to send is_guest.
+  useEffect(() => {
+    if (!analyticsEnabled) return;
+    registerSuperProps({ is_guest: isGuestSession });
+  }, [isGuestSession]);
+
+  // Bumped on foreground (throttled) so tier, level and streak on the person
+  // do not freeze at whatever they were on sign-in.
+  const [profileTick, setProfileTick] = useState(0);
+  const lastProfileFetch = useRef(0);
+  useEffect(() => {
+    if (!analyticsEnabled) return;
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s !== 'active') return;
+      if (Date.now() - lastProfileFetch.current < PROFILE_REFRESH_MS) return;
+      setProfileTick((t) => t + 1);
+    });
+    return () => sub.remove();
+  }, []);
 
   // ── Screen views ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -70,6 +99,7 @@ export function AnalyticsBridge() {
   useEffect(() => {
     if (!analyticsEnabled || !supabase || !isSignedIn || !user?.id) return;
     let cancelled = false;
+    lastProfileFetch.current = Date.now();
     (async () => {
       try {
         const { data } = await supabase
@@ -96,7 +126,7 @@ export function AnalyticsBridge() {
     return () => {
       cancelled = true;
     };
-  }, [supabase, isSignedIn, user?.id]);
+  }, [supabase, isSignedIn, user?.id, profileTick]);
 
   return null;
 }

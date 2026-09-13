@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { MusicApp } from '@/lib/musicLinks';
+import { track } from '@/lib/analytics';
 
 // Workout preferences live here. This mirrors useTheme's shape (Provider +
 // context + AsyncStorage) but holds the whole preferences object under a single
@@ -100,6 +101,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     <K extends keyof WorkoutPreferences,>(key: K, value: WorkoutPreferences[K]) => {
       // Mark the store user-touched so a late hydration read won't overwrite it.
       touchedBeforeReadyRef.current = true;
+      // Every key is a bounded enum or boolean, so the raw value is safe to send.
+      track('workout_preference_changed', { key, value: typeof value === 'boolean' || typeof value === 'number' ? value : String(value) });
       setPrefs((prev) => {
         const next = { ...prev, [key]: value };
         AsyncStorage.setItem(PREFS_KEY, JSON.stringify(next)).catch(() => {});

@@ -44,7 +44,7 @@ import {
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext,
+  parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
@@ -299,6 +299,7 @@ export default function NutritionScreen() {
     getParseSpeed().then((v) => { parseSpeedRef.current = v; setParseSpeedState(v); });
   }, []);
   const pickParseSpeed = (v: ParseSpeed) => {
+    track('parse_tier_changed', { from: parseSpeedRef.current, to: v });
     parseSpeedRef.current = v;
     setParseSpeedState(v);
     void setParseSpeed(v);
@@ -311,6 +312,7 @@ export default function NutritionScreen() {
     getAutoLog().then((v) => { autoLogRef.current = v; setAutoLogState(v); });
   }, []);
   const pickAutoLog = (v: boolean) => {
+    track('auto_log_toggled', { enabled: v, parse_tier: parseSpeedRef.current });
     autoLogRef.current = v;
     setAutoLogState(v);
     void setAutoLog(v);
@@ -398,6 +400,7 @@ export default function NutritionScreen() {
 
   // Step the diary a day back/forward; never past today.
   const stepDay = useCallback((delta: number) => {
+    track('nutrition_day_changed', { direction: delta > 0 ? 'forward' : 'back' });
     setViewDate((d) => {
       const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta);
       return ymd(next) > ymd(new Date()) ? d : next;
@@ -576,6 +579,18 @@ export default function NutritionScreen() {
     // same double-write by another route. This send is closed; the next
     // message starts a new one.
     if (auto && res.logged) {
+      // The server wrote the diary itself, so none of the client writers
+      // (logParsedMeal / logFood / logSavedMeal) run. Without this line the
+      // whole "Just log it" mode is invisible in the meal_logged breakdown.
+      track('meal_logged', {
+        method: 'auto',
+        item_count: res.meal.items.length,
+        kcal: Math.round(res.meal.items.reduce((t, it) => t + (it.kcal ?? 0), 0)),
+        meal_type: res.meal.meal_type ?? null,
+        section_count: res.logged.sections.length,
+        tier,
+        duration_ms: Date.now() - parseStartedAt,
+      });
       markAddedByDrona(res.logged);
       reload();
       turnsRef.current = [];
@@ -584,6 +599,9 @@ export default function NutritionScreen() {
     }
     // Asked to log, and the server sent it back for review instead. Say why
     // on the card; the meal itself is fine to Add by hand.
+    if (auto && res.autoLogSkipped) {
+      track('meal_auto_log_skipped', { reason: res.autoLogSkipped, tier, item_count: res.meal.items.length });
+    }
     const skippedNotice = auto && res.autoLogSkipped === 'implausible'
       ? 'One of these numbers looked off to Drona, so he left it for you to check before it goes in.'
       : auto && res.autoLogSkipped === 'write_error'
@@ -782,7 +800,12 @@ export default function NutritionScreen() {
       setChecking((curr) => (curr?.token === token ? null : curr));
     }
   }, [supabase]);
+  // How many times the user corrected the card before adding it. Read by
+  // onAdd so "accepted untouched" and "fixed three lines first" are separable.
+  const editCountRef = useRef(0);
   const onRemoveItem = useCallback((i: number) => {
+    editCountRef.current += 1;
+    track('parse_proposal_edited', { action: 'remove_item' });
     setFlow((f): ParseFlow => {
       if (f.status !== 'review') return f;
         const items = f.meal.items.filter((_, idx) => idx !== i);
@@ -796,6 +819,8 @@ export default function NutritionScreen() {
     });
   }, []);
   const onEditSave = useCallback((patch: ParsedMealItem) => {
+    editCountRef.current += 1;
+    track('parse_proposal_edited', { action: 'edit_item', source: patch.source ?? null });
     setFlow((f) => {
       if (f.status !== 'review' || editIndex === null) return f;
       const items = f.meal.items.map((it, i) => (i === editIndex ? patch : it));
@@ -825,6 +850,8 @@ export default function NutritionScreen() {
   }, [text, isSignedIn, flow.status, runParse]);
 
   const onMealTypeChange = useCallback((m: MealType) => {
+    editCountRef.current += 1;
+    track('parse_proposal_edited', { action: 'change_section', to: m });
     setFlow((f) => {
       if (f.status !== 'review') return f;
       // The chip row moves the WHOLE meal, so it stamps every line rather than
@@ -843,6 +870,10 @@ export default function NutritionScreen() {
 
   /** Multi-section card: move every line of one group to another section. */
   const onMoveGroup = useCallback((from: MealType, to: MealType) => {
+    if (from !== to) {
+      editCountRef.current += 1;
+      track('parse_proposal_edited', { action: 'move_group', from, to });
+    }
     setFlow((f) => {
       if (f.status !== 'review' || from === to) return f;
       const items = f.meal.items.map((it) => (it.meal_type === from ? { ...it, meal_type: to } : it));
@@ -873,6 +904,15 @@ export default function NutritionScreen() {
       supabase, { ...flow.meal, meal_type: flow.mealType }, viewDate,
     );
     setAdding(false);
+    track('parse_proposal_accepted', {
+      item_count: flow.meal.items.length,
+      section_count: sectionsOf(flow.meal).length,
+      edit_count: editCountRef.current,
+      meal_type_picked: !!flow.mealTypePicked,
+      is_today: isToday,
+      write_failed: !!error,
+    });
+    if (!error) editCountRef.current = 0;
     if (error) {
       // Keep the reviewed meal so Retry re-attempts the write (see onRetry).
       setFlow({ status: 'error', raw: flow.raw, message: 'Could not add that. Try again.', meal: flow.meal, mealType: flow.mealType });
@@ -883,7 +923,7 @@ export default function NutritionScreen() {
     // back open rather than as a summary line the user has to expand.
     setCardMinimized(false);
     setFlow({ status: 'idle' });
-  }, [flow, supabase, adding, reload, viewDate]);
+  }, [flow, supabase, adding, reload, viewDate, isToday]);
 
   const onRetry = useCallback(() => {
     if (flow.status !== 'error') return;
@@ -901,6 +941,12 @@ export default function NutritionScreen() {
   }, [flow, runParse]);
 
   const onDismiss = useCallback(() => {
+    track('parse_proposal_rejected', {
+      flow_status: flow.status,
+      item_count: flow.status === 'review' ? flow.meal.items.length : null,
+      edit_count: editCountRef.current,
+    });
+    editCountRef.current = 0;
     setChecking(null);
     setCardMinimized(false);
     // Discard is reachable mid-parse. Bumping the token orphans whatever is in
@@ -909,13 +955,17 @@ export default function NutritionScreen() {
     parseTokenRef.current += 1;
     parseAbortRef.current?.abort();
     setFlow({ status: 'idle' });
-  }, []);
+  }, [flow]);
 
   /** Undo from a diary row's "Added by Drona" chip: the whole send that row
    *  came from, which is the action being undone. Removing one line is what
    *  tapping the row already does. */
   const onUndoRow = useCallback(async (ref: LoggedParseRef) => {
     if (!supabase) return;
+    track('meal_undone', {
+      section_count: ref.sections.length,
+      entry_count: ref.sections.reduce((t, s) => t + s.entryIds.length, 0),
+    });
     await undoParsedMeal(supabase, ref);
     forgetAddedByDrona(ref);
     reload();

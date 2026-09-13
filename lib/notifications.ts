@@ -17,6 +17,8 @@
  * reminder dies with it, which Apple's own day-5 trial email covers.
  */
 
+import { track } from '@/lib/analytics';
+
 const TRIAL_REMINDER_ID = 'overload-trial-day5';
 const TRIAL_REMINDER_DAY = 5; // fire on day 5 of a 7-day trial
 
@@ -53,8 +55,12 @@ export async function requestNotificationPermission(): Promise<boolean> {
   try {
     const existing = await N.getPermissionsAsync();
     if (existing.granted) return true;
-    if (!existing.canAskAgain) return false;
+    if (!existing.canAskAgain) {
+      track('notification_permission_result', { outcome: 'blocked' });
+      return false;
+    }
     const asked = await N.requestPermissionsAsync();
+    track('notification_permission_result', { outcome: asked.granted ? 'granted' : 'denied' });
     return asked.granted;
   } catch {
     return false;

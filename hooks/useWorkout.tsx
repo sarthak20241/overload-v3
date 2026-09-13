@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, useMemo, ReactNode, Dispatch, SetStateAction } from 'react';
 import { AppState } from 'react-native';
 import type { ActiveWorkoutExercise } from '@/lib/types';
-import { track } from '@/lib/analytics';
+import { track, consumeWorkoutSource } from '@/lib/analytics';
 import {
   persistActiveWorkout,
   clearActiveWorkout,
@@ -166,6 +166,9 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
       exercise_count: exs.length,
       is_guest: !!meta?.isGuestSession,
       from_routine: !!id,
+      // Stamped by whichever surface pushed the workout route (today card,
+      // routine card, start modal, program). 'unknown' when nothing did.
+      source: consumeWorkoutSource(),
     });
   }, []);
 
@@ -174,6 +177,15 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
   // counts as elapsed, same as a tab switch. The running-timer effect below
   // takes over from here when the session isn't paused.
   const hydrateFromSnapshot = useCallback((snap: ActiveWorkoutSnapshot) => {
+    // "Session survived an app kill": the resume prompt and the silent
+    // cold-open restore both land here, so this fires once per restore.
+    track('workout_restored', {
+      exercise_count: snap.exercises.length,
+      completed_sets: snap.exercises.reduce((n, e) => n + e.sets.filter((s) => s.completed).length, 0),
+      was_paused: snap.isPaused,
+      is_guest: snap.isGuestSession,
+      gap_seconds: Math.max(0, Math.round((Date.now() - snap.savedAt) / 1000)),
+    });
     startTimeRef.current = snap.startTimeEpochMs;
     pausedElapsedRef.current = snap.pausedElapsedSeconds;
     metaRef.current = { ownerId: snap.ownerId, isGuestSession: snap.isGuestSession };
@@ -213,10 +225,12 @@ export function WorkoutProvider({ children }: { children: ReactNode }) {
 
   const pauseWorkout = useCallback(() => {
     pausedElapsedRef.current = Math.floor((Date.now() - startTimeRef.current) / 1000);
+    track('workout_paused', { elapsed_seconds: pausedElapsedRef.current });
     setIsPaused(true);
   }, []);
 
   const resumeWorkout = useCallback(() => {
+    track('workout_resumed', { elapsed_seconds: pausedElapsedRef.current });
     startTimeRef.current = Date.now() - pausedElapsedRef.current * 1000;
     setIsPaused(false);
   }, []);

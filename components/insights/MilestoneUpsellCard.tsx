@@ -21,6 +21,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, FontSize, FontWeight, LetterSpacing, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import type { Insight } from '@/lib/insights';
@@ -70,7 +71,10 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
         setEligible(ok);
         // Count this appearance against the cooldown the moment it renders,
         // so backgrounding and reopening all week doesn't re-show it.
-        if (ok) AsyncStorage.setItem(lastShownKey(userId), String(now)).catch(() => {});
+        if (ok) {
+          track('milestone_upsell_shown', { insight_kind: victory.id.split(':')[0] });
+          AsyncStorage.setItem(lastShownKey(userId), String(now)).catch(() => {});
+        }
       } catch {
         if (!cancelled) setEligible(false);
       }
@@ -81,10 +85,12 @@ export function MilestoneUpsellCard({ insights }: { insights: Insight[] }) {
   }, [access.state, victory, userId]);
 
   const handleShowMe = useCallback(() => {
+    track('upgrade_prompt_tapped', { feature: 'milestone', context: 'milestone' });
     router.push({ pathname: '/upgrade', params: { context: 'milestone' } });
   }, [router]);
 
   const handleNotNow = useCallback(() => {
+    track('milestone_upsell_snoozed');
     setDismissed(true);
     AsyncStorage.setItem(snoozeKey(userId), String(Date.now() + SNOOZE_MS)).catch(() => {});
   }, [userId]);

@@ -24,6 +24,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track, trackError } from '@/lib/analytics';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { useToast } from '@/components/ui/Toast';
@@ -108,6 +109,7 @@ export default function ImportScreen() {
       // Guard: make sure this actually looks like a Hevy export before previewing.
       const head = text.slice(0, 500).toLowerCase();
       if (!head.includes('exercise_title') || !head.includes('start_time')) {
+        track('import_file_rejected', { source: 'hevy', reason: 'not_hevy_format' });
         setCsvText(null);
         setPhase('idle');
         setParseError("That file doesn't look like a Hevy export. In Hevy: Settings → Export & Import Data → Export Workouts.");
@@ -116,7 +118,9 @@ export default function ImportScreen() {
       setFileName(asset.name ?? 'workouts.csv');
       setCsvText(text);
       setPhase('parsed');
+      track('import_file_picked', { source: 'hevy', bytes: text.length });
     } catch (err: any) {
+      track('import_file_rejected', { source: 'hevy', reason: 'read_error' });
       setParseError(`Couldn't read that file: ${String(err?.message ?? err)}`);
     }
   }, []);
@@ -131,6 +135,8 @@ export default function ImportScreen() {
     }
     setPhase('importing');
     setSyncedSoFar(0);
+    const importStartedAt = Date.now();
+    track('import_started', { source: 'hevy', workout_count: workouts.length });
     try {
       // Skip any workout already queued this session (deterministic clientId
       // means re-importing is also DB-safe; the unique index dedupes server-side).
@@ -161,9 +167,12 @@ export default function ImportScreen() {
       setSyncedSoFar(synced);
       setOutcome({ requested: total, synced, queued: left });
       setPhase('done');
+      track('import_completed', { source: 'hevy', requested: total, synced, queued: left, duration_ms: Date.now() - importStartedAt });
       if (left === 0) toast.success(`Imported ${synced} workout${synced === 1 ? '' : 's'}.`);
       else toast.info(`${synced} imported, ${left} will finish syncing when you're online.`);
     } catch (err: any) {
+      trackError(err, { where: 'hevy_import' });
+      track('import_failed', { source: 'hevy', workout_count: workouts.length });
       setPhase('parsed');
       toast.error(`Import failed: ${String(err?.message ?? err)}`);
     }

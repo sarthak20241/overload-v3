@@ -17,6 +17,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
+import { track } from '@/lib/analytics';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
 export interface ProgramDiet {
@@ -621,6 +622,7 @@ export async function reconcileActiveProgram(
         .from('coach_programs')
         .update({ status: 'completed', updated_at: new Date().toISOString() })
         .eq('id', active.id);
+      track('program_completed', { phases: active.phases.length, total_weeks: active.total_weeks ?? null });
     }
     return null;
   }
@@ -639,5 +641,12 @@ export async function reconcileActiveProgram(
     .from('coach_programs')
     .update({ applied_phase_seq: active.currentPhaseSeq, updated_at: new Date().toISOString() })
     .eq('id', active.id);
+  // System event, not a tap: the program rolled into its next phase and the
+  // diet targets were rewritten. Only reached when the phase actually changed.
+  track('program_phase_advanced', {
+    from_seq: active.applied_phase_seq,
+    to_seq: active.currentPhaseSeq,
+    phases: active.phases.length,
+  });
   return active.currentPhaseSeq;
 }

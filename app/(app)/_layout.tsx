@@ -11,6 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Radius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track, markWorkoutSource } from '@/lib/analytics';
 import { useWorkout } from '@/hooks/useWorkout';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestRoutines } from '@/lib/guestStore';
@@ -142,11 +143,15 @@ function StartWorkoutModal({ visible, onClose }: { visible: boolean; onClose: ()
   }, [visible, user?.id]);
 
   const startRoutine = (routine: Routine) => {
+    track('workout_start_selected', { kind: 'routine', exercise_count: (routine as any).routine_exercises?.length ?? 0 });
+    markWorkoutSource('start_modal');
     onClose();
     router.push(`/workout/${routine.id}`);
   };
 
   const startBlank = () => {
+    track('workout_start_selected', { kind: 'blank' });
+    markWorkoutSource('start_modal_blank');
     onClose();
     router.push('/workout/new');
   };
@@ -419,7 +424,7 @@ export default function AppLayout() {
         <Tabs.Screen name="admin/research" options={{ href: null }} />
       </Tabs>
 
-      {!hideWorkoutChrome && <BottomNav onOpenModal={() => setModalOpen(true)} />}
+      {!hideWorkoutChrome && <BottomNav onOpenModal={() => { track('start_workout_modal_opened'); setModalOpen(true); }} />}
       {!hideWorkoutChrome && (
         <StartWorkoutModal visible={modalOpen} onClose={() => setModalOpen(false)} />
       )}

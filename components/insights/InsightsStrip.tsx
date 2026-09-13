@@ -16,6 +16,7 @@ import { Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Spacing, FontSize, FontWeight, Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import type { Insight } from '@/lib/insights';
 import { InsightCard } from './InsightCard';
 import { DronaMark } from '@/components/coach/DronaMark';
@@ -42,6 +43,7 @@ function useDismissedInsights() {
   }, []);
 
   const dismiss = useCallback((id: string) => {
+    track('insight_dismissed', { insight_kind: id.split(':')[0] });
     setIds(prev => {
       const next = new Set(prev);
       next.add(id);

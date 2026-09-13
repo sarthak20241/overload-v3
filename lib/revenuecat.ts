@@ -200,6 +200,43 @@ export async function ensureIdentity(userId: string): Promise<void> {
   }
 }
 
+/**
+ * Subscribe to entitlement changes: renewals, expiries, cancellations and
+ * store-side restores all arrive here, none of which the paywall can see.
+ * The SDK replays the current CustomerInfo on subscribe and on every app
+ * open, so the callback is deduped on a fingerprint of the active
+ * entitlements and only fires when something actually changed.
+ */
+export function watchCustomerInfo(
+  onChange: (info: { activeEntitlements: string[]; willRenew: boolean | null; periodType: string | null; isFirst: boolean }) => void,
+): () => void {
+  const P = loadPurchases();
+  if (!P || !ensureConfigured() || typeof P.addCustomerInfoUpdateListener !== 'function') return () => {};
+  let last: string | null = null;
+  const listener = (info: any) => {
+    try {
+      const active = Object.values(info?.entitlements?.active ?? {}) as any[];
+      const ids = active.map((e) => String(e?.identifier ?? e?.productIdentifier ?? '')).sort();
+      const key = ids.join('|') + ':' + active.map((e) => String(e?.expirationDate ?? '')).join('|');
+      if (key === last) return;
+      const isFirst = last === null;
+      last = key;
+      onChange({
+        activeEntitlements: ids,
+        willRenew: active.length ? active.some((e) => !!e?.willRenew) : null,
+        periodType: active[0]?.periodType ? String(active[0].periodType) : null,
+        isFirst,
+      });
+    } catch {
+      /* analytics only */
+    }
+  };
+  P.addCustomerInfoUpdateListener(listener);
+  return () => {
+    try { P.removeCustomerInfoUpdateListener?.(listener); } catch { /* already gone */ }
+  };
+}
+
 /** Revert to an anonymous id on sign-out. */
 export async function logOutRevenueCat(): Promise<void> {
   const P = loadPurchases();

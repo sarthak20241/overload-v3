@@ -4,6 +4,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSync } from '@/components/SyncProvider';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { FontSize, FontWeight, Spacing } from '@/constants/theme';
 
 /**
@@ -27,6 +28,7 @@ export function OfflineBanner() {
       return;
     }
     setVisible(true);
+    track('offline_banner_shown', { pending_count: pendingCount });
     const t = setTimeout(() => setVisible(false), VISIBLE_MS);
     return () => clearTimeout(t);
   }, [pendingCount]);

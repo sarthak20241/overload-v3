@@ -8,6 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { Colors, Radius, FontSize, FontWeight, Spacing, Shadow } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track, trackError } from '@/lib/analytics';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -485,6 +486,15 @@ export default function EditWorkoutScreen() {
     const cleanName = name.trim() || 'Workout';
     const cleanNotes = notes.trim() ? notes.trim() : null;
 
+    // One call before the three backend branches: everything after this either
+    // succeeds or lands in the catch below.
+    track('workout_edited', {
+      backend,
+      exercise_count: cleaned.length,
+      set_count: allSets.length,
+      volume_kg: newVolume,
+      has_notes: !!cleanNotes,
+    });
     setSaving(true);
     try {
       if (backend === 'guest') {
@@ -580,7 +590,9 @@ export default function EditWorkoutScreen() {
       toast.success('Workout updated');
       void flushNow();
       leave();
-    } catch {
+    } catch (e) {
+      trackError(e, { where: 'workout_edit_save', backend });
+      track('workout_edit_failed', { backend });
       setSaving(false);
       toast.error("Couldn't save changes");
     }

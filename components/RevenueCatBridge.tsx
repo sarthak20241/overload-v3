@@ -26,7 +26,8 @@
 import { useEffect, useRef } from 'react';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { hasClerkKey } from '@/hooks/useClerkUser';
-import { ensureConfigured, ensureIdentity, logOutRevenueCat } from '@/lib/revenuecat';
+import { ensureConfigured, ensureIdentity, logOutRevenueCat, watchCustomerInfo } from '@/lib/revenuecat';
+import { track, setUserProps } from '@/lib/analytics';
 
 const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
@@ -35,7 +36,27 @@ export function RevenueCatBridge() {
   // before the user signs in. Expo Go does not support the app's native-store
   // key, so skip both configuration and identity sync in that environment.
   useEffect(() => {
-    if (!isExpoGo) ensureConfigured();
+    if (isExpoGo) return;
+    ensureConfigured();
+    // Entitlement changes the app never initiates (renewal, expiry, refund,
+    // a restore done in Settings) are invisible without this. The first
+    // replay after subscribe only refreshes the person; later ones are the
+    // real tier changes.
+    return watchCustomerInfo(({ activeEntitlements, willRenew, periodType, isFirst }) => {
+      setUserProps({
+        has_active_entitlement: activeEntitlements.length > 0,
+        will_renew: willRenew,
+        period_type: periodType,
+      });
+      if (!isFirst) {
+        track('subscription_changed', {
+          active: activeEntitlements.length > 0,
+          entitlement_count: activeEntitlements.length,
+          will_renew: willRenew,
+          period_type: periodType,
+        });
+      }
+    });
   }, []);
 
   // Identity sync only when Clerk is configured. In guest mode, RC stays

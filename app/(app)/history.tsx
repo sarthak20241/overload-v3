@@ -15,6 +15,7 @@ import Animated, { FadeInDown, useSharedValue, useAnimatedStyle, withTiming, typ
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Colors, Spacing, Radius, FontSize, FontWeight, Shadow, colorWithAlpha } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { track } from '@/lib/analytics';
 import { usePreferences, type IntensityScale } from '@/hooks/usePreferences';
 import { useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, removeGuestWorkout } from '@/lib/guestStore';
@@ -891,6 +892,9 @@ export default function HistoryScreen() {
   const confirmDelete = () => {
     const id = deleteId;
     if (!id) return;
+    // Tracked at the confirm, not in performDelete: the toast's Retry re-enters
+    // performDelete and would double-count.
+    track('history_workout_deleted', { is_guest: isGuestSession });
     setDeleteId(null);
     performDelete(id);
   };
@@ -1100,8 +1104,8 @@ export default function HistoryScreen() {
                     colorIndex={wIdx}
                     openRowRef={openRowRef}
                     onDelete={() => handleDelete(workout.id)}
-                    onEdit={() => router.push(`/workout/edit/${workout.id}`)}
-                    onShare={() => setShareWorkout(workout)}
+                    onEdit={() => { track('history_workout_edit_opened'); router.push(`/workout/edit/${workout.id}`); }}
+                    onShare={() => { track('workout_share_opened', { source: 'history' }); setShareWorkout(workout); }}
                   />
                 ))}
               </View>
@@ -1126,6 +1130,7 @@ export default function HistoryScreen() {
 
     {shareWorkout && (
       <ShareSheet
+        source="history"
         visible={!!shareWorkout}
         onClose={() => setShareWorkout(null)}
         card={(() => {

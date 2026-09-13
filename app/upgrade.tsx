@@ -79,7 +79,7 @@ import {
   Spacing,
 } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
-import { track } from '@/lib/analytics';
+import { track, setUserProps } from '@/lib/analytics';
 import { useToast } from '@/components/ui/Toast';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useSupabaseClient } from '@/lib/supabase';
@@ -325,11 +325,18 @@ export default function UpgradeScreen() {
           const t = e?.periodType;
           return t === 'TRIAL' || t === 'INTRO' || t === 'trial' || t === 'intro';
         });
-        if (onTrial) void scheduleTrialReminder();
+        if (onTrial) {
+          void scheduleTrialReminder().then((scheduled) => {
+            track('trial_reminder_scheduled', { scheduled, plan: selectedPlan });
+          });
+        }
         // Warm the dashboard cache while the success screen is up, so the
         // landing paints real data instead of "Level 1 · no workouts".
         void prefetchDashboard(supabase, user?.id);
         paywallResolved.current = true;
+        // The bridge only reads user_profiles on sign-in, so stamp the new tier
+        // now or every event until the next cold start still says 'free'.
+        setUserProps({ tier: selectedPlan, on_trial: onTrial });
         track('purchase_completed', {
           plan: selectedPlan,
           on_trial: onTrial,
@@ -369,9 +376,11 @@ export default function UpgradeScreen() {
   const handleRestore = useCallback(async () => {
     if (restoring) return;
     setRestoring(true);
+    track('purchase_restore_started', { context });
     try {
       const info = await restorePurchases();
       if (!info) {
+        track('purchase_restore_failed', { reason: 'unavailable', context });
         toast.info('Purchases unavailable in this build.');
         return;
       }
@@ -385,12 +394,15 @@ export default function UpgradeScreen() {
           toast.success('Restored. Welcome back.');
           finish();
         } else {
+          track('purchase_restore_failed', { reason: 'flip_pending', context });
           toast.info("Restored. We're finalizing. Try again in a minute.");
         }
       } else {
+        track('purchase_restore_failed', { reason: 'no_active', context });
         toast.info('No previous purchases on this Apple ID.');
       }
     } catch (e) {
+      track('purchase_restore_failed', { reason: 'error', context });
       console.warn('[upgrade] restore failed:', e);
       toast.error('Restore failed. Try again later.');
     } finally {
@@ -423,9 +435,10 @@ export default function UpgradeScreen() {
   const advanceFromReminder = useCallback(async () => {
     // The promise needs the permission. Denial is fine: the screen never
     // claimed the OS can't say no, and Apple emails trial reminders anyway.
-    await requestNotificationPermission();
+    const granted = await requestNotificationPermission();
+    track('paywall_step_advanced', { from: 'reminder', to: 'paywall', notifications_granted: granted, context });
     setStep('paywall');
-  }, []);
+  }, [context]);
 
   // ── Android: nothing to sell until Play billing unblocks ─────────────────
   if (Platform.OS === 'android') {
@@ -524,7 +537,7 @@ export default function UpgradeScreen() {
           <Animated.View entering={FadeInDown.delay(300).duration(400)} style={u.footer}>
             <NoPaymentRow color={C.foreground} />
             <PressableScale
-              onPress={() => setStep('reminder')}
+              onPress={() => { track('paywall_step_advanced', { from: 'warmup', to: 'reminder', context }); setStep('reminder'); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
               accessibilityLabel="Try it free"
@@ -609,7 +622,10 @@ export default function UpgradeScreen() {
           */}
           <View style={u.topBar}>
             <TouchableOpacity
-              onPress={() => (isFunnel ? setStep('reminder') : finish())}
+              onPress={() => {
+                if (!isFunnel) track('paywall_skipped', { via: 'top_bar', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) });
+                isFunnel ? setStep('reminder') : finish();
+              }}
               accessibilityRole="button"
               accessibilityLabel="Back"
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -724,7 +740,7 @@ export default function UpgradeScreen() {
                       price={annual.product.priceString}
                       priceUnit="/yr"
                       note={perMonth ? `${perMonth}/mo, billed yearly` : 'Billed yearly'}
-                      onPress={() => setSelectedPlan('annual')}
+                      onPress={() => { track('paywall_plan_selected', { plan: 'annual', previous_plan: selectedPlan }); setSelectedPlan('annual'); }}
                     />
                   </Animated.View>
                 )}
@@ -741,7 +757,7 @@ export default function UpgradeScreen() {
                           ? `Free for ${trialDays.monthly} days, then billed monthly`
                           : 'Billed monthly · no trial'
                       }
-                      onPress={() => setSelectedPlan('monthly')}
+                      onPress={() => { track('paywall_plan_selected', { plan: 'monthly', previous_plan: selectedPlan }); setSelectedPlan('monthly'); }}
                     />
                   </Animated.View>
                 )}
@@ -756,12 +772,12 @@ export default function UpgradeScreen() {
                         ? `${foundingLeft} of ${founding.cap} spots left · never comes back`
                         : 'One-time · Drona forever'
                     }
-                    onPress={() => setSelectedPlan('founding_lifetime')}
+                    onPress={() => { track('paywall_plan_selected', { plan: 'founding_lifetime', previous_plan: selectedPlan }); setSelectedPlan('founding_lifetime'); }}
                   />
                 )}
                 {lifetime && lifetime.product?.priceString && !foundingSoldOut && !showAllPlans && (
                   <TouchableOpacity
-                    onPress={() => setShowAllPlans(true)}
+                    onPress={() => { track('paywall_plans_expanded'); setShowAllPlans(true); }}
                     accessibilityRole="button"
                     accessibilityLabel="See all plans"
                   >
@@ -832,7 +848,7 @@ export default function UpgradeScreen() {
             {skipVisible && (
               <Animated.View entering={FadeIn.duration(400)}>
                 <TouchableOpacity
-                  onPress={finish}
+                  onPress={() => { track('paywall_skipped', { via: 'soft_skip', context, seconds_on_screen: Math.round((Date.now() - paywallOpenedAt.current) / 1000) }); finish(); }}
                   accessibilityRole="button"
                   accessibilityLabel="Continue with the free plan"
                 >
@@ -905,7 +921,7 @@ export default function UpgradeScreen() {
           </View>
           <Animated.View entering={FadeInDown.delay(440).duration(400)} style={u.footer}>
             <PressableScale
-              onPress={fromCap ? finish : finishWithCoach}
+              onPress={() => { track('paywall_success_cta', { destination: fromCap ? 'back' : 'coach' }); (fromCap ? finish : finishWithCoach)(); }}
               style={[u.cta, Shadow.playBtn]}
               accessibilityRole="button"
               accessibilityLabel={fromCap ? 'Continue' : 'Ask Drona to plan my week'}
@@ -914,7 +930,7 @@ export default function UpgradeScreen() {
             </PressableScale>
             {!fromCap && (
               <TouchableOpacity
-                onPress={goToDashboard}
+                onPress={() => { track('paywall_success_cta', { destination: 'dashboard' }); goToDashboard(); }}
                 accessibilityRole="button"
                 accessibilityLabel="Go to my dashboard"
               >
