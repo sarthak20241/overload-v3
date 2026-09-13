@@ -55,3 +55,14 @@ export function splitPromptFor(s: SplitPromptState): SplitPromptAction {
   if (s.phaseRoutineCount == null) return null;
   return s.phaseRoutineCount === 0 ? 'build' : null;
 }
+
+/**
+ * Where a "Not now" is remembered. One key PER PHASE, never one for the device:
+ * the answer belongs to the phase that was asked about. A single device-wide
+ * flag meant one tap on Build, even an abandoned one, silenced the ask for
+ * every program that came after it. A guest has no phase row yet, so they get
+ * a key of their own.
+ */
+export function splitPromptSnoozeKey(phaseId: string | null | undefined): string {
+  return `overload:split_prompt_snooze::${phaseId || 'guest'}`;
+}

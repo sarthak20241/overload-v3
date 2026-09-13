@@ -257,47 +257,56 @@ export default function DashboardScreen() {
 
   // ── The phase 1 split prompt ────────────────────────────────────────────
   // Onboarding hands out the program and stops; the week of workouts is built
-  // here, afterwards, against a real user id. Read once per identity: the
-  // answer only changes when they act on it, and the popup itself remembers
-  // that. A failed read leaves this null, which reads as "say nothing".
+  // from the Goal screen, against a real user id.
+  //
+  // Re-read on EVERY focus, not once per identity. A fresh account can reach
+  // this screen before its program exists (the pending-onboarding drain runs
+  // beside the first render) and the paywall sits on top of it on the way
+  // here, so a one-shot read could keep "no program" or "no routines" for the
+  // life of the tab. A failed read leaves this null, which reads as "say
+  // nothing".
   const [splitState, setSplitState] = useState<
-    { done: boolean; hasProgram: boolean; count: number | null } | null
+    { done: boolean; hasProgram: boolean; count: number | null; phaseId: string | null } | null
   >(null);
   // The prompt is a root-Portal overlay, so it would otherwise float above the
-  // paywall that a fresh iOS account hits on the way here. Gate it on this
-  // screen actually being the one in front.
+  // paywall. Gate it on this screen actually being the one in front.
   const [screenFocused, setScreenFocused] = useState(false);
   useFocusEffect(
     useCallback(() => {
       setScreenFocused(true);
-      return () => setScreenFocused(false);
-    }, []),
-  );
-  useEffect(() => {
-    if (!clerkLoaded) return;
-    let cancelled = false;
-    (async () => {
-      const clerkId = isGuestSession ? null : user?.id ?? null;
-      const done = await hasCompletedOnboarding(clerkId);
-      if (cancelled) return;
-      if (!done || !clerkId) {
-        setSplitState({ done, hasProgram: false, count: null });
-        return;
-      }
-      try {
-        const program = await loadActiveProgram(supabase, clerkId);
+      if (!clerkLoaded) return () => setScreenFocused(false);
+      let cancelled = false;
+      (async () => {
+        const clerkId = isGuestSession ? null : user?.id ?? null;
+        const done = await hasCompletedOnboarding(clerkId);
         if (cancelled) return;
-        const phase = program
-          ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? program.phases[0]
-          : null;
-        setSplitState({ done: true, hasProgram: !!program, count: phase ? phase.routines.length : null });
-      } catch {
-        // Offline or RLS hiccup: an unknown split state must not become a nudge.
-        if (!cancelled) setSplitState(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [clerkLoaded, isGuestSession, user?.id, supabase]);
+        if (!done || !clerkId) {
+          setSplitState({ done, hasProgram: false, count: null, phaseId: null });
+          return;
+        }
+        try {
+          const program = await loadActiveProgram(supabase, clerkId);
+          if (cancelled) return;
+          const phase = program
+            ? program.phases.find((ph) => ph.seq === program.currentPhaseSeq) ?? program.phases[0]
+            : null;
+          setSplitState({
+            done: true,
+            hasProgram: !!program,
+            count: phase ? phase.routines.length : null,
+            phaseId: phase?.id ?? null,
+          });
+        } catch {
+          // Offline or RLS hiccup: an unknown split state must not become a nudge.
+          if (!cancelled) setSplitState(null);
+        }
+      })();
+      return () => {
+        cancelled = true;
+        setScreenFocused(false);
+      };
+    }, [clerkLoaded, isGuestSession, user?.id, supabase]),
+  );
 
   // Today's suggestion (Element 2). Simple, no-AI heuristic for the polish; the
   // real adaptive "coach plans your path" pick is the separate feature workstream.
@@ -927,6 +936,7 @@ export default function DashboardScreen() {
         isGuest={isGuestSession || !user?.id}
         hasProgram={!!splitState?.hasProgram}
         phaseRoutineCount={splitState?.count ?? null}
+        phaseId={splitState?.phaseId ?? null}
         onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase' } })}
         onSignIn={() => router.push('/(auth)')}
       />

@@ -5,8 +5,8 @@
 // misfire: before anything has loaded, after the split already exists, and
 // during the snooze a "Later" bought.
 
-import { assertEquals } from "jsr:@std/assert@1";
-import { splitPromptFor, SNOOZE_MS, type SplitPromptState } from "./splitPrompt.ts";
+import { assert, assertEquals } from "jsr:@std/assert@1";
+import { splitPromptFor, splitPromptSnoozeKey, SNOOZE_MS, type SplitPromptState } from "./splitPrompt.ts";
 
 const NOW = 1_760_000_000_000;
 
@@ -57,4 +57,18 @@ Deno.test("Later holds for three days and then the ask returns", () => {
 Deno.test("a snooze stamped in the future does not hold forever", () => {
   // A clock moved backwards would otherwise park the prompt permanently.
   assertEquals(splitPromptFor({ ...base, dismissedAt: NOW + 10 * SNOOZE_MS }), "build");
+});
+
+Deno.test("a new program gets a fresh ask, not the old one's answer", () => {
+  // The bug: the popup remembered its answer in ONE device-wide key. Tapping
+  // Build once (even if the builder was abandoned) silenced it forever, so a
+  // brand-new program whose phase 1 had zero routines never got asked.
+  const oldPhase = splitPromptSnoozeKey("phase-aaa");
+  const newPhase = splitPromptSnoozeKey("phase-bbb");
+  assert(oldPhase !== newPhase, `both phases share ${oldPhase}`);
+});
+
+Deno.test("a guest's snooze has a stable key of its own", () => {
+  assertEquals(splitPromptSnoozeKey(null), splitPromptSnoozeKey(undefined));
+  assert(splitPromptSnoozeKey(null) !== splitPromptSnoozeKey("phase-aaa"));
 });

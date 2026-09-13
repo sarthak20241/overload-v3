@@ -21,20 +21,8 @@ import { Feather } from '@expo/vector-icons';
 import { Portal } from '@/components/ui/Portal';
 import { DronaMark } from '@/components/coach/DronaMark';
 import { useTheme } from '@/hooks/useTheme';
-import { splitPromptFor, type SplitPromptAction } from '@/lib/splitPrompt';
+import { splitPromptFor, splitPromptSnoozeKey, type SplitPromptAction } from '@/lib/splitPrompt';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-
-const DISMISS_KEY = 'overload:split_prompt_dismissed_at';
-/** Set once the ask has been answered for good, so it never returns. */
-const DONE_KEY = 'overload:split_prompt_done';
-
-export async function markSplitPromptDone(): Promise<void> {
-  try {
-    await AsyncStorage.setItem(DONE_KEY, '1');
-  } catch {
-    /* a prompt that shows once more is not worth failing a navigation over */
-  }
-}
 
 interface Props {
   /** False while auth or the program query is still settling. */
@@ -44,6 +32,8 @@ interface Props {
   hasProgram: boolean;
   /** Routines linked to the current phase; null until loaded. */
   phaseRoutineCount: number | null;
+  /** The phase being asked about. Its id scopes "Not now"; null for a guest. */
+  phaseId: string | null;
   /** Signed in: open the Goal screen on phase 1's build flow. */
   onBuild: () => void;
   /** Guest: send them to sign-in so the program has somewhere to land. */
@@ -54,20 +44,25 @@ export function BuildSplitPrompt(props: Props) {
   const { C } = useTheme();
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Session-only. Tapping Build or Sign in hides the ask for as long as this
+  // screen lives; nothing is written down, because the real "done" is the
+  // phase actually having routines, and the dashboard re-reads that on focus.
+  // An abandoned builder gets asked again next launch, which is the point.
   const [answered, setAnswered] = useState(false);
+  const snoozeKey = splitPromptSnoozeKey(props.phaseId);
 
   useEffect(() => {
     let alive = true;
+    setLoaded(false);
+    // A different phase is a different question; a Build tap on the old one
+    // says nothing about it.
+    setAnswered(false);
     (async () => {
       try {
-        const [raw, done] = await Promise.all([
-          AsyncStorage.getItem(DISMISS_KEY),
-          AsyncStorage.getItem(DONE_KEY),
-        ]);
+        const raw = await AsyncStorage.getItem(snoozeKey);
         if (!alive) return;
         const n = raw ? parseInt(raw, 10) : NaN;
         setDismissedAt(Number.isFinite(n) ? n : null);
-        setAnswered(done === '1');
       } catch {
         /* no stored answer reads the same as never asked */
       } finally {
@@ -77,7 +72,7 @@ export function BuildSplitPrompt(props: Props) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [snoozeKey]);
 
   const action: SplitPromptAction = answered
     ? null
@@ -95,8 +90,8 @@ export function BuildSplitPrompt(props: Props) {
   const later = useCallback(() => {
     const now = Date.now();
     setDismissedAt(now);
-    AsyncStorage.setItem(DISMISS_KEY, String(now)).catch(() => {});
-  }, []);
+    AsyncStorage.setItem(snoozeKey, String(now)).catch(() => {});
+  }, [snoozeKey]);
 
   // <Portal> has no onRequestClose, so route the Android hardware back button.
   useEffect(() => {
@@ -110,7 +105,6 @@ export function BuildSplitPrompt(props: Props) {
 
   const go = useCallback(() => {
     setAnswered(true);
-    void markSplitPromptDone();
     if (action === 'signin') props.onSignIn();
     else props.onBuild();
   }, [action, props]);
