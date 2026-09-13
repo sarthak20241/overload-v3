@@ -40,6 +40,7 @@ import {
 } from '@/lib/workoutCoach';
 import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
+import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
@@ -1526,6 +1527,7 @@ function ChatScreen({
             <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
           </TouchableOpacity>
         </View>
+        <MedicalDisclaimer variant="short" style={{ marginTop: Spacing.sm }} />
       </View>
     </View>
   );

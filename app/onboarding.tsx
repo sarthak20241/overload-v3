@@ -101,6 +101,7 @@ import {
 } from '@/lib/onboardingProgram';
 import type { GeneratedProgram } from '@/lib/programData';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
+import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 
 const LBS_PER_KG = 2.20462;
 const MIN_AGE_YEARS = 13;
@@ -841,6 +842,7 @@ export default function OnboardingScreen() {
                 placeholder="e.g. Trick left knee, avoid heavy squats. Sore right shoulder on overhead pressing."
                 accessibilityLabel="Physical or medical notes"
               />
+              <MedicalDisclaimer style={{ marginTop: Spacing.lg }} />
           </QuestionStep>
         )}
 

@@ -48,6 +48,7 @@ import { ReadinessRing } from '@/components/ui/ReadinessRing';
 import { MiniAreaChart } from '@/components/ui/MiniAreaChart';
 import { AICoachModal } from '@/components/ai/AICoachModal';
 import { SleepLogSheet } from '@/components/health/SleepLogSheet';
+import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { haptics } from '@/lib/haptics';
 import { dailyMetricDef, type DailyMetricDef } from '@/lib/dailyMetrics';
 import { sourcesForHub, type HealthHub } from '@/lib/healthSources';
@@ -593,6 +594,8 @@ export default function HealthScreen() {
             )}
           </>
         )}
+
+        <MedicalDisclaimer style={{ marginTop: Spacing.xl }} />
       </ScrollView>
 
       <SleepLogSheet

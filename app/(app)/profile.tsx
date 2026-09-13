@@ -34,6 +34,7 @@ import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { WorkoutSettingsSheet } from '@/components/workout/WorkoutSettingsSheet';
+import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import {
   loadWeightLog, saveWeightLog, loadBodyFatLog, saveBodyFatLog,
   type WeightEntry, type BodyFatEntry,
@@ -1390,7 +1391,8 @@ export default function ProfileScreen() {
           </View>
 
           {/* ─── Footer ─── */}
-          <View style={{ paddingHorizontal: Spacing.xl, alignItems: 'center', marginTop: 4 }}>
+          <View style={{ paddingHorizontal: Spacing.xl, alignItems: 'center', marginTop: 4, gap: Spacing.sm }}>
+            <MedicalDisclaimer />
             <Text style={[styles.versionText, { color: C.textDim }]}>Overload v1.0</Text>
           </View>
         </ScrollView>
