@@ -727,13 +727,15 @@ export default function OnboardingScreen() {
                 entering={FadeInDown.delay(320).duration(500)}
                 style={[s.heroTitle, { color: C.foreground }]}
               >
-                Tell me your goal. I will get you there.
+                {/* A hard break: the two clauses are the two halves of the deal, and
+                    a natural wrap left a lone "I" hanging at the end of line one. */}
+                Say where you want to be.{'\n'}I handle the rest.
               </Animated.Text>
               <Animated.Text
                 entering={FadeInDown.delay(420).duration(500)}
                 style={[s.heroSub, { color: C.textSecondary }]}
               >
-                A few quick questions. Then I plan your training and food, watch every session you log, and adjust the plan until you arrive.
+                Training, food and recovery, planned around you and adjusted as you log. You just show up.
               </Animated.Text>
             </View>
 
