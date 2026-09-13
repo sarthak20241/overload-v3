@@ -38,9 +38,12 @@ export const posthog = KEY
       captureAppLifecycleEvents: true,
       enableSessionReplay: true,
       sessionReplayConfig: {
-        // A fitness log is not sensitive, but a sign-in field is. Mask inputs,
-        // keep everything else legible so a replay is actually worth watching.
-        maskAllTextInputs: true,
+        // Despite the name, `true` masks ALL text on React Native, not just
+        // inputs, which turned every replay into grey boxes. A fitness log is
+        // not sensitive, so text stays legible; the places that show an email,
+        // a name or a sign-in code wrap themselves in <PostHogMaskView>
+        // (the sign-in card, the profile email).
+        maskAllTextInputs: false,
         maskAllImages: false,
         maskAllSandboxedViews: true,
         captureLog: true,

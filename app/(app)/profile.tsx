@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
+import { PostHogMaskView } from 'posthog-react-native';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -735,9 +736,11 @@ export default function ProfileScreen() {
             </View>
 
             <Text style={[styles.heroName, { color: C.foreground }]}>{userName}</Text>
-            <Text style={[styles.heroEmail, { color: C.textMuted }]} numberOfLines={1}>
-              {isGuest ? 'Guest account' : user?.emailAddresses?.[0]?.emailAddress || '—'}
-            </Text>
+            <PostHogMaskView style={styles.heroEmailMask}>
+              <Text style={[styles.heroEmail, { color: C.textMuted }]} numberOfLines={1}>
+                {isGuest ? 'Guest account' : user?.emailAddresses?.[0]?.emailAddress || '—'}
+              </Text>
+            </PostHogMaskView>
 
             <View style={styles.heroBadges}>
               {joinDate ? (
@@ -1593,6 +1596,7 @@ const styles = StyleSheet.create({
   levelBadgeText: { color: '#0a0a0a', fontSize: 9, fontWeight: FontWeight.black },
   heroName: { fontSize: 20, fontWeight: FontWeight.black, letterSpacing: -0.5 },
   heroEmail: { fontSize: FontSize.sm, marginTop: 2 },
+  heroEmailMask: { maxWidth: '100%' },
   heroBadges: { flexDirection: 'row', gap: 8, marginTop: 10 },
   heroBadge: {
     borderWidth: 1, borderRadius: Radius.full,
