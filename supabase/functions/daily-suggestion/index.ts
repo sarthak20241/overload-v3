@@ -19,6 +19,7 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { buildSuggestion, type SuggestionProgram, type SuggestionRow } from "../_shared/dailySuggestion.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
+import { retried } from "../_shared/retried.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -51,25 +52,6 @@ async function clerkUserId(authHeader: string | null): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * Retry a PostgREST call that came back with an error. The API layer answers
- * the odd plain read with a 504 in well under its own timeout (seen twice on
- * 2026-09-13 on single-row reads, with nothing in the Postgres log), and one
- * bad answer used to sink the whole midnight run. Every call retried here is a
- * read or an idempotent upsert, so a repeat is safe.
- */
-async function retried<T extends { error: { message: string } | null }>(
-  call: () => PromiseLike<T>,
-  attempts = 3,
-): Promise<T> {
-  let result = await call();
-  for (let i = 1; i < attempts && result.error; i += 1) {
-    await new Promise((r) => setTimeout(r, 400 * i * i));
-    result = await call();
-  }
-  return result;
 }
 
 const admin = () =>
@@ -167,7 +149,8 @@ async function runCron(): Promise<Response> {
   }
 
   const cutoff = new Date(now.getTime() - KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
-  await db.from("daily_suggestions").delete().lt("day", cutoff);
+  const prune = await retried(() => db.from("daily_suggestions").delete().lt("day", cutoff));
+  if (prune.error) console.error("[daily-suggestion] prune failed:", prune.error.message);
 
   return json({ users: todays.length, due: due.length, saved, failures: failures.slice(0, 20) });
 }
