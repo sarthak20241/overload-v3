@@ -234,6 +234,26 @@ Deno.test("weight: the old device log uploads once and never overwrites a server
   assertEquals(state.legacy.length, 0);
 });
 
+Deno.test("weight: an old entry that recorded its own unit uploads in that unit", async () => {
+  // A guest logs 80 in kg, switches to lbs, logs 176, then signs up. The saved
+  // unit is now lbs, but the first entry was typed in kg (PR #175 records it).
+  const state = { online: true, legacy: [
+    { date: new Date(2026, 8, 1, 7).toISOString(), weight: 80, unit: "kg" as const },
+    { date: new Date(2026, 8, 2, 7).toISOString(), weight: 176, unit: "lbs" as const },
+    { date: new Date(2026, 8, 3, 7).toISOString(), weight: 175 }, // no unit: the saved one
+  ] };
+  const { db, server } = fakeDayDb(state);
+  const log = weightLog({
+    userId: `user_${++uid}`,
+    unit: "lbs",
+    store: memStore(),
+    db,
+    legacy: { load: () => Promise.resolve(state.legacy), clear: () => { state.legacy = []; return Promise.resolve(); } },
+  });
+  await log.flush();
+  assertEquals([...server].sort(), [["2026-09-01", 80], ["2026-09-02", 79.83], ["2026-09-03", 79.38]]);
+});
+
 Deno.test("weight: the old device log stays on the phone when the upload fails", async () => {
   const { log, state } = fakeWeight({ online: false, legacy: [{ date: new Date(2026, 8, 1, 7).toISOString(), weight: 82 }] });
   await log.flush();

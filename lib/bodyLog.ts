@@ -428,6 +428,8 @@ function daySeriesLog<Out>(d: {
   db: DayValueDb;
   legacy: LegacyLog<{ date?: string | null; value?: number | null }>;
   toStored: (typed: number) => number | null;
+  /** How an old device entry's value becomes a stored one. Defaults to toStored. */
+  legacyToStored?: (value: number) => number | null;
   display: (stored: number) => number;
   out: (p: DayPoint) => Out;
 }): DaySeriesLog<Out> {
@@ -438,7 +440,7 @@ function daySeriesLog<Out>(d: {
     combine: withPendingDay,
     push: (p) => (p.value == null ? d.db.deleteDay(p.day) : d.db.upsert([{ day: p.day, value: p.value }], { keepExisting: false })),
     async uploadLegacy() {
-      const rows = legacyLogToRows(await d.legacy.load(), d.toStored);
+      const rows = legacyLogToRows(await d.legacy.load(), d.legacyToStored ?? d.toStored);
       if (rows.length > 0) await d.db.upsert(rows, { keepExisting: true });
       await d.legacy.clear();
     },
@@ -462,14 +464,25 @@ export function weightLog(d: {
   unit: WeightUnit;
   store: KeyValueStore;
   db: DayValueDb;
-  legacy: LegacyLog<{ date?: string | null; weight?: number | null }>;
+  /** `unit`: the unit an entry was typed in, when the device log recorded it. */
+  legacy: LegacyLog<{ date?: string | null; weight?: number | null; unit?: WeightUnit | null }>;
 }): DaySeriesLog<{ date: string; weight: number }> {
   return daySeriesLog({
     name: 'weight',
     userId: d.userId,
     store: d.store,
     db: d.db,
-    legacy: { load: async () => (await d.legacy.load()).map((e) => ({ date: e?.date, value: e?.weight })), clear: d.legacy.clear },
+    // Each old entry converts in its own unit when it has one, else the saved
+    // unit: a guest who logged in kg and later switched to lbs must not upload
+    // kg numbers read as lbs.
+    legacy: {
+      load: async () => (await d.legacy.load()).map((e) => ({
+        date: e?.date,
+        value: toKg(Number(e?.weight), e?.unit === 'kg' || e?.unit === 'lbs' ? e.unit : d.unit),
+      })),
+      clear: d.legacy.clear,
+    },
+    legacyToStored: (kg) => toKg(kg, 'kg'),
     toStored: (v) => toKg(v, d.unit),
     display: (kg) => fromKg(kg, d.unit),
     out: (p) => ({ date: p.date, weight: p.value }),
