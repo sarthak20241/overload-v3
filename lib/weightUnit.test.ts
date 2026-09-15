@@ -6,7 +6,9 @@
 // 165 kg. These tests pin the conversion on the way in and out.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { formatWeight, fromKg, KG_PER_LB, parseWeightInput, toKg } from "./weightUnit.ts";
+import { formatWeight, fromKg, KG_PER_LB, parseWeightInput, stampLegacyUnits, toKg, type WeightUnit, weightLogInUnit } from "./weightUnit.ts";
+
+type Entry = { date: string; weight: number; unit?: WeightUnit };
 
 Deno.test("a pound is the exact international pound", () => {
   assertEquals(KG_PER_LB, 0.45359237);
@@ -60,4 +62,45 @@ Deno.test("toKg and fromKg keep the bodyweight log's rounding", () => {
   assertEquals(toKg(165, "lbs"), 74.84);
   assertEquals(toKg(10, "kg"), null);
   assertEquals(fromKg(74.84, "lbs"), 165);
+});
+
+// ─── Weight history on the device ────────────────────────────────────────────
+// The device log saved the typed number with no unit. A guest on lbs who typed
+// 180 and then switched to kg saw "92% to goal": the start weight read as
+// 180 kg against a current 81.7 kg and a 72.6 kg goal. 81.7 matches the
+// Profile field, which stores 180 lbs as 81.65 kg.
+
+Deno.test("a history entry typed in lbs shows in kg after the switch", () => {
+  const log = [{ date: "2026-09-15T08:00:00.000Z", weight: 180, unit: "lbs" as const }];
+  assertEquals(weightLogInUnit(log, "kg"), [{ date: "2026-09-15T08:00:00.000Z", weight: 81.7, unit: "kg" }]);
+});
+
+Deno.test("an entry already in the shown unit keeps its number", () => {
+  const log = [{ date: "2026-09-15T08:00:00.000Z", weight: 180, unit: "lbs" as const }];
+  assertEquals(weightLogInUnit(log, "lbs")[0].weight, 180);
+});
+
+Deno.test("mixed entries all land in one unit", () => {
+  const log = [
+    { date: "2026-09-01T08:00:00.000Z", weight: 80, unit: "kg" as const },
+    { date: "2026-09-15T08:00:00.000Z", weight: 170, unit: "lbs" as const },
+  ];
+  assertEquals(weightLogInUnit(log, "lbs").map((e) => e.weight), [176.4, 170]);
+  assertEquals(weightLogInUnit(log, "kg").map((e) => e.weight), [80, 77.1]);
+});
+
+Deno.test("old entries without a unit get the current unit once, and say so", () => {
+  const log = [
+    { date: "2026-09-01T08:00:00.000Z", weight: 180 },
+    { date: "2026-09-15T08:00:00.000Z", weight: 80, unit: "kg" },
+  ] as Entry[];
+  const { log: stamped, changed } = stampLegacyUnits(log, "lbs");
+  assertEquals(changed, true);
+  assertEquals(stamped.map((e) => e.unit), ["lbs", "kg"]);
+  assertEquals(stampLegacyUnits(stamped, "kg").changed, false);
+});
+
+Deno.test("an unreadable history is empty, not a crash", () => {
+  assertEquals(stampLegacyUnits(null, "kg"), { log: [], changed: false });
+  assertEquals(weightLogInUnit(undefined, "kg"), []);
 });

@@ -40,7 +40,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { formatWeight, parseWeightInput } from '@/lib/weightUnit';
+import { formatWeight, parseWeightInput, weightLogInUnit } from '@/lib/weightUnit';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
@@ -399,7 +399,8 @@ export default function ProfileScreen() {
     const current = parseFloat(weight);
     const goal = parseFloat(goalWeight);
     if (isNaN(current) || isNaN(goal) || current <= 0 || goal <= 0) return null;
-    const startWeight = weightLog.length > 0 ? weightLog[0].weight : current;
+    // The first logged weight, in the unit on screen (it may have been typed in the other one).
+    const startWeight = weightLog.length > 0 ? weightLogInUnit(weightLog.slice(0, 1), weightUnit)[0].weight : current;
     const totalDelta = Math.abs(startWeight - goal);
     const currentDelta = Math.abs(current - goal);
     const pct = totalDelta > 0
@@ -608,7 +609,7 @@ export default function ProfileScreen() {
       const num = parseFloat(v);
       if (isNaN(num) || num <= 0) return;
       const today = new Date().toISOString().slice(0, 10);
-      const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+      const entry: WeightEntry = { date: new Date().toISOString(), weight: num, unit: weightUnit };
       const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
       const updated = latest && latest.date.slice(0, 10) === today
         ? [...weightLog.slice(0, -1), entry]

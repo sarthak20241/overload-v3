@@ -16,7 +16,7 @@ import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { fromKg } from '@/lib/weightUnit';
+import { fromKg, weightLogInUnit } from '@/lib/weightUnit';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { setVolumeKg } from '@/lib/sets';
@@ -1435,7 +1435,7 @@ export default function AnalyticsScreen() {
     const today = new Date().toISOString().slice(0, 10);
     const filtered = weightLog.filter((e) => e.date.slice(0, 10) !== today);
     track('weight_logged', { source: 'analytics', replaced_today: filtered.length !== weightLog.length, entry_count_after: filtered.length + 1 });
-    const next = [...filtered, { date: new Date().toISOString(), weight: v }].sort(
+    const next = [...filtered, { date: new Date().toISOString(), weight: v, unit: weightUnit }].sort(
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
     );
     setWeightLog(next);
@@ -1551,7 +1551,9 @@ export default function AnalyticsScreen() {
     setInsightsFromCoach(false);
   }, [weekWorkouts.length, weekVolume, avgDurationMin, selectedExercise, pr]);
 
-  const weightEntries = weightLog.map((e) => ({ date: e.date, value: e.weight }));
+  // Entries keep the unit they were typed in; the chart draws them all in the chosen one.
+  const shownWeightLog = weightLogInUnit(weightLog, weightUnit);
+  const weightEntries = shownWeightLog.map((e) => ({ date: e.date, value: e.weight }));
   const bfEntries = bodyFatLog.map((e) => ({ date: e.date, value: e.bodyFat }));
 
   // Body distribution — moved here from the dashboard (the readiness card took
@@ -1875,7 +1877,7 @@ export default function AnalyticsScreen() {
         unit={weightUnit}
         color="#10b981"
         icon="trending-up"
-        initial={weightLog.length > 0 ? String(weightLog[weightLog.length - 1].weight) : ''}
+        initial={shownWeightLog.length > 0 ? String(shownWeightLog[shownWeightLog.length - 1].weight) : ''}
         onSave={addWeight}
       />
       <AddEntryModal

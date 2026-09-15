@@ -57,3 +57,49 @@ export function parseWeightInput(text: string, unit: WeightUnit): { kg: number |
   const kg = toKg(Number(text.trim().replace(',', '.')), unit);
   return kg == null ? null : { kg };
 }
+
+// ─── The device weight log ──────────────────────────────────────────────────
+// lib/bodyStats.ts keeps a weight history on the phone (guests, and every user
+// until the daily_metrics series lands). Each entry is the number as typed; it
+// used to carry no unit, so a switch from lbs to kg read 180 lbs as 180 kg and
+// the goal bar showed 92% done for someone who had not moved.
+
+/** A history entry and the unit its number was typed in. */
+export interface UnitWeightEntry {
+  date: string;
+  weight: number;
+  unit?: WeightUnit;
+}
+
+/**
+ * The log with every weight in `unit`. An entry typed in the other unit goes
+ * through kilograms at the same rounding as the Profile field, so the history
+ * and the field agree (180 lbs shows as 81.7 kg in both). An entry with no unit
+ * is taken as already in `unit`; stampLegacyUnits gives old entries one.
+ */
+export function weightLogInUnit<T extends UnitWeightEntry>(log: T[] | null | undefined, unit: WeightUnit): T[] {
+  return (log ?? []).map((e) => {
+    if (!e.unit || e.unit === unit) return e;
+    const kg = round2(e.unit === 'lbs' ? e.weight * KG_PER_LB : e.weight);
+    return { ...e, weight: fromKg(kg, unit), unit };
+  });
+}
+
+/**
+ * Gives entries saved before units were recorded the unit in use now, the best
+ * guess available (the log never said). Done once: `changed` tells the caller
+ * to save it back, after which a unit switch converts them like any other.
+ */
+export function stampLegacyUnits<T extends UnitWeightEntry>(
+  log: T[] | null | undefined,
+  unit: WeightUnit,
+): { log: T[]; changed: boolean } {
+  if (!Array.isArray(log)) return { log: [], changed: false };
+  let changed = false;
+  const out = log.map((e) => {
+    if (e.unit === 'kg' || e.unit === 'lbs') return e;
+    changed = true;
+    return { ...e, unit };
+  });
+  return { log: out, changed };
+}
