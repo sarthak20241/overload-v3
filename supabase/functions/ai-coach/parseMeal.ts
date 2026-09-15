@@ -34,7 +34,7 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { brandIsIdentity, firstAcceptable } from "./acceptCandidate.ts";
+import { brandIsIdentity, pickCandidate } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -374,6 +374,19 @@ const GENERIC_PORTION_WORDS = new Set([
   "serving", "servings", "portion", "portions", "per", "of", "approx", "about", "1", "one",
 ]);
 
+/** Words that name a recipe MEASURE - a volume or a weight - never a piece of
+ *  the food. FNDDS lists "1 cup" first on nearly every row and marks it the
+ *  default, butter and beans included; that is how their tables are laid out,
+ *  not a claim about how the food is eaten. Household portions stay out of this
+ *  list on purpose: "1 katori" on a curated dal row was chosen by a person as
+ *  the serving, and "a dal" IS a katori of it. */
+const MEASURE_WORDS = new Set([
+  "cup", "cups", "tablespoon", "tablespoons", "tbsp", "tbsps", "teaspoon", "teaspoons", "tsp", "tsps",
+  "oz", "ounce", "ounces", "fl", "pint", "pints", "quart", "quarts", "gallon", "gallons",
+  "lb", "lbs", "pound", "pounds", "kg", "kgs", "litre", "liter", "litres", "liters", "ltr", "l",
+  "cubic",
+]);
+
 /**
  * True for a serving that states a BASIS, not a portion.
  *
@@ -416,6 +429,13 @@ export function isBasisServing(sv: ServingOption): boolean {
  * survives once the amount and the generic portion words are stripped - so a
  * count can safely multiply them.
  *
+ * A MEASURE is not a piece either, and this used to let it through. "1 cup"
+ * survived the strip, so a bare count took it as the thing to multiply: live
+ * on 2026-09-14, "toast with butter" logged Butter, NFS at its default "1 cup"
+ * - 224 g, 1664 kcal, for a pat on two slices. A label whose surviving words
+ * are all measure words (cup, tablespoon, oz...) names an amount of the food,
+ * and an amount is exactly what the count cannot multiply.
+ *
  * Deliberately conservative: an unnamed portion falls through to the model's
  * est_total_g, which is a labelled estimate. Guessing a piece weight from a
  * portion is precise about the wrong amount, which is the failure this whole
@@ -428,6 +448,10 @@ export function namesAPiece(sv: ServingOption): boolean {
     .trim()
     .split(/\s+/)
     .filter(Boolean);
+  // A measure anywhere in the label makes it an amount, even when other words
+  // follow: "1 cup (4.86 large eggs)" and "1 oz, raw (yield after cooking)"
+  // both describe a quantity of the food, not one of it.
+  if (words.some((w) => MEASURE_WORDS.has(w))) return false;
   return words.some((w) => !GENERIC_PORTION_WORDS.has(w));
 }
 
@@ -5280,7 +5304,8 @@ export async function runParseMeal(
       // the generic row out of every branded phrase.
       const brandWord = brandIsIdentity(r.brand, r.name) ? r.brand : null;
       const said = withPrefix(r.prep, withPrefix(brandWord, r.name));
-      const pick = firstAcceptable(said, r.candidates, guards);
+      const picked = pickCandidate(said, r.candidates, guards);
+      const pick = picked.pick;
       const per1 = pick ? gramsPerUnit(r.unit, pick.cand) : null;
       // Per-item verdict in the trace. Fast has no decide output to read, so
       // without this a wrong line is undiagnosable after the fact.
@@ -5292,6 +5317,10 @@ export async function runParseMeal(
           picked: pick ? pick.cand.name : null,
           unit_resolved: !!per1,
           used: pick && per1 ? "catalog" : (r.est ? "estimate" : "fallback"),
+          // The row the one-word rule turned down, and the words that did it.
+          // An estimate with no candidate named looks like a catalog miss;
+          // this says it was a refusal, and of what.
+          ...(picked.refused ? { refused: picked.refused.name, adds: picked.refused.adds } : {}),
         },
       });
       if (pick && per1) {
