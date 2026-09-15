@@ -106,6 +106,11 @@ async function generate(
 async function runCron(): Promise<Response> {
   const db = admin();
   const now = new Date();
+  // The prune touches only days long past, so it runs beside the reads instead
+  // of adding one more round trip (and its retries) to the end of every run.
+  const cutoff = new Date(now.getTime() - KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const prune = retried(() => db.from("daily_suggestions").delete().lt("day", cutoff));
+
   // PostgREST caps a read at 1000 rows: page through, or users past the first
   // thousand silently never get a midnight pick.
   const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
@@ -148,9 +153,8 @@ async function runCron(): Promise<Response> {
     });
   }
 
-  const cutoff = new Date(now.getTime() - KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
-  const prune = await retried(() => db.from("daily_suggestions").delete().lt("day", cutoff));
-  if (prune.error) console.error("[daily-suggestion] prune failed:", prune.error.message);
+  const pruned = await prune;
+  if (pruned.error) console.error("[daily-suggestion] prune failed:", pruned.error.message);
 
   return json({ users: todays.length, due: due.length, saved, failures: failures.slice(0, 20) });
 }
@@ -185,7 +189,11 @@ Deno.serve(async (req) => {
   if (body.mode === "cron") {
     const secret = req.headers.get("x-cron-secret") ?? "";
     const { data: ok, error } = await retried(() => admin().rpc("daily_suggestion_cron_ok", { p_secret: secret }));
-    if (error || ok !== true) return json({ error: "Unauthorized" }, 401);
+    // A check that could not RUN is the API layer failing, not a bad secret.
+    // Reporting it as 401 made three gateway 504s (2026-09-14 13:15) read as
+    // a rotated secret.
+    if (error) return json({ error: error.message, stage: "auth" }, 503);
+    if (ok !== true) return json({ error: "Unauthorized" }, 401);
     return await runCron();
   }
   return await runApp(req, body);
