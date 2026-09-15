@@ -34,7 +34,6 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { brandIsIdentity, pickCandidate } from "./acceptCandidate.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -4641,7 +4640,12 @@ export async function runParseMeal(
   // correction, a removal, a question or an addition, and all of those need the
   // model to read intent - "And a dosa" parses cleanly as one dosa but MEANS
   // add it to what is already there.
-  const grammarMode = deps.fastGrammarMode ?? "off";
+  // "on" is read as "shadow". Lane A's "on" skips the naming call, and the
+  // grammar produces names and amounts but no est_ numbers. It relied on the
+  // catalog to fill those in, and Quick no longer searches the catalog, so an
+  // "on" parse would log every line at zero calories. Shadow still records the
+  // grammar's agreement with the model, which is all Lane A can offer now.
+  const grammarMode = deps.fastGrammarMode === "on" ? "shadow" : (deps.fastGrammarMode ?? "off");
   // fastMode, not just "not a correction". Every comment here calls this
   // "Fast mode's Lane A", but the gate never checked the tier: with
   // PARSE_FAST_GRAMMAR=on it would have intercepted ANY first-shot parse whose
@@ -4673,11 +4677,10 @@ export async function runParseMeal(
       result: null,
     });
   }
-  // THE POINT of Lane A: when it is on and it matched, the extract call does
-  // not happen at all. That is the ~1.2s the sub-second budget needs back.
-  const extractRes = (laneA && grammarMode === "on")
-    ? null
-    : await callAnthropicOnce(deps, {
+  // Lane A "on" used to skip this call when the grammar matched. It cannot any
+  // more (see grammarMode): the naming call is the only source of numbers in
+  // Quick, so it always runs.
+  const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
     // message costs the same under either number. Both are 5000 now; the
@@ -4756,24 +4759,7 @@ export async function runParseMeal(
       "That was a long one and I lost the end of it. Send it as two messages and I will log both.",
     );
   }
-  // When the extract call was skipped, the grammar's own items ARE the extract
-  // result. Every flag defaults false: the grammar refuses corrections,
-  // removals and questions outright, so none of them can be true here.
-  const ext: Record<string, unknown> = extractBlock?.input ?? (
-    laneA && grammarMode === "on"
-      ? {
-        declined: false,
-        items: laneA.map((i) => ({
-          name: i.name,
-          brand: null,
-          quantity: i.quantity,
-          unit: i.unit,
-          prep: i.prep,
-          corrects_food_name: null,
-        })),
-      }
-      : {}
-  );
+  const ext: Record<string, unknown> = extractBlock?.input ?? {};
   let extItems: ExtractedItem[] = (Array.isArray(ext.items) ? ext.items : [])
     .slice(0, MAX_ITEMS_PER_PARSE)
     .flatMap((r: unknown): ExtractedItem[] => {
@@ -5161,7 +5147,9 @@ export async function runParseMeal(
   // Context (recents/targets/totals) was fired concurrently with the extract
   // call in index.ts; only the decide stage needs it. Awaiting here means those
   // DB queries overlapped extraction instead of blocking before the parse.
-  if (input.contextPromise) {
+  // Fast mode never reads recents, targets or totals (it has no decide call),
+  // so it does not wait on them.
+  if (input.contextPromise && !fastMode) {
     const tCtx0 = Date.now();
     try {
       const ctx = await input.contextPromise;
@@ -5233,187 +5221,88 @@ export async function runParseMeal(
     });
   }
 
-  const resolved: ResolvedItem[] = await Promise.all(
-    toResolve.map((item) =>
-      resolveOneItem(
-        deps,
-        item,
-        steps,
-        toolCalls,
-        stapleNames,
-        fastMode,
-        // Per ITEM, not per meal: each food's lookup finishes on its own clock,
-        // so a cached item is never held up by a sibling still being searched.
-        // accumulate() is passed through so the web_search_requests these calls
-        // spend land in usage, which is what 0113 prices.
-        superMode
-          ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
-          : undefined,
-      )
-    ),
-  );
-  T.resolve_ms = Date.now() - tResolve0;
-  const tDecide0 = Date.now();
-
-  // ── Stage 3: decide ───────────────────────────────────────────────────────
-  // One forced log_meal call. NO web lookup here any more: web search is a
-  // USER-INITIATED lookup only (the challenge path), never an automatic one
-  // for items this phase left weak. Phase 1 stays fast and always returns a
-  // usable meal immediately; the web only ever improves it afterwards.
+  // ── FAST MODE: the model's estimate, and nothing else ─────────────────────
+  // Decided 2026-09-15. Quick used to search the catalog here and let an
+  // accepted row REPLACE the estimate the naming call had already produced.
+  // Three live logs on 2026-09-14 show what that bought: "chicken" became
+  // Chicken feet, "toast" became Melba toast, and "with butter" became a
+  // 1-cup, 1664 kcal serving - each a correct estimate overwritten by a row
+  // that shared a word with the food. The 2026-08-29 A/B (commits 1d6420e,
+  // a9ee92b) had already measured estimate-only as near-identical on branded
+  // food; what the catalog added was a way to be precisely wrong.
   //
-  // P3: when every item reranked strongly and its quantity converts without
-  // judgment, the code fill IS the answer and this whole call is skipped.
-  const candidatePer100 = per100ForItems(resolved);
-
-  // ── FAST MODE: no decide call, ever ───────────────────────────────────────
-  // The pick decide makes in Smart is made here by the accept gate, which
-  // DEFAULTS TO NO: a row that does not cover the user's words falls through to
-  // the estimate the naming call already produced. Near-but-uncertain beats
-  // precise-about-the-wrong-food, and the estimate is free at this point - it
-  // rode in on the extract call.
+  // So Quick makes NO lookup: no catalog search, no OFF, no FatSecret, no
+  // precise-cache read, and no row re-read in verifyItems. The rows were
+  // painted above from these same estimates, so the fill below cannot move a
+  // number the user has already seen. fastNoCatalog.test.ts counts every
+  // lookup to keep it that way. Thorough and Precise are untouched.
   if (fastMode) {
-    // The rows were already painted above, before the resolve. One `items`
-    // event per parse: a second one here would renumber rows the card has
-    // already keyed and animated.
-    const guards = { variantClash, unhonouredGrade, implausiblePer100 };
-    const fastItems: ParsedItem[] = resolved.map((r) => {
-      // What the user actually named: prep + BRAND + name.
-      //
-      // The brand was missing, and its absence inverted the gate. Extract
-      // reports brand "Amul" and name "cheese slice" separately, so `said` was
-      // just "cheese slice" - the word "amul" was never required of a
-      // candidate, and worse, firstAcceptable then counted it AGAINST the right
-      // row. Measured on device: "Amul Cheese Slice A" carries two words the
-      // user "did not say" (amul, a) while "Cheese, provolone, sliced" carries
-      // one (provolone), so provolone won 2 of 5 runs. A row was beating the
-      // correct one precisely by NOT being the brand that was asked for.
-      //
-      // With the brand in `said`, coverage now REJECTS provolone outright
-      // (nothing in it covers "amul") rather than merely ranking it lower.
-      //
-      // Both joins guard against doubling, as the prep one already did: extract
-      // often bakes the qualifier into the name too ("boiled egg" + prep
-      // "boiled", "Oreo biscuits" + brand "Oreo"), and the trace showed the gate
-      // judging "boiled boiled egg", which skews coverage and the guards.
-      const withPrefix = (prefix: string | null | undefined, base: string) =>
-        prefix && !base.toLowerCase().includes(prefix.toLowerCase())
-          ? `${prefix} ${base}`
-          : base;
-      // The brand is only required when it IS the product. On a commodity fixed
-      // by standard (Amul vs Mother Dairy toned milk) requiring it would lock
-      // the generic row out of every branded phrase.
-      const brandWord = brandIsIdentity(r.brand, r.name) ? r.brand : null;
-      const said = withPrefix(r.prep, withPrefix(brandWord, r.name));
-      const picked = pickCandidate(said, r.candidates, guards);
-      const pick = picked.pick;
-      const per1 = pick ? gramsPerUnit(r.unit, pick.cand) : null;
-      // Per-item verdict in the trace. Fast has no decide output to read, so
-      // without this a wrong line is undiagnosable after the fact.
+    T.resolve_ms = 0;
+    const tPost0 = Date.now();
+    const fastItems: ParsedItem[] = toResolve.map((r) => {
+      // Per-item verdict in the trace. The harness prints fast_fill lines, and
+      // "fallback" is the one worth seeing: a line with no usable estimate.
       steps.push({
         iter: 2,
         tool: "fast_fill",
-        input: { item: said, unit: r.unit, candidates: r.candidates.length },
-        result: {
-          picked: pick ? pick.cand.name : null,
-          unit_resolved: !!per1,
-          used: pick && per1 ? "catalog" : (r.est ? "estimate" : "fallback"),
-          // The row the one-word rule turned down, and the words that did it.
-          // An estimate with no candidate named looks like a catalog miss;
-          // this says it was a refusal, and of what.
-          ...(picked.refused ? { refused: picked.refused.name, adds: picked.refused.adds } : {}),
-        },
+        input: { item: r.name, unit: r.unit },
+        result: { used: r.est ? "estimate" : "fallback" },
       });
-      if (pick && per1) {
-        const qty = r.quantity > 0 ? r.quantity : 1;
-        const grams = round1(per1.grams * qty);
-        const f = grams / 100;
-        return {
-          food_id: pick.cand.food_id,
-          // The user's phrase, not the row's name: verifyItems runs the
-          // name/row agreement on it, then displays the row's real name.
-          food_name: said,
-          quantity: qty,
-          serving_label: per1.label,
-          grams,
-          kcal: round1(pick.cand.kcal * f),
-          protein_g: round1(pick.cand.protein_g * f),
-          carb_g: round1(pick.cand.carb_g * f),
-          fat_g: round1(pick.cand.fat_g * f),
-          fiber_g: pick.cand.fiber_g === null ? null : round1(pick.cand.fiber_g * f),
-          source: pick.cand.source,
-          assumption: null,
-          confidence: "high" as const,
-        };
+      if (!r.est) {
+        // All five est_ fields or nothing (see rawEst), so this is a model
+        // reply missing numbers. Visibly low-confidence rather than dropped.
+        return fallbackFromResolved({ ...r, candidates: [] }, new Map());
       }
-      // NOTE the branch that used to sit here - catalog density x the model's
-      // gram estimate for an accepted row with an unresolvable unit - is gone
-      // on purpose. It existed because the per-100 estimate was the weak
-      // number; now the GRAM guess is the weak number and est kcal/macros are
-      // the strong ones, so mixing a measured density with a 2-5x gram guess
-      // produces worse lines than the estimate used directly.
-      if (r.est) {
-        // The model's own line totals, sanity-checked before anyone sees them.
-        // Atwater is scale-free, so it works unchanged on totals: when stated
-        // kcal and macros disagree by more than 30% (the shipped checkAtwater
-        // tolerance) the macros win - three constrained numbers against one
-        // free one.
-        const { protein_g, carb_g, fat_g, total_g } = r.est;
-        const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
-        const kcal = (atwater > 0 && Math.abs(r.est.kcal - atwater) > 0.3 * Math.max(r.est.kcal, atwater))
-          ? atwater
-          : r.est.kcal;
-        const item: ParsedItem = {
-          food_id: null,
-          // Brand included: an estimate has no row name to display, so this
-          // IS the display, and "multigrain bar" for a Yogabar loses the
-          // product identity the user typed.
-          food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
-          quantity: r.quantity > 0 ? r.quantity : 1,
-          serving_label: r.unit,
-          // Display only. A wrong gram guess now mislabels the line instead of
-          // corrupting the calories, which is the whole point of v2.
-          grams: round1(Math.min(total_g, 5000)),
-          kcal: round1(kcal),
-          protein_g: round1(protein_g),
-          carb_g: round1(carb_g),
-          fat_g: round1(fat_g),
-          fiber_g: null,
-          source: "estimate" as const,
-          assumption: pick
-            ? "Close matches did not quite fit, so these are estimated"
-            : "No close match in the catalog, so these are estimated",
-          confidence: "medium" as const,
-        };
-        // Per-100 physics no longer applies (these are line totals); the line
-        // guard does. An absurd line still logs - visibly low-confidence - so
-        // the user sees their food rather than a silent drop.
-        const bad = implausibleLine(item);
-        if (!bad) return item;
-        deps.log?.(`[parse_meal] fast estimate implausible for "${r.name}": ${bad}`);
-        return { ...item, confidence: "low" as const };
-      }
-      // No acceptable row AND no usable estimate: the existing best-effort
-      // fallback, visibly low-confidence rather than silently dropped.
-      return fallbackFromResolved(r, candidatePer100);
+      // The model's own line totals, sanity-checked before anyone sees them.
+      // Atwater is scale-free, so it works unchanged on totals: when stated
+      // kcal and macros disagree by more than 30% (the shipped checkAtwater
+      // tolerance) the macros win - three constrained numbers against one
+      // free one.
+      const { protein_g, carb_g, fat_g, total_g } = r.est;
+      const atwater = 4 * protein_g + 4 * carb_g + 9 * fat_g;
+      const kcal = (atwater > 0 && Math.abs(r.est.kcal - atwater) > 0.3 * Math.max(r.est.kcal, atwater))
+        ? atwater
+        : r.est.kcal;
+      const item: ParsedItem = {
+        food_id: null,
+        // Brand included: an estimate has no row name to display, so this IS
+        // the display, and "multigrain bar" for a Yogabar loses the product
+        // identity the user typed.
+        food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        quantity: r.quantity > 0 ? r.quantity : 1,
+        serving_label: r.unit,
+        // Display only. A wrong gram guess mislabels the line instead of
+        // corrupting the calories. But when the user TYPED the weight ("500 ml
+        // milk", "40 gm oats") there is nothing to guess: est_total_g drifted
+        // to 515 for "500 ml" once no catalog row pinned it, so the stated
+        // amount wins. MASS_UNITS covers every spelling gramsPerUnit accepts.
+        grams: round1(Math.min(
+          MASS_UNITS.has(r.unit.trim().toLowerCase()) && r.quantity > 0 ? r.quantity : total_g,
+          5000,
+        )),
+        kcal: round1(kcal),
+        protein_g: round1(protein_g),
+        carb_g: round1(carb_g),
+        fat_g: round1(fat_g),
+        fiber_g: null,
+        source: "estimate" as const,
+        // No note. The card already labels an estimate line "Drona's
+        // estimate", and the old notes ("No close match in the catalog...")
+        // would now claim a search that never ran.
+        assumption: null,
+        confidence: "medium" as const,
+      };
+      // An absurd line still logs - visibly low-confidence - so the user sees
+      // their food rather than a silent drop.
+      const bad = implausibleLine(item);
+      if (!bad) return item;
+      deps.log?.(`[parse_meal] fast estimate implausible for "${r.name}": ${bad}`);
+      return { ...item, confidence: "low" as const };
     });
 
-    // verifyItems re-reads the chosen food rows, so it is a DB round trip that
-    // was sitting outside every timer: extract_ms + resolve_ms never added up
-    // to latency_ms and the gap was being blamed on plumbing.
-    const tVerify0 = Date.now();
-    const verified = await verifyItems(deps, fastItems, candidatePer100);
-    T.verify_ms = Date.now() - tVerify0;
-
-    const tPost0 = Date.now();
     const fastDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const items = assignItemMeals(
-      stripEphemeralIds(
-        flagPrepMismatch(
-          checkAtwater(reconcileQuantity(verified, servingsForItems(resolved))),
-          prepForItems(resolved),
-        ),
-        verifiedForItems(resolved),
-      ),
+      checkAtwater(fastItems),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
     );
@@ -5439,6 +5328,40 @@ export async function runParseMeal(
       iterations: anthropicCalls,
     };
   }
+
+  const resolved: ResolvedItem[] = await Promise.all(
+    toResolve.map((item) =>
+      resolveOneItem(
+        deps,
+        item,
+        steps,
+        toolCalls,
+        stapleNames,
+        // Always false now: fast mode returns above and never resolves.
+        false,
+        // Per ITEM, not per meal: each food's lookup finishes on its own clock,
+        // so a cached item is never held up by a sibling still being searched.
+        // accumulate() is passed through so the web_search_requests these calls
+        // spend land in usage, which is what 0113 prices.
+        superMode
+          ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
+          : undefined,
+      )
+    ),
+  );
+  T.resolve_ms = Date.now() - tResolve0;
+  const tDecide0 = Date.now();
+
+  // ── Stage 3: decide ───────────────────────────────────────────────────────
+  // One forced log_meal call. NO web lookup here any more: web search is a
+  // USER-INITIATED lookup only (the challenge path), never an automatic one
+  // for items this phase left weak. Phase 1 stays fast and always returns a
+  // usable meal immediately; the web only ever improves it afterwards.
+  //
+  // P3: when every item reranked strongly and its quantity converts without
+  // judgment, the code fill IS the answer and this whole call is skipped.
+  const candidatePer100 = per100ForItems(resolved);
+
 
   const skipMode = deps.skipDecideMode ?? "off";
   const codeFill = (skipMode !== "off" && !correctsPrevious)

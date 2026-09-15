@@ -84,38 +84,6 @@ const FORM_WORDS = new Set([
   // because the user's side is silent. "yolk" only: "white" would also reject
   // white rice and white bread, where white IS the default food.
   "yolk",
-  // Body parts, the same blindness again. Live 2026-09-14, Quick mode:
-  // "chicken" logged Chicken feet (1 foot, 35 g), because the row covered the
-  // word and carried only one the user "did not say". A person who says
-  // "chicken" means the meat; a part they wanted, they name. "skin" is
-  // deliberately absent - "Apples, raw, with skin" and "skin not eaten" are
-  // attributes of the whole food, not a part of it.
-  "feet", "foot", "tail", "back", "neck", "wing", "wings", "gizzard", "gizzards",
-  "liver", "heart", "kidney", "kidneys", "tongue", "brain", "brains", "bone", "bones",
-  "head", "trotter", "trotters", "tripe", "intestine", "intestines", "marrow",
-]);
-
-/**
- * Words that DESCRIBE a food without changing which food it is: a grade, a
- * prep state, a size, or the catalog's own "not further specified". These are
- * the words a row may add for free when the tie-break asks how far it strays
- * from the user's phrase. Everything else a row adds is treated as identity.
- *
- * Kept apart from NON_IDENTIFYING on purpose. That list is words dropped from
- * the USER'S side before coverage is checked, so every entry there is a word
- * the gate stops checking; this list only softens the tie-break on the ROW'S
- * side and never lets a row cover a word it does not carry.
- */
-const DESCRIPTOR_WORDS = new Set([
-  "nfs", "ns", "generic",
-  // Grade and fat level (the GRADE_GROUPS vocabulary, as single words).
-  "toned", "skimmed", "skim", "whole", "fat", "low", "full", "double", "semi", "regular", "lite", "light",
-  // Prep state: the same food, cooked one way or another.
-  "boiled", "fried", "poached", "scrambled", "roasted", "grilled", "baked", "steamed", "stewed",
-  "toasted", "hard", "soft",
-  // Seasoning, ripeness and size.
-  "salted", "unsalted", "sweetened", "unsweetened", "ripe", "large", "medium", "small",
-  "sliced", "chopped", "diced",
 ]);
 
 /**
@@ -226,87 +194,30 @@ export function acceptCandidate(
 }
 
 /**
- * The words a row adds that CHANGE what the food is: everything in its name
- * (and its brand, when the brand is part of the identity) that the user did
- * not say, is not a regional spelling of something they said, and is not a
- * mere descriptor of the same food.
- *
- * "Toned Milk" adds nothing to "milk" - toned is a grade. "Chicken feet" adds
- * "feet" to "chicken", and that is the whole difference between the two.
+ * First candidate that survives, or null. Callers treat null as "use the
+ * estimate": with the model's own numbers already in hand from the naming call,
+ * refusing costs nothing but a chip.
  */
-export function unexplainedWords(said: string, cand: CandidateFood): string[] {
-  const saidWords = contentWords(said);
-  // A brand on a commodity does not change the food (see brandIsIdentity), so
-  // its words are not held against the row. On a formulated product they are
-  // identity and stay in.
-  const brandWords = new Set(
-    cand.brand && !brandIsIdentity(cand.brand, said) ? contentWords(cand.brand) : [],
-  );
-  const explained = (w: string): boolean => {
-    if (DESCRIPTOR_WORDS.has(w) || brandWords.has(w)) return true;
-    return saidWords.some((u) =>
-      nearWord(u, w) ||
-      (SYNONYMS[u] ?? []).some((a) => nearWord(a, w)) ||
-      (SYNONYMS[w] ?? []).some((a) => nearWord(a, u))
-    );
-  };
-  return contentWords(`${cand.name} ${cand.brand ?? ""}`).filter((w) => !explained(w));
-}
-
-export interface PickResult {
-  pick: { cand: CandidateFood; index: number } | null;
-  /** Set when a row passed the gate and was still turned down by the one-word
-   *  rule below: the row, and the identity words it added. For the trace. */
-  refused?: { name: string; adds: string[] };
-}
-
-/**
- * The candidate to log, or null for "use the estimate": with the model's own
- * numbers already in hand from the naming call, refusing costs nothing but a
- * chip.
- */
-export function pickCandidate(
-  said: string,
-  candidates: CandidateFood[],
-  guards: Parameters<typeof acceptCandidate>[2],
-): PickResult {
-  // Among the rows that pass, prefer the one adding the FEWEST identity words.
-  // Fast has no reranker, so search order alone chose "Free range hard boiled
-  // eggs" (90 g default) over "Egg, whole, boiled" (50 g) for "3 boiled eggs"
-  // - 270 g of egg. Every unexplained word is specificity the user never asked
-  // for, and the row closest to their phrase is the safest read. Ties keep
-  // search order, which still carries the history and popularity boosts.
-  //
-  // "Fewest" used to count every word the user did not say, descriptors
-  // included, so "Rice, cooked, NFS" (nfs) tied with "Rice cake" (cake) and
-  // search order - brevity-sorted - handed it to the cake. Only identity words
-  // count now; see unexplainedWords.
-  let best: { cand: CandidateFood; index: number; adds: string[] } | null = null;
-  for (let i = 0; i < candidates.length; i++) {
-    if (!acceptCandidate(said, candidates[i], guards).ok) continue;
-    const adds = unexplainedWords(said, candidates[i]);
-    if (!best || adds.length < best.adds.length) best = { cand: candidates[i], index: i, adds };
-    if (best.adds.length === 0) break;
-  }
-  if (!best) return { pick: null };
-  // A ONE-WORD food takes no row that adds an identity word. Live 2026-09-14:
-  // "chicken" logged Chicken feet, "toast" logged Melba toast, and with the
-  // part word guarded the next rows in line were Chicken kiev and Shrimp toast
-  // - dishes, not the food, and no list can name them all. On a bare word,
-  // "more specific" almost always means "a different food"; the model's
-  // estimate of "chicken" is at least an estimate of chicken. A phrase already
-  // pins the identity, so it keeps tolerating a more described row.
-  if (contentWords(said).length === 1 && best.adds.length > 0) {
-    return { pick: null, refused: { name: best.cand.name, adds: best.adds } };
-  }
-  return { pick: { cand: best.cand, index: best.index } };
-}
-
-/** pickCandidate without the trace detail. */
 export function firstAcceptable(
   said: string,
   candidates: CandidateFood[],
   guards: Parameters<typeof acceptCandidate>[2],
 ): { cand: CandidateFood; index: number } | null {
-  return pickCandidate(said, candidates, guards).pick;
+  // Among the rows that pass, prefer the one carrying the FEWEST words the
+  // user did not say. Fast has no reranker, so search order alone chose
+  // "Free range hard boiled eggs" (90 g default) over "Egg, whole, boiled"
+  // (50 g) for "3 boiled eggs" - 270 g of egg. Every extra unexplained word is
+  // specificity the user never asked for, and the row closest to their phrase
+  // is the safest read. Ties keep search order, which still carries the
+  // history and popularity boosts.
+  const saidWords = contentWords(said);
+  let best: { cand: CandidateFood; index: number; extra: number } | null = null;
+  for (let i = 0; i < candidates.length; i++) {
+    if (!acceptCandidate(said, candidates[i], guards).ok) continue;
+    const extra = contentWords(`${candidates[i].name} ${candidates[i].brand ?? ""}`)
+      .filter((w) => !saidWords.some((u) => nearWord(u, w))).length;
+    if (!best || extra < best.extra) best = { cand: candidates[i], index: i, extra };
+    if (best.extra === 0) break;
+  }
+  return best ? { cand: best.cand, index: best.index } : null;
 }
