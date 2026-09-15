@@ -40,7 +40,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { loadWeights, localDayISO, logWeight, weightDeps } from '@/lib/bodyweightSync';
+import { bodyFatLog as serverBodyFatLog, localDayISO, weightLog as serverWeightLog } from '@/lib/bodyLogSync';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
@@ -432,8 +432,8 @@ export default function ProfileScreen() {
   const loadLogs = async () => {
     const signedIn = !isGuestSession && !!user?.id;
     const [wl, bfl] = await Promise.all([
-      signedIn ? loadWeights(weightDeps(supabase, user!.id, weightUnit)) : loadWeightLog(),
-      loadBodyFatLog(),
+      signedIn ? serverWeightLog(supabase, user!.id, weightUnit).load() : loadWeightLog(),
+      signedIn ? serverBodyFatLog(supabase, user!.id).load() : loadBodyFatLog(),
     ]);
     setWeightLog(wl);
     setBodyFatLog(bfl);
@@ -593,7 +593,7 @@ export default function ProfileScreen() {
       const replacedToday = !!latest && localDayISO(new Date(latest.date)) === today;
       if (!isGuestSession && user?.id) {
         // Signed in: saved on the phone at once, then to daily_metrics.
-        const next = await logWeight(weightDeps(supabase, user.id, weightUnit), num);
+        const next = await serverWeightLog(supabase, user.id, weightUnit).log(num);
         if (!next) return; // not a weight yet (a half-typed "7")
         setWeightLog(next);
       } else {
@@ -612,15 +612,21 @@ export default function ProfileScreen() {
     bodyFatLogTimer.current = setTimeout(async () => {
       const num = parseFloat(v);
       if (isNaN(num) || num <= 0 || num > 60) return;
-      const today = new Date().toISOString().slice(0, 10);
-      const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+      const today = localDayISO();
       const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
-      const updated = latest && latest.date.slice(0, 10) === today
-        ? [...bodyFatLog.slice(0, -1), entry]
-        : [...bodyFatLog, entry];
-      setBodyFatLog(updated);
-      await saveBodyFatLog(updated);
-      track('body_fat_logged', { source: 'profile', replaced_today: !!latest && latest.date.slice(0, 10) === today });
+      const replacedToday = !!latest && localDayISO(new Date(latest.date)) === today;
+      if (!isGuestSession && user?.id) {
+        // Signed in: saved on the phone at once, then to daily_metrics.
+        const next = await serverBodyFatLog(supabase, user.id).log(num);
+        if (!next) return; // not a body fat a person has (a half-typed "1")
+        setBodyFatLog(next);
+      } else {
+        const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+        const updated = replacedToday ? [...bodyFatLog.slice(0, -1), entry] : [...bodyFatLog, entry];
+        setBodyFatLog(updated);
+        await saveBodyFatLog(updated);
+      }
+      track('body_fat_logged', { source: 'profile', replaced_today: replacedToday });
       flashLogged('bodyFat');
     }, 900);
   };

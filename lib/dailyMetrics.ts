@@ -16,6 +16,7 @@ export type DailyMetricType =
   | 'sleep_minutes'
   | 'sleep_quality'
   | 'bodyweight_kg'
+  | 'body_fat_percent'
   | 'resting_hr_bpm'
   | 'hrv_sdnn_ms'
   | 'active_energy_kcal'
@@ -83,6 +84,13 @@ export const DAILY_METRICS: DailyMetricDef[] = [
     type: 'bodyweight_kg', label: 'Bodyweight', shortLabel: 'Weight', unit: 'kg', storedUnit: 'kg',
     icon: 'trending-up', colorKey: 'bodyweight', aggregation: 'last', grantsXp: false, derived: false,
     format: (v) => `${formatWeight(v)} kg`,
+  },
+  {
+    // Manual for now (Profile and Analytics). HealthKit and Health Connect both
+    // carry body fat, so a hub read can join later without a schema change.
+    type: 'body_fat_percent', label: 'Body fat', shortLabel: 'Body fat', unit: '%', storedUnit: 'percent',
+    icon: 'percent', colorKey: 'body_fat', aggregation: 'last', grantsXp: false, derived: false,
+    format: (v) => `${Math.round(v * 10) / 10}%`,
   },
   {
     type: 'resting_hr_bpm', label: 'Resting heart rate', shortLabel: 'RHR', unit: 'bpm', storedUnit: 'bpm',

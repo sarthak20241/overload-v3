@@ -449,6 +449,17 @@ Profile field still stores the raw typed number (separate task).
 PostHog only went live 2026-09-13, so event counts cannot yet say how many
 people log body fat or measurements (0 events so far, 2 weight logs).
 
+**Body fat and tape measurements, DONE 2026-09-15 (PR #173, migration 0118
+APPLIED live).** Body fat is a `daily_metrics` type (`body_fat_percent`);
+tape measurements are `body_measurements` (user, local day, site, cm). The
+three logs share one upload queue in `lib/bodyLog.ts` (30 Deno tests; nine
+rules each proven to fail when broken). Live probe with a made-up user: 20/20.
+0118 also captures the live-only trigger that copies the latest weight onto
+`user_profiles.weight_kg`, extends it to body fat, and fixes
+`delete_user_data`, which failed on every call (it named two chat tables that
+do not exist live) so account deletion returned 500. All three body signals
+can now feed Drona card facts.
+
 **11.6 Free text the decision layer can see.** Last 28 days, whole user base:
 | Source | Rows with text | Avg chars |
 |---|---|---|
