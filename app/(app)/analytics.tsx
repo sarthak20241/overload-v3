@@ -16,6 +16,7 @@ import { track } from '@/lib/analytics';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
+import { fromKg } from '@/lib/weightUnit';
 import { useSupabaseClient } from '@/lib/supabase';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { setVolumeKg } from '@/lib/sets';
@@ -1226,7 +1227,8 @@ export default function AnalyticsScreen() {
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   const { goalWeight: ctxGoal, weightUnit } = useBasicInfo();
-  const goalWeight = ctxGoal ?? null;
+  // The goal is stored in kg; the chart draws in the chosen unit.
+  const goalWeight = ctxGoal != null && ctxGoal > 0 ? fromKg(ctxGoal, weightUnit) : null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   const [addBfOpen, setAddBfOpen] = useState(false);
   // Picks the body silhouette in the distribution card. Null just means "not
