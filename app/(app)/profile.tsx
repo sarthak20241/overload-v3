@@ -450,7 +450,12 @@ export default function ProfileScreen() {
   // The unit switch re-displays the saved kilograms. Keyed on the unit only:
   // re-formatting on every keystroke would rewrite "75." while it is typed.
   // Also covers the saved unit arriving after the profile painted in kg.
+  // Skips the mount run: the guest load fills the fields synchronously in the
+  // same commit, and this render's weightKg is still null, so it would blank them.
+  const shownUnitRef = useRef(weightUnit);
   useEffect(() => {
+    if (shownUnitRef.current === weightUnit) return;
+    shownUnitRef.current = weightUnit;
     setWeight(formatWeight(weightKg, weightUnit));
     setGoalWeight(formatWeight(goalWeightKg, weightUnit));
     // eslint-disable-next-line react-hooks/exhaustive-deps
