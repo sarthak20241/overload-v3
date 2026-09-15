@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useGuestMode } from '@/lib/guestMode';
 import { useForegroundHealthSync } from '@/lib/useHealthSync';
+import { useBodyLogRetry } from '@/lib/useBodyLogRetry';
 import { useForegroundProgramSync } from '@/lib/useProgramSync';
 import { resolveNeedsOnboarding } from '@/lib/onboarding';
 import { drainPendingOnboarding } from '@/lib/pendingOnboarding';
@@ -334,6 +335,7 @@ export default function AppLayout() {
   // No-op for guests and when no hub adapter exists. Called before the early
   // returns below so the hook runs on every render (rules of hooks).
   useForegroundHealthSync();
+  useBodyLogRetry();
 
   // Advance the active program's targets to the current phase on app-open /
   // foreground (boundary-only, idempotent). No-op for guests and users with no

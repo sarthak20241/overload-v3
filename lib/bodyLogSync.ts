@@ -44,6 +44,21 @@ const _keysMatch: [AppMeasurementKey] extends [MeasurementKey]
   : never = true;
 void _keysMatch;
 
+/**
+ * PostgREST errors with a Postgres data or constraint code (class 22 data
+ * exception, class 23 integrity violation, e.g. 23514 check) mean the server
+ * rejected this entry's data. Retrying can never fix that, so the queue drops
+ * it. Everything else (network, 401, RLS 42501, a table not there yet) stays
+ * retryable.
+ */
+function asBodyLogError(error: { code?: string | null; message?: string }): Error {
+  const code = error?.code ?? '';
+  return Object.assign(new Error(error?.message ?? 'body log upload failed'), {
+    code,
+    permanent: /^2[23]/.test(code),
+  });
+}
+
 function dailyMetricDb(supabase: SupabaseClient, userId: string, type: 'bodyweight_kg' | 'body_fat_percent'): DayValueDb {
   const unit = type === 'bodyweight_kg' ? 'kg' : 'percent';
   return {
@@ -53,7 +68,7 @@ function dailyMetricDb(supabase: SupabaseClient, userId: string, type: 'bodyweig
         rows.map((r) => ({ user_id: userId, metric_date: r.day, metric_type: type, value: r.value, unit, source: 'manual' })),
         { onConflict: 'user_id,metric_date,metric_type', ignoreDuplicates: keepExisting },
       );
-      if (error) throw error;
+      if (error) throw asBodyLogError(error);
     },
     async deleteDay(day) {
       const { error } = await supabase
@@ -62,7 +77,7 @@ function dailyMetricDb(supabase: SupabaseClient, userId: string, type: 'bodyweig
         .eq('user_id', userId)
         .eq('metric_type', type)
         .eq('metric_date', day);
-      if (error) throw error;
+      if (error) throw asBodyLogError(error);
     },
     async loadRows() {
       const { data, error } = await supabase
@@ -72,7 +87,7 @@ function dailyMetricDb(supabase: SupabaseClient, userId: string, type: 'bodyweig
         .eq('metric_type', type)
         .order('metric_date', { ascending: false })
         .limit(1000);
-      if (error) throw error;
+      if (error) throw asBodyLogError(error);
       return data ?? [];
     },
   };
@@ -86,11 +101,11 @@ function measurementDb(supabase: SupabaseClient, userId: string): MeasurementDb 
         rows.map((r) => ({ user_id: userId, measured_on: r.day, site: r.site, value_cm: r.cm, source: 'manual' })),
         { onConflict: 'user_id,measured_on,site', ignoreDuplicates: keepExisting },
       );
-      if (error) throw error;
+      if (error) throw asBodyLogError(error);
     },
     async deleteDay(day) {
       const { error } = await supabase.from('body_measurements').delete().eq('user_id', userId).eq('measured_on', day);
-      if (error) throw error;
+      if (error) throw asBodyLogError(error);
     },
     async loadRows() {
       const { data, error } = await supabase
@@ -99,7 +114,7 @@ function measurementDb(supabase: SupabaseClient, userId: string): MeasurementDb 
         .eq('user_id', userId)
         .order('measured_on', { ascending: false })
         .limit(5000);
-      if (error) throw error;
+      if (error) throw asBodyLogError(error);
       return data ?? [];
     },
   };

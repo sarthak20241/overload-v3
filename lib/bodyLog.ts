@@ -325,6 +325,99 @@ export interface BodyQueue<E, O> {
   edit(edit: E): Promise<O>;
 }
 
+// ─── Events and retry with backoff ───────────────────────────────────────────
+
+export type BodyLogEvent =
+  | { type: 'edit'; name: string; userId: string }
+  | { type: 'flushed'; name: string; userId: string; remaining: number };
+
+const listeners = new Set<(e: BodyLogEvent) => void>();
+
+/** Hear every save and every upload attempt. Returns the unsubscribe. */
+export function onBodyLogEvent(listener: (e: BodyLogEvent) => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function emit(e: BodyLogEvent) {
+  for (const l of listeners) {
+    try { l(e); } catch { /* a listener must never break a save */ }
+  }
+}
+
+/** An upload error that retrying can never fix (the server rejected the data itself). */
+export function isPermanentError(e: unknown): boolean {
+  return !!e && typeof e === 'object' && (e as { permanent?: unknown }).permanent === true;
+}
+
+/** Gap before retry number `attempt` (0-based): 15 s, 30 s, 60 s ... capped at 15 min. */
+export function retryDelayMs(attempt: number, baseMs = 15_000, maxMs = 900_000): number {
+  return Math.min(maxMs, baseMs * 2 ** Math.max(0, Math.min(attempt, 30)));
+}
+
+export interface RetryScheduler {
+  /** An upload round for one log finished with `remaining` entries still waiting. */
+  flushed(name: string, remaining: number): void;
+  /** A new save: start the backoff over. */
+  reset(): void;
+  /** App went to the background: cancel and ignore results until resume. */
+  pause(): void;
+  resume(): void;
+}
+
+/**
+ * Retries uploads while any log still has entries waiting, with a gap that
+ * doubles each round (a long outage costs a handful of requests, not one every
+ * few seconds). Success on every log stops it; a save or a return to the app
+ * starts it over at the shortest gap. Timers are injected for tests.
+ */
+export function createRetryScheduler(o: {
+  run: () => void;
+  setTimer: (fn: () => void, ms: number) => unknown;
+  clearTimer: (id: unknown) => void;
+  baseMs?: number;
+  maxMs?: number;
+}): RetryScheduler {
+  const waiting = new Map<string, number>();
+  let attempt = 0;
+  let timer: unknown = null;
+  let paused = false;
+  const cancel = () => {
+    if (timer != null) o.clearTimer(timer);
+    timer = null;
+  };
+  return {
+    flushed(name, remaining) {
+      waiting.set(name, remaining);
+      if (paused) return;
+      const total = [...waiting.values()].reduce((a, b) => a + b, 0);
+      if (total === 0) {
+        cancel();
+        attempt = 0;
+        return;
+      }
+      if (timer != null) return; // this round already has its retry
+      timer = o.setTimer(() => {
+        timer = null;
+        o.run();
+      }, retryDelayMs(attempt, o.baseMs, o.maxMs));
+      attempt++;
+    },
+    reset() {
+      cancel();
+      attempt = 0;
+    },
+    pause() {
+      paused = true;
+      cancel();
+    },
+    resume() {
+      paused = false;
+      attempt = 0;
+    },
+  };
+}
+
 // Per-key serial queues. Storage reads and writes are separate awaits, so two
 // read-modify-write passes that interleave lose an edit: an upload finishing
 // while a new entry was saved wrote back its stale copy of the list and erased
@@ -369,14 +462,20 @@ function bodyQueue<E extends { day: string }, R, O>(s: QueueSpec<E, R, O>): Body
       for (const p of await readPending()) {
         try {
           await s.push(p);
-        } catch {
-          break; // keep order: a later edit must not land before an earlier one
+        } catch (e) {
+          // The server rejected the data itself: retrying never helps, and a
+          // stuck entry would block every entry behind it. Drop it.
+          // Anything else (offline, auth, a missing table) keeps it and stops,
+          // so a later edit never lands before an earlier one.
+          if (!isPermanentError(e)) break;
         }
         // Drop it only if the user did not edit this day again while the write ran.
         const sent = JSON.stringify(p);
         await mutate((now) => now.filter((x) => !(x.day === p.day && JSON.stringify(x) === sent)));
       }
-      return (await readPending()).length;
+      const remaining = (await readPending()).length;
+      emit({ type: 'flushed', name: s.name, userId: s.userId, remaining });
+      return remaining;
     });
 
   const cached = () => readJson<R[]>(s.store, seriesKey, []);
@@ -397,6 +496,7 @@ function bodyQueue<E extends { day: string }, R, O>(s: QueueSpec<E, R, O>): Body
     async edit(edit) {
       // Never wait on the network here: callers flash "Logged" when this resolves.
       const pending = await mutate((now) => s.combine(now, edit));
+      emit({ type: 'edit', name: s.name, userId: s.userId });
       flush().catch(() => 0);
       return s.merge(await cached(), pending);
     },

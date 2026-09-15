@@ -32,6 +32,7 @@ import {
   withPendingDay,
   withPendingMeasurement,
 } from "./bodyLog.ts";
+import { createRetryScheduler, onBodyLogEvent, retryDelayMs } from "./bodyLog.ts";
 
 // ─── Days and units ─────────────────────────────────────────────────────────
 
@@ -423,4 +424,116 @@ Deno.test("measurements: nothing valid to save is ignored", async () => {
   assertEquals(await log.save("2026-09-15", { waist: 0, chest: "" }), null);
   await log.flush();
   assertEquals(server.size, 0);
+});
+
+// ─── Retry with backoff ─────────────────────────────────────────────────────
+
+
+Deno.test("retryDelayMs doubles from 15 s and caps at 15 min", () => {
+  assertEquals([0, 1, 2, 3, 4].map((a) => retryDelayMs(a)), [15_000, 30_000, 60_000, 120_000, 240_000]);
+  assertEquals(retryDelayMs(10), 900_000);
+  assertEquals(retryDelayMs(50), 900_000);
+});
+
+function fakeTimers() {
+  let nextId = 1;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  let now = 0;
+  return {
+    setTimer: (fn: () => void, ms: number) => { const id = nextId++; timers.set(id, { at: now + ms, fn }); return id; },
+    clearTimer: (id: unknown) => { timers.delete(id as number); },
+    pendingDelays: () => [...timers.values()].map((t) => t.at - now),
+    /** Fire the earliest timer. */
+    fire: () => {
+      const [id, t] = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      timers.delete(id); now = t.at; t.fn();
+    },
+  };
+}
+
+Deno.test("scheduler: waiting entries retry with growing gaps, success stops it", () => {
+  const t = fakeTimers();
+  let runs = 0;
+  const s = createRetryScheduler({ run: () => { runs++; }, setTimer: t.setTimer, clearTimer: t.clearTimer });
+  s.flushed("weight", 1);
+  assertEquals(t.pendingDelays(), [15_000]);
+  s.flushed("bodyfat", 1); // same round: no second timer, no extra backoff step
+  assertEquals(t.pendingDelays(), [15_000]);
+  t.fire(); assertEquals(runs, 1);
+  s.flushed("weight", 1);
+  assertEquals(t.pendingDelays(), [30_000]);
+  t.fire(); s.flushed("weight", 1);
+  assertEquals(t.pendingDelays(), [60_000]);
+  t.fire(); s.flushed("weight", 0); s.flushed("bodyfat", 0);
+  assertEquals(t.pendingDelays(), []);
+  s.flushed("weight", 1); // a later failure starts again from the shortest gap
+  assertEquals(t.pendingDelays(), [15_000]);
+});
+
+Deno.test("scheduler: a log still waiting keeps the timer after another log succeeds", () => {
+  const t = fakeTimers();
+  const s = createRetryScheduler({ run: () => {}, setTimer: t.setTimer, clearTimer: t.clearTimer });
+  s.flushed("weight", 1);
+  s.flushed("bodyfat", 0);
+  assertEquals(t.pendingDelays(), [15_000]);
+});
+
+Deno.test("scheduler: a new save resets the backoff", () => {
+  const t = fakeTimers();
+  const s = createRetryScheduler({ run: () => {}, setTimer: t.setTimer, clearTimer: t.clearTimer });
+  s.flushed("weight", 1); t.fire(); s.flushed("weight", 1); t.fire(); s.flushed("weight", 1);
+  assertEquals(t.pendingDelays(), [60_000]);
+  s.reset();
+  assertEquals(t.pendingDelays(), []); // the save's own upload reports next
+  s.flushed("weight", 1);
+  assertEquals(t.pendingDelays(), [15_000]);
+});
+
+Deno.test("scheduler: paused in the background, nothing is scheduled", () => {
+  const t = fakeTimers();
+  const s = createRetryScheduler({ run: () => {}, setTimer: t.setTimer, clearTimer: t.clearTimer });
+  s.flushed("weight", 1);
+  s.pause();
+  assertEquals(t.pendingDelays(), []);
+  s.flushed("weight", 1); // an upload that finishes after backgrounding
+  assertEquals(t.pendingDelays(), []);
+  s.resume();
+  s.flushed("weight", 1);
+  assertEquals(t.pendingDelays(), [15_000]);
+});
+
+Deno.test("events: a save and each upload report to listeners", async () => {
+  const { log } = fakeWeight({ online: false });
+  const seen: string[] = [];
+  const off = onBodyLogEvent((e) => seen.push(e.type === "flushed" ? `flushed:${e.name}:${e.remaining}` : `edit:${e.name}`));
+  await log.log(80, new Date(2026, 8, 15, 8));
+  await log.flush();
+  off();
+  assertEquals(seen.slice(0, 2), ["edit:weight", "flushed:weight:1"]);
+});
+
+Deno.test("an entry the server rejects as invalid is dropped so it cannot block the queue", async () => {
+  const { log, db, server } = fakeWeight();
+  const realUpsert = db.upsert;
+  db.upsert = async (rows, opts) => {
+    if (rows.some((r) => r.day === "2026-09-14")) throw Object.assign(new Error("check violation"), { permanent: true });
+    return realUpsert(rows, opts);
+  };
+  await log.log(80, new Date(2026, 8, 14, 8));
+  await log.log(79.8, new Date(2026, 8, 15, 8));
+  assertEquals(await log.flush(), 0);
+  assertEquals([...server], [["2026-09-15", 79.8]]);
+});
+
+Deno.test("a network failure keeps the entry and stops, keeping order", async () => {
+  const { log, db, server } = fakeWeight();
+  const realUpsert = db.upsert;
+  let fail = true;
+  db.upsert = async (rows, opts) => { if (fail) throw new Error("Network request failed"); return realUpsert(rows, opts); };
+  await log.log(80, new Date(2026, 8, 14, 8));
+  await log.log(79.8, new Date(2026, 8, 15, 8));
+  assertEquals(await log.flush(), 2);
+  fail = false;
+  assertEquals(await log.flush(), 0);
+  assertEquals([...server].sort(), [["2026-09-14", 80], ["2026-09-15", 79.8]]);
 });
