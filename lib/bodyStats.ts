@@ -1,8 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { stampLegacyUnits, type WeightUnit } from '@/lib/weightUnit';
 
 export interface WeightEntry {
   date: string;
+  /** As typed, in `unit`. Show it with weightLogInUnit (lib/weightUnit.ts). */
   weight: number;
+  /** Missing only on entries saved before units were recorded; loadWeightLog fills it. */
+  unit?: WeightUnit;
 }
 
 export interface BodyFatEntry {
@@ -41,7 +45,13 @@ const BASIC_KEY = 'overload_basic_info';
 export async function loadWeightLog(): Promise<WeightEntry[]> {
   try {
     const raw = await AsyncStorage.getItem(WEIGHT_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    // Old entries carry no unit. Give them the saved unit once and write that
+    // back, so a later kg/lbs switch converts them instead of relabeling them.
+    const info = await loadBasicInfo();
+    const { log, changed } = stampLegacyUnits<WeightEntry>(JSON.parse(raw), info.weightUnit === 'lbs' ? 'lbs' : 'kg');
+    if (changed) await AsyncStorage.setItem(WEIGHT_KEY, JSON.stringify(log)).catch(() => {});
+    return log;
   } catch {
     return [];
   }
