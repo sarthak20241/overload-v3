@@ -6,9 +6,9 @@
  * coach context, the onboarding protein and calorie targets, and goal plans.
  * Profile used to save the raw typed number, so "165" on lbs became 165 kg.
  *
- * toKg / fromKg / KG_PER_LB match lib/bodyweightLog.ts on the
- * claude/user-plan-disobedience-b282bf branch (the daily_metrics weight log),
- * so the two agree to the hundredth. When both land, keep one copy.
+ * toKg / fromKg / KG_PER_LB match lib/bodyLog.ts in PR #173 (the
+ * daily_metrics weight series), so the two agree to the hundredth. Whichever
+ * PR merges second points one copy at the other.
  *
  * Pure: no imports. Unit-tested in weightUnit.test.ts.
  */
