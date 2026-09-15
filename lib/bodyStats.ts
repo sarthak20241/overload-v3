@@ -47,8 +47,17 @@ export async function loadWeightLog(): Promise<WeightEntry[]> {
   }
 }
 
+/**
+ * The device weight log. Guests only: a signed-in user's weigh-ins live in
+ * daily_metrics (lib/bodyweightSync.ts), and this log is uploaded to their
+ * account once and then cleared.
+ */
 export async function saveWeightLog(log: WeightEntry[]): Promise<void> {
   await AsyncStorage.setItem(WEIGHT_KEY, JSON.stringify(log));
+}
+
+export async function clearWeightLog(): Promise<void> {
+  await AsyncStorage.removeItem(WEIGHT_KEY);
 }
 
 export async function loadBodyFatLog(): Promise<BodyFatEntry[]> {

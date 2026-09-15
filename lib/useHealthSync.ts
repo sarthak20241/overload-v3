@@ -1,8 +1,10 @@
 /**
  * Foreground health-sync trigger (holistic tracking, Phase 2).
  *
- * On app-open and each return to the foreground, pull the latest hub data and
- * recompute today's readiness for the signed-in user. No-op for guests /
+ * On app-open and each return to the foreground, push hand-typed weigh-ins that
+ * have not reached the server, pull the latest hub data, and recompute today's
+ * readiness for the signed-in user. Weights go first, so the hub sync's
+ * manual-wins guard already sees today's hand-typed row. No-op for guests /
  * signed-out sessions and on platforms with no hub adapter. Both underlying
  * steps are idempotent, so firing on every 'active' is safe. A ref guards
  * against overlapping runs. Mounted once from the (app) layout.
@@ -12,6 +14,7 @@ import { AppState } from 'react-native';
 import { useSupabaseClient } from './supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { runHealthSyncAndReadiness } from './readinessSync';
+import { flushWeightsOnOpen } from './bodyweightSync';
 
 export function useForegroundHealthSync(): void {
   const supabase = useSupabaseClient();
@@ -25,7 +28,9 @@ export function useForegroundHealthSync(): void {
     const run = () => {
       if (running.current || cancelled) return;
       running.current = true;
-      runHealthSyncAndReadiness(supabase, userId)
+      flushWeightsOnOpen(supabase, userId)
+        .catch(() => {})
+        .then(() => runHealthSyncAndReadiness(supabase, userId))
         .catch(() => {})
         .finally(() => {
           running.current = false;

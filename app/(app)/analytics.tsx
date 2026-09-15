@@ -17,6 +17,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
+import { deleteWeight as deleteServerWeight, loadWeights, localDayISO, logWeight, weightDeps } from '@/lib/bodyweightSync';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { setVolumeKg } from '@/lib/sets';
 import { metricTypeOf, type MetricType } from '@/lib/exercises';
@@ -1225,7 +1226,7 @@ export default function AnalyticsScreen() {
   // Body stats
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
-  const { goalWeight: ctxGoal, weightUnit } = useBasicInfo();
+  const { goalWeight: ctxGoal, weightUnit, ready: basicInfoReady } = useBasicInfo();
   const goalWeight = ctxGoal ?? null;
   const [addWeightOpen, setAddWeightOpen] = useState(false);
   const [addBfOpen, setAddBfOpen] = useState(false);
@@ -1320,18 +1321,30 @@ export default function AnalyticsScreen() {
     // Hold the spinner until Clerk settles; the effect re-runs when it does.
     if (!clerkLoaded) return;
     fetchData().finally(() => setLoading(false));
-    loadWeightLog().then(setWeightLog);
     loadBodyFatLog().then(setBodyFatLog);
   }, [fetchData, clerkLoaded, pendingCount]);
+
+  // A signed-in user's weigh-ins live in daily_metrics (kg), shown in the saved
+  // unit; guests keep the device log. Waits for the saved unit, which the first
+  // load also uses to upload the old device log.
+  const signedIn = !isGuestSession && !!user?.id;
+  const loadWeightSeries = useCallback(
+    () => (signedIn ? loadWeights(weightDeps(supabase, user!.id, weightUnit)) : loadWeightLog()),
+    [signedIn, supabase, user?.id, weightUnit],
+  );
+  useEffect(() => {
+    if (!clerkLoaded || !basicInfoReady) return;
+    loadWeightSeries().then(setWeightLog).catch(() => {});
+  }, [loadWeightSeries, clerkLoaded, basicInfoReady, pendingCount]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchData();
-    const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
+    const [wl, bfl] = await Promise.all([loadWeightSeries().catch(() => weightLog), loadBodyFatLog()]);
     setWeightLog(wl);
     setBodyFatLog(bfl);
     setRefreshing(false);
-  }, [fetchData]);
+  }, [fetchData, loadWeightSeries, weightLog]);
 
   // ── Stats ──
   const weekStart = getWeekStart();
@@ -1430,8 +1443,15 @@ export default function AnalyticsScreen() {
 
   // ── Handlers ──
   const addWeight = async (v: number) => {
-    const today = new Date().toISOString().slice(0, 10);
-    const filtered = weightLog.filter((e) => e.date.slice(0, 10) !== today);
+    const today = localDayISO();
+    const filtered = weightLog.filter((e) => localDayISO(new Date(e.date)) !== today);
+    if (signedIn) {
+      const next = await logWeight(weightDeps(supabase, user!.id, weightUnit), v);
+      if (!next) return; // not a weight a scale would show
+      track('weight_logged', { source: 'analytics', replaced_today: filtered.length !== weightLog.length, entry_count_after: next.length });
+      setWeightLog(next);
+      return;
+    }
     track('weight_logged', { source: 'analytics', replaced_today: filtered.length !== weightLog.length, entry_count_after: filtered.length + 1 });
     const next = [...filtered, { date: new Date().toISOString(), weight: v }].sort(
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -1441,6 +1461,10 @@ export default function AnalyticsScreen() {
   };
 
   const deleteWeight = async (date: string) => {
+    if (signedIn) {
+      setWeightLog(await deleteServerWeight(weightDeps(supabase, user!.id, weightUnit), localDayISO(new Date(date))));
+      return;
+    }
     const next = weightLog.filter((e) => e.date !== date);
     setWeightLog(next);
     await saveWeightLog(next);
