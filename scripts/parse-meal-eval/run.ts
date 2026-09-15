@@ -103,10 +103,19 @@ async function embedQueryForEval(text: string): Promise<number[] | null> {
   }
 }
 
-async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
+async function searchCatalogWithServings(query: string, lean = false): Promise<CandidateFood[]> {
   // Mirrors prod (index.ts): trigram and semantic run concurrently and merge,
   // servings joined server-side (0083). Keep this in lockstep with prod or the
   // eval measures a different pipeline than ships.
+  //
+  // `lean` is Fast mode's flag and it changes WHICH catalog search runs: prod
+  // calls the LIKE-only search_foods_fast_with_servings (0111) and skips the
+  // semantic leg. This harness ignored the flag and ran the ranked search plus
+  // semantic for every case, so FAST_MODE=on was scoring a candidate list the
+  // app never sees. Found 2026-09-14 while reproducing three live Quick-mode
+  // failures: the ranked search returned "Egg, whole, boiled or poached" where
+  // the fast one returns only 100 g-basis egg rows, and the harness could not
+  // reproduce what the app had shown.
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((s) => {
@@ -131,11 +140,14 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     source: "catalog" as const,
   });
   const [trigram, semantic] = await Promise.all([
-    supabase.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 }).then(({ data, error }) => {
+    supabase.rpc(
+      lean ? "search_foods_fast_with_servings" : "search_foods_ranked_with_servings",
+      { q: query, lim: 8 },
+    ).then(({ data, error }) => {
       if (error) console.error(`  trigram search error: ${error.message}`);
       return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
     }),
-    embedQueryForEval(query).then(async (vec) => {
+    lean ? Promise.resolve([] as Array<Record<string, unknown>>) : embedQueryForEval(query).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data, error } = await supabase.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -264,6 +276,16 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
   }
   if (exp.mealType && result.parsed!.meal_type !== exp.mealType) {
     failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
+  }
+  // The card's total. Per-item bounds cannot see a meal that is wrong as a
+  // whole when every line is individually defensible, and a single absurd line
+  // (one cup of butter) is easiest to catch where the user sees it: the sum.
+  if (exp.totalKcalBetween) {
+    const [lo, hi] = exp.totalKcalBetween;
+    const total = items.reduce((a, i) => a + (Number(i.kcal) || 0), 0);
+    if (total < lo || total > hi) {
+      failures.push(`total kcal ${Math.round(total)} outside [${lo}, ${hi}]`);
+    }
   }
   // Whole-result exclusions. Runs before the per-item checks so a nonsense
   // row is reported even when every named expectation is satisfied.
