@@ -19,6 +19,20 @@ Button sets used below:
 - **Question:** Answer / Not now. (Opens chat with the question.)
 - **Note:** Got it.
 
+
+## Decisions (owner, 2026-09-16)
+
+1. **Two options on one card: yes** (A1-style "move the date, or reshape").
+2. **Small changes may apply on their own: yes.** This is the handholding: the
+   plan was right on day one, life is not. Drona notices small things and
+   adjusts. Rules for what counts as small are in section H.
+3. Structured goal fields: explained in section I; decision pending.
+4. **Build order: Drona's call.** See section J.
+5. **First three: B1, A1, C2.**
+6. **New scenario family: Drona asks the user to use a feature** (log RIR, log
+   sleep, take measurements), explains what it means, and offers to talk it
+   through. Section G.
+
 ---
 
 ## A. Plan drift and the goal timeline
@@ -274,6 +288,141 @@ for 9 days. Open Health once so I can see the trend again."
 
 ---
 
+---
+
+## G. Use a feature: Drona asks, explains, and shows where it is
+
+The app already does more than most people find. When a feature would make
+this phase work better, Drona asks for it, says what it is in one line, points
+to where it lives, and offers to explain.
+
+Buttons for all of G: **Show me** (deep link to the exact place) / **What is
+this?** (opens chat seeded with the feature and why it matters now) / **Not now**.
+
+### G1. Log RIR this phase
+**Message.** "This phase runs on effort, not just weight: the plan says stop 2
+reps short of failure. Turn on RIR (reps left in the tank) so I can tell a hard
+set from an easy one. It is one tap in workout settings."
+**Show me.** Opens a workout's settings sheet with the intensity row in view.
+**Indicators.**
+- the current phase's training directive mentions RIR, RPE or effort
+- 4+ sessions in the phase, and under 20% of their working sets carry an RPE/RIR value
+- not asked in the last 6 weeks
+**Data.** phase training directive text [F-adjacent, D], `workout_sets.rpe`
+coverage per phase [D], whether the intensity column is switched on
+(stored on the phone only [N] on the server).
+**Model.** No for the card. Yes if the user taps "What is this?".
+
+### G2. Take measurements on a recomp
+**Message.** "On a recomp the scale barely moves while your body changes. A tape
+at the waist every 2 weeks shows what the scale cannot."
+**Show me.** Analytics, Body Measurements, Log.
+**Indicators.** goal is recomp, or weight flat on a cut while lifts rise; no
+measurement in 28 days. **Data.** measurement days [F], goal [F], lift trend [D].
+
+### G3. Log sleep (no wearable)
+**Message.** "Readiness needs sleep to read you. Logging last night takes ten
+seconds, and I will start adjusting hard days around it."
+**Show me.** Dashboard, Readiness, Log last night.
+**Indicators.** no sleep rows in 14 days; no Health connection; training 3+ days a week.
+**Data.** sleep days [F], hub connection [D].
+
+### G4. Connect Apple Health or Health Connect
+**Message.** "You log weight by hand most mornings. Connect Health and your
+scale, steps and sleep arrive on their own."
+**Indicators.** 8+ manual weigh-ins in 14 days; no hub rows ever.
+**Data.** weigh-in source [D].
+
+### G5. Tag your custom exercises
+**Message.** "7 of your exercises have no muscle group, so I cannot see if back
+is getting enough. Tag them once."
+**Indicators.** 5+ custom exercises with muscle group "Other" that were used in 28 days.
+**Data.** exercises with owner and muscle group [D].
+
+### G6. Use set types for your drop sets
+**Message.** "Your leg day has drop sets written in the notes. Mark them as drop
+sets and your volume and PRs will count them properly."
+**Indicators.** routine or set notes mention "drop" or "superset", and no sets
+carry that type. **Data.** notes [D], set_type [D].
+
+### Guardrails for G
+- One feature ask at a time, and at most one G card every 3 weeks: a feature
+  tour becomes noise fast.
+- Never ask for a feature the user turned off on purpose after using it.
+- The ask must name why THIS phase or goal needs it. "Try RIR" with no reason
+  is an ad, not coaching.
+
+Data to add for G: **feature usage flags on the server** [N]. Today the
+intensity-column preference lives only on the phone. A small `user_features`
+record (feature, first used, last used, turned off) lets Drona tell "never
+found it" from "tried it and turned it off".
+
+---
+
+## H. Small changes Drona may make on its own
+
+A change may apply without a tap only when ALL of these hold:
+- **Same intent.** It keeps the plan's goal and the phase's purpose.
+- **Small.** One exercise, one set, one load step, or one day. Never calories,
+  never the goal date, never days per week, never a whole phase.
+- **Reversible in one tap.** A notice card says what changed and has **Undo**.
+- **Earned.** Based on something the user already did repeatedly, not a guess.
+- **Safe.** Never overrides an injury note, never adds load on a low-readiness day.
+- **Switchable.** One setting, "Let Drona make small adjustments", on by default
+  for new plans. Off means these become Decide cards instead.
+
+| # | Small change | Trigger | Card after it applies |
+|---|---|---|---|
+| H1 | Make a swap permanent | the same exercise replaced the same way 4+ times | "You always do Chest-Supported Row here, so it is in the plan now. Undo" |
+| H2 | Raise the working weight one step | every set at the top of the rep range, 2 sessions running, readiness not low | "Bench goes to 62.5 kg next push day. You earned it. Undo" |
+| H3 | Lighter first session back | first session after 10+ days | "Today is set 10% lighter to ease back in." (today only) |
+| H4 | Drop the last set on a bad day | readiness under 35 today, or under 5 h sleep logged | "Rough night. Today's session keeps every lift and drops the last set." (today only) |
+| H5 | Reorder a skipped goal exercise earlier | a goal exercise at the end of a session skipped 3+ times | "Abs now open leg day, when you have the energy for them. Undo" |
+| H6 | Move a missed session | a scheduled session missed yesterday, today is a rest day | "Missed yesterday's Pull B. It is today instead, rest moves to tomorrow. Undo" |
+| H7 | Adjust a rest timer | the user overrides the rest time by the same amount 5+ times | "Rest on squats is 150 s now, like you take it. Undo" |
+
+Not small, always a Decide card: calories or macros, goal date, days per week,
+adding or removing a whole exercise, anything touching a future phase.
+
+Data to add for H: **plan change log** (who: drona_auto, drona_card, chat,
+manual; before and after) [N], **routine edit history** [N], **rest timer
+overrides** [N, phone only today], **the adjustments setting** [N].
+
+---
+
+## I. Question 3 explained: structured goal fields
+
+Today a goal is saved as free text, like "get six pack abs by March". A person
+reads that easily. The rules cannot: they cannot reliably pull out "abs" or
+"March", so C1 (the skipped ab work) would have to guess.
+
+"Structured" means storing the same goal as separate answers:
+- **Goal type:** fat loss, muscle gain, strength, recomp, endurance.
+- **Focus areas:** abs, arms, glutes, back, and so on. Pick any.
+- **Target:** a weight, a body fat percent, a lift, or a look.
+- **By when:** a date, or none.
+
+With these, C1 becomes "focus area includes abs, and ab exercises get skipped",
+which rules can check exactly. The user would pick focus areas once, on the
+Goal screen or in onboarding. The free-text goal stays for Drona to read.
+
+Decision needed: add focus areas and a target date as fields?
+
+---
+
+## J. Build order (Drona's call)
+
+1. **Plan change log** and **routine edit history.** Every act card and every
+   small change needs "what changed before" and "who changed it". Build first,
+   because data only starts accumulating once the log exists.
+2. **C2 / H1, the permanent swap.** No model. The first small change with Undo,
+   which proves the auto-adjust loop and the Undo card end to end.
+3. **B1, calories when logging is good but weight is flat.** The first model
+   act card, reading the change log.
+4. **A1, drift from the plan, with two options.**
+5. **G1, log RIR.** Cheap, no model, and teaches the pattern for feature asks.
+6. Then by value: H2, B2, B6, E3/H3, D1.
+
 ## Data we would need to start collecting  [N]
 
 Most scenarios run on data already stored. These are the real gaps:
@@ -300,15 +449,8 @@ Most scenarios run on data already stored. These are the real gaps:
   safety floor, never more than 4 weeks of date movement in one card, and a
   validator checks every number before the card is stored.
 
-## Questions to discuss
+## Still open
 
-1. **Two options on one card (A1):** allow, or one proposal per card with
-   "Talk it through" for alternatives?
-2. **Auto-applied small changes:** should anything apply without a tap, for
-   example C2's swap after it happened 5 times? (Plan so far: never.)
-3. **Goal detail:** add structured goal fields (body area, look, event date) to
-   onboarding and the Goal screen, so C1 is reliable?
-4. **Plan change log:** build it now, before P1, since B1 is the first act card
-   and depends on it?
-5. **Which 3 scenarios first** after P0? My suggestion: B1 (your calorie
-   example), A1 (drift), C2 (the swap, no model needed, quick trust win).
+1. Structured goal fields (section I): add focus areas and a target date?
+2. The "Let Drona make small adjustments" setting: on by default for everyone,
+   or only for users who start a program after it ships?
