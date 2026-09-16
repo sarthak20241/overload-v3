@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { stampLegacyUnits, type WeightUnit } from '@/lib/weightUnit';
+import { stampLegacyUnits, type WeightUnit } from '@/lib/bodyLog';
 
 export interface WeightEntry {
   date: string;
@@ -57,8 +57,15 @@ export async function loadWeightLog(): Promise<WeightEntry[]> {
   }
 }
 
+// The device logs below are for guests. A signed-in user's weight, body fat
+// and measurements live on the server (lib/bodyLogSync.ts); these logs are
+// uploaded to the account once and then cleared.
 export async function saveWeightLog(log: WeightEntry[]): Promise<void> {
   await AsyncStorage.setItem(WEIGHT_KEY, JSON.stringify(log));
+}
+
+export async function clearWeightLog(): Promise<void> {
+  await AsyncStorage.removeItem(WEIGHT_KEY);
 }
 
 export async function loadBodyFatLog(): Promise<BodyFatEntry[]> {
@@ -74,6 +81,10 @@ export async function saveBodyFatLog(log: BodyFatEntry[]): Promise<void> {
   await AsyncStorage.setItem(BF_KEY, JSON.stringify(log));
 }
 
+export async function clearBodyFatLog(): Promise<void> {
+  await AsyncStorage.removeItem(BF_KEY);
+}
+
 export async function loadMeasurements(): Promise<MeasurementsData> {
   try {
     const raw = await AsyncStorage.getItem(MEASUREMENTS_KEY);
@@ -87,6 +98,18 @@ export async function loadMeasurements(): Promise<MeasurementsData> {
 
 export async function saveMeasurements(d: MeasurementsData): Promise<void> {
   await AsyncStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(d));
+}
+
+/** Drop the device's measurement entries once uploaded, keeping the cm/in choice. */
+export async function clearMeasurementEntries(): Promise<void> {
+  const { unit } = await loadMeasurements();
+  await saveMeasurements({ entries: [], unit });
+}
+
+/** Save only the cm/in choice, keeping any device entries. */
+export async function saveMeasurementUnit(unit: 'cm' | 'in'): Promise<void> {
+  const current = await loadMeasurements();
+  await saveMeasurements({ ...current, unit });
 }
 
 export async function loadBasicInfo(): Promise<{ goalWeight?: number | null; weightUnit?: string }> {

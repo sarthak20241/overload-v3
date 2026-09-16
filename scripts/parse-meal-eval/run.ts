@@ -61,6 +61,20 @@ const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.t
 // from a parallel run are still valid per case, but avg latency is not
 // comparable to a serial baseline.
 const CONCURRENCY = Math.max(1, Number(env("EVAL_CONCURRENCY") || "1") || 1);
+// Hard spend cap for an API run, in dollars. The loop stops pulling new cases
+// once the running bill reaches it, and the summary says how many never ran -
+// a partial suite you can see the edge of beats an unbounded charge. Priced
+// per model below; unknown models are priced as the most expensive one we
+// list, so a typo cannot silently uncap the run. CLI runs bill no API credit,
+// so the cap is ignored there.
+const COST_CAP_USD = Number(env("EVAL_COST_CAP_USD") || "0") || 0;
+/** USD per million tokens, [input, output]. */
+const PRICES: Record<string, [number, number]> = {
+  "claude-haiku-4-5": [1, 5],
+  "claude-sonnet-5": [2, 10],
+  "claude-opus-5": [5, 25],
+};
+const PRICE = PRICES[MODEL] ?? [5, 25];
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local in cwd).");
@@ -103,10 +117,19 @@ async function embedQueryForEval(text: string): Promise<number[] | null> {
   }
 }
 
-async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
+async function searchCatalogWithServings(query: string, lean = false): Promise<CandidateFood[]> {
   // Mirrors prod (index.ts): trigram and semantic run concurrently and merge,
   // servings joined server-side (0083). Keep this in lockstep with prod or the
   // eval measures a different pipeline than ships.
+  //
+  // `lean` is Fast mode's flag and it changes WHICH catalog search runs: prod
+  // calls the LIKE-only search_foods_fast_with_servings (0111) and skips the
+  // semantic leg. This harness ignored the flag and ran the ranked search plus
+  // semantic for every case, so FAST_MODE=on was scoring a candidate list the
+  // app never sees. Found 2026-09-14 while reproducing three live Quick-mode
+  // failures: the ranked search returned "Egg, whole, boiled or poached" where
+  // the fast one returns only 100 g-basis egg rows, and the harness could not
+  // reproduce what the app had shown.
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((s) => {
@@ -131,11 +154,14 @@ async function searchCatalogWithServings(query: string): Promise<CandidateFood[]
     source: "catalog" as const,
   });
   const [trigram, semantic] = await Promise.all([
-    supabase.rpc("search_foods_ranked_with_servings", { q: query, lim: 8 }).then(({ data, error }) => {
+    supabase.rpc(
+      lean ? "search_foods_fast_with_servings" : "search_foods_ranked_with_servings",
+      { q: query, lim: 8 },
+    ).then(({ data, error }) => {
       if (error) console.error(`  trigram search error: ${error.message}`);
       return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
     }),
-    embedQueryForEval(query).then(async (vec) => {
+    lean ? Promise.resolve([] as Array<Record<string, unknown>>) : embedQueryForEval(query).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data, error } = await supabase.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -265,6 +291,16 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
   if (exp.mealType && result.parsed!.meal_type !== exp.mealType) {
     failures.push(`meal_type ${result.parsed!.meal_type} != ${exp.mealType}`);
   }
+  // The card's total. Per-item bounds cannot see a meal that is wrong as a
+  // whole when every line is individually defensible, and a single absurd line
+  // (one cup of butter) is easiest to catch where the user sees it: the sum.
+  if (exp.totalKcalBetween) {
+    const [lo, hi] = exp.totalKcalBetween;
+    const total = items.reduce((a, i) => a + (Number(i.kcal) || 0), 0);
+    if (total < lo || total > hi) {
+      failures.push(`total kcal ${Math.round(total)} outside [${lo}, ${hi}]`);
+    }
+  }
   // Whole-result exclusions. Runs before the per-item checks so a nonsense
   // row is reported even when every named expectation is satisfied.
   for (const bad of exp.forbidNames ?? []) {
@@ -325,6 +361,12 @@ async function main() {
 
   const outcomes: CaseOutcome[] = [];
   let totalTokens = 0;
+  // Billed tokens, split. The single total could not be priced: input and
+  // output differ 5x, so one number cannot say what a run costs.
+  let inTokens = 0;
+  let outTokens = 0;
+  let skippedForCost = 0;
+  const spent = () => (inTokens * PRICE[0] + outTokens * PRICE[1]) / 1_000_000;
 
   if (CONCURRENCY > 1) console.log(`running ${CONCURRENCY} cases at a time\n`);
 
@@ -394,6 +436,9 @@ async function main() {
       const failures = scoreCase(c, result);
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
       totalTokens += tokens;
+      inTokens += result.usage.input_tokens + (result.usage.cache_creation_input_tokens ?? 0) +
+        (result.usage.cache_read_input_tokens ?? 0);
+      outTokens += result.usage.output_tokens;
       const tiers = result.parsed ? [...new Set(result.parsed.items.map((i) => i.source))] : [];
       outcomes.push({
         id: c.id,
@@ -461,6 +506,13 @@ async function main() {
   await Promise.all(
     Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
       for (;;) {
+        // Checked BEFORE the shift, so the cap stops work rather than merely
+        // reporting it afterwards. Cases already in flight still finish.
+        if (COST_CAP_USD > 0 && !VIA_CLI && spent() >= COST_CAP_USD) {
+          skippedForCost += queue.length;
+          queue.length = 0;
+          return;
+        }
         const next = queue.shift();
         if (!next) return;
         await runOne(next);
@@ -478,7 +530,13 @@ async function main() {
   console.log(`passed:        ${passed}/${outcomes.length}  (${declineCases} decline cases)`);
   console.log(`tier mix:      ${JSON.stringify(tierCounts)}`);
   console.log(`avg latency:   ${avgMs}ms`);
-  console.log(`total tokens:  ${totalTokens}`);
+  console.log(`total tokens:  ${totalTokens} (in ${inTokens}, out ${outTokens})`);
+  if (!VIA_CLI) {
+    console.log(`est. cost:     $${spent().toFixed(4)} at ${MODEL} rates`);
+    if (skippedForCost > 0) {
+      console.log(`COST CAP HIT:  $${COST_CAP_USD} reached, ${skippedForCost} case(s) never ran`);
+    }
+  }
   console.log(`OFF lookups:   ${offLookups} (dry run, nothing written)`);
   const hardFails = outcomes.filter((o) => !o.pass);
   if (hardFails.length > 0) {

@@ -329,3 +329,64 @@ Deno.test("label chain: kcal 0 with real macros keeps the line self-consistent",
   // Within checkAtwater's shipped 30% tolerance, which the old branch failed.
   assertEquals(Math.abs(est.kcal - atwater) <= 0.3 * Math.max(est.kcal, atwater), true);
 });
+
+// ── A count never multiplies a recipe MEASURE ───────────────────────────────
+// Live 2026-09-14, Quick mode: "2 slices of whole wheat toast with butter"
+// logged Butter, NFS at 1 cup / 224 g / 1664 kcal. The row's default serving
+// is FNDDS's "1 cup" - a measure listed first because their tables list
+// volumes first, not a claim about how butter is eaten - and the bare count
+// ("with butter" arrives as 1 serving) took it as the piece to multiply.
+
+function butter(): CandidateFood {
+  return {
+    ...row([]),
+    name: "Butter, NFS",
+    brand: null,
+    kcal: 743,
+    servings: [
+      { label: "1 cup", grams: 224, is_default: true },
+      { label: "1 tablespoon", grams: 14, is_default: false },
+      { label: "1 pat", grams: 7, is_default: false },
+      { label: "100 g", grams: 100, is_default: false },
+    ],
+  };
+}
+
+Deno.test("a measure is not a piece", () => {
+  for (const label of ["1 cup", "1 cup, NFS", "1 cup (4.86 large eggs)", "1 tablespoon", "1 tbsp", "1 tsp", "1 fl oz", "1 oz, raw (yield after cooking)", "3 oz", "1 cubic inch"]) {
+    assertEquals(namesAPiece({ label, grams: 50 }), false, label);
+  }
+  // Countable things and household portions still are.
+  for (const label of ["1 pat", "1 egg", "1 slice", "1 large", "1 katori", "1 bowl", "1 stick", "1 individual container"]) {
+    assertEquals(namesAPiece({ label, grams: 50 }), true, label);
+  }
+});
+
+Deno.test("a bare count skips a cup default and takes the first real piece", () => {
+  assertEquals(gramsPerUnit("serving", butter()), { grams: 7, label: "1 pat" });
+  assertEquals(gramsPerUnit("", butter()), { grams: 7, label: "1 pat" });
+  // Saying the measure yourself still anchors to it.
+  assertEquals(gramsPerUnit("cup", butter()), { grams: 224, label: "1 cup" });
+  assertEquals(gramsPerUnit("tablespoon", butter()), { grams: 14, label: "1 tablespoon" });
+});
+
+Deno.test("a row whose only portions are measures refuses the count", () => {
+  const beans = { ...butter(), name: "Beans, NFS", servings: [
+    { label: "1 cup", grams: 185, is_default: true },
+    { label: "100 g", grams: 100, is_default: false },
+  ] };
+  assertEquals(gramsPerUnit("serving", beans), null);
+});
+
+Deno.test("fallback: a cup default is not multiplied by a count either", () => {
+  const r: ResolvedItem = {
+    name: "butter", brand: null, quantity: 1, unit: "serving", prep: null,
+    correctsFoodName: null, meal: null,
+    est: { kcal: 72, protein_g: 0.1, carb_g: 0, fat_g: 8, total_g: 10 },
+    candidates: [butter()],
+  };
+  const per: Map<string, Per100> = new Map([["f1", { kcal: 743, protein_g: 0.9, carb_g: 0.1, fat_g: 81, fiber_g: null }]]);
+  const out = fallbackFromResolved(r, per);
+  assertEquals(out.grams, 7);
+  assertEquals(out.serving_label, "1 pat");
+});
