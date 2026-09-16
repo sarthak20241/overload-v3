@@ -61,6 +61,11 @@ export interface EvalCase {
      *
      *  Checked against EVERY item, so it needs no way to identify the line. */
     forbidNames?: string[];
+    /** Inclusive bounds on the sum of every logged item's kcal: the number
+     *  the user actually reads on the card. A meal can pass every per-item
+     *  check and still be wrong as a whole, and one absurd serving (a cup of
+     *  butter on toast) is loudest here. */
+    totalKcalBetween?: [number, number];
     // Set when the case only makes sense with tier 3 enabled.
     needsWebSearch?: boolean;
   };
@@ -1190,6 +1195,81 @@ export const CASES: EvalCase[] = [
         { nameIncludes: "poha", meal: "breakfast" },
         { nameIncludes: "rajma", meal: "lunch" },
       ],
+    },
+  },
+
+  // ── Quick-mode catalog picks seen live 2026-09-14 ──────────────────────────
+  // Three real logs from the app's Quick (fast) tier. Every one resolved to a
+  // catalog row that shared a WORD with the food and was not the food, or to
+  // the right row at an absurd serving. The expectations name the wrong rows
+  // and bound the card total; they say nothing about which right row wins,
+  // because the honest answer for a bare "toast" or "chicken" may well be the
+  // model's own estimate. Held out: nothing in any prompt names these foods.
+  {
+    id: "quick-eggs-toast-coffee",
+    text: "2 eggs, 2 toast and a black coffee",
+    hour: 8,
+    expect: {
+      minItems: 3, maxItems: 3,
+      items: [
+        {
+          nameIncludes: "egg",
+          nameExcludes: ["yolk", "white", "curry", "bhurji", "nog", "burrito"],
+          kcalBetween: [110, 200],
+        },
+        {
+          nameIncludes: "toast", nameIncludesAny: ["bread"],
+          // A cracker is not a slice of toast, and a toaster pastry is a
+          // different breakfast entirely.
+          nameExcludes: ["melba", "shrimp", "anisette", "pastr", "cracker", "canap"],
+          kcalBetween: [100, 260],
+        },
+        { nameIncludes: "coffee", kcalBetween: [0, 15] },
+      ],
+      forbidNames: ["melba", "cracker", "pastr"],
+      totalKcalBetween: [220, 460],
+    },
+  },
+  {
+    id: "quick-boiled-eggs-toast-butter-coffee",
+    text: "2 boiled eggs, 2 slices of whole wheat toast with butter, and a black coffee",
+    hour: 8,
+    expect: {
+      // Butter may ride as its own line or be folded into the toast; both are
+      // readings a person would accept. Five lines is not.
+      minItems: 3, maxItems: 4,
+      items: [
+        { nameIncludes: "egg", nameExcludes: ["yolk", "white", "curry", "bhurji"], kcalBetween: [110, 200] },
+        { nameIncludes: "toast", nameIncludesAny: ["bread"], nameExcludes: ["melba", "cracker", "pastr"], kcalBetween: [100, 300] },
+        { nameIncludes: "coffee", kcalBetween: [0, 15] },
+      ],
+      forbidNames: ["chicken", "cookie", "buttermilk"],
+      // Butter on two slices is a pat or two, not a cup. The live card read
+      // nearly 2000 kcal for this breakfast.
+      totalKcalBetween: [260, 700],
+    },
+  },
+  {
+    id: "quick-chicken-burrito-bowl",
+    text: "chicken burrito bowl with rice, beans and guacamole",
+    hour: 13,
+    expect: {
+      // One composite line or a split into its parts are both fine readings.
+      minItems: 1, maxItems: 4,
+      items: [
+        {
+          nameIncludes: "chicken",
+          // Every one of these is a chicken ROW that is not chicken: a part the
+          // user never named, or a dish that happens to contain the word.
+          nameExcludes: ["feet", "foot", "tail", "skin", "back", "neck", "kiev", "curry", "keema", "gizzard", "liver"],
+        },
+      ],
+      forbidNames: ["feet", "foot", "tail", "kiev", "gizzard", "fava", "rice cake", "rice paper", "franks"],
+      // The floor admits the catalog's own "Burrito bowl, chicken" row at its
+      // 225 g default (~360 kcal), a correct pick the model reaches when it
+      // keeps the dish whole. The wrong rows this case exists for are named
+      // above; the total only has to catch a part or a dish priced as a meal.
+      totalKcalBetween: [300, 1300],
     },
   },
 ];
