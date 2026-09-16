@@ -61,6 +61,20 @@ const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.t
 // from a parallel run are still valid per case, but avg latency is not
 // comparable to a serial baseline.
 const CONCURRENCY = Math.max(1, Number(env("EVAL_CONCURRENCY") || "1") || 1);
+// Hard spend cap for an API run, in dollars. The loop stops pulling new cases
+// once the running bill reaches it, and the summary says how many never ran -
+// a partial suite you can see the edge of beats an unbounded charge. Priced
+// per model below; unknown models are priced as the most expensive one we
+// list, so a typo cannot silently uncap the run. CLI runs bill no API credit,
+// so the cap is ignored there.
+const COST_CAP_USD = Number(env("EVAL_COST_CAP_USD") || "0") || 0;
+/** USD per million tokens, [input, output]. */
+const PRICES: Record<string, [number, number]> = {
+  "claude-haiku-4-5": [1, 5],
+  "claude-sonnet-5": [2, 10],
+  "claude-opus-5": [5, 25],
+};
+const PRICE = PRICES[MODEL] ?? [5, 25];
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY (env or .env.local in cwd).");
@@ -347,6 +361,12 @@ async function main() {
 
   const outcomes: CaseOutcome[] = [];
   let totalTokens = 0;
+  // Billed tokens, split. The single total could not be priced: input and
+  // output differ 5x, so one number cannot say what a run costs.
+  let inTokens = 0;
+  let outTokens = 0;
+  let skippedForCost = 0;
+  const spent = () => (inTokens * PRICE[0] + outTokens * PRICE[1]) / 1_000_000;
 
   if (CONCURRENCY > 1) console.log(`running ${CONCURRENCY} cases at a time\n`);
 
@@ -416,6 +436,9 @@ async function main() {
       const failures = scoreCase(c, result);
       const tokens = result.usage.input_tokens + result.usage.output_tokens;
       totalTokens += tokens;
+      inTokens += result.usage.input_tokens + (result.usage.cache_creation_input_tokens ?? 0) +
+        (result.usage.cache_read_input_tokens ?? 0);
+      outTokens += result.usage.output_tokens;
       const tiers = result.parsed ? [...new Set(result.parsed.items.map((i) => i.source))] : [];
       outcomes.push({
         id: c.id,
@@ -483,6 +506,13 @@ async function main() {
   await Promise.all(
     Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
       for (;;) {
+        // Checked BEFORE the shift, so the cap stops work rather than merely
+        // reporting it afterwards. Cases already in flight still finish.
+        if (COST_CAP_USD > 0 && !VIA_CLI && spent() >= COST_CAP_USD) {
+          skippedForCost += queue.length;
+          queue.length = 0;
+          return;
+        }
         const next = queue.shift();
         if (!next) return;
         await runOne(next);
@@ -500,7 +530,13 @@ async function main() {
   console.log(`passed:        ${passed}/${outcomes.length}  (${declineCases} decline cases)`);
   console.log(`tier mix:      ${JSON.stringify(tierCounts)}`);
   console.log(`avg latency:   ${avgMs}ms`);
-  console.log(`total tokens:  ${totalTokens}`);
+  console.log(`total tokens:  ${totalTokens} (in ${inTokens}, out ${outTokens})`);
+  if (!VIA_CLI) {
+    console.log(`est. cost:     $${spent().toFixed(4)} at ${MODEL} rates`);
+    if (skippedForCost > 0) {
+      console.log(`COST CAP HIT:  $${COST_CAP_USD} reached, ${skippedForCost} case(s) never ran`);
+    }
+  }
   console.log(`OFF lookups:   ${offLookups} (dry run, nothing written)`);
   const hardFails = outcomes.filter((o) => !o.pass);
   if (hardFails.length > 0) {
