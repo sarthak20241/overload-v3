@@ -117,19 +117,16 @@ async function embedQueryForEval(text: string): Promise<number[] | null> {
   }
 }
 
-async function searchCatalogWithServings(query: string, lean = false): Promise<CandidateFood[]> {
+async function searchCatalogWithServings(query: string): Promise<CandidateFood[]> {
   // Mirrors prod (index.ts): trigram and semantic run concurrently and merge,
   // servings joined server-side (0083). Keep this in lockstep with prod or the
   // eval measures a different pipeline than ships.
   //
-  // `lean` is Fast mode's flag and it changes WHICH catalog search runs: prod
-  // calls the LIKE-only search_foods_fast_with_servings (0111) and skips the
-  // semantic leg. This harness ignored the flag and ran the ranked search plus
-  // semantic for every case, so FAST_MODE=on was scoring a candidate list the
-  // app never sees. Found 2026-09-14 while reproducing three live Quick-mode
-  // failures: the ranked search returned "Egg, whole, boiled or poached" where
-  // the fast one returns only 100 g-basis egg rows, and the harness could not
-  // reproduce what the app had shown.
+  // One search, because prod has one. A `lean` flag used to pick the LIKE-only
+  // search_foods_fast_with_servings (0111) for Fast mode, and this harness once
+  // ignored it and so scored a candidate list the app never saw. Fast makes no
+  // catalog lookup at all since 2026-09-15, so that whole divergence is gone:
+  // every caller that reaches here is Thorough or Precise, in both places.
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((s) => {
@@ -155,13 +152,13 @@ async function searchCatalogWithServings(query: string, lean = false): Promise<C
   });
   const [trigram, semantic] = await Promise.all([
     supabase.rpc(
-      lean ? "search_foods_fast_with_servings" : "search_foods_ranked_with_servings",
+      "search_foods_ranked_with_servings",
       { q: query, lim: 8 },
     ).then(({ data, error }) => {
       if (error) console.error(`  trigram search error: ${error.message}`);
       return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
     }),
-    lean ? Promise.resolve([] as Array<Record<string, unknown>>) : embedQueryForEval(query).then(async (vec) => {
+    embedQueryForEval(query).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data, error } = await supabase.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -194,9 +191,6 @@ const deps: ParseMealDeps = {
   maxTokens: 5000,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
-  // FAST_GRAMMAR=on runs Lane A for real, so the eval can prove the code-named
-  // path produces the same meals as the model-named one.
-  fastGrammarMode: (env("FAST_GRAMMAR") || "off") as "off" | "shadow" | "on",
 
   searchFoods: searchCatalogWithServings,
   backfillOffFood: async () => {
@@ -480,7 +474,6 @@ async function main() {
           [
             "fast_fill",
             "search_foods",
-            "lane_a_grammar",
             "extract_meal",
             "correction_scope",
             "correction_guard",

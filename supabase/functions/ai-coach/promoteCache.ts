@@ -89,9 +89,7 @@ export const DUPLICATE_KCAL_TOLERANCE = VERIFY_TOLERANCE;
 
 /** Words that do not decide WHICH food this is, so they must not decide whether a
  *  catalog row is a duplicate. Kept short: every word here is a word the dedup
- *  check stops looking at.
- *  NOTE: acceptCandidate.ts (Phase 6) carries a sibling list for the acceptance
- *  gate. When both are on one branch, collapse them into one shared list. */
+ *  check stops looking at. */
 const NON_IDENTIFYING = new Set([
   "fresh", "homemade", "home", "made", "pure", "natural", "organic", "farm",
   "packet", "packaged", "tetra", "pack", "a", "an", "the", "of", "with",
@@ -206,9 +204,8 @@ const MAX_NAME_WORDS = 6;
 /** Unit tokens that must never appear in a catalog NAME: their presence means an
  *  amount was folded into the name somewhere upstream.
  *
- *  DELIBERATELY NARROWER than ALL_UNIT_WORDS in fastGrammar.ts, and the difference
- *  is not drift. That list serves a parser deciding what "2 bowls dal" means, so it
- *  has to claim bowl, glass, slice and serving as units. Here those same words sit
+ *  DELIBERATELY NARROW. A list that serves a parser deciding what "2 bowls dal"
+ *  means has to claim bowl, glass, slice and serving as units. Here those same words sit
  *  inside perfectly good product names (Cheese Slice), and this guard only ever
  *  REJECTS, so sharing the wider list would quietly stop us publishing real foods.
  *  The mass and volume half is unambiguous and is the part worth sharing if these

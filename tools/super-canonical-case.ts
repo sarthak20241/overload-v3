@@ -37,7 +37,6 @@ const deps: ParseMealDeps = {
   maxTokens: 1600,
   timeoutMs: 40000,
   webSearchEnabled: true,
-  fastGrammarMode: "off",
   // Catalog deliberately empty: Super's job is the foods the catalog misses,
   // and a real row would mask whether the web path ran at all.
   searchFoods: async () => [],

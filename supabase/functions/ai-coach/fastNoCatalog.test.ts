@@ -27,7 +27,7 @@ function stub(lookups: string[], events: ParseProgress[] = []): ParseMealDeps {
   const hit = (name: string) => { lookups.push(name); };
   return {
     anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000,
-    webSearchEnabled: false, fastGrammarMode: "off",
+    webSearchEnabled: false,
     // Every lookup returns a row that WOULD win if anyone asked, so a parse
     // that still consults the catalog shows up as a catalog line, not only as
     // a counted call.

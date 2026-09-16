@@ -2,15 +2,15 @@
  * Shared fuzzy word matching for food names (I17).
  *
  * One question, asked in several places: are these two words the same word,
- * allowing for a typo? wordsOverlap uses it to decide whether a food is
- * "already here", and the Fast-mode acceptCandidate gate will use it to decide
- * whether a candidate row covers what the user typed.
+ * allowing for a typo? wordsOverlap (parseMeal) uses it to decide whether a
+ * food is "already here"; promoteCache uses it to decide whether a cache row
+ * duplicates a catalog row.
  *
- * WHY A SHARED FILE: the two callers must never drift. wordsOverlap answers
- * "is this thing already present?", and a wrong YES means a food the user named
- * is judged already-covered and is therefore never restored - it vanishes from
+ * WHY A SHARED FILE: the callers must never drift. wordsOverlap answers "is
+ * this thing already present?", and a wrong YES means a food the user named is
+ * judged already-covered and is therefore never restored - it vanishes from
  * the card silently. A wrong NO only restores a line. Looseness costs data;
- * strictness costs nothing. The acceptance gate needs the same asymmetry.
+ * strictness costs nothing.
  *
  * WHAT THIS REPLACES: a 4-character shared-prefix rule. Benchmarked on real
  * pairs it scored 5/8 and erred in BOTH directions:

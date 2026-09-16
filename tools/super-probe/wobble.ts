@@ -63,7 +63,6 @@ const deps: ParseMealDeps = {
   maxTokens: 1600,
   timeoutMs: 60000,
   webSearchEnabled: true,
-  fastGrammarMode: "off",
   searchFoods: async () => [],
   backfillOffFood: async () => null,
   getFoodPer100: async () => null,
