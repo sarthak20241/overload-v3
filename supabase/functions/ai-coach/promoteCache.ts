@@ -89,9 +89,7 @@ export const DUPLICATE_KCAL_TOLERANCE = VERIFY_TOLERANCE;
 
 /** Words that do not decide WHICH food this is, so they must not decide whether a
  *  catalog row is a duplicate. Kept short: every word here is a word the dedup
- *  check stops looking at.
- *  NOTE: acceptCandidate.ts (Phase 6) carries a sibling list for the acceptance
- *  gate. When both are on one branch, collapse them into one shared list. */
+ *  check stops looking at. */
 const NON_IDENTIFYING = new Set([
   "fresh", "homemade", "home", "made", "pure", "natural", "organic", "farm",
   "packet", "packaged", "tetra", "pack", "a", "an", "the", "of", "with",

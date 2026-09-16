@@ -772,8 +772,9 @@ export interface ParseMealInput {
   text: string;
   localHour: number | null;
   mealHint: MealType | null;
-  /** "fast": one model call names AND estimates, catalog resolve, code fill,
-   *  no decide. "super": the precise cache, then a per-item web lookup inside
+  /** "fast": one model call names AND estimates, and that estimate IS the
+   *  answer - no catalog, no OFF, no FatSecret, no decide (see the FAST MODE
+   *  block in runParseMeal). "super": the precise cache, then a web lookup inside
    *  the resolve fan-out, then the full pipeline on verified numbers.
    *  Both are honoured only on a first-shot log; with a meal on screen the
    *  turn may be a correction and falls through to the full pipeline. */
@@ -854,13 +855,12 @@ export interface ParseMealDeps {
    *  so its agreement with extract can be measured on real traffic first. */
   fastGrammarMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
-  // `lean` = trigram only, skip the semantic leg. The semantic leg embeds the
-  // query via an EXTERNAL Voyage API call first, which is ~1s and rate-limited,
-  // so a ladder of concurrent searches queues there - measured: every query in
-  // a batch reporting near-identical 0.8-1.6s wall times while the co-located
-  // trigram RPC costs ~30ms. Fast mode passes lean=true; synonym-bridging is
-  // decide's concern, and fast has no decide.
-  searchFoods(query: string, lean?: boolean): Promise<CandidateFood[]>;
+  // Always the full search now: trigram plus the semantic leg. A `lean`
+  // trigram-only variant existed for Fast mode, which paid ~1s of rate-limited
+  // Voyage embedding it could not afford. Fast makes no lookup at all since
+  // 2026-09-15, so the only callers left are Thorough and Precise, and both
+  // want the semantic leg for synonym-bridging ahead of decide.
+  searchFoods(query: string): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
   // Returns the new (or pre-existing) food id, or null on failure/dry-run.
   backfillOffFood(food: OffProduct): Promise<string | null>;
@@ -3019,9 +3019,6 @@ async function resolveOneItem(
   /** Lower-cased names of foods this user logs repeatedly (I13). Used ONLY to
    *  stop the reranker discarding them; see the promotion below. */
   stapleNames?: Set<string>,
-  /** Fast mode: skip FatSecret (~4s cold cache) and the reranker (~400ms +
-   *  429 risk). The accept gate does the judging instead. */
-  lean = false,
   /** Super mode: on a cache miss, look the food up on the web INSIDE the
    *  fan-out, before decide and before render. That timing is the whole design
    *  (see the WEB_LOOKUP_TOOL header): upgrade before the card exists and it is
@@ -3153,7 +3150,7 @@ async function resolveOneItem(
       const tq0 = Date.now();
       let found: CandidateFood[] = [];
       try {
-        found = (await deps.searchFoods(q, lean)).slice(0, 6);
+        found = (await deps.searchFoods(q)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
       }
@@ -3184,16 +3181,6 @@ async function resolveOneItem(
     return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
-    // Fast mode is catalog + the model's own estimate, nothing else. OFF sits
-    // in the same Promise.all as the catalog search, so its latency IS the
-    // resolve time whenever it is the slowest leg - and it was: 1.3s when it
-    // returned nothing against 3.4-4.6s when it returned products to back-fill.
-    // What it bought for that was thin. On "banana" it offered "Yogurt Bnine
-    // BANANA" and "Banana chips", which the accept gate then threw away.
-    // A packaged-food database earns its place in Smart, where there is time to
-    // rerank it and a model to judge it. Here the honest fallback is the
-    // estimate, which already rode in on the naming call for free.
-    if (lean) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
@@ -3239,7 +3226,7 @@ async function resolveOneItem(
   };
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
-    if (lean || !deps.searchFatSecret) return [];
+    if (!deps.searchFatSecret) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
@@ -3293,7 +3280,7 @@ async function resolveOneItem(
   // Rerank: the user's own phrase against each candidate, best first. This is
   // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
   // the sources returned. Fail-open: on any miss the merge order stands.
-  if (!lean && deps.rerankCandidates && usable.length > 1) {
+  if (deps.rerankCandidates && usable.length > 1) {
     const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
     const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
     const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
@@ -5337,8 +5324,6 @@ export async function runParseMeal(
         steps,
         toolCalls,
         stapleNames,
-        // Always false now: fast mode returns above and never resolves.
-        false,
         // Per ITEM, not per meal: each food's lookup finishes on its own clock,
         // so a cached item is never held up by a sibling still being searched.
         // accumulate() is passed through so the web_search_requests these calls

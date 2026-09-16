@@ -1347,9 +1347,6 @@ async function searchCatalogWithServings(
   admin: SupabaseClient,
   userId: string,
   query: string,
-  /** Trigram only - skip the semantic leg and the Voyage embed call in front
-   *  of it. Fast mode's flag; see ParseMealDeps.searchFoods for the numbers. */
-  lean = false,
 ): Promise<CandidateFood[]> {
   const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
     if (!Array.isArray(raw)) return [];
@@ -1382,21 +1379,22 @@ async function searchCatalogWithServings(
   // time is max(trigram, embed+semantic), not the sum, and the p_floor=0.50 on
   // the RPC keeps semantic from returning junk near-neighbours - so a genuine
   // catalog miss still returns nothing here and falls through to OFF.
-  // Lean uses the LIKE-only RPC (0111): explain(analyze) put the ranked
-  // function's `<%` word-similarity path at ~942ms of pure CPU for 'milk',
-  // against 29ms for the LIKE tiers on the same index. Fast mode's accept gate
-  // re-judges candidates in code anyway, so the fuzzy ranking bought nothing
-  // there. Smart keeps the ranked function - decide reads its ordering.
+  // The ranked function, always: decide reads its ordering. A LIKE-only variant
+  // (0111 search_foods_fast_with_servings) used to run here for Fast mode,
+  // which could not afford the ranked function's `<%` word-similarity path
+  // (~942ms of CPU for 'milk' against 29ms for the LIKE tiers). Fast makes no
+  // lookup at all since 2026-09-15, so nothing reaches this line but Thorough
+  // and Precise, and both want the ranking.
   const [trigram, semantic] = await Promise.all([
     userClient.rpc(
-      lean ? "search_foods_fast_with_servings" : "search_foods_ranked_with_servings",
+      "search_foods_ranked_with_servings",
       { q: query, lim: 8 },
     )
       .then((res: { data: unknown; error: { message: string } | null }) => {
         if (res.error) console.log("[parse_meal] trigram search error:", res.error.message);
         return (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>;
       }),
-    lean ? Promise.resolve([] as Array<Record<string, unknown>>) : embedQuery(query, admin, userId).then(async (vec) => {
+    embedQuery(query, admin, userId).then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data, error } = await userClient.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -1615,7 +1613,7 @@ function makeParseDeps(
     maxTokens: PARSE_MEAL_MAX_TOKENS,
     timeoutMs: ANTHROPIC_TIMEOUT_MS,
     webSearchEnabled: PARSE_WEB_SEARCH_ENABLED,
-    searchFoods: (q, lean) => searchCatalogWithServings(userClient, admin, userId, q, lean),
+    searchFoods: (q) => searchCatalogWithServings(userClient, admin, userId, q),
     backfillOffFood: (p) => backfillOffFoodRow(admin, p),
     // Only present when configured, so an unconfigured deploy simply never
     // calls FatSecret and the meal resolves from catalog + OFF as before.
