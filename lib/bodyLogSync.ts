@@ -103,8 +103,10 @@ function measurementDb(supabase: SupabaseClient, userId: string): MeasurementDb 
       );
       if (error) throw asBodyLogError(error);
     },
-    async deleteDay(day) {
-      const { error } = await supabase.from('body_measurements').delete().eq('user_id', userId).eq('measured_on', day);
+    async deleteDay(day, keepSites) {
+      let q = supabase.from('body_measurements').delete().eq('user_id', userId).eq('measured_on', day);
+      if (keepSites && keepSites.length > 0) q = q.not('site', 'in', `(${keepSites.join(',')})`);
+      const { error } = await q;
       if (error) throw asBodyLogError(error);
     },
     async loadRows() {

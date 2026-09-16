@@ -40,6 +40,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
+import { useToast } from '@/components/ui/Toast';
 import { bodyFatLog as serverBodyFatLog, localDayISO, weightLog as serverWeightLog } from '@/lib/bodyLogSync';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
@@ -218,6 +219,7 @@ export default function ProfileScreen() {
   const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const { pendingCount } = useSync();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
@@ -429,12 +431,18 @@ export default function ProfileScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clerkLoaded, basicInfoReady, isGuestSession, user?.id, pendingCount, weightUnit]);
 
+  // A load that finishes after the session changed (sign-out, account switch)
+  // must not paint the previous account's entries.
+  const logsIdentity = useRef<string | null>(null);
   const loadLogs = async () => {
     const signedIn = !isGuestSession && !!user?.id;
+    const identity = `${isGuestSession}:${user?.id ?? ''}`;
+    logsIdentity.current = identity;
     const [wl, bfl] = await Promise.all([
       signedIn ? serverWeightLog(supabase, user!.id, weightUnit).load() : loadWeightLog(),
       signedIn ? serverBodyFatLog(supabase, user!.id).load() : loadBodyFatLog(),
     ]);
+    if (logsIdentity.current !== identity) return;
     setWeightLog(wl);
     setBodyFatLog(bfl);
   };
@@ -594,7 +602,11 @@ export default function ProfileScreen() {
       if (!isGuestSession && user?.id) {
         // Signed in: saved on the phone at once, then to daily_metrics.
         const next = await serverWeightLog(supabase, user.id, weightUnit).log(num);
-        if (!next) return; // not a weight yet (a half-typed "7")
+        if (!next) {
+          // Out of what a scale shows. Say so: a silent drop reads as a bug.
+          if (num >= 10) toast.error('That weight looks off. Check the number.');
+          return;
+        }
         setWeightLog(next);
       } else {
         const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
@@ -618,7 +630,10 @@ export default function ProfileScreen() {
       if (!isGuestSession && user?.id) {
         // Signed in: saved on the phone at once, then to daily_metrics.
         const next = await serverBodyFatLog(supabase, user.id).log(num);
-        if (!next) return; // not a body fat a person has (a half-typed "1")
+        if (!next) {
+          if (num >= 2) toast.error('Body fat logs between 2 and 70 percent.');
+          return;
+        }
         setBodyFatLog(next);
       } else {
         const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };

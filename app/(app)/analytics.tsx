@@ -17,6 +17,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
 import { useSupabaseClient } from '@/lib/supabase';
+import { useToast } from '@/components/ui/Toast';
 import { bodyFatLog as serverBodyFatLog, legacyDayOf, localDayISO, measurementLog as serverMeasurementLog, weightLog as serverWeightLog } from '@/lib/bodyLogSync';
 import { roundVolume, abbreviateNumber } from '@/lib/format';
 import { setVolumeKg } from '@/lib/sets';
@@ -1244,6 +1245,7 @@ function get7DayDuration(workouts: WorkoutRaw[]): { data: number[]; labels: stri
 export default function AnalyticsScreen() {
   const { C } = useTheme();
   const { user, isLoaded: clerkLoaded } = useClerkUser();
+  const toast = useToast();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
   const { pendingCount } = useSync();
@@ -1377,10 +1379,14 @@ export default function AnalyticsScreen() {
     () => (signedIn ? serverBodyFatLog(supabase, user!.id).load() : loadBodyFatLog()),
     [signedIn, supabase, user?.id],
   );
+  // A load that finishes after the session changed must not paint the previous
+  // account's entries.
   useEffect(() => {
     if (!clerkLoaded || !basicInfoReady) return;
-    loadWeightSeries().then(setWeightLog).catch(() => {});
-    loadBodyFatSeries().then(setBodyFatLog).catch(() => {});
+    let live = true;
+    loadWeightSeries().then((wl) => { if (live) setWeightLog(wl); }).catch(() => {});
+    loadBodyFatSeries().then((bfl) => { if (live) setBodyFatLog(bfl); }).catch(() => {});
+    return () => { live = false; };
   }, [loadWeightSeries, loadBodyFatSeries, clerkLoaded, basicInfoReady, pendingCount]);
 
   const handleRefresh = useCallback(async () => {
@@ -1496,7 +1502,10 @@ export default function AnalyticsScreen() {
     const filtered = weightLog.filter((e) => localDayISO(new Date(e.date)) !== today);
     if (signedIn) {
       const next = await serverWeightLog(supabase, user!.id, weightUnit).log(v);
-      if (!next) return; // not a weight a scale would show
+      if (!next) {
+        toast.error('That weight looks off. Check the number.');
+        return;
+      }
       track('weight_logged', { source: 'analytics', replaced_today: filtered.length !== weightLog.length, entry_count_after: next.length });
       setWeightLog(next);
       return;
@@ -1524,7 +1533,10 @@ export default function AnalyticsScreen() {
     const filtered = bodyFatLog.filter((e) => localDayISO(new Date(e.date)) !== today);
     if (signedIn) {
       const next = await serverBodyFatLog(supabase, user!.id).log(v);
-      if (!next) return; // not a body fat a person has
+      if (!next) {
+        toast.error('Body fat logs between 2 and 70 percent.');
+        return;
+      }
       track('body_fat_logged', { source: 'analytics', replaced_today: filtered.length !== bodyFatLog.length, entry_count_after: next.length });
       setBodyFatLog(next);
       return;

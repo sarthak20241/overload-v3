@@ -1,6 +1,7 @@
 # Drona Cards Plan (act / request / talk)
 
-Status: PLAN, decisions locked, pre-P0 checks done (one blocker: 11.5). Owner: solo. Last revised: 2026-09-14.
+Status: PLAN, decisions locked, pre-P0 checks done. The 11.5 blocker (body data
+not reaching the server) is FIXED and shipped in this PR; P0 itself is not built. Owner: solo. Last revised: 2026-09-14.
 Branch: `claude/user-plan-disobedience-b282bf`. Nothing built yet.
 
 Drona cards are the proposal system: on a fixed schedule the app reads the
@@ -176,6 +177,13 @@ disk is Sonnet pricing, not memory). So v1 memory is this feature's own:
   long", "scale was not synced, 4 real weigh-ins"). The chat gets a small
   non-terminal tool `close_talk(summary)` for this. The card status goes to
   `done`.
+- Where close_talk WRITES: the ai-coach edge function, with the service role,
+  through one `close_drona_talk(p_card_id, p_summary)` RPC (security definer,
+  execute granted to service_role only). The client never writes the card.
+  The RPC updates exactly one row, only when it belongs to the calling user's
+  card id AND its status is `opened`, and only to `status = 'done'` plus the
+  summary. RLS on the table stays owner-read / owner-status-update, so this is
+  the single privileged path and it cannot move a card to any other state.
 - The reader gets the last 8 cards with status and summary as the memory
   block. Rules read it too (cooldowns, "already asked").
 Later, when general coach memory lands (per-fact rows, `remember_fact`), the
@@ -221,13 +229,21 @@ the next.
 ## 4. Storage
 
 `drona_cards` (new migration):
-- id, user_id (clerk), kind (act|request|talk), topic text, title, body,
+- id, user_id (clerk), kind (act|request|talk|hold), topic text, title, body,
   evidence jsonb (the 2-4 numbers the card shows), payload jsonb (act: the
   validated tool input; request: deep link + behaviour; talk: the seed),
   signals text[], facts jsonb (snapshot), status
   (pending|applied|dismissed|opened|done|expired), week_start date,
+  summary text (2d: what the user said when a talk closed; null otherwise),
+  rejected jsonb (the model output a validator refused, with the reason, so a
+  hold can be audited: a rejected card must never vanish untracked),
   created_at, decided_at, expires_at.
-- Partial unique index: one pending card per user.
+- Unique on (user_id, week_start) for EVERY status, not only pending: the cron
+  and the app-open fallback can race, and a "one pending" rule would let a
+  second card land beside a dismissed one. Generation is a single
+  insert-on-conflict-do-nothing, so the loser of a race writes nothing.
+- One pending card at a time is then a query rule (the newest pending row),
+  not a second index.
 - RLS: owner select + update of status only. Insert by service role (cron)
   and by the app-open fallback path through the edge function.
 - `delete_user_data()` must include it (the function has dropped tables before).
@@ -244,11 +260,22 @@ a server-written row would never show. Same reason the weekly report used
   OWN worker function (11.4: that function already takes ~16 s a run). The
   cron marks users whose local Monday began; the worker drains a few per call.
   One row per user per week_start, so reruns are idempotent.
+- ONE definition of week_start, shared by the worker and the facts RPC: the
+  Monday of the user's local week, from `user_profiles.timezone` (the same
+  column the TODAY pick uses), computed in that zone, never in UTC and never
+  from a client offset. The shared wall-clock helpers in
+  `supabase/functions/_shared/wallClock.ts` already do this for the daily pick;
+  reuse them so the two layers cannot drift and a DST week cannot produce two
+  cards or none.
 - App-open fallback: if no card row exists for this week and the user opens the
   app, the app POSTs `{mode:'app'}` style like the TODAY pick does. Needed
   because HealthKit weight only syncs when the app opens, so a Monday 00:00
   run can see stale weight for a user who was away. The fallback runs after
-  the foreground health sync.
+  the foreground body-log flush and health sync, and ONLY when that flush
+  reported everything uploaded (`flushBodyLogsOnOpen` must return the remaining
+  count for this). With entries still waiting on the phone the server's weight
+  is knowingly stale, and a weight-dependent card would be wrong; hold instead
+  and let the next open try.
 - Daily cards (readiness today, "you skipped yesterday's log") are v2. They
   need a phone-side trigger because readiness is computed on the phone.
 - Push notification: none exists (see project_today_suggestion). Later.
@@ -424,7 +451,7 @@ which is the UTC day, not the local day.
 log, and the Analytics chart reads the server series. Measurements and body
 fat stay device-only for now; the pipeline cannot use them until they move.
 
-**11.5 update (2026-09-15): weight FIXED in the worktree, not committed.**
+**11.5 update (2026-09-15): weight FIXED and committed in this PR (#173).**
 `lib/bodyweightLog.ts` (pure rules + sync core, 15 Deno tests, each rule
 proven to fail without its fix) and `lib/bodyweightSync.ts` (AsyncStorage +
 Supabase binding). Signed-in weigh-ins on Profile and Analytics save on the

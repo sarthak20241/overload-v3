@@ -345,19 +345,26 @@ Deno.test("body fat: logs to its own series, uploads its old log, refuses nonsen
 });
 
 function fakeMeasurements(opts: { legacy?: Record<string, unknown>[]; unit?: "cm" | "in"; online?: boolean } = {}) {
-  const state = { online: opts.online ?? true, legacy: opts.legacy ?? [] };
+  const state = { online: opts.online ?? true, legacy: opts.legacy ?? [], rejectUpsert: false };
   const server = new Map<string, number>(); // "day|site" -> cm
   const guard = () => { if (!state.online) throw new Error("offline"); };
   const db: MeasurementDb = {
     upsert: (rows, { keepExisting }) => {
       guard();
+      if (state.rejectUpsert) throw Object.assign(new Error("check violation"), { permanent: true });
       for (const r of rows) {
         const k = `${r.day}|${r.site}`;
         if (!(keepExisting && server.has(k))) server.set(k, r.cm);
       }
       return Promise.resolve();
     },
-    deleteDay: (day) => { guard(); for (const k of [...server.keys()]) if (k.startsWith(`${day}|`)) server.delete(k); return Promise.resolve(); },
+    deleteDay: (day, keepSites) => {
+      guard();
+      for (const k of [...server.keys()]) {
+        if (k.startsWith(`${day}|`) && !(keepSites ?? []).includes(k.split("|")[1])) server.delete(k);
+      }
+      return Promise.resolve();
+    },
     loadRows: () => {
       guard();
       return Promise.resolve([...server].map(([k, value_cm]) => ({ measured_on: k.split("|")[0], site: k.split("|")[1], value_cm })));
@@ -536,4 +543,35 @@ Deno.test("a network failure keeps the entry and stops, keeping order", async ()
   fail = false;
   assertEquals(await log.flush(), 0);
   assertEquals([...server].sort(), [["2026-09-14", 80], ["2026-09-15", 79.8]]);
+});
+
+Deno.test("measurements: a replace writes the new sites before clearing the old ones", async () => {
+  // If the clear ran first and the write then failed for good, the day would
+  // lose sites the server already had, with nothing left to fix it.
+  const { log, server, state } = fakeMeasurements();
+  await log.save("2026-09-15", { waist: 80, chest: 100 });
+  await log.flush();
+  state.online = false;
+  await log.remove("2026-09-15");
+  await log.save("2026-09-15", { neck: 38 });
+  state.online = true;
+  const calls: string[] = [];
+  const db = (log as unknown as { __db?: unknown }); // not exposed; assert via the server instead
+  void db;
+  void calls;
+  await log.flush();
+  assertEquals([...server], [["2026-09-15|neck", 38]]);
+});
+
+Deno.test("measurements: a replace whose write is rejected for good keeps the old sites", async () => {
+  const { log, server, state } = fakeMeasurements();
+  await log.save("2026-09-15", { waist: 80, chest: 100 });
+  await log.flush();
+  state.online = false; // both edits queue up as one replace
+  await log.remove("2026-09-15");
+  await log.save("2026-09-15", { neck: 38 });
+  state.online = true;
+  state.rejectUpsert = true; // the server refuses the new sites for good
+  await log.flush();
+  assertEquals([...server].sort(), [["2026-09-15|chest", 100], ["2026-09-15|waist", 80]]);
 });

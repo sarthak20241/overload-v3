@@ -610,7 +610,8 @@ export function bodyFatLog(d: {
 /** The server side of body_measurements, already scoped to one user. */
 export interface MeasurementDb {
   upsert(rows: SiteRow[], opts: { keepExisting: boolean }): Promise<void>;
-  deleteDay(day: string): Promise<void>;
+  /** Clears the day. `keepSites` leaves those sites in place. */
+  deleteDay(day: string, keepSites?: string[]): Promise<void>;
   loadRows(): Promise<MeasurementRow[]>;
 }
 
@@ -635,11 +636,16 @@ export function measurementLog(d: {
     store: d.store,
     combine: withPendingMeasurement,
     async push(p) {
-      if (p.sites == null || p.replace) await d.db.deleteDay(p.day);
-      if (p.sites != null) {
-        const rows = sitesToRows(p.day, p.sites);
-        if (rows.length > 0) await d.db.upsert(rows, { keepExisting: false });
+      if (p.sites == null) {
+        await d.db.deleteDay(p.day);
+        return;
       }
+      // Write the new sites FIRST, then clear the day's others. Clearing first
+      // would lose sites the server already had if the write then failed for
+      // good (a permanent failure drops the entry, so nothing would fix it).
+      const rows = sitesToRows(p.day, p.sites);
+      if (rows.length > 0) await d.db.upsert(rows, { keepExisting: false });
+      if (p.replace) await d.db.deleteDay(p.day, rows.map((r) => r.site));
     },
     async uploadLegacy() {
       const days = legacyMeasurementsToDays(await d.legacy.load(), d.unit);
