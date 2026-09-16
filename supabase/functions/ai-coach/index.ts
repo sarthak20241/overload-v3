@@ -114,9 +114,6 @@ const PARSE_MEAL_MAX_TOKENS = 5000;
 let PARSE_ISOLATE_REQUESTS = 0;
 const PARSE_RATE_LIMIT_MAX = 40;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
-// Fast Lane A. Shadow by default: measure the grammar against extract on real
-// traffic before letting it replace the call.
-const PARSE_FAST_GRAMMAR = (Deno.env.get("PARSE_FAST_GRAMMAR") ?? "shadow") as "off" | "shadow" | "on";
 // Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
 // server never routes anyone to fast on its own.
 // Phase 7b: the precise-cache read short-circuit. Default ON, env kill-switch
@@ -1661,7 +1658,6 @@ function makeParseDeps(
       }
       : undefined,
     skipDecideMode: PARSE_SKIP_DECIDE,
-    fastGrammarMode: PARSE_FAST_GRAMMAR,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
         voyageRerank(VOYAGE_API_KEY, q, docs, fetch, (m) => console.log(m))

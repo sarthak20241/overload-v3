@@ -108,7 +108,7 @@ function stubDeps(
 ): ParseMealDeps {
   return {
     anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000,
-    webSearchEnabled: true, fastGrammarMode: "off",
+    webSearchEnabled: true,
     searchFoods: async () => [], backfillOffFood: async () => null,
     getFoodPer100: async () => null, getFoodServings: async () => [],
     preciseCachePut: async (row) => {
