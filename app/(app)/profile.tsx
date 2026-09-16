@@ -434,9 +434,13 @@ export default function ProfileScreen() {
   // Stored kg in, display-unit text out. A cleared goal (null/0) goes to
   // context too, else it stays stale. The unit comes from a ref, not the
   // render's value: loadProfile's closure can outlive a unit change (the saved
-  // unit loads after the profile request started).
+  // unit loads after the profile request started). The ref moves after the
+  // commit, never during a render: a render React throws away must not leave
+  // behind a unit no committed screen is showing.
   const weightUnitRef = useRef(weightUnit);
-  weightUnitRef.current = weightUnit;
+  useEffect(() => {
+    weightUnitRef.current = weightUnit;
+  }, [weightUnit]);
   const applyWeights = (w: number | string | null | undefined, g: number | string | null | undefined) => {
     const unit = weightUnitRef.current;
     const wKg = Number(w) > 0 ? Number(w) : null;
@@ -606,8 +610,11 @@ export default function ProfileScreen() {
   const scheduleWeightLog = (v: string) => {
     if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
     weightLogTimer.current = setTimeout(async () => {
+      // The same gate the saved weight goes through, so the history and
+      // user_profiles.weight_kg cannot disagree: a "5" left standing on the way
+      // to "75" is not a weigh-in.
+      if (!parseWeightInput(v, weightUnit)?.kg) return;
       const num = parseFloat(v);
-      if (isNaN(num) || num <= 0) return;
       const today = new Date().toISOString().slice(0, 10);
       const entry: WeightEntry = { date: new Date().toISOString(), weight: num, unit: weightUnit };
       const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
