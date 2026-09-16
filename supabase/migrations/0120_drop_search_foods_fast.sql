@@ -1,6 +1,9 @@
--- DRAFT, NOT APPLIED. Do not run this against the live database without
--- Sarthak's say-so; apply it through the Supabase MCP like every other
--- migration in this project (never `db push`).
+-- APPLY ONLY AFTER ai-coach IS DEPLOYED FROM THIS BRANCH. The deployed
+-- function is the real caller, not the repo: on 2026-09-16 live ai-coach was
+-- v163 (= commit 78f8f66, pre-#176) and still selected the fast RPC on every
+-- Quick parse while the repo already had no caller. Deploy first, confirm the
+-- new bundle is live, then run this. Apply through the Supabase MCP like every
+-- other migration in this project (never `db push`).
 --
 -- WHY: 0111 added a LIKE-only pair of search functions for Quick mode. The
 -- ranked function's `<%` word-similarity path cost ~942ms of CPU for 'milk'
