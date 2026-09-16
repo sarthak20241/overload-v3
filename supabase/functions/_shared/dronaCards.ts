@@ -136,6 +136,48 @@ export function weekStartOf(localDay: string): string | null {
   return new Date(utc - back * 86_400_000).toISOString().slice(0, 10);
 }
 
+/** Whole days from one YYYY-MM-DD to another, or null when unreadable. */
+function daysBetween(from: string, to: string): number | null {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.round((b - a) / 86_400_000) : null;
+}
+
+/**
+ * The card the phone should show, from the user's newest cards.
+ *
+ * The SERVER decides which week a card belongs to, from the time zone saved on
+ * the profile. The phone must not re-derive it from its own clock: after a
+ * flight the two disagree around Sunday midnight, and the phone would look for
+ * a week the server never wrote (and ask for a second card). So the phone takes
+ * the newest card whose week is within 7 days either side of its own week, and
+ * treats "none in that window" as the only reason to ask for one.
+ *
+ * Returns the card (whatever its status) or null. `rows` newest first or not.
+ */
+export function pickCurrentCard<T extends { week_start: string }>(rows: T[] | null | undefined, deviceDay: string): T | null {
+  const deviceWeek = weekStartOf(deviceDay);
+  if (!deviceWeek) return null;
+  let best: T | null = null;
+  for (const row of rows ?? []) {
+    const gap = daysBetween(deviceWeek, row?.week_start ?? '');
+    if (gap == null || Math.abs(gap) > 7) continue;
+    if (!best || row.week_start > best.week_start) best = row;
+  }
+  return best;
+}
+
+/**
+ * Where a card's button goes, by its action. The phone maps the action itself
+ * rather than trusting a stored route, so a renamed screen can never strand a
+ * card that was written before the rename.
+ */
+export const ACTION_ROUTES: Record<string, string> = {
+  log_weight: '/(app)/analytics',
+  log_food: '/(app)/nutrition',
+  // start_session has no route: the dashboard opens today's session preview.
+};
+
 export type CardKind = 'request' | 'notice' | 'hold';
 
 export interface DronaCard {
@@ -212,7 +254,7 @@ export function decideCard(facts: DronaFacts, signals: DronaSignals = signalsFro
         title: 'Your plan is waiting',
         body: 'One session this week puts the block back in motion. Start with what is due.',
         evidence: [{ label: 'Days since your last session', value: String(days ?? 0) }],
-        payload: { action: 'start_session', route: '/(app)' },
+        payload: { action: 'start_session' },
         signals: ['no_training'],
       });
     }
@@ -234,7 +276,7 @@ export function decideCard(facts: DronaFacts, signals: DronaSignals = signalsFro
         title: 'Log what you eat for a few days',
         body: 'Without food days I cannot tie the scale to your intake. Five days this week is plenty.',
         evidence: [{ label: 'Days logged in 14', value: String(n(f.days_logged_14d) ?? 0) }],
-        payload: { action: 'log_food', route: '/(app)/diet' },
+        payload: { action: 'log_food', route: '/(app)/nutrition' },
         signals: ['food_none'],
       });
     }
@@ -256,7 +298,7 @@ export function decideCard(facts: DronaFacts, signals: DronaSignals = signalsFro
         title: 'Log food a little more often',
         body: 'A few more days and I can tell whether your intake is moving the scale, or your logging is.',
         evidence: [{ label: 'Days logged in 14', value: String(n(f.days_logged_14d) ?? 0) }],
-        payload: { action: 'log_food', route: '/(app)/diet' },
+        payload: { action: 'log_food', route: '/(app)/nutrition' },
         signals: ['food_sparse'],
       });
     }
@@ -270,7 +312,7 @@ export function decideCard(facts: DronaFacts, signals: DronaSignals = signalsFro
           { label: 'Sessions in 14 days', value: String(sessions) },
           { label: 'Plan asked for', value: String(planned) },
         ],
-        payload: { action: 'start_session', route: '/(app)' },
+        payload: { action: 'start_session' },
         signals: ['sessions_missed'],
       });
     }

@@ -33,6 +33,7 @@ import {
   currentWeekStart, readWeeklyCard, requestWeeklyCard, setCardStatus,
   type SavedDronaCard,
 } from '@/lib/dronaCard';
+import { ACTION_ROUTES } from '@/lib/dronaRules';
 import { todayReason } from '@/lib/todayReason';
 import { pickUpNext, resolveToday, type PickProgram } from '@/lib/todayPick';
 import { deviceTimeZone, localDayISO, readSavedSuggestion, requestSuggestion, type SavedSuggestion } from '@/lib/dailySuggestion';
@@ -497,9 +498,11 @@ export default function DashboardScreen() {
       return;
     }
     let live = true;
+    // Only the request guard uses the phone's week; which card is current is
+    // the server's call (readWeeklyCard -> pickCurrentCard).
     const week = currentWeekStart();
     (async () => {
-      const row = await readWeeklyCard(supabase, clerkId, week);
+      const row = await readWeeklyCard(supabase, clerkId);
       if (!live) return;
       if (row !== undefined) setWeeklyCard(row);
       if (row && row.status === 'pending') track('drona_card_shown', { kind: row.kind, topic: row.topic });
@@ -520,11 +523,19 @@ export default function DashboardScreen() {
 
   const handleCardAct = () => {
     if (!weeklyCard) return;
-    track('drona_card_acted', { kind: weeklyCard.kind, topic: weeklyCard.topic });
-    const route = weeklyCard.payload.route;
+    const action = weeklyCard.payload.action;
+    track('drona_card_acted', { kind: weeklyCard.kind, topic: weeklyCard.topic, action: action ?? null });
     setWeeklyCard(null);
     void setCardStatus(supabase, weeklyCard.id, 'applied');
-    if (route && route !== '/(app)') router.push(route as any);
+    if (action === 'start_session') {
+      // The session that is due is exactly what the TODAY card opens.
+      handleTodayPress();
+      return;
+    }
+    // Route by action, never by a stored path: a renamed screen must not strand
+    // a card written before the rename.
+    const route = action ? ACTION_ROUTES[action] : undefined;
+    if (route) router.push(route as any);
   };
 
   const handleCardDismiss = () => {

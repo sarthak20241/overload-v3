@@ -5,7 +5,7 @@
 // trust than a missed one earns. So most of these pin silence.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "./dronaCards.ts";
+import { ACTION_ROUTES, decideCard, type DronaFacts, onCooldown, pickCurrentCard, signalsFrom, weekStartOf } from "./dronaCards.ts";
 
 /** A settled user: months in, training to plan, logging food and weight. */
 function steady(over: Partial<DronaFacts> = {}): DronaFacts {
@@ -142,4 +142,39 @@ Deno.test("weekStartOf gives the Monday of that local week", () => {
   assertEquals(weekStartOf("2026-01-01"), "2025-12-29"); // across a year end
   assertEquals(weekStartOf("2026-03-29"), "2026-03-23"); // a DST changeover Sunday
   assertEquals(weekStartOf("nope"), null);
+});
+
+Deno.test("traveller: the phone shows the server's card when the two clocks straddle Monday", () => {
+  // Profile zone India: the server already wrote Monday 21 Sep's card. The phone,
+  // now in New York, still reads Sunday 20 Sep, which is the week of the 14th.
+  const rows = [
+    { week_start: "2026-09-21", topic: "weigh_in" },
+    { week_start: "2026-09-14", topic: "log_food" },
+  ];
+  assertEquals(pickCurrentCard(rows, "2026-09-20")?.week_start, "2026-09-21");
+  // And the other way: the server still on last week, the phone already on Monday.
+  assertEquals(pickCurrentCard([{ week_start: "2026-09-14" }], "2026-09-21")?.week_start, "2026-09-14");
+});
+
+Deno.test("an old card is not current, so the phone may ask for this week's", () => {
+  assertEquals(pickCurrentCard([{ week_start: "2026-08-31" }], "2026-09-16"), null);
+  assertEquals(pickCurrentCard([], "2026-09-16"), null);
+  assertEquals(pickCurrentCard([{ week_start: "nope" }], "2026-09-16"), null);
+});
+
+Deno.test("every request card's action has somewhere to go, and food goes to nutrition", () => {
+  const acts = new Set<string>();
+  const cases: Partial<DronaFacts>[] = [
+    { weight: { weigh_ins_14d: 0, weigh_ins_28d: 0 } },
+    { nutrition: { days_logged_14d: 0, target_kcal: 2250 } },
+    { training: { sessions_14d: 0, planned_14d: 8, days_since_last_session: 20 } },
+  ];
+  for (const c of cases) {
+    const card = decideCard(steady(c));
+    if (card.payload.action) acts.add(card.payload.action);
+  }
+  assertEquals([...acts].sort(), ["log_food", "log_weight", "start_session"]);
+  assertEquals(ACTION_ROUTES.log_food, "/(app)/nutrition");
+  assertEquals(ACTION_ROUTES.log_weight, "/(app)/analytics");
+  assertEquals("start_session" in ACTION_ROUTES, false); // handled on the dashboard itself
 });

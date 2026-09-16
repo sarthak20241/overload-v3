@@ -9,7 +9,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabaseAccessToken } from '@/lib/supabase';
 import { localDayISO } from '@/lib/dailySuggestion';
-import { weekStartOf } from '@/lib/dronaRules';
+import { pickCurrentCard, weekStartOf } from '@/lib/dronaRules';
 
 export type DronaCardKind = 'request' | 'notice' | 'act' | 'talk';
 export type DronaCardStatus = 'pending' | 'applied' | 'dismissed' | 'opened' | 'done' | 'expired' | 'held';
@@ -50,23 +50,25 @@ const asCard = (row: any): SavedDronaCard | null =>
     : null;
 
 /**
- * This week's card. `undefined` = the read failed (offline, or the table is not
- * there yet): do not treat that as "no card", or every blip re-requests.
+ * The current card: the newest one within a week either side of the phone's
+ * own week (see pickCurrentCard for why the phone must not insist on its own).
+ * `undefined` = the read failed (offline, or the table is not there yet): do
+ * not treat that as "no card", or every blip re-requests.
  */
 export async function readWeeklyCard(
   supabase: SupabaseClient,
   clerkId: string,
-  weekStart: string,
+  now: Date = new Date(),
 ): Promise<SavedDronaCard | null | undefined> {
   try {
     const { data, error } = await supabase
       .from('drona_cards')
       .select('id, week_start, kind, topic, title, body, evidence, payload, status')
       .eq('user_id', clerkId)
-      .eq('week_start', weekStart)
-      .maybeSingle();
+      .order('week_start', { ascending: false })
+      .limit(3);
     if (error) return undefined;
-    return asCard(data);
+    return asCard(pickCurrentCard(data ?? [], localDayISO(now)));
   } catch {
     return undefined;
   }
