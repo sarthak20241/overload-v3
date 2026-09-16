@@ -121,6 +121,21 @@ export function signalsFrom(facts: DronaFacts): DronaSignals {
   };
 }
 
+/**
+ * The Monday of a local day's week, as YYYY-MM-DD. The worker and the facts
+ * function must agree on this: two definitions would give one user two cards in
+ * a week, or none. Built from the date parts only, so no zone or DST shift can
+ * move it.
+ */
+export function weekStartOf(localDay: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDay ?? '');
+  if (!m) return null;
+  const utc = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  const weekday = new Date(utc).getUTCDay(); // 0 Sunday .. 6 Saturday
+  const back = (weekday + 6) % 7; // days since Monday
+  return new Date(utc - back * 86_400_000).toISOString().slice(0, 10);
+}
+
 export type CardKind = 'request' | 'notice' | 'hold';
 
 export interface DronaCard {

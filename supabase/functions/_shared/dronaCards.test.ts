@@ -5,7 +5,7 @@
 // trust than a missed one earns. So most of these pin silence.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { decideCard, type DronaFacts, onCooldown, signalsFrom } from "./dronaCards.ts";
+import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "./dronaCards.ts";
 
 /** A settled user: months in, training to plan, logging food and weight. */
 function steady(over: Partial<DronaFacts> = {}): DronaFacts {
@@ -133,4 +133,13 @@ Deno.test("a card always carries a signal name and its evidence", () => {
   assertEquals(card.signals, ["weight_goal", "weight_none"]);
   assertEquals(card.evidence.length > 0 && card.body.length > 0 && card.title.length > 0, true);
   assertEquals(card.body.includes("—"), false); // no em dashes in user-facing copy
+});
+
+Deno.test("weekStartOf gives the Monday of that local week", () => {
+  assertEquals(weekStartOf("2026-09-16"), "2026-09-14"); // Wednesday
+  assertEquals(weekStartOf("2026-09-14"), "2026-09-14"); // Monday itself
+  assertEquals(weekStartOf("2026-09-13"), "2026-09-07"); // Sunday belongs to the week before
+  assertEquals(weekStartOf("2026-01-01"), "2025-12-29"); // across a year end
+  assertEquals(weekStartOf("2026-03-29"), "2026-03-23"); // a DST changeover Sunday
+  assertEquals(weekStartOf("nope"), null);
 });

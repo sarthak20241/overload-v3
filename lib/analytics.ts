@@ -126,6 +126,10 @@ export type AnalyticsEvent =
   | 'routine_deleted'
   | 'routine_sync_answered'
   | 'today_suggestion_tapped'
+  // Drona's weekly card (P0: request + notice).
+  | 'drona_card_shown'
+  | 'drona_card_acted'
+  | 'drona_card_dismissed'
   | 'today_up_next_tapped'
   | 'today_suggestion_requested'
   | 'history_workout_edit_opened'

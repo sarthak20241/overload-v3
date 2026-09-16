@@ -28,6 +28,11 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
+import { DronaCardView } from '@/components/coach/DronaCardView';
+import {
+  currentWeekStart, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  type SavedDronaCard,
+} from '@/lib/dronaCard';
 import { todayReason } from '@/lib/todayReason';
 import { pickUpNext, resolveToday, type PickProgram } from '@/lib/todayPick';
 import { deviceTimeZone, localDayISO, readSavedSuggestion, requestSuggestion, type SavedSuggestion } from '@/lib/dailySuggestion';
@@ -415,6 +420,11 @@ export default function DashboardScreen() {
   // or was made from a plan that has since changed (a new program, a split just
   // built, a workout that synced late), the app asks for a new one and the card
   // says it is setting up. Offline or on any failure, the phone picks itself.
+  // The week's Drona card (P0: a request or a notice). Read once per week;
+  // asked for only when the week has none, at most once per app run, and never
+  // for a guest.
+  const [weeklyCard, setWeeklyCard] = useState<SavedDronaCard | null>(null);
+  const requestedWeeks = useRef(new Set<string>());
   const [savedPick, setSavedPick] = useState<SavedSuggestion | null>(null);
   const [savedRead, setSavedRead] = useState(false);
   const [requestingPick, setRequestingPick] = useState(false);
@@ -479,6 +489,50 @@ export default function DashboardScreen() {
       })
       .finally(() => setRequestingPick(false));
   }, [today.needsRequest, today.basis, user?.id, requestingPick, savedPick]);
+
+  useEffect(() => {
+    const clerkId = user?.id;
+    if (isGuestSession || !clerkId) {
+      setWeeklyCard(null);
+      return;
+    }
+    let live = true;
+    const week = currentWeekStart();
+    (async () => {
+      const row = await readWeeklyCard(supabase, clerkId, week);
+      if (!live) return;
+      if (row !== undefined) setWeeklyCard(row);
+      if (row && row.status === 'pending') track('drona_card_shown', { kind: row.kind, topic: row.topic });
+      // undefined = the read failed. Leave it: a blip must not trigger a
+      // request, and the card can wait for the next open.
+      if (row === null && !requestedWeeks.current.has(`${clerkId}|${week}`)) {
+        requestedWeeks.current.add(`${clerkId}|${week}`);
+        const made = await requestWeeklyCard(deviceTimeZone());
+        if (live && made) {
+          setWeeklyCard(made);
+          if (made.status === 'pending') track('drona_card_shown', { kind: made.kind, topic: made.topic });
+        }
+      }
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGuestSession, user?.id, focusTick]);
+
+  const handleCardAct = () => {
+    if (!weeklyCard) return;
+    track('drona_card_acted', { kind: weeklyCard.kind, topic: weeklyCard.topic });
+    const route = weeklyCard.payload.route;
+    setWeeklyCard(null);
+    void setCardStatus(supabase, weeklyCard.id, 'applied');
+    if (route && route !== '/(app)') router.push(route as any);
+  };
+
+  const handleCardDismiss = () => {
+    if (!weeklyCard) return;
+    track('drona_card_dismissed', { kind: weeklyCard.kind, topic: weeklyCard.topic });
+    setWeeklyCard(null);
+    void setCardStatus(supabase, weeklyCard.id, 'dismissed');
+  };
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
   //   preparing -> no saved pick yet and the server is making it
@@ -836,6 +890,14 @@ export default function DashboardScreen() {
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
           <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
         </View>
+
+        {/* Drona's weekly card (P0: a request or a notice). Under TODAY, which
+            is still the day's action; this one is the week talking. */}
+        {weeklyCard && weeklyCard.status === 'pending' && (
+          <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
+            <DronaCardView card={weeklyCard} onAct={handleCardAct} onDismiss={handleCardDismiss} />
+          </View>
+        )}
 
         {/* AI Coach Hero Card */}
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
