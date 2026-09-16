@@ -50,6 +50,12 @@ Deno.test("clearing the field clears the saved value", () => {
   assertEquals(parseWeightInput("  ", "kg"), { kg: null });
 });
 
+Deno.test("a comma decimal reads as a decimal, not as a whole number", () => {
+  // An Android numeric keypad shows a comma in many locales. parseFloat("75,5")
+  // gives 75, so the weight log and the saved weight would disagree.
+  assertEquals(parseWeightInput("75,5", "kg"), { kg: 75.5 });
+});
+
 Deno.test("a half-typed or unreadable value is not saved", () => {
   // "7" on the way to "75": saving it would store a 7 kg person.
   assertEquals(parseWeightInput("7", "kg"), null);

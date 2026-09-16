@@ -40,7 +40,7 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
-import { formatWeight, parseWeightInput, weightLogInUnit } from '@/lib/weightUnit';
+import { formatWeight, fromKg, parseWeightInput, weightLogInUnit } from '@/lib/weightUnit';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
@@ -610,11 +610,13 @@ export default function ProfileScreen() {
   const scheduleWeightLog = (v: string) => {
     if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
     weightLogTimer.current = setTimeout(async () => {
-      // The same gate the saved weight goes through, so the history and
-      // user_profiles.weight_kg cannot disagree: a "5" left standing on the way
-      // to "75" is not a weigh-in.
-      if (!parseWeightInput(v, weightUnit)?.kg) return;
-      const num = parseFloat(v);
+      // The same gate AND the same number the saved weight goes through, so the
+      // history and user_profiles.weight_kg cannot disagree: a "5" left standing
+      // on the way to "75" is not a weigh-in, and a comma decimal ("75,5" on an
+      // Android keypad) must not log 75 against a saved 75.5.
+      const kg = parseWeightInput(v, weightUnit)?.kg;
+      if (!kg) return;
+      const num = fromKg(kg, weightUnit);
       const today = new Date().toISOString().slice(0, 10);
       const entry: WeightEntry = { date: new Date().toISOString(), weight: num, unit: weightUnit };
       const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
