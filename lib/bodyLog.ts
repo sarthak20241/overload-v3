@@ -48,10 +48,13 @@ export function dayToEntryDate(day: string): string {
 
 /**
  * The day an old device entry belongs to, or null when its date is unreadable.
- * Weight and body fat entries stored the moment they were typed, so their day
- * is the local day of that moment. The measurements drawer stored a PICKED
- * calendar date as UTC midnight (`new Date('2026-09-15').toISOString()`), and
- * that string's own date is the day the user chose.
+ * Two shapes live here. Weight and body fat entries stored the MOMENT they
+ * were typed, so their day is the local day of that moment. The measurements
+ * drawer stored a PICKED calendar date as UTC midnight
+ * (`new Date('2026-09-15').toISOString()`), and that string's own date is the
+ * day the user chose. The exact-midnight test is really the measurement case;
+ * it is harmless for the others because a typed moment landing on
+ * 00:00:00.000Z to the millisecond does not happen.
  */
 export function legacyDayOf(iso: string | null | undefined): string | null {
   if (!iso) return null;

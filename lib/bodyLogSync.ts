@@ -115,7 +115,10 @@ function measurementDb(supabase: SupabaseClient, userId: string): MeasurementDb 
         .select('measured_on, site, value_cm')
         .eq('user_id', userId)
         .order('measured_on', { ascending: false })
-        .limit(5000);
+        // Newest first, so a very long history loses its OLDEST days from the
+        // chart rather than the recent ones. 13 sites a day reaches this in
+        // about four years; paging it is a later problem, not a silent one.
+        .limit(20000);
       if (error) throw asBodyLogError(error);
       return data ?? [];
     },
