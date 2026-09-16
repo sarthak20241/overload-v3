@@ -4,6 +4,7 @@ import { loadBasicInfo, saveBasicInfo } from '@/lib/bodyStats';
 type WeightUnit = 'kg' | 'lbs';
 
 interface BasicInfoContextType {
+  /** Kilograms, like user_profiles.goal_weight_kg. Convert with lib/weightUnit to show it. */
   goalWeight: number | null;
   weightUnit: WeightUnit;
   ready: boolean;

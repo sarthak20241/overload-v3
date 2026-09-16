@@ -97,6 +97,77 @@ export function fromCm(cm: number, unit: LengthUnit): number {
   return round1(unit === 'in' ? cm / CM_PER_IN : cm);
 }
 
+// The Profile screen's weight and goal fields (user_profiles.weight_kg and
+// goal_weight_kg, both kilograms) and the device weight log in lib/bodyStats.ts,
+// which guests still keep. The kg/lbs switch used to be a label there too.
+
+/**
+ * A stored weight as the text for an input in the user's unit. Empty when
+ * nothing is saved. PostgREST can send numeric columns as strings.
+ */
+export function formatWeight(kg: number | string | null | undefined, unit: WeightUnit): string {
+  const n = Number(kg);
+  if (kg == null || !Number.isFinite(n) || n <= 0) return '';
+  return String(fromKg(n, unit));
+}
+
+/**
+ * What to save for the text in a weight input. `{ kg: null }` clears the
+ * value (the field is empty); `null` means do not save (a half-typed "7" or
+ * something that is not a number).
+ */
+export function parseWeightInput(text: string, unit: WeightUnit): { kg: number | null } | null {
+  if (text.trim() === '') return { kg: null };
+  const kg = toKg(Number(text.trim().replace(',', '.')), unit);
+  return kg == null ? null : { kg };
+}
+
+// ─── The device weight log ──────────────────────────────────────────────────
+// lib/bodyStats.ts keeps a weight history on the phone (guests, and every user
+// until the daily_metrics series lands). Each entry is the number as typed; it
+// used to carry no unit, so a switch from lbs to kg read 180 lbs as 180 kg and
+// the goal bar showed 92% done for someone who had not moved.
+
+/** A history entry and the unit its number was typed in. */
+export interface UnitWeightEntry {
+  date: string;
+  weight: number;
+  unit?: WeightUnit;
+}
+
+/**
+ * The log with every weight in `unit`. An entry typed in the other unit goes
+ * through kilograms at the same rounding as the Profile field, so the history
+ * and the field agree (180 lbs shows as 81.7 kg in both). An entry with no unit
+ * is taken as already in `unit`; stampLegacyUnits gives old entries one.
+ */
+export function weightLogInUnit<T extends UnitWeightEntry>(log: T[] | null | undefined, unit: WeightUnit): T[] {
+  return (log ?? []).map((e) => {
+    if (!e.unit || e.unit === unit) return e;
+    const kg = round2(e.unit === 'lbs' ? e.weight * KG_PER_LB : e.weight);
+    return { ...e, weight: fromKg(kg, unit), unit };
+  });
+}
+
+/**
+ * Gives entries saved before units were recorded the unit in use now, the best
+ * guess available (the log never said). Done once: `changed` tells the caller
+ * to save it back, after which a unit switch converts them like any other.
+ */
+export function stampLegacyUnits<T extends UnitWeightEntry>(
+  log: T[] | null | undefined,
+  unit: WeightUnit,
+): { log: T[]; changed: boolean } {
+  if (!Array.isArray(log)) return { log: [], changed: false };
+  let changed = false;
+  const out = log.map((e) => {
+    if (e.unit === 'kg' || e.unit === 'lbs') return e;
+    changed = true;
+    return { ...e, unit };
+  });
+  return { log: out, changed };
+}
+
 // ─── Day series (weight, body fat) ───────────────────────────────────────────
 
 export interface DayValue {
