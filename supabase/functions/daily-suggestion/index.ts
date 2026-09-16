@@ -106,53 +106,61 @@ async function generate(
 async function runCron(): Promise<Response> {
   const db = admin();
   const now = new Date();
-  // PostgREST caps a read at 1000 rows: page through, or users past the first
-  // thousand silently never get a midnight pick.
-  const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
-  for (let from = 0; ; from += USER_PAGE) {
-    const { data, error } = await retried(() => db.from("user_profiles")
-      .select("clerk_user_id, timezone").not("timezone", "is", null)
-      .order("clerk_user_id", { ascending: true })
-      .range(from, from + USER_PAGE - 1));
-    if (error) return json({ error: error.message, stage: "users" }, 500);
-    users.push(...(data ?? []));
-    if (!data || data.length < USER_PAGE) break;
-  }
-
-  const todays = users
-    .filter((u) => u.clerk_user_id && isTimeZone(u.timezone))
-    .map((u) => ({ userId: u.clerk_user_id as string, tz: u.timezone as string, day: wallClock(now, u.timezone as string)!.slice(0, 10) }));
-
-  // Who already has a pick for their current day (made by the app, or an earlier run).
-  const days = [...new Set(todays.map((t) => t.day))];
-  const have = new Set<string>();
-  if (days.length > 0) {
-    for (let from = 0; ; from += USER_PAGE) {
-      const { data: rows, error: rowsErr } = await retried(() => db.from("daily_suggestions").select("user_id, day")
-        .in("day", days).order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1));
-      if (rowsErr) return json({ error: rowsErr.message, stage: "existing" }, 500);
-      for (const r of rows ?? []) have.add(`${r.user_id}|${r.day}`);
-      if (!rows || rows.length < USER_PAGE) break;
-    }
-  }
-  const due = todays.filter((t) => !have.has(`${t.userId}|${t.day}`));
-
-  let saved = 0;
-  const failures: string[] = [];
-  for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
-    const batch = due.slice(i, i + CRON_CONCURRENCY);
-    const results = await Promise.all(batch.map((t) => generate(db, t.userId, t.tz, now, "cron")));
-    results.forEach((r, j) => {
-      if (r.saved) saved += 1;
-      else failures.push(`${batch[j].userId.slice(0, 12)}: ${r.error ?? "not saved"}`);
-    });
-  }
-
+  // The prune touches only days long past, so it runs beside the reads instead
+  // of adding one more round trip (and its retries) to the end of every run.
   const cutoff = new Date(now.getTime() - KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
-  const prune = await retried(() => db.from("daily_suggestions").delete().lt("day", cutoff));
-  if (prune.error) console.error("[daily-suggestion] prune failed:", prune.error.message);
+  const prune = retried(() => db.from("daily_suggestions").delete().lt("day", cutoff));
 
-  return json({ users: todays.length, due: due.length, saved, failures: failures.slice(0, 20) });
+  try {
+    // PostgREST caps a read at 1000 rows: page through, or users past the first
+    // thousand silently never get a midnight pick.
+    const users: { clerk_user_id: string | null; timezone: string | null }[] = [];
+    for (let from = 0; ; from += USER_PAGE) {
+      const { data, error } = await retried(() => db.from("user_profiles")
+        .select("clerk_user_id, timezone").not("timezone", "is", null)
+        .order("clerk_user_id", { ascending: true })
+        .range(from, from + USER_PAGE - 1));
+      if (error) return json({ error: error.message, stage: "users" }, 500);
+      users.push(...(data ?? []));
+      if (!data || data.length < USER_PAGE) break;
+    }
+
+    const todays = users
+      .filter((u) => u.clerk_user_id && isTimeZone(u.timezone))
+      .map((u) => ({ userId: u.clerk_user_id as string, tz: u.timezone as string, day: wallClock(now, u.timezone as string)!.slice(0, 10) }));
+
+    // Who already has a pick for their current day (made by the app, or an earlier run).
+    const days = [...new Set(todays.map((t) => t.day))];
+    const have = new Set<string>();
+    if (days.length > 0) {
+      for (let from = 0; ; from += USER_PAGE) {
+        const { data: rows, error: rowsErr } = await retried(() => db.from("daily_suggestions").select("user_id, day")
+          .in("day", days).order("user_id", { ascending: true }).range(from, from + USER_PAGE - 1));
+        if (rowsErr) return json({ error: rowsErr.message, stage: "existing" }, 500);
+        for (const r of rows ?? []) have.add(`${r.user_id}|${r.day}`);
+        if (!rows || rows.length < USER_PAGE) break;
+      }
+    }
+    const due = todays.filter((t) => !have.has(`${t.userId}|${t.day}`));
+
+    let saved = 0;
+    const failures: string[] = [];
+    for (let i = 0; i < due.length; i += CRON_CONCURRENCY) {
+      const batch = due.slice(i, i + CRON_CONCURRENCY);
+      const results = await Promise.all(batch.map((t) => generate(db, t.userId, t.tz, now, "cron")));
+      results.forEach((r, j) => {
+        if (r.saved) saved += 1;
+        else failures.push(`${batch[j].userId.slice(0, 12)}: ${r.error ?? "not saved"}`);
+      });
+    }
+
+    return json({ users: todays.length, due: due.length, saved, failures: failures.slice(0, 20) });
+  } finally {
+    // Settled on every path, the early failures too: the runtime may stop the
+    // worker once the response is out, and an abandoned delete may never land.
+    const pruned = await prune;
+    if (pruned.error) console.error("[daily-suggestion] prune failed:", pruned.error.message);
+  }
 }
 
 async function runApp(req: Request, body: Record<string, unknown>): Promise<Response> {
@@ -185,7 +193,15 @@ Deno.serve(async (req) => {
   if (body.mode === "cron") {
     const secret = req.headers.get("x-cron-secret") ?? "";
     const { data: ok, error } = await retried(() => admin().rpc("daily_suggestion_cron_ok", { p_secret: secret }));
-    if (error || ok !== true) return json({ error: "Unauthorized" }, 401);
+    // A check that could not RUN is the API layer failing, not a bad secret.
+    // Reporting it as 401 made three gateway 504s (2026-09-14 13:15) read as
+    // a rotated secret. The detail stays in the log: this runs before the
+    // secret is known to be good, so any caller can reach it.
+    if (error) {
+      console.error("[daily-suggestion] cron check failed:", error.message);
+      return json({ error: "Service unavailable", stage: "auth" }, 503);
+    }
+    if (ok !== true) return json({ error: "Unauthorized" }, 401);
     return await runCron();
   }
   return await runApp(req, body);
