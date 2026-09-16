@@ -40,6 +40,8 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
+import { useToast } from '@/components/ui/Toast';
+import { bodyFatLog as serverBodyFatLog, localDayISO, weightLog as serverWeightLog } from '@/lib/bodyLogSync';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
@@ -217,6 +219,7 @@ export default function ProfileScreen() {
   const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const { pendingCount } = useSync();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
@@ -277,6 +280,7 @@ export default function ProfileScreen() {
   const [bodyFat, setBodyFat] = useState('');
   const {
     weightUnit,
+    ready: basicInfoReady,
     setWeightUnit,
     setGoalWeight: setCtxGoalWeight,
   } = useBasicInfo();
@@ -415,12 +419,30 @@ export default function ProfileScreen() {
   useEffect(() => {
     if (!clerkLoaded) return;
     loadProfile();
-    loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clerkLoaded, isGuestSession, user?.id, pendingCount]);
 
+  // Logs wait for the saved kg/lbs choice too: a signed-in user's series is
+  // stored in kg and shown in that unit, and the first load uploads the old
+  // device log, whose numbers are in it.
+  useEffect(() => {
+    if (!clerkLoaded || !basicInfoReady) return;
+    loadLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clerkLoaded, basicInfoReady, isGuestSession, user?.id, pendingCount, weightUnit]);
+
+  // A load that finishes after the session changed (sign-out, account switch)
+  // must not paint the previous account's entries.
+  const logsIdentity = useRef<string | null>(null);
   const loadLogs = async () => {
-    const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
+    const signedIn = !isGuestSession && !!user?.id;
+    const identity = `${isGuestSession}:${user?.id ?? ''}`;
+    logsIdentity.current = identity;
+    const [wl, bfl] = await Promise.all([
+      signedIn ? serverWeightLog(supabase, user!.id, weightUnit).load() : loadWeightLog(),
+      signedIn ? serverBodyFatLog(supabase, user!.id).load() : loadBodyFatLog(),
+    ]);
+    if (logsIdentity.current !== identity) return;
     setWeightLog(wl);
     setBodyFatLog(bfl);
   };
@@ -574,15 +596,25 @@ export default function ProfileScreen() {
     weightLogTimer.current = setTimeout(async () => {
       const num = parseFloat(v);
       if (isNaN(num) || num <= 0) return;
-      const today = new Date().toISOString().slice(0, 10);
-      const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+      const today = localDayISO();
       const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
-      const updated = latest && latest.date.slice(0, 10) === today
-        ? [...weightLog.slice(0, -1), entry]
-        : [...weightLog, entry];
-      setWeightLog(updated);
-      await saveWeightLog(updated);
-      track('weight_logged', { source: 'profile', unit: weightUnit, replaced_today: !!latest && latest.date.slice(0, 10) === today });
+      const replacedToday = !!latest && localDayISO(new Date(latest.date)) === today;
+      if (!isGuestSession && user?.id) {
+        // Signed in: saved on the phone at once, then to daily_metrics.
+        const next = await serverWeightLog(supabase, user.id, weightUnit).log(num);
+        if (!next) {
+          // Out of what a scale shows. Say so: a silent drop reads as a bug.
+          if (num >= 10) toast.error('That weight looks off. Check the number.');
+          return;
+        }
+        setWeightLog(next);
+      } else {
+        const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+        const updated = replacedToday ? [...weightLog.slice(0, -1), entry] : [...weightLog, entry];
+        setWeightLog(updated);
+        await saveWeightLog(updated);
+      }
+      track('weight_logged', { source: 'profile', unit: weightUnit, replaced_today: replacedToday });
       flashLogged('weight');
     }, 900);
   };
@@ -592,15 +624,24 @@ export default function ProfileScreen() {
     bodyFatLogTimer.current = setTimeout(async () => {
       const num = parseFloat(v);
       if (isNaN(num) || num <= 0 || num > 60) return;
-      const today = new Date().toISOString().slice(0, 10);
-      const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+      const today = localDayISO();
       const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
-      const updated = latest && latest.date.slice(0, 10) === today
-        ? [...bodyFatLog.slice(0, -1), entry]
-        : [...bodyFatLog, entry];
-      setBodyFatLog(updated);
-      await saveBodyFatLog(updated);
-      track('body_fat_logged', { source: 'profile', replaced_today: !!latest && latest.date.slice(0, 10) === today });
+      const replacedToday = !!latest && localDayISO(new Date(latest.date)) === today;
+      if (!isGuestSession && user?.id) {
+        // Signed in: saved on the phone at once, then to daily_metrics.
+        const next = await serverBodyFatLog(supabase, user.id).log(num);
+        if (!next) {
+          if (num >= 2) toast.error('Body fat logs between 2 and 70 percent.');
+          return;
+        }
+        setBodyFatLog(next);
+      } else {
+        const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+        const updated = replacedToday ? [...bodyFatLog.slice(0, -1), entry] : [...bodyFatLog, entry];
+        setBodyFatLog(updated);
+        await saveBodyFatLog(updated);
+      }
+      track('body_fat_logged', { source: 'profile', replaced_today: replacedToday });
       flashLogged('bodyFat');
     }, 900);
   };
