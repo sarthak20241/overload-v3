@@ -40,6 +40,9 @@ import {
   type WeightEntry, type BodyFatEntry,
 } from '@/lib/bodyStats';
 import { useBasicInfo } from '@/hooks/useBasicInfo';
+import { formatWeight, fromKg, parseWeightInput, weightLogInUnit } from '@/lib/bodyLog';
+import { useToast } from '@/components/ui/Toast';
+import { bodyFatLog as serverBodyFatLog, localDayISO, weightLog as serverWeightLog } from '@/lib/bodyLogSync';
 import { setGuestMode, useIsGuestSession } from '@/lib/guestMode';
 import { flushQueue, getPendingCount, getPendingWorkouts } from '@/lib/syncQueue';
 import { flushRoutineQueue, getPendingRoutineCount } from '@/lib/routineQueue';
@@ -217,6 +220,7 @@ export default function ProfileScreen() {
   const { user, signOut: clerkSignOut, isLoaded: clerkLoaded } = useClerkUser();
   const isGuestSession = useIsGuestSession();
   const supabase = useSupabaseClient();
+  const toast = useToast();
   const { pendingCount } = useSync();
   // Admin status determines whether the "Admin Tools" section renders.
   // The dashboard route itself re-checks via RLS, so this is a UX gate.
@@ -274,9 +278,14 @@ export default function ProfileScreen() {
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
   const [goalWeight, setGoalWeight] = useState('');
+  // The saved values, in kilograms. `weight` / `goalWeight` are the input text
+  // in the display unit, re-derived from these when the unit toggles.
+  const [weightKg, setWeightKg] = useState<number | null>(null);
+  const [goalWeightKg, setGoalWeightKg] = useState<number | null>(null);
   const [bodyFat, setBodyFat] = useState('');
   const {
     weightUnit,
+    ready: basicInfoReady,
     setWeightUnit,
     setGoalWeight: setCtxGoalWeight,
   } = useBasicInfo();
@@ -394,7 +403,8 @@ export default function ProfileScreen() {
     const current = parseFloat(weight);
     const goal = parseFloat(goalWeight);
     if (isNaN(current) || isNaN(goal) || current <= 0 || goal <= 0) return null;
-    const startWeight = weightLog.length > 0 ? weightLog[0].weight : current;
+    // The first logged weight, in the unit on screen (it may have been typed in the other one).
+    const startWeight = weightLog.length > 0 ? weightLogInUnit(weightLog.slice(0, 1), weightUnit)[0].weight : current;
     const totalDelta = Math.abs(startWeight - goal);
     const currentDelta = Math.abs(current - goal);
     const pct = totalDelta > 0
@@ -415,15 +425,68 @@ export default function ProfileScreen() {
   useEffect(() => {
     if (!clerkLoaded) return;
     loadProfile();
-    loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clerkLoaded, isGuestSession, user?.id, pendingCount]);
 
+  // Logs wait for the saved kg/lbs choice too: a signed-in user's series is
+  // stored in kg and shown in that unit, and the first load uploads the old
+  // device log, whose numbers are in it.
+  useEffect(() => {
+    if (!clerkLoaded || !basicInfoReady) return;
+    loadLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clerkLoaded, basicInfoReady, isGuestSession, user?.id, pendingCount, weightUnit]);
+
+  // A load that finishes after the session changed (sign-out, account switch)
+  // must not paint the previous account's entries.
+  const logsIdentity = useRef<string | null>(null);
   const loadLogs = async () => {
-    const [wl, bfl] = await Promise.all([loadWeightLog(), loadBodyFatLog()]);
+    const signedIn = !isGuestSession && !!user?.id;
+    const identity = `${isGuestSession}:${user?.id ?? ''}`;
+    logsIdentity.current = identity;
+    const [wl, bfl] = await Promise.all([
+      signedIn ? serverWeightLog(supabase, user!.id, weightUnit).load() : loadWeightLog(),
+      signedIn ? serverBodyFatLog(supabase, user!.id).load() : loadBodyFatLog(),
+    ]);
+    if (logsIdentity.current !== identity) return;
     setWeightLog(wl);
     setBodyFatLog(bfl);
   };
+
+  // Stored kg in, display-unit text out. A cleared goal (null/0) goes to
+  // context too, else it stays stale. The unit comes from a ref, not the
+  // render's value: loadProfile's closure can outlive a unit change (the saved
+  // unit loads after the profile request started). The ref moves after the
+  // commit, never during a render: a render React throws away must not leave
+  // behind a unit no committed screen is showing.
+  const weightUnitRef = useRef(weightUnit);
+  useEffect(() => {
+    weightUnitRef.current = weightUnit;
+  }, [weightUnit]);
+  const applyWeights = (w: number | string | null | undefined, g: number | string | null | undefined) => {
+    const unit = weightUnitRef.current;
+    const wKg = Number(w) > 0 ? Number(w) : null;
+    const gKg = Number(g) > 0 ? Number(g) : null;
+    setWeightKg(wKg);
+    setGoalWeightKg(gKg);
+    setWeight(formatWeight(wKg, unit));
+    setGoalWeight(formatWeight(gKg, unit));
+    setCtxGoalWeight(gKg);
+  };
+
+  // The unit switch re-displays the saved kilograms. Keyed on the unit only:
+  // re-formatting on every keystroke would rewrite "75." while it is typed.
+  // Also covers the saved unit arriving after the profile painted in kg.
+  // Skips the mount run: the guest load fills the fields synchronously in the
+  // same commit, and this render's weightKg is still null, so it would blank them.
+  const shownUnitRef = useRef(weightUnit);
+  useEffect(() => {
+    if (shownUnitRef.current === weightUnit) return;
+    shownUnitRef.current = weightUnit;
+    setWeight(formatWeight(weightKg, weightUnit));
+    setGoalWeight(formatWeight(goalWeightKg, weightUnit));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weightUnit]);
 
   const lastIdentityRef = useRef<string | null>(null);
   const loadProfile = async () => {
@@ -438,6 +501,8 @@ export default function ProfileScreen() {
       setHeight('');
       setWeight('');
       setGoalWeight('');
+      setWeightKg(null);
+      setGoalWeightKg(null);
       setCtxGoalWeight(null);
       setBodyFat('');
       setTotalXP(0);
@@ -457,9 +522,7 @@ export default function ProfileScreen() {
         const p = getGuestProfile();
         setGender((p.gender || '') as Gender | '');
         setHeight(p.height_cm ? String(p.height_cm) : '');
-        setWeight(p.weight_kg ? String(p.weight_kg) : '');
-        setGoalWeight(p.goal_weight_kg ? String(p.goal_weight_kg) : '');
-        setCtxGoalWeight(p.goal_weight_kg && p.goal_weight_kg > 0 ? p.goal_weight_kg : null);
+        applyWeights(p.weight_kg, p.goal_weight_kg);
         setBodyFat(p.body_fat_percent ? String(p.body_fat_percent) : '');
         setCoachGoal((p.goal as CoachGoal | null) || '');
         setExperienceLevel((p.experience_level as ExperienceLevel | null) || '');
@@ -474,10 +537,7 @@ export default function ProfileScreen() {
         // Unset fields stay empty (placeholder shows) — no demo fallbacks.
         setGender((profile.gender || '') as Gender | '');
         setHeight(profile.height_cm ? String(profile.height_cm) : '');
-        setWeight(profile.weight_kg ? String(profile.weight_kg) : '');
-        setGoalWeight(profile.goal_weight_kg ? String(profile.goal_weight_kg) : '');
-        // Propagate a cleared goal (null/0) to context too, else it stays stale.
-        setCtxGoalWeight(profile.goal_weight_kg && profile.goal_weight_kg > 0 ? profile.goal_weight_kg : null);
+        applyWeights(profile.weight_kg, profile.goal_weight_kg);
         setBodyFat(profile.body_fat_percent ? String(profile.body_fat_percent) : '');
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
@@ -572,17 +632,36 @@ export default function ProfileScreen() {
   const scheduleWeightLog = (v: string) => {
     if (weightLogTimer.current) clearTimeout(weightLogTimer.current);
     weightLogTimer.current = setTimeout(async () => {
-      const num = parseFloat(v);
-      if (isNaN(num) || num <= 0) return;
-      const today = new Date().toISOString().slice(0, 10);
-      const entry: WeightEntry = { date: new Date().toISOString(), weight: num };
+      // The same gate AND the same number the saved weight goes through, so the
+      // history and user_profiles.weight_kg cannot disagree: a "5" left standing
+      // on the way to "75" is not a weigh-in, and a comma decimal ("75,5" on an
+      // Android keypad) must not log 75 against a saved 75.5.
+      const kg = parseWeightInput(v, weightUnit)?.kg;
+      if (!kg) {
+        // Out of what a scale shows. Say so: a silent drop reads as a bug.
+        if (parseFloat(v) >= 10) toast.error('That weight looks off. Check the number.');
+        return;
+      }
+      const num = fromKg(kg, weightUnit);
+      const today = localDayISO();
       const latest = weightLog.length > 0 ? weightLog[weightLog.length - 1] : null;
-      const updated = latest && latest.date.slice(0, 10) === today
-        ? [...weightLog.slice(0, -1), entry]
-        : [...weightLog, entry];
-      setWeightLog(updated);
-      await saveWeightLog(updated);
-      track('weight_logged', { source: 'profile', unit: weightUnit, replaced_today: !!latest && latest.date.slice(0, 10) === today });
+      const replacedToday = !!latest && localDayISO(new Date(latest.date)) === today;
+      if (!isGuestSession && user?.id) {
+        // Signed in: saved on the phone at once, then to daily_metrics.
+        const next = await serverWeightLog(supabase, user.id, weightUnit).log(num);
+        if (!next) {
+          // Out of what a scale shows. Say so: a silent drop reads as a bug.
+          if (num >= 10) toast.error('That weight looks off. Check the number.');
+          return;
+        }
+        setWeightLog(next);
+      } else {
+        const entry: WeightEntry = { date: new Date().toISOString(), weight: num, unit: weightUnit };
+        const updated = replacedToday ? [...weightLog.slice(0, -1), entry] : [...weightLog, entry];
+        setWeightLog(updated);
+        await saveWeightLog(updated);
+      }
+      track('weight_logged', { source: 'profile', unit: weightUnit, replaced_today: replacedToday });
       flashLogged('weight');
     }, 900);
   };
@@ -592,15 +671,24 @@ export default function ProfileScreen() {
     bodyFatLogTimer.current = setTimeout(async () => {
       const num = parseFloat(v);
       if (isNaN(num) || num <= 0 || num > 60) return;
-      const today = new Date().toISOString().slice(0, 10);
-      const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+      const today = localDayISO();
       const latest = bodyFatLog.length > 0 ? bodyFatLog[bodyFatLog.length - 1] : null;
-      const updated = latest && latest.date.slice(0, 10) === today
-        ? [...bodyFatLog.slice(0, -1), entry]
-        : [...bodyFatLog, entry];
-      setBodyFatLog(updated);
-      await saveBodyFatLog(updated);
-      track('body_fat_logged', { source: 'profile', replaced_today: !!latest && latest.date.slice(0, 10) === today });
+      const replacedToday = !!latest && localDayISO(new Date(latest.date)) === today;
+      if (!isGuestSession && user?.id) {
+        // Signed in: saved on the phone at once, then to daily_metrics.
+        const next = await serverBodyFatLog(supabase, user.id).log(num);
+        if (!next) {
+          if (num >= 2) toast.error('Body fat logs between 2 and 70 percent.');
+          return;
+        }
+        setBodyFatLog(next);
+      } else {
+        const entry: BodyFatEntry = { date: new Date().toISOString(), bodyFat: num };
+        const updated = replacedToday ? [...bodyFatLog.slice(0, -1), entry] : [...bodyFatLog, entry];
+        setBodyFatLog(updated);
+        await saveBodyFatLog(updated);
+      }
+      track('body_fat_logged', { source: 'profile', replaced_today: replacedToday });
       flashLogged('bodyFat');
     }, 900);
   };
@@ -960,7 +1048,12 @@ export default function ProfileScreen() {
                     onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setWeight(v);
-                      persistField({ weight_kg: parseFloat(v) || null });
+                      // Saved in kg whatever the unit; a half-typed value is not saved.
+                      const parsed = parseWeightInput(v, weightUnit);
+                      if (parsed) {
+                        setWeightKg(parsed.kg);
+                        persistField({ weight_kg: parsed.kg });
+                      }
                       scheduleWeightLog(v);
                     }}
                     placeholder={weightUnit === 'kg' ? '75' : '165'}
@@ -983,10 +1076,13 @@ export default function ProfileScreen() {
                     onFocus={scrollFocusedIntoView}
                     onChangeText={(v) => {
                       setGoalWeight(v);
-                      persistField({ goal_weight_kg: parseFloat(v) || null });
-                      const num = parseFloat(v);
-                      // Clearing the field should clear context too, not keep the old goal.
-                      setCtxGoalWeight(!isNaN(num) && num > 0 ? num : null);
+                      const parsed = parseWeightInput(v, weightUnit);
+                      if (parsed) {
+                        setGoalWeightKg(parsed.kg);
+                        persistField({ goal_weight_kg: parsed.kg });
+                        // Context holds kg too. Clearing the field clears it, not keeps the old goal.
+                        setCtxGoalWeight(parsed.kg);
+                      }
                     }}
                     placeholder={weightUnit}
                   />

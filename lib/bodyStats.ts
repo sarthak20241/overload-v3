@@ -1,8 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { stampLegacyUnits, type WeightUnit } from '@/lib/bodyLog';
 
 export interface WeightEntry {
   date: string;
+  /** As typed, in `unit`. Show it with weightLogInUnit (lib/weightUnit.ts). */
   weight: number;
+  /** Missing only on entries saved before units were recorded; loadWeightLog fills it. */
+  unit?: WeightUnit;
 }
 
 export interface BodyFatEntry {
@@ -41,14 +45,27 @@ const BASIC_KEY = 'overload_basic_info';
 export async function loadWeightLog(): Promise<WeightEntry[]> {
   try {
     const raw = await AsyncStorage.getItem(WEIGHT_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    // Old entries carry no unit. Give them the saved unit once and write that
+    // back, so a later kg/lbs switch converts them instead of relabeling them.
+    const info = await loadBasicInfo();
+    const { log, changed } = stampLegacyUnits<WeightEntry>(JSON.parse(raw), info.weightUnit === 'lbs' ? 'lbs' : 'kg');
+    if (changed) await AsyncStorage.setItem(WEIGHT_KEY, JSON.stringify(log)).catch(() => {});
+    return log;
   } catch {
     return [];
   }
 }
 
+// The device logs below are for guests. A signed-in user's weight, body fat
+// and measurements live on the server (lib/bodyLogSync.ts); these logs are
+// uploaded to the account once and then cleared.
 export async function saveWeightLog(log: WeightEntry[]): Promise<void> {
   await AsyncStorage.setItem(WEIGHT_KEY, JSON.stringify(log));
+}
+
+export async function clearWeightLog(): Promise<void> {
+  await AsyncStorage.removeItem(WEIGHT_KEY);
 }
 
 export async function loadBodyFatLog(): Promise<BodyFatEntry[]> {
@@ -64,6 +81,10 @@ export async function saveBodyFatLog(log: BodyFatEntry[]): Promise<void> {
   await AsyncStorage.setItem(BF_KEY, JSON.stringify(log));
 }
 
+export async function clearBodyFatLog(): Promise<void> {
+  await AsyncStorage.removeItem(BF_KEY);
+}
+
 export async function loadMeasurements(): Promise<MeasurementsData> {
   try {
     const raw = await AsyncStorage.getItem(MEASUREMENTS_KEY);
@@ -77,6 +98,18 @@ export async function loadMeasurements(): Promise<MeasurementsData> {
 
 export async function saveMeasurements(d: MeasurementsData): Promise<void> {
   await AsyncStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(d));
+}
+
+/** Drop the device's measurement entries once uploaded, keeping the cm/in choice. */
+export async function clearMeasurementEntries(): Promise<void> {
+  const { unit } = await loadMeasurements();
+  await saveMeasurements({ entries: [], unit });
+}
+
+/** Save only the cm/in choice, keeping any device entries. */
+export async function saveMeasurementUnit(unit: 'cm' | 'in'): Promise<void> {
+  const current = await loadMeasurements();
+  await saveMeasurements({ ...current, unit });
 }
 
 export async function loadBasicInfo(): Promise<{ goalWeight?: number | null; weightUnit?: string }> {
