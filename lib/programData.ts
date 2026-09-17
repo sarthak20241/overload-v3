@@ -15,6 +15,7 @@
  * persistence on Apply, and the reconcile that advances targets at a phase
  * boundary. Tables live in migration 0096_coach_programs.sql.
  */
+import { withChangeSource } from '@/lib/planChangeSource';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 import { normalizeWeekPattern } from '@/lib/weekPattern';
@@ -614,9 +615,12 @@ export async function endActiveProgram(supabase: Supa, clerkId: string): Promise
  * app open. Returns the seq it advanced to, or null when nothing changed.
  */
 export async function reconcileActiveProgram(
-  supabase: Supa,
+  untagged: Supa,
   clerkId: string,
 ): Promise<number | null> {
+  // Everything this writes happens because the calendar moved, not because
+  // anyone edited: the plan log records it as automatic.
+  const supabase = withChangeSource(untagged, 'auto');
   const active = await loadActiveProgram(supabase, clerkId);
   if (!active) return null;
 

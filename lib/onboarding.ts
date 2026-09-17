@@ -19,6 +19,7 @@
  *   that burning the one-shot iOS permission prompt without immediate,
  *   specific value tanks grant rates.
  */
+import { withChangeSource } from '@/lib/planChangeSource';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { isSupabaseConfigured } from '@/lib/supabase';
@@ -380,7 +381,7 @@ export async function saveOnboardingProfile(
   if (prefs) row.training_preferences = prefs.slice(0, 500);
   if (Object.keys(row).length === 1) return; // nothing beyond the id
   try {
-    await opts.client
+    await withChangeSource(opts.client, 'onboarding')
       .from('user_profiles')
       .upsert(row, { onConflict: 'clerk_user_id' });
   } catch {
