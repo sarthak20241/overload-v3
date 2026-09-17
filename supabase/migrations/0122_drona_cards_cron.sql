@@ -1,4 +1,4 @@
--- 0121_drona_cards_cron.sql — the weekly Drona cards run.
+-- 0122_drona_cards_cron.sql — the weekly Drona cards run.
 --
 -- Same shape as the daily-suggestion cron (0116/0117): the secret lives ONLY in
 -- private.runtime_config and is checked inside the database, so rotating it

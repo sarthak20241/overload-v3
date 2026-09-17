@@ -449,8 +449,17 @@ Most scenarios run on data already stored. These are the real gaps:
   safety floor, never more than 4 weeks of date movement in one card, and a
   validator checks every number before the card is stored.
 
-## Still open
+## Decided 2026-09-17
 
-1. Structured goal fields (section I): add focus areas and a target date?
-2. The "Let Drona make small adjustments" setting: on by default for everyone,
-   or only for users who start a program after it ships?
+1. **Structured goal fields: yes.** `user_profiles.goal_focus_areas` added in
+   migration 0123 (PR #180); `goal_target_date` already existed. The picker on
+   the Goal screen and onboarding is still to build.
+2. **Small adjustments: on by default for everyone**, with a one-time card that
+   explains it and a clear way to turn it off.
+
+## Progress
+
+- **J1 plan change log: BUILT, PR #180.** `plan_changes` recorded by triggers
+  (targets, goal, program, phases, routines, routine exercises diffed by
+  exercise), source from the x-change-source header via
+  `lib/planChangeSource.ts`. Live, 26 + 7 probe checks.

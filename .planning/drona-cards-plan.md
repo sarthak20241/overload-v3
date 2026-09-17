@@ -342,8 +342,8 @@ a server-written row would never show. Same reason the weekly report used
   local day.
 
 **P0. Facts + signals + rules + request cards. No model. BUILT 2026-09-16.**
-Migrations 0120 (drona_cards + get_drona_facts + delete_user_data) and 0121
-(cron secret + schedule block) are APPLIED live; the worker `drona-cards` is
+Migrations 0121 (drona_cards + get_drona_facts + delete_user_data) and 0122
+(cron secret + schedule block, renumbered from 0120/0121 after main took 0120) are APPLIED live; the worker `drona-cards` is
 DEPLOYED (v1). The cron is deliberately NOT scheduled: the runtime_config rows
 go in when the card UI ships in a build, or cards pile up where nobody can see
 them. Verified on the simulator against the live database: the app asked for a

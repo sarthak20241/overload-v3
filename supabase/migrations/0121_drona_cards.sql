@@ -1,4 +1,4 @@
--- 0120_drona_cards.sql — Drona cards P0 (plan: .planning/drona-cards-plan.md)
+-- 0121_drona_cards.sql — Drona cards P0 (plan: .planning/drona-cards-plan.md)
 --
 -- The weekly proposal system's storage and its FACTS layer. P0 ships the cheap
 -- half: counts (this file) -> signals and rules (pure TS, _shared/drona*) ->
