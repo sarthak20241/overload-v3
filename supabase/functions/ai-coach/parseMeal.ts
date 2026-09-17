@@ -25,7 +25,6 @@
 // so catalog-backed numbers are never model-invented.
 
 import { nearWord } from "./textMatch.ts";
-import { parseFastGrammar } from "./fastGrammar.ts";
 import {
   cacheKey,
   kcalSpread,
@@ -462,8 +461,7 @@ export function gramsPerUnit(unit: string, cand: CandidateFood): { grams: number
   // "large", "1 scoop (30 g)" for "scoop").
   //
   // A BASIS serving can never be that anchor, even when the words line up. The
-  // user's count word is often "serving" (the grammar emits it for every
-  // counted noun, see fastGrammar SHAPE 5), and "1 serving (100 g)" contains
+  // user's count word is often "serving", and "1 serving (100 g)" contains
   // it - so without this the per-100 basis matched here and the whole
   // piece-count guard below was bypassed.
   //
@@ -772,8 +770,9 @@ export interface ParseMealInput {
   text: string;
   localHour: number | null;
   mealHint: MealType | null;
-  /** "fast": one model call names AND estimates, catalog resolve, code fill,
-   *  no decide. "super": the precise cache, then a per-item web lookup inside
+  /** "fast": one model call names AND estimates, and that estimate IS the
+   *  answer - no catalog, no OFF, no FatSecret, no decide (see the FAST MODE
+   *  block in runParseMeal). "super": the precise cache, then a web lookup inside
    *  the resolve fan-out, then the full pipeline on verified numbers.
    *  Both are honoured only on a first-shot log; with a meal on screen the
    *  turn may be a correction and falls through to the full pipeline. */
@@ -849,18 +848,13 @@ export interface ParseMealDeps {
    *  when the gate passes. Default off: this removes the model from the
    *  decision, so it earns its way in on shadow-mode agreement data. */
   skipDecideMode?: "off" | "shadow" | "on";
-  /** Fast Lane A: name the items in CODE and skip the extract call entirely.
-   *  Shadow records what the grammar WOULD have produced without acting on it,
-   *  so its agreement with extract can be measured on real traffic first. */
-  fastGrammarMode?: "off" | "shadow" | "on";
   // Tier 1: catalog search (search_foods_ranked RPC + food_servings).
-  // `lean` = trigram only, skip the semantic leg. The semantic leg embeds the
-  // query via an EXTERNAL Voyage API call first, which is ~1s and rate-limited,
-  // so a ladder of concurrent searches queues there - measured: every query in
-  // a batch reporting near-identical 0.8-1.6s wall times while the co-located
-  // trigram RPC costs ~30ms. Fast mode passes lean=true; synonym-bridging is
-  // decide's concern, and fast has no decide.
-  searchFoods(query: string, lean?: boolean): Promise<CandidateFood[]>;
+  // Always the full search now: trigram plus the semantic leg. A `lean`
+  // trigram-only variant existed for Fast mode, which paid ~1s of rate-limited
+  // Voyage embedding it could not afford. Fast makes no lookup at all since
+  // 2026-09-15, so the only callers left are Thorough and Precise, and both
+  // want the semantic leg for synonym-bridging ahead of decide.
+  searchFoods(query: string): Promise<CandidateFood[]>;
   // Tier 2 backfill hook: persist an OFF product as a global foods row.
   // Returns the new (or pre-existing) food id, or null on failure/dry-run.
   backfillOffFood(food: OffProduct): Promise<string | null>;
@@ -3019,9 +3013,6 @@ async function resolveOneItem(
   /** Lower-cased names of foods this user logs repeatedly (I13). Used ONLY to
    *  stop the reranker discarding them; see the promotion below. */
   stapleNames?: Set<string>,
-  /** Fast mode: skip FatSecret (~4s cold cache) and the reranker (~400ms +
-   *  429 risk). The accept gate does the judging instead. */
-  lean = false,
   /** Super mode: on a cache miss, look the food up on the web INSIDE the
    *  fan-out, before decide and before render. That timing is the whole design
    *  (see the WEB_LOOKUP_TOOL header): upgrade before the card exists and it is
@@ -3153,7 +3144,7 @@ async function resolveOneItem(
       const tq0 = Date.now();
       let found: CandidateFood[] = [];
       try {
-        found = (await deps.searchFoods(q, lean)).slice(0, 6);
+        found = (await deps.searchFoods(q)).slice(0, 6);
       } catch (e) {
         deps.log?.(`[parse_meal] searchFoods threw for "${q}": ${String(e).slice(0, 120)}`);
       }
@@ -3184,16 +3175,6 @@ async function resolveOneItem(
     return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
-    // Fast mode is catalog + the model's own estimate, nothing else. OFF sits
-    // in the same Promise.all as the catalog search, so its latency IS the
-    // resolve time whenever it is the slowest leg - and it was: 1.3s when it
-    // returned nothing against 3.4-4.6s when it returned products to back-fill.
-    // What it bought for that was thin. On "banana" it offered "Yogurt Bnine
-    // BANANA" and "Banana chips", which the accept gate then threw away.
-    // A packaged-food database earns its place in Smart, where there is time to
-    // rerank it and a model to judge it. Here the honest fallback is the
-    // estimate, which already rode in on the naming call for free.
-    if (lean) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
@@ -3239,7 +3220,7 @@ async function resolveOneItem(
   };
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
-    if (lean || !deps.searchFatSecret) return [];
+    if (!deps.searchFatSecret) return [];
     const q = item.brand ? `${item.brand} ${item.name}` : item.name;
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
@@ -3293,7 +3274,7 @@ async function resolveOneItem(
   // Rerank: the user's own phrase against each candidate, best first. This is
   // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
   // the sources returned. Fail-open: on any miss the merge order stands.
-  if (!lean && deps.rerankCandidates && usable.length > 1) {
+  if (deps.rerankCandidates && usable.length > 1) {
     const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
     const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
     const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
@@ -4640,31 +4621,6 @@ export async function runParseMeal(
   // correction, a removal, a question or an addition, and all of those need the
   // model to read intent - "And a dosa" parses cleanly as one dosa but MEANS
   // add it to what is already there.
-  // "on" is read as "shadow". Lane A's "on" skips the naming call, and the
-  // grammar produces names and amounts but no est_ numbers. It relied on the
-  // catalog to fill those in, and Quick no longer searches the catalog, so an
-  // "on" parse would log every line at zero calories. Shadow still records the
-  // grammar's agreement with the model, which is all Lane A can offer now.
-  const grammarMode = deps.fastGrammarMode === "on" ? "shadow" : (deps.fastGrammarMode ?? "off");
-  // fastMode, not just "not a correction". Every comment here calls this
-  // "Fast mode's Lane A", but the gate never checked the tier: with
-  // PARSE_FAST_GRAMMAR=on it would have intercepted ANY first-shot parse whose
-  // text matched the grammar - Thorough-tier requests, and old clients that
-  // never send speed:"fast" - and fed un-normalised names into decide with no
-  // spelling fixes and no "chai" -> "milk tea" canonicalisation. Latent while
-  // the default is "shadow"; a one-line trap for whoever flips the switch.
-  const laneA = (fastMode && grammarMode !== "off")
-    ? parseFastGrammar(input.text)
-    : null;
-  if (laneA) {
-    steps.push({
-      iter: 0,
-      tool: "lane_a_grammar",
-      input: { mode: grammarMode, items: laneA.length },
-      result: { named: laneA.map((i) => `${i.quantity} ${i.unit} ${i.prep ?? ""} ${i.name}`.trim()) },
-    });
-  }
-
   const tExtract0 = Date.now();
   // The user's own words, clamped once so both message shapes below send the
   // same thing and the trace can say when the clamp bit.
@@ -4677,9 +4633,6 @@ export async function runParseMeal(
       result: null,
     });
   }
-  // Lane A "on" used to skip this call when the grammar matched. It cannot any
-  // more (see grammarMode): the naming call is the only source of numbers in
-  // Quick, so it always runs.
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
@@ -4821,51 +4774,6 @@ export async function runParseMeal(
         est: chained ? chained.est : rawEst,
       }];
     });
-  // Shadow: did the grammar name the same foods the model did? Recorded, never
-  // acted on, so flipping to "on" is a decision made from real traffic rather
-  // than from how confident the grammar feels. Names are compared through
-  // wordsOverlap because extract deliberately corrects spelling ("panner" ->
-  // "paneer") and canonicalises ("chai" -> "milk tea"), so an exact match would
-  // report disagreement where the two actually agree.
-  // A REFUSAL is the most important thing to record, and it used to record
-  // nothing: the shadow block sat inside `if (laneA && ...)`, so the only
-  // traces written were the rare ones where the grammar produced something.
-  // Measured 2026-09-01 against real production inputs, Lane A parsed 1 of 8 -
-  // real logs are long multi-food sentences ("Breakfast was X, 25 grams, and
-  // 20 grams of Y") and the grammar refuses clause starters, spelled-out
-  // numbers and >4-word names by design. Coverage, not just agreement, is what
-  // decides whether Lane A is ever worth switching on, so log the refusal too.
-  if (!laneA && grammarMode !== "off" && fastMode && extractRes) {
-    steps.push({
-      iter: 0,
-      tool: "lane_a_shadow",
-      input: { refused: true, items_extract: extItems.length },
-      result: { agree: false, refused: true },
-    });
-  }
-  if (laneA && grammarMode === "shadow" && extractRes) {
-    const sameCount = laneA.length === extItems.length;
-    const sameNames = sameCount &&
-      laneA.every((g, i) => wordsOverlap(g.name, extItems[i].name));
-    const sameAmounts = sameCount && laneA.every((g, i) =>
-      Math.abs(g.quantity - extItems[i].quantity) < 0.01 &&
-      g.unit.replace(/s$/, "") === extItems[i].unit.toLowerCase().replace(/s$/, "")
-    );
-    steps.push({
-      iter: 0,
-      tool: "lane_a_shadow",
-      input: { same_count: sameCount, same_names: sameNames, same_amounts: sameAmounts },
-      // Both readings ALWAYS, agreement included. Discarding them on agreement
-      // meant a later catalog change could not be checked against what the two
-      // lanes actually said at the time - only against a boolean.
-      result: {
-        agree: sameNames && sameAmounts,
-        grammar: laneA.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
-        extract: extItems.map((i) => `${i.quantity} ${i.unit} ${i.name}`),
-      },
-    });
-  }
-
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Previous lines the user explicitly re-targeted. These are deliberately
@@ -5337,8 +5245,6 @@ export async function runParseMeal(
         steps,
         toolCalls,
         stapleNames,
-        // Always false now: fast mode returns above and never resolves.
-        false,
         // Per ITEM, not per meal: each food's lookup finishes on its own clock,
         // so a cached item is never held up by a sibling still being searched.
         // accumulate() is passed through so the web_search_requests these calls

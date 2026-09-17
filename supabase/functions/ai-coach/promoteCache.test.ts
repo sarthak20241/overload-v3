@@ -210,7 +210,6 @@ Deno.test("the failure this prevents: a log line becoming a permanent catalog ro
 });
 
 Deno.test("a unit word means the amount was folded into the name", () => {
-  // The exact string fastGrammar refuses to parse, for the same reason.
   assertEquals(badDisplayName("tea half cup") === null, false);
   const d = promotionDecision(cand({ display_name: "tea half cup" }), [], NOW);
   assertEquals(d.action, "skip");

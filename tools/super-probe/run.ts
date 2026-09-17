@@ -70,7 +70,6 @@ const deps: ParseMealDeps = {
   maxTokens: 1600,
   timeoutMs: 60000,
   webSearchEnabled: true,
-  fastGrammarMode: "off",
   // Catalog OFF. The ground truth in cases.ts IS the catalog's OFF rows, so
   // leaving search on would let Super read the answer key and the probe would
   // measure nothing at all.

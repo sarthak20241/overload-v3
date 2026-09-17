@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, AppState,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -168,7 +168,19 @@ export default function DashboardScreen() {
   }, []);
   const [userXP, setUserXP] = useState(0);
 
-  const hour = new Date().getHours();
+  // Read at render, the hour only moved when something else redrew this tab,
+  // which stays mounted: a simulator left on the dashboard all day still said
+  // "Good morning" at 7 PM. A return to the app happens to redraw it today;
+  // re-reading on focus and on foreground makes that a guarantee rather than a
+  // side effect of other state. It does not cover a screen left on for hours.
+  const [hour, setHour] = useState(() => new Date().getHours());
+  useFocusEffect(useCallback(() => { setHour(new Date().getHours()); }, []));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setHour(new Date().getHours());
+    });
+    return () => sub.remove();
+  }, []);
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const userName = user?.firstName || user?.fullName || user?.emailAddresses?.[0]?.emailAddress?.split('@')[0] || 'Athlete';
 
