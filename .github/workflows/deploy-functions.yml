@@ -59,9 +59,13 @@ jobs:
         with:
           deno-version: v2.x
 
-      # The repo has no other test CI, so this is the only gate between a bad
-      # commit and production. Deploy is blocked on it deliberately: these
-      # functions serve every chat message and every meal parse.
+      # The repo has no other test CI, so this is the only automated gate
+      # between a bad commit and production, and the deploy is blocked on it
+      # deliberately. Be clear about its reach though: these suites cover
+      # ai-coach, _shared and revenuecat-webhook. delete-account and form-check
+      # have no tests at all, and daily-suggestion is covered only indirectly,
+      # through the _shared rules it calls. All five are deployable, so a green
+      # run here is not a statement about every function it can ship.
       - name: Test
         run: |
           set -euo pipefail
@@ -97,17 +101,38 @@ jobs:
           else
             # Diff against the push's own base. A force-push or a first push
             # reports an all-zero (or unreachable) SHA, so fall back to the
-            # parent commit rather than deploying nothing silently.
-            base="$BEFORE"
-            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
-               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            # parent commit. `--verify --quiet` rather than a bare rev-parse:
+            # a commit with no parent (a repo's very first) would otherwise
+            # abort the whole job under `set -e`.
+            base=''
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              base="$BEFORE"
+            elif git rev-parse --verify --quiet "${SHA}^" >/dev/null 2>&1; then
               base="$(git rev-parse "${SHA}^")"
             fi
-            changed="$(git diff --name-only "$base" "$SHA" -- supabase/functions/ || true)"
+
+            if [ -z "$base" ]; then
+              # No base to diff against means we cannot know what changed.
+              # Deploy everything: shipping a redundant copy of an unchanged
+              # function is harmless, silently leaving a changed one behind is
+              # the drift this workflow exists to stop.
+              echo "::warning::No usable base commit to diff against — deploying every function."
+              changed="$(find supabase/functions -mindepth 1 -maxdepth 1 -type d -printf 'supabase/functions/%f/\n')"
+            else
+              changed="$(git diff --name-only "$base" "$SHA" -- supabase/functions/ || true)"
+            fi
 
             # _shared is compiled into each function that imports it, so a change
             # there is a change to every one of them. Nothing rebuilds on its
             # own; miss this and a function keeps running the old copy.
+            #
+            # The pattern looks one-level-deep but is not: it is an unanchored
+            # substring match, and "../../_shared/" contains "../_shared/", so
+            # an import from any depth still matches (verified with a nested
+            # fixture four levels down). -r also descends into subdirectories,
+            # and `cut -f3` takes the function name from the path, not the
+            # import, so depth never reaches the result.
             shared_users=''
             if printf '%s\n' "$changed" | grep -q '^supabase/functions/_shared/'; then
               shared_users="$(grep -rl '\.\./_shared/' supabase/functions/*/ --include='*.ts' \
