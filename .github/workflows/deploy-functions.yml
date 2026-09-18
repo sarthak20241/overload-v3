@@ -98,7 +98,13 @@ jobs:
           }
 
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            if [ -z "${REQUESTED:-}" ] || [ "$REQUESTED" = "all" ]; then
+            # Compare "all" case- and whitespace-insensitively. The strict
+            # compare meant typing "All" fell through to the name list, matched
+            # no directory, and the run went GREEN having deployed nothing —
+            # the worst outcome for a box a human types into by hand.
+            requested_norm="$(printf '%s' "${REQUESTED:-}" \
+              | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+            if [ -z "$requested_norm" ] || [ "$requested_norm" = "all" ]; then
               targets="$(all_functions)"
             else
               targets="$(printf '%s' "$REQUESTED" | tr ', ' '\n\n' | sed '/^$/d' | sort -u)"
@@ -173,6 +179,16 @@ jobs:
           valid="$(printf '%s' "$valid" | xargs || true)"
 
           if [ -z "$valid" ]; then
+            if [ "$EVENT" = "workflow_dispatch" ]; then
+              # Someone asked for something by name and none of it resolved.
+              # Failing is the only way they find out; a green run that
+              # deployed nothing reads as success.
+              echo "::error::Nothing matched \"${REQUESTED:-}\". Valid names:" \
+                   "$(all_functions | tr '\n' ' ')— or \"all\"."
+              exit 1
+            fi
+            # A push can legitimately touch supabase/functions/ without changing
+            # any function (docs, a stray file). Nothing to do is correct here.
             echo "No functions to deploy."
             echo "targets=" >> "$GITHUB_OUTPUT"
           else
