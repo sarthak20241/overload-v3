@@ -415,8 +415,10 @@ Decision needed: add focus areas and a target date as fields?
 1. **Plan change log** and **routine edit history.** Every act card and every
    small change needs "what changed before" and "who changed it". Build first,
    because data only starts accumulating once the log exists.
-2. **C2 / H1, the permanent swap.** No model. The first small change with Undo,
-   which proves the auto-adjust loop and the Undo card end to end.
+2. **C2 / H1, the permanent swap.** BUILT 2026-09-18 (migration 0124,
+   `_shared/dronaSwap.ts`, drona-cards v3). A run of 4 sessions applies itself
+   and the notice carries Undo; a run of 3, or the setting off, asks first.
+   The "Small adjustments" toggle is on the Profile screen.
 3. **B1, calories when logging is good but weight is flat.** The first model
    act card, reading the change log.
 4. **A1, drift from the plan, with two options.**

@@ -29,9 +29,10 @@ import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { DronaCardView } from '@/components/coach/DronaCardView';
+import { useToast } from '@/components/ui/Toast';
 import {
-  currentWeekStart, readWeeklyCard, requestWeeklyCard, setCardStatus,
-  type SavedDronaCard,
+  applySwap, currentWeekStart, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  undoSwap, type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { ACTION_ROUTES } from '@/lib/dronaRules';
 import { todayReason } from '@/lib/todayReason';
@@ -277,6 +278,7 @@ export default function DashboardScreen() {
   // pendingCount never moves and the TODAY card kept offering an old routine
   // until the app restarted. The first focus is the mount, which already loads.
   const [focusTick, setFocusTick] = useState(0);
+  const toast = useToast();
   const hasFocusedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
@@ -538,6 +540,19 @@ export default function DashboardScreen() {
     const action = weeklyCard.payload.action;
     track('drona_card_acted', { kind: weeklyCard.kind, topic: weeklyCard.topic, action: action ?? null });
     setWeeklyCard(null);
+    if (action === 'apply_swap') {
+      // The database makes the change and moves the card's status, so the
+      // routine can only change while it still holds what the card claims.
+      void applySwap(supabase, weeklyCard.id).then((result) => {
+        toast.success(
+          result === 'ok'
+            ? `${weeklyCard.payload.to_name ?? 'The swap'} is in the plan.`
+            : 'That routine has changed since. Nothing was touched.',
+        );
+        setFocusTick((t) => t + 1);
+      });
+      return;
+    }
     void setCardStatus(supabase, weeklyCard.id, 'applied');
     if (action === 'start_session') {
       // The session that is due is exactly what the TODAY card opens.
@@ -555,6 +570,23 @@ export default function DashboardScreen() {
     track('drona_card_dismissed', { kind: weeklyCard.kind, topic: weeklyCard.topic });
     setWeeklyCard(null);
     void setCardStatus(supabase, weeklyCard.id, 'dismissed');
+  };
+
+  // Undo on a change Drona made by itself. The card closes either way: the
+  // user has answered, even when their own edit already moved the slot on.
+  const handleCardUndo = () => {
+    if (!weeklyCard) return;
+    const back = weeklyCard.payload.from_name;
+    track('drona_card_undone', { kind: weeklyCard.kind, topic: weeklyCard.topic });
+    setWeeklyCard(null);
+    void undoSwap(supabase, weeklyCard.id).then((result) => {
+      toast.info(
+        result === 'ok'
+          ? `${back ?? 'The old exercise'} is back in the plan.`
+          : 'That routine has changed since. Nothing was touched.',
+      );
+      setFocusTick((t) => t + 1);
+    });
   };
 
   // Today's suggestion (Element 2). No AI; the rules live in lib/todayPick.
@@ -918,7 +950,12 @@ export default function DashboardScreen() {
             is still the day's action; this one is the week talking. */}
         {weeklyCard && weeklyCard.status === 'pending' && (
           <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-            <DronaCardView card={weeklyCard} onAct={handleCardAct} onDismiss={handleCardDismiss} />
+            <DronaCardView
+              card={weeklyCard}
+              onAct={handleCardAct}
+              onDismiss={handleCardDismiss}
+              onUndo={handleCardUndo}
+            />
           </View>
         )}
 

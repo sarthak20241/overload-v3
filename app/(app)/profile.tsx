@@ -297,6 +297,9 @@ export default function ProfileScreen() {
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   // Coach context (Phase 0). Empty string = unset / show placeholder.
   const [coachGoal, setCoachGoal] = useState<CoachGoal | ''>('');
+  // "Let Drona make small adjustments" (migration 0124). On by default. Off
+  // does not silence Drona; it turns every small change into a question.
+  const [autoAdjust, setAutoAdjust] = useState(true);
   const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel | ''>('');
   const [weeklyTargetSessions, setWeeklyTargetSessions] = useState('');
   const [trainingAgeMonths, setTrainingAgeMonths] = useState('');
@@ -542,6 +545,7 @@ export default function ProfileScreen() {
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
         setCoachGoal((profile.goal as CoachGoal | null) || '');
+        setAutoAdjust(profile.drona_auto_adjust !== false);
         setExperienceLevel((profile.experience_level as ExperienceLevel | null) || '');
         setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
         setTrainingAgeMonths(profile.training_age_months != null ? String(profile.training_age_months) : '');
@@ -1312,6 +1316,27 @@ export default function ProfileScreen() {
                       color={active ? Colors.primaryFg : C.textMuted}
                     />
                   )}
+                />
+              </View>
+
+              {/* Small adjustments Drona may make on its own */}
+              <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
+                <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                  <Feather name="sliders" size={11} color={C.mutedFg} />
+                </View>
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Small adjustments</Text>
+                <MiniSegmented
+                  options={['On', 'Off'] as const}
+                  value={autoAdjust ? 'On' : 'Off'}
+                  onChange={(v) => {
+                    const next = v === 'On';
+                    if (next === autoAdjust) return;
+                    setAutoAdjust(next);
+                    track('drona_auto_adjust_set', { on: next });
+                    void supabase.from('user_profiles')
+                      .update({ drona_auto_adjust: next })
+                      .eq('clerk_user_id', user?.id ?? '');
+                  }}
                 />
               </View>
 
