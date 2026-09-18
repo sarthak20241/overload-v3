@@ -13,13 +13,18 @@
  * Write-through is gated on `hydrated` so the lone starter can never clobber
  * stored history during that window.
  */
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   CoachChatMessage,
+  CoachConversationSummary,
+  deleteConversation as deleteStoredConversation,
+  getActiveConversationId,
   getActiveMessages,
   hydrateCoachConversations,
   isCoachStoreHydrated,
+  listConversations,
   saveActiveMessages,
+  setActiveConversation,
   startNewConversation,
 } from '@/lib/coachConversations';
 
@@ -31,6 +36,14 @@ export interface UseCoachConversationReturn {
   markStarted: () => void;
   /** Reset to a fresh conversation (the "New chat" action). */
   startNewChat: () => void;
+  /** Past chats, newest first. Empty when persistence is disabled. */
+  conversations: CoachConversationSummary[];
+  /** Id of the conversation on screen, null before its first send. */
+  activeId: string | null;
+  /** Switch the screen to a stored conversation. */
+  openConversation: (id: string) => void;
+  /** Delete a stored conversation. Deleting the active one resets to the starter. */
+  deleteConversation: (id: string) => void;
 }
 
 export function useCoachConversation(opts: {
@@ -55,6 +68,9 @@ export function useCoachConversation(opts: {
     () => !enabled || isCoachStoreHydrated(userId),
   );
   const startedRef = useRef(false);
+  // Bumped by open / delete / new so the derived `conversations` list and
+  // `activeId` re-read the module store, which React can't see change.
+  const [storeVersion, setStoreVersion] = useState(0);
 
   // Hydrate from disk, then adopt the stored active conversation unless the user
   // has already started typing into the fresh starter.
@@ -93,7 +109,43 @@ export function useCoachConversation(opts: {
     if (enabled) startNewConversation(userId);
     startedRef.current = false;
     setMessages([makeStarterRef.current()]);
+    setStoreVersion((v) => v + 1);
   }, [enabled, userId]);
 
-  return { messages, setMessages, markStarted, startNewChat };
+  const openConversation = useCallback((id: string) => {
+    if (!enabled) return;
+    const stored = setActiveConversation(userId, id);
+    if (!stored) return;
+    // Same lock as markStarted: a late hydrate must not replace what the user
+    // just chose to look at.
+    startedRef.current = true;
+    setMessages(stored.length ? stored : [makeStarterRef.current()]);
+    setStoreVersion((v) => v + 1);
+  }, [enabled, userId]);
+
+  const deleteConversation = useCallback((id: string) => {
+    if (!enabled) return;
+    const wasActive = getActiveConversationId(userId) === id;
+    deleteStoredConversation(userId, id);
+    if (wasActive) {
+      startedRef.current = false;
+      setMessages([makeStarterRef.current()]);
+    }
+    setStoreVersion((v) => v + 1);
+  }, [enabled, userId]);
+
+  // `messages` is a dependency on purpose: the active conversation's title and
+  // position come from what was last saved, and the write-through above runs
+  // on every messages change.
+  const conversations = useMemo(
+    () => (enabled && hydrated ? listConversations(userId) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabled, hydrated, userId, messages, storeVersion],
+  );
+  const activeId = enabled ? getActiveConversationId(userId) : null;
+
+  return {
+    messages, setMessages, markStarted, startNewChat,
+    conversations, activeId, openConversation, deleteConversation,
+  };
 }

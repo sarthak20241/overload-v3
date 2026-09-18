@@ -42,6 +42,9 @@ import { useCoachConversation } from '@/hooks/useCoachConversation';
 import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
+import { haptics } from '@/lib/haptics';
+import { MessageSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/MessageSheet';
+import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
@@ -463,10 +466,17 @@ function callAICoachStreaming(
   callbacks: StreamingCallbacks,
   options: StreamingOptions = {},
 ): { abort: () => void } {
+  const controller = new AbortController();
   // Single choke point for failures: everything below reports raw detail here,
   // and the user only ever sees the mapped copy. Keeps HTTP statuses, JSON
   // error bodies and provider billing notices out of the chat bubble.
-  const fail = (raw: string) => callbacks.onError(coachErrorMessage(raw));
+  // Once the caller has aborted (the user tapped Stop, or left the screen),
+  // nothing that lands late may touch the UI: not the fetch rejecting, not a
+  // chunk that was already on the wire. The caller has moved on.
+  const fail = (raw: string) => {
+    if (controller.signal.aborted) return;
+    callbacks.onError(coachErrorMessage(raw));
+  };
 
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -475,7 +485,6 @@ function callAICoachStreaming(
     return { abort: () => {} };
   }
 
-  const controller = new AbortController();
   let buffer = '';
 
   const processChunk = (text: string) => {
@@ -483,6 +492,7 @@ function callAICoachStreaming(
     const events = buffer.split('\n\n');
     buffer = events.pop() ?? '';
     for (const evtChunk of events) {
+      if (controller.signal.aborted) return;
       let event = 'message';
       let data = '';
       for (const line of evtChunk.split('\n')) {
@@ -617,7 +627,7 @@ function callAICoachStreaming(
         await attempt(undefined);
       }
     } catch (e: any) {
-      if (e?.name === 'AbortError') return;
+      if (e?.name === 'AbortError' || controller.signal.aborted) return;
       fail(`Network error: ${String(e?.message ?? e)}`);
     }
   })();
@@ -651,7 +661,7 @@ function createTypewriter(
   const tick = () => {
     if (buffer.length === 0) {
       if (finished) {
-        stop();
+        stopTicking();
         onComplete?.();
         onComplete = null;
       }
@@ -683,7 +693,7 @@ function createTypewriter(
     if (interval) return;
     interval = setInterval(tick, TICK_MS);
   };
-  const stop = () => {
+  const stopTicking = () => {
     if (interval) { clearInterval(interval); interval = null; }
   };
 
@@ -701,7 +711,7 @@ function createTypewriter(
       onComplete = cb;
       // If buffer is already empty, drain has effectively completed.
       if (buffer.length === 0) {
-        stop();
+        stopTicking();
         cb();
         onComplete = null;
       } else {
@@ -711,13 +721,31 @@ function createTypewriter(
     },
     // Hard-set the message content (used on error). Cancels animation.
     fail(text: string) {
-      stop();
+      stopTicking();
       buffer = '';
       displayed = text;
       finished = true;
       setMessages(prev => prev.map(m =>
         m.id === messageId ? { ...m, content: displayed } : m
       ));
+    },
+    // The user tapped Stop. Freeze the animation, show everything that had
+    // already arrived (those tokens are paid for and it is what the coach
+    // said), forget the finish callback (citations would otherwise land on a
+    // truncated reply), and report what is on screen so the caller can drop
+    // a bubble that never got a word.
+    stop(): string {
+      stopTicking();
+      finished = true;
+      onComplete = null;
+      if (buffer.length > 0) {
+        displayed += buffer;
+        buffer = '';
+        setMessages(prev => prev.map(m =>
+          m.id === messageId ? { ...m, content: displayed } : m
+        ));
+      }
+      return displayed;
     },
   };
 }
@@ -952,7 +980,10 @@ function ChatScreen({
         };
   // Persisted conversation state (lib/coachConversations). Disabled in workout
   // mode, where the chat is intentionally ephemeral and re-seeded per open.
-  const { messages, setMessages, markStarted, startNewChat } = useCoachConversation({
+  const {
+    messages, setMessages, markStarted, startNewChat,
+    conversations, activeId, openConversation, deleteConversation,
+  } = useCoachConversation({
     userId,
     enabled: !workoutContext,
     makeStarter,
@@ -1018,6 +1049,23 @@ function ChatScreen({
       streamRef.current = null;
     };
   }, []);
+  // The typewriter and the assistant bubble of the turn in flight, so Stop can
+  // freeze the text where it is and drop a bubble that never got a word.
+  const typewriterRef = useRef<ReturnType<typeof createTypewriter> | null>(null);
+  const pendingAssistantIdRef = useRef<string | null>(null);
+  // Long-press target (copy / select text) and the "Past chats" overlay.
+  const [sheetTarget, setSheetTarget] = useState<MessageSheetTarget | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  // Registered only while the overlay is up, so it lands after the sheet's own
+  // handler and wins: hardware back closes the list, not the whole chat.
+  useEffect(() => {
+    if (!showHistory) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setShowHistory(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [showHistory]);
 
   // Set by a suggestion chip right before it calls handleSend; anything else
   // that passes an override (auto review, insight prompt) reads as 'auto'.
@@ -1038,6 +1086,7 @@ function ChatScreen({
       thinkingPhase: 'Thinking',
     };
     setMessages(prev => [...prev, userMsg, placeholder]);
+    pendingAssistantIdRef.current = assistantId;
     setInput('');
     setLoading(true);
     const askedAt = Date.now();
@@ -1119,6 +1168,7 @@ function ChatScreen({
     // This is how ChatGPT/Claude.ai/Perplexity all do it: the network is
     // bursty, the animation is smooth.
     const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    typewriterRef.current = typewriter;
     // Per-invocation flag: did the live `structured` event already deliver this
     // turn's workout edit? Guards the onDone fallback against a double card.
     let handledEdit = false;
@@ -1248,6 +1298,41 @@ function ChatScreen({
     });
   }, [input, loading, messages, supabase, getToken, workoutContext, canEditWorkout, markStarted, setMessages, userId]);
 
+  // Stop generating. Aborts the request (no more tokens billed), keeps whatever
+  // the coach had already said, and drops the bubble if he had not started.
+  // The user's turn stays: the API merges consecutive user turns, so the next
+  // send is still well-formed.
+  const handleStop = useCallback(() => {
+    if (!loading) return;
+    streamRef.current?.abort();
+    streamRef.current = null;
+    const shown = typewriterRef.current?.stop() ?? '';
+    typewriterRef.current = null;
+    const id = pendingAssistantIdRef.current;
+    pendingAssistantIdRef.current = null;
+    if (!shown && id) {
+      setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
+    }
+    setLoading(false);
+    haptics.tick();
+    track('coach_generation_stopped', {
+      mode: workoutContext ? 'live_workout' : 'chat',
+      had_partial: shown.length > 0,
+    });
+  }, [loading, setMessages, workoutContext]);
+
+  // Long press on a bubble: copy or select text. Nothing for the streaming
+  // placeholder, which has no words yet.
+  const openMessageSheet = useCallback((msg: ChatMessage) => {
+    if (!msg.content) return;
+    haptics.medium();
+    setSheetTarget({
+      role: msg.role,
+      text: msg.role === 'assistant' ? coachPlainText(msg.content) : msg.content,
+      surface: workoutContext ? 'live_workout' : 'chat',
+    });
+  }, [workoutContext]);
+
   // P4: apply a coach-proposed target change. Writes only the provided fields
   // to user_profiles (the machine-read layer the Nutrition screen + FUEL card
   // read), so the change reflects on their next focus of those screens.
@@ -1346,15 +1431,40 @@ function ChatScreen({
         {/* New chat: reset to a fresh conversation. Only in ordinary chat (the
             workout chat is per-session) and once there's a conversation to
             clear, so it doesn't clutter an empty greeting. */}
-        {!workoutContext && messages.length > 1 && (
-          <TouchableOpacity
-            onPress={() => { track('coach_new_chat_started', { messages_count: messages.length }); startNewChat(); }}
-            style={[s.newChatBtn, { backgroundColor: C.muted }]}
-            accessibilityLabel="Start a new chat"
-            hitSlop={8}
-          >
-            <Feather name="plus" size={18} color={C.foreground} />
-          </TouchableOpacity>
+        {!workoutContext && (
+          <View style={s.headerActions}>
+            {/* Past chats: only once there is one to show. */}
+            {conversations.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  Keyboard.dismiss();
+                  track('coach_history_opened', { conversations: conversations.length });
+                  setShowHistory(true);
+                }}
+                style={[s.headerBtn, { backgroundColor: C.muted }]}
+                accessibilityRole="button"
+                accessibilityLabel="Past chats"
+                hitSlop={8}
+              >
+                <Feather name="clock" size={16} color={C.foreground} />
+              </TouchableOpacity>
+            )}
+            {messages.length > 1 && (
+              <TouchableOpacity
+                onPress={() => {
+                  track('coach_new_chat_started', { messages_count: messages.length });
+                  handleStop();
+                  startNewChat();
+                }}
+                style={[s.headerBtn, { backgroundColor: C.muted }]}
+                accessibilityRole="button"
+                accessibilityLabel="Start a new chat"
+                hitSlop={8}
+              >
+                <Feather name="plus" size={18} color={C.foreground} />
+              </TouchableOpacity>
+            )}
+          </View>
         )}
       </View>
 
@@ -1377,7 +1487,10 @@ function ChatScreen({
           return (
             <View key={msg.id}>
               {!bubbleOnlyHoldsTheCard && (
-              <View
+              <Pressable
+                onLongPress={() => openMessageSheet(msg)}
+                delayLongPress={350}
+                accessibilityHint="Press and hold to copy or select text"
                 style={[
                   s.chatBubble,
                   msg.role === 'user'
@@ -1403,7 +1516,7 @@ function ChatScreen({
                 {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                   <CitationList citations={msg.citations} />
                 )}
-              </View>
+              </Pressable>
               )}
               {edit && (
                 <WorkoutEditCard
@@ -1518,19 +1631,88 @@ function ChatScreen({
             onSubmitEditing={() => handleSend()}
             blurOnSubmit
           />
-          <TouchableOpacity
-            onPress={() => handleSend()}
-            disabled={!input.trim() || loading}
-            style={[
-              s.sendBtn,
-              { backgroundColor: input.trim() ? Colors.primary : C.muted },
-            ]}
-          >
-            <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
-          </TouchableOpacity>
+          {loading ? (
+            // Send becomes Stop while the coach is working, the way every chat
+            // app does it: one control, one place.
+            <TouchableOpacity
+              onPress={handleStop}
+              style={[s.sendBtn, { backgroundColor: C.foreground }]}
+              accessibilityRole="button"
+              accessibilityLabel="Stop generating"
+              hitSlop={6}
+            >
+              <View style={[s.stopSquare, { backgroundColor: C.background }]} />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              onPress={() => handleSend()}
+              disabled={!input.trim()}
+              style={[
+                s.sendBtn,
+                { backgroundColor: input.trim() ? Colors.primary : C.muted },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Send"
+            >
+              <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
         <MedicalDisclaimer variant="short" style={{ marginTop: Spacing.sm }} />
       </View>
+
+      {/* Past chats: an overlay over the whole chat, header included, so the
+          thread underneath stays mounted and nothing is re-seeded. */}
+      {showHistory && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: C.background }]}>
+          <View style={[s.screenHeader, { borderColor: C.borderSubtle }]}>
+            <TouchableOpacity
+              onPress={() => setShowHistory(false)}
+              style={[s.backBtn, { backgroundColor: C.muted }]}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Back to chat"
+            >
+              <Feather name="arrow-left" size={16} color={C.foreground} />
+            </TouchableOpacity>
+            <Feather name="clock" size={16} color={C.accentText} />
+            <Text style={[s.screenTitle, { color: C.foreground }]}>Past chats</Text>
+            <TouchableOpacity
+              onPress={() => {
+                track('coach_new_chat_started', { messages_count: messages.length, from: 'history' });
+                handleStop();
+                startNewChat();
+                setShowHistory(false);
+              }}
+              style={[s.headerBtn, { backgroundColor: C.muted, marginLeft: 'auto' }]}
+              accessibilityRole="button"
+              accessibilityLabel="Start a new chat"
+              hitSlop={8}
+            >
+              <Feather name="plus" size={18} color={C.foreground} />
+            </TouchableOpacity>
+          </View>
+          <PastChatsList
+            conversations={conversations}
+            activeId={activeId}
+            onOpen={(id) => {
+              track('coach_conversation_opened', { is_active: id === activeId });
+              // A reply still streaming belongs to the thread being left.
+              handleStop();
+              openConversation(id);
+              setShowHistory(false);
+              setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
+            }}
+            onDelete={(id) => {
+              track('coach_conversation_deleted', { was_active: id === activeId });
+              if (id === activeId) handleStop();
+              deleteConversation(id);
+            }}
+          />
+        </View>
+      )}
+
+      <MessageSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
     </View>
   );
 }
@@ -1743,6 +1925,18 @@ function GeneratePlanScreen({
       streamRef.current = null;
     };
   }, []);
+  // Stop generating: abort the request and drop back to the form with the
+  // fields as they were. Nothing has been saved, so there is nothing to undo.
+  // If the structured result had already landed, the result card shows.
+  const handleStopGeneration = () => {
+    streamRef.current?.abort();
+    streamRef.current = null;
+    setLoading(false);
+    setRefining(false);
+    setCoachIntent('');
+    haptics.tick();
+    track('coach_generation_stopped', { mode: 'generate_plan', had_partial: false });
+  };
 
   const buildInitialPrompt = () =>
     // Gate on the NOTE, not just `seed`: the note is the entire substance of a
@@ -2052,6 +2246,15 @@ function GeneratePlanScreen({
           <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
             {coachIntent || 'Reviewing your training history and matching split, volume, and progression…'}
           </Text>
+          <TouchableOpacity
+            onPress={handleStopGeneration}
+            style={[s.loadingStopBtn, { borderColor: C.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Stop generating"
+          >
+            <View style={[s.stopSquare, { backgroundColor: C.foreground }]} />
+            <Text style={[s.loadingStopText, { color: C.foreground }]}>Stop</Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
@@ -2385,6 +2588,18 @@ function GenerateWorkoutScreen({
       streamRef.current = null;
     };
   }, []);
+  // Stop generating: abort the request and drop back to the form with the
+  // fields as they were. Nothing has been saved, so there is nothing to undo.
+  // If the structured result had already landed, the result card shows.
+  const handleStopGeneration = () => {
+    streamRef.current?.abort();
+    streamRef.current = null;
+    setLoading(false);
+    setRefining(false);
+    setCoachIntent('');
+    haptics.tick();
+    track('coach_generation_stopped', { mode: 'generate_workout', had_partial: false });
+  };
 
   const buildInitialPrompt = () =>
     `Design a workout for me. Focus: ${focus || 'full body'}. Time available: ${duration}. Equipment: ${equipment}. Use my training data (volume trends, recent workouts, PRs) and pick exercises that fit my goal and experience. Add per-exercise notes for form, intent, or RIR cues. Before calling generate_workout, write one short sentence (5-15 words) signaling your intent.`;
@@ -2611,6 +2826,15 @@ function GenerateWorkoutScreen({
           <Text style={[s.loadingIntent, { color: C.mutedFg }]}>
             {coachIntent || 'Pulling your training data and matching exercises…'}
           </Text>
+          <TouchableOpacity
+            onPress={handleStopGeneration}
+            style={[s.loadingStopBtn, { borderColor: C.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Stop generating"
+          >
+            <View style={[s.stopSquare, { backgroundColor: C.foreground }]} />
+            <Text style={[s.loadingStopText, { color: C.foreground }]}>Stop</Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
@@ -2910,6 +3134,10 @@ function RefineChatScreen({
       streamRef.current = null;
     };
   }, []);
+  // See ChatScreen: what Stop needs to freeze the turn in flight.
+  const typewriterRef = useRef<ReturnType<typeof createTypewriter> | null>(null);
+  const pendingAssistantIdRef = useRef<string | null>(null);
+  const [sheetTarget, setSheetTarget] = useState<MessageSheetTarget | null>(null);
 
   // Translate a terminal-tool emission into the right shape and hand it
   // up. Guards against double-fire (live + done) and against tool-name
@@ -2940,6 +3168,7 @@ function RefineChatScreen({
       thinkingPhase: 'Thinking',
     };
     setMessages(prev => [...prev, userMsg, placeholder]);
+    pendingAssistantIdRef.current = assistantId;
     setInput('');
     setLoading(true);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -3029,6 +3258,7 @@ function RefineChatScreen({
 
     streamRef.current?.abort();
     const typewriter = createTypewriter(assistantId, setMessages, scrollRef);
+    typewriterRef.current = typewriter;
     streamRef.current = callAICoachStreaming(apiMessages, token, {
       onDelta: (chunk) => typewriter.append(chunk),
       onStatus: (phase, payload) => {
@@ -3105,6 +3335,43 @@ function RefineChatScreen({
     });
   }, [input, loading, messages, getToken, recapText, starterText, mode, kind, handleStructured, onRequestUpgrade]);
 
+  // Stop generating (see ChatScreen.handleStop). One difference: if the
+  // terminal tool had already fired, the plan/workout exists server-side and
+  // the user was only waiting on the closing sentence, so hand it up rather
+  // than throw away a finished build.
+  const handleStop = useCallback(() => {
+    if (!loading) return;
+    streamRef.current?.abort();
+    streamRef.current = null;
+    const shown = typewriterRef.current?.stop() ?? '';
+    typewriterRef.current = null;
+    const id = pendingAssistantIdRef.current;
+    pendingAssistantIdRef.current = null;
+    if (!shown && id) {
+      setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
+    }
+    setLoading(false);
+    haptics.tick();
+    track('coach_generation_stopped', {
+      mode: `${kind}_${mode}`,
+      had_partial: shown.length > 0,
+      had_structured: !!pendingStructuredRef.current,
+    });
+    const built = pendingStructuredRef.current;
+    pendingStructuredRef.current = null;
+    if (built) handleStructured(built.name, built.input);
+  }, [loading, kind, mode, handleStructured]);
+
+  const openMessageSheet = useCallback((msg: ChatMessage) => {
+    if (!msg.content) return;
+    haptics.medium();
+    setSheetTarget({
+      role: msg.role,
+      text: msg.role === 'assistant' ? coachPlainText(msg.content) : msg.content,
+      surface: `${kind}_${mode}`,
+    });
+  }, [kind, mode]);
+
   // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
   // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
   // which is unreliable inside a transparent Modal on iOS.
@@ -3130,8 +3397,11 @@ function RefineChatScreen({
         keyboardShouldPersistTaps="handled"
       >
         {messages.map((msg) => (
-          <View
+          <Pressable
             key={msg.id}
+            onLongPress={() => openMessageSheet(msg)}
+            delayLongPress={350}
+            accessibilityHint="Press and hold to copy or select text"
             style={[
               s.chatBubble,
               msg.role === 'user'
@@ -3153,7 +3423,7 @@ function RefineChatScreen({
             {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
               <CitationList citations={msg.citations} />
             )}
-          </View>
+          </Pressable>
         ))}
       </ScrollView>
 
@@ -3171,18 +3441,34 @@ function RefineChatScreen({
             onSubmitEditing={handleSend}
             blurOnSubmit
           />
-          <TouchableOpacity
-            onPress={handleSend}
-            disabled={!input.trim() || loading}
-            style={[
-              s.sendBtn,
-              { backgroundColor: input.trim() ? Colors.primary : C.muted },
-            ]}
-          >
-            <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
-          </TouchableOpacity>
+          {loading ? (
+            <TouchableOpacity
+              onPress={handleStop}
+              style={[s.sendBtn, { backgroundColor: C.foreground }]}
+              accessibilityRole="button"
+              accessibilityLabel="Stop generating"
+              hitSlop={6}
+            >
+              <View style={[s.stopSquare, { backgroundColor: C.background }]} />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              onPress={handleSend}
+              disabled={!input.trim()}
+              style={[
+                s.sendBtn,
+                { backgroundColor: input.trim() ? Colors.primary : C.muted },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Send"
+            >
+              <Feather name="send" size={16} color={input.trim() ? Colors.primaryFg : C.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
+
+      <MessageSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
     </View>
   );
 }
@@ -3996,11 +4282,24 @@ const s = StyleSheet.create({
     width: 32, height: 32, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
   },
-  newChatBtn: {
-    width: 32, height: 32, borderRadius: 16,
-    alignItems: 'center', justifyContent: 'center',
+  // Right-hand header controls (past chats, new chat)
+  headerActions: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
     marginLeft: 'auto',
   },
+  headerBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  // The Stop glyph: a filled square, the convention every chat app shares
+  stopSquare: { width: 12, height: 12, borderRadius: 3 },
+  loadingStopBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginTop: Spacing.md,
+    paddingHorizontal: 16, paddingVertical: 9,
+    borderRadius: Radius.full, borderWidth: 1,
+  },
+  loadingStopText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   screenTitle: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold,
   },
