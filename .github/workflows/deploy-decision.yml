@@ -1,28 +1,33 @@
 name: Deploy Decision
 
-# Forces an explicit yes or no on every PR that touches supabase/functions/**,
-# so nothing reaches production because someone merged without thinking about it.
+# Reports what merging a PR will do to production, and fails ONLY when the
+# stated intent is impossible or self-contradictory.
 #
-# A PR that changes an Edge Function must carry exactly one of:
+# On a PR that changes supabase/functions/**:
 #   deploy:yes  -> deploy-functions.yml deploys that PR's functions on merge
-#   deploy:no   -> the code lands, production is untouched; deploy later by hand
+#   deploy:no   -> explicitly recorded as "land it, deploy later"
+#   no label    -> PASSES, and nothing deploys
 #
-# Until one is present this check FAILS, so whoever merges — person or agent —
-# has to make the call and it is recorded on the PR forever.
+# A missing label does NOT block the merge. Silence is already the safe answer:
+# deploy-functions.yml requires deploy:yes to be PRESENT, so an unlabelled merge
+# lands the code and leaves production alone. Failing the check would have added
+# friction to every PR in order to prevent an outcome that was never possible.
+#
+# The check fails on the two cases where someone has said something that cannot
+# be carried out:
+#   - both labels at once, which is not an answer
+#   - deploy:yes on a fork PR, which GitHub's secret rules cannot honour
 #
 # The labels are added on the PR page: right sidebar -> Labels -> gear icon.
-# This workflow creates both of them the first time it runs, so there is
-# nothing to set up by hand.
+# This workflow creates both the first time it runs, so there is nothing to set
+# up by hand.
 #
-# ONE THING THIS CANNOT DO ON ITS OWN: a failing check only BLOCKS a merge if
-# branch protection requires it. Add the check named "Deploy decision" (the
-# job's name below, NOT the workflow name above — branch protection matches the
-# check run, and they are different strings) to the required status checks for
-# main: Settings -> Branches -> branch protection rule -> Require status checks
-# to pass. Until then this reports and does not block.
+# Making this a required status check (the check is named "Deploy decision" —
+# the job's name below, NOT the workflow name above; branch protection matches
+# the check run and they are different strings) is optional now that a missing
+# label is a pass. It only adds teeth to the two contradiction cases.
 #
-# PRs that touch no Edge Function skip the requirement entirely — most PRs
-# should never see this.
+# PRs that touch no Edge Function skip this entirely.
 
 on:
   # Scoped to PRs targeting main, matching what can actually deploy. A PR into a
@@ -111,11 +116,14 @@ jobs:
           fi
 
           if [ "$has_yes" = false ] && [ "$has_no" = false ]; then
-            echo "::error::This PR changes Edge Functions and has no deploy decision." \
-                 "Add deploy:yes (deploy on merge) or deploy:no (merge only) on the PR" \
-                 "page: right sidebar -> Labels. Merging without one would leave it" \
-                 "unclear whether production was meant to change."
-            exit 1
+            # Not an error. No label means no deploy, which is the safe outcome
+            # anyway — deploy-functions.yml requires deploy:yes to be present.
+            # Blocking the merge here would tax every PR to prevent something
+            # that could not happen.
+            echo "::notice::No deploy label — merging will NOT touch production."
+            echo "Add deploy:yes if these functions should go live on merge, or"
+            echo "deploy later with Actions -> Deploy Edge Functions -> Run workflow."
+            exit 0
           fi
 
           # deploy:yes is a promise the merge cannot keep from a fork. GitHub

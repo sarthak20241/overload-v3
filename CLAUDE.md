@@ -39,25 +39,23 @@ There are no configured lint or build scripts.
 
 **Nothing deploys automatically. Merging is not consent to deploy.**
 
-Any PR touching `supabase/functions/**` must carry exactly one label before it
-can merge — `deploy:yes` or `deploy:no` — enforced by
-`.github/workflows/deploy-decision.yml`. Labels are set on the PR page: right
-sidebar → Labels.
-
-**If you are an agent merging such a PR, you must set the label first**, and
-the choice is the user's, not yours. Ask before merging. `deploy:yes` changes
-production the moment the PR merges.
+A PR touching `supabase/functions/**` deploys on merge only if it carries the
+`deploy:yes` label. Labels are set on the PR page: right sidebar → Labels.
 
 - `deploy:yes` → `deploy-functions.yml` deploys that PR's functions on merge
-- `deploy:no` → the code lands, production is untouched
+- `deploy:no` → explicitly recorded as "land it, deploy later"
+- **no label → nothing deploys**, and the merge is not blocked
 
-`deploy:yes` is refused on a PR from a fork: GitHub withholds secrets from
-fork-triggered runs, so the deploy would start and then fail with no
-credentials. Use `deploy:no` and deploy by hand after merging.
+**If you are an agent, never add `deploy:yes` on your own.** It changes
+production the moment the PR merges, so the choice is the user's — ask. Leaving
+it off is always safe; the code lands and production is untouched, and it can be
+deployed later with Actions → "Deploy Edge Functions" → Run workflow.
 
-The check is named **"Deploy decision"** — the job name, not the workflow name.
-That is the string to add under Settings → Branches → required status checks.
-Until it is required there, the check reports but does not block a merge.
+`.github/workflows/deploy-decision.yml` reports what a merge will do and fails
+only on the two contradictions: both labels at once, and `deploy:yes` on a fork
+PR (GitHub withholds secrets from fork runs, so that deploy could not run). Its
+check is named **"Deploy decision"** — the job name, not the workflow name — if
+you want it as a required status check.
 
 A change under `_shared/` fans out to every function importing it, since nothing
 rebuilds on its own. To deploy by hand at any time: Actions → "Deploy Edge
