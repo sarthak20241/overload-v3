@@ -111,14 +111,17 @@ ok('the card is still pending, so the user still sees the notice',
   (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'pending');
 
 // Applying twice must not move anything: the slot no longer holds the old one.
-ok('a second apply is a no-op', (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'moved_on');
+ok('a replayed apply answers ok, so a retry cannot read as a failure',
+  (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'ok');
 
 // ── Undo ─────────────────────────────────────────────────────────────────────
 const undone = await db.rpc('drona_undo_swap', { p_card_id: cardId });
 ok('the user can undo their own card', undone.data === 'ok', undone.data ?? undone.error?.message);
 ok('the planned exercise is back', await slotNow() === PLANNED.id);
 ok('the card is closed', (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'dismissed');
-ok('a second undo finds nothing to put back', (await db.rpc('drona_undo_swap', { p_card_id: cardId })).data === 'moved_on');
+ok('a replayed undo answers ok too', (await db.rpc('drona_undo_swap', { p_card_id: cardId })).data === 'ok');
+ok('a card the user already answered is never re-applied by the worker',
+  (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'already_decided');
 
 // ── A hand edit wins ─────────────────────────────────────────────────────────
 const card2 = (await service.from('drona_cards').insert({
@@ -155,3 +158,4 @@ for (const uid of [UID, OTHER]) await service.rpc('delete_user_data', { p_user_i
 ok('cleanup', ((await service.from('drona_cards').select('id').eq('user_id', UID)).data?.length ?? 0) === 0
   && ((await service.from('plan_changes').select('id').eq('user_id', UID)).data?.length ?? 0) === 0);
 console.log(fails === 0 ? 'ALL PASS' : fails + ' FAILED');
+if (fails > 0) process.exitCode = 1;

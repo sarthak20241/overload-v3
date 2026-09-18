@@ -1330,12 +1330,21 @@ export default function ProfileScreen() {
                   value={autoAdjust ? 'On' : 'Off'}
                   onChange={(v) => {
                     const next = v === 'On';
-                    if (next === autoAdjust) return;
+                    if (next === autoAdjust || !user?.id) return;
                     setAutoAdjust(next);
                     track('drona_auto_adjust_set', { on: next });
+                    // A PostgREST builder only sends its request once it is
+                    // awaited. `void builder` on its own would move the switch
+                    // and save nothing.
                     void supabase.from('user_profiles')
                       .update({ drona_auto_adjust: next })
-                      .eq('clerk_user_id', user?.id ?? '');
+                      .eq('clerk_user_id', user.id)
+                      .then(({ error }) => {
+                        if (error) {
+                          setAutoAdjust(!next); // it did not save: put it back
+                          toast.error('Could not save that. Try again.');
+                        }
+                      });
                   }}
                 />
               </View>

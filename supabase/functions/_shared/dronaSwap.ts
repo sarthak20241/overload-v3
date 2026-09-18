@@ -68,11 +68,9 @@ export interface SwapCandidate {
   last_on: string;
 }
 
-/** Below this many sessions of a routine there is no habit to read. */
-const MIN_SESSIONS = 4;
 /** A run this long changes the plan by itself. */
 const AUTO_RUN = 4;
-/** A run this long is worth asking about. */
+/** A run this long is worth asking about, and the fewest sessions to read. */
 const ASK_RUN = 3;
 
 const key = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase();
@@ -114,7 +112,7 @@ export function swapCandidates(facts: SwapFacts): SwapCandidate[] {
   for (const routine of facts.routines ?? []) {
     const plan = routine.plan ?? [];
     const sessions = routine.sessions ?? [];
-    if (plan.length === 0 || sessions.length < MIN_SESSIONS) continue;
+    if (plan.length === 0 || sessions.length < ASK_RUN) continue;
 
     const first = swapIn(plan, sessions[0]);
     if (!first) continue;

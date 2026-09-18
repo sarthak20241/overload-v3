@@ -49,6 +49,13 @@ Deno.test("four sessions in a row with the same stand-in is a candidate", () => 
   assertEquals(c.sessions, 4);
 });
 
+Deno.test("three sessions that all swapped is enough to ask", () => {
+  const [c] = swapCandidates(facts(swapped(3)));
+  assertEquals(c.run, 3);
+  assertEquals(c.sessions, 3);
+  assertEquals(decideSwap(facts(swapped(3))).move, "ask");
+});
+
 Deno.test("two sessions is not enough to call it a habit", () => {
   assertEquals(swapCandidates(facts([...swapped(2), ...asPlanned(3, 2)])).length, 0);
 });

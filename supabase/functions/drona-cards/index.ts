@@ -106,8 +106,17 @@ async function swapFirst(
     tagged(db.rpc("drona_swap_autoapply", { p_card_id: cardId }), cardId)
   );
   if (applyErr || result !== "ok") {
-    await retried(() => db.from("drona_cards").delete().eq("id", cardId));
-    return null;
+    // Delete the notice ONLY where the routine plainly did not change. If that
+    // read fails too, keep the card: a stale card is a smaller harm than a
+    // changed plan with no Undo on it.
+    const { data: slot } = await retried(() =>
+      db.from("routine_exercises").select("exercise_id")
+        .eq("id", card.payload.routine_exercise_id).maybeSingle()
+    );
+    if (slot && slot.exercise_id !== card.payload.to_exercise_id) {
+      await retried(() => db.from("drona_cards").delete().eq("id", cardId));
+      return null;
+    }
   }
   return { kind: card.kind, saved: true };
 }

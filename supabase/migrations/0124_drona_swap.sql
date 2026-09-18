@@ -112,6 +112,13 @@ grant execute on function public.get_drona_swap_facts(text, date) to service_rol
 -- One exercise becomes another in one routine slot, and only when that slot
 -- still holds what the card said it did. A user who already edited the routine
 -- by hand gets 'moved_on', never a silent overwrite of their own edit.
+--
+-- REPLAY-SAFE. The caller may retry after an ambiguous answer (the API gateway
+-- has 504'd on calls that committed), so a move that finds the slot ALREADY
+-- holding its target answers 'ok'. Without that a replay reads as a failure,
+-- and the worker would delete the notice after the routine had changed,
+-- leaving a changed plan with no Undo on it. The card row is locked, so an
+-- apply and an Undo of the same card cannot interleave.
 create or replace function private.drona_swap_move(p_card_id uuid, p_undo boolean)
 returns text
 language plpgsql
@@ -126,8 +133,10 @@ declare
   v_to uuid;
   v_expect uuid;
   v_target uuid;
+  v_current uuid;
 begin
-  select user_id, payload into v_owner, v_payload from drona_cards where id = p_card_id;
+  select user_id, payload into v_owner, v_payload
+    from drona_cards where id = p_card_id for update;
   if v_owner is null then
     return 'no_card';
   end if;
@@ -158,6 +167,14 @@ begin
      and re.exercise_id = v_expect;
 
   if not found then
+    select re.exercise_id into v_current
+      from routine_exercises re
+      join routines r on r.id = re.routine_id
+     where re.id = v_slot and r.user_id = v_owner;
+    -- Already where this move wants it: the same move, replayed.
+    if v_current = v_target then
+      return 'ok';
+    end if;
     return 'moved_on';
   end if;
   return 'ok';
@@ -204,10 +221,13 @@ set search_path = public, pg_temp
 as $function$
 declare
   v_topic text;
+  v_status text;
 begin
-  select topic into v_topic from drona_cards where id = p_card_id;
+  select topic, status into v_topic, v_status from drona_cards where id = p_card_id;
   if v_topic is null then return 'no_card'; end if;
   if v_topic <> 'swap' then return 'not_a_swap'; end if;
+  -- The user has already answered this card (usually with Undo). Never re-apply.
+  if v_status <> 'pending' then return 'already_decided'; end if;
   return private.drona_swap_move(p_card_id, false);
 end;
 $function$;
