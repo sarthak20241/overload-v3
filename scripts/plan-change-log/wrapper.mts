@@ -1,0 +1,34 @@
+import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createClient } from '@supabase/supabase-js';
+import { withChangeSource } from '../../lib/planChangeSource.ts';
+const env = Object.fromEntries(readFileSync(new URL('../../.env.local', import.meta.url),'utf8').split('\n').filter(l=>l.includes('=')).map(l=>[l.slice(0,l.indexOf('=')), l.slice(l.indexOf('=')+1).trim()]));
+const UID = 'user_probe_wrapper_20260917';
+const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const now = Math.floor(Date.now()/1000);
+const h = b64({alg:'HS256',typ:'JWT'}), p = b64({sub:UID, role:'authenticated', aud:'authenticated', iat:now, exp:now+600});
+const sig = crypto.createHmac('sha256', env.SUPABASE_JWT_SECRET).update(h+'.'+p).digest('base64url');
+const db = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.EXPO_PUBLIC_SUPABASE_ANON_KEY, { global:{headers:{Authorization:'Bearer '+h+'.'+p+'.'+sig}}, auth:{persistSession:false} });
+const service = createClient(env.EXPO_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth:{persistSession:false} });
+let fails = 0;
+const ok = (n: string, c: boolean, d?: unknown) => { if(!c) fails++; console.log((c?'PASS ':'FAIL ')+n+(d===undefined?'':'  '+JSON.stringify(d))); };
+const log = async () => (await db.from('plan_changes').select('entity, action, source').order('id')).data ?? [];
+
+const onb = withChangeSource(db, 'onboarding');
+const i = await onb.from('user_profiles').upsert({ clerk_user_id: UID, daily_calorie_target: 2300 }, { onConflict: 'clerk_user_id' });
+ok('real client upsert through the wrapper works', !i.error, i.error?.message);
+const chat = withChangeSource(db, 'chat');
+const r = await chat.from('routines').insert({ user_id: UID, name: 'Wrapped' }).select().single();
+ok('insert().select().single() chain works and returns the row', !r.error && (r.data as any)?.name === 'Wrapped', r.error?.message);
+const u = await withChangeSource(db, 'auto').from('user_profiles').update({ daily_calorie_target: 2200 }).eq('clerk_user_id', UID);
+ok('update().eq() chain works', !u.error, u.error?.message);
+const sel = await chat.from('routines').select('name').eq('user_id', UID);
+ok('reads through the wrapper still work', !sel.error && sel.data?.length === 1);
+const rows = await log();
+ok('sources recorded: onboarding, chat, auto', JSON.stringify(rows.map((x: any) => x.entity + ':' + x.source)) === JSON.stringify(['targets:onboarding', 'routine:chat', 'targets:auto']), rows);
+const plain = await db.from('user_profiles').update({ daily_calorie_target: 2100 }).eq('clerk_user_id', UID);
+ok('the untagged client still logs manual', !plain.error && (await log()).some((x: any) => x.source === 'manual'));
+
+await service.rpc('delete_user_data', { p_user_id: UID });
+ok('cleanup', ((await service.from('plan_changes').select('id').eq('user_id', UID)).data?.length ?? 0) === 0);
+console.log(fails === 0 ? 'ALL PASS' : fails + ' FAILED');
