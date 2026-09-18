@@ -5,10 +5,16 @@ name: CodeRabbit Auto Trigger
 # (See its own note on PR #109: "This repository does not receive automatic
 # reviews because it has fewer than 10 stars.")
 #
-# This workflow types the trigger for us: on PR open/reopen AND on every push to
-# an open PR it posts "@coderabbitai review", which CodeRabbit honors even under
-# the star gate. On a push that command is an incremental review of the new
-# commits, which is what the star gate would otherwise have given us for free.
+# This workflow types the trigger for us: on PR open/reopen, on every push to
+# an open PR, AND when a draft PR is marked ready for review it posts
+# "@coderabbitai review", which CodeRabbit honors even under the star gate. On a
+# push that command is an incremental review of the new commits, which is what
+# the star gate would otherwise have given us for free.
+#
+# ready_for_review is not optional: a PR opened as a draft is skipped by the
+# draft == false guard below, so without that event the PR would only ever be
+# reviewed if someone pushed another commit to it (PRs #182 and #183 both had to
+# be triggered by hand).
 #
 # TOKEN: it must be a REAL user token, not the built-in GITHUB_TOKEN, because
 # CodeRabbit ignores comments authored by bots (github-actions[bot]) to avoid
@@ -21,7 +27,7 @@ name: CodeRabbit Auto Trigger
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 # One trigger per PR at a time. cancel-in-progress means a burst of pushes
 # collapses into a single review of the newest head instead of queueing one
@@ -33,7 +39,8 @@ concurrency:
 jobs:
   trigger:
     # Fork PRs don't get repo secrets, so there'd be no token to post with.
-    # Draft PRs are still being written; review them once they're ready.
+    # Draft PRs are still being written; the ready_for_review event brings them
+    # back here the moment they stop being drafts.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.draft == false
