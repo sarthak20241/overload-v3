@@ -69,3 +69,6 @@ export function envInt(name: string, fallback: number, opts: EnvIntOptions = {})
   }
   return floored;
 }
+
+// Gate proof (reverted in the next commit): a PR touching an Edge Function
+// must carry deploy:yes or deploy:no before it can merge.
