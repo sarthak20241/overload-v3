@@ -1,0 +1,242 @@
+name: Deploy Edge Functions
+
+# Deploys supabase/functions/* to the live project.
+#
+# This exists because there was no way to ship an Edge Function without a human
+# at a terminal running the Supabase CLI. The deployed ai-coach drifted two
+# commits behind main that way, which is how an unrelated parse_meal refactor
+# ended up riding along with an unrelated fix.
+#
+# Two ways in:
+#   - push to main touching supabase/functions/**  -> deploys only what changed
+#   - Actions -> "Deploy Edge Functions" -> Run workflow -> deploys what you name
+#
+# verify_jwt is NOT set here on purpose. supabase/config.toml declares
+# `verify_jwt = false` per function, and the CLI reads it from the repo root,
+# so the setting travels with the code. Passing --no-verify-jwt here would put
+# the same decision in two places and let them drift. If you add a function,
+# give it a [functions.<name>] block in config.toml — the CLI default is
+# verify_jwt = true, which rejects Clerk JWTs at the gateway before the handler
+# ever runs.
+#
+# A change to config.toml alone does not auto-deploy (nothing under
+# supabase/functions/ changed, so there is nothing to diff). Use the manual
+# "all" run for that.
+
+on:
+  workflow_dispatch:
+    inputs:
+      functions:
+        description: 'Function names, space or comma separated — or "all"'
+        required: false
+        default: all
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
+      - '.github/workflows/deploy-functions.yml'
+
+# One deploy at a time, and never cancel one in flight: a half-applied deploy
+# is worse than a queued one.
+concurrency:
+  group: deploy-edge-functions
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so a push can be diffed against its own `before` SHA
+          # rather than guessing at HEAD^, which is wrong for a multi-commit push.
+          fetch-depth: 0
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # The repo has no other test CI, so this is the only automated gate
+      # between a bad commit and production, and the deploy is blocked on it
+      # deliberately. Be clear about its reach though: these suites cover
+      # ai-coach, _shared and revenuecat-webhook. delete-account and form-check
+      # have no tests at all, and daily-suggestion is covered only indirectly,
+      # through the _shared rules it calls. All five are deployable, so a green
+      # run here is not a statement about every function it can ship.
+      - name: Test
+        run: |
+          set -euo pipefail
+          # No --node-modules-dir: none of these suites reach an npm import, and
+          # on a clean checkout the flag makes Deno install this repo's entire
+          # React Native dependency tree before running a single test. Verified
+          # in a fresh worktree — 385 pass without it. These are the commands
+          # CLAUDE.md documents, unmodified.
+          deno test --allow-all supabase/functions/ai-coach/
+          deno test --allow-all supabase/functions/_shared/
+          deno test --allow-all supabase/functions/revenuecat-webhook/
+          deno test --allow-all lib/xp.test.ts
+          deno test --allow-all lib/tiers.test.ts
+
+      - name: Pick functions
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.functions }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Every deployable function = a directory under supabase/functions/
+          # that is not the shared library.
+          all_functions() {
+            find supabase/functions -mindepth 1 -maxdepth 1 -type d \
+              ! -name '_shared' -printf '%f\n' | sort
+          }
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            # Compare "all" case- and whitespace-insensitively. The strict
+            # compare meant typing "All" fell through to the name list, matched
+            # no directory, and the run went GREEN having deployed nothing —
+            # the worst outcome for a box a human types into by hand.
+            requested_norm="$(printf '%s' "${REQUESTED:-}" \
+              | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+            if [ -z "$requested_norm" ] || [ "$requested_norm" = "all" ]; then
+              targets="$(all_functions)"
+            else
+              targets="$(printf '%s' "$REQUESTED" | tr ', ' '\n\n' | sed '/^$/d' | sort -u)"
+            fi
+          else
+            # Diff against the push's own base. A force-push or a first push
+            # reports an all-zero (or unreachable) SHA, so fall back to the
+            # parent commit. `--verify --quiet` rather than a bare rev-parse:
+            # a commit with no parent (a repo's very first) would otherwise
+            # abort the whole job under `set -e`.
+            base=''
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              base="$BEFORE"
+            elif git rev-parse --verify --quiet "${SHA}^" >/dev/null 2>&1; then
+              base="$(git rev-parse "${SHA}^")"
+            fi
+
+            if [ -z "$base" ]; then
+              # No base to diff against means we cannot know what changed.
+              # Deploy everything: shipping a redundant copy of an unchanged
+              # function is harmless, silently leaving a changed one behind is
+              # the drift this workflow exists to stop.
+              echo "::warning::No usable base commit to diff against — deploying every function."
+              changed="$(find supabase/functions -mindepth 1 -maxdepth 1 -type d -printf 'supabase/functions/%f/\n')"
+            else
+              changed="$(git diff --name-only "$base" "$SHA" -- supabase/functions/ || true)"
+            fi
+
+            # _shared is compiled into each function that imports it, so a change
+            # there is a change to every one of them. Nothing rebuilds on its
+            # own; miss this and a function keeps running the old copy.
+            #
+            # The pattern looks one-level-deep but is not: it is an unanchored
+            # substring match, and "../../_shared/" contains "../_shared/", so
+            # an import from any depth still matches (verified with a nested
+            # fixture four levels down). -r also descends into subdirectories,
+            # and `cut -f3` takes the function name from the path, not the
+            # import, so depth never reaches the result.
+            # `|| true` on both: grep exits 1 when it matches nothing, and under
+            # `set -euo pipefail` that status propagates out of the pipeline and
+            # kills the step on a plain assignment. Matching nothing is a normal
+            # outcome for each of these, not an error:
+            #   - shared_users: no function imports _shared (true of a repo before
+            #     the first shared module lands).
+            #   - direct: EVERY changed path is under _shared/ — i.e. a standalone
+            #     fix to a shared module, which is precisely the case the fan-out
+            #     below exists to serve. Without the guard the job died with a raw
+            #     script error on its own primary use case.
+            shared_users=''
+            if printf '%s\n' "$changed" | grep -q '^supabase/functions/_shared/'; then
+              shared_users="$(grep -rl '\.\./_shared/' supabase/functions/*/ --include='*.ts' \
+                | cut -d/ -f3 | sort -u || true)"
+            fi
+            direct="$(printf '%s\n' "$changed" \
+              | grep -v '^supabase/functions/_shared/' \
+              | cut -d/ -f3 | sort -u || true)"
+            targets="$(printf '%s\n%s\n' "$direct" "$shared_users" | sed '/^$/d' | sort -u)"
+          fi
+
+          # Drop anything that is not a real function directory: a deleted
+          # function still shows up in a diff, and a typo'd manual input should
+          # fail loudly here rather than as a confusing CLI error.
+          valid=''
+          for fn in $targets; do
+            if [ -d "supabase/functions/$fn" ] && [ "$fn" != "_shared" ]; then
+              valid="$valid $fn"
+            else
+              echo "::warning::skipping '$fn' — no such function directory"
+            fi
+          done
+          valid="$(printf '%s' "$valid" | xargs || true)"
+
+          if [ -z "$valid" ]; then
+            if [ "$EVENT" = "workflow_dispatch" ]; then
+              # Someone asked for something by name and none of it resolved.
+              # Failing is the only way they find out; a green run that
+              # deployed nothing reads as success.
+              echo "::error::Nothing matched \"${REQUESTED:-}\". Valid names:" \
+                   "$(all_functions | tr '\n' ' ')— or \"all\"."
+              exit 1
+            fi
+            # A push can legitimately touch supabase/functions/ without changing
+            # any function (docs, a stray file). Nothing to do is correct here.
+            echo "No functions to deploy."
+            echo "targets=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will deploy: $valid"
+            echo "targets=$valid" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: supabase/setup-cli@v1
+        if: steps.pick.outputs.targets != ''
+        with:
+          version: latest
+
+      - name: Deploy
+        if: steps.pick.outputs.targets != ''
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          TARGETS: ${{ steps.pick.outputs.targets }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+            echo "::error::SUPABASE_ACCESS_TOKEN is not set. Create one at" \
+                 "Supabase dashboard -> Account -> Access Tokens, then add it as a" \
+                 "repository secret."
+            exit 1
+          fi
+
+          # Derive the project ref from the existing SUPABASE_URL secret
+          # (https://<ref>.supabase.co) so there is no second place to update
+          # when the project changes, and no project id committed to a public repo.
+          ref="$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://([a-z0-9]+)\..*#\1#')"
+          if [ -z "$ref" ] || [ "$ref" = "$SUPABASE_URL" ]; then
+            echo "::error::Could not read a project ref out of SUPABASE_URL." \
+                 "Expected https://<ref>.supabase.co"
+            exit 1
+          fi
+          # Register the derived value for masking. GitHub only redacts exact,
+          # complete matches of a registered secret, and $ref is a SUBSTRING of
+          # SUPABASE_URL (no scheme, no .supabase.co), so it is not masked
+          # automatically. This repo is public and its Actions logs are world
+          # readable, so without this the ref lands in the log — which is the
+          # thing deriving it from a secret was meant to avoid.
+          echo "::add-mask::$ref"
+          echo "Project ref resolved from SUPABASE_URL."
+
+          for fn in $TARGETS; do
+            echo "::group::deploy $fn"
+            supabase functions deploy "$fn" --project-ref "$ref"
+            echo "::endgroup::"
+          done
