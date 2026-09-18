@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { buildSystemPrompt, STRUCTURED_TOOLS, TERMINAL_TOOLS } from "./prompt.ts";
+import { envInt } from "../_shared/envInt.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -81,6 +82,10 @@ const GENERATE_PLAN_MAX_TOKENS = 4096;
 // still hard-errored (tool_truncated), never silently dropped.
 const GENERATE_PROGRAM_MAX_TOKENS = 6144;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
+// Every model-call timeout below reads its budget through the shared envInt
+// (../_shared/envInt.ts), so any of them can be retuned from the Edge
+// Function secrets without a redeploy. Defaults are unchanged, so an unset
+// secret keeps today's behaviour exactly.
 // Hard cap on a single Anthropic call — a guard against a HUNG upstream, not
 // a latency budget. The original 30s was set from n=4 production samples and
 // sat exactly on the p50 of real generate_plan runs: the 2026-07-19 eval
@@ -89,12 +94,12 @@ const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // starter plan. 80s clears the observed max with ~30s headroom while still
 // killing a truly wedged connection. Note the onboarding client
 // (lib/onboardingDrona.ts) aborts at 75s, so it gives up before we do.
-const ANTHROPIC_TIMEOUT_MS = 80000;
+const ANTHROPIC_TIMEOUT_MS = envInt("ANTHROPIC_TIMEOUT_MS", 80000);
 // Dedicated short timeout for the pre-retrieval rewrite hop. It is a cheap,
 // optional pre-step that runs synchronously before embed + the main coach call,
 // so if Haiku hangs we bail fast to the raw message rather than block the whole
 // turn for the full 80s ANTHROPIC_TIMEOUT_MS.
-const RETRIEVAL_QUERY_TIMEOUT_MS = 8000;
+const RETRIEVAL_QUERY_TIMEOUT_MS = envInt("RETRIEVAL_QUERY_TIMEOUT_MS", 8000);
 
 // parse_meal mode (AI food logging). Haiku for speed + cost: this fires on
 // every meal, and the catalog does the nutrition work — the model only
@@ -171,7 +176,24 @@ const RETRIEVAL_QUERY_CAP = 4000; // max chars sent to Voyage per query
 // question-shaped that the extra hop costs latency for nothing.
 const RETRIEVAL_REWRITE_MIN_CHARS = 180;
 const RETRIEVAL_QUERY_MODEL = "claude-haiku-4-5";
-const VOYAGE_TIMEOUT_MS = 6000;
+const VOYAGE_TIMEOUT_MS = envInt("VOYAGE_TIMEOUT_MS", 6000);
+
+// SSE keepalive. The streaming coach turn can go completely silent on the
+// wire for minutes: only `text_delta` is forwarded to the client, and a
+// forced terminal tool (generate_program above all — 6144 max_tokens, the
+// largest budget of any mode) emits its whole payload as `input_json_delta`,
+// which is accumulated server-side and never sent. generate_plan is shielded
+// by the fan-out's plan_skeleton/plan_day events; program modes have no
+// equivalent, so they hold the longest silent socket of any mode — the best
+// available explanation for program chat being the mode users report as
+// timing out, though the instrumentation added alongside this is what will
+// actually confirm it.
+//
+// A bare SSE comment frame every 10s keeps bytes flowing without any client
+// change: comments carry no `event:`/`data:` line, so every already-shipped
+// build drops them in the `if (!data) continue` arm of its chunk parser.
+// Set SSE_HEARTBEAT_MS=0 to disable.
+const SSE_HEARTBEAT_MS = envInt("SSE_HEARTBEAT_MS", 10000, { allowZero: true });
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -678,6 +700,9 @@ async function callAnthropic(
 // ── SSE helpers (Phase 2.6) ─────────────────────────────────────────────────
 interface SSEWriter {
   write: (event: string, data: unknown) => void;
+  /** Keepalive frame. An SSE comment — no event, no data — so it keeps the
+   *  connection warm without reaching any client's event handlers. */
+  comment: (text: string) => void;
   close: () => void;
 }
 
@@ -694,6 +719,16 @@ function createSSEResponse(): { response: Response; sse: SSEWriter } {
           try {
             controller.enqueue(encoder.encode(chunk));
           } catch {
+            closed = true;
+          }
+        },
+        comment(text) {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`: ${text}\n\n`));
+          } catch {
+            // Enqueue throws once the client has gone away. Latch closed so
+            // the heartbeat interval stops re-throwing every tick.
             closed = true;
           }
         },
@@ -769,6 +804,13 @@ async function runStreamingToolLoop(
   forceTool: string | null,
   maxTokens: number,
 ): Promise<StreamingLoopResult> {
+  // Per-iteration wall clock, recorded in spans.stream_iterations. The whole
+  // reason the program-chat report was hard to diagnose is that a turn's only
+  // latency number was end-to-end: a 5-iteration turn and one slow call look
+  // identical. ANTHROPIC_TIMEOUT_MS is a PER-ITERATION cap, so the real
+  // ceiling on a turn is MAX_TOOL_ITERATIONS x that — 400s at the defaults,
+  // well past any sane client patience. This is how we find out which it is.
+  const iterationTimings: { iter: number; ms: number; stop_reason: string | null }[] = [];
   const conversation = [...initialConversation];
   let totalInput = 0;
   let totalOutput = 0;
@@ -785,6 +827,7 @@ async function runStreamingToolLoop(
     const toolChoice = (forceTool && iter === 0)
       ? { type: "tool" as const, name: forceTool }
       : undefined;
+    const iterStartedAt = Date.now();
 
     // Same hung-upstream guard as the non-streaming callAnthropic. The abort
     // signal covers the body reads too, so a stream that stalls mid-flight
@@ -885,6 +928,14 @@ async function runStreamingToolLoop(
       throw e;
     } finally {
       clearTimeout(streamTimeoutId);
+      const iterMs = Date.now() - iterStartedAt;
+      iterationTimings.push({ iter, ms: iterMs, stop_reason: stopReason });
+      trace.spans = { ...(trace.spans ?? {}), stream_iterations: iterationTimings };
+      console.log(
+        `[ai-coach] stream iter=${iter} mode=${trace.mode ?? "null"} ms=${iterMs} `
+        + `stop_reason=${stopReason ?? "none"} max_tokens=${maxTokens} `
+        + `force_tool=${forceTool ?? "none"} cap=${ANTHROPIC_TIMEOUT_MS}`,
+      );
     }
 
     // Strip our private accumulators before persisting in conversation history
@@ -3019,6 +3070,13 @@ Deno.serve(async (req) => {
     ] as typeof system;
   }
   trace.model = MODEL;
+  // Record the resolved mode on EVERY turn. This was previously assigned only
+  // in handleFanoutPlan ("generate_plan") and the onboarding path
+  // ("onboarding_plan"), so chat, live_workout and all six discuss/refine
+  // modes landed in coach_traces as mode=null — 330 of 330 rows over 45 days.
+  // Program chat was therefore impossible to measure separately, which is
+  // exactly the question we could not answer when timeouts were reported.
+  trace.mode = mode;
 
   // ── Fan-out plan generation ─────────────────────────────────────────────
   // A fresh generate_plan (NOT refine/discuss, which are conversational and
@@ -3077,7 +3135,20 @@ Deno.serve(async (req) => {
           : CHAT_MAX_TOKENS;
 
     // Headers flush as soon as we return; body fills asynchronously.
-    (async () => {
+    //
+    // keepAlive (EdgeRuntime.waitUntil) is load-bearing, not belt-and-braces:
+    // without it the isolate is torn down as soon as the response stream is
+    // done or cancelled, killing this IIFE before the `finally` can
+    // recordTrace. That is why coach_traces held zero internal_error rows
+    // across 45 days while users were reporting failures — every stream that
+    // died took its own trace row with it.
+    keepAlive((async () => {
+      // Keeps the socket warm through the long silent stretch of a forced
+      // tool emission. Cleared in the finally below, and self-latching once
+      // the client disconnects (see SSEWriter.comment).
+      const heartbeat = SSE_HEARTBEAT_MS > 0
+        ? setInterval(() => sse.comment("hb"), SSE_HEARTBEAT_MS)
+        : null;
       try {
         const statusPhase = effectiveForceTool
           ? effectiveForceTool === 'generate_program'
@@ -3178,11 +3249,12 @@ Deno.serve(async (req) => {
           metadata: { user_id: userId, mode, stream: true },
         });
       } finally {
+        if (heartbeat) clearInterval(heartbeat);
         trace.http_status = 200;
         try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
         sse.close();
       }
-    })();
+    })());
 
     return sseResponse;
   }
