@@ -6,26 +6,36 @@ import { PressableScale } from '@/components/ui/PressableScale';
 import { DronaMark } from '@/components/coach/DronaMark';
 import type { SavedDronaCard } from '@/lib/dronaCard';
 
-// The weekly card from Drona, under the TODAY card on the dashboard. P0 shows
-// two kinds, both CALM: a request (do this, it is worth it) and a notice (I am
-// reading, not steering). Neither competes with TODAY for the lime, because
-// TODAY is still the day's action; this is the week talking.
+// The weekly card from Drona, under the TODAY card on the dashboard. Three
+// kinds, all CALM: a request (do this, it is worth it), a notice (I am
+// reading, or I changed one small thing) and an act (may I change the plan?).
+// None competes with TODAY for the lime, because TODAY is still the day's
+// action; this is the week talking.
 //
 // Every card carries its numbers as chips. A user who cannot check what the
 // card claims has to trust it blindly, and one wrong card then costs the lot.
+//
+// A card that CHANGED something always leaves a way back: the swap notice's
+// second button is Undo, never "not now".
 
 interface Props {
   card: SavedDronaCard;
-  /** The request's own action (log a weight, open food, start the session). */
+  /** The request's own action (log a weight, open food, make the swap the plan). */
   onAct: () => void;
   /** Got it / not now: the card goes away for this week. */
   onDismiss: () => void;
+  /** Put back what Drona changed. Only swap notices offer this. */
+  onUndo?: () => void;
 }
 
-export function DronaCardView({ card, onAct, onDismiss }: Props) {
+export function DronaCardView({ card, onAct, onDismiss, onUndo }: Props) {
   const { C } = useTheme();
   const isNotice = card.kind === 'notice';
+  // A notice about a change Drona already made: the way back is Undo.
+  const undoable = isNotice && card.payload.action === 'undo_swap' && !!onUndo;
   const actionLabel = isNotice ? 'Got it' : labelFor(card.payload.action);
+  const secondLabel = undoable ? 'Undo' : card.kind === 'act' ? 'Keep the plan' : 'Not now';
+  const onSecond = undoable ? onUndo : onDismiss;
 
   return (
     <View
@@ -37,9 +47,7 @@ export function DronaCardView({ card, onAct, onDismiss }: Props) {
     >
       <View style={s.head}>
         <DronaMark size={22} />
-        <Text style={[s.kicker, { color: C.textMuted }]}>
-          {isNotice ? 'DRONA NOTICED' : 'DRONA ASKS'}
-        </Text>
+        <Text style={[s.kicker, { color: C.textMuted }]}>{kickerFor(card, undoable)}</Text>
       </View>
 
       <Text style={[s.title, { color: C.foreground }]}>{card.title}</Text>
@@ -65,14 +73,14 @@ export function DronaCardView({ card, onAct, onDismiss }: Props) {
         >
           <Text style={[s.primaryText, { color: C.background }]}>{actionLabel}</Text>
         </PressableScale>
-        {!isNotice && (
+        {(!isNotice || undoable) && (
           <PressableScale
-            onPress={onDismiss}
+            onPress={onSecond}
             style={[s.secondary, { borderColor: C.borderSubtle }]}
             accessibilityRole="button"
-            accessibilityLabel="Not now"
+            accessibilityLabel={secondLabel}
           >
-            <Text style={[s.secondaryText, { color: C.textMuted }]}>Not now</Text>
+            <Text style={[s.secondaryText, { color: C.textMuted }]}>{secondLabel}</Text>
           </PressableScale>
         )}
       </View>
@@ -88,9 +96,19 @@ function labelFor(action?: string): string {
       return 'Log food';
     case 'start_session':
       return 'See what is due';
+    case 'apply_swap':
+      return 'Make it the plan';
     default:
       return 'Open';
   }
+}
+
+/** What Drona is doing, in two words, above the title. */
+function kickerFor(card: SavedDronaCard, undoable: boolean): string {
+  if (undoable) return 'DRONA ADJUSTED';
+  if (card.kind === 'act') return 'DRONA SUGGESTS';
+  if (card.kind === 'notice') return 'DRONA NOTICED';
+  return 'DRONA ASKS';
 }
 
 const s = StyleSheet.create({

@@ -14,7 +14,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
-import { decideCard, type DronaFacts, weekStartOf } from "../_shared/dronaCards.ts";
+import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
+import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
@@ -44,6 +45,82 @@ async function clerkUserId(authHeader: string | null): Promise<string | null> {
   }
 }
 
+/** Tag a write so the plan change log records WHO changed the plan (0123). */
+function tagged<T>(request: T, cardId: string): T {
+  const r = request as unknown as { setHeader?: (name: string, value: string) => void };
+  r.setHeader?.("x-change-source", "card");
+  r.setHeader?.("x-change-card", cardId);
+  return request;
+}
+
+/**
+ * The permanent swap (C2 / H1). Checked BEFORE the weekly rules: a habit the
+ * user already built is more concrete than any nudge, and it is the only card
+ * that changes the plan without a model.
+ *
+ * A run of 4 applies itself and the notice carries Undo. A run of 3, or the
+ * auto-adjust setting off, asks first. When the routine has moved on since the
+ * facts were read the card is deleted again: a notice nobody acted on is a lie.
+ */
+async function swapFirst(
+  db: SupabaseClient,
+  userId: string,
+  localDay: string,
+  weekStart: string,
+  source: "cron" | "app",
+): Promise<{ kind: string; saved: boolean; error?: string } | null> {
+  const { data, error } = await retried(() =>
+    db.rpc("get_drona_swap_facts", { p_user_id: userId, p_as_of: localDay })
+  );
+  if (error || !data) return null;
+
+  const { move, candidate } = decideSwap(data as SwapFacts);
+  if (move === "none" || !candidate) return null;
+
+  const card = swapCard(candidate, move);
+  const { data: row, error: insErr } = await retried(() =>
+    db.from("drona_cards").insert({
+      user_id: userId,
+      week_start: weekStart,
+      kind: card.kind,
+      topic: card.topic,
+      title: card.title,
+      body: card.body,
+      evidence: card.evidence,
+      payload: card.payload,
+      signals: card.signals,
+      facts: data,
+      source,
+    }).select("id").single()
+  );
+  if (insErr) {
+    // 23505: this week's card already exists. Not a failure, and not ours.
+    return (insErr as { code?: string }).code === "23505"
+      ? { kind: card.kind, saved: false }
+      : { kind: card.kind, saved: false, error: insErr.message };
+  }
+  if (move === "ask") return { kind: card.kind, saved: true };
+
+  const cardId = row!.id as string;
+  const { data: result, error: applyErr } = await retried(() =>
+    tagged(db.rpc("drona_swap_autoapply", { p_card_id: cardId }), cardId)
+  );
+  if (applyErr || result !== "ok") {
+    // Delete the notice ONLY where the routine plainly did not change. If that
+    // read fails too, keep the card: a stale card is a smaller harm than a
+    // changed plan with no Undo on it.
+    const { data: slot } = await retried(() =>
+      db.from("routine_exercises").select("exercise_id")
+        .eq("id", card.payload.routine_exercise_id).maybeSingle()
+    );
+    if (slot && slot.exercise_id !== card.payload.to_exercise_id) {
+      await retried(() => db.from("drona_cards").delete().eq("id", cardId));
+      return null;
+    }
+  }
+  return { kind: card.kind, saved: true };
+}
+
 /** Read one user's facts, decide, and write the card. A hold writes nothing. */
 async function generate(
   db: SupabaseClient,
@@ -57,6 +134,12 @@ async function generate(
   );
   if (error) return { kind: "none", saved: false, error: error.message };
   if (!facts) return { kind: "none", saved: false, error: "no facts" };
+
+  // Too new to read a habit, and a swap just asked about waits its turn.
+  if (!signalsFrom(facts as DronaFacts).new_user && !onCooldown("swap", facts as DronaFacts)) {
+    const swap = await swapFirst(db, userId, localDay, weekStart, source);
+    if (swap) return swap;
+  }
 
   const card = decideCard(facts as DronaFacts);
   if (card.kind === "hold") return { kind: "hold", saved: false };

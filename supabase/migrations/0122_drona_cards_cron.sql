@@ -46,6 +46,15 @@ begin
     return;
   end if;
 
+  -- The secret must be there too. Scheduling on the URL alone posts every 15
+  -- minutes to a handler that answers 401, so nobody gets a card and nothing
+  -- says why. Raised in review of PR #178.
+  if coalesce((select value from private.runtime_config where key = 'drona_cards_cron_secret'), '') = '' then
+    raise notice
+      'drona-cards NOT scheduled: drona_cards_url is set but drona_cards_cron_secret is missing. Every run would be refused.';
+    return;
+  end if;
+
   perform cron.schedule(
     'drona-cards',
     '*/15 * * * *',

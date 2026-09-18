@@ -130,6 +130,8 @@ export type AnalyticsEvent =
   | 'drona_card_shown'
   | 'drona_card_acted'
   | 'drona_card_dismissed'
+  | 'drona_card_undone'
+  | 'drona_auto_adjust_set'
   | 'today_up_next_tapped'
   | 'today_suggestion_requested'
   | 'history_workout_edit_opened'

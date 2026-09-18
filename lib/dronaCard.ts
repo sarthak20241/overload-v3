@@ -14,6 +14,23 @@ import { pickCurrentCard, weekStartOf } from '@/lib/dronaRules';
 export type DronaCardKind = 'request' | 'notice' | 'act' | 'talk';
 export type DronaCardStatus = 'pending' | 'applied' | 'dismissed' | 'opened' | 'done' | 'expired' | 'held';
 
+/**
+ * What the card's button does. `route` is legacy and never trusted: the phone
+ * maps the ACTION to a screen (see ACTION_ROUTES). The swap fields name the
+ * routine slot a swap card changes, so the card can show what it did.
+ */
+export interface DronaCardPayload {
+  action?: string;
+  route?: string;
+  routine_id?: string;
+  routine_exercise_id?: string;
+  from_exercise_id?: string;
+  to_exercise_id?: string;
+  from_name?: string;
+  to_name?: string;
+  routine_name?: string;
+}
+
 export interface SavedDronaCard {
   id: string;
   week_start: string;
@@ -22,7 +39,7 @@ export interface SavedDronaCard {
   title: string;
   body: string;
   evidence: { label: string; value: string }[];
-  payload: { action?: string; route?: string };
+  payload: DronaCardPayload;
   status: DronaCardStatus;
 }
 
@@ -116,3 +133,41 @@ export async function setCardStatus(
     // next open, which is better than blocking the tap.
   }
 }
+
+/**
+ * The swap card's two moves (migration 0124). The database owns both: it
+ * changes the routine only while the slot still holds what the card claims,
+ * and it moves the card's status itself. So the phone sends a card id and
+ * nothing else, and cannot change a routine by sending a made-up exercise.
+ *
+ * Returns the database's word for what happened, or null when the call failed.
+ * 'moved_on' means the user already edited that routine by hand; their edit
+ * stands and nothing was touched.
+ */
+async function swapMove(
+  supabase: SupabaseClient,
+  fn: 'drona_apply_swap' | 'drona_undo_swap',
+  cardId: string,
+): Promise<string | null> {
+  try {
+    // Tag the write so the plan change log says a CARD changed the plan, not
+    // the user's own hand (migration 0123 reads these headers in its trigger).
+    const request = supabase.rpc(fn, { p_card_id: cardId });
+    const taggable = request as unknown as { setHeader?: (name: string, value: string) => void };
+    taggable.setHeader?.('x-change-source', 'card');
+    taggable.setHeader?.('x-change-card', cardId);
+    const { data, error } = await request;
+    if (error) return null;
+    return typeof data === 'string' ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** "Make it the plan" on a swap act card. */
+export const applySwap = (supabase: SupabaseClient, cardId: string) =>
+  swapMove(supabase, 'drona_apply_swap', cardId);
+
+/** "Undo" on the notice that follows a swap Drona applied by itself. */
+export const undoSwap = (supabase: SupabaseClient, cardId: string) =>
+  swapMove(supabase, 'drona_undo_swap', cardId);
