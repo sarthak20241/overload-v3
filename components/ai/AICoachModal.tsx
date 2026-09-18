@@ -43,6 +43,7 @@ import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
+import { withChangeSource } from '@/lib/planChangeSource';
 import type { CoachChatMessage, CoachCitation } from '@/lib/coachConversations';
 import {
   describeCoachEditOp,
@@ -1264,7 +1265,8 @@ function ChatScreen({
     // the card is still the one we submitted.
     const submitted = targetProposal;
     try {
-      await applyPhaseTargets(supabase, userId, {
+      // Tagged: the plan log records this as Drona's chat, not a manual edit.
+      await applyPhaseTargets(withChangeSource(supabase, 'chat'), userId, {
         calories: submitted.calories,
         protein_g: submitted.protein_g,
         carb_g: submitted.carb_g,
@@ -3446,7 +3448,7 @@ export function AICoachModal({
     // One row, one write, so the routine and its link land or fail together.
     // (It was split out once for PostgREST schema-cache lag on a then-new
     // column; program_phase_id has been live since migration 0096.)
-    const { data: routine, error } = await supabase
+    const { data: routine, error } = await withChangeSource(supabase, 'chat')
       .from('routines')
       .insert({ user_id: clerkId, name: workout.name, program_phase_id: phaseId ?? null })
       .select()
@@ -3483,7 +3485,7 @@ export function AICoachModal({
       if (!exerciseId) return;
 
       const repsArr = ex.reps.split('-').map(Number);
-      const { error: linkErr } = await supabase.from('routine_exercises').insert({
+      const { error: linkErr } = await withChangeSource(supabase, 'chat').from('routine_exercises').insert({
         routine_id: routine.id,
         exercise_id: exerciseId,
         sets: ex.sets,
@@ -3627,7 +3629,7 @@ export function AICoachModal({
     });
     handleClose();
     toast.info('Setting up your program…');
-    saveProgram(supabase, clerkId, program)
+    saveProgram(withChangeSource(supabase, 'chat'), clerkId, program)
       .then(() => {
         toast.success('Program set. Your targets are updated.');
         onProgramApplied?.();

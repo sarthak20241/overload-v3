@@ -11,6 +11,7 @@
  * simply happens AFTER identity is known rather than before, which is what
  * makes "onboarding first, then sign in" work without a migration.
  */
+import { withChangeSource } from '@/lib/planChangeSource';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { saveBasicInfo } from '@/lib/bodyStats';
@@ -134,7 +135,7 @@ export async function saveOnboardingProgram(
 ): Promise<string | null> {
   if (target.isGuest || !target.clerkId) return null;
   try {
-    const { phaseIds } = await saveProgram(target.client, target.clerkId, program);
+    const { phaseIds } = await saveProgram(withChangeSource(target.client, 'onboarding'), target.clerkId, program);
     return phaseIds[0] ?? null;
   } catch (e) {
     console.warn('[onboarding] program save failed; routines save unlinked', e);
