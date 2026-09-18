@@ -94,6 +94,26 @@ ok('another user cannot apply this card', (await other.rpc('drona_apply_swap', {
 ok('another user cannot undo this card', (await other.rpc('drona_undo_swap', { p_card_id: cardId })).data === 'forbidden');
 ok('the slot is untouched after those attempts', await slotNow() === PLANNED.id);
 
+// ── Later ────────────────────────────────────────────────────────────────────
+// Deferring parks the card until its week ends, in the user's own zone.
+await service.from('user_profiles').update({ timezone: 'Asia/Kolkata' }).eq('clerk_user_id', UID);
+ok('another user cannot push this card to Later', (await other.rpc('drona_defer_card', { p_card_id: cardId })).data === 'forbidden');
+ok('the owner can push it to Later', (await db.rpc('drona_defer_card', { p_card_id: cardId })).data === 'ok');
+const deferred = (await service.from('drona_cards').select('deferred_at, expires_at, status, week_start').eq('id', cardId).single()).data!;
+ok('a deferred card is still pending, with deferred_at set', deferred.status === 'pending' && !!deferred.deferred_at, deferred);
+// week_start + 7 days at 00:00 Asia/Kolkata = the day before at 18:30 UTC.
+const weekEnd = new Date(Date.parse(deferred.week_start + 'T00:00:00Z') + 7*86400000 - 5.5*3600000).toISOString();
+ok('it expires at the end of ITS week in the user\'s zone (18:30 UTC = midnight in Kolkata)',
+  new Date(deferred.expires_at).toISOString() === weekEnd, { expires_at: deferred.expires_at, expected: weekEnd });
+ok('a deferred card still applies', (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
+ok('and the routine holds the stand-in', await slotNow() === STAND_IN.id);
+// Put it back so the apply section below starts from the planned exercise.
+ok('reset for the apply section', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
+ok('Later is refused once the card is answered', (await db.rpc('drona_defer_card', { p_card_id: cardId })).data === 'already_decided');
+await service.from('drona_cards').update({ status: 'pending', decided_at: null, deferred_at: null, expires_at: null }).eq('id', cardId);
+
 // ── Apply ────────────────────────────────────────────────────────────────────
 const applied = await service.rpc('drona_swap_autoapply', { p_card_id: cardId })
   .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId);
@@ -119,7 +139,7 @@ const undone = await db.rpc('drona_undo_swap', { p_card_id: cardId })
   .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId);
 ok('the user can undo their own card', undone.data === 'ok', undone.data ?? undone.error?.message);
 ok('the planned exercise is back', await slotNow() === PLANNED.id);
-ok('the card is closed', (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'dismissed');
+ok('the card is closed as undone, not dismissed', (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'undone');
 // The apply and the Undo are the same source, minutes apart, and they cancel:
 // a routine that ends where it began is not a change (migration 0125).
 const afterUndo = (await service.from('plan_changes').select('id, changes')

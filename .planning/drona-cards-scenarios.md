@@ -484,7 +484,11 @@ The kinds want different treatment. A popup that says "I changed Seated Leg
 Curl into your plan" is an interruption with nothing to decide; a card that
 says "should I drop your calories to 2000" is a decision hidden in a scroll.
 
-**Proposal: treat by kind.**
+**Decided 2026-09-18 (owner): every card is a popup.** The point of a card
+is to bring something to the user's notice, and a strip does not do that.
+The by-kind table below is kept as the alternative that was NOT taken.
+
+**Alternative not taken: treat by kind.**
 
 | Kind | First open of the week | After that |
 |---|---|---|
@@ -524,10 +528,13 @@ edits as their own rows. One backlog item, not two.
 
 ### K4. Order
 
+**BUILT 2026-09-18** (migrations 0127 + 0128, `DronaCardPopup`, `From Drona`
+screen, rows on Profile and Goal). Verified on an iPhone 17 Pro Max end to end:
+popup, Later, "1 waiting" on Profile, apply from the inbox, Undo from Done.
+
 Build this BEFORE the next card (B1 calories): it decides how every card looks
 and asks, and B1 is the first card with a real decision in it.
 
-1. `deferred_at` + the popup + Later (act cards only; the swap act card is
-   the test case).
-2. Strips for request and notice, replacing the card under TODAY.
-3. The From Drona screen (Waiting + Done), rows on Profile and Goal.
+1. `deferred_at` + the popup for every kind, with **Later** on each. Tapping
+   outside the popup counts as Later. The card under TODAY goes away.
+2. The From Drona screen (Waiting + Done), rows on Profile and Goal.

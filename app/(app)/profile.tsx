@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ActivityIndicator,
   BackHandler,
@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import Constants from 'expo-constants';
 import { PostHogMaskView } from 'posthog-react-native';
 import { useClerkUser } from '@/hooks/useClerkUser';
@@ -24,6 +24,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
+import { readCardHistory } from '@/lib/dronaCard';
+import { waitingCount } from '@/lib/dronaInbox';
 import { track, flushAnalytics } from '@/lib/analytics';
 import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfile } from '@/lib/guestStore';
@@ -300,6 +302,17 @@ export default function ProfileScreen() {
   // "Let Drona make small adjustments" (migration 0124). On by default. Off
   // does not silence Drona; it turns every small change into a question.
   const [autoAdjust, setAutoAdjust] = useState(true);
+  // Cards the user pushed to Later, still waiting on From Drona. Read on every
+  // focus, because a Later on the dashboard is exactly what changes it.
+  const [dronaWaiting, setDronaWaiting] = useState<number | null>(null);
+  useFocusEffect(useCallback(() => {
+    let live = true;
+    if (!user?.id) { setDronaWaiting(null); return; }
+    readCardHistory(supabase, user.id, 20).then((rows) => {
+      if (live && rows) setDronaWaiting(waitingCount(rows, Date.now()));
+    });
+    return () => { live = false; };
+  }, [user?.id, supabase]));
   const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel | ''>('');
   const [weeklyTargetSessions, setWeeklyTargetSessions] = useState('');
   const [trainingAgeMonths, setTrainingAgeMonths] = useState('');
@@ -1294,6 +1307,32 @@ export default function ProfileScreen() {
               </View>
             </View>
           </View>
+
+          {/* ─── From Drona ───
+              Where a card goes when the user says Later, and what Drona has
+              changed so far. A row, not a card: it is a door, not a status. */}
+          {!isGuest && (
+            <View style={styles.section}>
+              <SectionLabel icon="inbox">FROM DRONA</SectionLabel>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => { track('drona_inbox_opened', { from: 'profile' }); router.push({ pathname: '/(app)/from-drona', params: { from: 'profile' } } as any); }}
+                accessibilityRole="button"
+                accessibilityLabel="Open From Drona"
+                style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle }]}
+              >
+                <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+                  <View style={[styles.rowIcon, { backgroundColor: C.glowBg }]}>
+                    <Feather name="inbox" size={11} color={C.mutedFg} />
+                  </View>
+                  <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>
+                    {dronaWaiting ? `${dronaWaiting} waiting for you` : 'Nothing waiting'}
+                  </Text>
+                  <Feather name="chevron-right" size={14} color={C.textDim} />
+                </View>
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* ─── Preferences ─── */}
           <View style={styles.section}>

@@ -24,6 +24,8 @@ import { Feather } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
+import { readCardHistory } from '@/lib/dronaCard';
+import { waitingCount } from '@/lib/dronaInbox';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
@@ -75,6 +77,16 @@ export default function GoalPlanScreen() {
   const clerkId = user?.id ?? null;
 
   const [program, setProgram] = useState<ActiveProgram | null>(null);
+  // Cards waiting on From Drona: they are about this plan, so the door is here too.
+  const [dronaWaiting, setDronaWaiting] = useState(0);
+  useFocusEffect(useCallback(() => {
+    let live = true;
+    if (!user?.id) return;
+    readCardHistory(supabase, user.id, 20).then((rows) => {
+      if (live && rows) setDronaWaiting(waitingCount(rows, Date.now()));
+    });
+    return () => { live = false; };
+  }, [user?.id, supabase]));
   const [loading, setLoading] = useState(true);
   const [coachOpen, setCoachOpen] = useState(false);
   // Which rail row is expanded in "The full plan" (phase seq), if any.
@@ -591,6 +603,19 @@ export default function GoalPlanScreen() {
           >
             <Feather name="message-circle" size={14} color={C.mutedFg} />
             <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>Adjust with Drona</Text>
+          </Pressable>
+
+          {/* From Drona: the cards pushed to Later, and what has changed. */}
+          <Pressable
+            onPress={() => { track('drona_inbox_opened', { from: 'goal' }); router.push({ pathname: '/(app)/from-drona', params: { from: 'goal' } } as any); }}
+            style={[styles.secondaryBtn, { backgroundColor: C.muted, marginTop: Spacing.sm }]}
+            accessibilityRole="button"
+            accessibilityLabel="Open From Drona"
+          >
+            <Feather name="inbox" size={14} color={C.mutedFg} />
+            <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>
+              {dronaWaiting > 0 ? `From Drona · ${dronaWaiting} waiting` : 'From Drona'}
+            </Text>
           </Pressable>
 
           {/* The way out. Without this a user who stops following the plan has

@@ -417,6 +417,11 @@ export default function AppLayout() {
         */}
         <Tabs.Screen name="plan" options={{ href: null }} />
         {/*
+          From Drona: the cards the user pushed to Later, and what Drona has
+          changed. Hidden from the bottom nav; reached from Profile and Goal.
+        */}
+        <Tabs.Screen name="from-drona" options={{ href: null }} />
+        {/*
           Admin dashboard for research-kb review (Phase 3).
           Hidden from the bottom nav — only reachable via deep-link
           (`/admin/research`) or the "Admin Tools" button rendered for

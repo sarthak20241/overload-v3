@@ -38,6 +38,8 @@ interface Props {
   onBuild: () => void;
   /** Guest: send them to sign-in so the program has somewhere to land. */
   onSignIn: () => void;
+  /** Fires as the popup appears and goes, so the dashboard can hold any other popup back. */
+  onVisibleChange?: (visible: boolean) => void;
 }
 
 export function BuildSplitPrompt(props: Props) {
@@ -87,6 +89,10 @@ export function BuildSplitPrompt(props: Props) {
         nowMs: Date.now(),
       });
   const visible = action != null;
+  const { onVisibleChange } = props;
+  useEffect(() => {
+    onVisibleChange?.(visible);
+  }, [visible, onVisibleChange]);
 
   const later = useCallback(() => {
     const now = Date.now();
