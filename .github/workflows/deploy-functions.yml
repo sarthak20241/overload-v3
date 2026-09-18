@@ -1,0 +1,179 @@
+name: Deploy Edge Functions
+
+# Deploys supabase/functions/* to the live project.
+#
+# This exists because there was no way to ship an Edge Function without a human
+# at a terminal running the Supabase CLI. The deployed ai-coach drifted two
+# commits behind main that way, which is how an unrelated parse_meal refactor
+# ended up riding along with an unrelated fix.
+#
+# Two ways in:
+#   - push to main touching supabase/functions/**  -> deploys only what changed
+#   - Actions -> "Deploy Edge Functions" -> Run workflow -> deploys what you name
+#
+# verify_jwt is NOT set here on purpose. supabase/config.toml declares
+# `verify_jwt = false` per function, and the CLI reads it from the repo root,
+# so the setting travels with the code. Passing --no-verify-jwt here would put
+# the same decision in two places and let them drift. If you add a function,
+# give it a [functions.<name>] block in config.toml — the CLI default is
+# verify_jwt = true, which rejects Clerk JWTs at the gateway before the handler
+# ever runs.
+#
+# A change to config.toml alone does not auto-deploy (nothing under
+# supabase/functions/ changed, so there is nothing to diff). Use the manual
+# "all" run for that.
+
+on:
+  workflow_dispatch:
+    inputs:
+      functions:
+        description: 'Function names, space or comma separated — or "all"'
+        required: false
+        default: all
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
+      - '.github/workflows/deploy-functions.yml'
+
+# One deploy at a time, and never cancel one in flight: a half-applied deploy
+# is worse than a queued one.
+concurrency:
+  group: deploy-edge-functions
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so a push can be diffed against its own `before` SHA
+          # rather than guessing at HEAD^, which is wrong for a multi-commit push.
+          fetch-depth: 0
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # The repo has no other test CI, so this is the only gate between a bad
+      # commit and production. Deploy is blocked on it deliberately: these
+      # functions serve every chat message and every meal parse.
+      - name: Test
+        run: |
+          set -euo pipefail
+          deno test --allow-all --node-modules-dir=auto supabase/functions/ai-coach/
+          deno test --allow-all --node-modules-dir=auto supabase/functions/_shared/
+          deno test --allow-all --node-modules-dir=auto supabase/functions/revenuecat-webhook/
+          deno test --allow-all --node-modules-dir=auto lib/xp.test.ts
+          deno test --allow-all --node-modules-dir=auto lib/tiers.test.ts
+
+      - name: Pick functions
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.functions }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Every deployable function = a directory under supabase/functions/
+          # that is not the shared library.
+          all_functions() {
+            find supabase/functions -mindepth 1 -maxdepth 1 -type d \
+              ! -name '_shared' -printf '%f\n' | sort
+          }
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ -z "${REQUESTED:-}" ] || [ "$REQUESTED" = "all" ]; then
+              targets="$(all_functions)"
+            else
+              targets="$(printf '%s' "$REQUESTED" | tr ', ' '\n\n' | sed '/^$/d' | sort -u)"
+            fi
+          else
+            # Diff against the push's own base. A force-push or a first push
+            # reports an all-zero (or unreachable) SHA, so fall back to the
+            # parent commit rather than deploying nothing silently.
+            base="$BEFORE"
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              base="$(git rev-parse "${SHA}^")"
+            fi
+            changed="$(git diff --name-only "$base" "$SHA" -- supabase/functions/ || true)"
+
+            # _shared is compiled into each function that imports it, so a change
+            # there is a change to every one of them. Nothing rebuilds on its
+            # own; miss this and a function keeps running the old copy.
+            shared_users=''
+            if printf '%s\n' "$changed" | grep -q '^supabase/functions/_shared/'; then
+              shared_users="$(grep -rl '\.\./_shared/' supabase/functions/*/ --include='*.ts' \
+                | cut -d/ -f3 | sort -u)"
+            fi
+            direct="$(printf '%s\n' "$changed" \
+              | grep -v '^supabase/functions/_shared/' \
+              | cut -d/ -f3 | sort -u)"
+            targets="$(printf '%s\n%s\n' "$direct" "$shared_users" | sed '/^$/d' | sort -u)"
+          fi
+
+          # Drop anything that is not a real function directory: a deleted
+          # function still shows up in a diff, and a typo'd manual input should
+          # fail loudly here rather than as a confusing CLI error.
+          valid=''
+          for fn in $targets; do
+            if [ -d "supabase/functions/$fn" ] && [ "$fn" != "_shared" ]; then
+              valid="$valid $fn"
+            else
+              echo "::warning::skipping '$fn' — no such function directory"
+            fi
+          done
+          valid="$(printf '%s' "$valid" | xargs || true)"
+
+          if [ -z "$valid" ]; then
+            echo "No functions to deploy."
+            echo "targets=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will deploy: $valid"
+            echo "targets=$valid" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: supabase/setup-cli@v1
+        if: steps.pick.outputs.targets != ''
+        with:
+          version: latest
+
+      - name: Deploy
+        if: steps.pick.outputs.targets != ''
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          TARGETS: ${{ steps.pick.outputs.targets }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+            echo "::error::SUPABASE_ACCESS_TOKEN is not set. Create one at" \
+                 "Supabase dashboard -> Account -> Access Tokens, then add it as a" \
+                 "repository secret."
+            exit 1
+          fi
+
+          # Derive the project ref from the existing SUPABASE_URL secret
+          # (https://<ref>.supabase.co) so there is no second place to update
+          # when the project changes, and no project id committed to a public repo.
+          ref="$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://([a-z0-9]+)\..*#\1#')"
+          if [ -z "$ref" ] || [ "$ref" = "$SUPABASE_URL" ]; then
+            echo "::error::Could not read a project ref out of SUPABASE_URL." \
+                 "Expected https://<ref>.supabase.co"
+            exit 1
+          fi
+          echo "Project ref: $ref"
+
+          for fn in $TARGETS; do
+            echo "::group::deploy $fn"
+            supabase functions deploy "$fn" --project-ref "$ref"
+            echo "::endgroup::"
+          done

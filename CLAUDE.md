@@ -35,6 +35,27 @@ deno test --allow-all lib/tiers.test.ts
 
 There are no configured lint or build scripts.
 
+## Deploying Edge Functions
+
+`.github/workflows/deploy-functions.yml` deploys `supabase/functions/*`. A push
+to `main` touching `supabase/functions/**` deploys only what changed; a change
+under `_shared/` fans out to every function importing it, since nothing rebuilds
+on its own. To deploy by hand, use Actions → "Deploy Edge Functions" → Run
+workflow (name functions, or `all`). The deploy is gated on the Deno suites
+above — they are the only test CI this repo has.
+
+Deploying requires the `SUPABASE_ACCESS_TOKEN` repo secret; the project ref is
+derived from the existing `SUPABASE_URL` secret.
+
+`verify_jwt` lives in `supabase/config.toml`, not in the workflow, so it travels
+with the code. **A new function needs a `[functions.<name>]` block there** — the
+CLI default is `verify_jwt = true`, which makes the gateway reject Clerk JWTs
+before the handler runs, so every call 401s.
+
+Prefer this over deploying from a laptop. The deployed `ai-coach` silently drifted
+two commits behind `main` that way, which meant an unrelated refactor shipped
+alongside the next fix.
+
 When reporting eval results, say which mode was used — a latency number must
 never be quoted from a CLI run.
 
