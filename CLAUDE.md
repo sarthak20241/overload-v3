@@ -37,12 +37,30 @@ There are no configured lint or build scripts.
 
 ## Deploying Edge Functions
 
-`.github/workflows/deploy-functions.yml` deploys `supabase/functions/*`. A push
-to `main` touching `supabase/functions/**` deploys only what changed; a change
-under `_shared/` fans out to every function importing it, since nothing rebuilds
-on its own. To deploy by hand, use Actions → "Deploy Edge Functions" → Run
-workflow (name functions, or `all`). The deploy is gated on the Deno suites
-above — they are the only test CI this repo has.
+**Nothing deploys automatically. Merging is not consent to deploy.**
+
+A PR touching `supabase/functions/**` deploys on merge only if it carries the
+`deploy:yes` label. Labels are set on the PR page: right sidebar → Labels.
+
+- `deploy:yes` → `deploy-functions.yml` deploys that PR's functions on merge
+- `deploy:no` → explicitly recorded as "land it, deploy later"
+- **no label → nothing deploys**, and the merge is not blocked
+
+**If you are an agent, never add `deploy:yes` on your own.** It changes
+production the moment the PR merges, so the choice is the user's — ask. Leaving
+it off is always safe; the code lands and production is untouched, and it can be
+deployed later with Actions → "Deploy Edge Functions" → Run workflow.
+
+`.github/workflows/deploy-decision.yml` reports what a merge will do and fails
+only on the two contradictions: both labels at once, and `deploy:yes` on a fork
+PR (GitHub withholds secrets from fork runs, so that deploy could not run). Its
+check is named **"Deploy decision"** — the job name, not the workflow name — if
+you want it as a required status check.
+
+A change under `_shared/` fans out to every function importing it, since nothing
+rebuilds on its own. To deploy by hand at any time: Actions → "Deploy Edge
+Functions" → Run workflow (name functions, or `all`). The deploy is gated on the
+Deno suites above — they are the only test CI this repo has.
 
 Deploying requires the `SUPABASE_ACCESS_TOKEN` repo secret; the project ref is
 derived from the existing `SUPABASE_URL` secret.

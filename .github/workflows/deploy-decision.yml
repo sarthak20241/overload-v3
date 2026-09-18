@@ -1,0 +1,149 @@
+name: Deploy Decision
+
+# Reports what merging a PR will do to production, and fails ONLY when the
+# stated intent is impossible or self-contradictory.
+#
+# On a PR that changes supabase/functions/**:
+#   deploy:yes  -> deploy-functions.yml deploys that PR's functions on merge
+#   deploy:no   -> explicitly recorded as "land it, deploy later"
+#   no label    -> PASSES, and nothing deploys
+#
+# A missing label does NOT block the merge. Silence is already the safe answer:
+# deploy-functions.yml requires deploy:yes to be PRESENT, so an unlabelled merge
+# lands the code and leaves production alone. Failing the check would have added
+# friction to every PR in order to prevent an outcome that was never possible.
+#
+# The check fails on the two cases where someone has said something that cannot
+# be carried out:
+#   - both labels at once, which is not an answer
+#   - deploy:yes on a fork PR, which GitHub's secret rules cannot honour
+#
+# The labels are added on the PR page: right sidebar -> Labels -> gear icon.
+# This workflow creates both the first time it runs, so there is nothing to set
+# up by hand.
+#
+# Making this a required status check (the check is named "Deploy decision" —
+# the job's name below, NOT the workflow name above; branch protection matches
+# the check run and they are different strings) is optional now that a missing
+# label is a pass. It only adds teeth to the two contradiction cases.
+#
+# PRs that touch no Edge Function skip this entirely.
+
+on:
+  # Scoped to PRs targeting main, matching what can actually deploy. A PR into a
+  # feature branch cannot reach production, so demanding a deploy decision on it
+  # would be noise — and, once this is a required check, a merge blocker on
+  # branches the decision does not apply to.
+  # `edited` is in the list because it is the only event fired when a PR's BASE
+  # BRANCH changes. A PR opened against a feature branch does not run this check
+  # at all (branches: main below); retargeting it at main later fires no
+  # synchronize and no label event, so without `edited` the retargeted PR could
+  # reach main with function changes and no decision ever evaluated.
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited]
+    branches: [main]
+
+concurrency:
+  group: deploy-decision-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Creating the two labels if they don't exist yet.
+  issues: write
+
+jobs:
+  decide:
+    # Named explicitly because THIS string is what branch protection matches.
+    # Without it the check run takes the job id ("decide"), which is what the
+    # required-status-check picker would have shown — not the workflow name.
+    name: Deploy decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require an explicit deploy decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # contains() over the label ARRAY is exact element matching. Joining
+          # into a comma string and pattern-matching it looked equivalent, but
+          # GitHub permits commas inside a label name, and one such label would
+          # corrupt the delimiting and flip a decision either way.
+          HAS_YES: ${{ contains(github.event.pull_request.labels.*.name, 'deploy:yes') }}
+          HAS_NO: ${{ contains(github.event.pull_request.labels.*.name, 'deploy:no') }}
+          # (1) head.repo is null once a contributor deletes their fork, and a
+          # null full_name still fails this comparison, so the unknown case is
+          # treated as a fork — the safe direction, since such a run has no
+          # secrets either way.
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Three-dot: what this PR changed relative to where it branched from,
+          # not everything that has landed on the base since.
+          changed="$(git diff --name-only "${BASE}...${HEAD}" -- supabase/functions/ || true)"
+
+          if [ -z "$changed" ]; then
+            echo "No Edge Function changes in this PR — no deploy decision needed."
+            exit 0
+          fi
+
+          echo "This PR changes Edge Functions:"
+          printf '%s\n' "$changed" | sed 's/^/  /'
+          echo
+
+          # Best effort: a repo that already has the labels just gets 422s here,
+          # and a token without issues:write shouldn't fail the whole check —
+          # the decision itself is what matters, not who created the label.
+          gh label create "deploy:yes" --repo "$REPO" --color 0E8A16 \
+            --description "Deploy these Edge Functions to production on merge" 2>/dev/null || true
+          gh label create "deploy:no" --repo "$REPO" --color B60205 \
+            --description "Merge without deploying; deploy later by hand" 2>/dev/null || true
+
+          has_yes="${HAS_YES:-false}"
+          has_no="${HAS_NO:-false}"
+
+          if [ "$has_yes" = true ] && [ "$has_no" = true ]; then
+            echo "::error::This PR carries BOTH deploy:yes and deploy:no." \
+                 "Remove one — an ambiguous answer is not an answer."
+            exit 1
+          fi
+
+          if [ "$has_yes" = false ] && [ "$has_no" = false ]; then
+            # Not an error. No label means no deploy, which is the safe outcome
+            # anyway — deploy-functions.yml requires deploy:yes to be present.
+            # Blocking the merge here would tax every PR to prevent something
+            # that could not happen.
+            echo "::notice::No deploy label — merging will NOT touch production."
+            echo "Add deploy:yes if these functions should go live on merge, or"
+            echo "deploy later with Actions -> Deploy Edge Functions -> Run workflow."
+            exit 0
+          fi
+
+          # deploy:yes is a promise the merge cannot keep from a fork. GitHub
+          # withholds every secret but GITHUB_TOKEN from a pull_request run whose
+          # head is a fork, so deploy-functions.yml would pass its consent check,
+          # start, and then die with no SUPABASE_ACCESS_TOKEN. Refuse the label
+          # here, while someone is still looking at the PR, rather than letting
+          # the failure surface after the merge in a log nobody opens.
+          if [ "$has_yes" = true ] && [ "${IS_FORK:-false}" = "true" ]; then
+            echo "::error::deploy:yes cannot work on a PR from a fork — GitHub" \
+                 "withholds secrets from fork-triggered runs, so the deploy would" \
+                 "start and then fail with no credentials. Use deploy:no, then" \
+                 "deploy after merging: Actions -> Deploy Edge Functions -> Run" \
+                 "workflow."
+            exit 1
+          fi
+
+          if [ "$has_yes" = true ]; then
+            echo "Decision: deploy:yes — merging will deploy the functions above."
+          else
+            echo "Decision: deploy:no — merging changes nothing in production."
+            echo "Deploy later with Actions -> Deploy Edge Functions -> Run workflow."
+          fi
