@@ -7,9 +7,17 @@ name: Deploy Edge Functions
 # commits behind main that way, which is how an unrelated parse_meal refactor
 # ended up riding along with an unrelated fix.
 #
-# Two ways in:
-#   - push to main touching supabase/functions/**  -> deploys only what changed
+# Nothing here deploys on its own. There are exactly two ways in, and both
+# require a human to have said yes:
+#   - a merged PR carrying the "deploy:yes" label -> deploys what that PR changed
 #   - Actions -> "Deploy Edge Functions" -> Run workflow -> deploys what you name
+#
+# The push-to-main trigger was REMOVED deliberately. Merging is not consent to
+# deploy: a PR can be merged to get it off the board, batched with others, or
+# landed at a time nobody wants production touched. deploy-decision.yml forces
+# every PR that touches supabase/functions/** to carry "deploy:yes" or
+# "deploy:no" before it can merge, so the answer is always explicit, recorded on
+# the PR, and given by whoever merged it — person or agent.
 #
 # verify_jwt is NOT set here on purpose. supabase/config.toml declares
 # `verify_jwt = false` per function, and the CLI reads it from the repo root,
@@ -30,11 +38,10 @@ on:
         description: 'Function names, space or comma separated — or "all"'
         required: false
         default: all
-  push:
-    branches: [main]
-    paths:
-      - 'supabase/functions/**'
-      - '.github/workflows/deploy-functions.yml'
+  # A merged PR. The job below runs ONLY when it was merged AND carries
+  # "deploy:yes"; a "deploy:no" merge lands the code and deploys nothing.
+  pull_request:
+    types: [closed]
 
 # One deploy at a time, and never cancel one in flight: a half-applied deploy
 # is worse than a queued one.
@@ -47,12 +54,21 @@ permissions:
 
 jobs:
   deploy:
+    # The consent check. A manual dispatch IS the explicit yes. A merged PR only
+    # counts when someone attached "deploy:yes" to it; anything else — merged
+    # with "deploy:no", or closed without merging — stops here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'deploy:yes'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history so a push can be diffed against its own `before` SHA
-          # rather than guessing at HEAD^, which is wrong for a multi-commit push.
+          # The merged state, explicitly. On a closed PR the default checkout is
+          # the pull/N/merge ref, which is not what landed on main.
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
+          # Full history so the merge commit can be diffed against the PR base.
           fetch-depth: 0
 
       - uses: denoland/setup-deno@v2
@@ -85,8 +101,9 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           REQUESTED: ${{ inputs.functions }}
-          BEFORE: ${{ github.event.before }}
-          SHA: ${{ github.sha }}
+          # For a merged PR, "what changed" is base..merge-commit.
+          BEFORE: ${{ github.event.pull_request.base.sha }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           set -euo pipefail
 
@@ -187,8 +204,8 @@ jobs:
                    "$(all_functions | tr '\n' ' ')— or \"all\"."
               exit 1
             fi
-            # A push can legitimately touch supabase/functions/ without changing
-            # any function (docs, a stray file). Nothing to do is correct here.
+            # A merged PR can touch supabase/functions/ without changing any
+            # function (docs, a stray file). Nothing to do is correct here.
             echo "No functions to deploy."
             echo "targets=" >> "$GITHUB_OUTPUT"
           else

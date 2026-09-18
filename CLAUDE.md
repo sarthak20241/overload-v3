@@ -37,12 +37,24 @@ There are no configured lint or build scripts.
 
 ## Deploying Edge Functions
 
-`.github/workflows/deploy-functions.yml` deploys `supabase/functions/*`. A push
-to `main` touching `supabase/functions/**` deploys only what changed; a change
-under `_shared/` fans out to every function importing it, since nothing rebuilds
-on its own. To deploy by hand, use Actions → "Deploy Edge Functions" → Run
-workflow (name functions, or `all`). The deploy is gated on the Deno suites
-above — they are the only test CI this repo has.
+**Nothing deploys automatically. Merging is not consent to deploy.**
+
+Any PR touching `supabase/functions/**` must carry exactly one label before it
+can merge — `deploy:yes` or `deploy:no` — enforced by
+`.github/workflows/deploy-decision.yml`. Labels are set on the PR page: right
+sidebar → Labels.
+
+**If you are an agent merging such a PR, you must set the label first**, and
+the choice is the user's, not yours. Ask before merging. `deploy:yes` changes
+production the moment the PR merges.
+
+- `deploy:yes` → `deploy-functions.yml` deploys that PR's functions on merge
+- `deploy:no` → the code lands, production is untouched
+
+A change under `_shared/` fans out to every function importing it, since nothing
+rebuilds on its own. To deploy by hand at any time: Actions → "Deploy Edge
+Functions" → Run workflow (name functions, or `all`). The deploy is gated on the
+Deno suites above — they are the only test CI this repo has.
 
 Deploying requires the `SUPABASE_ACCESS_TOKEN` repo secret; the project ref is
 derived from the existing `SUPABASE_URL` secret.

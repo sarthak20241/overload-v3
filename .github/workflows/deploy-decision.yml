@@ -1,0 +1,102 @@
+name: Deploy Decision
+
+# Forces an explicit yes or no on every PR that touches supabase/functions/**,
+# so nothing reaches production because someone merged without thinking about it.
+#
+# A PR that changes an Edge Function must carry exactly one of:
+#   deploy:yes  -> deploy-functions.yml deploys that PR's functions on merge
+#   deploy:no   -> the code lands, production is untouched; deploy later by hand
+#
+# Until one is present this check FAILS, so whoever merges — person or agent —
+# has to make the call and it is recorded on the PR forever.
+#
+# The labels are added on the PR page: right sidebar -> Labels -> gear icon.
+# This workflow creates both of them the first time it runs, so there is
+# nothing to set up by hand.
+#
+# ONE THING THIS CANNOT DO ON ITS OWN: a failing check only BLOCKS a merge if
+# branch protection requires it. Add "Deploy Decision" to the required status
+# checks for main (Settings -> Branches -> branch protection rule -> Require
+# status checks to pass), or this is advice rather than a gate.
+#
+# PRs that touch no Edge Function skip the requirement entirely — most PRs
+# should never see this.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+concurrency:
+  group: deploy-decision-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Creating the two labels if they don't exist yet.
+  issues: write
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require an explicit deploy decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          # Three-dot: what this PR changed relative to where it branched from,
+          # not everything that has landed on the base since.
+          changed="$(git diff --name-only "${BASE}...${HEAD}" -- supabase/functions/ || true)"
+
+          if [ -z "$changed" ]; then
+            echo "No Edge Function changes in this PR — no deploy decision needed."
+            exit 0
+          fi
+
+          echo "This PR changes Edge Functions:"
+          printf '%s\n' "$changed" | sed 's/^/  /'
+          echo
+
+          # Best effort: a repo that already has the labels just gets 422s here,
+          # and a token without issues:write shouldn't fail the whole check —
+          # the decision itself is what matters, not who created the label.
+          gh label create "deploy:yes" --repo "$REPO" --color 0E8A16 \
+            --description "Deploy these Edge Functions to production on merge" 2>/dev/null || true
+          gh label create "deploy:no" --repo "$REPO" --color B60205 \
+            --description "Merge without deploying; deploy later by hand" 2>/dev/null || true
+
+          has_yes=false
+          has_no=false
+          case ",${LABELS}," in *",deploy:yes,"*) has_yes=true ;; esac
+          case ",${LABELS}," in *",deploy:no,"*) has_no=true ;; esac
+
+          if [ "$has_yes" = true ] && [ "$has_no" = true ]; then
+            echo "::error::This PR carries BOTH deploy:yes and deploy:no." \
+                 "Remove one — an ambiguous answer is not an answer."
+            exit 1
+          fi
+
+          if [ "$has_yes" = false ] && [ "$has_no" = false ]; then
+            echo "::error::This PR changes Edge Functions and has no deploy decision." \
+                 "Add deploy:yes (deploy on merge) or deploy:no (merge only) on the PR" \
+                 "page: right sidebar -> Labels. Merging without one would leave it" \
+                 "unclear whether production was meant to change."
+            exit 1
+          fi
+
+          if [ "$has_yes" = true ]; then
+            echo "Decision: deploy:yes — merging will deploy the functions above."
+          else
+            echo "Decision: deploy:no — merging changes nothing in production."
+            echo "Deploy later with Actions -> Deploy Edge Functions -> Run workflow."
+          fi
