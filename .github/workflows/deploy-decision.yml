@@ -51,6 +51,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
           set -euo pipefail
 
@@ -91,6 +92,21 @@ jobs:
                  "Add deploy:yes (deploy on merge) or deploy:no (merge only) on the PR" \
                  "page: right sidebar -> Labels. Merging without one would leave it" \
                  "unclear whether production was meant to change."
+            exit 1
+          fi
+
+          # deploy:yes is a promise the merge cannot keep from a fork. GitHub
+          # withholds every secret but GITHUB_TOKEN from a pull_request run whose
+          # head is a fork, so deploy-functions.yml would pass its consent check,
+          # start, and then die with no SUPABASE_ACCESS_TOKEN. Refuse the label
+          # here, while someone is still looking at the PR, rather than letting
+          # the failure surface after the merge in a log nobody opens.
+          if [ "$has_yes" = true ] && [ "${IS_FORK:-false}" = "true" ]; then
+            echo "::error::deploy:yes cannot work on a PR from a fork — GitHub" \
+                 "withholds secrets from fork-triggered runs, so the deploy would" \
+                 "start and then fail with no credentials. Use deploy:no, then" \
+                 "deploy after merging: Actions -> Deploy Edge Functions -> Run" \
+                 "workflow."
             exit 1
           fi
 
