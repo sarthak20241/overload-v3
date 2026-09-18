@@ -150,7 +150,13 @@ async function swapMove(
   cardId: string,
 ): Promise<string | null> {
   try {
-    const { data, error } = await supabase.rpc(fn, { p_card_id: cardId });
+    // Tag the write so the plan change log says a CARD changed the plan, not
+    // the user's own hand (migration 0123 reads these headers in its trigger).
+    const request = supabase.rpc(fn, { p_card_id: cardId });
+    const taggable = request as unknown as { setHeader?: (name: string, value: string) => void };
+    taggable.setHeader?.('x-change-source', 'card');
+    taggable.setHeader?.('x-change-card', cardId);
+    const { data, error } = await request;
     if (error) return null;
     return typeof data === 'string' ? data : null;
   } catch {

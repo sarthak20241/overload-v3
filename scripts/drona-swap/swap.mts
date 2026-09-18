@@ -115,11 +115,18 @@ ok('a replayed apply answers ok, so a retry cannot read as a failure',
   (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'ok');
 
 // ── Undo ─────────────────────────────────────────────────────────────────────
-const undone = await db.rpc('drona_undo_swap', { p_card_id: cardId });
+const undone = await db.rpc('drona_undo_swap', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId);
 ok('the user can undo their own card', undone.data === 'ok', undone.data ?? undone.error?.message);
 ok('the planned exercise is back', await slotNow() === PLANNED.id);
 ok('the card is closed', (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'dismissed');
-ok('a replayed undo answers ok too', (await db.rpc('drona_undo_swap', { p_card_id: cardId })).data === 'ok');
+// The apply and the Undo are the same source, minutes apart, and they cancel:
+// a routine that ends where it began is not a change (migration 0125).
+const afterUndo = (await service.from('plan_changes').select('id, changes')
+  .eq('user_id', UID).eq('entity', 'routine_exercises').eq('source', 'card')).data ?? [];
+ok('an apply and its Undo leave NO change in the plan log', afterUndo.length === 0, afterUndo);
+ok('a replayed undo answers ok too', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
 ok('a card the user already answered is never re-applied by the worker',
   (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'already_decided');
 
@@ -130,7 +137,8 @@ const card2 = (await service.from('drona_cards').insert({
 }).select('id').single()).data!;
 await db.from('routine_exercises').update({ exercise_id: legs.id }).eq('id', card.payload.routine_exercise_id);
 ok('a card cannot overwrite the user\'s own later edit',
-  (await db.rpc('drona_apply_swap', { p_card_id: card2.id })).data === 'moved_on');
+  (await db.rpc('drona_apply_swap', { p_card_id: card2.id })
+    .setHeader('x-change-source', 'card').setHeader('x-change-card', card2.id)).data === 'moved_on');
 ok('the hand edit stands', await slotNow() === legs.id);
 
 // ── Sessions that are not a swap ─────────────────────────────────────────────
