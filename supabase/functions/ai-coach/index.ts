@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { buildSystemPrompt, STRUCTURED_TOOLS, TERMINAL_TOOLS } from "./prompt.ts";
+import { envInt } from "../_shared/envInt.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -81,24 +82,10 @@ const GENERATE_PLAN_MAX_TOKENS = 4096;
 // still hard-errored (tool_truncated), never silently dropped.
 const GENERATE_PROGRAM_MAX_TOKENS = 6144;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
-// Numeric env override with a compiled-in default. Every model-call timeout
-// below runs through this so the budget can be retuned from the Edge Function
-// secrets instead of a redeploy; until now all of them were literals, so
-// changing one during an incident meant shipping a deploy. The defaults are
-// unchanged, so an unset secret keeps today's behaviour exactly. A blank,
-// non-numeric or non-positive value also falls back to the default, so a
-// fat-fingered secret degrades to today's behaviour rather than 0ms aborts.
-function envInt(name: string, fallback: number): number {
-  const raw = Deno.env.get(name);
-  if (!raw) return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    console.warn(`[ai-coach] ${name}="${raw}" is not a positive number — using ${fallback}`);
-    return fallback;
-  }
-  return Math.floor(n);
-}
-
+// Every model-call timeout below reads its budget through the shared envInt
+// (../_shared/envInt.ts), so any of them can be retuned from the Edge
+// Function secrets without a redeploy. Defaults are unchanged, so an unset
+// secret keeps today's behaviour exactly.
 // Hard cap on a single Anthropic call — a guard against a HUNG upstream, not
 // a latency budget. The original 30s was set from n=4 production samples and
 // sat exactly on the p50 of real generate_plan runs: the 2026-07-19 eval
@@ -206,11 +193,7 @@ const VOYAGE_TIMEOUT_MS = envInt("VOYAGE_TIMEOUT_MS", 6000);
 // change: comments carry no `event:`/`data:` line, so every already-shipped
 // build drops them in the `if (!data) continue` arm of its chunk parser.
 // Set SSE_HEARTBEAT_MS=0 to disable.
-const SSE_HEARTBEAT_MS = (() => {
-  const raw = Deno.env.get("SSE_HEARTBEAT_MS");
-  if (raw === "0") return 0; // explicit kill switch; envInt would reject it
-  return envInt("SSE_HEARTBEAT_MS", 10000);
-})();
+const SSE_HEARTBEAT_MS = envInt("SSE_HEARTBEAT_MS", 10000, { allowZero: true });
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",

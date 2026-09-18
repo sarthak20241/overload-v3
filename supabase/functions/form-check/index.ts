@@ -27,6 +27,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
+import { envInt } from "../_shared/envInt.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -46,12 +47,7 @@ const AUTHOR_MAX_TOKENS = 1600;
 // from the coach's ANTHROPIC_TIMEOUT_MS on purpose: these are different calls
 // with different budgets (haiku + 700/1600 tokens here), and one secret
 // silently moving both is how a form-check tweak breaks program chat.
-const ANTHROPIC_TIMEOUT_MS = (() => {
-  const raw = Deno.env.get("FORM_CHECK_TIMEOUT_MS");
-  if (!raw) return 30000;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30000;
-})();
+const ANTHROPIC_TIMEOUT_MS = envInt("FORM_CHECK_TIMEOUT_MS", 30000);
 
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Paid and trialing users. */

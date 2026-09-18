@@ -17,19 +17,15 @@
  * what will let Smart skip the decide call entirely.
  */
 
+import { envInt } from "../_shared/envInt.ts";
+
 const VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank";
 const RERANK_MODEL = "rerank-2.5-lite";
 // Measured ~400ms warm. The budget is deliberately tight: rerank runs after
 // the source wait, so every ms here is on the meal's critical path.
-// Overridable via the RERANK_TIMEOUT_MS Edge Function secret (non-positive or
-// non-numeric values fall back to this default) so the budget can be relaxed
-// during a Voyage slowdown without a redeploy.
-const RERANK_TIMEOUT_MS = (() => {
-  const raw = Deno.env.get("RERANK_TIMEOUT_MS");
-  if (!raw) return 900;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 900;
-})();
+// Overridable via the RERANK_TIMEOUT_MS Edge Function secret so the budget can
+// be relaxed during a Voyage slowdown without a redeploy.
+const RERANK_TIMEOUT_MS = envInt("RERANK_TIMEOUT_MS", 900);
 
 export interface RerankResult {
   /** Candidate indexes in best-first order. Same length as the input docs. */
