@@ -38,10 +38,20 @@ on:
         description: 'Function names, space or comma separated — or "all"'
         required: false
         default: all
-  # A merged PR. The job below runs ONLY when it was merged AND carries
-  # "deploy:yes"; a "deploy:no" merge lands the code and deploys nothing.
+  # A merged PR. The job below runs ONLY when it was merged into main AND
+  # carries "deploy:yes"; a "deploy:no" merge lands the code and deploys nothing.
+  #
+  # branches: for a pull_request event this filters the BASE branch, and it is
+  # load-bearing. The old push trigger could only ever fire on main; without
+  # this, merging a deploy:yes PR into a feature branch, a release branch or the
+  # middle of a stack would deploy THAT branch's code to production. paths:
+  # keeps the job (checkout + the whole Deno suite) off the merges that could
+  # never deploy anything.
   pull_request:
     types: [closed]
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
 
 # One deploy at a time, and never cancel one in flight: a half-applied deploy
 # is worse than a queued one.
@@ -57,9 +67,14 @@ jobs:
     # The consent check. A manual dispatch IS the explicit yes. A merged PR only
     # counts when someone attached "deploy:yes" to it; anything else — merged
     # with "deploy:no", or closed without merging — stops here.
+    # base.ref is checked here as well as in the trigger. The duplication is
+    # deliberate: the trigger filter is one edit away from being widened by
+    # someone who does not realise it is the only thing keeping a feature-branch
+    # merge out of production.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.merged == true &&
+       github.event.pull_request.base.ref == 'main' &&
        contains(github.event.pull_request.labels.*.name, 'deploy:yes'))
     runs-on: ubuntu-latest
     steps:

@@ -25,8 +25,13 @@ name: Deploy Decision
 # should never see this.
 
 on:
+  # Scoped to PRs targeting main, matching what can actually deploy. A PR into a
+  # feature branch cannot reach production, so demanding a deploy decision on it
+  # would be noise — and, once this is a required check, a merge blocker on
+  # branches the decision does not apply to.
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+    branches: [main]
 
 concurrency:
   group: deploy-decision-${{ github.event.pull_request.number }}
