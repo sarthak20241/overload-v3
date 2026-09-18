@@ -42,7 +42,16 @@ if (!CLERK_ISSUER) throw new Error("CLERK_ISSUER is required");
 const MODEL = "claude-haiku-4-5";
 const ANALYZE_MAX_TOKENS = 700;
 const AUTHOR_MAX_TOKENS = 1600;
-const ANTHROPIC_TIMEOUT_MS = 30000;
+// Overridable via the FORM_CHECK_TIMEOUT_MS Edge Function secret. Named apart
+// from the coach's ANTHROPIC_TIMEOUT_MS on purpose: these are different calls
+// with different budgets (haiku + 700/1600 tokens here), and one secret
+// silently moving both is how a form-check tweak breaks program chat.
+const ANTHROPIC_TIMEOUT_MS = (() => {
+  const raw = Deno.env.get("FORM_CHECK_TIMEOUT_MS");
+  if (!raw) return 30000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30000;
+})();
 
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Paid and trialing users. */
