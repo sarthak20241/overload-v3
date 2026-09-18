@@ -29,8 +29,13 @@ on:
   # feature branch cannot reach production, so demanding a deploy decision on it
   # would be noise — and, once this is a required check, a merge blocker on
   # branches the decision does not apply to.
+  # `edited` is in the list because it is the only event fired when a PR's BASE
+  # BRANCH changes. A PR opened against a feature branch does not run this check
+  # at all (branches: main below); retargeting it at main later fires no
+  # synchronize and no label event, so without `edited` the retargeted PR could
+  # reach main with function changes and no decision ever evaluated.
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited]
     branches: [main]
 
 concurrency:

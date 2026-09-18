@@ -67,21 +67,35 @@ jobs:
     # The consent check. A manual dispatch IS the explicit yes. A merged PR only
     # counts when someone attached "deploy:yes" to it; anything else — merged
     # with "deploy:no", or closed without merging — stops here.
-    # base.ref is checked here as well as in the trigger. The duplication is
-    # deliberate: the trigger filter is one edit away from being widened by
-    # someone who does not realise it is the only thing keeping a feature-branch
-    # merge out of production.
+    # Every clause here is also enforced somewhere else, on purpose.
+    #
+    # base.ref: the trigger's branches filter already does this, but that filter
+    # is one edit away from being widened by someone who does not realise it is
+    # the only thing keeping a feature-branch merge out of production.
+    #
+    # NOT deploy:no: deploy-decision.yml rejects a PR carrying both labels, but
+    # that check only BLOCKS anything once it is a required status check —
+    # a manual setup step that may not have been done. Without this clause the
+    # "ambiguous answer is not an answer" rule would hold only on a correctly
+    # configured repo, and ambiguity would resolve to "deploy" everywhere else.
+    # An unclear answer must never be read as yes.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.merged == true &&
        github.event.pull_request.base.ref == 'main' &&
-       contains(github.event.pull_request.labels.*.name, 'deploy:yes'))
+       contains(github.event.pull_request.labels.*.name, 'deploy:yes') &&
+       !contains(github.event.pull_request.labels.*.name, 'deploy:no'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           # The merged state, explicitly. On a closed PR the default checkout is
           # the pull/N/merge ref, which is not what landed on main.
+          # merge_commit_sha is the commit that actually landed. The fallback
+          # covers only the race where it is not yet populated: on a closed PR
+          # github.ref resolves to the ephemeral refs/pull/N/merge test-merge,
+          # which is NOT the landed commit under squash or rebase merging. Close
+          # enough in content to deploy from, not the same object.
           ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
           # Full history so the merge commit can be diffed against the PR base.
           fetch-depth: 0
