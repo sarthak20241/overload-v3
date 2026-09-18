@@ -138,14 +138,24 @@ jobs:
             # fixture four levels down). -r also descends into subdirectories,
             # and `cut -f3` takes the function name from the path, not the
             # import, so depth never reaches the result.
+            # `|| true` on both: grep exits 1 when it matches nothing, and under
+            # `set -euo pipefail` that status propagates out of the pipeline and
+            # kills the step on a plain assignment. Matching nothing is a normal
+            # outcome for each of these, not an error:
+            #   - shared_users: no function imports _shared (true of a repo before
+            #     the first shared module lands).
+            #   - direct: EVERY changed path is under _shared/ — i.e. a standalone
+            #     fix to a shared module, which is precisely the case the fan-out
+            #     below exists to serve. Without the guard the job died with a raw
+            #     script error on its own primary use case.
             shared_users=''
             if printf '%s\n' "$changed" | grep -q '^supabase/functions/_shared/'; then
               shared_users="$(grep -rl '\.\./_shared/' supabase/functions/*/ --include='*.ts' \
-                | cut -d/ -f3 | sort -u)"
+                | cut -d/ -f3 | sort -u || true)"
             fi
             direct="$(printf '%s\n' "$changed" \
               | grep -v '^supabase/functions/_shared/' \
-              | cut -d/ -f3 | sort -u)"
+              | cut -d/ -f3 | sort -u || true)"
             targets="$(printf '%s\n%s\n' "$direct" "$shared_users" | sed '/^$/d' | sort -u)"
           fi
 
