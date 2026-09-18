@@ -38,6 +38,12 @@ verify_jwt = false
 [functions.daily-suggestion]
 verify_jwt = false
 
+# drona-cards: same two callers as daily-suggestion. The app sends a Clerk JWT
+# (verified in the handler), pg_cron sends x-cron-secret. Neither is a Supabase
+# JWT, so the gateway must not check one.
+[functions.drona-cards]
+verify_jwt = false
+
 # RevenueCat sends its own shared secret in the Authorization header, NOT a
 # Supabase JWT, and the function checks that secret itself at the top of the
 # handler. With the default verify_jwt = true the gateway rejects every
