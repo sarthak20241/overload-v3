@@ -69,11 +69,16 @@ jobs:
       - name: Test
         run: |
           set -euo pipefail
-          deno test --allow-all --node-modules-dir=auto supabase/functions/ai-coach/
-          deno test --allow-all --node-modules-dir=auto supabase/functions/_shared/
-          deno test --allow-all --node-modules-dir=auto supabase/functions/revenuecat-webhook/
-          deno test --allow-all --node-modules-dir=auto lib/xp.test.ts
-          deno test --allow-all --node-modules-dir=auto lib/tiers.test.ts
+          # No --node-modules-dir: none of these suites reach an npm import, and
+          # on a clean checkout the flag makes Deno install this repo's entire
+          # React Native dependency tree before running a single test. Verified
+          # in a fresh worktree — 385 pass without it. These are the commands
+          # CLAUDE.md documents, unmodified.
+          deno test --allow-all supabase/functions/ai-coach/
+          deno test --allow-all supabase/functions/_shared/
+          deno test --allow-all supabase/functions/revenuecat-webhook/
+          deno test --allow-all lib/xp.test.ts
+          deno test --allow-all lib/tiers.test.ts
 
       - name: Pick functions
         id: pick
@@ -195,7 +200,14 @@ jobs:
                  "Expected https://<ref>.supabase.co"
             exit 1
           fi
-          echo "Project ref: $ref"
+          # Register the derived value for masking. GitHub only redacts exact,
+          # complete matches of a registered secret, and $ref is a SUBSTRING of
+          # SUPABASE_URL (no scheme, no .supabase.co), so it is not masked
+          # automatically. This repo is public and its Actions logs are world
+          # readable, so without this the ref lands in the log — which is the
+          # thing deriving it from a secret was meant to avoid.
+          echo "::add-mask::$ref"
+          echo "Project ref resolved from SUPABASE_URL."
 
           for fn in $TARGETS; do
             echo "::group::deploy $fn"
