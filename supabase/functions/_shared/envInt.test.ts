@@ -69,6 +69,42 @@ Deno.test("allowZero lets 0 through as a real kill switch", () => {
   assertEquals(h.warnings.length, 0);
 });
 
+Deno.test("allowZero rejects a positive value that would floor to zero", () => {
+  // REGRESSION (CodeRabbit, PR #182): "0.5" cleared the old `n >= 0` check and
+  // then floored to 0, silently disabling the heartbeat this PR exists to add.
+  // Only an explicit zero may ever yield zero.
+  for (const raw of ["0.5", "0.9", "0.001"]) {
+    const h = harness({ SSE_HEARTBEAT_MS: raw });
+    assertEquals(h.read("SSE_HEARTBEAT_MS", 10000, true), 10000);
+    assertEquals(h.warnings.length, 1);
+  }
+});
+
+Deno.test("a sub-integer is rejected without allowZero too", () => {
+  const h = harness({ T: "0.5" });
+  assertEquals(h.read("T", 80000), 80000);
+  assertEquals(h.warnings.length, 1);
+});
+
+Deno.test("1 is the smallest accepted positive value", () => {
+  // The boundary either side of the floor rule above.
+  const h = harness({ T: "1" });
+  assertEquals(h.read("T", 80000), 1);
+  assertEquals(h.warnings.length, 0);
+  const h2 = harness({ T: "1.9" });
+  assertEquals(h2.read("T", 80000), 1);
+  assertEquals(h2.warnings.length, 0);
+});
+
+Deno.test("the warning names what was expected, and says so differently under allowZero", () => {
+  const strict = harness({ T: "nope" });
+  strict.read("T", 80000);
+  assertEquals(strict.warnings[0].includes("a number >= 1"), true);
+  const zeroOk = harness({ T: "nope" });
+  zeroOk.read("T", 80000, true);
+  assertEquals(zeroOk.warnings[0].includes("0, or a number >= 1"), true);
+});
+
 Deno.test("allowZero still rejects negatives", () => {
   const h = harness({ SSE_HEARTBEAT_MS: "-1" });
   assertEquals(h.read("SSE_HEARTBEAT_MS", 10000, true), 10000);
