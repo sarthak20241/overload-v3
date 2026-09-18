@@ -15,9 +15,11 @@ name: Deploy Decision
 # nothing to set up by hand.
 #
 # ONE THING THIS CANNOT DO ON ITS OWN: a failing check only BLOCKS a merge if
-# branch protection requires it. Add "Deploy Decision" to the required status
-# checks for main (Settings -> Branches -> branch protection rule -> Require
-# status checks to pass), or this is advice rather than a gate.
+# branch protection requires it. Add the check named "Deploy decision" (the
+# job's name below, NOT the workflow name above — branch protection matches the
+# check run, and they are different strings) to the required status checks for
+# main: Settings -> Branches -> branch protection rule -> Require status checks
+# to pass. Until then this reports and does not block.
 #
 # PRs that touch no Edge Function skip the requirement entirely — most PRs
 # should never see this.
@@ -37,6 +39,10 @@ permissions:
 
 jobs:
   decide:
+    # Named explicitly because THIS string is what branch protection matches.
+    # Without it the check run takes the job id ("decide"), which is what the
+    # required-status-check picker would have shown — not the workflow name.
+    name: Deploy decision
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -50,8 +56,17 @@ jobs:
           REPO: ${{ github.repository }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          # contains() over the label ARRAY is exact element matching. Joining
+          # into a comma string and pattern-matching it looked equivalent, but
+          # GitHub permits commas inside a label name, and one such label would
+          # corrupt the delimiting and flip a decision either way.
+          HAS_YES: ${{ contains(github.event.pull_request.labels.*.name, 'deploy:yes') }}
+          HAS_NO: ${{ contains(github.event.pull_request.labels.*.name, 'deploy:no') }}
+          # (1) head.repo is null once a contributor deletes their fork, and a
+          # null full_name still fails this comparison, so the unknown case is
+          # treated as a fork — the safe direction, since such a run has no
+          # secrets either way.
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           set -euo pipefail
 
@@ -76,10 +91,8 @@ jobs:
           gh label create "deploy:no" --repo "$REPO" --color B60205 \
             --description "Merge without deploying; deploy later by hand" 2>/dev/null || true
 
-          has_yes=false
-          has_no=false
-          case ",${LABELS}," in *",deploy:yes,"*) has_yes=true ;; esac
-          case ",${LABELS}," in *",deploy:no,"*) has_no=true ;; esac
+          has_yes="${HAS_YES:-false}"
+          has_no="${HAS_NO:-false}"
 
           if [ "$has_yes" = true ] && [ "$has_no" = true ]; then
             echo "::error::This PR carries BOTH deploy:yes and deploy:no." \

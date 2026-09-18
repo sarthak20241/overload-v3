@@ -51,6 +51,14 @@ production the moment the PR merges.
 - `deploy:yes` → `deploy-functions.yml` deploys that PR's functions on merge
 - `deploy:no` → the code lands, production is untouched
 
+`deploy:yes` is refused on a PR from a fork: GitHub withholds secrets from
+fork-triggered runs, so the deploy would start and then fail with no
+credentials. Use `deploy:no` and deploy by hand after merging.
+
+The check is named **"Deploy decision"** — the job name, not the workflow name.
+That is the string to add under Settings → Branches → required status checks.
+Until it is required there, the check reports but does not block a merge.
+
 A change under `_shared/` fans out to every function importing it, since nothing
 rebuilds on its own. To deploy by hand at any time: Actions → "Deploy Edge
 Functions" → Run workflow (name functions, or `all`). The deploy is gated on the

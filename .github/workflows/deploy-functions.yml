@@ -225,7 +225,10 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           TARGETS: ${{ steps.pick.outputs.targets }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          # Null-safe, and scoped to PR events: on a manual dispatch there is no
+          # pull_request at all, and an unguarded comparison would report every
+          # missing-token failure as a fork problem.
+          IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           set -euo pipefail
 
