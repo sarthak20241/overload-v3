@@ -1513,7 +1513,7 @@ function ChatScreen({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {messages.map((msg) => {
+        {messages.map((msg, idx) => {
           // A workout edit proposed on this turn renders under its bubble, so
           // the coach's sentence and the change it describes stay together.
           const edit = edits.find((e) => e.messageId === msg.id);
@@ -1523,7 +1523,9 @@ function ChatScreen({
           const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === '' && !!edit;
           // No copy icon under a reply still being written: it would copy half
           // a sentence. It appears the moment the turn finishes.
-          const streaming = loading && msg.id === pendingAssistantIdRef.current;
+          // While a turn runs, its assistant bubble is always the last message.
+          // Derived from state, so render never reads a mutable ref.
+          const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
             <View key={msg.id}>
               {!bubbleOnlyHoldsTheCard && (
@@ -3474,8 +3476,9 @@ function RefineChatScreen({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {messages.map((msg) => {
-          const streaming = loading && msg.id === pendingAssistantIdRef.current;
+        {messages.map((msg, idx) => {
+          // See ChatScreen: the running turn's bubble is always the last one.
+          const streaming = loading && idx === messages.length - 1 && msg.role === 'assistant';
           return (
           <View key={msg.id}>
             <Pressable

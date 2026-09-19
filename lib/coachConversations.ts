@@ -222,7 +222,13 @@ export function getActiveMessages(userId: string | null): CoachChatMessage[] | n
  * a message is added/removed (count change), otherwise debounces (streaming
  * text growth coalesces into one disk write).
  */
-export function saveActiveMessages(userId: string | null, messages: CoachChatMessage[]): void {
+export function saveActiveMessages(
+  userId: string | null,
+  messages: CoachChatMessage[],
+  // Write to disk now instead of after the debounce. Stop uses it: a reply
+  // the user just cut short must survive the app being killed right after.
+  opts: { immediate?: boolean } = {},
+): void {
   const storeKey = storeKeyFor(userId);
   const store = getStore(storeKey);
 
@@ -241,6 +247,9 @@ export function saveActiveMessages(userId: string | null, messages: CoachChatMes
   // reorder the "Past chats" list on every open) and don't touch disk.
   if (sameMessages(clean, convo.messages)) {
     _lastSavedCount[storeKey] = clean.length;
+    // Already in memory, but the disk write may still be sitting in the
+    // debounce (the last streamed tick). Immediate means flush it.
+    if (opts.immediate && _persistTimers[storeKey]) persistNow(storeKey);
     return;
   }
   convo.messages = clean;
@@ -253,7 +262,7 @@ export function saveActiveMessages(userId: string | null, messages: CoachChatMes
 
   const prevCount = _lastSavedCount[storeKey] ?? -1;
   _lastSavedCount[storeKey] = clean.length;
-  if (clean.length !== prevCount) persistNow(storeKey);
+  if (opts.immediate || clean.length !== prevCount) persistNow(storeKey);
   else schedulePersist(storeKey);
 }
 

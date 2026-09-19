@@ -49,7 +49,8 @@ export interface UseCoachConversationReturn {
    * Stop calls this so a reply cut short is saved to the chat it belongs to
    * even when a switch (new chat, open a past one) follows in the same tap:
    * the switch replaces state in the same batch, so the cut-short text would
-   * never reach the write-through effect.
+   * never reach the write-through effect. Written to disk at once, not after
+   * the streaming debounce, so it also survives the app being killed.
    */
   persistMessages: (list: CoachChatMessage[]) => void;
 }
@@ -146,7 +147,7 @@ export function useCoachConversation(opts: {
     // Same gate as the write-through: before hydration this would clobber the
     // stored conversation with whatever is on screen.
     if (!enabled || !hydrated) return;
-    saveActiveMessages(userId, list);
+    saveActiveMessages(userId, list, { immediate: true });
   }, [enabled, hydrated, userId]);
 
   // `messages` is a dependency on purpose: the active conversation's title and
