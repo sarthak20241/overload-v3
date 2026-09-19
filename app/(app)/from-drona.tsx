@@ -87,7 +87,7 @@ export default function FromDronaScreen() {
         } else {
           patch(card.id, before);
           toast.info(result === 'moved_on'
-            ? 'That routine has changed since. Nothing was touched.'
+            ? 'That has changed since. Nothing was touched.'
             : 'Could not do that right now. Try again.');
         }
       });
@@ -120,7 +120,7 @@ export default function FromDronaScreen() {
       } else if (result === 'moved_on') {
         // The server closed the card as dismissed: nothing was left to put back.
         patch(card.id, { status: 'dismissed' });
-        toast.info('That routine has changed since. Nothing was touched.');
+        toast.info('That has changed since. Nothing was touched.');
       } else {
         patch(card.id, before);
         toast.info(result === 'too_late' ? 'That one is past its Undo window.' : 'Could not do that right now. Try again.');

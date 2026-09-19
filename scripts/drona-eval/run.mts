@@ -103,4 +103,7 @@ for (const p of packs) {
   if (a.tool === "propose_targets") console.log(`     "${String(a.input.rationale)}"`);
 }
 console.log(`model ${modelPass}/${packs.length}   pipeline ${pipelinePass}/${packs.length} ${VIA_CLI ? "(via claude -p: correctness only, no latency)" : "(API)"}`);
-if (pipelinePass < packs.length) process.exitCode = 1;
+// Both scores must be whole. The validator catching a bad proposal is the
+// safety net working, not the model passing: a green run that hides a wrong
+// judgment behind a refusal is exactly what this eval exists to show.
+if (modelPass < packs.length || pipelinePass < packs.length) process.exitCode = 1;

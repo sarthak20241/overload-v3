@@ -606,16 +606,17 @@ export default function DashboardScreen() {
   // user has answered, even when their own edit already moved the slot on.
   const handleCardUndo = () => {
     if (!weeklyCard) return;
-    const back = weeklyCard.payload.from_name;
+    // A calories card puts a NUMBER back, not an exercise: say which.
+    const undone = weeklyCard.payload.from_kcal != null
+      ? `Back to ${weeklyCard.payload.from_kcal} kcal.`
+      : `${weeklyCard.payload.from_name ?? 'The old exercise'} is back in the plan.`;
     track('drona_card_undone', { kind: weeklyCard.kind, topic: weeklyCard.topic });
     setWeeklyCard(null);
     const moves = movesFor(weeklyCard.payload.action);
     if (!moves) return;
     void moves.undo(supabase, weeklyCard.id).then((result) => {
       toast.info(
-        result === 'ok'
-          ? `${back ?? 'The old exercise'} is back in the plan.`
-          : 'That has changed since. Nothing was touched.',
+        result === 'ok' ? undone : 'That has changed since. Nothing was touched.',
       );
       setFocusTick((t) => t + 1);
     });
