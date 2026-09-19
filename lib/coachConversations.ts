@@ -14,6 +14,11 @@
  * Phase 0 is local-only. The conversation `id` is minted with newClientId() so
  * it lines up with the server row when cloud sync (Phase 1) lands.
  *
+ * Past chats: every conversation stays in the store (bounded, oldest evicted),
+ * and listConversations / setActiveConversation / deleteConversation back the
+ * "Past chats" list in the coach sheet. Empty conversations (no user turn yet)
+ * are never listed and are dropped when the user switches away from them.
+ *
  * NOTE: the in-workout coach chat (live / review) is intentionally NOT persisted
  * here — its session recap is rebuilt on every open, so the caller passes
  * `enabled: false` to useCoachConversation and bypasses this store entirely.
@@ -50,6 +55,14 @@ export interface CoachConversation {
   updatedAt: number;
 }
 
+/** What the "Past chats" list renders. No messages: the list stays cheap. */
+export interface CoachConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messageCount: number;
+}
+
 interface UserStore {
   activeId: string | null;
   conversations: Record<string, CoachConversation>;
@@ -57,8 +70,8 @@ interface UserStore {
 
 const SCHEMA = 1 as const;
 const TITLE_MAX = 60;
-// Keep the on-disk store bounded. Phase 0 has no history list, so old
-// conversations would otherwise accumulate forever.
+// Keep the on-disk store bounded so old conversations don't accumulate
+// forever. The "Past chats" list shows everything under this cap.
 const MAX_CONVERSATIONS = 50;
 const PERSIST_DEBOUNCE_MS = 600;
 
@@ -109,12 +122,40 @@ function sanitize(messages: CoachChatMessage[]): CoachChatMessage[] {
     .map(({ thinkingPhase, ...rest }) => rest);
 }
 
+// Only the tail of a conversation ever changes (the streaming assistant turn,
+// then its citations), so comparing length + last message is exact enough.
+function sameMessages(a: CoachChatMessage[], b: CoachChatMessage[]): boolean {
+  if (a.length !== b.length) return false;
+  if (a.length === 0) return true;
+  return JSON.stringify(a[a.length - 1]) === JSON.stringify(b[b.length - 1]);
+}
+
+// A conversation the user never typed into is just the greeting. It is not
+// worth listing, and it is safe to drop when they move to another chat.
+function hasUserTurn(convo: CoachConversation | undefined): boolean {
+  return !!convo && convo.messages.some((m) => m.role === 'user');
+}
+
+// Drop every chat that is not open and was never typed into. "New chat" and
+// deleting the open chat each leave one behind, and they would otherwise pile
+// up: they carry a fresh updatedAt, so they outrank genuinely old chats in the
+// eviction sort below and quietly push real past chats out of the list. Run on
+// every save, so empties written by older builds are swept on first use too.
+function dropEmptyInactive(store: UserStore): void {
+  for (const id of Object.keys(store.conversations)) {
+    if (id !== store.activeId && !hasUserTurn(store.conversations[id])) {
+      delete store.conversations[id];
+    }
+  }
+}
+
 function evictOldest(store: UserStore): void {
-  const ids = Object.keys(store.conversations);
-  if (ids.length <= MAX_CONVERSATIONS) return;
-  const sorted = ids
-    .map((id) => store.conversations[id])
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+  dropEmptyInactive(store);
+  // The cap counts real chats only. The open chat may be a fresh greeting, and
+  // counting it would let "New chat" push the 50th real chat out of the list.
+  const real = Object.values(store.conversations).filter(hasUserTurn);
+  if (real.length <= MAX_CONVERSATIONS) return;
+  const sorted = real.sort((a, b) => b.updatedAt - a.updatedAt);
   for (const convo of sorted.slice(MAX_CONVERSATIONS)) {
     if (convo.id === store.activeId) continue; // never evict the active one
     delete store.conversations[convo.id];
@@ -181,7 +222,13 @@ export function getActiveMessages(userId: string | null): CoachChatMessage[] | n
  * a message is added/removed (count change), otherwise debounces (streaming
  * text growth coalesces into one disk write).
  */
-export function saveActiveMessages(userId: string | null, messages: CoachChatMessage[]): void {
+export function saveActiveMessages(
+  userId: string | null,
+  messages: CoachChatMessage[],
+  // Write to disk now instead of after the debounce. Stop uses it: a reply
+  // the user just cut short must survive the app being killed right after.
+  opts: { immediate?: boolean } = {},
+): void {
   const storeKey = storeKeyFor(userId);
   const store = getStore(storeKey);
 
@@ -195,6 +242,16 @@ export function saveActiveMessages(userId: string | null, messages: CoachChatMes
   const convo = store.conversations[id];
 
   const clean = sanitize(messages);
+  // Opening a past chat feeds its own messages straight back through the
+  // write-through effect. Nothing changed, so don't bump updatedAt (which would
+  // reorder the "Past chats" list on every open) and don't touch disk.
+  if (sameMessages(clean, convo.messages)) {
+    _lastSavedCount[storeKey] = clean.length;
+    // Already in memory, but the disk write may still be sitting in the
+    // debounce (the last streamed tick). Immediate means flush it.
+    if (opts.immediate && _persistTimers[storeKey]) persistNow(storeKey);
+    return;
+  }
   convo.messages = clean;
   convo.updatedAt = Date.now();
   if (!convo.title) {
@@ -205,7 +262,7 @@ export function saveActiveMessages(userId: string | null, messages: CoachChatMes
 
   const prevCount = _lastSavedCount[storeKey] ?? -1;
   _lastSavedCount[storeKey] = clean.length;
-  if (clean.length !== prevCount) persistNow(storeKey);
+  if (opts.immediate || clean.length !== prevCount) persistNow(storeKey);
   else schedulePersist(storeKey);
 }
 
@@ -219,9 +276,72 @@ export function startNewConversation(userId: string | null): CoachConversation {
   const convo = newConversation();
   store.activeId = convo.id;
   store.conversations[convo.id] = convo;
+  // The chat being left may be an untouched greeting (New chat tapped twice).
+  dropEmptyInactive(store);
   _lastSavedCount[storeKey] = 0;
   persistNow(storeKey);
   return convo;
+}
+
+/** The active conversation id, or null before the first send. */
+export function getActiveConversationId(userId: string | null): string | null {
+  return _mem[storeKeyFor(userId)]?.activeId ?? null;
+}
+
+/**
+ * Conversations the user actually talked in, newest first. Feeds the "Past
+ * chats" list. Call after hydrateCoachConversations for a cold start.
+ */
+export function listConversations(userId: string | null): CoachConversationSummary[] {
+  const store = _mem[storeKeyFor(userId)];
+  if (!store) return [];
+  return Object.values(store.conversations)
+    .filter(hasUserTurn)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((c) => ({
+      id: c.id,
+      title: c.title || snippet(c.messages.find((m) => m.role === 'user')?.content ?? ''),
+      updatedAt: c.updatedAt,
+      messageCount: c.messages.length,
+    }));
+}
+
+/**
+ * Make a stored conversation the active one and return its messages (null if
+ * the id is unknown). A conversation left behind with no user turn is dropped:
+ * it was only ever the greeting, and keeping it would let "New chat" then
+ * "open a past chat" pile up empties.
+ */
+export function setActiveConversation(
+  userId: string | null,
+  id: string,
+): CoachChatMessage[] | null {
+  const storeKey = storeKeyFor(userId);
+  const store = getStore(storeKey);
+  const next = store.conversations[id];
+  if (!next) return null;
+  store.activeId = id;
+  dropEmptyInactive(store);
+  _lastSavedCount[storeKey] = next.messages.length;
+  persistNow(storeKey);
+  return next.messages;
+}
+
+/**
+ * Remove a conversation. Deleting the active one leaves no active
+ * conversation; the caller resets the screen to a fresh starter (the next
+ * send creates a new one).
+ */
+export function deleteConversation(userId: string | null, id: string): void {
+  const storeKey = storeKeyFor(userId);
+  const store = getStore(storeKey);
+  if (!store.conversations[id]) return;
+  delete store.conversations[id];
+  if (store.activeId === id) {
+    store.activeId = null;
+    _lastSavedCount[storeKey] = -1;
+  }
+  persistNow(storeKey);
 }
 
 /**
