@@ -29,6 +29,13 @@ export interface DronaCardPayload {
   from_name?: string;
   to_name?: string;
   routine_name?: string;
+  /** apply_targets: the four numbers the card saw, so Undo can put them back. */
+  from_kcal?: number;
+  to_kcal?: number;
+  from_protein_g?: number | null;
+  from_carb_g?: number | null;
+  from_fat_g?: number | null;
+  phase_id?: string | null;
 }
 
 export interface SavedDronaCard {
@@ -158,7 +165,7 @@ export async function setCardStatus(
  */
 async function swapMove(
   supabase: SupabaseClient,
-  fn: 'drona_apply_swap' | 'drona_undo_swap',
+  fn: 'drona_apply_swap' | 'drona_undo_swap' | 'drona_apply_targets' | 'drona_undo_targets',
   cardId: string,
 ): Promise<string | null> {
   try {
@@ -217,4 +224,19 @@ export async function readCardHistory(
   } catch {
     return undefined;
   }
+}
+
+/** "Set 1950 kcal" on a calories act card (B1). The database re-derives the macros. */
+export const applyTargets = (supabase: SupabaseClient, cardId: string) =>
+  swapMove(supabase, 'drona_apply_targets', cardId);
+
+/** Undo on a calories card: the four numbers it saw go back, seven days. */
+export const undoTargets = (supabase: SupabaseClient, cardId: string) =>
+  swapMove(supabase, 'drona_undo_targets', cardId);
+
+/** Which move a card's action wants, so one handler serves swaps and targets. */
+export function movesFor(action?: string): { apply: typeof applySwap; undo: typeof undoSwap } | null {
+  if (action === 'apply_swap' || action === 'undo_swap') return { apply: applySwap, undo: undoSwap };
+  if (action === 'apply_targets') return { apply: applyTargets, undo: undoTargets };
+  return null;
 }

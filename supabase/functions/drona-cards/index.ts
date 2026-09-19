@@ -16,12 +16,15 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
 import { decideCard, type DronaFacts, onCooldown, signalsFrom, weekStartOf } from "../_shared/dronaCards.ts";
 import { decideSwap, type SwapFacts, swapCard } from "../_shared/dronaSwap.ts";
+import { calorieGate, caloriesCard, type DietFacts, uglyChecks, validateTargets } from "../_shared/dronaCalories.ts";
+import { askCaloriesModel, DRONA_CARD_MODEL } from "../_shared/dronaModel.ts";
 import { isTimeZone, wallClock } from "../_shared/wallClock.ts";
 import { retried } from "../_shared/retried.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const CLERK_ISSUER = Deno.env.get("CLERK_ISSUER") ?? "";
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const JWKS = createRemoteJWKSet(new URL(`${CLERK_ISSUER}/.well-known/jwks.json`));
 
 const USER_PAGE = 1000;
@@ -121,6 +124,74 @@ async function swapFirst(
   return { kind: card.kind, saved: true };
 }
 
+type CardRow = {
+  user_id: string; week_start: string; kind: string; topic: string; title: string; body: string;
+  evidence: unknown; payload: unknown; signals: string[]; facts: unknown; source: string;
+  status?: string; rejected?: unknown;
+};
+
+/**
+ * B1, the first card the MODEL decides (plan section 3). The rules gate the
+ * week and set the anchor; the model reads the series and the diary and
+ * answers with one tool call; the validator has the last word. A refused
+ * answer is stored as a HOLD with the refusal attached, so the audit can say
+ * why, and nothing is retried. Model failures write nothing at all.
+ *
+ * Returns the row to insert, or null when the week holds.
+ */
+async function caloriesFirst(
+  db: SupabaseClient,
+  userId: string,
+  localDay: string,
+  weekStart: string,
+  facts: DronaFacts,
+  source: "cron" | "app",
+): Promise<CardRow | null> {
+  if (!ANTHROPIC_API_KEY) return null;
+  const { data: diet, error } = await retried(() =>
+    db.rpc("get_drona_diet_facts", { p_user_id: userId, p_as_of: localDay })
+  );
+  if (error || !diet) return null;
+
+  const gate = calorieGate(facts, diet as DietFacts);
+  if (!gate.eligible || !gate.anchor) return null;
+
+  const started = Date.now();
+  const answer = await askCaloriesModel(
+    { facts, diet: diet as DietFacts, anchor: gate.anchor, memory: facts.cards ?? [] },
+    ANTHROPIC_API_KEY,
+  );
+  // COST: every call lands in token_usage under its own pipeline, whatever it answered.
+  await db.rpc("log_token_usage", {
+    p_pipeline: "drona_card",
+    p_provider: "anthropic",
+    p_model: DRONA_CARD_MODEL,
+    p_input_tokens: answer.usage.input_tokens,
+    p_output_tokens: answer.usage.output_tokens,
+    p_cache_read_tokens: answer.usage.cache_read_tokens,
+    p_cache_creation_tokens: answer.usage.cache_creation_tokens,
+    p_metadata: { topic: "calories", tool: answer.tool, user: userId.slice(0, 12) },
+    p_latency_ms: Date.now() - started,
+    p_status: answer.tool === "none" ? "error" : "success",
+    p_error_message: answer.error ?? null,
+  }).then(({ error: e }) => { if (e) console.error("[drona-cards] token usage:", e.message); });
+
+  const base = { user_id: userId, week_start: weekStart, facts: { ...facts, diet, gate }, source };
+  if (answer.tool === "none") return null;
+  if (answer.tool === "hold") {
+    return { ...base, kind: "hold", topic: "calories", title: "", body: "", evidence: [], payload: {},
+      signals: ["model_hold"], status: "held", rejected: { reason: String(answer.input.reason ?? "") } };
+  }
+  const checked = validateTargets(answer.input, { ...gate.anchor, checks: uglyChecks(facts, diet as DietFacts) });
+  if (!checked.ok) {
+    return { ...base, kind: "hold", topic: "calories", title: "", body: "", evidence: [], payload: {},
+      signals: ["validator_refused"], status: "held", rejected: { reason: checked.reason, input: answer.input } };
+  }
+  const card = caloriesCard(facts, diet as DietFacts, checked.kcal, checked.rationale);
+  return { ...base, kind: card.kind, topic: card.topic, title: card.title, body: card.body,
+    evidence: card.evidence, payload: card.payload, signals: card.signals };
+}
+
 /** Read one user's facts, decide, and write the card. A hold writes nothing. */
 async function generate(
   db: SupabaseClient,
@@ -136,9 +207,24 @@ async function generate(
   if (!facts) return { kind: "none", saved: false, error: "no facts" };
 
   // Too new to read a habit, and a swap just asked about waits its turn.
-  if (!signalsFrom(facts as DronaFacts).new_user && !onCooldown("swap", facts as DronaFacts)) {
+  const newUser = signalsFrom(facts as DronaFacts).new_user;
+  if (!newUser && !onCooldown("swap", facts as DronaFacts)) {
     const swap = await swapFirst(db, userId, localDay, weekStart, source);
     if (swap) return swap;
+  }
+
+  // B1 (Pro, model-decided). A model hold is written as a held row so the
+  // week is settled and the audit keeps the reason; a model failure writes
+  // nothing and the rules below get their turn.
+  if (!newUser && !onCooldown("calories", facts as DronaFacts)) {
+    const row = await caloriesFirst(db, userId, localDay, weekStart, facts as DronaFacts, source);
+    if (row) {
+      const { error: insErr } = await retried(() => db.from("drona_cards").insert(row));
+      if (insErr && (insErr as { code?: string }).code !== "23505") {
+        return { kind: row.kind, saved: false, error: insErr.message };
+      }
+      return { kind: row.kind, saved: !insErr };
+    }
   }
 
   const card = decideCard(facts as DronaFacts);

@@ -39,7 +39,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
   const { C } = useTheme();
   const isNotice = card.kind === 'notice';
   const undoable = isNotice && card.payload.action === 'undo_swap';
-  const primary = { label: isNotice ? 'Got it' : primaryLabelFor(card.payload.action), press: isNotice ? onDismiss : onAct };
+  const primary = { label: isNotice ? 'Got it' : primaryLabelFor(card.payload), press: isNotice ? onDismiss : onAct };
   const second = undoable
     ? { label: 'Undo', press: onUndo }
     : card.kind === 'act'
@@ -150,8 +150,10 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
   );
 }
 
-function primaryLabelFor(action?: string): string {
-  switch (action) {
+function primaryLabelFor(payload: SavedDronaCard['payload']): string {
+  switch (payload.action) {
+    case 'apply_targets':
+      return payload.to_kcal ? `Set ${payload.to_kcal} kcal` : 'Set the new target';
     case 'log_weight':
       return 'Log a weigh-in';
     case 'log_food':

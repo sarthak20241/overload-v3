@@ -149,24 +149,49 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
 
     const forced = payload.tool_choice?.name;
     const tools = payload.tools ?? [];
+    // Two shapes the API supports and the CLI cannot:
+    //   a named tool_choice  -> the model fills ONE schema (parse_meal)
+    //   tool_choice "any"    -> the model PICKS a tool, then fills it (Drona
+    //                           cards: propose or hold). Forcing tools[0] here
+    //                           silently deletes the choice and every answer
+    //                           reads as a proposal, which is how the first
+    //                           B1 eval scored the model 2/6 for holds it had
+    //                           written in plain words.
+    const choose = !forced && tools.length > 1;
     const tool = forced ? tools.find((t) => t.name === forced) : tools[0];
     if (!tool) throw new Error(`claude-cli shim: no tool to force (tool_choice=${JSON.stringify(payload.tool_choice)})`);
 
-    const system = [
-      systemToText(payload.system),
-      "",
-      "## Output contract",
-      "",
-      `You must answer by producing the arguments for a function called \`${tool.name}\`.`,
-      tool.description ? `Its purpose: ${tool.description}` : "",
-      "",
-      "Its arguments must match this JSON Schema exactly:",
-      "",
-      JSON.stringify(tool.input_schema, null, 2),
-      "",
-      "Reply with ONLY that JSON object. No prose, no explanation, no code fence.",
-      "Do not use any tools; answer from the conversation alone.",
-    ].filter(Boolean).join("\n");
+    const contract = choose
+      ? [
+          "## Output contract",
+          "",
+          "You must answer by calling exactly ONE of these functions. Pick the one that fits, then produce its arguments.",
+          "",
+          ...tools.flatMap((t) => [
+            `### ${t.name}`,
+            t.description ? t.description : "",
+            "Arguments JSON Schema:",
+            JSON.stringify(t.input_schema, null, 2),
+            "",
+          ]),
+          'Reply with ONLY this JSON object, nothing else: {"tool": "<function name>", "input": { ...its arguments... }}',
+          "No prose, no explanation, no code fence.",
+          "Do not use any tools; answer from the conversation alone.",
+        ]
+      : [
+          "## Output contract",
+          "",
+          `You must answer by producing the arguments for a function called \`${tool.name}\`.`,
+          tool.description ? `Its purpose: ${tool.description}` : "",
+          "",
+          "Its arguments must match this JSON Schema exactly:",
+          "",
+          JSON.stringify(tool.input_schema, null, 2),
+          "",
+          "Reply with ONLY that JSON object. No prose, no explanation, no code fence.",
+          "Do not use any tools; answer from the conversation alone.",
+        ];
+    const system = [systemToText(payload.system), "", ...contract].filter(Boolean).join("\n");
 
     const args = [
       "-p",
@@ -197,8 +222,16 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
     }
 
     let input: unknown;
+    let chosen = tool.name;
     try {
       input = extractJson(String(envelope.result ?? ""));
+      if (choose) {
+        const pick = input as { tool?: unknown; input?: unknown };
+        const name = typeof pick?.tool === "string" ? pick.tool : "";
+        if (!tools.some((t) => t.name === name)) throw new Error(`picked an unknown tool: ${JSON.stringify(input).slice(0, 200)}`);
+        chosen = name;
+        input = pick.input ?? {};
+      }
     } catch (e) {
       return new Response(`claude-cli shim: ${String(e).slice(0, 400)}`, { status: 502 });
     }
@@ -210,7 +243,7 @@ export function makeClaudeCliFetch(model: string): typeof fetch {
         type: "message",
         role: "assistant",
         model,
-        content: [{ type: "tool_use", id: "toolu_claude_cli", name: tool.name, input }],
+        content: [{ type: "tool_use", id: "toolu_claude_cli", name: chosen, input }],
         stop_reason: "tool_use",
         usage: {
           input_tokens: envelope.usage?.input_tokens ?? 0,

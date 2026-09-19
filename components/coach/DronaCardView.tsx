@@ -33,7 +33,7 @@ export function DronaCardView({ card, onAct, onDismiss, onUndo }: Props) {
   const isNotice = card.kind === 'notice';
   // A notice about a change Drona already made: the way back is Undo.
   const undoable = isNotice && card.payload.action === 'undo_swap' && !!onUndo;
-  const actionLabel = isNotice ? 'Got it' : labelFor(card.payload.action);
+  const actionLabel = isNotice ? 'Got it' : labelFor(card.payload);
   const secondLabel = undoable ? 'Undo' : card.kind === 'act' ? 'Keep the plan' : 'Skip this week';
   const onSecond = undoable ? onUndo : onDismiss;
 
@@ -91,8 +91,10 @@ export function DronaCardView({ card, onAct, onDismiss, onUndo }: Props) {
   );
 }
 
-function labelFor(action?: string): string {
-  switch (action) {
+function labelFor(payload: SavedDronaCard['payload']): string {
+  switch (payload.action) {
+    case 'apply_targets':
+      return payload.to_kcal ? `Set ${payload.to_kcal} kcal` : 'Set the new target';
     case 'log_weight':
       return 'Log a weigh-in';
     case 'log_food':
