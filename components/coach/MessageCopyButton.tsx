@@ -39,11 +39,18 @@ export function MessageCopyButton({
   const { C } = useTheme();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  // The copy is async. If the bubble goes away first (the user switched chats
+  // mid-tap), don't set state or leave a timer behind for a dead component.
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 
   const onPress = useCallback(async () => {
     const ok = await copyToClipboard(text);
     track('coach_message_copied', { role, surface, chars: text.length, ok });
+    if (!mountedRef.current) return;
     if (!ok) {
       onFallback?.();
       return;

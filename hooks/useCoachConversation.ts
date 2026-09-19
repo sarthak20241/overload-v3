@@ -44,6 +44,14 @@ export interface UseCoachConversationReturn {
   openConversation: (id: string) => void;
   /** Delete a stored conversation. Deleting the active one resets to the starter. */
   deleteConversation: (id: string) => void;
+  /**
+   * Write a message list into the open conversation right now, outside React.
+   * Stop calls this so a reply cut short is saved to the chat it belongs to
+   * even when a switch (new chat, open a past one) follows in the same tap:
+   * the switch replaces state in the same batch, so the cut-short text would
+   * never reach the write-through effect.
+   */
+  persistMessages: (list: CoachChatMessage[]) => void;
 }
 
 export function useCoachConversation(opts: {
@@ -134,6 +142,13 @@ export function useCoachConversation(opts: {
     setStoreVersion((v) => v + 1);
   }, [enabled, userId]);
 
+  const persistMessages = useCallback((list: CoachChatMessage[]) => {
+    // Same gate as the write-through: before hydration this would clobber the
+    // stored conversation with whatever is on screen.
+    if (!enabled || !hydrated) return;
+    saveActiveMessages(userId, list);
+  }, [enabled, hydrated, userId]);
+
   // `messages` is a dependency on purpose: the active conversation's title and
   // position come from what was last saved, and the write-through above runs
   // on every messages change.
@@ -146,6 +161,6 @@ export function useCoachConversation(opts: {
 
   return {
     messages, setMessages, markStarted, startNewChat,
-    conversations, activeId, openConversation, deleteConversation,
+    conversations, activeId, openConversation, deleteConversation, persistMessages,
   };
 }

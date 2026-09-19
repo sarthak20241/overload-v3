@@ -136,12 +136,26 @@ function hasUserTurn(convo: CoachConversation | undefined): boolean {
   return !!convo && convo.messages.some((m) => m.role === 'user');
 }
 
+// Drop every chat that is not open and was never typed into. "New chat" and
+// deleting the open chat each leave one behind, and they would otherwise pile
+// up: they carry a fresh updatedAt, so they outrank genuinely old chats in the
+// eviction sort below and quietly push real past chats out of the list. Run on
+// every save, so empties written by older builds are swept on first use too.
+function dropEmptyInactive(store: UserStore): void {
+  for (const id of Object.keys(store.conversations)) {
+    if (id !== store.activeId && !hasUserTurn(store.conversations[id])) {
+      delete store.conversations[id];
+    }
+  }
+}
+
 function evictOldest(store: UserStore): void {
-  const ids = Object.keys(store.conversations);
-  if (ids.length <= MAX_CONVERSATIONS) return;
-  const sorted = ids
-    .map((id) => store.conversations[id])
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+  dropEmptyInactive(store);
+  // The cap counts real chats only. The open chat may be a fresh greeting, and
+  // counting it would let "New chat" push the 50th real chat out of the list.
+  const real = Object.values(store.conversations).filter(hasUserTurn);
+  if (real.length <= MAX_CONVERSATIONS) return;
+  const sorted = real.sort((a, b) => b.updatedAt - a.updatedAt);
   for (const convo of sorted.slice(MAX_CONVERSATIONS)) {
     if (convo.id === store.activeId) continue; // never evict the active one
     delete store.conversations[convo.id];
@@ -253,6 +267,8 @@ export function startNewConversation(userId: string | null): CoachConversation {
   const convo = newConversation();
   store.activeId = convo.id;
   store.conversations[convo.id] = convo;
+  // The chat being left may be an untouched greeting (New chat tapped twice).
+  dropEmptyInactive(store);
   _lastSavedCount[storeKey] = 0;
   persistNow(storeKey);
   return convo;
@@ -295,11 +311,8 @@ export function setActiveConversation(
   const store = getStore(storeKey);
   const next = store.conversations[id];
   if (!next) return null;
-  const prevId = store.activeId;
-  if (prevId && prevId !== id && !hasUserTurn(store.conversations[prevId])) {
-    delete store.conversations[prevId];
-  }
   store.activeId = id;
+  dropEmptyInactive(store);
   _lastSavedCount[storeKey] = next.messages.length;
   persistNow(storeKey);
   return next.messages;

@@ -4,9 +4,14 @@
  * expo-clipboard is a native module, so a dev client or store build made
  * before it was added has no such module and requiring it throws. Same
  * discipline as lib/haptics.ts: load lazily, cache the failure, never crash.
- * Older binaries fall back to React Native's own Clipboard, which RN 0.81
- * still ships (deprecated, removal announced), so an OTA update of this code
- * copies on every binary we have out. Returns false only when neither works.
+ * Older binaries fall back to React Native's own Clipboard. RN 0.81.5 still
+ * exports it (node_modules/react-native/index.js, `get Clipboard()`, with a
+ * deprecation warnOnce; RCTClipboard / ClipboardModule are in the native
+ * core), so an OTA update of this code copies on every binary we have out.
+ * Checked on a simulator dev client built before expo-clipboard existed: the
+ * copy landed in the pasteboard (`xcrun simctl pbpaste`). When RN finally
+ * drops it, `rn.Clipboard` is undefined and this returns false, which the
+ * caller turns into the selectable view. Returns false only when neither works.
  */
 import { requireOptionalNativeModule } from 'expo-modules-core';
 

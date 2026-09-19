@@ -983,7 +983,7 @@ function ChatScreen({
   // mode, where the chat is intentionally ephemeral and re-seeded per open.
   const {
     messages, setMessages, markStarted, startNewChat,
-    conversations, activeId, openConversation, deleteConversation,
+    conversations, activeId, openConversation, deleteConversation, persistMessages,
   } = useCoachConversation({
     userId,
     enabled: !workoutContext,
@@ -1054,6 +1054,10 @@ function ChatScreen({
   // freeze the text where it is and drop a bubble that never got a word.
   const typewriterRef = useRef<ReturnType<typeof createTypewriter> | null>(null);
   const pendingAssistantIdRef = useRef<string | null>(null);
+  // Latest messages for Stop, which must save the cut-short turn before a
+  // switch in the same tap replaces them.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   // Long-press target (copy / select text) and the "Past chats" overlay.
   const [sheetTarget, setSheetTarget] = useState<MessageSheetTarget | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -1088,6 +1092,10 @@ function ChatScreen({
     };
     setMessages(prev => [...prev, userMsg, placeholder]);
     pendingAssistantIdRef.current = assistantId;
+    // The last turn's typewriter is still referenced. Until this turn's own
+    // exists (after the token fetch), Stop must see nothing, not the previous
+    // reply's text.
+    typewriterRef.current = null;
     setInput('');
     setLoading(true);
     const askedAt = Date.now();
@@ -1150,6 +1158,10 @@ function ChatScreen({
     // Streaming path. Auth header is the current Clerk token.
     let token: string | null = null;
     try { token = await getToken(); } catch { token = null; }
+    // Stopped while the token was being fetched: Stop has already cleaned up
+    // this turn, so starting the stream now would bill tokens for a reply that
+    // lands in a bubble that no longer exists.
+    if (pendingAssistantIdRef.current !== assistantId) return;
     if (!token) {
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
@@ -1311,6 +1323,16 @@ function ChatScreen({
     typewriterRef.current = null;
     const id = pendingAssistantIdRef.current;
     pendingAssistantIdRef.current = null;
+    // Save the turn as it stands, straight to the store, before anything else
+    // in this tap can switch chats. `shown` is the typewriter's full text
+    // (typed plus buffered), which state may not have caught up to yet.
+    if (id) {
+      persistMessages(
+        messagesRef.current
+          .map(m => (m.id === id ? { ...m, content: shown } : m))
+          .filter(m => !(m.id === id && m.content === '')),
+      );
+    }
     if (!shown && id) {
       setMessages(prev => prev.filter(m => !(m.id === id && m.content === '')));
     }
@@ -1320,7 +1342,7 @@ function ChatScreen({
       mode: workoutContext ? 'live_workout' : 'chat',
       had_partial: shown.length > 0,
     });
-  }, [loading, setMessages, workoutContext]);
+  }, [loading, setMessages, workoutContext, persistMessages]);
 
   // What a message reads as on the clipboard / in the selection sheet: the
   // coach's markdown markers dropped, the user's own words untouched.
@@ -3196,6 +3218,10 @@ function RefineChatScreen({
     };
     setMessages(prev => [...prev, userMsg, placeholder]);
     pendingAssistantIdRef.current = assistantId;
+    // The last turn's typewriter is still referenced. Until this turn's own
+    // exists (after the token fetch), Stop must see nothing, not the previous
+    // reply's text.
+    typewriterRef.current = null;
     setInput('');
     setLoading(true);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -3275,6 +3301,8 @@ function RefineChatScreen({
 
     let token: string | null = null;
     try { token = await getToken(); } catch { token = null; }
+    // Stopped while the token was being fetched (see ChatScreen).
+    if (pendingAssistantIdRef.current !== assistantId) return;
     if (!token) {
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, content: 'Not signed in. Please sign in again.' } : m
