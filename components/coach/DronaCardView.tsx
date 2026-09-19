@@ -34,7 +34,7 @@ export function DronaCardView({ card, onAct, onDismiss, onUndo }: Props) {
   // A notice about a change Drona already made: the way back is Undo.
   const undoable = isNotice && card.payload.action === 'undo_swap' && !!onUndo;
   const actionLabel = isNotice ? 'Got it' : labelFor(card.payload.action);
-  const secondLabel = undoable ? 'Undo' : card.kind === 'act' ? 'Keep the plan' : 'Not now';
+  const secondLabel = undoable ? 'Undo' : card.kind === 'act' ? 'Keep the plan' : 'Skip this week';
   const onSecond = undoable ? onUndo : onDismiss;
 
   return (
@@ -54,11 +54,14 @@ export function DronaCardView({ card, onAct, onDismiss, onUndo }: Props) {
       <Text style={[s.body, { color: C.textSecondary }]}>{card.body}</Text>
 
       {card.evidence.length > 0 && (
-        <View style={s.chips}>
-          {card.evidence.slice(0, 3).map((e) => (
-            <View key={e.label} style={[s.chip, { backgroundColor: C.muted, borderColor: C.borderSubtle }]}>
-              <Text style={[s.chipValue, { color: C.foreground }]}>{e.value}</Text>
-              <Text style={[s.chipLabel, { color: C.textDim }]}>{e.label}</Text>
+        <View style={[s.facts, { backgroundColor: C.muted }]}>
+          {card.evidence.slice(0, 3).map((e, i) => (
+            <View key={e.label} style={s.factWrap}>
+              {i > 0 && <View style={[s.factDivider, { backgroundColor: C.borderSubtle }]} />}
+              <View style={s.fact}>
+                <Text style={[s.factValue, { color: C.foreground }]}>{e.value}</Text>
+                <Text style={[s.factLabel, { color: C.textDim }]} numberOfLines={2}>{e.label}</Text>
+              </View>
             </View>
           ))}
         </View>
@@ -76,11 +79,11 @@ export function DronaCardView({ card, onAct, onDismiss, onUndo }: Props) {
         {(!isNotice || undoable) && (
           <PressableScale
             onPress={onSecond}
-            style={[s.secondary, { borderColor: C.borderSubtle }]}
+            style={[s.secondary, { borderColor: C.border }]}
             accessibilityRole="button"
             accessibilityLabel={secondLabel}
           >
-            <Text style={[s.secondaryText, { color: C.textMuted }]}>{secondLabel}</Text>
+            <Text style={[s.secondaryText, { color: C.foreground }]}>{secondLabel}</Text>
           </PressableScale>
         )}
       </View>
@@ -120,34 +123,34 @@ const s = StyleSheet.create({
   },
   head: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   kicker: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 1 },
-  title: { fontSize: FontSize.md, fontWeight: FontWeight.bold },
-  body: { fontSize: FontSize.sm, lineHeight: 19 },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginTop: Spacing.xs },
-  chip: {
+  title: { fontSize: FontSize.lg, lineHeight: 22, fontWeight: FontWeight.bold },
+  body: { fontSize: FontSize.base, lineHeight: 21 },
+  facts: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 4,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 6,
-    borderRadius: Radius.sm,
-    borderWidth: 1,
+    alignItems: 'stretch',
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    marginTop: Spacing.xs,
   },
-  chipValue: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  chipLabel: { fontSize: FontSize.xs },
-  actions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+  factWrap: { flex: 1, flexDirection: 'row', alignItems: 'stretch' },
+  factDivider: { width: StyleSheet.hairlineWidth, marginVertical: 2 },
+  fact: { flex: 1, alignItems: 'center', paddingHorizontal: Spacing.sm },
+  factValue: { fontSize: FontSize.xl, lineHeight: 22, fontWeight: FontWeight.bold },
+  factLabel: { fontSize: FontSize.xs, lineHeight: 13, textAlign: 'center', marginTop: 3 },
+  actions: { gap: Spacing.sm, marginTop: Spacing.md },
   primary: {
-    flex: 1,
-    paddingVertical: 11,
+    height: 46,
     borderRadius: Radius.md,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  primaryText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  primaryText: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
   secondary: {
-    paddingVertical: 11,
-    paddingHorizontal: Spacing.lg,
+    height: 46,
     borderRadius: Radius.md,
     borderWidth: 1,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  secondaryText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  secondaryText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
 });

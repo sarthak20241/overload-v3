@@ -1,7 +1,6 @@
 import { useCallback, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet, BackHandler } from 'react-native';
 import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
-import { Feather } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 import { Portal } from '@/components/ui/Portal';
@@ -13,13 +12,20 @@ import type { SavedDronaCard } from '@/lib/dronaCard';
 // Every kind is a popup (owner's call, 2026-09-18): the point of a card is to
 // bring one thing to the user's notice, and a card in the scroll does not. So
 // it interrupts once, asks for one answer, and goes. Three answers, always:
-//   the card's own action   (Log a weigh-in / Make it the plan / Got it)
-//   the quiet no            (Not now / Keep the plan / Undo on an adjustment)
+//   the card's own action   Log a weigh-in / Make it the plan / Got it
+//   the quiet no            Skip this week / Keep the plan / Undo
 //   Later                   the card leaves and waits on From Drona
 // Tapping outside, or the Android back button, is Later: nobody answered.
 //
-// Same shape as BuildSplitPrompt on purpose. The two never show together; the
-// dashboard holds this one back while that one is up.
+// Laid out to be read top to bottom in one breath, then answered. Every
+// spacing step is deliberate (owner's ask, 2026-09-19):
+//   who is talking   a small mark and a kicker, then room
+//   what             the title, then a short body that explains the why
+//   the proof        the numbers in one calm strip, equal columns, no pills
+//   the answers      two stacked full-width buttons, same size, clear rank,
+//                    and Later as quiet text underneath
+// The two never show together with BuildSplitPrompt; the dashboard holds
+// this one back while that one is up.
 
 interface Props {
   card: SavedDronaCard;
@@ -33,15 +39,15 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
   const { C } = useTheme();
   const isNotice = card.kind === 'notice';
   const undoable = isNotice && card.payload.action === 'undo_swap';
-  const primaryLabel = isNotice ? 'Got it' : labelFor(card.payload.action);
-  const onPrimary = isNotice ? onDismiss : onAct;
+  const primary = { label: isNotice ? 'Got it' : primaryLabelFor(card.payload.action), press: isNotice ? onDismiss : onAct };
   const second = undoable
     ? { label: 'Undo', press: onUndo }
     : card.kind === 'act'
       ? { label: 'Keep the plan', press: onDismiss }
       : isNotice
         ? null
-        : { label: 'Not now', press: onDismiss };
+        : { label: 'Skip this week', press: onDismiss };
+  const evidence = card.evidence.slice(0, 3);
 
   const later = useCallback(() => onLater(), [onLater]);
 
@@ -66,59 +72,64 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
           entering={ZoomIn.duration(240)}
           style={[s.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }]}
         >
+          {/* Who is talking */}
           <View style={s.head}>
             <View style={[s.mark, { backgroundColor: C.muted }]}>
-              <DronaMark size={12} state="static" />
+              <DronaMark size={16} state="static" />
             </View>
             <Text style={[s.kicker, { color: C.textMuted }]}>{kickerFor(card, undoable)}</Text>
           </View>
 
+          {/* What, and why */}
           <Text style={[s.title, { color: C.foreground }]}>{card.title}</Text>
-          <Text style={[s.body, { color: C.mutedFg }]}>{card.body}</Text>
+          <Text style={[s.body, { color: C.textSecondary }]}>{card.body}</Text>
 
-          {card.evidence.length > 0 && (
-            <View style={s.chips}>
-              {card.evidence.slice(0, 3).map((e) => (
-                <View key={e.label} style={[s.chip, { backgroundColor: C.muted, borderColor: C.borderSubtle }]}>
-                  <Text style={[s.chipValue, { color: C.foreground }]}>{e.value}</Text>
-                  <Text style={[s.chipLabel, { color: C.textDim }]}>{e.label}</Text>
+          {/* The proof: equal columns, hairline between them */}
+          {evidence.length > 0 && (
+            <View style={[s.facts, { backgroundColor: C.muted }]}>
+              {evidence.map((e, i) => (
+                <View key={e.label} style={s.factWrap}>
+                  {i > 0 && <View style={[s.factDivider, { backgroundColor: C.borderSubtle }]} />}
+                  <View style={s.fact}>
+                    <Text style={[s.factValue, { color: C.foreground }]}>{e.value}</Text>
+                    <Text style={[s.factLabel, { color: C.textMuted }]} numberOfLines={2}>{e.label}</Text>
+                  </View>
                 </View>
               ))}
             </View>
           )}
 
+          {/* The answers */}
           <Pressable
-            onPress={onPrimary}
+            onPress={primary.press}
             style={({ pressed }) => [s.primary, { backgroundColor: Colors.primary, opacity: pressed ? 0.85 : 1 }]}
             accessibilityRole="button"
-            accessibilityLabel={primaryLabel}
+            accessibilityLabel={primary.label}
           >
-            <Text style={[s.primaryText, { color: Colors.primaryFg }]}>{primaryLabel}</Text>
-            {!isNotice && <Feather name="arrow-right" size={13} color={Colors.primaryFg} />}
+            <Text style={[s.primaryText, { color: Colors.primaryFg }]}>{primary.label}</Text>
           </Pressable>
 
-          <View style={s.row}>
-            {second && (
-              <Pressable
-                onPress={second.press}
-                style={[s.secondary, { borderColor: C.borderSubtle }]}
-                accessibilityRole="button"
-                accessibilityLabel={second.label}
-              >
-                <Text style={[s.secondaryText, { color: C.foreground }]}>{second.label}</Text>
-              </Pressable>
-            )}
-            <Pressable onPress={later} style={s.later} hitSlop={8} accessibilityRole="button" accessibilityLabel="Later">
-              <Text style={[s.laterText, { color: C.mutedFg }]}>Later</Text>
+          {second && (
+            <Pressable
+              onPress={second.press}
+              style={({ pressed }) => [s.secondary, { borderColor: C.border, opacity: pressed ? 0.7 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel={second.label}
+            >
+              <Text style={[s.secondaryText, { color: C.foreground }]}>{second.label}</Text>
             </Pressable>
-          </View>
+          )}
+
+          <Pressable onPress={later} style={s.later} hitSlop={8} accessibilityRole="button" accessibilityLabel="Later">
+            <Text style={[s.laterText, { color: C.mutedFg }]}>Later</Text>
+          </Pressable>
         </Animated.View>
       </Animated.View>
     </Portal>
   );
 }
 
-function labelFor(action?: string): string {
+function primaryLabelFor(action?: string): string {
   switch (action) {
     case 'log_weight':
       return 'Log a weigh-in';
@@ -141,51 +152,66 @@ function kickerFor(card: SavedDronaCard, undoable: boolean): string {
   return 'DRONA ASKS';
 }
 
-// Narrower than the phone and light on padding: this interrupts a screen the
-// user just arrived at, so it asks for a glance, not a page.
+const BUTTON_HEIGHT = 50;
+
 const s = StyleSheet.create({
-  backdrop: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
-  card: {
-    width: '100%',
-    maxWidth: 320,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing.md,
-  },
-  head: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  mark: { width: 22, height: 22, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
-  kicker: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 1 },
-  title: { fontSize: FontSize.md, fontWeight: FontWeight.bold, marginBottom: 4 },
-  body: { fontSize: FontSize.xs, lineHeight: 17, marginBottom: 10 },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginBottom: 12 },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 4,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 5,
-    borderRadius: Radius.sm,
-    borderWidth: 1,
-  },
-  chipValue: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  chipLabel: { fontSize: FontSize.xs },
-  primary: {
-    height: 40,
-    borderRadius: Radius.md,
-    flexDirection: 'row',
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
+    padding: Spacing.xxl,
   },
-  primaryText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, marginTop: Spacing.sm },
+  // Wider than a prompt, narrower than the screen: a sheet of paper held up,
+  // not a wall. Generous padding so nothing touches an edge.
+  card: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: Radius.xxl,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.xxl,
+    paddingTop: Spacing.xxl,
+    paddingBottom: Spacing.lg,
+  },
+
+  head: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm + 2, marginBottom: Spacing.xl },
+  mark: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  kicker: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, letterSpacing: 1.4 },
+
+  title: { fontSize: FontSize.xl, lineHeight: 24, fontWeight: FontWeight.bold, marginBottom: Spacing.sm },
+  body: { fontSize: FontSize.base, lineHeight: 21, marginBottom: Spacing.xl },
+
+  facts: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.md + 2,
+    marginBottom: Spacing.xxl,
+  },
+  factWrap: { flex: 1, flexDirection: 'row', alignItems: 'stretch' },
+  factDivider: { width: StyleSheet.hairlineWidth, marginVertical: 2 },
+  fact: { flex: 1, alignItems: 'center', paddingHorizontal: Spacing.sm },
+  factValue: { fontSize: FontSize.xxl, lineHeight: 26, fontWeight: FontWeight.bold },
+  factLabel: { fontSize: FontSize.xs, lineHeight: 13, textAlign: 'center', marginTop: 3 },
+
+  // Same height, same width, same corners: rank comes from fill against
+  // outline, not from one being smaller.
+  primary: {
+    height: BUTTON_HEIGHT,
+    borderRadius: Radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryText: { fontSize: FontSize.base, fontWeight: FontWeight.bold },
   secondary: {
-    paddingVertical: 9,
-    paddingHorizontal: 14,
-    borderRadius: Radius.md,
+    height: BUTTON_HEIGHT,
+    borderRadius: Radius.lg,
     borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.sm + 2,
   },
-  secondaryText: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
-  later: { paddingVertical: 9, paddingHorizontal: 14 },
-  laterText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  secondaryText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold },
+  // Quiet on purpose: the answer for when the user is not ready to answer.
+  later: { alignSelf: 'center', paddingVertical: Spacing.md + 2, paddingHorizontal: Spacing.xl, marginTop: Spacing.xs },
+  laterText: { fontSize: FontSize.md, fontWeight: FontWeight.medium },
 });
