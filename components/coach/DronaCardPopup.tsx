@@ -1,5 +1,5 @@
-import { useCallback, useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet, BackHandler } from 'react-native';
+import { useCallback, useEffect, useRef } from 'react';
+import { View, Text, Pressable, StyleSheet, BackHandler, AccessibilityInfo, findNodeHandle } from 'react-native';
 import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -51,6 +51,18 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
 
   const later = useCallback(() => onLater(), [onLater]);
 
+  // A screen reader stays on whatever the dashboard control was until told
+  // otherwise; accessibilityViewIsModal fences traversal but does not move
+  // focus. Put it on the title as the popup lands.
+  const titleRef = useRef<Text>(null);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const node = titleRef.current ? findNodeHandle(titleRef.current) : null;
+      if (node) AccessibilityInfo.setAccessibilityFocus(node);
+    }, 260); // after the zoom-in, so the focus ring lands on a settled view
+    return () => clearTimeout(t);
+  }, []);
+
   // <Portal> has no onRequestClose, so route the Android hardware back button.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -90,7 +102,7 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
           </View>
 
           {/* What, and why */}
-          <Text style={[s.title, { color: C.foreground }]}>{card.title}</Text>
+          <Text ref={titleRef} accessibilityRole="header" style={[s.title, { color: C.foreground }]}>{card.title}</Text>
           <Text style={[s.body, { color: C.textSecondary }]}>{card.body}</Text>
 
           {/* The proof: equal columns, hairline between them */}

@@ -28,7 +28,9 @@ const day = (back: number) => new Date(Date.now() - back*86400000).toISOString()
 const today = new Date().toISOString().slice(0,10);
 // Cards are keyed by the MONDAY of their week (see weekStartOf); the expiry
 // check below depends on it being one.
-const monday = (() => { const d = new Date(); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0,10); })();
+// ...and the week is the USER's (Asia/Kolkata, set below), not UTC's: on a
+// Sunday evening UTC the Kolkata week has already turned.
+const monday = (() => { const d = new Date(Date.now() + 5.5*3600000); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0,10); })();
 const slotNow = async () => (await service.from('routine_exercises').select('exercise_id').eq('routine_id', rid).eq('"order"', 0).single()).data?.exercise_id;
 
 // Two exercises for the SAME muscle (the swap) and one for another (the rest of the day).
