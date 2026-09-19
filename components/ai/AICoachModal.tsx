@@ -1140,12 +1140,15 @@ function ChatScreen({
         const reply = !getToken
           ? { text: getMockResponse(text), citations: [] as Citation[] }
           : await callAICoach(allMessages, supabase);
+        // Stopped while waiting: Stop has already cleaned up this turn.
+        if (pendingAssistantIdRef.current !== assistantId) return;
         setMessages(prev => prev.map(m =>
           m.id === assistantId
             ? { ...m, content: reply.text, citations: reply.citations.length > 0 ? reply.citations : undefined }
             : m
         ));
       } catch (err: any) {
+        if (pendingAssistantIdRef.current !== assistantId) return;
         const errText = err instanceof AICoachUnavailableError
           ? err.message
           : 'Coach Drona is currently unavailable. Try again in a moment.';
@@ -1974,17 +1977,23 @@ function GeneratePlanScreen({
       streamRef.current = null;
     };
   }, []);
+  // Each run takes a number and Stop bumps it. Whatever a run does after an
+  // await first checks it still owns the screen, so a run stopped during the
+  // token fetch (or the guest demo timer) never starts a stream nobody wants
+  // or pops a result card for a build the user cancelled.
+  const runIdRef = useRef(0);
   // Stop generating: abort the request and drop back to the form with the
   // fields as they were. Nothing has been saved, so there is nothing to undo.
   // If the structured result had already landed, the result card shows.
   const handleStopGeneration = () => {
+    runIdRef.current += 1;
     streamRef.current?.abort();
     streamRef.current = null;
     setLoading(false);
     setRefining(false);
     setCoachIntent('');
     haptics.tick();
-    track('coach_generation_stopped', { mode: 'generate_plan', had_partial: false });
+    track('coach_generation_stopped', { mode: 'generate_plan', had_partial: coachIntent.length > 0 });
   };
 
   const buildInitialPrompt = () =>
@@ -2003,6 +2012,7 @@ function GeneratePlanScreen({
     conversation: { role: string; content: string }[],
     isRefine: boolean,
   ) => {
+    const runId = ++runIdRef.current;
     setErrorText(null);
     setCoachIntent('');
     if (isRefine) setRefining(true);
@@ -2011,6 +2021,7 @@ function GeneratePlanScreen({
     // Guest fallback (no Supabase / no Clerk): minimal mock so the demo UI still works.
     if (!isSupabaseConfigured || !getToken) {
       setTimeout(() => {
+        if (runIdRef.current !== runId) return;
         setResult({
           name: 'Demo Plan',
           rationale: 'Demo plan (guest mode). Sign in to get a real coach-designed plan that uses your training data.',
@@ -2041,6 +2052,7 @@ function GeneratePlanScreen({
 
     let token: string | null = null;
     try { token = await getToken!(); } catch { token = null; }
+    if (runIdRef.current !== runId) return;
     if (!token) {
       setErrorText('Not signed in. Please sign in again.');
       setLoading(false);
@@ -2637,17 +2649,23 @@ function GenerateWorkoutScreen({
       streamRef.current = null;
     };
   }, []);
+  // Each run takes a number and Stop bumps it. Whatever a run does after an
+  // await first checks it still owns the screen, so a run stopped during the
+  // token fetch (or the guest demo timer) never starts a stream nobody wants
+  // or pops a result card for a build the user cancelled.
+  const runIdRef = useRef(0);
   // Stop generating: abort the request and drop back to the form with the
   // fields as they were. Nothing has been saved, so there is nothing to undo.
   // If the structured result had already landed, the result card shows.
   const handleStopGeneration = () => {
+    runIdRef.current += 1;
     streamRef.current?.abort();
     streamRef.current = null;
     setLoading(false);
     setRefining(false);
     setCoachIntent('');
     haptics.tick();
-    track('coach_generation_stopped', { mode: 'generate_workout', had_partial: false });
+    track('coach_generation_stopped', { mode: 'generate_workout', had_partial: coachIntent.length > 0 });
   };
 
   const buildInitialPrompt = () =>
@@ -2657,6 +2675,7 @@ function GenerateWorkoutScreen({
     conversation: { role: string; content: string }[],
     isRefine: boolean,
   ) => {
+    const runId = ++runIdRef.current;
     setErrorText(null);
     setCoachIntent('');
     if (isRefine) setRefining(true);
@@ -2665,6 +2684,7 @@ function GenerateWorkoutScreen({
     // Guest fallback: minimal mock so the UI demos without a real backend.
     if (!isSupabaseConfigured || !getToken) {
       setTimeout(() => {
+        if (runIdRef.current !== runId) return;
         setResult({
           name: focus || 'Workout',
           rationale: 'Demo workout (guest mode). Sign in to get a real coach-designed session that uses your training data.',
@@ -2683,6 +2703,7 @@ function GenerateWorkoutScreen({
 
     let token: string | null = null;
     try { token = await getToken!(); } catch { token = null; }
+    if (runIdRef.current !== runId) return;
     if (!token) {
       setErrorText('Not signed in. Please sign in again.');
       setLoading(false);
