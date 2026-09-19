@@ -425,7 +425,12 @@ Decision needed: add focus areas and a target date as fields?
    (10% or 150 off, whichever is less; floor = Mifflin-St Jeor); the model
    answers `propose_targets` or `hold` in one forced tool call; the validator
    has the last word; a refusal is stored as a held row with the reason.
-   Eval: `scripts/drona-eval/run.mts`.
+   Eval: `scripts/drona-eval/run.mts`, two scores: the model's own judgment
+   and the pipeline's. The validator computes the four ugly checks itself (a
+   blowout day, an unreadable scale, protein low, a target raised back by
+   hand) and the model must copy the worst day and the weight range it read
+   into its answer, so the pipeline holds the line even when the model would
+   not.
 4. **A1, drift from the plan, with two options.**
 5. **G1, log RIR.** Cheap, no model, and teaches the pattern for feature asks.
 6. Then by value: H2, B2, B6, E3/H3, D1.

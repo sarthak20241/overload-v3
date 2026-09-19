@@ -17,3 +17,8 @@ out as a proposal inside the bounds, ugly weeks (weekend blowouts hiding in a
 good mean, a target raised back by hand, a noisy scale, collapsed protein) as
 a hold. Packs are held out: never paste them into the prompt. A CLI run proves
 correctness only; its latency and token counts mean nothing.
+
+The CLI shim (`scripts/parse-meal-eval/claude-cli-fetch.ts`) now honours
+`tool_choice: any` by offering every tool and asking for `{"tool", "input"}`.
+Before that it forced the first tool, which scored the model 2/6 on holds it
+had written out in plain words. The real API path never had that problem.
