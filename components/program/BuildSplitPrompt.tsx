@@ -13,7 +13,7 @@
  * The decision of WHETHER to show is in lib/splitPrompt (pure, tested); this
  * file owns the storage and the words.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { View, Text, Pressable, BackHandler, StyleSheet } from 'react-native';
 import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -38,6 +38,8 @@ interface Props {
   onBuild: () => void;
   /** Guest: send them to sign-in so the program has somewhere to land. */
   onSignIn: () => void;
+  /** Fires as the popup appears and goes, so the dashboard can hold any other popup back. */
+  onVisibleChange?: (visible: boolean) => void;
 }
 
 export function BuildSplitPrompt(props: Props) {
@@ -87,6 +89,12 @@ export function BuildSplitPrompt(props: Props) {
         nowMs: Date.now(),
       });
   const visible = action != null;
+  // Layout effect, not a passive one: the dashboard must know BEFORE paint,
+  // or a pending Drona card and this prompt can share one frame.
+  const { onVisibleChange } = props;
+  useLayoutEffect(() => {
+    onVisibleChange?.(visible);
+  }, [visible, onVisibleChange]);
 
   const later = useCallback(() => {
     const now = Date.now();
@@ -117,8 +125,10 @@ export function BuildSplitPrompt(props: Props) {
           entering={FadeIn.duration(220)}
           exiting={FadeOut.duration(150)}
           style={[styles.backdrop, { backgroundColor: C.overlay }]}
+          accessibilityViewIsModal
+          importantForAccessibility="yes"
         >
-          <Pressable style={StyleSheet.absoluteFill} onPress={later} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={later} accessibilityElementsHidden importantForAccessibility="no" />
           <Animated.View
             entering={ZoomIn.duration(240)}
             style={[styles.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }]}

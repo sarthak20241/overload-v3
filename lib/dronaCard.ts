@@ -12,7 +12,7 @@ import { localDayISO } from '@/lib/dailySuggestion';
 import { pickCurrentCard, weekStartOf } from '@/lib/dronaRules';
 
 export type DronaCardKind = 'request' | 'notice' | 'act' | 'talk';
-export type DronaCardStatus = 'pending' | 'applied' | 'dismissed' | 'opened' | 'done' | 'expired' | 'held';
+export type DronaCardStatus = 'pending' | 'applied' | 'dismissed' | 'undone' | 'opened' | 'done' | 'expired' | 'held';
 
 /**
  * What the card's button does. `route` is legacy and never trusted: the phone
@@ -41,9 +41,17 @@ export interface SavedDronaCard {
   evidence: { label: string; value: string }[];
   payload: DronaCardPayload;
   status: DronaCardStatus;
+  /** Set when the user tapped Later. The popup skips it; From Drona lists it. */
+  deferred_at: string | null;
+  /** Set on Later: the end of the card's week, in the user's zone. */
+  expires_at: string | null;
+  decided_at: string | null;
+  created_at: string | null;
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const CARD_COLUMNS =
+  'id, week_start, kind, topic, title, body, evidence, payload, status, deferred_at, expires_at, decided_at, created_at';
 const KINDS: DronaCardKind[] = ['request', 'notice', 'act', 'talk'];
 
 /** The Monday of the device's current local week. */
@@ -63,6 +71,10 @@ const asCard = (row: any): SavedDronaCard | null =>
         evidence: Array.isArray(row.evidence) ? row.evidence.filter((e: any) => e?.label && e?.value != null) : [],
         payload: row.payload && typeof row.payload === 'object' ? row.payload : {},
         status: row.status ?? 'pending',
+        deferred_at: typeof row.deferred_at === 'string' ? row.deferred_at : null,
+        expires_at: typeof row.expires_at === 'string' ? row.expires_at : null,
+        decided_at: typeof row.decided_at === 'string' ? row.decided_at : null,
+        created_at: typeof row.created_at === 'string' ? row.created_at : null,
       }
     : null;
 
@@ -80,7 +92,7 @@ export async function readWeeklyCard(
   try {
     const { data, error } = await supabase
       .from('drona_cards')
-      .select('id, week_start, kind, topic, title, body, evidence, payload, status')
+      .select(CARD_COLUMNS)
       .eq('user_id', clerkId)
       .order('week_start', { ascending: false })
       .limit(3);
@@ -171,3 +183,38 @@ export const applySwap = (supabase: SupabaseClient, cardId: string) =>
 /** "Undo" on the notice that follows a swap Drona applied by itself. */
 export const undoSwap = (supabase: SupabaseClient, cardId: string) =>
   swapMove(supabase, 'drona_undo_swap', cardId);
+
+/** Later: the card leaves the dashboard and waits on From Drona until its week ends. */
+export async function deferCard(supabase: SupabaseClient, cardId: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.rpc('drona_defer_card', { p_card_id: cardId });
+    if (error) return null;
+    return typeof data === 'string' ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every card the user has, newest first, for the From Drona screen. Which pile
+ * each one goes in is lib/dronaInbox's call. `undefined` = the read failed.
+ */
+export async function readCardHistory(
+  supabase: SupabaseClient,
+  clerkId: string,
+  limit = 40,
+): Promise<SavedDronaCard[] | undefined> {
+  try {
+    const { data, error } = await supabase
+      .from('drona_cards')
+      .select(CARD_COLUMNS)
+      .eq('user_id', clerkId)
+      .order('week_start', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) return undefined;
+    return (data ?? []).map(asCard).filter((c): c is SavedDronaCard => c != null);
+  } catch {
+    return undefined;
+  }
+}

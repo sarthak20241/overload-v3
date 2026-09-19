@@ -5,7 +5,7 @@ them with `delete_user_data`. It needs `.env.local` with `SUPABASE_JWT_SECRET`
 and `SUPABASE_SERVICE_ROLE_KEY`.
 
 ```bash
-npx tsx scripts/drona-swap/swap.mts   # facts, access, apply, log, undo (33 checks)
+npx tsx scripts/drona-swap/swap.mts   # facts, access, apply, log, undo (43 checks)
 ```
 
 It builds a routine, four sessions that all replace the planned exercise with

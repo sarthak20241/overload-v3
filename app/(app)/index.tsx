@@ -28,12 +28,13 @@ import { useClerkUser } from '@/hooks/useClerkUser';
 import { useIsGuestSession } from '@/lib/guestMode';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
-import { DronaCardView } from '@/components/coach/DronaCardView';
+import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import {
-  applySwap, currentWeekStart, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  applySwap, currentWeekStart, deferCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
   undoSwap, type SavedDronaCard,
 } from '@/lib/dronaCard';
+import { useWorkout } from '@/hooks/useWorkout';
 import { ACTION_ROUTES } from '@/lib/dronaRules';
 import { todayReason } from '@/lib/todayReason';
 import { pickUpNext, resolveToday, type PickProgram } from '@/lib/todayPick';
@@ -439,6 +440,11 @@ export default function DashboardScreen() {
   // asked for only when the week has none, at most once per app run, and never
   // for a guest.
   const [weeklyCard, setWeeklyCard] = useState<SavedDronaCard | null>(null);
+  // Two popups must never stack: BuildSplitPrompt reports when it is up, and
+  // the card waits. Later or a tap outside marks the card deferred, which is
+  // what keeps it from coming straight back on the next focus.
+  const [splitPromptShowing, setSplitPromptShowing] = useState(false);
+  const { isActive: workoutActive } = useWorkout();
   const requestedWeeks = useRef(new Set<string>());
   const [savedPick, setSavedPick] = useState<SavedSuggestion | null>(null);
   const [savedRead, setSavedRead] = useState(false);
@@ -570,6 +576,24 @@ export default function DashboardScreen() {
     track('drona_card_dismissed', { kind: weeklyCard.kind, topic: weeklyCard.topic });
     setWeeklyCard(null);
     void setCardStatus(supabase, weeklyCard.id, 'dismissed');
+  };
+
+  // Later, or a tap outside: the card leaves the dashboard and waits on the
+  // From Drona screen until its week ends. Still pending, so its buttons work
+  // there. Nothing is decided.
+  const handleCardLater = () => {
+    if (!weeklyCard) return;
+    track('drona_card_deferred', { kind: weeklyCard.kind, topic: weeklyCard.topic });
+    const before = weeklyCard;
+    setWeeklyCard({ ...weeklyCard, deferred_at: new Date().toISOString() });
+    void deferCard(supabase, weeklyCard.id).then((result) => {
+      // Not saved: the server row is still undeferred, so the popup would be
+      // back on the next open with no explanation. Say so now instead.
+      if (result !== 'ok') {
+        setWeeklyCard(before);
+        toast.error('Could not save that for later. Try again.');
+      }
+    });
   };
 
   // Undo on a change Drona made by itself. The card closes either way: the
@@ -946,18 +970,6 @@ export default function DashboardScreen() {
           <TodaySuggestionCard suggestion={todaySuggestion} onPress={handleTodayPress} />
         </View>
 
-        {/* Drona's weekly card (P0: a request or a notice). Under TODAY, which
-            is still the day's action; this one is the week talking. */}
-        {weeklyCard && weeklyCard.status === 'pending' && (
-          <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
-            <DronaCardView
-              card={weeklyCard}
-              onAct={handleCardAct}
-              onDismiss={handleCardDismiss}
-              onUndo={handleCardUndo}
-            />
-          </View>
-        )}
 
         {/* AI Coach Hero Card */}
         <View style={{ paddingHorizontal: Spacing.xl, marginBottom: Spacing.xl }}>
@@ -1306,7 +1318,27 @@ export default function DashboardScreen() {
         phaseId={splitState?.phaseId ?? null}
         onBuild={() => router.push({ pathname: '/goal-plan', params: { build: 'phase' } })}
         onSignIn={() => router.push('/(auth)')}
+        onVisibleChange={setSplitPromptShowing}
       />
+
+      {/* Drona's card for the week, as a popup (every kind; owner's call
+          2026-09-18). Never over BuildSplitPrompt, never mid-workout, and not
+          once the user has said Later. */}
+      {weeklyCard
+        && weeklyCard.status === 'pending'
+        && !weeklyCard.deferred_at
+        && screenFocused
+        && !splitPromptShowing
+        && !workoutActive
+        && (
+          <DronaCardPopup
+            card={weeklyCard}
+            onAct={handleCardAct}
+            onDismiss={handleCardDismiss}
+            onUndo={handleCardUndo}
+            onLater={handleCardLater}
+          />
+        )}
 
       {/* AI Coach Modal */}
       <AICoachModal

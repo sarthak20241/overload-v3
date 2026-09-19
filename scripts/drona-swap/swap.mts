@@ -26,6 +26,11 @@ let fails = 0;
 const ok = (n: string, c: boolean, d?: unknown) => { if(!c) fails++; console.log((c?'PASS ':'FAIL ')+n+(d===undefined?'':'  '+JSON.stringify(d))); };
 const day = (back: number) => new Date(Date.now() - back*86400000).toISOString();
 const today = new Date().toISOString().slice(0,10);
+// Cards are keyed by the MONDAY of their week (see weekStartOf); the expiry
+// check below depends on it being one.
+// ...and the week is the USER's (Asia/Kolkata, set below), not UTC's: on a
+// Sunday evening UTC the Kolkata week has already turned.
+const monday = (() => { const d = new Date(Date.now() + 5.5*3600000); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0,10); })();
 const slotNow = async () => (await service.from('routine_exercises').select('exercise_id').eq('routine_id', rid).eq('"order"', 0).single()).data?.exercise_id;
 
 // Two exercises for the SAME muscle (the swap) and one for another (the rest of the day).
@@ -79,7 +84,7 @@ const slotRow = (await service.from('routine_exercises').select('id').eq('id', c
 ok('the card names a real routine slot', !!slotRow);
 
 const savedRes = await service.from('drona_cards').insert({
-  user_id: UID, week_start: today, kind: card.kind, topic: card.topic, title: card.title,
+  user_id: UID, week_start: monday, kind: card.kind, topic: card.topic, title: card.title,
   body: card.body, evidence: card.evidence, payload: card.payload, signals: card.signals,
   facts, source: 'app',
 }).select('id').single();
@@ -93,6 +98,26 @@ ok('a signed-in user cannot call the worker\'s auto-apply', !!(await db.rpc('dro
 ok('another user cannot apply this card', (await other.rpc('drona_apply_swap', { p_card_id: cardId })).data === 'forbidden');
 ok('another user cannot undo this card', (await other.rpc('drona_undo_swap', { p_card_id: cardId })).data === 'forbidden');
 ok('the slot is untouched after those attempts', await slotNow() === PLANNED.id);
+
+// ── Later ────────────────────────────────────────────────────────────────────
+// Deferring parks the card until its week ends, in the user's own zone.
+await service.from('user_profiles').update({ timezone: 'Asia/Kolkata' }).eq('clerk_user_id', UID);
+ok('another user cannot push this card to Later', (await other.rpc('drona_defer_card', { p_card_id: cardId })).data === 'forbidden');
+ok('the owner can push it to Later', (await db.rpc('drona_defer_card', { p_card_id: cardId })).data === 'ok');
+const deferred = (await service.from('drona_cards').select('deferred_at, expires_at, status, week_start').eq('id', cardId).single()).data!;
+ok('a deferred card is still pending, with deferred_at set', deferred.status === 'pending' && !!deferred.deferred_at, deferred);
+// week_start + 7 days at 00:00 Asia/Kolkata = the day before at 18:30 UTC.
+const weekEnd = new Date(Date.parse(deferred.week_start + 'T00:00:00Z') + 7*86400000 - 5.5*3600000).toISOString();
+ok('it expires at the end of ITS week in the user\'s zone (18:30 UTC = midnight in Kolkata)',
+  new Date(deferred.expires_at).toISOString() === weekEnd, { expires_at: deferred.expires_at, expected: weekEnd });
+ok('a deferred card still applies', (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
+ok('and the routine holds the stand-in', await slotNow() === STAND_IN.id);
+// Put it back so the apply section below starts from the planned exercise.
+ok('reset for the apply section', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
+ok('Later is refused once the card is answered', (await db.rpc('drona_defer_card', { p_card_id: cardId })).data === 'already_decided');
+await service.from('drona_cards').update({ status: 'pending', decided_at: null, deferred_at: null, expires_at: null }).eq('id', cardId);
 
 // ── Apply ────────────────────────────────────────────────────────────────────
 const applied = await service.rpc('drona_swap_autoapply', { p_card_id: cardId })
@@ -119,14 +144,22 @@ const undone = await db.rpc('drona_undo_swap', { p_card_id: cardId })
   .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId);
 ok('the user can undo their own card', undone.data === 'ok', undone.data ?? undone.error?.message);
 ok('the planned exercise is back', await slotNow() === PLANNED.id);
-ok('the card is closed', (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'dismissed');
+ok('the card is closed as undone, not dismissed', (await service.from('drona_cards').select('status').eq('id', cardId).single()).data?.status === 'undone');
 // The apply and the Undo are the same source, minutes apart, and they cancel:
 // a routine that ends where it began is not a change (migration 0125).
 const afterUndo = (await service.from('plan_changes').select('id, changes')
   .eq('user_id', UID).eq('entity', 'routine_exercises').eq('source', 'card')).data ?? [];
 ok('an apply and its Undo leave NO change in the plan log', afterUndo.length === 0, afterUndo);
-ok('a replayed undo answers ok too', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
-  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
+ok('Undo is refused past seven days', (await (async () => {
+  await service.from('drona_cards').update({ status: 'applied', decided_at: new Date(Date.now() - 8*86400000).toISOString() }).eq('id', cardId);
+  const r = await db.rpc('drona_undo_swap', { p_card_id: cardId });
+  await service.from('drona_cards').update({ status: 'undone', decided_at: new Date().toISOString() }).eq('id', cardId);
+  return r.data;
+})()) === 'too_late');
+// The card is closed now, so a second Undo is refused rather than replayed:
+// the server holds the Undo rule (0129), and 'undone' is not a state to undo.
+ok('a second undo is refused once the card is closed', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'already_decided');
 ok('a card the user already answered is never re-applied by the worker',
   (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'already_decided');
 

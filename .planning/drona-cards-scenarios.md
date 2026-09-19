@@ -465,3 +465,76 @@ Most scenarios run on data already stored. These are the real gaps:
   (targets, goal, program, phases, routines, routine exercises diffed by
   exercise), source from the x-change-source header via
   `lib/planChangeSource.ts`. Live, 26 + 7 probe checks.
+
+## K. Where the card lives (brainstorm, 2026-09-18)
+
+Owner's read after the first simulator run: the card takes dashboard space it
+should not, and there is no way to say "later". Three questions, one proposal.
+
+### K1. Popup or card?
+
+| | Popup (centred, like BuildSplitPrompt) | Card under TODAY (today) |
+|---|---|---|
+| Dashboard space | none | a full card, every week |
+| Attention | commands it; one decision, then gone | competes with TODAY, easy to scroll past |
+| Cost to the user | an interruption on open | none |
+| Fit by kind | right for a DECISION (act, talk) | right for a quiet read (notice, request) |
+
+The kinds want different treatment. A popup that says "I changed Seated Leg
+Curl into your plan" is an interruption with nothing to decide; a card that
+says "should I drop your calories to 2000" is a decision hidden in a scroll.
+
+**Decided 2026-09-18 (owner): every card is a popup.** The point of a card
+is to bring something to the user's notice, and a strip does not do that.
+The by-kind table below is kept as the alternative that was NOT taken.
+
+**Alternative not taken: treat by kind.**
+
+| Kind | First open of the week | After that |
+|---|---|---|
+| act / talk (a decision) | centred popup: Yes / No / **Later** | nothing on the dashboard; a badge on the Drona entry point |
+| request (please do X) | one-line strip under TODAY, no popup | strip stays until done or dismissed; also listed in the inbox |
+| notice (I adjusted X, **Undo**) | one-line strip under TODAY with Undo | Undo stays in the inbox for 7 days |
+
+Guards: at most one popup per card, never two on one open (BuildSplitPrompt
+wins, the card waits), never during an active workout, never on the first
+open after install, never twice in a day.
+
+### K2. "Decide later"
+
+- Storage: `drona_cards.deferred_at timestamptz` (null = not deferred). No new
+  status: a deferred card is still `pending`, it has just left the dashboard.
+- The popup skips cards with `deferred_at` set. The inbox shows them.
+- Shelf life: a card rests on last week's numbers. A deferred act card
+  **expires on Sunday night** of its week (`expires_at`, already a column) and
+  moves quietly to history as `expired`. Applying a stale card is worse than
+  losing it: the swap's slot check already refuses a routine that moved on,
+  and every act card must re-validate the same way before it applies.
+- Copy on the popup's third button: **Later**, not "Remind me": Drona does not
+  push notifications for this.
+
+### K3. Where "later" goes: one screen, two entry points
+
+A **From Drona** screen, reached from a row on Profile ("From Drona · 1
+waiting") and a row on the Goal screen (it is about the plan). One list:
+
+- **Waiting**: deferred and pending cards, each with its buttons live.
+- **Done**: applied, undone, dismissed, expired, newest first, each with what
+  it changed. Undo stays live for 7 days on an applied change.
+
+This is also the **Plan history** screen decided on 2026-09-17: the change
+diary (`plan_changes`) read through the cards that caused it, plus manual
+edits as their own rows. One backlog item, not two.
+
+### K4. Order
+
+**BUILT 2026-09-18** (migrations 0127 + 0128, `DronaCardPopup`, `From Drona`
+screen, rows on Profile and Goal). Verified on an iPhone 17 Pro Max end to end:
+popup, Later, "1 waiting" on Profile, apply from the inbox, Undo from Done.
+
+Build this BEFORE the next card (B1 calories): it decides how every card looks
+and asks, and B1 is the first card with a real decision in it.
+
+1. `deferred_at` + the popup for every kind, with **Later** on each. Tapping
+   outside the popup counts as Later. The card under TODAY goes away.
+2. The From Drona screen (Waiting + Done), rows on Profile and Goal.
