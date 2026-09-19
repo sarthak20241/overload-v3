@@ -43,7 +43,8 @@ import { DronaMark, type DronaMarkState } from '@/components/coach/DronaMark';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
 import { ensureActiveConversationId } from '@/lib/coachConversations';
 import { haptics } from '@/lib/haptics';
-import { MessageSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/MessageSheet';
+import { SelectTextSheet, coachPlainText, type MessageSheetTarget } from '@/components/coach/SelectTextSheet';
+import { MessageCopyButton } from '@/components/coach/MessageCopyButton';
 import { PastChatsList } from '@/components/coach/PastChatsList';
 import { coachErrorMessage, coachInvokeErrorMessage } from '@/lib/coachErrors';
 import { withChangeSource } from '@/lib/planChangeSource';
@@ -1321,17 +1322,28 @@ function ChatScreen({
     });
   }, [loading, setMessages, workoutContext]);
 
-  // Long press on a bubble: copy or select text. Nothing for the streaming
-  // placeholder, which has no words yet.
-  const openMessageSheet = useCallback((msg: ChatMessage) => {
+  // What a message reads as on the clipboard / in the selection sheet: the
+  // coach's markdown markers dropped, the user's own words untouched.
+  const plainTextOf = useCallback(
+    (msg: ChatMessage) => (msg.role === 'assistant' ? coachPlainText(msg.content) : msg.content),
+    [],
+  );
+  // Long press on a bubble goes straight to selecting part of it. Copying the
+  // whole message is the icon under the bubble, one tap, no menu. Nothing for
+  // the streaming placeholder, which has no words yet.
+  const openSelectSheet = useCallback((msg: ChatMessage) => {
     if (!msg.content) return;
     haptics.medium();
-    setSheetTarget({
+    track('coach_message_select_opened', {
       role: msg.role,
-      text: msg.role === 'assistant' ? coachPlainText(msg.content) : msg.content,
       surface: workoutContext ? 'live_workout' : 'chat',
     });
-  }, [workoutContext]);
+    setSheetTarget({
+      role: msg.role,
+      text: plainTextOf(msg),
+      surface: workoutContext ? 'live_workout' : 'chat',
+    });
+  }, [workoutContext, plainTextOf]);
 
   // P4: apply a coach-proposed target change. Writes only the provided fields
   // to user_profiles (the machine-read layer the Nutrition screen + FUEL card
@@ -1484,13 +1496,17 @@ function ChatScreen({
           // it may emit the tool alone. Then the card IS the message: an empty
           // bubble would otherwise sit above it stuck on "Thinking".
           const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === '' && !!edit;
+          // No copy icon under a reply still being written: it would copy half
+          // a sentence. It appears the moment the turn finishes.
+          const streaming = loading && msg.id === pendingAssistantIdRef.current;
           return (
             <View key={msg.id}>
               {!bubbleOnlyHoldsTheCard && (
+              <>
               <Pressable
-                onLongPress={() => openMessageSheet(msg)}
+                onLongPress={() => openSelectSheet(msg)}
                 delayLongPress={350}
-                accessibilityHint="Press and hold to copy or select text"
+                accessibilityHint="Press and hold to select text"
                 style={[
                   s.chatBubble,
                   msg.role === 'user'
@@ -1517,6 +1533,17 @@ function ChatScreen({
                   <CitationList citations={msg.citations} />
                 )}
               </Pressable>
+              {!!msg.content && !streaming && (
+                <View style={[s.msgActions, msg.role === 'user' ? s.msgActionsRight : s.msgActionsLeft]}>
+                  <MessageCopyButton
+                    text={plainTextOf(msg)}
+                    role={msg.role}
+                    surface={workoutContext ? 'live_workout' : 'chat'}
+                    onFallback={() => openSelectSheet(msg)}
+                  />
+                </View>
+              )}
+              </>
               )}
               {edit && (
                 <WorkoutEditCard
@@ -1712,7 +1739,7 @@ function ChatScreen({
         </View>
       )}
 
-      <MessageSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
+      <SelectTextSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
     </View>
   );
 }
@@ -3362,15 +3389,17 @@ function RefineChatScreen({
     if (built) handleStructured(built.name, built.input);
   }, [loading, kind, mode, handleStructured]);
 
-  const openMessageSheet = useCallback((msg: ChatMessage) => {
+  // See ChatScreen: long press selects, the icon under the bubble copies.
+  const plainTextOf = useCallback(
+    (msg: ChatMessage) => (msg.role === 'assistant' ? coachPlainText(msg.content) : msg.content),
+    [],
+  );
+  const openSelectSheet = useCallback((msg: ChatMessage) => {
     if (!msg.content) return;
     haptics.medium();
-    setSheetTarget({
-      role: msg.role,
-      text: msg.role === 'assistant' ? coachPlainText(msg.content) : msg.content,
-      surface: `${kind}_${mode}`,
-    });
-  }, [kind, mode]);
+    track('coach_message_select_opened', { role: msg.role, surface: `${kind}_${mode}` });
+    setSheetTarget({ role: msg.role, text: plainTextOf(msg), surface: `${kind}_${mode}` });
+  }, [kind, mode, plainTextOf]);
 
   // See ChatScreen — keyboard avoidance lives at the AICoachModal sheet
   // level (marginBottom + dynamic height), not via KeyboardAvoidingView,
@@ -3396,35 +3425,49 @@ function RefineChatScreen({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {messages.map((msg) => (
-          <Pressable
-            key={msg.id}
-            onLongPress={() => openMessageSheet(msg)}
-            delayLongPress={350}
-            accessibilityHint="Press and hold to copy or select text"
-            style={[
-              s.chatBubble,
-              msg.role === 'user'
-                ? [s.userBubble, { backgroundColor: Colors.primary }]
-                : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
-            ]}
-          >
-            {msg.role === 'assistant' && msg.content === '' ? (
-              <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
-            ) : msg.role === 'assistant' ? (
-              <MessageContent
-                content={msg.content}
-                citations={msg.citations}
-                textColor={C.foreground}
-              />
-            ) : (
-              <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+        {messages.map((msg) => {
+          const streaming = loading && msg.id === pendingAssistantIdRef.current;
+          return (
+          <View key={msg.id}>
+            <Pressable
+              onLongPress={() => openSelectSheet(msg)}
+              delayLongPress={350}
+              accessibilityHint="Press and hold to select text"
+              style={[
+                s.chatBubble,
+                msg.role === 'user'
+                  ? [s.userBubble, { backgroundColor: Colors.primary }]
+                  : [s.assistantBubble, { backgroundColor: C.card, borderColor: C.borderSubtle }],
+              ]}
+            >
+              {msg.role === 'assistant' && msg.content === '' ? (
+                <ThinkingIndicator phase={msg.thinkingPhase ?? 'Thinking'} />
+              ) : msg.role === 'assistant' ? (
+                <MessageContent
+                  content={msg.content}
+                  citations={msg.citations}
+                  textColor={C.foreground}
+                />
+              ) : (
+                <Text style={[s.chatText, { color: Colors.primaryFg }]}>{msg.content}</Text>
+              )}
+              {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+                <CitationList citations={msg.citations} />
+              )}
+            </Pressable>
+            {!!msg.content && !streaming && (
+              <View style={[s.msgActions, msg.role === 'user' ? s.msgActionsRight : s.msgActionsLeft]}>
+                <MessageCopyButton
+                  text={plainTextOf(msg)}
+                  role={msg.role}
+                  surface={`${kind}_${mode}`}
+                  onFallback={() => openSelectSheet(msg)}
+                />
+              </View>
             )}
-            {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
-              <CitationList citations={msg.citations} />
-            )}
-          </Pressable>
-        ))}
+          </View>
+          );
+        })}
       </ScrollView>
 
       {/* Input */}
@@ -3468,7 +3511,7 @@ function RefineChatScreen({
         </View>
       </View>
 
-      <MessageSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
+      <SelectTextSheet target={sheetTarget} onClose={() => setSheetTarget(null)} />
     </View>
   );
 }
@@ -4291,6 +4334,11 @@ const s = StyleSheet.create({
     width: 32, height: 32, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
   },
+  // The copy icon under a bubble. Pulled in 2px on the bubble's side so the
+  // glyph optically lines up with the bubble edge rather than its padding.
+  msgActions: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  msgActionsLeft: { alignSelf: 'flex-start', marginLeft: -2 },
+  msgActionsRight: { alignSelf: 'flex-end', marginRight: -2 },
   // The Stop glyph: a filled square, the convention every chat app shares
   stopSquare: { width: 12, height: 12, borderRadius: 3 },
   loadingStopBtn: {
