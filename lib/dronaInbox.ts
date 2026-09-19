@@ -56,7 +56,7 @@ export function waitingCount(cards: InboxCard[], nowMs: number): number {
 export function canUndo(card: InboxCard, nowMs: number): boolean {
   const action = card.payload?.action;
   let at: number | null = null;
-  if (action === 'apply_swap' && card.status === 'applied') at = ms(card.decided_at);
+  if ((action === 'apply_swap' || action === 'apply_targets') && card.status === 'applied') at = ms(card.decided_at);
   else if (action === 'undo_swap' && card.status === 'pending') at = ms(card.created_at);
   return at != null && nowMs - at <= UNDO_WINDOW_MS;
 }

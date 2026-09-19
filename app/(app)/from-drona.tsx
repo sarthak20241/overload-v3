@@ -28,7 +28,7 @@ import { DronaCardView } from '@/components/coach/DronaCardView';
 import { ACTION_ROUTES } from '@/lib/dronaRules';
 import { bucketOf, canUndo } from '@/lib/dronaInbox';
 import {
-  applySwap, readCardHistory, setCardStatus, undoSwap, type SavedDronaCard,
+  movesFor, readCardHistory, setCardStatus, type SavedDronaCard,
 } from '@/lib/dronaCard';
 
 export default function FromDronaScreen() {
@@ -73,14 +73,17 @@ export default function FromDronaScreen() {
   const act = (card: SavedDronaCard) => {
     const action = card.payload.action;
     track('drona_card_acted', { kind: card.kind, topic: card.topic, action: action ?? null, from: 'inbox' });
-    if (action === 'apply_swap') {
+    const moves = movesFor(action);
+    if (moves && action !== 'undo_swap') {
       // Optimistic: the row moves to Done now, and comes back if the server
       // said no (it leaves the card pending in that case).
       const before = { status: card.status, decided_at: card.decided_at };
       patch(card.id, { status: 'applied', decided_at: new Date().toISOString() });
-      void applySwap(supabase, card.id).then((result) => {
+      void moves.apply(supabase, card.id).then((result) => {
         if (result === 'ok') {
-          toast.success(`${card.payload.to_name ?? 'The swap'} is in the plan.`);
+          toast.success(action === 'apply_targets'
+            ? `${card.payload.to_kcal} kcal is your target now.`
+            : `${card.payload.to_name ?? 'The swap'} is in the plan.`);
         } else {
           patch(card.id, before);
           toast.info(result === 'moved_on'
@@ -105,11 +108,15 @@ export default function FromDronaScreen() {
 
   const undo = (card: SavedDronaCard) => {
     track('drona_card_undone', { kind: card.kind, topic: card.topic, from: 'inbox' });
+    const moves = movesFor(card.payload.action);
+    if (!moves) return;
     const before = { status: card.status, decided_at: card.decided_at };
     patch(card.id, { status: 'undone', decided_at: new Date().toISOString() });
-    void undoSwap(supabase, card.id).then((result) => {
+    void moves.undo(supabase, card.id).then((result) => {
       if (result === 'ok') {
-        toast.info(`${card.payload.from_name ?? 'The old exercise'} is back in the plan.`);
+        toast.info(card.payload.action === 'apply_targets'
+          ? `Back to ${card.payload.from_kcal} kcal.`
+          : `${card.payload.from_name ?? 'The old exercise'} is back in the plan.`);
       } else if (result === 'moved_on') {
         // The server closed the card as dismissed: nothing was left to put back.
         patch(card.id, { status: 'dismissed' });
@@ -207,14 +214,18 @@ export default function FromDronaScreen() {
 /** One plain phrase for what became of a card. Coach voice, not a status enum. */
 function outcomeFor(card: SavedDronaCard, nowMs: number): string {
   if (card.status === 'pending') return 'Expired before you decided';
-  const swap = card.payload.action === 'apply_swap' || card.payload.action === 'undo_swap';
+  const action = card.payload.action;
+  const swap = action === 'apply_swap' || action === 'undo_swap';
+  const targets = action === 'apply_targets';
   switch (card.status) {
     case 'applied':
+      if (targets) return `Target set to ${card.payload.to_kcal} kcal`;
       return swap ? `${card.payload.to_name ?? 'The swap'} went into the plan` : 'You took it up';
     case 'undone':
+      if (targets) return `Back to ${card.payload.from_kcal} kcal`;
       return `${card.payload.from_name ?? 'The old exercise'} went back in`;
     case 'dismissed':
-      return swap ? 'You kept the plan' : 'You passed';
+      return swap || targets ? 'You kept the plan' : 'You passed';
     case 'expired':
       return 'Expired';
     default:

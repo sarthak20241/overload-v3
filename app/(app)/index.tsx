@@ -31,8 +31,8 @@ import { TodaySuggestionCard } from '@/components/workout/TodaySuggestionCard';
 import { DronaCardPopup } from '@/components/coach/DronaCardPopup';
 import { useToast } from '@/components/ui/Toast';
 import {
-  applySwap, currentWeekStart, deferCard, readWeeklyCard, requestWeeklyCard, setCardStatus,
-  undoSwap, type SavedDronaCard,
+  currentWeekStart, deferCard, movesFor, readWeeklyCard, requestWeeklyCard, setCardStatus,
+  type SavedDronaCard,
 } from '@/lib/dronaCard';
 import { useWorkout } from '@/hooks/useWorkout';
 import { ACTION_ROUTES } from '@/lib/dronaRules';
@@ -139,7 +139,10 @@ export default function DashboardScreen() {
   const router = useRouter();
   const { C } = useTheme();
   const fuel = useTodayNutrition();
-  const { targets: fuelTargets } = useNutritionTargets();
+  // `reload` too: a calories card changes the targets underneath this ring,
+  // and so does a chat with Drona on another screen. Re-read on every focus
+  // and right after a card lands, or the ring keeps showing the old goal.
+  const { targets: fuelTargets, reload: reloadFuel } = useNutritionTargets();
   // Coach card uses the flat, on-brand lime signature. The purple/teal gradient +
   // glow orbs were removed in the design polish: the coach's own menu is flat/lime,
   // so the dashboard entry now matches the room it opens into (and survives light mode).
@@ -280,6 +283,9 @@ export default function DashboardScreen() {
   // until the app restarted. The first focus is the mount, which already loads.
   const [focusTick, setFocusTick] = useState(0);
   const toast = useToast();
+  useEffect(() => {
+    if (focusTick > 0) reloadFuel();
+  }, [focusTick, reloadFuel]);
   const hasFocusedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
@@ -546,15 +552,15 @@ export default function DashboardScreen() {
     const action = weeklyCard.payload.action;
     track('drona_card_acted', { kind: weeklyCard.kind, topic: weeklyCard.topic, action: action ?? null });
     setWeeklyCard(null);
-    if (action === 'apply_swap') {
+    const moves = movesFor(action);
+    if (moves && action !== 'undo_swap') {
       // The database makes the change and moves the card's status, so the
-      // routine can only change while it still holds what the card claims.
-      void applySwap(supabase, weeklyCard.id).then((result) => {
-        toast.success(
-          result === 'ok'
-            ? `${weeklyCard.payload.to_name ?? 'The swap'} is in the plan.`
-            : 'That routine has changed since. Nothing was touched.',
-        );
+      // plan can only change while it still holds what the card claims.
+      const done = action === 'apply_targets'
+        ? `${weeklyCard.payload.to_kcal ?? 'The new target'} kcal is your target now.`
+        : `${weeklyCard.payload.to_name ?? 'The swap'} is in the plan.`;
+      void moves.apply(supabase, weeklyCard.id).then((result) => {
+        toast.success(result === 'ok' ? done : 'That has changed since. Nothing was touched.');
         setFocusTick((t) => t + 1);
       });
       return;
@@ -603,11 +609,13 @@ export default function DashboardScreen() {
     const back = weeklyCard.payload.from_name;
     track('drona_card_undone', { kind: weeklyCard.kind, topic: weeklyCard.topic });
     setWeeklyCard(null);
-    void undoSwap(supabase, weeklyCard.id).then((result) => {
+    const moves = movesFor(weeklyCard.payload.action);
+    if (!moves) return;
+    void moves.undo(supabase, weeklyCard.id).then((result) => {
       toast.info(
         result === 'ok'
           ? `${back ?? 'The old exercise'} is back in the plan.`
-          : 'That routine has changed since. Nothing was touched.',
+          : 'That has changed since. Nothing was touched.',
       );
       setFocusTick((t) => t + 1);
     });
