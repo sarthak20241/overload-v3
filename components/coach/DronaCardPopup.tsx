@@ -66,8 +66,17 @@ export function DronaCardPopup({ card, onAct, onDismiss, onUndo, onLater }: Prop
         entering={FadeIn.duration(220)}
         exiting={FadeOut.duration(150)}
         style={[s.backdrop, { backgroundColor: C.overlay }]}
+        // Keep screen readers inside the popup while it is up: the dashboard
+        // is still mounted underneath it in the same window.
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
       >
-        <Pressable style={StyleSheet.absoluteFill} onPress={later} accessibilityLabel="Later" />
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={later}
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+        />
         <Animated.View
           entering={ZoomIn.duration(240)}
           style={[s.card, { backgroundColor: C.elevated, borderColor: C.borderSubtle }]}

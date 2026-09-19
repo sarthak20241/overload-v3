@@ -584,8 +584,16 @@ export default function DashboardScreen() {
   const handleCardLater = () => {
     if (!weeklyCard) return;
     track('drona_card_deferred', { kind: weeklyCard.kind, topic: weeklyCard.topic });
+    const before = weeklyCard;
     setWeeklyCard({ ...weeklyCard, deferred_at: new Date().toISOString() });
-    void deferCard(supabase, weeklyCard.id);
+    void deferCard(supabase, weeklyCard.id).then((result) => {
+      // Not saved: the server row is still undeferred, so the popup would be
+      // back on the next open with no explanation. Say so now instead.
+      if (result !== 'ok') {
+        setWeeklyCard(before);
+        toast.error('Could not save that for later. Try again.');
+      }
+    });
   };
 
   // Undo on a change Drona made by itself. The card closes either way: the

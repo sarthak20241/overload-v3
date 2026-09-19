@@ -74,11 +74,19 @@ export default function FromDronaScreen() {
     const action = card.payload.action;
     track('drona_card_acted', { kind: card.kind, topic: card.topic, action: action ?? null, from: 'inbox' });
     if (action === 'apply_swap') {
+      // Optimistic: the row moves to Done now, and comes back if the server
+      // said no (it leaves the card pending in that case).
+      const before = { status: card.status, decided_at: card.decided_at };
       patch(card.id, { status: 'applied', decided_at: new Date().toISOString() });
       void applySwap(supabase, card.id).then((result) => {
-        toast.success(result === 'ok'
-          ? `${card.payload.to_name ?? 'The swap'} is in the plan.`
-          : 'That routine has changed since. Nothing was touched.');
+        if (result === 'ok') {
+          toast.success(`${card.payload.to_name ?? 'The swap'} is in the plan.`);
+        } else {
+          patch(card.id, before);
+          toast.info(result === 'moved_on'
+            ? 'That routine has changed since. Nothing was touched.'
+            : 'Could not do that right now. Try again.');
+        }
       });
       return;
     }
@@ -97,12 +105,19 @@ export default function FromDronaScreen() {
 
   const undo = (card: SavedDronaCard) => {
     track('drona_card_undone', { kind: card.kind, topic: card.topic, from: 'inbox' });
+    const before = { status: card.status, decided_at: card.decided_at };
     patch(card.id, { status: 'undone', decided_at: new Date().toISOString() });
     void undoSwap(supabase, card.id).then((result) => {
-      if (result !== 'ok') patch(card.id, { status: 'dismissed' });
-      toast.info(result === 'ok'
-        ? `${card.payload.from_name ?? 'The old exercise'} is back in the plan.`
-        : 'That routine has changed since. Nothing was touched.');
+      if (result === 'ok') {
+        toast.info(`${card.payload.from_name ?? 'The old exercise'} is back in the plan.`);
+      } else if (result === 'moved_on') {
+        // The server closed the card as dismissed: nothing was left to put back.
+        patch(card.id, { status: 'dismissed' });
+        toast.info('That routine has changed since. Nothing was touched.');
+      } else {
+        patch(card.id, before);
+        toast.info(result === 'too_late' ? 'That one is past its Undo window.' : 'Could not do that right now. Try again.');
+      }
     });
   };
 
@@ -130,7 +145,11 @@ export default function FromDronaScreen() {
         {failed && (
           <Text style={[s.empty, { color: C.mutedFg }]}>Could not load this right now. Pull back in a moment.</Text>
         )}
+        {cards === null && !failed && (
+          <Text style={[s.empty, { color: C.mutedFg }]}>Reading your cards...</Text>
+        )}
 
+        {cards !== null && (<>
         <Text style={[s.label, { color: C.textMuted }]}>WAITING</Text>
         {waiting.length === 0 ? (
           <Text style={[s.empty, { color: C.mutedFg }]}>
@@ -179,6 +198,7 @@ export default function FromDronaScreen() {
             ))}
           </View>
         )}
+        </>)}
       </ScrollView>
     </SafeAreaView>
   );

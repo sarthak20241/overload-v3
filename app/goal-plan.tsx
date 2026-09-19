@@ -419,6 +419,19 @@ export default function GoalPlanScreen() {
             <Feather name="target" size={16} color={Colors.primaryFg} />
             <Text style={[styles.primaryBtnText, { color: Colors.primaryFg }]}>Build a program</Text>
           </Pressable>
+          {/* A card can wait on From Drona with no program at all (log food,
+              weigh in), so the door stays open here too. */}
+          {dronaWaiting > 0 && (
+            <Pressable
+              onPress={() => { track('drona_inbox_opened', { from: 'goal' }); router.push({ pathname: '/(app)/from-drona', params: { from: 'goal' } } as any); }}
+              style={[styles.secondaryBtn, { backgroundColor: C.muted, marginTop: Spacing.md, alignSelf: 'stretch' }]}
+              accessibilityRole="button"
+              accessibilityLabel="Open From Drona"
+            >
+              <Feather name="inbox" size={14} color={C.mutedFg} />
+              <Text style={[styles.secondaryBtnText, { color: C.mutedFg }]}>From Drona · {dronaWaiting} waiting</Text>
+            </Pressable>
+          )}
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: Spacing.xl, paddingBottom: insets.bottom + 96 }}>

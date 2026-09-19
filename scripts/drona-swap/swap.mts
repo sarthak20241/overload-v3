@@ -26,6 +26,9 @@ let fails = 0;
 const ok = (n: string, c: boolean, d?: unknown) => { if(!c) fails++; console.log((c?'PASS ':'FAIL ')+n+(d===undefined?'':'  '+JSON.stringify(d))); };
 const day = (back: number) => new Date(Date.now() - back*86400000).toISOString();
 const today = new Date().toISOString().slice(0,10);
+// Cards are keyed by the MONDAY of their week (see weekStartOf); the expiry
+// check below depends on it being one.
+const monday = (() => { const d = new Date(); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0,10); })();
 const slotNow = async () => (await service.from('routine_exercises').select('exercise_id').eq('routine_id', rid).eq('"order"', 0).single()).data?.exercise_id;
 
 // Two exercises for the SAME muscle (the swap) and one for another (the rest of the day).
@@ -79,7 +82,7 @@ const slotRow = (await service.from('routine_exercises').select('id').eq('id', c
 ok('the card names a real routine slot', !!slotRow);
 
 const savedRes = await service.from('drona_cards').insert({
-  user_id: UID, week_start: today, kind: card.kind, topic: card.topic, title: card.title,
+  user_id: UID, week_start: monday, kind: card.kind, topic: card.topic, title: card.title,
   body: card.body, evidence: card.evidence, payload: card.payload, signals: card.signals,
   facts, source: 'app',
 }).select('id').single();
@@ -145,8 +148,16 @@ ok('the card is closed as undone, not dismissed', (await service.from('drona_car
 const afterUndo = (await service.from('plan_changes').select('id, changes')
   .eq('user_id', UID).eq('entity', 'routine_exercises').eq('source', 'card')).data ?? [];
 ok('an apply and its Undo leave NO change in the plan log', afterUndo.length === 0, afterUndo);
-ok('a replayed undo answers ok too', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
-  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'ok');
+ok('Undo is refused past seven days', (await (async () => {
+  await service.from('drona_cards').update({ status: 'applied', decided_at: new Date(Date.now() - 8*86400000).toISOString() }).eq('id', cardId);
+  const r = await db.rpc('drona_undo_swap', { p_card_id: cardId });
+  await service.from('drona_cards').update({ status: 'undone', decided_at: new Date().toISOString() }).eq('id', cardId);
+  return r.data;
+})()) === 'too_late');
+// The card is closed now, so a second Undo is refused rather than replayed:
+// the server holds the Undo rule (0129), and 'undone' is not a state to undo.
+ok('a second undo is refused once the card is closed', (await db.rpc('drona_undo_swap', { p_card_id: cardId })
+  .setHeader('x-change-source', 'card').setHeader('x-change-card', cardId)).data === 'already_decided');
 ok('a card the user already answered is never re-applied by the worker',
   (await service.rpc('drona_swap_autoapply', { p_card_id: cardId })).data === 'already_decided');
 
