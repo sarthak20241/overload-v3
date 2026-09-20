@@ -495,9 +495,7 @@ export function ParsedMealCard({
           )}
 
           {meal.drona_line ? (
-            // flex:0 override: dronaRow's shared flex:1 (basis 0) would collapse
-            // this row to nothing once the card sits at its maxHeight cap.
-            <View style={[s.dronaRow, { flex: 0 }]}>
+            <View style={s.dronaRow}>
               <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
               <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
             </View>
@@ -783,7 +781,15 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     chipOff: { backgroundColor: 'transparent', borderColor: C.border },
     chipTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 
-    dronaRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: Spacing.md },
+    // NO flex here. This is a row of content inside a column, so it must size
+    // to what it holds. `flex: 1` means flexBasis 0 plus grow, and in an
+    // auto-height column there is no free space to grow into, so the row
+    // collapsed to zero: the fixed-size avatar still drew and the flex:1 text
+    // beside it got no width at all. That is why "hey" in the food bar showed
+    // Drona's mark and no reply, for every decline, every 'sent' notice, and
+    // the reading indicator. The review row already carried a local `flex: 0`
+    // override for exactly this, which fixed one of the four places it bites.
+    dronaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: Spacing.md },
     avatar: {
       width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle,
       alignItems: 'center', justifyContent: 'center',
