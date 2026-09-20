@@ -262,6 +262,57 @@ target, 1.2 kg of range, 9 days of 14. Those go. The policy stays a table a
 person can read, because "who decided to change my plan, and why" must have an
 answer that is not "a probability said so".
 
+## Decided 2026-09-20 (owner): maths stays maths; Jev only where it is needed
+
+"Replacing every else-if with Jev is foolishness. Signals that simple maths can
+catch go to simple code; the ones that need Jev use Jev. First determine which
+is which. The last LLM call can use all of the signals to generate cards."
+
+Probe 4 already proved the premise: with the lines removed from the criteria
+Jev could not tell a healthy cut from a dangerous one, so for a number signal
+it is an expensive, slightly random `if`. Honest reading of the 68-week eval:
+**11 of its 13 signals are pure maths**, and a twelfth (the user undid a coach
+change) is structured data the B1 validator already checks in code.
+
+### The split
+
+**Code (exact, free, never flips).** Anything that is a count, a percentage, a
+slope, a date, or a comparison of structured rows:
+weight flat / falling fast / rising fast, jumpy scale, few weigh-ins, sparse
+food log, intake near target, a far-over day, high days cluster on weekends,
+protein against target, training short this week / for weeks / stopped,
+off-plan sessions, the same exercise always swapped or skipped, sessions cut
+short, a lift stalled, the target changed recently, **the user undid a coach
+change** (source + from/to on `plan_changes`), the same topic dismissed twice,
+readiness low, new user, a feature never used (RIR).
+
+**Jev (free text in, typed answer out).** Only where the input is language:
+| Signal | Reads | Type |
+|---|---|---|
+| a note explains the gap, and is it still current | `coach_memory`, `injury_notes` | yes/no |
+| pain or injury mentioned lately, and where | `workout_exercise_notes`, `workouts.notes`, `user_exercise_notes` | yes/no + choice of body area |
+| the person has said the plan is too much / they are busy / motivation is low | `coach_memory` | choice |
+| how training has FELT lately | workout notes | score: fine .. struggling |
+| what a typed talk answer means ("something else") | the answer | choice over the reason list |
+| food entries suggest eating out or social events | meal entry names | yes/no (optional, weak) |
+
+A user with no text this fortnight costs **zero** Jev calls.
+
+Dates stay out of Jev: a memory that expires ("until 30 September") should get
+an `expires_on` when the coach LLM writes it, so "is it current" is a date
+comparison in code.
+
+**The LLM (one call, only when the code gate says something is worth saying).**
+Gets every signal by name with its value, picks the card, sizes the change,
+writes the sentence. Then the validator, unchanged.
+
+### Open question, to settle with data, not opinion
+Jev's `which_card` scored 17/18 on fresh weeks from RAW data. The LLM alone
+scored 2/6 from raw data, but it has never been given clean named signals.
+Next: run the same 68 weeks through the LLM with the signals as input (via
+`claude -p`), and compare. The better one decides; the other can be a free
+second opinion, with disagreement meaning "ask, do not act".
+
 ## What is needed to start
 
 The API key, in two places, added by the owner (I do not handle keys):
