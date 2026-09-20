@@ -53,19 +53,29 @@ export interface FoodIntentDecision {
 /**
  * The confidence floor for acting on Jev's answer.
  *
- * TypeSafe's own guidance is a three-band split: act high, verify medium, do not
- * act low. Our "verify" band is not a prompt for the user, it is the model step
- * below, which is cheap enough to be the thing we do when unsure.
+ * MEASURED, not guessed: scripts/food-intent/probe.ts, 22 labelled messages
+ * against jev-1.13.0 on 2026-09-20.
  *
- * 0.6 rather than something tighter because BOTH outcomes here are recoverable:
- * the create path ends in a card the user can dismiss, and the log path ends in
- * a parsed meal they confirm. Neither writes on its own. A stricter floor would
- * just spend a Claude call to re-derive an answer Jev already had.
+ *   confidence when RIGHT   mean 90%, min 35%
+ *   confidence when WRONG   mean 47%, max 87%
  *
- * Tune this on real traffic, not on intuition, and re-check it whenever JEV_MODEL
- * moves: a threshold is calibrated against one version's distribution.
+ * Those overlap, so no floor makes Jev correct. What a floor can do is catch the
+ * cases where it is guessing, and here the guessing is honest: the low-confidence
+ * answers were the genuinely ambiguous messages ("I had my usual breakfast bowl,
+ * save it too" at 37%, "add my greek yogurt bowl" at 17%) that a person would
+ * also hesitate on. That is calibration working.
+ *
+ * 0.9 rather than something looser because of ONE case: "my protein shake is 180
+ * cal, 30g protein" went to log at 87% confident, which is wrong and which any
+ * floor below 0.88 waves through. At 0.9 the 16 accepted answers were 16 right,
+ * and the 6 rejected are the muddy ones the model step exists for.
+ *
+ * Two honest limits. 22 cases is a small sample, so this is a measured starting
+ * point rather than a proven optimum. And it is calibrated against jev-1.13.0
+ * specifically: re-run the probe before moving JEV_MODEL, because a threshold is
+ * owed to one version's distribution and nothing else.
  */
-export const JEV_INTENT_FLOOR = 0.6;
+export const JEV_INTENT_FLOOR = 0.9;
 
 /** Options for the Choice. Keys are what comes back, so they are the intent
  *  names themselves and no mapping table can drift out of sync.
