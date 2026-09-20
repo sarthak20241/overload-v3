@@ -12,7 +12,9 @@ import {
   type FoodIntent,
   type FoodIntentDeps,
   JEV_INTENT_FLOOR,
+  parseFoodIntentMode,
   routeFoodIntent,
+  shouldRouteFoodIntent,
 } from "./foodIntent.ts";
 import { JEV_ENDPOINT, type JevDeps } from "./jev.ts";
 
@@ -264,3 +266,44 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 // new intent is added to FoodIntent without a rubric, this stops being valid.
 const _exhaustive: Record<FoodIntent, true> = { log: true, create: true };
 void _exhaustive;
+
+// ── The gate: should we even ask? ───────────────────────────────────────────
+// These live here rather than in index.ts because index.ts cannot be unit
+// tested (Deno globals, npm: imports), and "do not spend a call on a correction"
+// is real behaviour, not plumbing.
+
+Deno.test("mode off asks nothing", () => {
+  assertEquals(shouldRouteFoodIntent("off", false), false);
+  assertEquals(shouldRouteFoodIntent("off", true), false);
+});
+
+Deno.test("a correction turn is never routed, in any live mode", () => {
+  // A parsed meal is already on screen and the user said "no, the other one".
+  // That is editing. It is neither logging nor creating, so both answers are
+  // wrong and asking spends a call to learn nothing.
+  assertEquals(shouldRouteFoodIntent("shadow", true), false);
+  assertEquals(shouldRouteFoodIntent("on", true), false);
+});
+
+Deno.test("a first-shot message is routed in shadow and on", () => {
+  assertEquals(shouldRouteFoodIntent("shadow", false), true);
+  assertEquals(shouldRouteFoodIntent("on", false), true);
+});
+
+Deno.test("mode parsing accepts the three words and nothing else", () => {
+  assertEquals(parseFoodIntentMode("off"), "off");
+  assertEquals(parseFoodIntentMode("on"), "on");
+  assertEquals(parseFoodIntentMode("shadow"), "shadow");
+  assertEquals(parseFoodIntentMode("  ON  "), "on");
+  assertEquals(parseFoodIntentMode("On"), "on");
+});
+
+Deno.test("an unrecognised mode falls to shadow, never to on", () => {
+  // The direction matters more than the default. A typo in a secret must not be
+  // the thing that starts diverting people's meals into an unbuilt path.
+  assertEquals(parseFoodIntentMode(undefined), "shadow");
+  assertEquals(parseFoodIntentMode(""), "shadow");
+  assertEquals(parseFoodIntentMode("enabled"), "shadow");
+  assertEquals(parseFoodIntentMode("true"), "shadow");
+  assertEquals(parseFoodIntentMode("1"), "shadow");
+});

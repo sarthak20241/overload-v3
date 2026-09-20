@@ -141,6 +141,38 @@ export const INTENT_INSTRUCTIONS = {
     "When the message does not explicitly ask to save or create something, the answer is log.",
 };
 
+/**
+ * How much the router is allowed to do.
+ *
+ * 'shadow' exists because a decision layer earns trust on real traffic before it
+ * gets to change anything. The floor in this file was measured on 46 messages I
+ * wrote; shadow is how it meets messages people actually type.
+ */
+export type FoodIntentMode = "off" | "shadow" | "on";
+
+/** Parse an env string into a mode. Anything unrecognised is 'shadow', not an
+ *  error and not 'on': a typo in a secret must never be the thing that starts
+ *  diverting people's meals. */
+export function parseFoodIntentMode(raw: string | undefined): FoodIntentMode {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "off" || v === "on" || v === "shadow" ? v : "shadow";
+}
+
+/**
+ * Is this turn worth asking about at all?
+ *
+ * Two reasons not to, and the second is the interesting one. A CORRECTION turn
+ * (a parsed meal already on screen, "no, the other one", "make it two") is
+ * neither logging nor creating. It is editing. Routing it as either would be
+ * wrong in both directions, and asking would spend a call to receive a
+ * meaningless answer.
+ */
+export function shouldRouteFoodIntent(mode: FoodIntentMode, isCorrection: boolean): boolean {
+  if (mode === "off") return false;
+  if (isCorrection) return false;
+  return true;
+}
+
 export interface FoodIntentDeps {
   /** Present when a TYPESAFE_API_KEY is configured. Absent means step 1 of the
    *  ladder simply does not exist, which is a supported state, not an error. */

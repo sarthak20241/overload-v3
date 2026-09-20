@@ -620,6 +620,139 @@ export const PROPOSE_TARGETS_TOOL: AnthropicTool = {
   },
 };
 
+// ── Custom food + meal creation (every conversational mode) ──────────────────
+// The user's own foods: a restaurant plate, a home dish, a label in their hand.
+// The catalog will never have them, and an estimate re-guessed on every log is
+// a different number every time. These two tools let the user say it ONCE, in
+// their own words, and keep it.
+//
+// Terminal like edit_active_workout: never executed server-side. The input is
+// emitted to the client, which renders a confirm card and writes on tap. The
+// saved row then outranks every other source the next time that food is logged
+// (see the saved_meals block in the parse prompts), so "my protein shake" stops
+// being a fresh guess and becomes the number the user set.
+//
+// Which tool: ONE thing with no parts is create_custom_food. A named dish the
+// user described BY its parts is create_custom_meal. "A chicken roll, about 450
+// cal" is a food; "my breakfast bowl: 100g oats, a scoop of whey, a banana" is
+// a meal.
+const CUSTOM_MACROS_NOTE =
+  'Grams. Optional: give it when the user stated it OR when you can estimate it with confidence. Leave it out rather than inventing a number you would not defend.';
+
+export const CREATE_CUSTOM_FOOD_TOOL: AnthropicTool = {
+  name: 'create_custom_food',
+  description:
+    'Save ONE food the user describes as a single thing, with no ingredient list: a restaurant plate, a packet they are holding, a dish they make. Use it when they want to keep a food ("save this", "add my protein shake", "remember this for next time") and when they tell you what they ate in numbers you cannot match to a catalog row. The user taps a card to save, so emit the tool as soon as you know the food rather than asking for permission. Fill in any calories or macros they did not give you, from the description, and list those field names in `estimated` so the card can show which numbers are yours. If they gave you nothing to work from, ask one short question instead of calling this. No em dashes in any field.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'What the user calls it, in their words: "Chicken roll", "Amma\'s rajma", "Post-gym shake". Not a catalog-style name. Max 80 characters.',
+      },
+      kcal: { type: 'integer', description: 'Calories for one serving of this food. Required: this is the number the whole entry hangs on.' },
+      protein_g: { type: 'number', description: `Protein per serving. ${CUSTOM_MACROS_NOTE}` },
+      carb_g: { type: 'number', description: `Carbs per serving. ${CUSTOM_MACROS_NOTE}` },
+      fat_g: { type: 'number', description: `Fat per serving. ${CUSTOM_MACROS_NOTE}` },
+      serving_label: {
+        type: 'string',
+        description: 'What one of it is called: "roll", "bowl", "plate", "scoop", "glass". Defaults to "serving". This is a NAME, not a weight: these entries carry no grams on purpose, so the numbers stay exactly what the user said.',
+      },
+      estimated: {
+        type: 'array',
+        items: { type: 'string', enum: ['kcal', 'protein_g', 'carb_g', 'fat_g'] },
+        description: 'Every field above that YOU filled in rather than the user stating it. The card marks these as your estimate so they can correct them before saving. Be honest here: an unmarked guess reads to the user as a number they gave you.',
+      },
+      log_now: {
+        type: 'boolean',
+        description: 'True when the user is telling you they ATE it ("I had a chicken roll, about 450 cal"): saving and logging happen on one tap. False when they only want it kept for later ("save my protein shake so I can log it fast"). When you are unsure which they meant, read the tense: past tense is eating, everything else is saving.',
+      },
+      meal_type: {
+        type: 'string',
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        description: 'Which section to log it into. Only meaningful with log_now true. Omit and the app uses the meal the user is currently looking at, or the one that fits the time of day.',
+      },
+      summary: {
+        type: 'string',
+        description: 'One short line in your coach voice for the card: "Chicken roll at 450, saved so next time is one tap." Say plainly if you estimated anything. No em dashes.',
+      },
+    },
+    required: ['name', 'kcal', 'log_now', 'summary'],
+  },
+};
+
+export const CREATE_CUSTOM_MEAL_TOOL: AnthropicTool = {
+  name: 'create_custom_meal',
+  description:
+    'Save a named meal the user described BY ITS PARTS: "my breakfast bowl is 100g oats, a scoop of whey and a banana". Each ingredient becomes its own line, so the meal can be rescaled and edited later. Use create_custom_food instead when they describe one thing with no parts. The user taps a card to save. Estimate the per-ingredient numbers the user did not give you and mark those ingredients with estimated true. Call coach_list_saved_meals first if they say "the usual" or otherwise refer to a meal they may already have, so you update their idea of it rather than creating a near-duplicate. No em dashes in any field.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'What the user calls the meal: "Breakfast bowl", "Sunday poha", "Post-workout plate". Max 80 characters.',
+      },
+      items: {
+        type: 'array',
+        description: 'The ingredients, in the order the user said them. Two or more: a one-item list belongs in create_custom_food.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'The ingredient, plainly: "Rolled oats", "Whey protein", "Banana".' },
+            quantity: { type: 'number', description: 'How many of serving_label. Defaults to 1.' },
+            serving_label: { type: 'string', description: 'The unit for quantity: "g", "scoop", "medium", "tbsp", "bowl". Defaults to "serving".' },
+            grams: { type: 'number', description: 'Weight of this line in grams, when the user gave a weight or you are confident of one. Omit for things with no sensible weight (a scoop, a glass): the line then carries only its numbers, which is fine.' },
+            kcal: { type: 'integer', description: 'Calories for this line as described (for the whole quantity, not per 100g).' },
+            protein_g: { type: 'number', description: `Protein for this line. ${CUSTOM_MACROS_NOTE}` },
+            carb_g: { type: 'number', description: `Carbs for this line. ${CUSTOM_MACROS_NOTE}` },
+            fat_g: { type: 'number', description: `Fat for this line. ${CUSTOM_MACROS_NOTE}` },
+            estimated: { type: 'boolean', description: 'True when the numbers on this line are yours rather than the user\'s. The card marks these so they can be corrected before saving.' },
+          },
+          required: ['name', 'kcal'],
+        },
+      },
+      log_now: {
+        type: 'boolean',
+        description: 'True when the user is telling you they ATE this meal, false when they only want it saved for later. Read the tense: past tense is eating.',
+      },
+      meal_type: {
+        type: 'string',
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        description: 'Which section to log into. Only meaningful with log_now true. Omit to let the app use the meal on screen or the time of day.',
+      },
+      summary: {
+        type: 'string',
+        description: 'One short line in your coach voice for the card: "Breakfast bowl, 3 items, 520 cal. Saved to My Meals." Say plainly if you estimated anything. No em dashes.',
+      },
+    },
+    required: ['name', 'items', 'log_now', 'summary'],
+  },
+};
+
+// Read tool: what the user has already saved. Cheap, and it is what stops the
+// coach creating a second "Breakfast bowl" next to the one they made last week.
+export const LIST_SAVED_MEALS_TOOL: AnthropicTool = {
+  name: 'coach_list_saved_meals',
+  description:
+    'List the foods and meals this user has saved (their "My Meals"), newest first, with each one\'s calories, macros and item count. Call it before creating anything, whenever the user refers to a food as if you should already know it ("the usual", "my shake", "that bowl I saved"), and when they ask what they have saved. A saved row is the user\'s own number for that food, so it outranks anything you would estimate.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Optional substring to filter names by, case-insensitive. Omit to list everything.' },
+      limit: { type: 'integer', description: 'Max rows. Default 40, max 100.' },
+    },
+  },
+};
+
+// Present in every conversational mode, including the chat opened mid-set: the
+// user may drink a shake between sets, and refusing to log it there would be a
+// worse surprise than the coach mentioning food.
+export const FOOD_TOOLS: AnthropicTool[] = [
+  LIST_SAVED_MEALS_TOOL,
+  CREATE_CUSTOM_FOOD_TOOL,
+  CREATE_CUSTOM_MEAL_TOOL,
+];
+
 // ── Live-workout editing (live_workout mode) ─────────────────────────────────
 // The one tool that can change a workout the user is CURRENTLY doing. Like the
 // generate tools it is never executed server-side: the active session lives
@@ -700,7 +833,16 @@ export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan', 'gen
 // executed. Superset of TERMINAL_TOOLS, which is left alone because it ALSO
 // means "Pro-only": the free tier strips everything in it, while editing the
 // session you are standing in the middle of stays free.
-export const STRUCTURED_TOOLS = new Set([...TERMINAL_TOOLS, 'edit_active_workout']);
+// The create tools join it for the same reason edit_active_workout did: there
+// is a card between the model and the write, and the user's tap is the write.
+// They stay OUT of TERMINAL_TOOLS so the free tier keeps them, like editing the
+// session you are standing in: logging what you ate is not a Pro feature.
+export const STRUCTURED_TOOLS = new Set([
+  ...TERMINAL_TOOLS,
+  'edit_active_workout',
+  'create_custom_food',
+  'create_custom_meal',
+]);
 
 // Phase 4: prepended to the system prompt when get_user_coach_context()'s
 // `training_inactive` flag is true (no completed workout in the last 14
@@ -862,6 +1004,36 @@ The tool call is the only thing that changes anything. Text in your reply change
 Everything else — weight for the next set, whether to push or stop, form cues, rest length, how the session went — is ordinary coaching. Answer it directly, at the length the situation calls for.
 </live_workout_behavior>`;
 
+// Behavioral steering for the food tools. Present in every conversational mode,
+// so it sits beside the toolset rather than behind a mode branch: a tool with no
+// instructions gets called at the wrong moments, and instructions for a tool
+// that is not there invite a promise the model cannot keep.
+const FOOD_LOGGING_BEHAVIOR = `<food_behavior>
+You can save the user's own foods, and log them, from any conversation. This is the only way to do it: describing a food in your reply saves nothing and logs nothing.
+
+Which tool:
+- create_custom_food for ONE thing with no parts: a restaurant plate, a packet in their hand, a dish they make. "A chicken roll, about 450 cal."
+- create_custom_meal for a named meal they described BY its parts. "My breakfast bowl is 100g oats, a scoop of whey and a banana."
+- coach_list_saved_meals before either one when they talk about a food as though you should already know it ("the usual", "my shake", "that bowl"). Creating a second copy of something they already saved is worse than asking.
+
+Saving versus eating:
+- log_now true when they are telling you they ATE it. Past tense is the tell: "I had", "just finished", "grabbed a".
+- log_now false when they want it kept for next time: "save this", "remember my shake", "add it to my meals".
+- One tap does both when log_now is true. Do not make them ask twice.
+
+Numbers you did not get:
+- Fill in the calories or macros the user did not give you, from what they described, and mark every one of those in estimated (create_custom_food) or estimated true on that line (create_custom_meal). The card shows your estimates differently so they can fix them before saving. An unmarked guess reads to them as a number they gave you.
+- If there is nothing to estimate FROM, ask one short question instead of calling the tool. "Roughly how big was it?" beats a number you invented.
+- Never claim precision you do not have. "Call it 450, correct me on the card" is honest; "450 calories" said flatly about a homemade dish is not.
+
+What a saved food is worth:
+- A saved row is the user's OWN number for that food. Once it exists it outranks any estimate, catalog row or web result the next time they log that food. That is the point of saving: say it once, never re-guess it.
+
+CRITICAL — never claim a save you did not make:
+- The tool call is the only thing that saves or logs. NEVER say "saved", "logged", "added it", or "that is in your diary" unless that turn contains a create_custom_food or create_custom_meal tool call.
+- After the call, one short line is enough. The card shows them the numbers.
+</food_behavior>`;
+
 export function buildSystemPrompt(ctx: PromptContext): {
   system: AnthropicSystemBlock[];
   tools: AnthropicTool[];
@@ -916,7 +1088,13 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // an instruction/tool mismatch either way.
   const carriesProposeTargets = mode === 'chat' && !ctx.freeTier;
   const targetBlock = carriesProposeTargets ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
+  // The generate_* modes are not conversations: the caller forces tool_choice
+  // onto one tool, so the food toolset and its instructions are both dead
+  // weight there. Derived once and used for both, so they cannot drift apart.
+  const forcedMode = mode === 'generate_workout' || mode === 'generate_plan' ||
+    mode === 'generate_program';
+  const foodBlock = forcedMode ? '' : `\n\n${FOOD_LOGGING_BEHAVIOR}`;
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${foodBlock}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',
@@ -955,6 +1133,12 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // generate tools are deliberately absent: mid-session the answer is
   // never "here's a whole new workout to save".
   // (`mode` was hoisted above for the behavior branch.)
+  // The generate_* modes are not conversations: the caller forces tool_choice
+  // onto the single matching tool, so anything else in the list is dead weight.
+  // Every mode that IS a conversation carries FOOD_TOOLS, including the chat
+  // opened mid-set. A user who drinks a shake between sets should be able to
+  // say so wherever they are standing, rather than being told to go to another
+  // screen for it.
   const baseTools: AnthropicTool[] = mode === 'generate_workout'
     ? [GENERATE_TOOLS[0]]
     : mode === 'generate_plan'
@@ -972,6 +1156,7 @@ export function buildSystemPrompt(ctx: PromptContext): {
                 : carriesProposeTargets
                   ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
                   : [...COACH_TOOLS];
+  if (!forcedMode) baseTools.push(...FOOD_TOOLS);
 
   // Tools: cache them since they're static. Last tool gets the cache_control
   // marker per Anthropic's convention.

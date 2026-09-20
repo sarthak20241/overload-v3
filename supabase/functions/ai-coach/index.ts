@@ -15,6 +15,15 @@ import {
   runParseMeal,
   USER_TEXT_MAX_CHARS,
 } from "./parseMeal.ts";
+import {
+  type FoodIntent,
+  type FoodIntentDecision,
+  type FoodIntentDeps,
+  JEV_INTENT_FLOOR,
+  parseFoodIntentMode,
+  routeFoodIntent,
+  shouldRouteFoodIntent,
+} from "./foodIntent.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import {
   type AutoLogSkip,
@@ -108,6 +117,141 @@ const RETRIEVAL_QUERY_TIMEOUT_MS = envInt("RETRIEVAL_QUERY_TIMEOUT_MS", 8000);
 // eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
 // it can be killed without a redeploy if costs or quality surprise us.
 const PARSE_MEAL_MODEL = "claude-haiku-4-5";
+
+// ── Food intent routing (log vs create) ─────────────────────────────────────
+// TypeSafe's Jev decides whether a message is "I ate this" or "save this for
+// later". Absent key = the rung simply does not exist and the ladder starts at
+// the model, which is a supported state rather than an error.
+const JEV_API_KEY = Deno.env.get("JEV_API_KEY");
+
+/**
+ * off    | never runs, costs nothing. The kill switch.
+ * shadow | runs and is RECORDED on the trace, but the parse proceeds exactly as
+ *          today. Nothing a user sees changes.
+ * on     | a 'create' answer diverts out of the parse.
+ *
+ * Defaults to shadow, and will until the create path it would divert INTO
+ * exists. Flipping to 'on' before then would route a message to nothing, which
+ * is worse than logging it. The shadow week is also how a threshold measured on
+ * 46 messages I wrote myself gets checked against messages real people type.
+ */
+const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
+
+/** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
+ *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
+ *  up); one that takes longer than this has already lost its reason to exist,
+ *  and the ladder below it is cheap. */
+// envInt has no range, so the bounds are applied here: a 50ms override would
+// make the rung useless and a 60s one would keep the trace open long after
+// anyone cared.
+const JEV_TIMEOUT_MS = Math.min(Math.max(envInt("JEV_TIMEOUT_MS", 2500), 500), 10_000);
+
+/** Step 2 of the ladder: a small forced-tool Haiku call, used when Jev is
+ *  absent, rate limited, or honest about not knowing. Forced tool_choice so the
+ *  answer is an enum rather than a sentence we would have to parse. Cheap
+ *  enough to be the thing we do when unsure: it fires on a few percent of
+ *  messages, and only ever on the ones that were genuinely ambiguous. */
+async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | null> {
+  if (!ANTHROPIC_API_KEY) return null;
+  const res = await callAnthropic({
+    model: PARSE_MEAL_MODEL,
+    max_tokens: 64,
+    system:
+      "You route messages typed into a food tracking app. Decide on the INSTRUCTION in the message, " +
+      "not on the food it describes. Creating requires an EXPLICIT ask to save, create, or remember a " +
+      "food for later use. Describing a food, even in present tense with calories and macros attached, " +
+      "is logging. When the message does not explicitly ask to save something, the answer is log.",
+    tools: [{
+      name: "route_food_text",
+      description: "Report which of the two things the user is asking for.",
+      input_schema: {
+        type: "object",
+        properties: {
+          intent: {
+            type: "string",
+            enum: ["log", "create"],
+            description:
+              "log: they are telling the app about food they ate or are eating. " +
+              "create: they explicitly asked for a food or meal to be SAVED as a reusable entry.",
+          },
+        },
+        required: ["intent"],
+      },
+    }],
+    tool_choice: { type: "tool", name: "route_food_text" },
+    messages: [{ role: "user", content: text }],
+  }, 6000);
+  if (!res.ok) {
+    console.log(`[food_intent] model fallback failed: ${res.status}`);
+    return null;
+  }
+  const block = (res.data?.content ?? []).find((b: { type?: string }) => b?.type === "tool_use");
+  const intent = block?.input?.intent;
+  return intent === "log" || intent === "create" ? intent : null;
+}
+
+function makeFoodIntentDeps(abortSignal?: AbortSignal): FoodIntentDeps {
+  return {
+    jev: JEV_API_KEY
+      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m) }
+      : undefined,
+    classify: classifyFoodIntentWithModel,
+    log: (m) => console.log(m),
+  };
+}
+
+/**
+ * Start the router CONCURRENTLY with the parse, never in front of it.
+ *
+ * Measured, and it is the reason for this shape: Jev answers in about 700ms and
+ * a parse takes 1.2s and up. Run in sequence that is 700ms added to every meal
+ * anyone logs, to answer a question that is 'log' almost every time. Run
+ * alongside, the common path pays nothing and only a create wastes a call it
+ * was going to make anyway.
+ *
+ * Returns null when there is nothing to decide, so the caller can tell "we did
+ * not ask" from "we asked and it said log":
+ *   - the switch is off
+ *   - this turn is a CORRECTION, with a parsed meal already on screen. "no, the
+ *     other one" is neither logging nor creating, it is editing, and routing it
+ *     as either would be wrong.
+ */
+function startFoodIntent(
+  text: string,
+  isCorrection: boolean,
+  abortSignal?: AbortSignal,
+): Promise<FoodIntentDecision | null> {
+  if (!shouldRouteFoodIntent(FOOD_INTENT_MODE, isCorrection)) return Promise.resolve(null);
+  return routeFoodIntent(text, makeFoodIntentDeps(abortSignal))
+    // routeFoodIntent is documented never to throw. This is the belt on top of
+    // the braces: nothing about a shadow measurement may fail a meal log.
+    .catch((e) => {
+      console.log(`[food_intent] router threw: ${String(e).slice(0, 120)}`);
+      return null;
+    });
+}
+
+/** The router's answer as a trace pseudo-step, in the same shape __edge_timing
+ *  already uses. parse_traces.steps is jsonb precisely so this needs no
+ *  migration. This is the record we read after a week to find out whether a
+ *  floor tuned on invented messages survives real ones. */
+function foodIntentStep(d: FoodIntentDecision | null): ParseStep[] {
+  if (!d) return [];
+  return [{
+    iter: 9,
+    tool: "__food_intent",
+    input: {
+      intent: d.intent,
+      source: d.source,
+      confidence: d.confidence,
+      note: d.note,
+      mode: FOOD_INTENT_MODE,
+      // Recorded per row rather than assumed from the constant, so a trace read
+      // months from now still says what bar it was judged against.
+      floor: JEV_INTENT_FLOOR,
+    },
+  }] as ParseStep[];
+}
 // The DECIDE call's budget. It writes one line per item plus the Drona line,
 // so it scales with the item count, and that ceiling went from 12 to 50
 // (MAX_ITEMS_PER_PARSE). 1600 was sized for twelve; a long day would have been
@@ -440,6 +584,40 @@ async function executeTool(
           note:
             "No catalog exercise matched. Try a shorter, more generic query (one word) before concluding it does not exist. Never invent a name for edit_active_workout.",
         };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  // The user's own saved foods and meals. A plain RLS-gated PostgREST read for
+  // the same reason the catalog search is: saved_meals is already scoped to the
+  // caller by policy (0075), so no security-definer function and no migration.
+  // Headers only plus an item count — the coach needs to know WHAT the user has
+  // and what it comes to, not every ingredient of every meal, and pulling the
+  // full item rows would put a large blob in the tool result for no decision it
+  // changes.
+  if (name === "coach_list_saved_meals") {
+    const q = String(input.query ?? "").trim();
+    const limit = Math.min(Math.max(Number(input.limit ?? 40) || 40, 1), 100);
+    try {
+      let query = userClient
+        .from("saved_meals")
+        .select("id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, created_at, saved_meal_items(count)")
+        .order("created_at", { ascending: false });
+      if (q) query = query.ilike("name", `%${q.replace(/[%_]/g, "\\$&")}%`);
+      const { data, error } = await query.limit(limit);
+      if (error) return { error: error.message };
+      const rows = (data ?? []).map((r: Record<string, unknown>) => {
+        const counted = r.saved_meal_items as { count: number }[] | undefined;
+        const { saved_meal_items: _drop, ...rest } = r;
+        return { ...rest, item_count: counted?.[0]?.count ?? 0 };
+      });
+      return rows.length > 0 ? { saved: rows } : {
+        saved: [],
+        note: q
+          ? "Nothing saved matches that name. List without a query before concluding they have not saved it."
+          : "This user has not saved any foods or meals yet.",
+      };
     } catch (e) {
       return { error: String(e) };
     }
@@ -1627,9 +1805,28 @@ function staplesFrom(
 // Full agent-flow observability for parse_meal: one parse_traces row per request
 // (logged or not), capturing the input, the tool-call trail, and the resolved
 // items. Fire-and-forget; never let a trace failure break the parse response.
-function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): void {
+/**
+ * @param lateSteps Steps that are not ready when the row is built. The food
+ *   intent router resolves on its own clock beside the parse, and awaiting it at
+ *   the call site would hold the SSE stream open for as long as it took, which
+ *   is precisely the latency this design exists to avoid. Awaited HERE instead,
+ *   inside work that is already kept alive past the response, so a slow or
+ *   hanging router costs the trace its timeliness and the user nothing.
+ */
+function recordParseTrace(
+  admin: SupabaseClient,
+  row: Record<string, unknown>,
+  lateSteps?: Promise<ParseStep[]>,
+): void {
   const p = (async () => {
     try {
+      if (lateSteps) {
+        const extra = await lateSteps.catch(() => [] as ParseStep[]);
+        if (extra.length) {
+          const existing = Array.isArray(row.steps) ? row.steps as ParseStep[] : [];
+          row = { ...row, steps: [...existing, ...extra] };
+        }
+      }
       await admin.from("parse_traces").insert(row);
     } catch (e) {
       console.log("[parse_meal] parse_trace insert failed:", String(e));
@@ -2180,6 +2377,9 @@ async function handleParseMealRequest(args: {
         // runtime tears the isolate down once the stream is cancelled unless
         // the work is registered with waitUntil. Review mode is unchanged:
         // the client leaving aborts the parse (see parseAbortFor above).
+        // Kicked off BEFORE the parse is awaited, so the two overlap and the
+        // common path (log, almost always) pays nothing for the question.
+        const intentP = startFoodIntent(text, previousItems.length > 0, abort.signal);
         const work = (async () => {
           try {
             const result = await runParseMeal(
@@ -2238,7 +2438,7 @@ async function handleParseMealRequest(args: {
               output_tokens: result.usage.output_tokens,
               web_search_requests: result.usage.web_search_requests,
               latency_ms: Date.now() - startedAtMs,
-            });
+            }, intentP.then(foodIntentStep));
             // COST. recordTrace writes coach_traces; logTokenUsage writes the
             // token-cost table that cost_summary, cost_by_day and the admin
             // pages read. They are separate calls, and the SSE branch had
@@ -2326,6 +2526,13 @@ async function handleParseMealRequest(args: {
       },
     });
   }
+
+  // Same concurrency rule as the streaming path: started before the parse is
+  // awaited, so the answer is ready by the time the trace wants it and the user
+  // waits for neither. Declared OUTSIDE the try because the catch traces it too:
+  // a parse that blew up is exactly when knowing what the user was asking for is
+  // most useful.
+  const intentP = startFoodIntent(text, previousItems.length > 0);
 
   try {
     // Just log it on the JSON path: the parse AND the diary write stay alive
@@ -2422,7 +2629,7 @@ async function handleParseMealRequest(args: {
       output_tokens: result.usage.output_tokens,
       web_search_requests: result.usage.web_search_requests,
       latency_ms: Date.now() - startedAtMs,
-    });
+    }, intentP.then(foodIntentStep));
 
     return respond(
       {
@@ -2457,7 +2664,7 @@ async function handleParseMealRequest(args: {
       outcome: "error",
       message: trace.error_message,
       latency_ms: Date.now() - startedAtMs,
-    });
+    }, intentP.then(foodIntentStep));
     return respond(
       {
         error: "parse_failed",
