@@ -31,9 +31,14 @@ import { haptics } from '@/lib/haptics';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 type SearchTab = 'all' | 'meals';
-const TABS: { key: SearchTab; label: string }[] = [
+/** 'quick' is not a pane — it opens the Quick add screen and the row stays on
+ *  whichever tab you were reading. It sits with the others because that is where
+ *  the eye looks for "the other way to log", not above the list as a wide banner. */
+type TabKey = SearchTab | 'quick';
+const TABS: { key: TabKey; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'meals', label: 'My Meals' },
+  { key: 'quick', label: 'Quick add' },
 ];
 
 const MEALS: { type: MealType; label: string; icon: keyof typeof Feather.glyphMap }[] = [
@@ -143,7 +148,7 @@ export default function FoodSearchScreen() {
   // Nothing in the catalog, nothing to ask Drona about: the user already knows
   // the calories. Carries the current query as the title so a search that came
   // up empty is not typed twice.
-  function openQuickAdd(from: 'header' | 'no_match') {
+  function openQuickAdd(from: 'tab' | 'no_match') {
     Keyboard.dismiss();
     track('quick_add_opened', { from, meal, query_length: query.trim().length });
     setLogMeal(meal);
@@ -394,12 +399,19 @@ export default function FoodSearchScreen() {
         )}
       </View>
 
-      {/* Tabs — All / My Meals (MFP model). */}
+      {/* Tabs — All / My Meals / Quick add (MFP model, plus the escape hatch). */}
       <View style={s.tabs}>
         {TABS.map((t) => {
           const on = t.key === tab;
           return (
-            <Pressable key={t.key} onPress={() => { setTab(t.key); haptics.tick(); }} style={s.tab}>
+            <Pressable
+              key={t.key}
+              onPress={() => {
+                if (t.key === 'quick') { haptics.tick(); openQuickAdd('tab'); return; }
+                setTab(t.key); haptics.tick();
+              }}
+              style={s.tab}
+            >
               <Text style={[s.tabTxt, { color: on ? C.foreground : C.textMuted }]}>{t.label}</Text>
               <View style={[s.tabUnderline, { backgroundColor: on ? C.accentText : 'transparent' }]} />
             </Pressable>
@@ -436,18 +448,6 @@ export default function FoodSearchScreen() {
         />
       ) : (
         <>
-      {/* The catalog's escape hatch, above the list and always in reach: calories
-          you already know (a restaurant plate, a home dish) with no row to match. */}
-      <Pressable style={s.createRow} onPress={() => openQuickAdd('header')}>
-        <View style={[s.createIcon, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}>
-          <Feather name="edit-3" size={15} color={C.accentText} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={s.createTxt}>Quick add calories</Text>
-          <Text style={s.createSub}>Know the calories? Log them without a match.</Text>
-        </View>
-      </Pressable>
-
       {showingRecents && (
         <View style={s.listHead}>
           <Text style={s.listHeadTxt}>Recent</Text>
@@ -536,7 +536,6 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     createRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.xl, paddingVertical: 16 },
     createIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
     createTxt: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: C.accentText },
-    createSub: { fontSize: FontSize.sm, color: C.textMuted, marginTop: 2 },
     quickLink: { marginTop: Spacing.md, paddingVertical: 6 },
     quickLinkTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: C.accentText },
 
