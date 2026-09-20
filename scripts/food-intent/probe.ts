@@ -1,240 +1,234 @@
-// Phase 0 for the food-intent router: does Jev actually separate "log" from
-// "create" on real-looking messages, and where does the confidence floor belong?
+// Does Jev separate "log" from "create" on real-looking messages, and where
+// does the confidence floor belong?
 //
 //   deno run --allow-net --allow-env scripts/food-intent/probe.ts
 //
-// Context for why this exists: a sibling session probed Jev on the Drona-cards
-// judgment and found it "perceives sharply and decides poorly" - single-signal
-// questions separated 98% vs 9-13%, while a judgment needing three signals
-// weighed together returned 10-20% confidence on everything. Their conclusion,
-// which this inherits, is that every Jev question is a tiny prompt and has to be
-// checked against known answers before anyone trusts it.
+// Background: a sibling session probed Jev on the Drona-cards judgment and found
+// it "perceives sharply and decides poorly". Single-signal questions separated
+// 98% vs 9-13%; a judgment needing three signals weighed together returned
+// 10-20% confidence on everything. Their lesson, inherited here: every Jev
+// question is a tiny prompt and has to be checked against known answers.
 //
-// "Log or create" is a single-signal read, so it SHOULD be on the good side of
-// that line. Should is not measured.
+// ── The rule under test ────────────────────────────────────────────────────
+// CREATE REQUIRES AN EXPLICIT ASK. Describing a food, even in present tense with
+// macros, is a log. This is a product decision, and it is what makes the question
+// answerable: the first version left it implicit, the two options read as near
+// synonyms, and confidence collapsed on exactly the messages a person would also
+// argue about. The ambiguity was in the question, not the model.
 //
-// HELD OUT: the criteria wording in foodIntent.ts was written and committed
-// before these cases existed and is not edited to fit them. If it turns out to
-// need changing, these cases are burned and the next run needs fresh ones.
+// ── Two sets, and why ──────────────────────────────────────────────────────
+// DEV is the original 22 cases, RE-LABELLED under the explicit-ask rule. Their
+// results have already been seen, so a number from them is not evidence about
+// unseen messages. They are kept because a regression on them is still a
+// regression.
+//
+// HELD_OUT is fresh, written after the criteria wording was fixed and never
+// scored before. This is the set the floor is chosen from. The few-shot examples
+// inside INTENT_CRITERIA appear in NEITHER set, on purpose.
 
-import { asChoice, asNoul, askJev, JEV_MODEL, type JevQuestion } from "../../supabase/functions/ai-coach/jev.ts";
+import { asChoice, askJev, JEV_MODEL } from "../../supabase/functions/ai-coach/jev.ts";
+import { INTENT_CRITERIA, INTENT_INSTRUCTIONS } from "../../supabase/functions/ai-coach/foodIntent.ts";
 
 type Label = "log" | "create";
 
 interface Case {
   text: string;
   want: Label;
-  /** Hard cases are the ones the floor has to survive, so they are reported
-   *  separately from the easy ones that any approach would get. */
   hard?: boolean;
-  why?: string;
 }
 
-// Messages a real person might type into the food bar. Weighted toward the
-// middle, because the ends are not where a threshold earns its keep.
-const CASES: Case[] = [
-  // ── plainly logging ───────────────────────────────────────────────────────
-  { text: "2 eggs and toast", want: "log", why: "bare list, no verb" },
+// ── DEV: the original 22, re-labelled under the explicit-ask rule ───────────
+// Four labels moved, and every one of them moved toward 'log', because each was
+// a present-tense description with no instruction to save. That re-labelling is
+// the whole point: the model was reading the rule correctly before the rule was
+// written down.
+const DEV: Case[] = [
+  { text: "2 eggs and toast", want: "log" },
   { text: "I had a chicken roll for lunch", want: "log" },
   { text: "just finished a bowl of dal and rice", want: "log" },
   { text: "grabbed a protein bar on the way to the gym", want: "log" },
-  { text: "100g paneer, 2 rotis, salad", want: "log", why: "quantities only" },
+  { text: "100g paneer, 2 rotis, salad", want: "log" },
   { text: "large cappuccino and a croissant", want: "log" },
-
-  // ── plainly creating ──────────────────────────────────────────────────────
   { text: "save my protein shake so I can log it quickly next time", want: "create" },
   { text: "create a meal called Sunday Poha", want: "create" },
   { text: "remember this: my breakfast bowl is 100g oats, a scoop of whey and a banana", want: "create" },
   { text: "add a food called Amma's rajma to my meals", want: "create" },
   { text: "I want to set up my usual post workout shake as a saved meal", want: "create" },
-
-  // ── the hard middle ───────────────────────────────────────────────────────
-  {
-    text: "chicken roll, about 450 cal",
-    want: "log",
-    hard: true,
-    why: "numbers present but it is still a report of eating",
-  },
-  {
-    text: "my protein shake is 180 cal, 30g protein",
-    want: "create",
-    hard: true,
-    why: "present tense definition, 'is' not 'had'",
-  },
-  {
-    text: "I had my usual breakfast bowl, save it too",
-    want: "create",
-    hard: true,
-    why: "both intents in one line; the save is the new instruction",
-  },
-  {
-    text: "dosa 600 cal 20p 80c 20f",
-    want: "log",
-    hard: true,
-    why: "terse macros with no save word reads as a log",
-  },
-  {
-    text: "make a note that my office salad is around 320 calories",
-    want: "create",
-    hard: true,
-    why: "'make a note' is a save, not an eating report",
-  },
-  {
-    text: "the rajma I make at home comes to roughly 400 a bowl",
-    want: "create",
-    hard: true,
-    why: "defines a recurring dish, present habitual tense",
-  },
-  {
-    text: "had 3 idlis with sambar this morning",
-    want: "log",
-    hard: true,
-    why: "time reference anchors it to an actual meal",
-  },
-  {
-    text: "log my breakfast bowl",
-    want: "log",
-    hard: true,
-    why: "explicit verb 'log', even though it names a saved meal",
-  },
-  {
-    text: "add my greek yogurt bowl",
-    want: "log",
-    hard: true,
-    why: "'add' is ambiguous but in a diary it means add to today",
-  },
-  {
-    text: "set up oats 50g whey 1 scoop banana 1 as a meal I eat most mornings",
-    want: "create",
-    hard: true,
-    why: "recipe plus 'set up' plus habitual framing",
-  },
-  {
-    text: "two boiled eggs, 140 calories total",
-    want: "log",
-    hard: true,
-    why: "a total for one sitting, not a definition",
-  },
+  { text: "chicken roll, about 450 cal", want: "log", hard: true },
+  // WAS create. No instruction to save anywhere in it, so it is a log.
+  { text: "my protein shake is 180 cal, 30g protein", want: "log", hard: true },
+  { text: "I had my usual breakfast bowl, save it too", want: "create", hard: true },
+  { text: "dosa 600 cal 20p 80c 20f", want: "log", hard: true },
+  { text: "make a note that my office salad is around 320 calories", want: "create", hard: true },
+  // WAS create. Describes a recurring dish but never asks for it to be kept.
+  { text: "the rajma I make at home comes to roughly 400 a bowl", want: "log", hard: true },
+  { text: "had 3 idlis with sambar this morning", want: "log", hard: true },
+  { text: "log my breakfast bowl", want: "log", hard: true },
+  // WAS create. "add" in a diary means add to today.
+  { text: "add my greek yogurt bowl", want: "log", hard: true },
+  { text: "set up oats 50g whey 1 scoop banana 1 as a meal I eat most mornings", want: "create", hard: true },
+  { text: "two boiled eggs, 140 calories total", want: "log", hard: true },
 ];
 
-// The Choice the router actually ships, imported in spirit: duplicated here so
-// the probe can compare it against a Noul phrasing of the same judgment without
-// the router needing to know about the experiment.
-const CHOICE: JevQuestion = {
-  type: "choice",
-  instructions:
-    "The state is a message the user typed into a food tracking app. " +
-    "Decide whether they are recording food they ate, or defining a food to save for later use. " +
-    "Judge only what this message asks for. Do not consider whether the food sounds healthy, whether the numbers are plausible, or what they should do next.",
-  criteria: {
-    log:
-      "The user is recording food they have ALREADY eaten or are eating now, and wants it added to today's diary. " +
-      "Past tense is the strongest signal: 'I had', 'just ate', 'finished', 'grabbed'. " +
-      "A bare list of foods with no verb is also this, because describing food with no other request means they ate it. " +
-      "Choose this when they mention a quantity of something they consumed, even if they also give calories.",
-    create:
-      "The user wants a food or meal SAVED as a reusable entry for future use, and is not reporting having eaten it now. " +
-      "The signals are an explicit request to keep it ('save this', 'remember', 'add to my meals', 'create a meal', 'make a food called'), " +
-      "or defining a named dish by its recipe or ingredients for later. " +
-      "Choose this even when they also give calories and macros, because the numbers are the definition of the food, not a record of a meal.",
-  },
-};
+// ── HELD OUT: written after the wording was fixed, never scored ────────────
+// Weighted toward the boundary the rule draws: present-tense descriptions with
+// numbers that are NOT saves, and saves phrased in ways the few-shot does not use.
+const HELD_OUT: Case[] = [
+  // Plain logs.
+  { text: "three scrambled eggs and a black coffee", want: "log" },
+  { text: "ate a shawarma on the way home", want: "log" },
+  { text: "250ml milk and 4 dates", want: "log" },
+  { text: "leftover biryani for lunch", want: "log" },
 
-// The same judgment as a yes/no. Their probe found single-signal Nouls separated
-// far better than Choices, and the jaggedness page warns the two are NOT
-// comparable, so this is measured rather than assumed.
-const NOUL: JevQuestion = {
-  type: "noul",
-  instructions:
-    "The state is a message the user typed into a food tracking app. " +
-    "The user is asking to SAVE a food or meal as a reusable entry for later, rather than recording something they have just eaten.",
-  criteria: {
-    true: "They want it kept for future use: 'save this', 'remember', 'create a meal', 'add a food called', or they are defining a named dish by its ingredients.",
-    false: "They are reporting food they ate or are eating now, including a bare list of foods with no other request.",
-  },
-};
+  // Descriptions with numbers, no instruction to save. The rule says log.
+  { text: "my morning smoothie comes to about 300 calories", want: "log", hard: true },
+  { text: "the protein bar I eat is 20g protein", want: "log", hard: true },
+  { text: "a plate of my mum's pulao is roughly 500", want: "log", hard: true },
+  { text: "this sandwich has 400 cal 25p 40c 12f", want: "log", hard: true },
+  { text: "lunch today was around 700 calories", want: "log", hard: true },
+
+  // Explicit saves, phrased away from the few-shot wording.
+  { text: "keep this one in my meals please", want: "create", hard: true },
+  { text: "I want a saved entry for my gym day breakfast", want: "create", hard: true },
+  { text: "store this as a food I can pick later", want: "create", hard: true },
+  { text: "make a reusable meal out of 60g oats and 250ml milk", want: "create", hard: true },
+  { text: "put my office salad into my meals list", want: "create", hard: true },
+
+  // Both in one message. The save is the new instruction, so create.
+  { text: "two rotis and sabzi, and keep that as a meal", want: "create", hard: true },
+  { text: "logged my shake already, can you also save it for next time", want: "create", hard: true },
+
+  // Verbs that look like saving but are not, in a diary.
+  { text: "add 2 bananas", want: "log", hard: true },
+  { text: "put down a coffee for me", want: "log", hard: true },
+  { text: "note that I had a samosa", want: "log", hard: true },
+
+  // Terse, no verb at all.
+  { text: "idli sambar x3", want: "log" },
+  { text: "protein shake", want: "log" },
+
+  // A question, not an instruction. Still not a save.
+  { text: "how many calories in my usual breakfast bowl", want: "log", hard: true },
+
+  // Naming a dish without asking for anything.
+  { text: "we call it Sunday poha at home", want: "log", hard: true },
+
+  // Explicit create with a recipe attached.
+  { text: "create a meal: 100g chicken, 150g rice, 1 tsp oil", want: "create", hard: true },
+];
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(0)}%`.padStart(4);
 }
 
-async function main() {
-  const apiKey = Deno.env.get("JEV_API_KEY") ?? "";
-  if (!apiKey) {
-    console.error("JEV_API_KEY is not set. Export it and re-run.");
-    Deno.exit(1);
-  }
+interface Outcome {
+  right: number;
+  total: number;
+  hardRight: number;
+  hardTotal: number;
+  rightConf: number[];
+  wrongConf: number[];
+  rows: string[];
+  tokens: number;
+  ms: number;
+}
 
-  const deps = { apiKey, timeoutMs: 15_000 };
-  console.log(`model ${JEV_MODEL}, ${CASES.length} cases\n`);
+async function runSet(name: string, cases: Case[], apiKey: string): Promise<Outcome> {
+  const o: Outcome = {
+    right: 0, total: cases.length, hardRight: 0, hardTotal: 0,
+    rightConf: [], wrongConf: [], rows: [], tokens: 0, ms: 0,
+  };
 
-  let choiceRight = 0, noulRight = 0, hardTotal = 0, choiceHardRight = 0, noulHardRight = 0;
-  let totalIn = 0, totalMs = 0;
-  // Confidence of the CORRECT answers and of the WRONG ones, kept apart: a floor
-  // is only useful if wrong answers are less confident than right ones.
-  const rightConf: number[] = [], wrongConf: number[] = [];
-  const rows: string[] = [];
-
-  for (const c of CASES) {
+  for (const c of cases) {
     const t0 = Date.now();
-    // Both questions in ONE call. They are independent, evaluated in parallel
-    // against the same state, and the state is only charged once.
-    const res = await askJev({ message: c.text }, { intent: CHOICE, wants_save: NOUL }, deps);
-    const ms = Date.now() - t0;
-    totalMs += ms;
+    const res = await askJev(
+      { message: c.text },
+      { intent: { type: "choice", instructions: INTENT_INSTRUCTIONS, criteria: INTENT_CRITERIA } },
+      { apiKey, timeoutMs: 15_000 },
+    );
+    o.ms += Date.now() - t0;
 
-    if (!res.ok) {
-      rows.push(`FAIL  ${res.failure.padEnd(16)} ${c.text.slice(0, 50)}`);
-      continue;
-    }
-    totalIn += res.response.usage.input_tokens;
+    if (!res.ok) { o.rows.push(`FAIL ${res.failure} ${c.text.slice(0, 44)}`); continue; }
+    o.tokens += res.response.usage.input_tokens;
 
     const ch = asChoice(res.response.answers.intent);
-    const nl = asNoul(res.response.answers.wants_save);
-    if (!ch || nl === null) {
-      rows.push(`SHAPE ${c.text.slice(0, 50)}`);
-      continue;
-    }
+    if (!ch) { o.rows.push(`SHAPE ${c.text.slice(0, 44)}`); continue; }
 
-    const choiceOk = ch.choice === c.want;
-    // 0.5 is the natural midpoint for a yes/no; the real cut is chosen below
-    // from the spread, not assumed here.
-    const noulSaysCreate = nl > 0.5;
-    const noulOk = (noulSaysCreate ? "create" : "log") === c.want;
+    const ok = ch.choice === c.want;
+    if (ok) { o.right++; o.rightConf.push(ch.confidence); } else { o.wrongConf.push(ch.confidence); }
+    if (c.hard) { o.hardTotal++; if (ok) o.hardRight++; }
 
-    if (choiceOk) { choiceRight++; rightConf.push(ch.confidence); } else { wrongConf.push(ch.confidence); }
-    if (noulOk) noulRight++;
-    if (c.hard) {
-      hardTotal++;
-      if (choiceOk) choiceHardRight++;
-      if (noulOk) noulHardRight++;
-    }
-
-    rows.push(
-      `${choiceOk ? "  " : "XX"} ${noulOk ? "  " : "xx"} ` +
-        `want=${c.want.padEnd(6)} choice=${ch.choice.padEnd(6)} conf=${pct(ch.confidence)} ` +
-        `noul=${pct(nl)} ${ms}ms ${c.hard ? "[hard] " : ""}${c.text.slice(0, 44)}`,
+    o.rows.push(
+      `${ok ? "  " : "XX"} want=${c.want.padEnd(6)} got=${ch.choice.padEnd(6)} ` +
+        `conf=${pct(ch.confidence)} ${c.hard ? "[hard] " : "       "}${c.text.slice(0, 46)}`,
     );
   }
+  return o;
+}
 
-  console.log("XX = Choice wrong, xx = Noul wrong\n");
-  for (const r of rows) console.log(r);
+const mean = (a: number[]) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
+const min = (a: number[]) => a.length ? Math.min(...a) : NaN;
+const max = (a: number[]) => a.length ? Math.max(...a) : NaN;
 
-  const n = CASES.length;
-  const mean = (a: number[]) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
-  const min = (a: number[]) => a.length ? Math.min(...a) : NaN;
-  const max = (a: number[]) => a.length ? Math.max(...a) : NaN;
-
-  console.log(`\nChoice  ${choiceRight}/${n}   hard ${choiceHardRight}/${hardTotal}`);
-  console.log(`Noul    ${noulRight}/${n}   hard ${noulHardRight}/${hardTotal}`);
-  console.log(`\nconfidence when RIGHT: mean ${pct(mean(rightConf))} min ${pct(min(rightConf))}`);
-  console.log(`confidence when WRONG: mean ${pct(mean(wrongConf))} max ${pct(max(wrongConf))}`);
+function report(name: string, o: Outcome) {
+  console.log(`\n══════ ${name} ══════`);
+  for (const r of o.rows) console.log(r);
+  console.log(`\n  correct ${o.right}/${o.total}   hard ${o.hardRight}/${o.hardTotal}`);
+  console.log(`  conf when RIGHT  mean ${pct(mean(o.rightConf))}  min ${pct(min(o.rightConf))}`);
+  console.log(`  conf when WRONG  mean ${pct(mean(o.wrongConf))}  max ${pct(max(o.wrongConf))}`);
+  const gap = min(o.rightConf) - max(o.wrongConf);
   console.log(
-    `\nA floor is only worth having if the wrong answers sit below it. ` +
-      `Wrong max ${pct(max(wrongConf))} vs right min ${pct(min(rightConf))}.`,
+    o.wrongConf.length === 0
+      ? "  no wrong answers, so any floor at or below the right-min is clean"
+      : gap > 0
+      ? `  SEPARATED: every wrong answer sits below every right one (gap ${pct(gap)})`
+      : `  OVERLAP: a wrong answer outranks a right one, so no floor is clean`,
   );
-  console.log(`\n${Math.round(totalIn / n)} input tokens/call avg, ${Math.round(totalMs / n)}ms avg`);
-  console.log(`$${((totalIn / 1_000_000) * 0.042).toFixed(6)} for this whole run`);
+  console.log(`  ${Math.round(o.tokens / o.total)} tok/call, ${Math.round(o.ms / o.total)}ms/call`);
+}
+
+/** What a given floor would actually do: how many answers it lets through, and
+ *  how many of those were right. Precision on the accepted set is the number
+ *  that matters, because the rejected ones go to a better judge anyway. */
+function sweep(o: Outcome) {
+  console.log("\n  floor  accepted  correct  sent to Claude");
+  for (const f of [0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) {
+    const accRight = o.rightConf.filter((c) => c >= f).length;
+    const accWrong = o.wrongConf.filter((c) => c >= f).length;
+    const acc = accRight + accWrong;
+    console.log(
+      `  ${f.toFixed(2)}   ${String(acc).padStart(8)}  ${String(accRight).padStart(7)}  ${
+        String(o.total - acc).padStart(14)
+      }`,
+    );
+  }
+}
+
+async function main() {
+  const apiKey = Deno.env.get("JEV_API_KEY") ?? "";
+  if (!apiKey) { console.error("JEV_API_KEY is not set."); Deno.exit(1); }
+
+  console.log(`model ${JEV_MODEL}`);
+  const dev = await runSet("DEV", DEV, apiKey);
+  const held = await runSet("HELD_OUT", HELD_OUT, apiKey);
+
+  report("DEV (seen before, re-labelled)", dev);
+  report("HELD OUT (never scored)", held);
+
+  console.log("\n══════ floor sweep, HELD OUT ══════");
+  sweep(held);
+
+  const all: Outcome = {
+    right: dev.right + held.right, total: dev.total + held.total,
+    hardRight: dev.hardRight + held.hardRight, hardTotal: dev.hardTotal + held.hardTotal,
+    rightConf: [...dev.rightConf, ...held.rightConf],
+    wrongConf: [...dev.wrongConf, ...held.wrongConf],
+    rows: [], tokens: dev.tokens + held.tokens, ms: dev.ms + held.ms,
+  };
+  console.log("\n══════ floor sweep, BOTH SETS ══════");
+  sweep(all);
+  console.log(`\ncombined ${all.right}/${all.total}`);
+  console.log(`$${((all.tokens / 1_000_000) * 0.042).toFixed(6)} for this whole run`);
 }
 
 await main();

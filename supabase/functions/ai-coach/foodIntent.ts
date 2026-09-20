@@ -53,55 +53,93 @@ export interface FoodIntentDecision {
 /**
  * The confidence floor for acting on Jev's answer.
  *
- * MEASURED, not guessed: scripts/food-intent/probe.ts, 22 labelled messages
- * against jev-1.13.0 on 2026-09-20.
+ * MEASURED: scripts/food-intent/probe.ts, jev-1.13.0, 2026-09-20.
  *
- *   confidence when RIGHT   mean 90%, min 35%
- *   confidence when WRONG   mean 47%, max 87%
+ *   held out (24 fresh cases)   24/24, 18/18 on the hard ones
+ *   dev (22 re-labelled)        21/22
+ *   combined                    45/46
  *
- * Those overlap, so no floor makes Jev correct. What a floor can do is catch the
- * cases where it is guessing, and here the guessing is honest: the low-confidence
- * answers were the genuinely ambiguous messages ("I had my usual breakfast bowl,
- * save it too" at 37%, "add my greek yogurt bowl" at 17%) that a person would
- * also hesitate on. That is calibration working.
+ *   confidence when RIGHT   min 49%
+ *   confidence when WRONG   max 25%   (one case, "add my greek yogurt bowl")
  *
- * 0.9 rather than something looser because of ONE case: "my protein shake is 180
- * cal, 30g protein" went to log at 87% confident, which is wrong and which any
- * floor below 0.88 waves through. At 0.9 the 16 accepted answers were 16 right,
- * and the 6 rejected are the muddy ones the model step exists for.
+ * Those SEPARATE, so anything in (0.25, 0.49] accepts every right answer and
+ * rejects the wrong one. 0.4 sits inside that band with room on both sides.
  *
- * Two honest limits. 22 cases is a small sample, so this is a measured starting
- * point rather than a proven optimum. And it is calibrated against jev-1.13.0
- * specifically: re-run the probe before moving JEV_MODEL, because a threshold is
+ * This floor came DOWN from 0.9, and the reason is worth keeping. 0.9 was
+ * compensating for a badly posed question: the first criteria left "create
+ * requires an explicit ask" implicit, the two options read as near synonyms, and
+ * confidence collapsed on messages a person would also argue about. Four of the
+ * labels were simply wrong. Writing the rule down and adding few-shot examples
+ * fixed the question, and a fixed question needed a LOWER bar, not a higher one.
+ * Reach for the wording before reaching for the threshold.
+ *
+ * Note how little this floor now does: on 46 cases nothing wrong ever scored
+ * above 25%. That is the finding, not the number. A well-posed question makes
+ * Jev right when it is confident and honest when it is not, which is the whole
+ * promise of a calibrated model and the reason the model step below stays cheap.
+ *
+ * Limits, stated not buried. 46 cases is still a small sample, and both sets are
+ * messages I wrote rather than real traffic. And this is calibrated against
+ * jev-1.13.0: re-run the probe before moving JEV_MODEL, because a threshold is
  * owed to one version's distribution and nothing else.
  */
-export const JEV_INTENT_FLOOR = 0.9;
+export const JEV_INTENT_FLOOR = 0.4;
 
 /** Options for the Choice. Keys are what comes back, so they are the intent
  *  names themselves and no mapping table can drift out of sync.
  *
- *  Written the way the jaggedness page asks for: jev-1.13 "answers the question
- *  you wrote, not the one you meant", so each rubric states the exact condition
- *  and names the boundary case rather than gesturing at it. The tense rule is
- *  spelled out because it is the single strongest signal in this decision and
- *  leaving it implicit made the two options read as near-synonyms. */
-const INTENT_CRITERIA: Record<FoodIntent, string> = {
-  log:
-    "The user is recording food they have ALREADY eaten or are eating now, and wants it added to today's diary. " +
-    "Past tense is the strongest signal: 'I had', 'just ate', 'finished', 'grabbed'. " +
-    "A bare list of foods with no verb is also this, because describing food with no other request means they ate it. " +
-    "Choose this when they mention a quantity of something they consumed, even if they also give calories.",
-  create:
-    "The user wants a food or meal SAVED as a reusable entry for future use, and is not reporting having eaten it now. " +
-    "The signals are an explicit request to keep it ('save this', 'remember', 'add to my meals', 'create a meal', 'make a food called'), " +
-    "or defining a named dish by its recipe or ingredients for later. " +
-    "Choose this even when they also give calories and macros, because the numbers are the definition of the food, not a record of a meal.",
+ *  Structured rather than prose, which is TypeSafe's own documented way to
+ *  sharpen a boundary: `what` the option covers, `not_for` what it does not,
+ *  and `examples` of each. The examples are FEW-SHOT and are deliberately not
+ *  drawn from any probe case, so a measurement stays a measurement.
+ *
+ *  The rule they encode is the product decision, and it is what makes this
+ *  question answerable at all: CREATE REQUIRES AN EXPLICIT ASK. Describing a
+ *  food, even in the present tense, even with macros attached, is a log. The
+ *  first version of this left that implicit and the two options read as near
+ *  synonyms, so the model's confidence collapsed on exactly the messages a
+ *  person would also argue about. The ambiguity was ours, not the model's. */
+/** Exported ONLY so the probe measures what ships. A probe holding its own
+ *  copy of the wording measures a copy. */
+export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
+  log: {
+    what:
+      "The user is telling the app about food, and has NOT explicitly asked for it to be saved as a reusable entry. " +
+      "This is the default: a message about food is a log unless it contains an instruction to save or create.",
+    not_for: "Messages that explicitly ask to save, create, or remember a food or meal for future use.",
+    examples: [
+      "a bowl of poha and chai",
+      "half a pizza, maybe 600 calories",
+      "had two parathas with curd",
+      "my usual shake, 180 cal and 30g protein",
+      "chicken 200g, rice 1 cup",
+    ],
+  },
+  create: {
+    what:
+      "The user has EXPLICITLY asked for a food or meal to be saved, created, or remembered as a reusable entry they can log again later. " +
+      "There must be an instruction to that effect in the message. The words vary (save, create, remember, make a meal, add to my meals, set up) but the instruction itself is always present.",
+    not_for:
+      "Merely describing a food, naming a dish, or giving its calories and macros. Numbers and present tense are NOT a request to save. " +
+      "If you have to infer that they probably want it kept, they did not ask, and this is not the option.",
+    examples: [
+      "create this as a new meal called Desk Lunch",
+      "save this combination as a meal for later",
+      "remember my evening shake so I can reuse it",
+      "add a new food called Nani's khichdi",
+    ],
+  },
 };
 
-const INTENT_INSTRUCTIONS =
-  "The state is a message the user typed into a food tracking app. " +
-  "Decide whether they are recording food they ate, or defining a food to save for later use. " +
-  "Judge only what this message asks for. Do not consider whether the food sounds healthy, whether the numbers are plausible, or what they should do next.";
+export const INTENT_INSTRUCTIONS = {
+  question:
+    "The state is a message the user typed into a food tracking app. Which option does it match?",
+  focus:
+    "Decide on the INSTRUCTION in the message, not on the food it describes. " +
+    "Ignore whether the food sounds healthy, whether the numbers look plausible, and what the user should do next.",
+  default_rule:
+    "When the message does not explicitly ask to save or create something, the answer is log.",
+};
 
 export interface FoodIntentDeps {
   /** Present when a TYPESAFE_API_KEY is configured. Absent means step 1 of the

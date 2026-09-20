@@ -104,12 +104,13 @@ Deno.test("a clearly confident answer IS trusted", async () => {
 });
 
 Deno.test("the floor stays in a defensible band", () => {
-  // 0 would trust every answer including the ones Jev flags as guesses; 1 would
-  // mean nothing is ever good enough and the model step pays for every message.
-  // Moving outside this band is a real decision and should break a test, not
-  // slip in as a one-character edit.
-  assertEquals(JEV_INTENT_FLOOR >= 0.5, true);
-  assertEquals(JEV_INTENT_FLOOR <= 0.9, true);
+  // The band is the measured clean window from scripts/food-intent/probe.ts:
+  // nothing wrong scored above 25%, nothing right scored below 49%. A floor
+  // outside it either trusts a known-bad answer or rejects a known-good one.
+  // Moving it is a real decision backed by a fresh probe run, not a one
+  // character edit.
+  assertEquals(JEV_INTENT_FLOOR > 0.25, true);
+  assertEquals(JEV_INTENT_FLOOR < 0.49, true);
 });
 
 Deno.test("exactly at the floor counts as confident", async () => {
