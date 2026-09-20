@@ -196,6 +196,54 @@ Two cautions before trusting it:
 - Six weeks is a smoke test, not an eval. The real bar is 30-40 weeks that
   include mixed cases (high days AND low protein) and near-misses.
 
+## The eval set (2026-09-20): `scripts/drona-jev/eval.mts`, questions in `_shared/dronaJev.ts`
+
+68 fortnights with a known answer: 35 clean, 9 near-misses (just on the safe
+side of a line), 6 mixed (two things true, priority decides), and 18 FRESH
+weeks written after tuning and never used to tune. 13 yes/no signals plus the
+which_card choice (12 cards), all in ONE call per week. The whole set costs
+under one cent and runs in about ten seconds.
+
+| | Signals that separate cleanly | Cards right |
+|---|---|---|
+| First run | 11 / 13 | 41 / 47 |
+| After fixes (tuned set) | 13 / 13, every gap 77+ points | 50 / 50 |
+| **FRESH weeks, run once, untouched** | 13 / 13 | **17 / 18** |
+| FRESH, identical second run | | 16 / 18 |
+
+### What the failures taught, in order of importance
+
+1. **Most failures were MY data, not Jev.** The first weight summary averaged
+   three old and three new readings; on a noisy scale that leaves a residue, so
+   a flat person read as "falling 0.35% a week" and Jev correctly held. Then a
+   random seed produced a "jumpy" week that was not jumpy, and Jev was right
+   again, at 99%. Fixes: a least-squares slope, and every week now RESEEDS
+   until its realised numbers show what its label claims.
+2. **Jev is not a calculator.** Both coin-flips needed a percentage worked out
+   in its head (3054 of 2000). Every percentage, slope and count is now
+   computed in code and handed over as a named field, and each question points
+   at the field it should read. Arithmetic in code, judgment in Jev.
+3. **It is not deterministic near 50%.** The same input gave hold (48%) once
+   and lower-calories (51%) the next time. A 50% answer is a coin being
+   flipped, literally.
+4. **Confidence is honest, which makes (3) harmless.** Across all 68 weeks and
+   both runs, every wrong answer had confidence 49% or lower; right answers
+   averaged 78-89%. **A floor at about 55% catches every wrong answer seen so
+   far**, and withholds roughly 4 right ones in 68. Under the floor Drona does
+   not act: it asks (a talk card) or holds. That is the owner's "discuss before
+   changing" rule, now with a number behind it.
+5. **Dates are arithmetic too.** The one steady failure: a note saying
+   "travelling until 5 September" read on 20 September. Jev treated it as
+   current. Fix belongs in code: expired notes are dropped (or marked expired)
+   before the state is built. Not yet done, deliberately: fixing it now would
+   be tuning on the fresh set.
+
+### Rules for keeping this eval honest
+- The FRESH group is never used to tune wording. When a finding from it leads
+  to a change, write NEW fresh weeks for the next check.
+- Examples inside the questions use people and numbers that appear in no week.
+- A new question is not trusted until it shows a wide gap here.
+
 ### What this does to the design
 
 Jev is the PERCEPTION layer, not the policy layer:
