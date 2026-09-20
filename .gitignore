@@ -29,6 +29,10 @@ google-service-account.json
 *.p8
 AuthKey_*.p8
 
+# Migration tooling — secrets and any user-data exports (node_modules already ignored above)
+scripts/migration/.env.migration
+scripts/migration/*.export.json
+
 # OS / editor
 .DS_Store
 .vscode/

@@ -1,0 +1,12 @@
+{
+  "name": "overload-mongo-migration",
+  "private": true,
+  "type": "module",
+  "description": "One-off tooling to migrate workout history from the legacy circle-rate MongoDB into the Overload Supabase database.",
+  "scripts": {
+    "discover": "node discover.mjs"
+  },
+  "dependencies": {
+    "mongodb": "^6.12.0"
+  }
+}
