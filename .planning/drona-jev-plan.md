@@ -167,6 +167,35 @@ on every week, the clean ones included. A flat scale has no trend, so the
 question was ambiguous, not the model. Every Jev question is a tiny prompt and
 needs its own check against known weeks before it is trusted.
 
+### Probe 3 (owner's idea): give the card question its policy and worked examples
+
+Probe 1 asked "act / talk / request / hold" in the abstract and got mush. The
+owner's suggestion: say WHEN to pick each card, with examples. `instructions`
+became an ordered list of special cases to check first; each `criteria` entry
+carries a one-line example with different people and numbers from the test
+weeks, so the weeks stay held-out. `scripts/drona-jev/probe3.mts`.
+
+| Week | Chose | Confidence |
+|---|---|---|
+| clean-stall | propose_lower_calories | 45% (runner-up: steadier weigh-ins 41%) |
+| clean-stall-no-history | propose_lower_calories | 51% |
+| weekend-blowouts | talk_about_high_days | 94% |
+| raised-back-by-hand | talk_about_undone_change | 92% |
+| noisy-scale | request_steadier_weigh_ins | 85% |
+| protein-collapsed | propose_protein_fix | 98% |
+
+**6/6.** So the earlier conclusion was too strong: Jev decides well when the
+policy is written INTO the question. The policy does not disappear; it moves
+from code into plain English that anyone can read and edit, which is better.
+
+Two cautions before trusting it:
+- The least confident answers are the two where Drona would ACT (45%, 51%).
+  It hedges toward "steadier weigh-ins" because the clean scale still wobbles
+  0.25 kg. The jumpy-scale wording needs tightening, and an act card should
+  need a confidence floor; under it, ask instead.
+- Six weeks is a smoke test, not an eval. The real bar is 30-40 weeks that
+  include mixed cases (high days AND low protein) and near-misses.
+
 ### What this does to the design
 
 Jev is the PERCEPTION layer, not the policy layer:
