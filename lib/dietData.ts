@@ -1419,7 +1419,7 @@ export async function createSavedMeal(
     food_name: it.food_name,
     quantity: num(it.quantity) || 1,
     serving_unit: it.serving_label,
-    grams_logged: it.grams == null ? null : r1(num(it.grams)),
+    grams_logged: num(it.grams) > 0 ? r1(num(it.grams)) : null, // 0 = weightless (a quick add); the log CHECK wants null, not 0
     kcal: r0(num(it.kcal)), protein_g: r1(num(it.protein_g)), carb_g: r1(num(it.carb_g)), fat_g: r1(num(it.fat_g)),
     fiber_g: it.fiber_g == null ? null : r1(num(it.fiber_g)),
     position: i,
@@ -1499,7 +1499,7 @@ export async function logSavedMeal(
     rows = saved.items.map((it, i) => ({
       meal_id: mealId, food_id: it.food_id, food_name: it.food_name,
       quantity: r1(it.quantity * servings), serving_unit: it.serving_unit,
-      grams_logged: it.grams_logged == null ? null : r1(it.grams_logged * servings),
+      grams_logged: num(it.grams_logged) > 0 ? r1(num(it.grams_logged) * servings) : null,
       kcal: r0(it.kcal * servings), protein_g: r1(it.protein_g * servings), carb_g: r1(it.carb_g * servings), fat_g: r1(it.fat_g * servings),
       fiber_g: it.fiber_g == null ? null : r1(it.fiber_g * servings), sugar_g: null, sat_fat_g: null, sodium_mg: null,
       position: base + i, logged_via: 'manual',
@@ -1554,7 +1554,7 @@ export async function updateSavedMeal(
     food_name: it.food_name,
     quantity: num(it.quantity) || 1,
     serving_unit: it.serving_label,
-    grams_logged: it.grams == null ? null : r1(num(it.grams)),
+    grams_logged: num(it.grams) > 0 ? r1(num(it.grams)) : null, // 0 = weightless (a quick add); the log CHECK wants null, not 0
     kcal: r0(num(it.kcal)), protein_g: r1(num(it.protein_g)), carb_g: r1(num(it.carb_g)), fat_g: r1(num(it.fat_g)),
     fiber_g: it.fiber_g == null ? null : r1(num(it.fiber_g)),
     position: i,
@@ -1677,4 +1677,113 @@ export async function logFood(
     track('meal_logged', { method: 'search', item_count: 1, kcal: r0(n.kcal), meal_type: mealType });
   }
   return { error: error?.message };
+}
+
+// ── Quick add (calories you know, no catalog match) ──────────────────────────
+// The escape hatch every tracker needs: a restaurant plate, a homemade dish, a
+// label you are holding. The user types what they know — calories, and macros
+// only if they have them — and it lands in the diary like any other entry. The
+// row is a plain manual entry with NO food_id: nothing to re-derive from, so
+// the typed numbers are the numbers, forever.
+
+/** The title a quick add falls back to when the user names nothing. */
+export const QUICK_ADD_NAME = 'Quick add';
+
+/** Quick adds carry no weight, so the portion is one abstract serving. That keeps
+ *  the entry rescalable (quantity × the snapshot) without inventing grams. */
+export const QUICK_ADD_SERVING = 'serving';
+
+/** A title to prefill the quick-add form with (the search that came up empty),
+ *  handed over the same way as the meal target: /quick-add is a retained Tabs
+ *  screen, so a router param would still be there — and stale — next time.
+ *  Reading it consumes it. */
+let _quickAddSeed = '';
+export const setQuickAddSeed = (name: string) => { _quickAddSeed = name.trim().slice(0, 60); };
+export const takeQuickAddSeed = (): string => { const v = _quickAddSeed; _quickAddSeed = ''; return v; };
+
+export interface QuickAddDraft {
+  /** Blank falls back to QUICK_ADD_NAME. */
+  name: string;
+  kcal: number;
+  /** Optional — null means the user did not say. The diary's core macro columns
+   *  are NOT NULL, so a blank lands as 0; the distinction lives in the form,
+   *  where it decides whether the calorie cross-check has anything to compare. */
+  protein_g: number | null;
+  carb_g: number | null;
+  fat_g: number | null;
+}
+
+/** The title a draft will actually be logged under. */
+export function quickAddName(draft: { name: string }): string {
+  return draft.name.trim().slice(0, 80) || QUICK_ADD_NAME;
+}
+
+/** A quick-add draft as a one-line ParsedMealItem, so "save it as a meal" can go
+ *  through the same createSavedMeal path the builder and the parse card use.
+ *  `source: 'manual'` — the numbers are the user's own. */
+export function quickAddToItem(draft: QuickAddDraft, mealType: MealType): ParsedMealItem {
+  return {
+    food_id: null,
+    food_name: quickAddName(draft),
+    quantity: 1,
+    serving_label: QUICK_ADD_SERVING,
+    grams: 0, // no weight was given; the entry is a serving, not a portion of one
+    kcal: num(draft.kcal),
+    protein_g: num(draft.protein_g), carb_g: num(draft.carb_g), fat_g: num(draft.fat_g),
+    fiber_g: null,
+    source: 'manual', assumption: null, confidence: 'high',
+    meal_type: mealType,
+  };
+}
+
+/** Log a quick add to the day's meal of `mealType`: one manual entry, no
+ *  food_id, no grams — the typed numbers, stored as they were typed. Returns
+ *  { error } on failure, and cleans up a meal row it created for an insert that
+ *  then failed, so no empty section is left behind. */
+export async function logQuickAdd(
+  supabase: Supa,
+  args: { mealType: MealType; draft: QuickAddDraft; date?: Date },
+): Promise<{ error?: string }> {
+  const { mealType, draft } = args;
+  const kcal = num(draft.kcal);
+  if (!(kcal > 0)) return { error: 'Enter the calories first' };
+
+  const m = await findOrCreateMeal(supabase, mealType, args.date ?? getLogDate());
+  if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
+  const mealId = m.id;
+  const createdMeal = !!m.created;
+
+  const { count } = await supabase
+    .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', mealId);
+
+  // Core macros are NOT NULL on meal_entries (0069: kcal/protein/carb/fat are
+  // "always known" and the day-total trigger sums them), so a macro the user
+  // left blank is written as 0. The null in the draft is the UI's business —
+  // it drives the "macros add up to" hint — and stops at this boundary.
+  const macro = (v: number | null) => r1(Math.max(num(v), 0));
+  const { error } = await supabase.from('meal_entries').insert({
+    meal_id: mealId,
+    food_id: null,
+    food_name: quickAddName(draft),
+    quantity: 1,
+    serving_unit: QUICK_ADD_SERVING,
+    grams_logged: null,
+    kcal: r0(kcal),
+    protein_g: macro(draft.protein_g), carb_g: macro(draft.carb_g), fat_g: macro(draft.fat_g),
+    fiber_g: null, sugar_g: null, sat_fat_g: null, sodium_mg: null,
+    position: count ?? 0,
+    logged_via: 'manual',
+  });
+  if (error) {
+    if (createdMeal) await supabase.from('meals').delete().eq('id', mealId);
+    return { error: error.message };
+  }
+  track('meal_logged', {
+    method: 'quick_add',
+    item_count: 1,
+    kcal: r0(kcal),
+    meal_type: mealType,
+    has_macros: draft.protein_g != null || draft.carb_g != null || draft.fat_g != null,
+  });
+  return {};
 }
