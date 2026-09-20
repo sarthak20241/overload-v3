@@ -22,7 +22,7 @@ import { track } from '@/lib/analytics';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
-  searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal,
+  searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal, setQuickAddSeed,
   listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext,
   type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
@@ -138,6 +138,17 @@ export default function FoodSearchScreen() {
     Keyboard.dismiss();
     setLogMeal(meal);
     router.push({ pathname: '/meal-builder', params: { meal } });
+  }
+
+  // Nothing in the catalog, nothing to ask Drona about: the user already knows
+  // the calories. Carries the current query as the title so a search that came
+  // up empty is not typed twice.
+  function openQuickAdd(from: 'header' | 'no_match') {
+    Keyboard.dismiss();
+    track('quick_add_opened', { from, meal, query_length: query.trim().length });
+    setLogMeal(meal);
+    setQuickAddSeed(query.trim());
+    router.push({ pathname: '/quick-add', params: { meal } });
   }
 
   // Catalog had no match → hand the (possibly partial) query to Drona's fallback
@@ -425,6 +436,18 @@ export default function FoodSearchScreen() {
         />
       ) : (
         <>
+      {/* The catalog's escape hatch, above the list and always in reach: calories
+          you already know (a restaurant plate, a home dish) with no row to match. */}
+      <Pressable style={s.createRow} onPress={() => openQuickAdd('header')}>
+        <View style={[s.createIcon, { borderColor: C.primaryBorder, backgroundColor: C.primarySubtle }]}>
+          <Feather name="edit-3" size={15} color={C.accentText} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.createTxt}>Quick add calories</Text>
+          <Text style={s.createSub}>Know the calories? Log them without a match.</Text>
+        </View>
+      </Pressable>
+
       {showingRecents && (
         <View style={s.listHead}>
           <Text style={s.listHeadTxt}>Recent</Text>
@@ -468,6 +491,11 @@ export default function FoodSearchScreen() {
                   {aiError && <Text style={[s.askErr, { color: C.textMuted }]}>{aiError}</Text>}
                 </>
               )}
+              {!showingRecents && (
+                <Pressable onPress={() => openQuickAdd('no_match')} hitSlop={8} style={s.quickLink}>
+                  <Text style={s.quickLinkTxt}>Or quick add the calories yourself</Text>
+                </Pressable>
+              )}
             </View>
           )
         }
@@ -508,6 +536,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     createRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.xl, paddingVertical: 16 },
     createIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
     createTxt: { fontSize: FontSize.base, fontWeight: FontWeight.bold, color: C.accentText },
+    createSub: { fontSize: FontSize.sm, color: C.textMuted, marginTop: 2 },
+    quickLink: { marginTop: Spacing.md, paddingVertical: 6 },
+    quickLinkTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: C.accentText },
 
     listHead: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.lg, paddingBottom: Spacing.xs },
     listHeadTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: LetterSpacing.eyebrow, textTransform: 'uppercase', color: C.textDim },

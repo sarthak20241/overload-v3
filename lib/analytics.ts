@@ -168,6 +168,7 @@ export type AnalyticsEvent =
   | 'auto_log_toggled'
   | 'food_searched'
   | 'food_picked'
+  | 'quick_add_opened'
   | 'ask_drona_tapped'
   | 'ask_drona_result'
   | 'saved_meal_saved'

@@ -329,7 +329,7 @@ export default function AppLayout() {
   // input is reachable and the screen reads as its own destination.
   const hideWorkoutChrome =
     pathname === '/nutrition' || pathname === '/food-search' || pathname === '/food-detail'
-    || pathname === '/meal-builder';
+    || pathname === '/meal-builder' || pathname === '/quick-add';
 
   // Mirror health-hub data + recompute readiness on app-open / foreground.
   // No-op for guests and when no hub adapter exists. Called before the early
@@ -410,6 +410,8 @@ export default function AppLayout() {
         <Tabs.Screen name="food-search" options={{ href: null }} />
         <Tabs.Screen name="food-detail" options={{ href: null }} />
         <Tabs.Screen name="meal-builder" options={{ href: null }} />
+        {/* Quick add: calories the user already knows, no catalog row behind them. */}
+        <Tabs.Screen name="quick-add" options={{ href: null }} />
         {/*
           Plan screen — what your subscription is and what it has done for you.
           Hidden from the bottom nav; reached from the Profile plan card. The
