@@ -23,7 +23,14 @@
 // Runtime-agnostic like its siblings: deps injected, no Deno globals, so the
 // eval harness drives the production path rather than a copy of it.
 
-import { asChoice, askJev, type JevDeps, type JevResult } from "./jev.ts";
+import {
+  asChoice,
+  askJev,
+  type JevCriterion,
+  type JevDeps,
+  type JevQuestion,
+  type JevResult,
+} from "./jev.ts";
 
 /** The intents we route on TODAY.
  *
@@ -48,6 +55,10 @@ export interface FoodIntentDecision {
   confidence: number | null;
   /** Why we ended up here, for logs. Never shown to a user. */
   note: string;
+  /** The user's own saved food this message names, when Jev was sure enough.
+   *  Null when they have none saved, when nothing matched, or when the match was
+   *  not confident enough to outrank the pipeline. */
+  savedMatch: SavedMealMatch | null;
 }
 
 /**
@@ -173,7 +184,58 @@ export function shouldRouteFoodIntent(mode: FoodIntentMode, isCorrection: boolea
   return true;
 }
 
+/** One of the user's saved foods or meals, reduced to what a match needs. The
+ *  macros ride along because they are what the match is FOR: a hit means we log
+ *  the user's own numbers instead of re-estimating them. */
+export interface SavedMealSummary {
+  id: string;
+  name: string;
+  kcal: number;
+  protein_g?: number | null;
+  item_count?: number;
+}
+
+export interface SavedMealMatch {
+  id: string;
+  name: string;
+  confidence: number;
+}
+
+/** The option key meaning "none of their saved meals". TypeSafe's guidance is
+ *  explicit that a Choice needs a no-match outcome when nothing may fit, and
+ *  without one the model is forced to name a meal for "two eggs and toast". */
+export const NO_SAVED_MATCH = "__none__";
+
+/**
+ * The bar for letting a saved meal REPLACE what the pipeline would have worked
+ * out on its own.
+ *
+ * Higher than the intent floor on purpose, and the asymmetry is the point.
+ * Getting the intent wrong shows someone a card they dismiss. Getting this wrong
+ * logs the wrong food with the wrong numbers, silently, under a name they
+ * recognise. Wrong in a way that looks right is the worst kind, so this one has
+ * to be nearly sure.
+ *
+ * Unmeasured: unlike JEV_INTENT_FLOOR there is no probe behind this number yet,
+ * because it needs a real user's real saved meals to mean anything. It runs in
+ * shadow first for exactly that reason. Treat 0.8 as deliberately cautious
+ * rather than as calibrated.
+ */
+export const SAVED_MATCH_FLOOR = 0.8;
+
+/** Cap on how many saved meals go into one question. The API allows 255 options
+ *  and the jaggedness page warns accuracy falls as the state fills with
+ *  irrelevant detail, so this is about the second limit, not the first. Newest
+ *  first, which is the order listSavedMeals already returns. */
+const MAX_SAVED_OPTIONS = 60;
+
 export interface FoodIntentDeps {
+  /** The user's saved foods and meals. When non-empty, the SAME Jev call that
+   *  routes the intent also asks which of these the message names, because
+   *  questions are evaluated in parallel against one state and the state is only
+   *  charged once. A second call would pay for the message twice to learn two
+   *  things about it. */
+  savedMeals?: SavedMealSummary[];
   /** Present when a TYPESAFE_API_KEY is configured. Absent means step 1 of the
    *  ladder simply does not exist, which is a supported state, not an error. */
   jev?: JevDeps;
@@ -185,6 +247,53 @@ export interface FoodIntentDeps {
    */
   classify?(text: string): Promise<FoodIntent | null>;
   log?: (msg: string) => void;
+}
+
+/** Build the saved-meal Choice, plus the map from option key back to row id.
+ *
+ *  Keyed by NAME rather than id because the key is what the model matches on:
+ *  "m7" carries no meaning, and a rubric that has to explain which id is which
+ *  is a hop of indirection the jaggedness page says costs accuracy. Duplicate
+ *  names get a suffix so the map stays one-to-one. */
+function savedMealQuestion(
+  saved: SavedMealSummary[],
+): { question: JevQuestion; byKey: Map<string, SavedMealSummary> } | null {
+  if (saved.length === 0) return null;
+
+  const byKey = new Map<string, SavedMealSummary>();
+  const criteria: Record<string, JevCriterion> = {
+    [NO_SAVED_MATCH]: {
+      what: "The message does not name any of the saved foods below.",
+      note: "This is the normal answer. Most messages are ordinary food, not one of their saved entries.",
+    },
+  };
+
+  for (const m of saved.slice(0, MAX_SAVED_OPTIONS)) {
+    const base = m.name.trim().slice(0, 60) || "Saved meal";
+    let key = base;
+    for (let n = 2; byKey.has(key); n++) key = `${base} (${n})`;
+    byKey.set(key, m);
+    criteria[key] = {
+      what: `The user's own saved entry "${m.name}", ${Math.round(m.kcal)} kcal` +
+        (m.item_count && m.item_count > 1 ? `, ${m.item_count} items` : ""),
+      matches_when: "The message names this food or meal, by this name or an obvious short form of it.",
+    };
+  }
+
+  return {
+    question: {
+      type: "choice",
+      instructions: {
+        question: "Which of the user's saved foods does this message name, if any?",
+        focus:
+          "Match on the FOOD being named, not on whether they want it saved or logged. " +
+          "Only pick a saved entry when the message is clearly about that same food. " +
+          "A food that merely resembles a saved one is not a match: prefer __none__ whenever there is real doubt.",
+      },
+      criteria,
+    },
+    byKey,
+  };
 }
 
 /** Longest message we will send. The jaggedness page is explicit that accuracy
@@ -215,22 +324,26 @@ export async function routeFoodIntent(
   // Nothing to judge. Not worth a call in either direction, and 'log' is where
   // an empty string already went.
   if (!trimmed) {
-    return { intent: "log", source: "default", confidence: null, note: "empty text" };
+    return { intent: "log", source: "default", confidence: null, note: "empty text", savedMatch: null };
   }
 
   const state = trimForState(trimmed);
+  let savedMatch: SavedMealMatch | null = null;
 
   // ── Step 1: Jev ───────────────────────────────────────────────────────────
   if (deps.jev?.apiKey) {
+    // BOTH questions in one call. They are independent and evaluated in
+    // parallel against the same state, which is charged once, so the saved-meal
+    // match is very nearly free on top of the routing we already wanted.
+    const savedQ = savedMealQuestion(deps.savedMeals ?? []);
+    const questions: Record<string, JevQuestion> = {
+      intent: { type: "choice", instructions: INTENT_INSTRUCTIONS, criteria: INTENT_CRITERIA },
+    };
+    if (savedQ) questions.saved = savedQ.question;
+
     let res: JevResult;
     try {
-      res = await askJev(
-        { message: state },
-        {
-          intent: { type: "choice", instructions: INTENT_INSTRUCTIONS, criteria: INTENT_CRITERIA },
-        },
-        deps.jev,
-      );
+      res = await askJev({ message: state }, questions, deps.jev);
     } catch (e) {
       // askJev is documented never to throw; this catch exists so a future
       // change to it can never take a meal log down with it.
@@ -238,6 +351,23 @@ export async function routeFoodIntent(
     }
 
     if (res.ok) {
+      // Read the saved match first: it is useful whatever the intent turns out
+      // to be, and it survives the intent falling through to the model step.
+      if (savedQ) {
+        const sc = asChoice(res.response.answers.saved);
+        if (sc && sc.choice !== NO_SAVED_MATCH) {
+          const row = savedQ.byKey.get(sc.choice);
+          if (row && sc.confidence >= SAVED_MATCH_FLOOR) {
+            savedMatch = { id: row.id, name: row.name, confidence: sc.confidence };
+            deps.log?.(`[food_intent] saved="${row.name}" conf=${sc.confidence.toFixed(2)}`);
+          } else if (row) {
+            deps.log?.(
+              `[food_intent] saved "${row.name}" @ ${sc.confidence.toFixed(2)} below ${SAVED_MATCH_FLOOR}, ignored`,
+            );
+          }
+        }
+      }
+
       const choice = asChoice(res.response.answers.intent);
       if (choice && isIntent(choice.choice)) {
         if (choice.confidence >= JEV_INTENT_FLOOR) {
@@ -249,6 +379,7 @@ export async function routeFoodIntent(
             source: "jev",
             confidence: choice.confidence,
             note: `jev ${res.response.model}`,
+            savedMatch,
           };
         }
         deps.log?.(
@@ -268,7 +399,7 @@ export async function routeFoodIntent(
       const guess = await deps.classify(state);
       if (isIntent(guess)) {
         deps.log?.(`[food_intent] model=${guess}`);
-        return { intent: guess, source: "model", confidence: null, note: "model fallback" };
+        return { intent: guess, source: "model", confidence: null, note: "model fallback", savedMatch };
       }
     } catch (e) {
       deps.log?.(`[food_intent] model classify threw: ${String(e).slice(0, 120)}`);
@@ -280,5 +411,5 @@ export async function routeFoodIntent(
   // a card they dismiss; getting it wrong in the log direction loses the meal
   // they sat down to record.
   deps.log?.("[food_intent] defaulted to log");
-  return { intent: "log", source: "default", confidence: null, note: "no router available" };
+  return { intent: "log", source: "default", confidence: null, note: "no router available", savedMatch };
 }

@@ -22,6 +22,8 @@ import {
   JEV_INTENT_FLOOR,
   parseFoodIntentMode,
   routeFoodIntent,
+  SAVED_MATCH_FLOOR,
+  type SavedMealSummary,
   shouldRouteFoodIntent,
 } from "./foodIntent.ts";
 import { searchFatSecret } from "./fatsecret.ts";
@@ -190,8 +192,41 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
   return intent === "log" || intent === "create" ? intent : null;
 }
 
-function makeFoodIntentDeps(abortSignal?: AbortSignal): FoodIntentDeps {
+/** The user's saved foods and meals, for the match question. Headers only: the
+ *  question is "which of these is this", and the ingredient rows of every meal
+ *  would be state that changes no answer while making every other answer worse
+ *  (the jaggedness page is explicit that accuracy falls as the state fills with
+ *  irrelevant detail).
+ *
+ *  Never throws. A user with no saved meals, a slow query, a missing table: all
+ *  of them mean the same thing here, which is that the match question is not
+ *  asked. Nothing about it may cost someone their meal log. */
+async function fetchSavedMealSummaries(userClient: SupabaseClient): Promise<SavedMealSummary[]> {
+  try {
+    const { data, error } = await userClient
+      .from("saved_meals")
+      .select("id, name, kcal, protein_g, saved_meal_items(count)")
+      .order("created_at", { ascending: false })
+      .limit(60);
+    if (error || !data) return [];
+    return (data as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id),
+      name: String(r.name ?? ""),
+      kcal: Number(r.kcal ?? 0),
+      protein_g: r.protein_g === null || r.protein_g === undefined ? null : Number(r.protein_g),
+      item_count: (r.saved_meal_items as { count: number }[] | undefined)?.[0]?.count ?? 0,
+    })).filter((m) => m.name.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function makeFoodIntentDeps(
+  savedMeals: SavedMealSummary[],
+  abortSignal?: AbortSignal,
+): FoodIntentDeps {
   return {
+    savedMeals,
     jev: JEV_API_KEY
       ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m) }
       : undefined,
@@ -217,12 +252,17 @@ function makeFoodIntentDeps(abortSignal?: AbortSignal): FoodIntentDeps {
  *     as either would be wrong.
  */
 function startFoodIntent(
+  userClient: SupabaseClient,
   text: string,
   isCorrection: boolean,
   abortSignal?: AbortSignal,
 ): Promise<FoodIntentDecision | null> {
   if (!shouldRouteFoodIntent(FOOD_INTENT_MODE, isCorrection)) return Promise.resolve(null);
-  return routeFoodIntent(text, makeFoodIntentDeps(abortSignal))
+  // The saved-meal read rides inside the same concurrent work, so it overlaps
+  // the parse like everything else here and adds nothing to the path a user
+  // waits on.
+  return fetchSavedMealSummaries(userClient)
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(saved, abortSignal)))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -245,6 +285,10 @@ function foodIntentStep(d: FoodIntentDecision | null): ParseStep[] {
       source: d.source,
       confidence: d.confidence,
       note: d.note,
+      saved_match: d.savedMatch
+        ? { id: d.savedMatch.id, name: d.savedMatch.name, confidence: d.savedMatch.confidence }
+        : null,
+      saved_floor: SAVED_MATCH_FLOOR,
       mode: FOOD_INTENT_MODE,
       // Recorded per row rather than assumed from the constant, so a trace read
       // months from now still says what bar it was judged against.
@@ -2379,7 +2423,7 @@ async function handleParseMealRequest(args: {
         // the client leaving aborts the parse (see parseAbortFor above).
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
-        const intentP = startFoodIntent(text, previousItems.length > 0, abort.signal);
+        const intentP = startFoodIntent(userClient, text, previousItems.length > 0, abort.signal);
         const work = (async () => {
           try {
             const result = await runParseMeal(
@@ -2532,7 +2576,7 @@ async function handleParseMealRequest(args: {
   // waits for neither. Declared OUTSIDE the try because the catch traces it too:
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
-  const intentP = startFoodIntent(text, previousItems.length > 0);
+  const intentP = startFoodIntent(userClient, text, previousItems.length > 0);
 
   try {
     // Just log it on the JSON path: the parse AND the diary write stay alive

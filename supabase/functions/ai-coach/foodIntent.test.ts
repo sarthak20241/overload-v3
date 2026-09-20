@@ -14,6 +14,9 @@ import {
   JEV_INTENT_FLOOR,
   parseFoodIntentMode,
   routeFoodIntent,
+  NO_SAVED_MATCH,
+  SAVED_MATCH_FLOOR,
+  type SavedMealSummary,
   shouldRouteFoodIntent,
 } from "./foodIntent.ts";
 import { JEV_ENDPOINT, type JevDeps } from "./jev.ts";
@@ -306,4 +309,151 @@ Deno.test("an unrecognised mode falls to shadow, never to on", () => {
   assertEquals(parseFoodIntentMode("enabled"), "shadow");
   assertEquals(parseFoodIntentMode("true"), "shadow");
   assertEquals(parseFoodIntentMode("1"), "shadow");
+});
+
+// ── The saved-meal match ────────────────────────────────────────────────────
+// Getting this wrong is worse than getting the intent wrong: a bad intent shows
+// a card you dismiss, a bad match logs the wrong food under a name you trust.
+// So these are mostly about REFUSING a match, not making one.
+
+/** A Jev response carrying both answers. */
+function bothFetch(
+  intent: string, intentConf: number,
+  saved: string, savedConf: number,
+  captured?: { body?: string },
+): typeof fetch {
+  return (async (_url: string | URL | Request, init?: RequestInit) => {
+    if (captured) captured.body = String(init?.body ?? "");
+    return new Response(
+      JSON.stringify({
+        model: "jev-1.13.0",
+        answers: {
+          intent: {
+            type: "choice", choice: intent, confidence: intentConf,
+            probabilities: { log: 0.5, create: 0.5 },
+          },
+          saved: {
+            type: "choice", choice: saved, confidence: savedConf,
+            probabilities: { [saved]: savedConf },
+          },
+        },
+        usage: { input_tokens: 90, output_tokens: 12 },
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+}
+
+const SAVED: SavedMealSummary[] = [
+  { id: "id-dosa", name: "Dosa", kcal: 600, item_count: 1 },
+  { id: "id-bowl", name: "Breakfast bowl", kcal: 520, item_count: 3 },
+];
+
+Deno.test("a confident saved match comes back with its row id", async () => {
+  const d = await routeFoodIntent("had my breakfast bowl", {
+    jev: jevDeps(bothFetch("log", 0.99, "Breakfast bowl", 0.95)),
+    savedMeals: SAVED,
+  });
+  assertEquals(d.savedMatch?.id, "id-bowl");
+  assertEquals(d.savedMatch?.name, "Breakfast bowl");
+  assertEquals(d.intent, "log");
+});
+
+Deno.test("a match below the floor is ignored, not downgraded", async () => {
+  // Wrong here means logging the wrong food under a name the user recognises,
+  // so an unsure match is worth nothing and must not leak through.
+  const d = await routeFoodIntent("some kind of bowl", {
+    jev: jevDeps(bothFetch("log", 0.99, "Breakfast bowl", SAVED_MATCH_FLOOR - 0.01)),
+    savedMeals: SAVED,
+  });
+  assertEquals(d.savedMatch, null);
+  assertEquals(d.intent, "log");
+});
+
+Deno.test("the no-match option never becomes a match", async () => {
+  const d = await routeFoodIntent("two eggs and toast", {
+    jev: jevDeps(bothFetch("log", 0.99, NO_SAVED_MATCH, 1.0)),
+    savedMeals: SAVED,
+  });
+  assertEquals(d.savedMatch, null);
+});
+
+Deno.test("an option name Jev invented is refused", async () => {
+  // Typed output guarantees the shape, not that the value is one we offered.
+  const d = await routeFoodIntent("had a thing", {
+    jev: jevDeps(bothFetch("log", 0.99, "Dinner bowl", 0.99)),
+    savedMeals: SAVED,
+  });
+  assertEquals(d.savedMatch, null);
+});
+
+Deno.test("no saved meals means the question is never asked", async () => {
+  const cap: { body?: string } = {};
+  const d = await routeFoodIntent("two eggs", {
+    jev: jevDeps(bothFetch("log", 0.99, NO_SAVED_MATCH, 1, cap)),
+    savedMeals: [],
+  });
+  assertEquals(d.savedMatch, null);
+  const sent = JSON.parse(cap.body ?? "{}");
+  assertEquals(Object.keys(sent.questions), ["intent"]);
+});
+
+Deno.test("with saved meals, both questions ride ONE call", async () => {
+  // The whole reason this is cheap: questions run in parallel against one state
+  // and the state is charged once. Two calls would pay for the message twice.
+  const cap: { body?: string } = {};
+  await routeFoodIntent("had my dosa", {
+    jev: jevDeps(bothFetch("log", 0.99, "Dosa", 0.99, cap)),
+    savedMeals: SAVED,
+  });
+  const sent = JSON.parse(cap.body ?? "{}");
+  assertEquals(Object.keys(sent.questions).sort(), ["intent", "saved"]);
+  // The no-match option must always be offered, or the model is forced to name
+  // a saved meal for food that is not one.
+  assertEquals(NO_SAVED_MATCH in sent.questions.saved.criteria, true);
+});
+
+Deno.test("duplicate saved names stay one-to-one", async () => {
+  const cap: { body?: string } = {};
+  const dupes: SavedMealSummary[] = [
+    { id: "a", name: "Bowl", kcal: 300 },
+    { id: "b", name: "Bowl", kcal: 700 },
+  ];
+  const d = await routeFoodIntent("bowl", {
+    jev: jevDeps(bothFetch("log", 0.99, "Bowl (2)", 0.99, cap)),
+    savedMeals: dupes,
+  });
+  // The second "Bowl" is addressable, and resolves to the SECOND row.
+  assertEquals(d.savedMatch?.id, "b");
+  const sent = JSON.parse(cap.body ?? "{}");
+  assertEquals("Bowl (2)" in sent.questions.saved.criteria, true);
+});
+
+Deno.test("the saved match survives the intent falling to the model", async () => {
+  // Jev was sure which food it was but not what to do with it. The food answer
+  // is still worth keeping.
+  const d = await routeFoodIntent("my dosa, save it maybe", {
+    jev: jevDeps(bothFetch("create", 0.2, "Dosa", 0.97)),
+    savedMeals: SAVED,
+    classify: async () => "log",
+  });
+  assertEquals(d.source, "model");
+  assertEquals(d.savedMatch?.id, "id-dosa");
+});
+
+Deno.test("the match floor is stricter than the intent floor", () => {
+  // Deliberate asymmetry. A wrong intent shows a card you dismiss; a wrong match
+  // logs the wrong numbers under a name you recognise, which looks right.
+  assertEquals(SAVED_MATCH_FLOOR > JEV_INTENT_FLOOR, true);
+});
+
+Deno.test("Jev being down loses the match but never the log", async () => {
+  const attempts = { n: 0 };
+  const d = await routeFoodIntent("had my dosa", {
+    jev: jevDeps(failingFetch(529, attempts)),
+    savedMeals: SAVED,
+    classify: async () => "log",
+  });
+  assertEquals(d.savedMatch, null);
+  assertEquals(d.intent, "log");
 });
