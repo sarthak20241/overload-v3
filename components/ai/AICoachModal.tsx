@@ -27,6 +27,14 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
 import { structuredToProgram, saveProgram, applyPhaseTargets, clampDiet, type GeneratedProgram } from '@/lib/programData';
+import {
+  applyCoachFoodCreate,
+  createActionLabel,
+  parseCoachFoodCreate,
+  type CoachFoodCreate,
+  type CoachFoodCreateResult,
+} from '@/lib/coachFoodCreate';
+import { getLogMeal } from '@/lib/dietData';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate, isCoachContentAllowed } from './CoachAccessGate';
@@ -862,6 +870,109 @@ function MenuScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
 }
 
 // ─── Live-workout edit card ──────────────────────────────────────────────────
+// The confirm step for create_custom_food / create_custom_meal. Drona proposes
+// a food; nothing reaches My Meals or the diary until this is tapped. Same rule
+// as the workout edit card, for the same reason: a coach that saved things on
+// its own would be a coach you had to check up on.
+//
+// The card's job beyond confirming is HONESTY about where the numbers came
+// from. Anything Drona filled in is marked, because an unmarked guess reads to
+// the user as a number they gave it.
+function FoodCreateCard({
+  create,
+  result,
+  busy,
+  onApply,
+}: {
+  create: CoachFoodCreate;
+  result: CoachFoodCreateResult | null;
+  busy: boolean;
+  onApply: () => void;
+}) {
+  const { C } = useTheme();
+  const done = !!result && !result.error;
+  const partial = !!result?.error && !!result.savedMealId;
+  const fallbackMeal = getLogMeal();
+
+  const title = result
+    ? (partial ? 'Saved, not logged' : result.error ? 'Not saved' : (result.logged ? 'Saved and logged' : 'Saved to My Meals'))
+    : (create.kind === 'meal' ? 'Save this meal' : 'Save this food');
+
+  return (
+    <Animated.View
+      entering={FadeInDown.duration(240)}
+      style={[s.editCard, { backgroundColor: C.card, borderColor: C.primaryBorder }]}
+    >
+      <View style={s.editCardHead}>
+        <SparkleIcon size={13} color={C.accentText} />
+        <Text style={[s.editCardTitle, { color: C.accentText }]}>{title}</Text>
+      </View>
+
+      {!!create.summary && (
+        <Text style={[s.editCardSummary, { color: C.foreground }]}>{create.summary}</Text>
+      )}
+
+      <View style={s.foodCreateHeader}>
+        <Text style={[s.foodCreateName, { color: C.foreground }]} numberOfLines={2}>{create.name}</Text>
+        <Text style={[s.foodCreateTotal, { color: C.textMuted }]}>
+          {create.totals.kcal} cal
+          {create.totals.proteinG > 0 ? `  ${create.totals.proteinG}g P` : ''}
+          {create.totals.carbG > 0 ? `  ${create.totals.carbG}g C` : ''}
+          {create.totals.fatG > 0 ? `  ${create.totals.fatG}g F` : ''}
+        </Text>
+      </View>
+
+      {/* Ingredients, for a meal. A single food is already fully described by
+          the header above, so repeating it as a one-row list is noise. */}
+      {create.kind === 'meal' && (
+        <View style={s.editOpList}>
+          {create.lines.map((l, i) => (
+            <View key={i} style={s.foodCreateRow}>
+              <Text style={[s.foodCreateItem, { color: C.foreground }]} numberOfLines={1}>
+                {l.quantity !== 1 ? `${l.quantity} ` : ''}{l.name}
+                {l.grams ? ` (${l.grams}g)` : ''}
+              </Text>
+              <Text style={[s.foodCreateKcal, { color: l.estimated ? C.textDim : C.textMuted }]}>
+                {l.kcal} cal{l.estimated ? ' ~' : ''}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Say which numbers are Drona's. The tilde in the rows above is the
+          quiet version; this is the sentence that explains it. */}
+      {(create.estimated.length > 0 || create.lines.some((l) => l.estimated)) && (
+        <Text style={[s.foodCreateNote, { color: C.textDim }]}>
+          {create.kind === 'meal'
+            ? 'The lines marked ~ are my estimate. Tap the meal in My Meals to fix them.'
+            : `I estimated the ${create.estimated.map((f) => f === 'kcal' ? 'calories' : f.replace('_g', '')).join(', ')}. Change it in My Meals if I am off.`}
+        </Text>
+      )}
+
+      {result?.error && (
+        <Text style={[s.foodCreateNote, { color: C.textMuted }]}>{result.error}</Text>
+      )}
+
+      {!done && !partial && (
+        <TouchableOpacity
+          onPress={onApply}
+          disabled={busy}
+          style={[s.editApplyBtn, { backgroundColor: Colors.primary, opacity: busy ? 0.6 : 1 }]}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={createActionLabel(create, fallbackMeal)}
+        >
+          {busy
+            ? <ActivityIndicator size="small" color={Colors.primaryFg} />
+            : <Feather name="bookmark" size={14} color={Colors.primaryFg} />}
+          <Text style={s.editApplyText}>{createActionLabel(create, fallbackMeal)}</Text>
+        </TouchableOpacity>
+      )}
+    </Animated.View>
+  );
+}
+
 // The confirm step for edit_active_workout. The coach proposes; nothing on the
 // workout screen moves until this is tapped. That's deliberate: the failure
 // this whole path fixes was a coach that claimed changes it never made, and a
@@ -996,6 +1107,12 @@ function ChatScreen({
   const [edits, setEdits] = useState<
     { messageId: string; edit: CoachWorkoutEdit; result: CoachEditApplyResult | null }[]
   >([]);
+  // Foods and meals Drona offered to save. Same shape as `edits` and for the
+  // same reason: the card is attached to the message that proposed it, so a
+  // conversation with two proposals keeps them straight.
+  const [creates, setCreates] = useState<
+    { messageId: string; create: CoachFoodCreate; result: CoachFoodCreateResult | null; busy: boolean }[]
+  >([]);
   // Both kinds, not just 'live': the review chat opens from the finish sheet
   // with the session still unsaved and still editable, so a coach without the
   // tool there could promise a change it can't make. Same hole, other door.
@@ -1010,6 +1127,7 @@ function ChatScreen({
     if (!workoutContext) return;
     setMessages([{ id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
     setEdits([]);
+    setCreates([]);
     setInput('');
   }, [workoutContext]);
   const [input, setInput] = useState('');
@@ -1207,6 +1325,25 @@ function ChatScreen({
           handledEdit = true;
           track('coach_workout_edit_proposed', { ops_count: edit.operations.length });
           setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+          return;
+        }
+        // Drona built a food or meal out of what the user said. Attach a
+        // confirm card; nothing reaches My Meals or the diary until it is
+        // tapped. Available in every chat, including the one opened mid-set:
+        // a shake between sets is still food.
+        if (name === 'create_custom_food' || name === 'create_custom_meal') {
+          const create = parseCoachFoodCreate(name, input);
+          // A proposal we cannot act on (no calories, no items) stays as plain
+          // text rather than becoming a card with a dead button.
+          if (!create) return;
+          track('drona_food_create_proposed', {
+            kind: create.kind,
+            item_count: create.lines.length,
+            kcal: create.totals.kcal,
+            log_now: create.logNow,
+            estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
+          });
+          setCreates(prev => [...prev, { messageId: assistantId, create, result: null, busy: false }]);
           return;
         }
         // P4: the coach proposed a nutrition-target change. Surface it as an
@@ -1450,6 +1587,32 @@ function ChatScreen({
     setEdits((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, result } : e)));
   }, [edits, onApplyWorkoutEdit]);
 
+  // Save (and maybe log) one proposed food. Guarded against a double tap the
+  // same way the workout edit is: a second tap would create a second row in My
+  // Meals, which is a duplicate the user then has to find and delete.
+  const creatingRef = useRef<Set<string>>(new Set());
+  const handleApplyCreate = useCallback(async (messageId: string) => {
+    const entry = creates.find((e) => e.messageId === messageId);
+    if (!entry || entry.result || !supabase) return;
+    if (creatingRef.current.has(messageId)) return;
+    creatingRef.current.add(messageId);
+    setCreates((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, busy: true } : e)));
+    const result = await applyCoachFoodCreate(supabase, entry.create, getLogMeal());
+    if (result.error && !result.savedMealId) {
+      // Nothing was written, so let them try again rather than stranding the
+      // card on a transient network failure.
+      creatingRef.current.delete(messageId);
+    }
+    track('drona_food_create_applied', {
+      kind: entry.create.kind,
+      logged: result.logged,
+      ok: !result.error,
+    });
+    setCreates((prev) =>
+      prev.map((e) => (e.messageId === messageId ? { ...e, result, busy: false } : e))
+    );
+  }, [creates, supabase]);
+
   // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
   // parent shrinks the sheet and lifts it via marginBottom (both platforms)
   // so the input naturally sits above the keyboard. No KeyboardAvoidingView
@@ -1579,6 +1742,15 @@ function ChatScreen({
                   onApply={() => handleApplyEdit(msg.id)}
                 />
               )}
+              {creates.filter((c) => c.messageId === msg.id).map((c, i) => (
+                <FoodCreateCard
+                  key={i}
+                  create={c.create}
+                  result={c.result}
+                  busy={c.busy}
+                  onApply={() => void handleApplyCreate(msg.id)}
+                />
+              ))}
             </View>
           );
         })}
@@ -4620,6 +4792,32 @@ const s = StyleSheet.create({
     fontSize: FontSize.xs,
     lineHeight: 17,
   },
+  foodCreateHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+    marginTop: 2,
+  },
+  foodCreateName: {
+    flex: 1,
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+  },
+  foodCreateTotal: {
+    fontSize: FontSize.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  foodCreateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+  },
+  foodCreateItem: { flex: 1, fontSize: FontSize.sm },
+  foodCreateKcal: { fontSize: FontSize.sm, fontVariant: ['tabular-nums'] },
+  foodCreateNote: { fontSize: FontSize.xs, lineHeight: 16, marginTop: 2 },
+
   editApplyBtn: {
     flexDirection: 'row',
     alignItems: 'center',

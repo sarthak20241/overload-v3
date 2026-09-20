@@ -1473,8 +1473,10 @@ export async function logSavedMeal(
   servings = 1,
   date: Date = getLogDate(),
   /** Which surface logged it. The builder can log a meal that was never saved,
-   *  which is a different behaviour from re-logging a saved one. */
-  source: 'search_tab' | 'saved_sheet' | 'builder' = 'search_tab',
+   *  which is a different behaviour from re-logging a saved one. 'drona_create'
+   *  is a meal Drona built from what the user said and logged in the same tap,
+   *  so it is both a create and a log and deserves to be tellable from either. */
+  source: 'search_tab' | 'saved_sheet' | 'builder' | 'drona_create' = 'search_tab',
 ): Promise<{ error?: string }> {
   const m = await findOrCreateMeal(supabase, mealType, date);
   if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };

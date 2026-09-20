@@ -169,6 +169,11 @@ export type AnalyticsEvent =
   | 'food_searched'
   | 'food_picked'
   | 'quick_add_opened'
+  // Drona built a food or meal out of what the user said. Two events, not one:
+  // the gap between them is how many proposals get dismissed, which is the only
+  // read we have on whether the cards are worth showing.
+  | 'drona_food_create_proposed'
+  | 'drona_food_create_applied'
   | 'ask_drona_tapped'
   | 'ask_drona_result'
   | 'saved_meal_saved'
