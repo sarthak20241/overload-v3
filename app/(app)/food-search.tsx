@@ -23,7 +23,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal, setQuickAddSeed,
-  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext,
+  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext, setBuilderMeal,
   type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
@@ -142,6 +142,7 @@ export default function FoodSearchScreen() {
   function openBuilder() {
     Keyboard.dismiss();
     setLogMeal(meal);
+    setBuilderMeal(null); // blank form — the builder reads this on focus, not params
     router.push({ pathname: '/meal-builder', params: { meal } });
   }
 
@@ -274,7 +275,8 @@ export default function FoodSearchScreen() {
   function openEditMeal(m: SavedMeal) {
     Keyboard.dismiss();
     setLogMeal(meal); // the builder's "Log" writes to this section
-    router.push({ pathname: '/meal-builder', params: { saved: encodeURIComponent(JSON.stringify(m)), meal } });
+    setBuilderMeal(m); // edit mode — via the store, because builder params go stale
+    router.push({ pathname: '/meal-builder', params: { meal } });
   }
 
   const savedFiltered = savedMeals.filter((m) => {
