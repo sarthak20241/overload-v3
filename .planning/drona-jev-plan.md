@@ -133,6 +133,58 @@ The real risks:
 - **Trusting a probability too early.** Mitigation: Phase 2 exists precisely so
   we see a week of disagreements before Jev gets the wheel.
 
+## Phase 0 results (2026-09-20, live API, `scripts/drona-jev/probe.mts` + `probe2.mts`)
+
+Run on the six B1 eval weeks. jev-1.13.0, about 1,670 input tokens a call
+(roughly $0.00007), 360-430 ms warm and 1.2-1.4 s on a cold first call.
+
+**The docs were wrong in one place already:** a `choice` needs `criteria` (a map
+of option -> meaning). The launch blog's `options: [...]` returns 422.
+
+**Jev SEES sharply.** One yes/no per signal, scored against the raw fortnight:
+
+| Signal | On the week that has it | On the other five |
+|---|---|---|
+| a far-over-target day | 98% | 9-13% |
+| protein adequate | 4% (collapsed week) | 97-98% |
+| the user undid a cut by hand | 96% | 3-4% |
+| weight is flat | 53% (jumpy scale) | 83-86% |
+
+**Jev does NOT decide well.** Asked "what should the coach do" it was right
+where one signal dominates (protein 93%, high days 81%) and wrong where signals
+must be combined: it saw the undone cut at 96% and still voted to cut again
+(58%). Asked "which kind of card" it returned 10-20% confidence on everything.
+Handing it its own findings first (probe 2) barely moved it: "lowering is sound"
+came out 53-65% on the clean weeks and 46-47% on two weeks where it is wrong,
+and "ask first" sat at 73-80% for all six. No separation, no use.
+
+Why: questions are scored independently against the state. There is no step
+where one answer informs another, so a judgment that needs three signals
+weighed together is outside what it does.
+
+**One wording lesson:** "a real trend can be read from the weigh-ins" scored 19%
+on every week, the clean ones included. A flat scale has no trend, so the
+question was ambiguous, not the model. Every Jev question is a tiny prompt and
+needs its own check against known weeks before it is trusted.
+
+### What this does to the design
+
+Jev is the PERCEPTION layer, not the policy layer:
+
+```
+  facts -> Jev: "can we see X here?" for ~25 signals, one call     perception (replaces guessed thresholds)
+        -> a POLICY TABLE in code: each card lists the signals it
+           needs and the signals that veto it                      policy (readable, tested, no nesting)
+        -> thin margins or an INTENT veto  -> talk card            routing
+        -> LLM: sizes the number, writes the sentence              judgment + words
+        -> validator                                               veto
+```
+
+The if/else we disliked was never the policy. It was the perception: 135% of
+target, 1.2 kg of range, 9 days of 14. Those go. The policy stays a table a
+person can read, because "who decided to change my plan, and why" must have an
+answer that is not "a probability said so".
+
 ## What is needed to start
 
 The API key, in two places, added by the owner (I do not handle keys):
