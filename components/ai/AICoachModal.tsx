@@ -1683,7 +1683,9 @@ function ChatScreen({
           // The coach is told to precede the tool call with a short line, but
           // it may emit the tool alone. Then the card IS the message: an empty
           // bubble would otherwise sit above it stuck on "Thinking".
-          const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === '' && !!edit;
+          const create = creates.find((c) => c.messageId === msg.id);
+          const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === ''
+            && (!!edit || !!create);
           // No copy icon under a reply still being written: it would copy half
           // a sentence. It appears the moment the turn finishes.
           // While a turn runs, its assistant bubble is always the last message.
