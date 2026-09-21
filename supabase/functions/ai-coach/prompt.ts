@@ -674,7 +674,7 @@ export const CREATE_CUSTOM_FOOD_TOOL: AnthropicTool = {
       },
       summary: {
         type: 'string',
-        description: 'One short line in your coach voice for the card: "Chicken roll at 450, saved so next time is one tap." Say plainly if you estimated anything. No em dashes.',
+        description: 'One short line in your coach voice for the card, written as an OFFER because the user has not tapped yet: "Chicken roll at 450. Keep it and next time is one tap." Never write that it is saved or logged, since nothing is until they tap. Say plainly if you estimated anything. No em dashes.',
       },
     },
     required: ['name', 'kcal', 'log_now', 'summary'],
@@ -722,7 +722,7 @@ export const CREATE_CUSTOM_MEAL_TOOL: AnthropicTool = {
       },
       summary: {
         type: 'string',
-        description: 'One short line in your coach voice for the card: "Breakfast bowl, 3 items, 520 cal. Saved to My Meals." Say plainly if you estimated anything. No em dashes.',
+        description: 'One short line in your coach voice for the card, written as an OFFER because the user has not tapped yet: "Breakfast bowl, 3 items, 520 cal. Want it in My Meals?" Never write that it is saved or logged, since nothing is until they tap. Say plainly if you estimated anything. No em dashes.',
       },
     },
     required: ['name', 'items', 'log_now', 'summary'],

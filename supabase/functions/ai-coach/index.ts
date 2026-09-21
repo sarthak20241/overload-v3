@@ -305,9 +305,15 @@ function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
  */
 async function replyToFoodBarChat(text: string, supportsCreate: boolean): Promise<string | null> {
   if (!ANTHROPIC_API_KEY) return null;
+  // What THIS box can do, stated as fact the reply has to get right. The first
+  // version put "for longer answers, ask in Chat" beside it, and the model
+  // over-applied that: asked "do you have tools to create meals", it sent the
+  // user to Chat to do something this box had just learned to do. Seen live.
   const canDo = supportsCreate
-    ? "In this box you log food by describing what you ate, and you save a food or meal for later by asking, for example \"save my shake, 180 cal\"."
-    : "In this box you log food by describing what you ate.";
+    ? "This box does two things, and if the user asks what you can do you must describe both accurately: " +
+      "it logs food they describe (\"two eggs and toast\"), and it saves a food or meal for later when they ask " +
+      "(\"save my shake, 180 cal\"). Both happen right here. Never tell them to go anywhere else to log, save or create a meal."
+    : "This box logs food the user describes (\"two eggs and toast\"). Describe only that if they ask what you can do.";
   const res = await callAnthropic({
     model: PARSE_MEAL_MODEL,
     max_tokens: 160,
@@ -315,7 +321,7 @@ async function replyToFoodBarChat(text: string, supportsCreate: boolean): Promis
       "You are Coach Drona, answering inside the food logging box of a fitness app. The user typed something that is not a meal. " +
       `${canDo} ` +
       "Reply in one or two short sentences, warm and direct, like a coach. If they asked a real question, answer it briefly. " +
-      "For anything that needs a longer answer, tell them to ask you in Chat. " +
+      "Only a long nutrition or training question is worth sending to Chat, never a question about logging or saving food. " +
       "Never claim you did anything: you logged nothing and saved nothing. Never use em dashes.",
     messages: [{ role: "user", content: text }],
   }, 6000);
@@ -357,6 +363,7 @@ async function draftFoodCreate(
       "Use every number the user gave. Estimate any calories or macros they did not give, and mark each estimate " +
       "(the estimated list on a food, estimated true on a meal line). " +
       "Set log_now true only when they said they ate it; if they only asked to save it, log_now is false. " +
+      "The summary is shown on a card the user has NOT tapped yet, so write it as an offer: never say it is saved or logged. " +
       (mealHint ? `If log_now is true, the meal is ${mealHint}. ` : "") +
       "Never use em dashes.",
     tools: [CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL],
