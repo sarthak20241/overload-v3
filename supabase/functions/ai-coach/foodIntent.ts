@@ -34,12 +34,17 @@ import {
 
 /** The intents we route on TODAY.
  *
+ *  'other' is everything that is neither eating nor saving: a greeting, a
+ *  question about the app, small talk. It exists because the two-box version
+ *  had to put "hey" SOMEWHERE, and it put it in 'log' at 100% confidence.
+ *  Confident because 'create' was clearly wrong, not because 'log' was right.
+ *  A Choice with no honest home for a message will still answer, and will
+ *  sound sure doing it.
+ *
  *  'improvise' (build me something from what I have) and 'challenge' (push back
- *  on what I logged) are coming, and the Choice criteria below are written so
- *  adding them is one more option plus one more branch, not a rewrite. They are
- *  deliberately NOT here yet: an option the downstream code cannot handle is a
- *  route to nowhere, and a half-wired intent is worse than an absent one. */
-export type FoodIntent = "log" | "create";
+ *  on what I logged) are still coming. They stay out until the downstream code
+ *  can handle them: an option with nowhere to go is a route to nowhere. */
+export type FoodIntent = "log" | "create" | "other";
 
 /** Where the answer came from. Carried so the logs can show the ladder working,
  *  and so a regression in routing can be attributed to a step rather than
@@ -117,7 +122,9 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
     what:
       "The user is telling the app about food, and has NOT explicitly asked for it to be saved as a reusable entry. " +
       "This is the default: a message about food is a log unless it contains an instruction to save or create.",
-    not_for: "Messages that explicitly ask to save, create, or remember a food or meal for future use.",
+    not_for:
+      "Messages that explicitly ask to save, create, or remember a food or meal for future use. " +
+      "Also not for messages that report no eating at all, such as a greeting or a question about the app.",
     examples: [
       "a bowl of poha and chai",
       "half a pizza, maybe 600 calories",
@@ -140,6 +147,20 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "add a new food called Nani's khichdi",
     ],
   },
+  other: {
+    what:
+      "The user is not reporting anything they ate or drank, and is not asking for anything to be saved. " +
+      "Greetings, thanks, small talk, and questions about the app or about nutrition in general all belong here.",
+    not_for:
+      "Any message that reports eating or drinking. That holds even when no specific food or dish is named, " +
+      "and even when the report comes alongside a greeting. \"hi, had two eggs\" is a log, not this.",
+    examples: [
+      "good morning",
+      "thanks, that helps",
+      "what can you do",
+      "is rice bad for cutting",
+    ],
+  },
 };
 
 export const INTENT_INSTRUCTIONS = {
@@ -149,7 +170,8 @@ export const INTENT_INSTRUCTIONS = {
     "Decide on the INSTRUCTION in the message, not on the food it describes. " +
     "Ignore whether the food sounds healthy, whether the numbers look plausible, and what the user should do next.",
   default_rule:
-    "When the message does not explicitly ask to save or create something, the answer is log.",
+    "If the message reports eating or drinking and does not explicitly ask to save anything, the answer is log. " +
+    "If it reports no eating at all, the answer is other.",
 };
 
 /**
@@ -308,7 +330,7 @@ function trimForState(text: string): string {
 }
 
 function isIntent(v: unknown): v is FoodIntent {
-  return v === "log" || v === "create";
+  return v === "log" || v === "create" || v === "other";
 }
 
 /**
@@ -412,4 +434,81 @@ export async function routeFoodIntent(
   // they sat down to record.
   deps.log?.("[food_intent] defaulted to log");
   return { intent: "log", source: "default", confidence: null, note: "no router available", savedMatch };
+}
+
+// ── Policy: what the food bar actually DOES ─────────────────────────────────
+//
+// routeFoodIntent is perception: what does this message look like. This is the
+// decision, kept apart on purpose. A calibrated guess is a good input and a bad
+// boss. The measured failures are what shaped these rules:
+//
+//   "lunch today was around 700 calories"   Jev: other @ 76%   truth: log
+//   "add my greek yogurt bowl"              Jev: create @ 64%  truth: log
+//
+// Both are the DANGEROUS direction. A log read as other means Drona chats back
+// instead of recording the meal. A log read as create turns "I ate this" into a
+// save prompt. So neither gets to act on Jev's word alone.
+
+/** What the food bar does with a message. 'reply' is Drona answering in words,
+ *  for a greeting or a question, instead of the canned "tell me what you ate". */
+export type FoodAction = "log" | "create" | "reply";
+
+/**
+ * The bar for letting 'create' pull a message out of the parse.
+ *
+ * Above JEV_INTENT_FLOOR on purpose. The one false create measured sat at 64%
+ * and every clear create the probe offered ("save my overnight oats as a meal",
+ * "create a food called gym shake") landed at 99-100%. Below this, a create
+ * verdict is treated as a log, which is the safe miss: the parse shows the meal
+ * and nothing is saved that the user did not ask for.
+ */
+export const CREATE_ACTION_FLOOR = 0.7;
+
+export interface FoodActionInputs {
+  /** The router's verdict. Null when it did not run (mode off, a correction). */
+  decision: FoodIntentDecision | null;
+  mode: FoodIntentMode;
+  /** Did the parse find anything to log? The parse is the ground truth for
+   *  "is there food in this message": it is the thing actually built to answer
+   *  that, and it has already run by the time this is decided. */
+  parseFoundFood: boolean;
+  /** Does this CLIENT know how to render a create? Builds already in testers'
+   *  hands do not, and sending them a payload they cannot draw would dead-end
+   *  the food bar, the exact failure 0088's `state: 'free'` caused a day before
+   *  the client understood it. Old clients keep today's behaviour. */
+  clientSupportsCreate: boolean;
+}
+
+/**
+ * Decide what the food bar does. Pure, so every rule below is pinned by a test
+ * rather than by hoping nobody reorders the ifs in index.ts.
+ *
+ * The shape of it: 'log' is the default and wins every tie, because it is what
+ * shipped and because losing a meal the user sat down to record is the worst
+ * outcome available here. Anything else has to earn its way past it.
+ */
+export function decideFoodAction(i: FoodActionInputs): FoodAction {
+  // Not live, or nothing to go on: exactly today's behaviour.
+  if (i.mode !== "on" || !i.decision) return "log";
+
+  const { intent, confidence, source } = i.decision;
+
+  if (intent === "create") {
+    if (!i.clientSupportsCreate) return "log";
+    // Only a CONFIDENT Jev answer may divert. The model rung has no calibrated
+    // number to clear this bar with, and the default rung is a guess by
+    // definition, so neither of them gets to turn a meal into a save prompt.
+    if (source !== "jev" || confidence === null || confidence < CREATE_ACTION_FLOOR) return "log";
+    return "create";
+  }
+
+  if (intent === "other") {
+    // Jev thinks there is no eating here. The parse is the one that would
+    // know, so it gets the veto: if it found food, this is a log and Jev was
+    // wrong. A wrong 'other' can therefore never cost anyone a meal. It can
+    // only turn a decline into a better answer.
+    return i.parseFoundFood ? "log" : "reply";
+  }
+
+  return "log";
 }

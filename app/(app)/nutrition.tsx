@@ -49,6 +49,14 @@ import {
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
 import {
+  applyCoachFoodCreate,
+  parseCoachFoodCreate,
+  type CoachFoodCreate,
+  type CoachFoodCreateResult,
+} from '@/lib/coachFoodCreate';
+import { FoodCreateCard } from '@/components/ai/FoodCreateCard';
+import { haptics } from '@/lib/haptics';
+import {
   getAutoLog, setAutoLog, newAutoLogClientId, addPending, removePending, touchPending,
   reconcilePending, markAddedByDrona, addedByDronaRef, forgetAddedByDrona,
   type PendingAutoLog,
@@ -102,6 +110,12 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+    }
+  // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
+  // written until the card is tapped; `result` is what came back from that tap.
+  | {
+      status: 'create'; raw: string; create: CoachFoodCreate;
+      result: CoachFoodCreateResult | null; busy: boolean;
     };
 
 const fmtK = (n: number) => Math.round(n).toLocaleString();
@@ -471,6 +485,8 @@ export default function NutritionScreen() {
       previous: pending,
       turns,
       autoLog: auto,
+      // The food bar can draw a save card, so it asks for creates.
+      canCreate: true,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
@@ -560,6 +576,27 @@ export default function NutritionScreen() {
         status: 'error', raw: t, message: res.message,
         ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
       });
+      return;
+    }
+    // Drona drafted a food or meal the user asked to save. Normalized with the
+    // same function the chat uses, so a draft that cannot be acted on (no
+    // calories, no items) becomes a plain reply instead of a card with a dead
+    // button.
+    if (res.kind === 'create') {
+      const create = parseCoachFoodCreate(res.tool, res.input);
+      if (!create) {
+        setFlow({ status: 'declined', raw: t, message: 'I could not put that one together. Give me the name and the calories and I will save it.' });
+        return;
+      }
+      track('drona_food_create_proposed', {
+        kind: create.kind,
+        item_count: create.lines.length,
+        kcal: create.totals.kcal,
+        log_now: create.logNow,
+        estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
+      });
+      pushTurn('drona', create.summary || `Save ${create.name}?`);
+      setFlow({ status: 'create', raw: t, create, result: null, busy: false });
       return;
     }
     pushTurn('drona', res.meal.drona_line);
@@ -944,6 +981,24 @@ export default function NutritionScreen() {
     }
   }, [flow, runParse]);
 
+  // Save the food or meal Drona drafted, and log it too when the user said they
+  // ate it. Guarded against a double tap, which would put a duplicate in My
+  // Meals. Logs to the day on screen, same as every other add from this box.
+  const onApplyCreate = useCallback(async () => {
+    if (flow.status !== 'create' || flow.busy || flow.result || !supabase) return;
+    const { create } = flow;
+    setFlow({ ...flow, busy: true });
+    const res = await applyCoachFoodCreate(supabase, create, mealForNow(), viewDate);
+    track('drona_food_create_applied', { kind: create.kind, logged: res.logged, ok: !res.error });
+    setFlow((cur) => (cur.status === 'create' && cur.create === create ? { ...cur, busy: false, result: res } : cur));
+    if (res.savedMealId) {
+      if (res.logged) reload();
+      haptics.success();
+    } else {
+      haptics.warning();
+    }
+  }, [flow, supabase, viewDate, reload]);
+
   const onDismiss = useCallback(() => {
     track('parse_proposal_rejected', {
       flow_status: flow.status,
@@ -1204,7 +1259,20 @@ export default function NutritionScreen() {
         s.inputWrap,
         { bottom: kbHeight, paddingBottom: kbHeight > 0 ? Spacing.sm : insets.bottom + 12 },
       ]}>
-        {flow.status !== 'idle' && (
+        {flow.status === 'create' && (
+          <View style={{ marginBottom: Spacing.sm }}>
+            <FoodCreateCard
+              create={flow.create}
+              result={flow.result}
+              busy={flow.busy}
+              fallbackMeal={mealForNow()}
+              onApply={() => void onApplyCreate()}
+              onDismiss={() => setFlow({ status: 'idle' })}
+              fullWidth
+            />
+          </View>
+        )}
+        {flow.status !== 'idle' && flow.status !== 'create' && (
           <View style={{ marginBottom: Spacing.sm }}>
             <ParsedMealCard
               state={flow.status as ParseCardState}

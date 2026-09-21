@@ -29,7 +29,7 @@
 import { asChoice, askJev, JEV_MODEL } from "../../supabase/functions/ai-coach/jev.ts";
 import { INTENT_CRITERIA, INTENT_INSTRUCTIONS } from "../../supabase/functions/ai-coach/foodIntent.ts";
 
-type Label = "log" | "create";
+type Label = "log" | "create" | "other";
 
 interface Case {
   text: string;
@@ -108,13 +108,50 @@ const HELD_OUT: Case[] = [
   { text: "protein shake", want: "log" },
 
   // A question, not an instruction. Still not a save.
-  { text: "how many calories in my usual breakfast bowl", want: "log", hard: true },
+  // WAS log, when there was nowhere else to put a question. A question names
+  // no food the user ATE, so under three boxes it is other.
+  { text: "how many calories in my usual breakfast bowl", want: "other", hard: true },
 
   // Naming a dish without asking for anything.
-  { text: "we call it Sunday poha at home", want: "log", hard: true },
+  // WAS log, same reason: naming a dish is not reporting eating it.
+  { text: "we call it Sunday poha at home", want: "other", hard: true },
 
   // Explicit create with a recipe attached.
   { text: "create a meal: 100g chicken, 150g rice, 1 tsp oil", want: "create", hard: true },
+];
+
+// ── HELD OUT 2: the three-way boundary, fresh ─────────────────────────────
+// Written after the 'other' criteria were fixed and never scored. The few-shot
+// examples in INTENT_CRITERIA ("good morning", "thanks, that helps", "what can
+// you do", "is rice bad for cutting") appear nowhere here. The traps are
+// greetings WITH food, which must stay logs, and food words inside questions,
+// which must not become logs.
+const HELD_OUT_2: Case[] = [
+  // plain other
+  { text: "hey", want: "other" },
+  { text: "hello drona", want: "other" },
+  { text: "ok cool", want: "other" },
+  { text: "who are you", want: "other" },
+  { text: "can you log food for me", want: "other", hard: true },
+  { text: "do you have tools to create meals", want: "other", hard: true },
+  { text: "how much protein should i eat", want: "other", hard: true },
+  { text: "is paneer good for protein", want: "other", hard: true },
+  { text: "why is my weight not dropping", want: "other", hard: true },
+  { text: "you there?", want: "other" },
+
+  // greeting plus food: the food wins, it is a log
+  { text: "hi, had two eggs", want: "log", hard: true },
+  { text: "morning! oats and coffee", want: "log", hard: true },
+  { text: "hey just ate a sandwich", want: "log", hard: true },
+  { text: "thanks, also had a banana", want: "log", hard: true },
+
+  // plain logs, so a shifted boundary shows up here
+  { text: "chicken biryani for lunch", want: "log" },
+  { text: "3 rotis and dal", want: "log" },
+
+  // creates, so a shifted boundary shows up here too
+  { text: "save my overnight oats as a meal", want: "create", hard: true },
+  { text: "create a food called gym shake, 250 cal", want: "create", hard: true },
 ];
 
 function pct(n: number): string {
@@ -211,21 +248,24 @@ async function main() {
   console.log(`model ${JEV_MODEL}`);
   const dev = await runSet("DEV", DEV, apiKey);
   const held = await runSet("HELD_OUT", HELD_OUT, apiKey);
+  const held2 = await runSet("HELD_OUT_2", HELD_OUT_2, apiKey);
 
-  report("DEV (seen before, re-labelled)", dev);
-  report("HELD OUT (never scored)", held);
+  report("DEV (seen, re-labelled)", dev);
+  report("HELD OUT (seen last run, 2 labels moved to other)", held);
+  report("HELD OUT 2 (three-way boundary, never scored)", held2);
 
-  console.log("\n══════ floor sweep, HELD OUT ══════");
-  sweep(held);
+  console.log("\n══════ floor sweep, HELD OUT 2 ══════");
+  sweep(held2);
 
   const all: Outcome = {
-    right: dev.right + held.right, total: dev.total + held.total,
-    hardRight: dev.hardRight + held.hardRight, hardTotal: dev.hardTotal + held.hardTotal,
-    rightConf: [...dev.rightConf, ...held.rightConf],
-    wrongConf: [...dev.wrongConf, ...held.wrongConf],
-    rows: [], tokens: dev.tokens + held.tokens, ms: dev.ms + held.ms,
+    right: dev.right + held.right + held2.right, total: dev.total + held.total + held2.total,
+    hardRight: dev.hardRight + held.hardRight + held2.hardRight,
+    hardTotal: dev.hardTotal + held.hardTotal + held2.hardTotal,
+    rightConf: [...dev.rightConf, ...held.rightConf, ...held2.rightConf],
+    wrongConf: [...dev.wrongConf, ...held.wrongConf, ...held2.wrongConf],
+    rows: [], tokens: dev.tokens + held.tokens + held2.tokens, ms: dev.ms + held.ms + held2.ms,
   };
-  console.log("\n══════ floor sweep, BOTH SETS ══════");
+  console.log("\n══════ floor sweep, ALL SETS ══════");
   sweep(all);
   console.log(`\ncombined ${all.right}/${all.total}`);
   console.log(`$${((all.tokens / 1_000_000) * 0.042).toFixed(6)} for this whole run`);

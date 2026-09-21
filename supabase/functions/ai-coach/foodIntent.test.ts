@@ -18,6 +18,8 @@ import {
   SAVED_MATCH_FLOOR,
   type SavedMealSummary,
   shouldRouteFoodIntent,
+  CREATE_ACTION_FLOOR,
+  decideFoodAction,
 } from "./foodIntent.ts";
 import { JEV_ENDPOINT, type JevDeps } from "./jev.ts";
 
@@ -267,7 +269,7 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 
 // A compile-time reminder that the union is what the criteria advertise. If a
 // new intent is added to FoodIntent without a rubric, this stops being valid.
-const _exhaustive: Record<FoodIntent, true> = { log: true, create: true };
+const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true };
 void _exhaustive;
 
 // ── The gate: should we even ask? ───────────────────────────────────────────
@@ -456,4 +458,75 @@ Deno.test("Jev being down loses the match but never the log", async () => {
   });
   assertEquals(d.savedMatch, null);
   assertEquals(d.intent, "log");
+});
+
+// ── Policy: decideFoodAction ─────────────────────────────────────────────────
+// The rules that stop a calibrated guess from costing anyone a meal. Each one
+// is here because a real probe case walked straight into it.
+
+function dec(intent: "log" | "create" | "other", confidence: number | null, source: "jev" | "model" | "default" = "jev") {
+  return { intent, confidence, source, note: "", savedMatch: null };
+}
+const on = { mode: "on" as const, parseFoundFood: true, clientSupportsCreate: true };
+
+Deno.test("policy: shadow and off never act, whatever Jev says", () => {
+  for (const mode of ["shadow", "off"] as const) {
+    assertEquals(decideFoodAction({ ...on, mode, decision: dec("create", 1) }), "log");
+    assertEquals(decideFoodAction({ ...on, mode, decision: dec("other", 1), parseFoundFood: false }), "log");
+  }
+});
+
+Deno.test("policy: no decision is today's behaviour", () => {
+  assertEquals(decideFoodAction({ ...on, decision: null }), "log");
+});
+
+Deno.test("policy: a confident create diverts", () => {
+  assertEquals(decideFoodAction({ ...on, decision: dec("create", 0.99) }), "create");
+});
+
+Deno.test("policy: the measured false create at 64% stays a log", () => {
+  // "add my greek yogurt bowl" came back create @ 0.64 when it meant log.
+  assertEquals(decideFoodAction({ ...on, decision: dec("create", 0.64) }), "log");
+});
+
+Deno.test("policy: create never diverts on the model or default rung", () => {
+  // Neither has a calibrated number, so neither may turn a meal into a prompt.
+  assertEquals(decideFoodAction({ ...on, decision: dec("create", null, "model") }), "log");
+  assertEquals(decideFoodAction({ ...on, decision: dec("create", null, "default") }), "log");
+  // The case that matters: a model rung that DOES carry a number. Today it never
+  // does, so the null check alone would pass the two lines above and the source
+  // check would be dead code nobody noticed was load-bearing. The first time
+  // someone maps Claude's "high" to 0.95, this is the only thing standing
+  // between a guess and a meal turned into a save prompt.
+  assertEquals(decideFoodAction({ ...on, decision: dec("create", 0.95, "model") }), "log");
+});
+
+Deno.test("policy: an old client never receives a create", () => {
+  // Builds 110 / 107 cannot draw one. Sending it would dead-end the food bar.
+  assertEquals(decideFoodAction({ ...on, clientSupportsCreate: false, decision: dec("create", 1) }), "log");
+});
+
+Deno.test("policy: 'other' replies only when the parse found no food", () => {
+  assertEquals(decideFoodAction({ ...on, parseFoundFood: false, decision: dec("other", 1) }), "reply");
+});
+
+Deno.test("policy: the parse vetoes a wrong 'other', so no meal is lost", () => {
+  // "lunch today was around 700 calories" came back other @ 0.76 when it was a
+  // meal. If the parse found food, it is a log, full stop.
+  assertEquals(decideFoodAction({ ...on, parseFoundFood: true, decision: dec("other", 0.76) }), "log");
+  assertEquals(decideFoodAction({ ...on, parseFoundFood: true, decision: dec("other", 1) }), "log");
+});
+
+Deno.test("policy: 'reply' needs no client capability", () => {
+  // It rides the existing decline channel, which every build already renders.
+  assertEquals(
+    decideFoodAction({ ...on, clientSupportsCreate: false, parseFoundFood: false, decision: dec("other", 1) }),
+    "reply",
+  );
+});
+
+Deno.test("policy: the create bar sits above the intent floor", () => {
+  assertEquals(CREATE_ACTION_FLOOR > JEV_INTENT_FLOOR, true);
+  // And above the measured false positive, or it catches nothing.
+  assertEquals(CREATE_ACTION_FLOOR > 0.64, true);
 });

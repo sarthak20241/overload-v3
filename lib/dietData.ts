@@ -577,6 +577,11 @@ export interface ParsedMeal {
  *  falls back to the review card in every case; the value picks the notice. */
 export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
 
+/** What this build's food bar can render, sent with every parse. A list rather
+ *  than a boolean so the next capability (improvise, challenge) is one more
+ *  string, not a second flag the server has to learn to read. */
+export const FOOD_BAR_CAPABILITIES = ['food_create'] as const;
+
 export type ParseMealResult =
   | {
     kind: 'parsed';
@@ -603,6 +608,10 @@ export type ParseMealResult =
     cleared?: boolean;
   }
   | { kind: 'error'; message: string }
+  // The user asked to SAVE a food or meal. Drona drafted it with the same tools
+  // the coach chat uses, so this is the chat's tool name and raw input, and the
+  // card normalizes it with parseCoachFoodCreate exactly as the chat does.
+  | { kind: 'create'; tool: string; input: Record<string, unknown> }
   // A 402 the paywall answers, not an error. `scope` says WHICH wall was hit:
   // 'free' is the daily allowance spent, 'pro' is a Pro-only feature. Both open
   // /upgrade, on different copy, instead of the app blaming itself.
@@ -677,6 +686,9 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
  * honoured on one path and silently dropped on the other.
  */
 function toParseResult(data: any): ParseMealResult {
+  if (data?.create && typeof data.create.tool === 'string' && data.create.input && typeof data.create.input === 'object') {
+    return { kind: 'create', tool: data.create.tool, input: data.create.input };
+  }
   if (data?.declined?.message) {
     const p = data?.proposal;
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
@@ -842,6 +854,10 @@ export async function parseMealStreaming(
         // made streaming unreachable, since `mode` is always 'parse_meal' here.
         speed: 'fast',
         stream: true,
+        // This build can draw a save card in the food bar. Builds without this
+        // flag get a create served as a log, because they have nothing to draw
+        // one with (see clientSupportsFoodCreate in the edge function).
+        supports: FOOD_BAR_CAPABILITIES,
         text,
         local_hour: now.getHours(),
         local_date: localDate,
@@ -955,6 +971,10 @@ export async function parseMeal(
      *  a fresh uuid per send (the idempotency key: a Retry re-uses it and the
      *  server writes once), `logDate` the diary day (YYYY-MM-DD) to land on. */
     autoLog?: { clientId: string; logDate: string } | null;
+    /** This caller can draw a save card. ONLY the food bar sets it. Food
+     *  search's "Ask Drona" is a one-food lookup with nowhere to put a save
+     *  card, so it must not claim it can and gets a create served as a log. */
+    canCreate?: boolean;
     /** Pipeline tier. Omitted means smart, which is what every existing caller
      *  wants and what the server assumes when the field is absent. Only
      *  'super' (Precise) is passed here - 'fast' rides the streaming call
@@ -979,6 +999,7 @@ export async function parseMeal(
       region: FunctionRegion.UsEast1,
       body: {
         mode: 'parse_meal',
+        ...(args.canCreate ? { supports: FOOD_BAR_CAPABILITIES } : {}),
         text,
         local_hour: now.getHours(),
         local_date: localDate,

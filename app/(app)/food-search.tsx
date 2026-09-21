@@ -184,6 +184,13 @@ export default function FoodSearchScreen() {
     // 'sent' only comes back from a "Just log it" stream, which this path never
     // opens; handled so the type narrows to the parsed meal below.
     if (res.kind === 'error' || res.kind === 'sent') { setAiError(res.message); haptics.warning(); return; }
+    // Never sent by the server here: this call does not ask for creates. Handled
+    // so the type narrows, and so a future change that sends one anyway points
+    // the user somewhere that works rather than failing silently.
+    if (res.kind === 'create') {
+      setAiError('To save a food, use Quick add above, or tell Drona on the Nutrition screen.');
+      return;
+    }
     if (!res.meal.items.length) { setAiError('Drona could not pin that one down. Try a fuller name.'); haptics.warning(); return; }
     haptics.success();
     openDetailFromParsed(res.meal.items);

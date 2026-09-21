@@ -1,7 +1,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
-import { buildSystemPrompt, STRUCTURED_TOOLS, TERMINAL_TOOLS } from "./prompt.ts";
+import {
+  buildSystemPrompt,
+  CREATE_CUSTOM_FOOD_TOOL,
+  CREATE_CUSTOM_MEAL_TOOL,
+  STRUCTURED_TOOLS,
+  TERMINAL_TOOLS,
+} from "./prompt.ts";
 import { envInt } from "../_shared/envInt.ts";
 import {
   type CandidateFood,
@@ -24,6 +30,9 @@ import {
   routeFoodIntent,
   SAVED_MATCH_FLOOR,
   type SavedMealSummary,
+  CREATE_ACTION_FLOOR,
+  decideFoodAction,
+  type FoodAction,
   shouldRouteFoodIntent,
 } from "./foodIntent.ts";
 import { searchFatSecret } from "./fatsecret.ts";
@@ -161,8 +170,9 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
     system:
       "You route messages typed into a food tracking app. Decide on the INSTRUCTION in the message, " +
       "not on the food it describes. Creating requires an EXPLICIT ask to save, create, or remember a " +
-      "food for later use. Describing a food, even in present tense with calories and macros attached, " +
-      "is logging. When the message does not explicitly ask to save something, the answer is log.",
+      "food for later use. Reporting eating or drinking, even without naming a specific food and even " +
+      "with calories attached, is logging. A message that reports no eating at all (a greeting, thanks, " +
+      "a question about the app or about nutrition) is other.",
     tools: [{
       name: "route_food_text",
       description: "Report which of the two things the user is asking for.",
@@ -171,10 +181,11 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
         properties: {
           intent: {
             type: "string",
-            enum: ["log", "create"],
+            enum: ["log", "create", "other"],
             description:
-              "log: they are telling the app about food they ate or are eating. " +
-              "create: they explicitly asked for a food or meal to be SAVED as a reusable entry.",
+              "log: they are reporting food or drink they had. " +
+              "create: they explicitly asked for a food or meal to be SAVED as a reusable entry. " +
+              "other: they reported no eating and asked to save nothing.",
           },
         },
         required: ["intent"],
@@ -189,7 +200,7 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
   }
   const block = (res.data?.content ?? []).find((b: { type?: string }) => b?.type === "tool_use");
   const intent = block?.input?.intent;
-  return intent === "log" || intent === "create" ? intent : null;
+  return intent === "log" || intent === "create" || intent === "other" ? intent : null;
 }
 
 /** The user's saved foods and meals, for the match question. Headers only: the
@@ -271,16 +282,166 @@ function startFoodIntent(
     });
 }
 
+/** The capability a client sends to say it can draw a create card in the food
+ *  bar. Builds 110 (iOS) and 107 (Android) do not send it and cannot draw one,
+ *  so for them a create is served as a log: exactly what they do today. */
+const CLIENT_CAP_FOOD_CREATE = "food_create";
+
+function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
+  return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_FOOD_CREATE);
+}
+
+/**
+ * Drona answering a message that is not food: a greeting, thanks, a question.
+ *
+ * Replaces the canned "tell me what you ate" that every such message used to
+ * get, which was actively wrong for "do you have tools to create meals": it
+ * told the user it could only log, the day it learned to create.
+ *
+ * Every claim in this prompt has to be TRUE for the client asking. An old build
+ * cannot create from the food bar, so it is never told that it can. Returns
+ * null on any failure, and the caller falls back to the parse's own decline, so
+ * a broken reply is never worse than what shipped.
+ */
+async function replyToFoodBarChat(text: string, supportsCreate: boolean): Promise<string | null> {
+  if (!ANTHROPIC_API_KEY) return null;
+  const canDo = supportsCreate
+    ? "In this box you log food by describing what you ate, and you save a food or meal for later by asking, for example \"save my shake, 180 cal\"."
+    : "In this box you log food by describing what you ate.";
+  const res = await callAnthropic({
+    model: PARSE_MEAL_MODEL,
+    max_tokens: 160,
+    system:
+      "You are Coach Drona, answering inside the food logging box of a fitness app. The user typed something that is not a meal. " +
+      `${canDo} ` +
+      "Reply in one or two short sentences, warm and direct, like a coach. If they asked a real question, answer it briefly. " +
+      "For anything that needs a longer answer, tell them to ask you in Chat. " +
+      "Never claim you did anything: you logged nothing and saved nothing. Never use em dashes.",
+    messages: [{ role: "user", content: text }],
+  }, 6000);
+  if (!res.ok) {
+    console.log(`[food_intent] chat reply failed: ${res.status}`);
+    return null;
+  }
+  const out = (res.data?.content ?? [])
+    .filter((b: { type?: string }) => b?.type === "text")
+    .map((b: { text?: string }) => b.text ?? "")
+    .join("")
+    .trim()
+    // A stray em dash reads as machine-written. Belt on top of the prompt.
+    .replace(/\s*\u2014\s*/g, ", ");
+  return out.length > 0 ? out.slice(0, 400) : null;
+}
+
+/**
+ * Drona building the food or meal the user asked to save.
+ *
+ * Forced onto the SAME two tools the coach chat uses, so a food-bar create and a
+ * chat create are the same shape and the client needs one card for both. The
+ * model picks food versus meal itself, fills in the macros it was not given, and
+ * says which ones it filled. Returns null on any failure and the caller serves
+ * the parse as a log instead: a create that could not be drafted must never cost
+ * the user the meal.
+ */
+async function draftFoodCreate(
+  text: string,
+  mealHint: MealType | null,
+): Promise<{ tool: string; input: Record<string, unknown> } | null> {
+  if (!ANTHROPIC_API_KEY) return null;
+  const res = await callAnthropic({
+    model: PARSE_MEAL_MODEL,
+    max_tokens: 900,
+    system:
+      "The user asked to SAVE a food or meal in a fitness app. Call exactly one tool. " +
+      "create_custom_food for one thing with no parts; create_custom_meal for a named dish described by its ingredients. " +
+      "Use every number the user gave. Estimate any calories or macros they did not give, and mark each estimate " +
+      "(the estimated list on a food, estimated true on a meal line). " +
+      "Set log_now true only when they said they ate it; if they only asked to save it, log_now is false. " +
+      (mealHint ? `If log_now is true, the meal is ${mealHint}. ` : "") +
+      "Never use em dashes.",
+    tools: [CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL],
+    // "any" and not a named tool: which of the two it is IS the judgment.
+    tool_choice: { type: "any" },
+    messages: [{ role: "user", content: text }],
+  }, 12000);
+  if (!res.ok) {
+    console.log(`[food_intent] create draft failed: ${res.status}`);
+    return null;
+  }
+  const block = (res.data?.content ?? []).find((b: { type?: string }) => b?.type === "tool_use");
+  if (!block || (block.name !== "create_custom_food" && block.name !== "create_custom_meal")) return null;
+  return { tool: String(block.name), input: (block.input ?? {}) as Record<string, unknown> };
+}
+
+interface FoodBarOutcome {
+  action: FoodAction;
+  decision: FoodIntentDecision | null;
+  reply?: string;
+  create?: { tool: string; input: Record<string, unknown> };
+}
+
+/**
+ * What the food bar sends back, decided AFTER the parse.
+ *
+ * Outside 'on' this returns straight away WITHOUT awaiting the router, so shadow
+ * keeps its promise of costing the response path nothing. In 'on' it waits for
+ * the router, which has usually long since answered: it started alongside the
+ * parse and is the faster of the two.
+ *
+ * Every branch degrades to 'log', the parse result exactly as it shipped. A
+ * reply that could not be written, a create that could not be drafted: the user
+ * still gets their meal.
+ */
+async function resolveFoodBarOutcome(args: {
+  result: ParseMealResult;
+  intentP: Promise<FoodIntentDecision | null>;
+  supportsCreate: boolean;
+  text: string;
+  mealHint: MealType | null;
+}): Promise<FoodBarOutcome> {
+  if (FOOD_INTENT_MODE !== "on") return { action: "log", decision: null };
+  const decision = await args.intentP.catch(() => null);
+  const parseFoundFood = !!args.result.parsed && args.result.parsed.items.length > 0;
+  const action = decideFoodAction({
+    decision,
+    mode: FOOD_INTENT_MODE,
+    parseFoundFood,
+    clientSupportsCreate: args.supportsCreate,
+  });
+
+  if (action === "reply") {
+    const reply = await replyToFoodBarChat(args.text, args.supportsCreate);
+    return reply ? { action, decision, reply } : { action: "log", decision };
+  }
+  if (action === "create") {
+    const create = await draftFoodCreate(args.text, args.mealHint);
+    return create ? { action, decision, create } : { action: "log", decision };
+  }
+  return { action: "log", decision };
+}
+
+/** True once the router has settled on a create this client can draw, so the
+ *  stream can stop painting meal rows that are about to be replaced by a save
+ *  card. Read synchronously from a settled flag, never awaited on the hot path. */
+function wouldDivertToCreate(d: FoodIntentDecision | null, supportsCreate: boolean): boolean {
+  return FOOD_INTENT_MODE === "on" && supportsCreate && !!d && d.intent === "create" &&
+    d.source === "jev" && d.confidence !== null && d.confidence >= CREATE_ACTION_FLOOR;
+}
+
 /** The router's answer as a trace pseudo-step, in the same shape __edge_timing
  *  already uses. parse_traces.steps is jsonb precisely so this needs no
  *  migration. This is the record we read after a week to find out whether a
  *  floor tuned on invented messages survives real ones. */
-function foodIntentStep(d: FoodIntentDecision | null): ParseStep[] {
+function foodIntentStep(d: FoodIntentDecision | null, action?: FoodAction): ParseStep[] {
   if (!d) return [];
   return [{
     iter: 9,
     tool: "__food_intent",
     input: {
+      // What we DID, beside what we guessed. They differ whenever the policy
+      // overrules Jev (a create under the bar, a parse vetoing an 'other'), and
+      // those disagreements are the rows worth reading.
+      action: action ?? null,
       intent: d.intent,
       source: d.source,
       confidence: d.confidence,
@@ -2424,10 +2585,23 @@ async function handleParseMealRequest(args: {
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
         const intentP = startFoodIntent(userClient, text, previousItems.length > 0, abort.signal);
+        const supportsCreate = clientSupportsFoodCreate(body);
+        // Settled into a plain variable so the progress gate below can read it
+        // synchronously. Awaiting inside onProgress would stall the stream.
+        let settledIntent: FoodIntentDecision | null = null;
+        void intentP.then((d) => { settledIntent = d; });
         const work = (async () => {
           try {
             const result = await runParseMeal(
-              { ...deps, onProgress: (p) => send(p.kind, p) },
+              {
+                ...deps,
+                // Once a create this client can draw is certain, stop painting
+                // meal rows: a save card is about to replace them, and a meal
+                // flashing up first reads as "it logged it anyway".
+                onProgress: (p) => {
+                  if (!wouldDivertToCreate(settledIntent, supportsCreate)) send(p.kind, p);
+                },
+              },
               {
                 text,
                 localHour,
@@ -2442,16 +2616,28 @@ async function handleParseMealRequest(args: {
                 recentTurns,
               },
             );
-            // The diary write happens BEFORE `end` so a connected client's
-            // strip goes straight to "Added" with the ids Undo needs.
-            const autoRes = await finishAutoLog(result);
-            send("end", {
-              parsed: result.parsed,
-              declined: result.declined,
-              proposal: result.proposal ?? null,
-              // Just log it: `logged` when the diary was written, else why not.
-              ...autoRes.extra,
-            });
+            const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint });
+            // A create is NOT a log: the user asked to save, so "Just log it"
+            // must not write the parsed meal behind the save card's back. A reply
+            // has nothing to log. Only the log path runs the diary write.
+            let autoRes: Awaited<ReturnType<typeof finishAutoLog>> | null = null;
+            if (outcome.action === "create") {
+              send("end", { parsed: null, declined: null, proposal: null, create: outcome.create });
+            } else if (outcome.action === "reply") {
+              // The existing decline channel, which every build already draws.
+              send("end", { parsed: null, declined: { message: outcome.reply }, proposal: null });
+            } else {
+              // The diary write happens BEFORE `end` so a connected client's
+              // strip goes straight to "Added" with the ids Undo needs.
+              autoRes = await finishAutoLog(result);
+              send("end", {
+                parsed: result.parsed,
+                declined: result.declined,
+                proposal: result.proposal ?? null,
+                // Just log it: `logged` when the diary was written, else why not.
+                ...autoRes.extra,
+              });
+            }
             void recordParseTrace(admin, {
               user_id: userId,
               input_text: text.slice(0, USER_TEXT_MAX_CHARS),
@@ -2465,7 +2651,7 @@ async function handleParseMealRequest(args: {
               // unexplained latency. pre_parse_ms is auth + the rate-limit write
               // before the parse starts; run_parse_ms brackets the parse itself,
               // so latency - pre - run is what the response and trace cost.
-              steps: [...result.steps, ...(autoRes.step ? [autoRes.step] : []), {
+              steps: [...result.steps, ...(autoRes?.step ? [autoRes.step] : []), {
                 iter: 9,
                 tool: "__edge_timing",
                 input: {
@@ -2482,7 +2668,7 @@ async function handleParseMealRequest(args: {
               output_tokens: result.usage.output_tokens,
               web_search_requests: result.usage.web_search_requests,
               latency_ms: Date.now() - startedAtMs,
-            }, intentP.then(foodIntentStep));
+            }, intentP.then((d) => foodIntentStep(d, outcome.action)));
             // COST. recordTrace writes coach_traces; logTokenUsage writes the
             // token-cost table that cost_summary, cost_by_day and the admin
             // pages read. They are separate calls, and the SSE branch had
@@ -2577,6 +2763,7 @@ async function handleParseMealRequest(args: {
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
   const intentP = startFoodIntent(userClient, text, previousItems.length > 0);
+  const supportsCreate = clientSupportsFoodCreate(body);
 
   try {
     // Just log it on the JSON path: the parse AND the diary write stay alive
@@ -2604,10 +2791,14 @@ async function handleParseMealRequest(args: {
           recentTurns,
         },
       );
-      return { result, autoRes: await finishAutoLog(result) };
+      // Decided before the diary write, for the same reason as the stream: a
+      // create or a reply must not log the parsed meal behind the user's back.
+      const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint });
+      const autoRes = outcome.action === "log" ? await finishAutoLog(result) : null;
+      return { result, autoRes, outcome };
     })();
     if (autoLogArmed) keepAlive(work);
-    const { result, autoRes } = await work;
+    const { result, autoRes, outcome } = await work;
 
     trace.status = "success";
     trace.input_tokens = result.usage.input_tokens || null;
@@ -2646,7 +2837,7 @@ async function handleParseMealRequest(args: {
     // observability + eval, whether or not the user ends up logging it.
     const edgeSteps = [
       ...result.steps,
-      ...(autoRes.step ? [autoRes.step] : []),
+      ...(autoRes?.step ? [autoRes.step] : []),
       {
         iter: 9,
         tool: "__edge_timing",
@@ -2673,8 +2864,20 @@ async function handleParseMealRequest(args: {
       output_tokens: result.usage.output_tokens,
       web_search_requests: result.usage.web_search_requests,
       latency_ms: Date.now() - startedAtMs,
-    }, intentP.then(foodIntentStep));
+    }, intentP.then((d) => foodIntentStep(d, outcome.action)));
 
+    if (outcome.action === "create") {
+      return respond(
+        { parsed: null, declined: null, proposal: null, create: outcome.create, usage: result.usage, tool_calls: result.tool_calls },
+        200,
+      );
+    }
+    if (outcome.action === "reply") {
+      return respond(
+        { parsed: null, declined: { message: outcome.reply }, proposal: null, usage: result.usage, tool_calls: result.tool_calls },
+        200,
+      );
+    }
     return respond(
       {
         parsed: result.parsed,
@@ -2682,7 +2885,7 @@ async function handleParseMealRequest(args: {
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
         // Just log it: `logged` when the diary was written, else why not.
-        ...autoRes.extra,
+        ...(autoRes?.extra ?? {}),
         usage: result.usage,
         tool_calls: result.tool_calls,
       },
