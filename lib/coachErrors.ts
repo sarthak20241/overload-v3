@@ -35,11 +35,25 @@ function detailOf(raw: unknown): string {
  * live on `error.context`, which is the raw Response. Without this the
  * classifier can never see a 401 or a 429, and the console log is useless.
  * Both invoke call sites go through here so they cannot drift apart again.
+ *
+ * `context` is NOT always a Response, and assuming it was is how a failure
+ * that never reached the server got reported as one that did. supabase-js
+ * wraps a THROWING fetch in FunctionsFetchError, whose message is the same
+ * useless "Failed to send a request to the Edge Function" every time and whose
+ * context is the original thrown error — the only thing that says what went
+ * wrong. Reading only the Response shape dropped it, so every transport
+ * failure landed in the generic "Something broke on my end", blaming our
+ * server for a request that never left the device. Our own auth fetch throws
+ * exactly this way when Clerk cannot hand over a token in time.
  */
 export async function coachInvokeErrorMessage(error: unknown): Promise<string> {
   let detail = detailOf(error);
   const ctx = (error as any)?.context;
   if (ctx) {
+    // A Response carries the status and the server's body; anything else is a
+    // thrown error whose own message is the reason. The two are mutually
+    // exclusive, and only the second one can reach the offline bucket.
+    const isResponse = typeof ctx.status === 'number' || typeof ctx.json === 'function';
     if (typeof ctx.status === 'number') detail = `HTTP ${ctx.status}: ${detail}`;
     try {
       if (typeof ctx.json === 'function') {
@@ -50,6 +64,14 @@ export async function coachInvokeErrorMessage(error: unknown): Promise<string> {
         if (inner) detail = `${detail} ${inner}`;
       }
     } catch { /* body already consumed or not JSON — status alone still helps */ }
+    if (!isResponse) {
+      // Only text we can actually read. A bare object would stringify to
+      // "[object Object]", which tells the classifier and the console nothing.
+      const cause = ctx instanceof Error || typeof ctx === 'string' || typeof ctx?.message === 'string'
+        ? detailOf(ctx)
+        : '';
+      if (cause) detail = `${detail} (${cause})`;
+    }
   }
   return coachErrorMessage(detail);
 }
