@@ -92,11 +92,16 @@ export const SPECS: Spec[] = [
   w('normal-wobble', 'near-miss', 'propose_lower_calories', '0.35 kg wobble is a normal scale', { wobbleKg: 0.35 }),
   w('two-weigh-ins', 'clean', 'request_weigh_ins', 'two weigh-ins in 14 days', { weighIns: 2 }),
   w('no-weigh-ins', 'clean', 'request_weigh_ins', 'none at all', { weighIns: 0 }),
-  w('five-weigh-ins', 'near-miss', 'propose_lower_calories', 'five is thin but readable', { weighIns: 5 }),
+  // The lines are the SHIPPED ones (dronaCalories: 6+ weigh-ins and 9+ food days before
+  // calories may change). The first version of this file invented looser lines and
+  // labelled 'lower calories on 5 weigh-ins' as right. The owner caught it.
+  w('five-weigh-ins', 'clean', 'request_weigh_ins', 'five is not enough to move calories on', { weighIns: 5 }),
+  w('six-weigh-ins', 'near-miss', 'propose_lower_calories', 'six is the line: enough', { weighIns: 6 }),
   // ── food logging ───────────────────────────────────────────────────────────
   w('four-days-logged', 'clean', 'request_more_food_logging', '4 of 14', { daysLogged: 4 }),
   w('nothing-logged', 'clean', 'request_more_food_logging', '0 of 14', { daysLogged: 0 }),
-  w('eight-days-logged', 'near-miss', 'propose_lower_calories', '8 of 14 is enough', { daysLogged: 8 }),
+  w('eight-days-logged', 'clean', 'request_more_food_logging', '8 of 14 is not enough to judge intake', { daysLogged: 8 }),
+  w('nine-days-logged', 'near-miss', 'propose_lower_calories', '9 of 14 is the line: enough', { daysLogged: 9 }),
   // ── protein ────────────────────────────────────────────────────────────────
   w('protein-half', 'clean', 'propose_protein_fix', '47% of protein target', { proteinShare: 0.47 }),
   w('protein-two-thirds', 'clean', 'propose_protein_fix', '65% of target', { proteinShare: 0.65 }),
@@ -138,7 +143,7 @@ export const SPECS: Spec[] = [
   w('fresh-jumpy-64kg', 'fresh', 'request_steadier_weigh_ins', 'a light person, 1 kg wobble', { kg: 64, goalKg: 60, kcal: 1700, protein: 125, wobbleKg: 1.0 }),
   w('fresh-exactly-three-weigh-ins', 'fresh', 'request_weigh_ins', 'the boundary: three', { weighIns: 3 }),
   w('fresh-six-days-logged', 'fresh', 'request_more_food_logging', 'the boundary: six', { daysLogged: 6 }),
-  w('fresh-seven-days-logged', 'fresh', 'propose_lower_calories', 'seven is enough', { daysLogged: 7 }),
+  w('fresh-seven-days-logged', 'fresh', 'request_more_food_logging', 'seven is still under the line of nine', { daysLogged: 7 }),
   w('fresh-protein-78pct', 'fresh', 'propose_protein_fix', 'just under the line', { proteinShare: 0.78 }),
   w('fresh-3-day-plan-missed', 'fresh', 'talk_about_missed_training', 'planned 3, did 1 and 1', { pctPerWeek: -0.5, planned: 3, done: [3, 3, 1, 1], daysSinceLast: 5 }),
   w('fresh-6-day-plan-one-short', 'fresh', 'offer_to_relay_week', 'planned 6: 6, 5, 6, then 2', { pctPerWeek: -0.5, planned: 6, done: [6, 5, 6, 2], daysSinceLast: 2 }),
@@ -243,7 +248,7 @@ function build(s: Spec, seed: string) {
 
 /** The truth for each signal, from the spec. null = not a fair question for this week. */
 export function truthFor(s: Spec): Record<SignalName, boolean | null> {
-  const readable = s.weighIns >= 4 && s.wobbleKg < 0.7;
+  const readable = s.weighIns >= 6 && s.wobbleKg < 0.7;
   const undid = s.changes.some((c, i) => c.changed_by === 'user_by_hand' && s.changes.some((e, j) => j !== i && e.changed_by !== 'user_by_hand' && e.days_ago > c.days_ago && e.to === c.from));
   const recent = s.done[3] / s.planned, before = s.done[2] / s.planned;
   return {
@@ -251,9 +256,9 @@ export function truthFor(s: Spec): Record<SignalName, boolean | null> {
     weight_falling_fast: readable ? s.pctPerWeek <= -1.0 : null,
     weight_rising_fast: readable ? s.pctPerWeek >= 0.5 : null,
     scale_is_jumpy: s.weighIns >= 4 ? s.wobbleKg >= 0.7 : null,
-    few_weigh_ins: s.weighIns <= 3,
-    food_log_sparse: s.daysLogged <= 6,
-    intake_near_target: s.daysLogged >= 7 ? Math.abs(s.kcalOffset) <= s.kcal * 0.1 : null,
+    few_weigh_ins: s.weighIns < 6,
+    food_log_sparse: s.daysLogged < 9,
+    intake_near_target: s.daysLogged >= 9 ? Math.abs(s.kcalOffset) <= s.kcal * 0.1 : null,
     has_far_over_days: s.daysLogged >= 1 ? !!s.highDays && s.highDays.kcal >= s.kcal * 1.4 : false,
     protein_adequate: s.daysLogged >= 1 ? s.proteinShare >= 0.85 : null,
     user_undid_a_cut: undid,

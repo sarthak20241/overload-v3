@@ -66,9 +66,15 @@ confidence: `{"choice":"talk_about_high_days","confidence":0.82,"probabilities":
 | Group | Count | What it proves |
 |---|---|---|
 | clean | 35 | every card, on different bodies, targets and training plans |
-| near-miss | 9 | just on the SAFE side of a line: 8 days logged, 0.35 kg wobble, one day at 125%, protein at 88%, a hand edit with no coach change before it |
+| near-miss | 9 | just on the SAFE side of a line: exactly 6 weigh-ins, exactly 9 food days, 0.35 kg wobble, one day at 125%, protein at 88%, a hand edit with no coach change before it |
 | mixed | 6 | two things true at once; the priority order decides (an undone change beats high days; high days beat low protein; training drift beats a food stall) |
 | fresh | 18 | written AFTER tuning, never used to tune. Boundaries (exactly three weigh-ins, six days logged), a reversed RAISE, a flu note, a note about a trip that already ended |
+
+**The lines are the SHIPPED ones.** `dronaCalories.ts` lets calories move only on
+6+ weigh-ins and 9+ food days; under that the card asks for more data. The first
+version of this set invented looser lines (3 and 6) and labelled "lower calories
+on 5 weigh-ins" as right. The owner caught it. A label that contradicts the
+product is worse than no test: check new lines against the shipped rules.
 
 ## The scoring
 
