@@ -67,6 +67,11 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKe
   },
 });
 
+/** How long a request will wait on Clerk for a token before failing. Sized for
+ *  a COLD refresh on mobile, not a warm cache read — see the note in the fetch
+ *  wrapper below for what the old 4s budget cost. */
+const TOKEN_BUDGET_MS = 10000;
+
 // Hook that returns a Supabase client which forwards the current Clerk session
 // JWT on every request. Use this everywhere user data is touched.
 //
@@ -102,11 +107,27 @@ export function useSupabaseClient(): SupabaseClient {
           // request forever — Clerk otherwise blocks on a token refresh it
           // can't complete offline. On timeout we treat it as no token and FAIL
           // the request (see below) rather than hanging the UI.
+          //
+          // The bound was 4s, which is not a slow network, it is a COLD one.
+          // Clerk's session token is short-lived, so the first request after
+          // the app has sat idle pays a full refresh round trip to clerk.com
+          // before anything of ours is contacted. On mobile that runs past 4s
+          // often enough to matter: two meal parses died here at 4026ms and
+          // 3482ms without ever reaching the edge function (the function logs
+          // show no invocation at all), and the retry 6s later died the same
+          // way. The token was fine again a minute on, once the refresh had
+          // landed and cached. TOKEN_BUDGET_MS buys that refresh room to
+          // finish while still bounding the wait, and it stays well under the
+          // time a parse itself takes, so it costs a healthy request nothing.
           let token: string | null = null;
+          let timedOut = false;
           try {
             token = await Promise.race([
               getTokenRef.current(),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+              new Promise<null>((resolve) => setTimeout(() => {
+                timedOut = true;
+                resolve(null);
+              }, TOKEN_BUDGET_MS)),
             ]);
           } catch {
             token = null;
@@ -117,7 +138,17 @@ export function useSupabaseClient(): SupabaseClient {
           // would then write over their caches, wiping the user's data view (and
           // resetting XP / workout counts to 0). Throwing makes supabase-js
           // surface an error so callers keep their cached data instead.
-          if (!token) throw new Error('No auth token available (offline?)');
+          //
+          // The two cases say so separately, because this message is the ONLY
+          // account of the failure that reaches the user: supabase-js buries it
+          // in FunctionsFetchError.context and coachErrorMessage buckets it by
+          // wording. Both strings must keep a word the offline bucket matches
+          // ("timed out", "offline") or the user is told our server broke.
+          if (!token) {
+            throw new Error(timedOut
+              ? `Auth token timed out after ${TOKEN_BUDGET_MS}ms (slow connection?)`
+              : 'No auth token available (offline?)');
+          }
           const headers = new Headers(init.headers);
           headers.set('Authorization', `Bearer ${token}`);
           return fetch(input as any, { ...init, headers });
