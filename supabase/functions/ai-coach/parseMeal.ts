@@ -4625,7 +4625,13 @@ export async function runParseMeal(
         drona_line: `Fresh numbers, not your saved meal. ${fresh.parsed.drona_line}`.slice(0, 240),
       };
     }
+    // The call that noticed the rejection was billed too: keep its cost.
     fresh.steps = [...result.steps, ...fresh.steps];
+    fresh.tool_calls = [...result.tool_calls, ...fresh.tool_calls];
+    fresh.iterations += result.iterations;
+    for (const k of Object.keys(fresh.usage) as (keyof ParseMealResult["usage"])[]) {
+      fresh.usage[k] += result.usage[k];
+    }
     return fresh;
   }
 
