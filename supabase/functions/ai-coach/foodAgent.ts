@@ -225,7 +225,8 @@ interface ToolUse {
 
 export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): Promise<FoodAgentOutcome> {
   const turns: AgentTurn[] = [];
-  const days = input.today ? recentDays(input.today) : null;
+  // An undated `today` still goes in as written rather than being dropped.
+  const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
   const messages: unknown[] = [{
     role: "user",
     content: days ? `(${days})\n${input.text}` : input.text,
@@ -462,7 +463,9 @@ function copiedLine(raw: unknown, meal: MealType, seen: Seen): ParsedItem[] {
       : from === "changed"
       ? {
         source: "manual" as const,
-        assumption: `Adjusted from ${[...was!][0]} kcal in your log.`,
+        // The same food can appear on two days with different numbers: cite
+        // the one closest to the new value, the likeliest one it came from.
+        assumption: `Adjusted from ${[...was!].sort((a, b) => Math.abs(a - kcal) - Math.abs(b - kcal))[0]} kcal in your log.`,
         confidence: "medium" as const,
       }
       : { source: "estimate" as const, assumption: "Not found in your logs, so check this one.", confidence: "low" as const }),

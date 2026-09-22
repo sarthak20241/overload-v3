@@ -263,3 +263,13 @@ Deno.test("which date a weekday was is worked out in code", () => {
   assert(d.includes("days_ago 7 = Thursday 2026-09-17"));
   assertEquals(recentDays("no date here"), null);
 });
+
+Deno.test("an adjusted line cites the logged number closest to it", async () => {
+  const d = deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }, { name: "coach_list_logged_meals", input: { days_ago: 2 } }],
+    [{ name: "log_food", input: { summary: "x", items: [{ food_name: "rice", kcal: 140 }] } }],
+  ]));
+  d.readDiary = async (i) => ({ meals: [{ foods: [{ food_name: "rice", kcal: i.days_ago === 1 ? 300 : 150 }] }] });
+  const out = await runFoodAgent(INPUT, d);
+  assertEquals(out.kind === "log" && out.result.parsed!.items[0].assumption, "Adjusted from 150 kcal in your log.");
+});
