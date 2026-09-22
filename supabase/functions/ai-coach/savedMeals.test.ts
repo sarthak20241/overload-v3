@@ -65,6 +65,7 @@ Deno.test("a meal logs its own rows, times the count", () => {
   assertEquals(lines.map((l) => l.grams), [96, 1100]);
   assertEquals(lines.map((l) => l.food_id), ["f-oats", "f-milk"]);
   assertEquals(lines.every((l) => l.source === "manual" && l.confidence === "high"), true);
+  assertEquals(lines.every((l) => l.saved_meal === "Oats with milk"), true);
 });
 
 Deno.test("a recipe logs one line at count / yield of the batch", () => {

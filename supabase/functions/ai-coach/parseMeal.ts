@@ -129,6 +129,9 @@ export interface ParsedItem {
    *  answered no, so a badge belongs on `true` alone. Stamped in
    *  stripEphemeralIds, the one step every return path already owes. */
   verified?: boolean;
+  /** Set on lines that are a saved meal's own rows (savedMeals.ts): the name
+   *  of that saved meal. The card labels them "saved meal". */
+  saved_meal?: string;
   /** Which diary section this line belongs in. Optional on the type because
    *  lines are built in a dozen places (fill, fallback, decide, corrections,
    *  research) and none of them knows the meal; assignItemMeals stamps it in

@@ -45,7 +45,7 @@ import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
-  loadNutritionRange, dateFromYmd,
+  loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
 import {
@@ -75,7 +75,9 @@ type ParseFlow =
   | { status: 'idle' }
   // `auto`: this parse was sent in "Just log it" mode, so the card says
   // "adding" rather than "reading" while it waits.
-  | { status: 'analysing'; raw: string; auto?: boolean }
+  // `statusLabel`: a multi-step message, and what Drona is doing for it now
+  // ("Checking yesterday's breakfast"). Sent by the food agent only.
+  | { status: 'analysing'; raw: string; auto?: boolean; statusLabel?: string }
   // Fast mode only: the names are known and the numbers are still settling, so
   // the card shows real rows with shimmering figures instead of a spinner.
   // Named rows arrive ~1.2s ahead of the finished parse; this is that window.
@@ -117,6 +119,36 @@ type ParseFlow =
       status: 'create'; raw: string; create: CoachFoodCreate;
       result: CoachFoodCreateResult | null; busy: boolean;
     };
+
+/** The "use your saved meal?" offer for a reviewed card, or null. The FIRST
+ *  suggestion whose line is still on the card wins; the proposal is the whole
+ *  card with that one line replaced by the saved meal's own rows, which is the
+ *  shape onAcceptProposal already applies. Any failure is just no offer. */
+async function savedMealOffer(
+  supabase: Parameters<typeof listSavedMeals>[0],
+  items: ParsedMealItem[],
+  suggestions: { food_name: string; saved_id: string; saved_name: string }[],
+): Promise<{ notice: string; proposal: { items: ParsedMealItem[]; note: string } } | null> {
+  if (suggestions.length === 0) return null;
+  try {
+    const saved = await listSavedMeals(supabase);
+    const key = (n: string) => n.trim().toLowerCase();
+    for (const sug of suggestions) {
+      const meal = saved.find((m) => m.id === sug.saved_id);
+      const at = items.findIndex((it) => key(it.food_name) === key(sug.food_name));
+      if (!meal || at < 0) continue;
+      const swapped = savedMealAsItems(meal, items[at].meal_type);
+      const kcal = Math.round(swapped.reduce((a, it) => a + it.kcal, 0));
+      return {
+        notice: `You have ${meal.name} saved, ${kcal} kcal with your own numbers. Want that instead of ${items[at].food_name}?`,
+        proposal: { items: [...items.slice(0, at), ...swapped, ...items.slice(at + 1)], note: 'Use my saved meal' },
+      };
+    }
+  } catch {
+    // No offer. The card is right as it is.
+  }
+  return null;
+}
 
 const fmtK = (n: number) => Math.round(n).toLocaleString();
 const calCaption = (eaten: number, goal: number) =>
@@ -506,8 +538,12 @@ export default function NutritionScreen() {
       is_correction: !!pending,
       chars: t.length,
     });
+    // A Quick follow-up still says it is Quick. The correction itself runs the
+    // full pipeline either way, but a fresh re-parse it triggers ("not from
+    // saved meals") has to come back in the tier the user picked.
+    const followUpSpeed = precise ? { speed: 'super' as const } : pending && tier === 'quick' ? { speed: 'fast' as const } : {};
     const res = pending || tier !== 'quick'
-      ? await parseMeal(supabase, { ...args, ...(precise ? { speed: 'super' as const } : {}) })
+      ? await parseMeal(supabase, { ...args, ...followUpSpeed })
       : await parseMealStreaming(supabase, args, (rows) => {
         // A stream that resolves after the user has moved on must not repaint
         // the card they are now looking at.
@@ -515,7 +551,10 @@ export default function NutritionScreen() {
         setFlow((cur) => (
           cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows, auto: cur.auto } : cur
         ));
-      }, ac.signal);
+      }, ac.signal, (label) => {
+        if (parseTokenRef.current !== token) return;
+        setFlow((cur) => (cur.status === 'analysing' && cur.raw === t ? { ...cur, statusLabel: label } : cur));
+      });
     // From here on we are writing to the card. If another parse has started, or
     // the user discarded this one, this result is stale - drop it whole rather
     // than let any branch below (declined, cap, error, review) speak for a
@@ -684,7 +723,19 @@ export default function NutritionScreen() {
             mealTypePicked: prevReview?.mealTypePicked,
           };
         })();
-    setFlow(skippedNotice ? { ...reviewFlow, notice: skippedNotice } : reviewFlow);
+    // A food that is only PART of a saved meal was searched as asked ("oats",
+    // saved "Oats with milk"). Offer the saved meal as a choice, never a swap:
+    // the numbers on the card do not change unless the user taps. Loaded
+    // BEFORE the card is set, so the card appears once, whole (I15 below).
+    const offer = !skippedNotice && reviewFlow.status === 'review'
+      ? await savedMealOffer(supabase, reviewFlow.meal.items, res.savedSuggestions ?? [])
+      : null;
+    if (parseTokenRef.current !== token) return;
+    setFlow(
+      skippedNotice ? { ...reviewFlow, notice: skippedNotice }
+      : offer && reviewFlow.status === 'review' ? { ...reviewFlow, notice: offer.notice, proposal: offer.proposal }
+      : reviewFlow,
+    );
     // I15: NOTHING fires after this point. The card the user is reading is the
     // card they will log. The automatic web refine that used to run here swapped
     // numbers in while Add was already live, so a user could tap Add on 180 kcal
@@ -1287,6 +1338,7 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' || flow.status === 'sent' ? flow.message : null
               }
               autoLogging={(flow.status === 'analysing' || flow.status === 'streaming') && !!flow.auto}
+              statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
               onMealTypeChange={onMealTypeChange}
               onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
