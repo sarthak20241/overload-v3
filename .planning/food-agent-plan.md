@@ -61,7 +61,12 @@ fast path and today's latency.
    - Gated on `food_create` (builds that draw save cards). Status events are
      ignored by builds that do not know them, so no new capability was needed.
    - No log to past days yet: log_food writes today only.
-3. **App**: status lines, save-and-log card, saved-meal chip. Capability gate.
+3. **App**: status lines, saved-meal offer, "saved meal" label, Quick tier on
+   follow-ups. DONE, PR #200, verified on the iOS simulator. The save-and-log
+   card needed no change (existing create card with log_now). Status lines show
+   on Quick only: Thorough/Precise use the JSON path, which has no stream.
+   Also shipped from device testing: #199 ('not from saved meals' caught in
+   code, no 'Logged.' before a tap).
 4. **Eval**: multi-step case set, via `claude -p` only.
 
 ## Open
