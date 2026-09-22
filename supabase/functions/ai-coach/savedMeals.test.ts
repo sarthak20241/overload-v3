@@ -290,3 +290,41 @@ Deno.test("rejecting the saved meal keeps the cost of BOTH calls", async () => {
   assertEquals(r.usage.output_tokens, 30);
   assertEquals(r.tool_calls.length, 2);
 });
+
+// ── Seen on device: the model missed "not from saved meals" ─────────────────
+
+import { rejectsSavedMeal } from "./savedMeals.ts";
+
+Deno.test("plain words that turn the saved meal down are caught in code", () => {
+  for (const t of ["not from saved meals", "don't use my saved one", "do not use the saved meal", "without my saved meal", "no, not my meals"]) {
+    assertEquals(rejectsSavedMeal(t), true, t);
+  }
+  for (const t of ["make it 2 servings", "save this as a meal", "add a banana", "not the milk"]) {
+    assertEquals(rejectsSavedMeal(t), false, t);
+  }
+});
+
+Deno.test("the rejection fires even when the model does not flag it", async () => {
+  let call = 0;
+  const deps = stub([], []);
+  deps.fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
+    call++;
+    const name = JSON.parse(String(init?.body ?? "{}")).tool_choice?.name;
+    // What the device trace showed: no rejects_saved, no items.
+    const input = call === 1
+      ? { declined: false, items: [] }
+      : { declined: false, meal_type_from_text: null, items: [OATMEAL_ITEM] };
+    return new Response(JSON.stringify({
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+      content: [{ type: "tool_use", name, input }],
+    }), { status: 200 });
+  }) as typeof fetch;
+  const r = await runParseMeal(deps, {
+    ...INPUT, text: "not from saved meals", mode: null, savedMeals: [OATS],
+    previousText: "log the oat meal",
+    previousItems: [{ food_id: "f-oats", food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180, source: "manual" }],
+  });
+  // Thorough mode: the fresh parse lands on the catalog row, not the saved oats.
+  assertEquals(r.parsed?.items.map((i) => i.food_name), ["Oatmeal, cooked"]);
+  assertEquals(r.parsed?.corrects_previous, true);
+});

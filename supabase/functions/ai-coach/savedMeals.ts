@@ -254,6 +254,16 @@ function words(s: string): string[] {
     .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w));
 }
 
+/** Plain words that turn the saved meal down: "not from saved meals", "don't
+ *  use my saved one", "without the saved meal". Checked in code so the obvious
+ *  phrasing never depends on the model spotting it: seen on device, the model
+ *  could not tell which card lines came from a saved meal and missed it. */
+export function rejectsSavedMeal(text: string): boolean {
+  const t = text.toLowerCase();
+  if (!/\bsaved\b|\bmy meals\b/.test(t)) return false;
+  return /\b(not|don'?t|do not|no|without|instead of|never|skip|ignore)\b/.test(t);
+}
+
 function norm(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ").replace(/^"|"$/g, "");
 }

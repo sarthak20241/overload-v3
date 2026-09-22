@@ -737,7 +737,7 @@ function toParseResult(data: any): ParseMealResult {
     meal: {
       meal_type: mealType,
       items: (parsed.items as any[]).map((i) => toParsedItem(i, mealType)),
-      drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
+      drona_line: String(parsed.drona_line ?? 'Here it is. Keep the protein coming.'),
       corrects_previous: parsed.corrects_previous === true,
     },
     logged,

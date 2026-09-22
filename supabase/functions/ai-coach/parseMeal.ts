@@ -31,6 +31,7 @@ import {
   savedCount,
   type SavedHit,
   type SavedMealForParse,
+  rejectsSavedMeal,
   savedMealsBlock,
   suggestSavedMeal,
 } from "./savedMeals.ts";
@@ -651,14 +652,16 @@ function prepForItems(
   return byFood;
 }
 
-/** Coach line without a model call, keyed on what the meal actually is. */
+/** Coach line without a model call, keyed on what the meal actually is.
+ *  Never says "logged": the card is still waiting for a tap when this shows,
+ *  and on device it read "Logged." above an Add button. */
 export function templateDronaLine(items: ParsedItem[]): string {
   const protein = Math.round(items.reduce((a, it) => a + (it.protein_g || 0), 0));
   const kcal = Math.round(items.reduce((a, it) => a + (it.kcal || 0), 0));
   if (protein >= 30) return `${protein}g protein in there. That is how you build.`;
-  if (protein >= 15) return `${protein}g protein logged. Solid, keep stacking.`;
+  if (protein >= 15) return `${protein}g protein in this one. Solid, keep stacking.`;
   if (kcal >= 400) return `${kcal} calories, light on protein. Add a protein hit next.`;
-  return "Logged. Keep the protein coming.";
+  return "Here it is. Keep the protein coming.";
 }
 
 /**
@@ -1086,8 +1089,9 @@ const EXTRACT_TOOL = {
       rejects_saved: {
         type: "boolean",
         description:
-          "Only with a previous meal: true when the user rejects their SAVED meal on that card " +
-          '("not from saved meals", "don\'t use my saved one", "estimate it fresh"). ' +
+          "Only with a previous meal: true when the user turns down using their SAVED meal " +
+          '("not from saved meals", "don\'t use my saved one", "estimate it fresh instead of my meal"), ' +
+          "even when you cannot tell which lines on the card came from a saved meal. " +
           "Their original words are then logged again without saved meals. false otherwise.",
       },
       declined: {
@@ -4883,7 +4887,7 @@ async function runParseMealCore(
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Handled in runParseMeal, which re-logs the original words without saved
   // meals. Nothing below would do anything useful with this turn.
-  if (hasPrevious && ext.rejects_saved === true && input.previousText?.trim()) {
+  if (hasPrevious && (ext.rejects_saved === true || rejectsSavedMeal(input.text)) && input.previousText?.trim()) {
     steps.push({ iter: 0, tool: "rejects_saved", input: null, result: null });
     return declineResult("Logging that again without your saved meal.");
   }
@@ -5666,7 +5670,7 @@ async function runParseMealCore(
       input.todayTotals,
       input.targets,
     )
-    : "Logged. Keep the protein coming.";
+    : "Here it is. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 
   steps.push({ iter: 9, tool: "__timing", input: { ...T } });
