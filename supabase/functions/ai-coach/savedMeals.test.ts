@@ -328,3 +328,46 @@ Deno.test("the rejection fires even when the model does not flag it", async () =
   assertEquals(r.parsed?.items.map((i) => i.food_name), ["Oatmeal, cooked"]);
   assertEquals(r.parsed?.corrects_previous, true);
 });
+
+function rejectionDeps(firstItems: Record<string, unknown>[], seen: string[]) {
+  let call = 0;
+  const deps = stub([], []);
+  deps.fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
+    call++;
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (call > 1) seen.push(String(body.messages?.[0]?.content ?? ""));
+    const input = call === 1
+      ? { declined: false, items: firstItems }
+      : { declined: false, meal_type_from_text: null, items: [OATMEAL_ITEM] };
+    return new Response(JSON.stringify({
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+      content: [{ type: "tool_use", name: body.tool_choice?.name, input }],
+    }), { status: 200 });
+  }) as typeof fetch;
+  return deps;
+}
+
+const SAVED_CARD = {
+  previousText: "log the oat meal",
+  previousItems: [{ food_id: "f-oats", food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180, source: "manual" as const }],
+};
+
+Deno.test("rejecting the saved meal AND adding food keeps the new food", async () => {
+  const seen: string[] = [];
+  const eggs = { name: "eggs", quantity: 2, unit: "piece" };
+  await runParseMeal(rejectionDeps([eggs], seen), {
+    ...INPUT, text: "not using my saved meal, add 2 eggs", mode: null, savedMeals: [OATS], ...SAVED_CARD,
+  });
+  assertEquals(seen[0], "log the oat meal. not using my saved meal, add 2 eggs");
+});
+
+Deno.test("the code check never fires on a card with no saved-meal lines", async () => {
+  const seen: string[] = [];
+  const r = await runParseMeal(rejectionDeps([], seen), {
+    ...INPUT, text: "no, not my meals", mode: null, savedMeals: [OATS],
+    previousText: "2 eggs",
+    previousItems: [{ food_id: null, food_name: "eggs", quantity: 2, serving_label: "piece", grams: 100, kcal: 140, source: "estimate" }],
+  });
+  assertEquals(seen, []);
+  assertEquals(r.steps.some((s) => s.tool === "rejects_saved"), false);
+});

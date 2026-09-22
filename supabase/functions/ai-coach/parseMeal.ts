@@ -4613,10 +4613,13 @@ export async function runParseMeal(
   // off, in the same mode, and replace the card. The correction paths are the
   // wrong tool here: a saved meal is several lines standing for one thing they
   // said, and only the original words say what that thing was.
-  if (!firstShot && result.steps.some((s) => s.tool === "rejects_saved") && input.previousText?.trim()) {
+  const rejection = result.steps.find((s) => s.tool === "rejects_saved");
+  if (!firstShot && rejection && input.previousText?.trim()) {
+    const newItems = Number((rejection.input as { new_items?: number } | null)?.new_items ?? 0);
     const fresh = await runParseMeal(deps, {
       ...input,
-      text: input.previousText,
+      // Only the original words, unless this message added food of its own.
+      text: newItems > 0 ? `${input.previousText.trim()}. ${input.text.trim()}` : input.previousText,
       previousText: null,
       previousItems: [],
       recentTurns: [],
@@ -4887,8 +4890,15 @@ async function runParseMealCore(
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Handled in runParseMeal, which re-logs the original words without saved
   // meals. Nothing below would do anything useful with this turn.
-  if (hasPrevious && (ext.rejects_saved === true || rejectsSavedMeal(input.text)) && input.previousText?.trim()) {
-    steps.push({ iter: 0, tool: "rejects_saved", input: null, result: null });
+  // The code check only counts when the card really has saved-meal lines on it
+  // (they arrive as 'manual'); otherwise "no, not my meals" on an ordinary card
+  // would throw that card away.
+  const codeRejects = rejectsSavedMeal(input.text) && prevItems.some((p) => p.source === "manual");
+  if (hasPrevious && (ext.rejects_saved === true || codeRejects) && input.previousText?.trim()) {
+    // New food in the same message ("not my saved meal, add 2 eggs") must not be
+    // lost: runParseMeal re-logs the original words WITH this message.
+    const newFood = extItems.filter((it) => !it.correctsFoodName).length;
+    steps.push({ iter: 0, tool: "rejects_saved", input: { new_items: newFood, by: ext.rejects_saved === true ? "model" : "code" }, result: null });
     return declineResult("Logging that again without your saved meal.");
   }
   // Previous lines the user explicitly re-targeted. These are deliberately
