@@ -30,7 +30,7 @@ const TARGETS = { protein_target_g: 150, daily_calorie_target: 2000 };
 Deno.test("the real regression: a fabricated protein figure is replaced", () => {
   const out = groundDronaLine("Three eggs, 37.5 grams protein.", EGGS, TODAY, TARGETS);
   assertEquals(out.includes("37.5"), false);
-  assertEquals(out, "19g protein logged. Solid, keep stacking.");
+  assertEquals(out, "19g protein in this one. Solid, keep stacking.");
 });
 
 Deno.test("a line quoting the MEAL total survives", () => {
