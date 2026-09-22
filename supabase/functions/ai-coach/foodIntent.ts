@@ -512,3 +512,115 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
 
   return "log";
 }
+
+// ── What happened after the decision ─────────────────────────────────────────
+//
+// A 'reply' or a 'create' is a second model call, and until this existed its
+// output reached the user and nowhere else. Asked "what did Drona tell them",
+// the trace could only offer the parse's own decline, which the user never saw
+// whenever a reply replaced it. These readers turn the raw call into the value
+// the food bar serves AND the record the trace keeps, in one place, so the two
+// cannot drift apart.
+
+/** callAnthropic's result, restated here so this module stays import-free of
+ *  index.ts and can be tested on its own. */
+export type AnthropicCallResult =
+  | { ok: true; data: any }
+  | { ok: false; status: number; body: string };
+
+/** Everything the follow-up call did, for parse_traces. */
+export interface FoodFollowup {
+  kind: "reply" | "create";
+  ok: boolean;
+  ms: number;
+  /** Set when the call failed: the HTTP status (504 for our own timeout). */
+  http_status: number | null;
+  error: string | null;
+  stop_reason: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  /** reply: the model's text BEFORE cleanup. */
+  raw_text: string | null;
+  /** reply: the exact sentence the user was shown. Null means nothing was
+   *  shown and the bar fell back to the log path. */
+  shown_text: string | null;
+  /** create: which tool the model picked, and the card it drafted. */
+  tool: string | null;
+  draft: Record<string, unknown> | null;
+}
+
+const ERROR_BODY_MAX = 300;
+const REPLY_MAX_CHARS = 400;
+
+function baseFollowup(kind: FoodFollowup["kind"], res: AnthropicCallResult, ms: number): FoodFollowup {
+  const usage = res.ok ? res.data?.usage : null;
+  return {
+    kind,
+    ok: false,
+    ms,
+    http_status: res.ok ? null : res.status,
+    error: res.ok ? null : String(res.body ?? "").slice(0, ERROR_BODY_MAX),
+    stop_reason: res.ok ? (res.data?.stop_reason ?? null) : null,
+    input_tokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : null,
+    output_tokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : null,
+    raw_text: null,
+    shown_text: null,
+    tool: null,
+    draft: null,
+  };
+}
+
+/** The follow-up that never ran because there was no API key. */
+export function skippedFollowup(kind: FoodFollowup["kind"]): FoodFollowup {
+  return { ...baseFollowup(kind, { ok: false, status: 0, body: "" }, 0), http_status: null, error: "no_api_key" };
+}
+
+/** Read the reply call. `reply` is what the food bar shows, or null to fall
+ *  back to the log path. */
+export function readReplyResult(
+  res: AnthropicCallResult,
+  ms: number,
+): { reply: string | null; followup: FoodFollowup } {
+  const followup = baseFollowup("reply", res, ms);
+  if (!res.ok) return { reply: null, followup };
+  const raw = ((res.data?.content ?? []) as { type?: string; text?: string }[])
+    .filter((b) => b?.type === "text")
+    .map((b) => b.text ?? "")
+    .join("");
+  const cleaned = raw
+    .trim()
+    // A stray em dash reads as machine-written. Belt on top of the prompt.
+    .replace(/\s*—\s*/g, ", ");
+  const reply = cleaned.length > 0 ? cleaned.slice(0, REPLY_MAX_CHARS) : null;
+  return {
+    reply,
+    followup: {
+      ...followup,
+      ok: reply !== null,
+      error: reply === null ? "empty_reply" : null,
+      raw_text: raw,
+      shown_text: reply,
+    },
+  };
+}
+
+const CREATE_TOOLS = new Set(["create_custom_food", "create_custom_meal"]);
+
+/** Read the create-draft call. `create` is the card the food bar shows, or
+ *  null to fall back to the log path. */
+export function readDraftResult(
+  res: AnthropicCallResult,
+  ms: number,
+): { create: { tool: string; input: Record<string, unknown> } | null; followup: FoodFollowup } {
+  const followup = baseFollowup("create", res, ms);
+  if (!res.ok) return { create: null, followup };
+  const block = ((res.data?.content ?? []) as { type?: string; name?: string; input?: unknown }[])
+    .find((b) => b?.type === "tool_use");
+  const tool = block?.name ? String(block.name) : null;
+  const input = (block?.input ?? null) as Record<string, unknown> | null;
+  if (!tool || !CREATE_TOOLS.has(tool)) {
+    return { create: null, followup: { ...followup, tool, draft: input, error: tool ? "wrong_tool" : "no_tool_call" } };
+  }
+  const create = { tool, input: input ?? {} };
+  return { create, followup: { ...followup, ok: true, tool, draft: create.input } };
+}
