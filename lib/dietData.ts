@@ -1724,6 +1724,24 @@ let _quickAddSeed = '';
 export const setQuickAddSeed = (name: string) => { _quickAddSeed = name.trim().slice(0, 60); };
 export const takeQuickAddSeed = (): string => { const v = _quickAddSeed; _quickAddSeed = ''; return v; };
 
+/** What the meal builder should open with: a saved meal to EDIT, or null for a
+ *  blank "create a meal". /meal-builder is a retained Tabs screen, so its route
+ *  params are read once at mount and then stay frozen for the session — the
+ *  first visit's mode won a whole session in both directions. Set this right
+ *  before navigating; the builder consumes it on focus.
+ *
+ *  Reading it CONSUMES it, which is also how the builder tells "entered afresh
+ *  from search" (reset the form) from "regained focus" (keep unsaved edits). */
+let _builderMeal: SavedMeal | null = null;
+let _builderPending = false;
+export const setBuilderMeal = (m: SavedMeal | null) => { _builderMeal = m; _builderPending = true; };
+/** `pending` false means no fresh entry happened — leave the form alone. */
+export const takeBuilderMeal = (): { pending: boolean; meal: SavedMeal | null } => {
+  const out = { pending: _builderPending, meal: _builderMeal };
+  _builderMeal = null; _builderPending = false;
+  return out;
+};
+
 export interface QuickAddDraft {
   /** Blank falls back to QUICK_ADD_NAME. */
   name: string;
