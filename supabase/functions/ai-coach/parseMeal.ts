@@ -32,6 +32,7 @@ import {
   type SavedHit,
   type SavedMealForParse,
   savedMealsBlock,
+  suggestSavedMeal,
 } from "./savedMeals.ts";
 import {
   cacheKey,
@@ -167,6 +168,9 @@ export interface ParseMealResult {
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
+  /** Saved meals to OFFER as a one-tap swap, never logged: the line names one
+   *  food that is part of a saved meal (decision 1A, savedMeals.ts). */
+  saved_suggestions?: { food_name: string; saved_id: string; saved_name: string }[];
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -1079,6 +1083,13 @@ const EXTRACT_TOOL = {
   input_schema: {
     type: "object",
     properties: {
+      rejects_saved: {
+        type: "boolean",
+        description:
+          "Only with a previous meal: true when the user rejects their SAVED meal on that card " +
+          '("not from saved meals", "don\'t use my saved one", "estimate it fresh"). ' +
+          "Their original words are then logged again without saved meals. false otherwise.",
+      },
       declined: {
         type: "boolean",
         description:
@@ -1215,10 +1226,12 @@ const EXTRACT_TOOL = {
               type: ["string", "null"],
               description:
                 "Only when a <saved_meals> list follows the message: the EXACT name from that " +
-                "list when this item IS one of the user's saved meals - they name it, shorten " +
-                'it, or clearly mean it ("my oats", "the oat meal" for a saved "Oats with milk"). ' +
-                "Then name/quantity/unit are the saved meal and how many servings. " +
-                "null for any food that is not on the list, and whenever there is no list.",
+                "list when this item IS one of the user's saved meals as a WHOLE - they say its " +
+                'name, a dish name for it ("the oat meal" for a saved "Oats with milk"), or ' +
+                '"my usual" for it. Then name/quantity/unit are the saved meal and how many servings.\n' +
+                'null when they name a single food that is only PART of a saved meal: "oats" or ' +
+                '"my oats" is oats, not a saved "Oats with milk". null for anything not on the ' +
+                "list, and whenever there is no list.",
             },
           },
           required: ["name", "quantity", "unit"],
@@ -2099,7 +2112,7 @@ const FAST_EXTRACT_TOOL = (() => {
   // a previous meal was given". Leaving them in the schema asks Haiku to
   // consider, and often emit, five fields whose answer is fixed. Latency here is
   // output tokens, so a field the model cannot need is pure delay.
-  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names"]) {
+  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names", "rejects_saved"]) {
     delete t.input_schema.properties[dead];
   }
   delete item.properties.corrects_food_name;
@@ -4588,7 +4601,35 @@ export async function runParseMeal(
     }
   }
   const hits: SavedHit[] = [];
-  const result = await runParseMealCore(deps, input, saved, hits);
+  const suggestions: NonNullable<ParseMealResult["saved_suggestions"]> = [];
+  const result = await runParseMealCore(deps, input, saved, hits, suggestions);
+
+  // "Not from saved meals": the user turned down the saved meal on the card.
+  // Log their ORIGINAL words again as a first shot with saved meals switched
+  // off, in the same mode, and replace the card. The correction paths are the
+  // wrong tool here: a saved meal is several lines standing for one thing they
+  // said, and only the original words say what that thing was.
+  if (!firstShot && result.steps.some((s) => s.tool === "rejects_saved") && input.previousText?.trim()) {
+    const fresh = await runParseMeal(deps, {
+      ...input,
+      text: input.previousText,
+      previousText: null,
+      previousItems: [],
+      recentTurns: [],
+      savedMeals: undefined,
+    });
+    if (fresh.parsed) {
+      fresh.parsed = {
+        ...fresh.parsed,
+        corrects_previous: true,
+        drona_line: `Fresh numbers, not your saved meal. ${fresh.parsed.drona_line}`.slice(0, 240),
+      };
+    }
+    fresh.steps = [...result.steps, ...fresh.steps];
+    return fresh;
+  }
+
+  if (suggestions.length > 0) result.saved_suggestions = suggestions;
   if (hits.length === 0) return result;
   const merged = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
   merged.steps = [...merged.steps, {
@@ -4605,6 +4646,7 @@ async function runParseMealCore(
   input: ParseMealInput,
   saved: SavedMealForParse[],
   hits: SavedHit[],
+  suggestions: NonNullable<ParseMealResult["saved_suggestions"]>,
 ): Promise<ParseMealResult> {
   const usage = {
     input_tokens: 0,
@@ -4833,6 +4875,12 @@ async function runParseMealCore(
     });
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
+  // Handled in runParseMeal, which re-logs the original words without saved
+  // meals. Nothing below would do anything useful with this turn.
+  if (hasPrevious && ext.rejects_saved === true && input.previousText?.trim()) {
+    steps.push({ iter: 0, tool: "rejects_saved", input: null, result: null });
+    return declineResult("Logging that again without your saved meal.");
+  }
   // Previous lines the user explicitly re-targeted. These are deliberately
   // replaced, so the no-drop guard must not resurrect them.
   // ONLY a tag naming a DIFFERENT line counts as a replacement.
@@ -4920,7 +4968,11 @@ async function runParseMealCore(
   if (!hasPrevious && saved.length > 0) {
     extItems = extItems.filter((it) => {
       const meal = findSavedMeal(it.savedMeal, saved);
-      if (!meal) return true;
+      if (!meal) {
+        const offer = suggestSavedMeal(it.name, saved);
+        if (offer) suggestions.push({ food_name: it.name, saved_id: offer.id, saved_name: offer.name });
+        return true;
+      }
       hits.push({ meal, count: savedCount(it.quantity, it.unit), mealType: it.meal ?? mealFromText ?? null });
       return false;
     });

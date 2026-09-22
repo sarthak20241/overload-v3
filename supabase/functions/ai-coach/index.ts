@@ -2830,6 +2830,8 @@ async function handleParseMealRequest(args: {
                 parsed: result.parsed,
                 declined: result.declined,
                 proposal: result.proposal ?? null,
+                // "Use your saved X?" chips: a food that is only part of a saved meal.
+                saved_suggestions: result.saved_suggestions ?? [],
                 // Just log it: `logged` when the diary was written, else why not.
                 ...autoRes.extra,
               });
@@ -3082,6 +3084,8 @@ async function handleParseMealRequest(args: {
         declined: result.declined,
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
+        // "Use your saved X?" chips: a food that is only part of a saved meal.
+        saved_suggestions: result.saved_suggestions ?? [],
         // Just log it: `logged` when the diary was written, else why not.
         ...(autoRes?.extra ?? {}),
         usage: result.usage,

@@ -91,7 +91,8 @@ export function savedMealsBlock(saved: SavedMealForParse[]): string {
   });
   return (
     "\n\n<saved_meals>\n" +
-    "The user's own saved meals. A reference list, NOT food they ate: take items only from the message above.\n" +
+    "The user's own saved meals. A reference list, NOT food they ate: take items only from the message above. " +
+    "Use one only when the words mean that WHOLE meal, never for a single food that is only part of it.\n" +
     lines.join("\n") +
     "\n</saved_meals>"
   );
@@ -225,6 +226,28 @@ export function mergeSavedLines<R extends MergeableResult>(
       drona_line: savedDronaLine(hits, result.parsed.drona_line),
     },
   };
+}
+
+/** A saved meal to OFFER, never to log: the item names one food that is part
+ *  of a saved meal ("oats", saved "Oats with milk"). Decision 1A: search the
+ *  food as asked, and let the user swap with one tap. Every word of the food
+ *  must appear in the meal's name or one of its items, so "chicken" does not
+ *  offer "Chicken biryani" when it is only in the name by accident of a longer
+ *  word. Newest saved meal first, which is the order they arrive in. */
+export function suggestSavedMeal(foodName: string, saved: SavedMealForParse[]): SavedMealForParse | null {
+  const want = words(foodName);
+  if (want.length === 0) return null;
+  for (const m of saved) {
+    const have = new Set([m.name, ...m.items.map((i) => i.food_name)].flatMap(words));
+    if (want.every((w) => have.has(w))) return m;
+  }
+  return null;
+}
+
+function words(s: string): string[] {
+  return s.toLowerCase().split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3)
+    .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w));
 }
 
 function norm(s: string): string {
