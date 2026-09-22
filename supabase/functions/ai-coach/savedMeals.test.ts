@@ -204,3 +204,59 @@ Deno.test("a correction turn never swaps in a saved meal", async () => {
   assertEquals(seen.some((m) => m.includes("<saved_meals>")), false);
   assertEquals(r?.parsed?.items.some((i) => i.food_name === "milk") ?? false, false);
 });
+
+// ── decision 1A: part of a saved meal is offered, not logged ────────────────
+
+import { suggestSavedMeal } from "./savedMeals.ts";
+
+Deno.test("a food inside a saved meal is offered as a swap", () => {
+  assertEquals(suggestSavedMeal("oats", [OATS])?.id, "sm-oats");
+  assertEquals(suggestSavedMeal("Milk", [OATS])?.id, "sm-oats");
+  assertEquals(suggestSavedMeal("chicken", [OATS]), null);
+  assertEquals(suggestSavedMeal("oats and honey", [OATS]), null);
+});
+
+Deno.test("an untagged food that is part of a saved meal: estimate logged, swap offered", async () => {
+  const r = await runParseMeal(
+    stub([], [{ ...OATMEAL_ITEM, name: "oats" }]),
+    { ...INPUT, text: "oats in breakfast", mode: "fast", savedMeals: [OATS] },
+  );
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.source]), [["oats", "estimate"]]);
+  assertEquals(r.saved_suggestions, [{ food_name: "oats", saved_id: "sm-oats", saved_name: "Oats with milk" }]);
+});
+
+// ── scenario 2: "not from saved meals" ──────────────────────────────────────
+
+Deno.test("rejecting the saved meal re-logs the original words without it", async () => {
+  // Turn 1 of the stub is the correction extract saying rejects_saved; every
+  // later call is the fresh first-shot parse of the ORIGINAL text.
+  const seen: string[] = [];
+  let call = 0;
+  const deps = stub([], [], seen);
+  const inner = deps.fetchFn!;
+  deps.fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    call++;
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const name = body.tool_choice?.name;
+    const input = call === 1
+      ? { declined: false, rejects_saved: true, corrects_previous: true, items: [] }
+      : { declined: false, meal_type_from_text: null, items: [OATMEAL_ITEM] };
+    await inner(url, init); // keeps `seen` honest
+    return new Response(JSON.stringify({
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+      content: [{ type: "tool_use", name, input }],
+    }), { status: 200 });
+  }) as typeof fetch;
+
+  const r = await runParseMeal(deps, {
+    ...INPUT, text: "not from saved meals", mode: "fast", savedMeals: [OATS],
+    previousText: "Can you log the oat meal to breakfast",
+    previousItems: [
+      { food_id: "f-oats", food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180 },
+      { food_id: "f-milk", food_name: "milk", quantity: 550, serving_label: "ml", grams: 550, kcal: 370 },
+    ],
+  });
+  assertEquals(r.parsed!.items.map((i) => [i.food_name, i.source]), [["oatmeal", "estimate"]]);
+  assertEquals(r.parsed!.corrects_previous, true);
+  assertEquals(seen.at(-1), "Can you log the oat meal to breakfast"); // no <saved_meals> block
+});

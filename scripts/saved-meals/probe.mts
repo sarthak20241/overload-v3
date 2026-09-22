@@ -24,12 +24,15 @@ const SAVED: SavedMealForParse[] = [
 
 const CASES: { text: string; want: string[] }[] = [
   { text: "Can you log the oat meal to breakfast", want: ["oats"] },
-  { text: "log my oats", want: ["oats"] },
+  { text: "my usual oats with milk", want: ["oats"] },
   { text: "had my shake after the gym", want: ["shake"] },
   { text: "breakfast bowl and a coffee", want: ["bowl"] },
   { text: "2 servings of amma's rajma", want: ["rajma"] },
   { text: "office salad for lunch and an apple", want: ["salad"] },
-  // Must NOT match.
+  // Must NOT match. A food that is only PART of a saved meal is searched (1A).
+  { text: "log my oats", want: [] },
+  { text: "oats in breakfast", want: [] },
+  { text: "a banana after the gym", want: [] },
   { text: "40g oats with water", want: [] },
   { text: "a protein shake from the cafe", want: [] },
   { text: "rajma chawal at a restaurant", want: [] },
@@ -64,9 +67,46 @@ async function one(c: { text: string; want: string[] }) {
 }
 // 4 at a time: more than that and `claude -p` starts returning empty envelopes.
 const results: Awaited<ReturnType<typeof one>>[] = [];
+if (process.env.ONLY_REJECTS) CASES.length = 0;
 for (let i = 0; i < CASES.length; i += 4) results.push(...await Promise.all(CASES.slice(i, i + 4).map(one)));
 for (const { c, got, ok, items } of results) {
   if (!ok) bad++;
   console.log(`${ok ? "  " : "XX"} want=[${c.want}] got=[${got}]  ${c.text}  ->  ${items}`);
 }
 console.log(`\n${CASES.length - bad}/${CASES.length} correct`);
+
+// ── Scenario 2: a correction turn that rejects the saved meal ───────────────
+const PREV = {
+  previousText: "Can you log the oat meal to breakfast",
+  previousItems: [
+    { food_id: null, food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180, protein_g: 6, carb_g: 32, fat_g: 3, fiber_g: 5, source: "manual" as const },
+    { food_id: null, food_name: "milk", quantity: 550, serving_label: "ml", grams: 550, kcal: 370, protein_g: 19, carb_g: 28, fat_g: 17, fiber_g: null, source: "manual" as const },
+  ],
+  recentTurns: [
+    { role: "user" as const, text: "Can you log the oat meal to breakfast" },
+    { role: "drona" as const, text: "Your saved Oats with milk, with your own numbers. 550 kcal." },
+  ],
+};
+const REJECTS: { text: string; want: boolean }[] = [
+  { text: "not from saved meals", want: true },
+  { text: "don't use my saved one, estimate it", want: true },
+  { text: "make the milk 300 ml", want: false },
+  { text: "add a banana", want: false },
+];
+let rbad = 0;
+for (const c of REJECTS) {
+  try {
+    const r = await runParseMeal(deps, {
+      text: c.text, localHour: 9, mealHint: null, mode: "fast",
+      recentFoods: [], todayTotals: null, targets: null, savedMeals: SAVED, ...PREV,
+    });
+    const got = r.steps.some((s) => s.tool === "rejects_saved");
+    if (got !== c.want) rbad++;
+    if (!r.parsed) console.log(`   declined: ${JSON.stringify(r.declined)} steps: ${r.steps.map((s) => s.tool).join(",")}`);
+    console.log(`${got === c.want ? "  " : "XX"} rejects want=${c.want} got=${got}  ${c.text}  ->  ${(r.parsed?.items ?? []).map((i) => `${i.food_name}:${i.kcal}`).join(", ")}`);
+  } catch (e) {
+    rbad++;
+    console.log(`XX ${c.text}  ERR ${String(e).slice(0, 80)}`);
+  }
+}
+console.log(`\n${REJECTS.length - rbad}/${REJECTS.length} rejection cases correct`);
