@@ -154,11 +154,14 @@ export const FOOD_AGENT_SYSTEM =
   "call more tools or finish.\n" +
   "Finish with exactly one of: create_custom_meal or create_custom_food (a save card the user taps; set log_now true " +
   "and meal_type when they also want it logged today, so one tap saves and logs), log_food (log to today), or reply.\n" +
-  "Numbers: never invent them. Copy lines from the diary or a saved meal exactly, with estimated false. For food " +
+  "Numbers: never invent them. Copy lines from the diary or a saved meal exactly, with estimated false (in the " +
+  "create tools each line's food_name goes in `name`). For food " +
   "that is in neither, use parse_food and copy what it returns.\n" +
   "When they point at food they logged, read that day first. If they name a whole meal (\"yesterday's breakfast\", " +
   "\"Monday's lunch\"), copy EVERY food in it. If they name one dish inside a meal, copy only the foods that make up " +
-  "that dish: from tea, sugar, biscuits and poha, \"the chai\" is the tea and sugar. Apply any change they asked for " +
+  "that dish: from tea, sugar, biscuits and poha, \"the chai\" is the tea and sugar. A dish name is one dish even " +
+  "when they also say which meal it was in: \"the chai I had at breakfast\" is still only the tea and sugar. " +
+  "Apply any change they asked for " +
   "(half the rice, without the naan) to the copied lines. If you cannot tell which foods they mean, or nothing " +
   "matches, reply with one short question.\n" +
   "A card's summary is an offer the user has not tapped: never say saved or logged. No em dashes anywhere.";
@@ -190,6 +193,27 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   return null;
 }
 
+// ── Dates ───────────────────────────────────────────────────────────────────
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** "Today is Thursday 2026-09-24. days_ago 1 = Wednesday 2026-09-23, ..." for
+ *  the last week. Which date "Monday" was is arithmetic, and arithmetic is
+ *  code's job: left to the model, "same lunch as Monday" read the wrong day
+ *  in one probe run out of three. Null when `today` carries no date. */
+export function recentDays(today: string): string | null {
+  const m = today.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const base = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  if (Number.isNaN(base)) return null;
+  const label = (n: number) => {
+    const d = new Date(base - n * 86_400_000);
+    return `${WEEKDAYS[d.getUTCDay()]} ${d.toISOString().slice(0, 10)}`;
+  };
+  const past = [1, 2, 3, 4, 5, 6, 7].map((n) => `days_ago ${n} = ${label(n)}`).join(", ");
+  return `Today is ${label(0)}. ${past}.`;
+}
+
 // ── The loop ────────────────────────────────────────────────────────────────
 
 interface ToolUse {
@@ -201,10 +225,15 @@ interface ToolUse {
 
 export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): Promise<FoodAgentOutcome> {
   const turns: AgentTurn[] = [];
+  const days = input.today ? recentDays(input.today) : null;
   const messages: unknown[] = [{
     role: "user",
-    content: input.today ? `(Today is ${input.today}.)\n${input.text}` : input.text,
+    content: days ? `(${days})\n${input.text}` : input.text,
   }];
+  // Every food line a read returned, by name, with the calories it carried.
+  // A line the agent says it COPIED is checked against this: the model is told
+  // never to invent numbers, and this is how the code knows whether it did.
+  const seen: Seen = new Map();
   // parse_food results by text, so log_food on the same text does not pay twice.
   const parses = new Map<string, ParseMealResult>();
   const parse = async (text: string) => {
@@ -213,6 +242,7 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     if (hit) return hit;
     const r = await deps.parseFood(text);
     parses.set(key, r);
+    remember(seen, r.parsed?.items ?? []);
     return r;
   };
 
@@ -248,22 +278,21 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
     if (finish) {
       const label = statusFor(finish.name, finish.input ?? {});
       if (label) deps.onStatus?.(label);
-      return await finishWith(finish, input, parse, turns);
+      return await finishWith(finish, input, parse, turns, seen);
     }
-    if (last) return { kind: "failed", reason: "read_on_last_turn", turns };
-
     const unknown = uses.find((u) => !READ_TOOLS.has(u.name));
     if (unknown) return { kind: "failed", reason: `unknown_tool_${unknown.name}`, turns };
+    if (last) return { kind: "failed", reason: "read_on_last_turn", turns };
 
     for (const u of uses) {
       const label = statusFor(u.name, u.input ?? {});
       if (label) deps.onStatus?.(label);
     }
-    const results = await Promise.all(uses.map(async (u) => ({
-      type: "tool_result",
-      tool_use_id: u.id,
-      content: JSON.stringify(await runRead(u, deps, parse)),
-    })));
+    const results = await Promise.all(uses.map(async (u) => {
+      const out = await runRead(u, deps, parse);
+      remember(seen, out);
+      return { type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) };
+    }));
     messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
   }
   // Unreachable: the last turn always returns. Kept so a future edit to the
@@ -311,11 +340,60 @@ async function runRead(
   return { error: "unknown tool" };
 }
 
+type Seen = Map<string, Set<number>>;
+
+/** Walk a read result and file every food line in it (anything with a name and
+ *  a calorie count), whatever shape the result has. */
+function remember(seen: Seen, v: unknown, depth = 0): void {
+  if (depth > 6 || v === null || typeof v !== "object") return;
+  if (Array.isArray(v)) {
+    for (const x of v) remember(seen, x, depth + 1);
+    return;
+  }
+  const o = v as Record<string, unknown>;
+  const name = typeof o.food_name === "string" ? o.food_name : typeof o.name === "string" ? o.name : null;
+  if (name && typeof o.kcal === "number") {
+    const k = foodKey(name);
+    if (!seen.has(k)) seen.set(k, new Set());
+    seen.get(k)!.add(Math.round(o.kcal));
+  }
+  for (const x of Object.values(o)) remember(seen, x, depth + 1);
+}
+
+function foodKey(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Where a line's numbers came from, judged against what the reads returned. */
+function provenance(seen: Seen, name: string, kcal: number): "copied" | "changed" | "unseen" {
+  const k = seen.get(foodKey(name));
+  if (!k) return "unseen";
+  return k.has(Math.round(kcal)) ? "copied" : "changed";
+}
+
+/** The create tools call an ingredient `name`, the reads call it `food_name`.
+ *  Accept either, and mark any line the reads cannot vouch for as estimated so
+ *  the card flags it for the user to check before saving. */
+function checkedCreateInput(input: Record<string, unknown>, seen: Seen): Record<string, unknown> {
+  if (!Array.isArray(input.items)) return input;
+  const items = input.items.map((raw) => {
+    if (!raw || typeof raw !== "object") return raw;
+    const o = { ...(raw as Record<string, unknown>) };
+    if (typeof o.name !== "string" && typeof o.food_name === "string") o.name = o.food_name;
+    delete o.food_name;
+    const kcal = num(o.kcal);
+    if (typeof o.name === "string" && kcal !== null && provenance(seen, o.name, kcal) !== "copied") o.estimated = true;
+    return o;
+  });
+  return { ...input, items };
+}
+
 async function finishWith(
   u: ToolUse,
   input: FoodAgentInput,
   parse: (text: string) => Promise<ParseMealResult>,
   turns: AgentTurn[],
+  seen: Seen,
 ): Promise<FoodAgentOutcome> {
   const args = u.input ?? {};
   if (u.name === REPLY_TOOL.name) {
@@ -323,11 +401,11 @@ async function finishWith(
     return text ? { kind: "reply", text, turns } : { kind: "failed", reason: "empty_reply", turns };
   }
   if (u.name === CREATE_CUSTOM_MEAL_TOOL.name || u.name === CREATE_CUSTOM_FOOD_TOOL.name) {
-    return { kind: "create", create: { tool: u.name, input: args }, turns };
+    return { kind: "create", create: { tool: u.name, input: checkedCreateInput(args, seen) }, turns };
   }
   // log_food
   const meal: MealType = isMeal(args.meal_type) ? args.meal_type : input.defaultMeal;
-  const copied = Array.isArray(args.items) ? args.items.flatMap((r) => copiedLine(r, meal)) : [];
+  const copied = Array.isArray(args.items) ? args.items.flatMap((r) => copiedLine(r, meal, seen)) : [];
   let parsedLines: ParsedItem[] = [];
   let usage: ParseMealResult["usage"] = {
     input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0,
@@ -356,12 +434,18 @@ async function finishWith(
   };
 }
 
-function copiedLine(raw: unknown, meal: MealType): ParsedItem[] {
+function copiedLine(raw: unknown, meal: MealType, seen: Seen): ParsedItem[] {
   if (!raw || typeof raw !== "object") return [];
   const o = raw as Record<string, unknown>;
-  const name = typeof o.food_name === "string" ? o.food_name.trim().slice(0, 120) : "";
+  const rawName = typeof o.food_name === "string" ? o.food_name : typeof o.name === "string" ? o.name : "";
+  const name = rawName.trim().slice(0, 120);
   const kcal = num(o.kcal);
   if (!name || kcal === null) return [];
+  // Only a line the reads returned with these exact calories is the user's own
+  // number. A changed one ("half the rice") is the agent's arithmetic, and one
+  // the reads never showed is a guess: both go on the card as something to check.
+  const from = provenance(seen, name, kcal);
+  const was = seen.get(foodKey(name));
   return [{
     food_id: null,
     food_name: name,
@@ -373,10 +457,15 @@ function copiedLine(raw: unknown, meal: MealType): ParsedItem[] {
     carb_g: num(o.carb_g) ?? 0,
     fat_g: num(o.fat_g) ?? 0,
     fiber_g: null,
-    // The user's own numbers, copied: nothing to question on the card.
-    source: "manual",
-    assumption: null,
-    confidence: "high",
+    ...(from === "copied"
+      ? { source: "manual" as const, assumption: null, confidence: "high" as const }
+      : from === "changed"
+      ? {
+        source: "manual" as const,
+        assumption: `Adjusted from ${[...was!][0]} kcal in your log.`,
+        confidence: "medium" as const,
+      }
+      : { source: "estimate" as const, assumption: "Not found in your logs, so check this one.", confidence: "low" as const }),
     meal_type: meal,
   }];
 }

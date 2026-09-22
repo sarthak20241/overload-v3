@@ -1151,7 +1151,9 @@ async function logSection(
     food_name: it.food_name,
     quantity: it.quantity,
     serving_unit: it.serving_label,
-    grams_logged: r1(it.grams),
+    // 0 means "no weight known" (a saved line from a quick add or a recipe).
+    // The column allows null or > 0, never 0 (migration 0069), so 0 is null here.
+    grams_logged: it.grams > 0 ? r1(it.grams) : null,
     kcal: r0(it.kcal), protein_g: r1(it.protein_g), carb_g: r1(it.carb_g), fat_g: r1(it.fat_g),
     // The parser returns fiber per line; sugar/sat_fat/sodium aren't parsed, so
     // they stay null (meal_entries snapshot columns are nullable as of 0069).

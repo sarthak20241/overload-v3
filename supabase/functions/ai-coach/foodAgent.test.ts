@@ -7,7 +7,7 @@
 //   - every finish is a shape the app already draws
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, LAST_TURN_NOTE, MAX_TURNS, runFoodAgent, statusFor } from "./foodAgent.ts";
+import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
 
 type Use = { name: string; input: Record<string, unknown> };
@@ -156,6 +156,7 @@ Deno.test("log_food with text reuses the parse already done for that text", asyn
 
 Deno.test("log_food copies diary lines as the user's own numbers", async () => {
   const out = await runFoodAgent(INPUT, deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1, meal_type: "breakfast" } }],
     [{
       name: "log_food",
       input: {
@@ -199,4 +200,66 @@ Deno.test("status lines say what is being checked", () => {
   assertEquals(statusFor("coach_list_logged_meals", { days_ago: 3, meal_type: "snack" }), "Checking your snacks from 3 days ago");
   assertEquals(statusFor("parse_food", { text: "2 eggs" }), "Working out 2 eggs");
   assertEquals(statusFor("reply", { text: "x" }), null);
+});
+
+Deno.test("a 'copied' line the reads never returned is flagged, not trusted", async () => {
+  const out = await runFoodAgent(INPUT, deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }],
+    [{
+      name: "log_food",
+      input: {
+        summary: "Yesterday's breakfast, half the milk.",
+        items: [
+          { food_name: "oats", kcal: 180 },      // as logged
+          { food_name: "milk", kcal: 185 },      // changed: half of 370
+          { food_name: "honey", kcal: 60 },      // never in the diary
+        ],
+      },
+    }],
+  ])));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log") return;
+  assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.source, i.confidence]), [
+    ["oats", "manual", "high"],
+    ["milk", "manual", "medium"],
+    ["honey", "estimate", "low"],
+  ]);
+  assertEquals(out.result.parsed!.items[1].assumption, "Adjusted from 370 kcal in your log.");
+});
+
+Deno.test("a save card takes food_name or name, and marks lines it cannot vouch for", async () => {
+  const out = await runFoodAgent(INPUT, deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }],
+    [{
+      name: "create_custom_meal",
+      input: {
+        name: "Oat meal", log_now: false, summary: "Oat meal. Want it in My Meals?",
+        items: [{ food_name: "oats", kcal: 180 }, { name: "milk", kcal: 370 }, { name: "honey", kcal: 60 }],
+      },
+    }],
+  ])));
+  assertEquals(out.kind, "create");
+  if (out.kind !== "create") return;
+  const items = out.create.input.items as Record<string, unknown>[];
+  assertEquals(items.map((i) => [i.name, i.food_name, i.estimated]), [
+    ["oats", undefined, undefined],
+    ["milk", undefined, undefined],
+    ["honey", undefined, true],
+  ]);
+});
+
+Deno.test("an unknown tool on the last turn says unknown, not read", async () => {
+  const script: Use[][] = [0, 1, 2, 3].map(() => [{ name: "coach_list_saved_meals", input: {} }]);
+  script.push([{ name: "delete_everything", input: {} }]);
+  const out = await runFoodAgent(INPUT, deps(scripted(script)));
+  assertEquals(out.kind === "failed" && out.reason, "unknown_tool_delete_everything");
+});
+
+Deno.test("which date a weekday was is worked out in code", () => {
+  const d = recentDays("Thursday 2026-09-24")!;
+  assert(d.startsWith("Today is Thursday 2026-09-24."));
+  assert(d.includes("days_ago 1 = Wednesday 2026-09-23"));
+  assert(d.includes("days_ago 3 = Monday 2026-09-21"));
+  assert(d.includes("days_ago 7 = Thursday 2026-09-17"));
+  assertEquals(recentDays("no date here"), null);
 });

@@ -334,3 +334,15 @@ function rowFor(mealId: string, name: string): AutoLogEntryRow {
     source: "estimate", client_id: CID,
   };
 }
+
+Deno.test("write: a line with no known weight is stored as null grams, never 0", async () => {
+  // meal_entries allows grams_logged null or > 0 (0069). A saved meal's quick-add
+  // item or a recipe line carries grams 0, and writing 0 failed the whole insert.
+  const store = new FakeStore();
+  const res = await writeAutoLog(store, writeArgs([
+    line("protein bar", { grams: 0, source: "manual", meal_type: "snack" }),
+    line("oats", { grams: 48, meal_type: "snack" }),
+  ]));
+  assert("logged" in res);
+  assertEquals(store.entries.map((e) => e.grams_logged), [null, 48]);
+});

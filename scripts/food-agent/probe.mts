@@ -205,7 +205,8 @@ async function one(c: (typeof CASES)[number]) {
     parseFood: async (t) => fakeParse(t),
     onStatus: (s) => statuses.push(s),
   });
-  const err = out.kind === "failed" ? `failed: ${out.reason}` : c.check(out);
+  let err = out.kind === "failed" ? `failed: ${out.reason}` : c.check(out);
+  if (err && out.kind === "reply") err += ` | said: ${out.text}`;
   if (out.kind === "failed" && out.reason.startsWith("http_")) lastErr.push(c.text);
   const turns = out.turns.map((t) => `[${t.tools.map((x) => x.name.replace("coach_list_", "")).join("+")}]`).join(" ");
   return { c, err, turns, statuses };

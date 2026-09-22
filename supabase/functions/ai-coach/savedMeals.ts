@@ -244,9 +244,13 @@ export function suggestSavedMeal(foodName: string, saved: SavedMealForParse[]): 
   return null;
 }
 
+/** Joining words that say nothing about the food: "rice and dal" is still
+ *  rice and dal when the saved meal is called "Dal rice". */
+const STOP_WORDS = new Set(["and", "the", "with", "for", "some", "plus"]);
+
 function words(s: string): string[] {
   return s.toLowerCase().split(/[^a-z0-9]+/)
-    .filter((w) => w.length >= 3)
+    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
     .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w));
 }
 

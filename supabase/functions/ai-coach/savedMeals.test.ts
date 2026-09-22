@@ -260,3 +260,33 @@ Deno.test("rejecting the saved meal re-logs the original words without it", asyn
   assertEquals(r.parsed!.corrects_previous, true);
   assertEquals(seen.at(-1), "Can you log the oat meal to breakfast"); // no <saved_meals> block
 });
+
+Deno.test("joining words do not block a swap offer", () => {
+  const DAL_RICE: SavedMealForParse = { ...OATS, id: "sm-dr", name: "Dal rice", items: [] };
+  assertEquals(suggestSavedMeal("rice and dal", [DAL_RICE])?.id, "sm-dr");
+  assertEquals(suggestSavedMeal("rice and chicken", [DAL_RICE]), null);
+});
+
+Deno.test("rejecting the saved meal keeps the cost of BOTH calls", async () => {
+  let call = 0;
+  const deps = stub([], []);
+  deps.fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
+    call++;
+    const name = JSON.parse(String(init?.body ?? "{}")).tool_choice?.name;
+    const input = call === 1
+      ? { declined: false, rejects_saved: true, items: [] }
+      : { declined: false, meal_type_from_text: null, items: [OATMEAL_ITEM] };
+    return new Response(JSON.stringify({
+      stop_reason: "tool_use", usage: { input_tokens: 100 * call, output_tokens: 10 * call },
+      content: [{ type: "tool_use", name, input }],
+    }), { status: 200 });
+  }) as typeof fetch;
+  const r = await runParseMeal(deps, {
+    ...INPUT, text: "not from saved meals", mode: "fast", savedMeals: [OATS],
+    previousText: "Can you log the oat meal to breakfast",
+    previousItems: [{ food_id: "f-oats", food_name: "oats", quantity: 48, serving_label: "g", grams: 48, kcal: 180 }],
+  });
+  assertEquals(r.usage.input_tokens, 300);
+  assertEquals(r.usage.output_tokens, 30);
+  assertEquals(r.tool_calls.length, 2);
+});
