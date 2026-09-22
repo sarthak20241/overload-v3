@@ -139,18 +139,24 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "There must be an instruction to that effect in the message. The words vary (save, create, remember, make a meal, add to my meals, set up) but the instruction itself is always present.",
     not_for:
       "Merely describing a food, naming a dish, or giving its calories and macros. Numbers and present tense are NOT a request to save. " +
-      "If you have to infer that they probably want it kept, they did not ask, and this is not the option.",
+      "If you have to infer that they probably want it kept, they did not ask, and this is not the option. " +
+      "A QUESTION about whether saving or creating is possible is not an instruction either: it asks about ability and names nothing to save. " +
+      "A polite request that names the specific food or meal to save (\"could you save X\") IS an instruction.",
     examples: [
       "create this as a new meal called Desk Lunch",
       "save this combination as a meal for later",
       "remember my evening shake so I can reuse it",
       "add a new food called Nani's khichdi",
+      "could you keep my post-workout smoothie, 220 cal",
     ],
   },
   other: {
     what:
       "The user is not reporting anything they ate or drank, and is not asking for anything to be saved. " +
-      "Greetings, thanks, small talk, and questions about the app or about nutrition in general all belong here.",
+      "Greetings, thanks, small talk, and questions all belong here: questions about what this box or the app can do " +
+      "(even when they use the words create, save or meal, because asking whether something is possible is not asking for it), " +
+      "questions about the user's own progress, totals or history, and questions about nutrition in general. " +
+      "These get a spoken answer, which is why they are kept apart from logging and saving.",
     not_for:
       "Any message that reports eating or drinking. That holds even when no specific food or dish is named, " +
       "and even when the report comes alongside a greeting. \"hi, had two eggs\" is a log, not this.",
@@ -158,6 +164,9 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "good morning",
       "thanks, that helps",
       "what can you do",
+      "is there a way to keep my recipes in here?",
+      "am I eating enough protein lately",
+      "did I go over yesterday",
       "is rice bad for cutting",
     ],
   },

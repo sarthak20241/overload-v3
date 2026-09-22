@@ -154,6 +154,38 @@ const HELD_OUT_2: Case[] = [
   { text: "create a food called gym shake, 250 cal", want: "create", hard: true },
 ];
 
+// ── HELD OUT 3: questions about ability and about progress, fresh ──────────
+// Written 2026-09-22 after "Can you create meal?" went live as create at 92%
+// and drew an empty save card. That message is here as the regression case and
+// appears nowhere in INTENT_CRITERIA. The rule under test: a QUESTION about what
+// the box can do, or about the user's own progress, is other, even when it says
+// create, save or meal. The traps run the other way: a polite request that names
+// the thing to save is still create, and one that names food to log is a log.
+const HELD_OUT_3: Case[] = [
+  // ability questions: nothing named to save
+  { text: "Can you create meal?", want: "other", hard: true },
+  { text: "are you able to save foods", want: "other", hard: true },
+  { text: "can I make my own meals in here?", want: "other", hard: true },
+  { text: "is it possible to store a recipe", want: "other", hard: true },
+  { text: "how do I add a custom food", want: "other", hard: true },
+
+  // progress questions: about the user, not a report of eating
+  { text: "how am I doing this week", want: "other", hard: true },
+  { text: "how much protein have I had today", want: "other", hard: true },
+  { text: "am I under my calories today?", want: "other", hard: true },
+  { text: "what did I eat yesterday", want: "other", hard: true },
+  { text: "have I been consistent with logging", want: "other", hard: true },
+
+  // polite requests that NAME the thing to save: still create
+  { text: "can you save my banana shake, 250 cal", want: "create", hard: true },
+  { text: "could you create a meal called cut lunch with 150g chicken and salad", want: "create", hard: true },
+  { text: "can you remember my usual chai, 90 cal", want: "create", hard: true },
+
+  // polite requests that name food to log: still log
+  { text: "can you log 2 eggs", want: "log", hard: true },
+  { text: "could you add a coffee", want: "log", hard: true },
+];
+
 function pct(n: number): string {
   return `${(n * 100).toFixed(0)}%`.padStart(4);
 }
@@ -249,21 +281,26 @@ async function main() {
   const dev = await runSet("DEV", DEV, apiKey);
   const held = await runSet("HELD_OUT", HELD_OUT, apiKey);
   const held2 = await runSet("HELD_OUT_2", HELD_OUT_2, apiKey);
+  const held3 = await runSet("HELD_OUT_3", HELD_OUT_3, apiKey);
 
   report("DEV (seen, re-labelled)", dev);
   report("HELD OUT (seen last run, 2 labels moved to other)", held);
-  report("HELD OUT 2 (three-way boundary, never scored)", held2);
+  report("HELD OUT 2 (three-way boundary, seen)", held2);
+  report("HELD OUT 3 (ability + progress questions)", held3);
 
   console.log("\n══════ floor sweep, HELD OUT 2 ══════");
   sweep(held2);
 
   const all: Outcome = {
-    right: dev.right + held.right + held2.right, total: dev.total + held.total + held2.total,
-    hardRight: dev.hardRight + held.hardRight + held2.hardRight,
-    hardTotal: dev.hardTotal + held.hardTotal + held2.hardTotal,
-    rightConf: [...dev.rightConf, ...held.rightConf, ...held2.rightConf],
-    wrongConf: [...dev.wrongConf, ...held.wrongConf, ...held2.wrongConf],
-    rows: [], tokens: dev.tokens + held.tokens + held2.tokens, ms: dev.ms + held.ms + held2.ms,
+    right: dev.right + held.right + held2.right + held3.right,
+    total: dev.total + held.total + held2.total + held3.total,
+    hardRight: dev.hardRight + held.hardRight + held2.hardRight + held3.hardRight,
+    hardTotal: dev.hardTotal + held.hardTotal + held2.hardTotal + held3.hardTotal,
+    rightConf: [...dev.rightConf, ...held.rightConf, ...held2.rightConf, ...held3.rightConf],
+    wrongConf: [...dev.wrongConf, ...held.wrongConf, ...held2.wrongConf, ...held3.wrongConf],
+    rows: [],
+    tokens: dev.tokens + held.tokens + held2.tokens + held3.tokens,
+    ms: dev.ms + held.ms + held2.ms + held3.ms,
   };
   console.log("\n══════ floor sweep, ALL SETS ══════");
   sweep(all);
