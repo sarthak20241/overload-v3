@@ -59,6 +59,8 @@ export interface SavedLine {
   source: "manual";
   assumption: null;
   confidence: "high";
+  /** The saved meal this line came from, so the card can say so. */
+  saved_meal: string;
   meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
 }
 
@@ -126,7 +128,7 @@ export function savedCount(quantity: unknown, unit: unknown): number {
  *  batch. */
 export function savedMealLines(hit: SavedHit): SavedLine[] {
   const { meal, count } = hit;
-  const base = { source: "manual" as const, assumption: null, confidence: "high" as const };
+  const base = { source: "manual" as const, assumption: null, confidence: "high" as const, saved_meal: meal.name.trim() };
   const withMeal = hit.mealType ? { meal_type: hit.mealType } : {};
 
   if (meal.kind === "recipe" || meal.items.length === 0) {

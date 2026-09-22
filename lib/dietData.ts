@@ -552,6 +552,11 @@ export interface ParsedMealItem {
    *  worth putting a mark on the card for. */
   verified?: boolean;
 
+  /** The name of the user's saved meal this line came from, when the server
+   *  logged a saved meal's own rows. The card labels these "saved meal"
+   *  instead of "edited": the numbers are the user's, from My Meals. */
+  saved_meal?: string | null;
+
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
    *  belong to different sections. The server stamps every line; the client
@@ -591,6 +596,8 @@ export type ParseMealResult =
     logged?: LoggedParseRef | null;
     /** "Just log it" was asked for and the server declined to write. */
     autoLogSkipped?: AutoLogSkipped | null;
+    /** Saved meals to offer as a one-tap swap. Empty from an older server. */
+    savedSuggestions?: SavedSuggestion[];
   }
   // "Just log it" only: the request left and no answer came back (a dropped
   // stream). The server keeps working without us, so this is NOT retried
@@ -675,7 +682,31 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // and absent from an older server build, so the badge simply does not
     // render rather than claiming a cross-check that never happened.
     verified: i.verified === true,
+    ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
   };
+}
+
+/** A saved meal to OFFER as a swap for one line on the card: the line names a
+ *  food that is only part of a saved meal ("oats", saved "Oats with milk"). */
+export interface SavedSuggestion { food_name: string; saved_id: string; saved_name: string }
+
+/** A saved meal as card lines, one serving, the same numbers logSavedMeal
+ *  writes. Marked as the user's own (manual) and named after the saved meal. */
+export function savedMealAsItems(saved: SavedMeal, mealType: MealType): ParsedMealItem[] {
+  const base = { source: 'manual' as const, assumption: null, confidence: 'high' as const, meal_type: mealType, saved_meal: saved.name };
+  if (saved.kind === 'recipe' || saved.items.length === 0) {
+    const f = saved.kind === 'recipe' && saved.servings > 0 ? 1 / saved.servings : 1;
+    return [{
+      food_id: null, food_name: saved.name, quantity: 1, serving_label: saved.serving_label ?? 'serving', grams: 0,
+      kcal: Math.round(saved.kcal * f), protein_g: r1(saved.protein_g * f), carb_g: r1(saved.carb_g * f), fat_g: r1(saved.fat_g * f),
+      fiber_g: null, ...base,
+    }];
+  }
+  return saved.items.map((it) => ({
+    food_id: it.food_id, food_name: it.food_name, quantity: num(it.quantity) || 1, serving_label: it.serving_unit,
+    grams: num(it.grams_logged), kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
+    fiber_g: it.fiber_g == null ? null : num(it.fiber_g), ...base,
+  }));
 }
 
 /**
@@ -742,6 +773,13 @@ function toParseResult(data: any): ParseMealResult {
     },
     logged,
     autoLogSkipped: skipped === 'declined' || skipped === 'implausible' || skipped === 'write_error' ? skipped : null,
+    savedSuggestions: Array.isArray(data?.saved_suggestions)
+      ? (data.saved_suggestions as any[]).flatMap((x) => (
+        typeof x?.food_name === 'string' && typeof x?.saved_id === 'string' && typeof x?.saved_name === 'string'
+          ? [{ food_name: x.food_name, saved_id: x.saved_id, saved_name: x.saved_name }]
+          : []
+      ))
+      : [],
   };
 }
 
@@ -814,6 +852,9 @@ export async function parseMealStreaming(
   args: Parameters<typeof parseMeal>[1],
   onItems: (items: StreamedItem[]) => void,
   signal?: AbortSignal,
+  /** What Drona is doing right now on a multi-step message ("Checking
+   *  yesterday's breakfast"). Only the food agent sends these. */
+  onStatus?: (label: string) => void,
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
   if (!text) return { kind: 'error', message: 'Type what you ate first.' };
@@ -906,6 +947,8 @@ export async function parseMealStreaming(
             est_carb_g: num(i.est_carb_g),
             est_fat_g: num(i.est_fat_g),
           })));
+        } else if (ev === 'status' && typeof payload.label === 'string') {
+          onStatus?.(payload.label.slice(0, 80));
         } else if (ev === 'end') {
           final = toParseResult(payload);
         } else if (ev === 'error') {
@@ -976,10 +1019,11 @@ export async function parseMeal(
      *  card, so it must not claim it can and gets a create served as a log. */
     canCreate?: boolean;
     /** Pipeline tier. Omitted means smart, which is what every existing caller
-     *  wants and what the server assumes when the field is absent. Only
-     *  'super' (Precise) is passed here - 'fast' rides the streaming call
-     *  instead, because the whole point of that tier is the stream. */
-    speed?: 'super';
+     *  wants and what the server assumes when the field is absent. 'super' is
+     *  Precise. 'fast' is passed only on a Quick FOLLOW-UP: the correction
+     *  itself still runs the full pipeline, but a fresh re-parse it triggers
+     *  ("not from saved meals") must come back in the user's tier. */
+    speed?: 'super' | 'fast';
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
