@@ -26,6 +26,14 @@
 
 import { nearWord } from "./textMatch.ts";
 import {
+  findSavedMeal,
+  mergeSavedLines,
+  savedCount,
+  type SavedHit,
+  type SavedMealForParse,
+  savedMealsBlock,
+} from "./savedMeals.ts";
+import {
   cacheKey,
   kcalSpread,
   meetsVerificationBar,
@@ -785,6 +793,11 @@ export interface ParseMealInput {
    *  "yes do that" or "no the other one" has nothing to attach to. */
   recentTurns?: { role: "user" | "drona"; text: string }[];
   recentFoods: RecentFoodContext[];
+  /** The user's saved meals. When the message names one, that meal's own rows
+   *  are logged and nothing else is consulted for it: not the estimate, not the
+   *  catalog, not the web (savedMeals.ts). A promise so the read can start
+   *  alongside everything else; it is awaited just before the first call. */
+  savedMeals?: SavedMealForParse[] | Promise<SavedMealForParse[]>;
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
   // Optional: when set, the recents/targets/totals above are placeholders and
@@ -1197,6 +1210,15 @@ const EXTRACT_TOOL = {
                 "null when the text ties no meal to THIS item, and null when the message " +
                 "names ONE meal for everything (that goes in meal_type_from_text instead). " +
                 "Never infer a meal from the FOOD itself.",
+            },
+            saved_meal: {
+              type: ["string", "null"],
+              description:
+                "Only when a <saved_meals> list follows the message: the EXACT name from that " +
+                "list when this item IS one of the user's saved meals - they name it, shorten " +
+                'it, or clearly mean it ("my oats", "the oat meal" for a saved "Oats with milk"). ' +
+                "Then name/quantity/unit are the saved meal and how many servings. " +
+                "null for any food that is not on the list, and whenever there is no list.",
             },
           },
           required: ["name", "quantity", "unit"],
@@ -2490,6 +2512,9 @@ export interface ExtractedItem {
    *  total_g a display label that never feeds the math. Null when any field
    *  was missing or negative: a partial estimate is not an estimate. */
   est?: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number } | null;
+  /** The exact name of the user's saved meal this item IS, when the message
+   *  referred to one (see savedMeals.ts). First-shot only. */
+  savedMeal?: string | null;
 }
 
 export interface ResolvedItem extends ExtractedItem {
@@ -4550,6 +4575,37 @@ export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
+  // First-shot only. With a card on screen the turn is an edit of that card, and
+  // the correction paths own it; a saved line already on the card is 'manual',
+  // so those paths keep its numbers as they are.
+  const firstShot = (input.previousItems ?? []).length === 0;
+  let saved: SavedMealForParse[] = [];
+  if (firstShot && input.savedMeals) {
+    try {
+      saved = await input.savedMeals;
+    } catch {
+      saved = [];
+    }
+  }
+  const hits: SavedHit[] = [];
+  const result = await runParseMealCore(deps, input, saved, hits);
+  if (hits.length === 0) return result;
+  const merged = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
+  merged.steps = [...merged.steps, {
+    iter: 0,
+    tool: "saved_meal",
+    input: { offered: saved.length },
+    result: hits.map((h) => ({ id: h.meal.id, name: h.meal.name, count: h.count })),
+  }];
+  return merged;
+}
+
+async function runParseMealCore(
+  deps: ParseMealDeps,
+  input: ParseMealInput,
+  saved: SavedMealForParse[],
+  hits: SavedHit[],
+): Promise<ParseMealResult> {
   const usage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -4675,7 +4731,7 @@ export async function runParseMeal(
             })),
           },
         })
-        : userText.text,
+        : userText.text + savedMealsBlock(saved),
     }],
   });
   if (extractRes && !extractRes.ok) {
@@ -4772,6 +4828,7 @@ export async function runParseMeal(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
+        savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
   // Only trust the correction flag when a previous meal was actually supplied.
@@ -4858,6 +4915,28 @@ export async function runParseMeal(
     ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
       ? ext.meal_type_from_text
       : null;
+  // The user's saved meals come out HERE, before any lookup can run on them.
+  // Nothing past this line sees a saved item: no estimate, no catalog, no web.
+  if (!hasPrevious && saved.length > 0) {
+    extItems = extItems.filter((it) => {
+      const meal = findSavedMeal(it.savedMeal, saved);
+      if (!meal) return true;
+      hits.push({ meal, count: savedCount(it.quantity, it.unit), mealType: it.meal ?? mealFromText ?? null });
+      return false;
+    });
+    // Everything they said was a saved meal. There is nothing left to look up,
+    // so return now: runParseMeal fills the lines in from the stored rows.
+    if (hits.length > 0 && extItems.length === 0) {
+      return {
+        parsed: { meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour), items: [], drona_line: "" },
+        declined: null,
+        usage,
+        tool_calls: toolCalls,
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
+  }
   steps.push({
     iter: 0,
     tool: fastMode ? "estimate_meal" : "extract_meal",

@@ -41,6 +41,7 @@ import {
   type FoodAction,
   shouldRouteFoodIntent,
 } from "./foodIntent.ts";
+import type { SavedMealForParse } from "./savedMeals.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import {
   type DayClock,
@@ -226,24 +227,56 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
  *  Never throws. A user with no saved meals, a slow query, a missing table: all
  *  of them mean the same thing here, which is that the match question is not
  *  asked. Nothing about it may cost someone their meal log. */
-async function fetchSavedMealSummaries(userClient: SupabaseClient): Promise<SavedMealSummary[]> {
+/** The user's saved meals WITH their rows, read once per food message. The
+ *  parser logs these rows when the message names one (savedMeals.ts), and the
+ *  router gets its summary from the same read. Never throws: a failed read is
+ *  an empty list, which is exactly the behaviour before saved meals existed. */
+async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<SavedMealForParse[]> {
   try {
     const { data, error } = await userClient
       .from("saved_meals")
-      .select("id, name, kcal, protein_g, saved_meal_items(count)")
+      .select(
+        "id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, " +
+          "saved_meal_items(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)",
+      )
       .order("created_at", { ascending: false })
       .limit(60);
     if (error || !data) return [];
-    return (data as Record<string, unknown>[]).map((r) => ({
+    const n = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? 0 : Number(v));
+    const nn = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
+    return (data as unknown as Record<string, unknown>[]).map((r) => ({
       id: String(r.id),
       name: String(r.name ?? ""),
-      kcal: Number(r.kcal ?? 0),
-      protein_g: r.protein_g === null || r.protein_g === undefined ? null : Number(r.protein_g),
-      item_count: (r.saved_meal_items as { count: number }[] | undefined)?.[0]?.count ?? 0,
+      kind: r.kind === "recipe" ? "recipe" as const : "meal" as const,
+      servings: n(r.servings) > 0 ? n(r.servings) : 1,
+      serving_label: typeof r.serving_label === "string" ? r.serving_label : null,
+      kcal: n(r.kcal),
+      protein_g: n(r.protein_g),
+      carb_g: n(r.carb_g),
+      fat_g: n(r.fat_g),
+      items: ((r.saved_meal_items as Record<string, unknown>[] | undefined) ?? [])
+        .slice()
+        .sort((a, b) => n(a.position) - n(b.position))
+        .map((i) => ({
+          food_id: typeof i.food_id === "string" ? i.food_id : null,
+          food_name: String(i.food_name ?? ""),
+          quantity: n(i.quantity) || 1,
+          serving_unit: String(i.serving_unit ?? "serving"),
+          grams: nn(i.grams_logged),
+          kcal: n(i.kcal),
+          protein_g: nn(i.protein_g),
+          carb_g: nn(i.carb_g),
+          fat_g: nn(i.fat_g),
+          fiber_g: nn(i.fiber_g),
+        })),
     })).filter((m) => m.name.length > 0);
   } catch {
     return [];
   }
+}
+
+function toSavedSummaries(saved: SavedMealForParse[]): SavedMealSummary[] {
+  return saved.map((m) => ({ id: m.id, name: m.name, kcal: m.kcal, protein_g: m.protein_g, item_count: m.items.length }));
 }
 
 function makeFoodIntentDeps(
@@ -277,17 +310,15 @@ function makeFoodIntentDeps(
  *     as either would be wrong.
  */
 function startFoodIntent(
-  userClient: SupabaseClient,
+  savedMealsP: Promise<SavedMealForParse[]>,
   text: string,
   isCorrection: boolean,
   abortSignal?: AbortSignal,
 ): Promise<FoodIntentDecision | null> {
   if (!shouldRouteFoodIntent(FOOD_INTENT_MODE, isCorrection)) return Promise.resolve(null);
-  // The saved-meal read rides inside the same concurrent work, so it overlaps
-  // the parse like everything else here and adds nothing to the path a user
-  // waits on.
-  return fetchSavedMealSummaries(userClient)
-    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(saved, abortSignal)))
+  // The same saved-meal read the parser uses, so one query serves both.
+  return savedMealsP
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal)))
     // routeFoodIntent is documented never to throw. This is the belt on top of
     // the braces: nothing about a shadow measurement may fail a meal log.
     .catch((e) => {
@@ -2747,7 +2778,8 @@ async function handleParseMealRequest(args: {
         // the client leaving aborts the parse (see parseAbortFor above).
         // Kicked off BEFORE the parse is awaited, so the two overlap and the
         // common path (log, almost always) pays nothing for the question.
-        const intentP = startFoodIntent(userClient, text, previousItems.length > 0, abort.signal);
+        const savedMealsP = fetchSavedMealsForParse(userClient);
+        const intentP = startFoodIntent(savedMealsP, text, previousItems.length > 0, abort.signal);
         const supportsCreate = clientSupportsFoodCreate(body);
         // Settled into a plain variable so the progress gate below can read it
         // synchronously. Awaiting inside onProgress would stall the stream.
@@ -2771,6 +2803,7 @@ async function handleParseMealRequest(args: {
                 mealHint,
                 mode: "fast",
                 recentFoods: [],
+                savedMeals: savedMealsP,
                 todayTotals: null,
                 targets: null,
                 contextPromise,
@@ -2925,7 +2958,8 @@ async function handleParseMealRequest(args: {
   // waits for neither. Declared OUTSIDE the try because the catch traces it too:
   // a parse that blew up is exactly when knowing what the user was asking for is
   // most useful.
-  const intentP = startFoodIntent(userClient, text, previousItems.length > 0);
+  const savedMealsP = fetchSavedMealsForParse(userClient);
+  const intentP = startFoodIntent(savedMealsP, text, previousItems.length > 0);
   const supportsCreate = clientSupportsFoodCreate(body);
 
   try {
@@ -2946,6 +2980,7 @@ async function handleParseMealRequest(args: {
           // Placeholders; the real values are awaited from contextPromise inside
           // runParseMeal (after extract), so these queries overlap extraction.
           recentFoods: [],
+          savedMeals: savedMealsP,
           todayTotals: null,
           targets: null,
           contextPromise,
