@@ -550,7 +550,7 @@ export interface FoodFollowup {
 }
 
 const ERROR_BODY_MAX = 300;
-const REPLY_MAX_CHARS = 400;
+const REPLY_MAX_CHARS = 600;
 
 function baseFollowup(kind: FoodFollowup["kind"], res: AnthropicCallResult, ms: number): FoodFollowup {
   const usage = res.ok ? res.data?.usage : null;

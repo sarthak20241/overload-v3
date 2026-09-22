@@ -5,10 +5,12 @@ import {
   buildSystemPrompt,
   CREATE_CUSTOM_FOOD_TOOL,
   CREATE_CUSTOM_MEAL_TOOL,
+  LIST_LOGGED_MEALS_TOOL,
   STRUCTURED_TOOLS,
   TERMINAL_TOOLS,
 } from "./prompt.ts";
 import { envInt } from "../_shared/envInt.ts";
+import { isTimeZone } from "../_shared/wallClock.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -40,6 +42,14 @@ import {
   shouldRouteFoodIntent,
 } from "./foodIntent.ts";
 import { searchFatSecret } from "./fatsecret.ts";
+import {
+  type DayClock,
+  listLoggedMeals,
+  type LoggedMealsStore,
+  type MealRowIn,
+  todayFor,
+  weekdayOf,
+} from "./loggedMeals.ts";
 import {
   type AutoLogSkip,
   type AutoLogStore,
@@ -295,6 +305,68 @@ function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
   return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_FOOD_CREATE);
 }
 
+/** Reads the food box may do before it answers: the user's diary, so "save
+ *  yesterday's breakfast" and "what did I have for lunch" work here the same as
+ *  in Chat. Null when the box has no user to read for. */
+type DiaryReader = (input: Record<string, unknown>) => Promise<unknown>;
+
+function makeDiaryReader(userClient: SupabaseClient, extra: { todayLocal?: string | null; tzOffsetMin?: number | null }): DiaryReader {
+  let clockP: Promise<DayClock> | null = null;
+  return async (input) => {
+    clockP ??= coachDayClock(userClient, extra);
+    try {
+      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient));
+    } catch (e) {
+      return { error: String(e) };
+    }
+  };
+}
+
+/** Most diary reads one answer needs: one day, and one retry on a second day
+ *  when the first was empty. Past it the model has to answer with what it has. */
+const FOOD_BAR_MAX_DIARY_READS = 2;
+
+/**
+ * One model call that may first read the diary. Runs the call; while it asks
+ * for coach_list_logged_meals, answers that and calls again, up to the cap.
+ * Any other tool_use, or text, is the final answer and comes back as-is. After
+ * the cap the diary tool is taken away so the next call HAS to answer.
+ */
+async function callWithDiaryReads(
+  payload: Record<string, unknown>,
+  readDiary: DiaryReader | null,
+  timeoutMs: number,
+): Promise<{ ok: true; data: any; reads: number } | { ok: false; status: number; body: string }> {
+  const messages = [...(payload.messages as unknown[])];
+  let reads = 0;
+  const tools = (payload.tools as { name: string }[] | undefined) ?? [];
+  for (;;) {
+    const canRead = readDiary !== null && reads < FOOD_BAR_MAX_DIARY_READS;
+    const body: Record<string, unknown> = { ...payload, messages };
+    // Once a read is in the history the tool stays DEFINED (the API wants a
+    // definition for every tool_use it is shown), but past the cap a plain
+    // reply is told it may not call it again.
+    const offered = canRead || reads > 0 ? [LIST_LOGGED_MEALS_TOOL, ...tools] : tools;
+    if (offered.length > 0) body.tools = offered;
+    if (!canRead && reads > 0 && tools.length === 0) body.tool_choice = { type: "none" };
+    const res = await callAnthropic(body, timeoutMs);
+    if (!res.ok) return res;
+    const blocks = (res.data?.content ?? []) as { type?: string; name?: string; id?: string; input?: unknown }[];
+    const readCalls = blocks.filter((b) => b.type === "tool_use" && b.name === LIST_LOGGED_MEALS_TOOL.name);
+    const otherCalls = blocks.filter((b) => b.type === "tool_use" && b.name !== LIST_LOGGED_MEALS_TOOL.name);
+    // Past the cap a create draft that reaches for the diary again comes back
+    // with no create in it, and the caller serves the parse as a log.
+    if (readCalls.length === 0 || otherCalls.length > 0 || !canRead) return { ok: true, data: res.data, reads };
+    const results = await Promise.all(readCalls.map(async (b) => ({
+      type: "tool_result",
+      tool_use_id: b.id ?? "",
+      content: JSON.stringify(await readDiary!((b.input ?? {}) as Record<string, unknown>)),
+    })));
+    reads += readCalls.length;
+    messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
+  }
+}
+
 /**
  * Drona answering a message that is not food: a greeting, thanks, a question.
  *
@@ -310,6 +382,7 @@ function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
 async function replyToFoodBarChat(
   text: string,
   supportsCreate: boolean,
+  readDiary: DiaryReader | null = null,
 ): Promise<{ reply: string | null; followup: FoodFollowup }> {
   if (!ANTHROPIC_API_KEY) return { reply: null, followup: skippedFollowup("reply") };
   const t0 = Date.now();
@@ -322,17 +395,23 @@ async function replyToFoodBarChat(
       "it logs food they describe (\"two eggs and toast\"), and it saves a food or meal for later when they ask " +
       "(\"save my shake, 180 cal\"). Both happen right here. Never tell them to go anywhere else to log, save or create a meal."
     : "This box logs food the user describes (\"two eggs and toast\"). Describe only that if they ask what you can do.";
-  const res = await callAnthropic({
+  // With a diary to read, questions about what they already logged ("what did
+  // I have for lunch yesterday") get a real answer instead of a shrug.
+  const diary = readDiary
+    ? "You can read their food diary with coach_list_logged_meals: use it when they ask about food they already logged " +
+      "(\"what did I have for lunch yesterday\", \"how much protein yesterday\"), and answer from what it returns. "
+    : "";
+  const res = await callWithDiaryReads({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 160,
+    max_tokens: 300,
     system:
       "You are Coach Drona, answering inside the food logging box of a fitness app. The user typed something that is not a meal. " +
-      `${canDo} ` +
-      "Reply in one or two short sentences, warm and direct, like a coach. If they asked a real question, answer it briefly. " +
+      `${canDo} ${diary}` +
+      "Reply in one to three short sentences, warm and direct, like a coach. If they asked a real question, answer it briefly. " +
       "Only a long nutrition or training question is worth sending to Chat, never a question about logging or saving food. " +
       "Never claim you did anything: you logged nothing and saved nothing. Never use em dashes.",
     messages: [{ role: "user", content: text }],
-  }, 6000);
+  }, readDiary, 6000);
   if (!res.ok) console.log(`[food_intent] chat reply failed: ${res.status}`);
   return readReplyResult(res, Date.now() - t0);
 }
@@ -350,10 +429,19 @@ async function replyToFoodBarChat(
 async function draftFoodCreate(
   text: string,
   mealHint: MealType | null,
+  readDiary: DiaryReader | null = null,
 ): Promise<{ create: { tool: string; input: Record<string, unknown> } | null; followup: FoodFollowup }> {
   if (!ANTHROPIC_API_KEY) return { create: null, followup: skippedFollowup("create") };
   const t0 = Date.now();
-  const res = await callAnthropic({
+  // "Save yesterday's breakfast as a meal": the foods are in the diary, not in
+  // the message. Without the read the model would invent a breakfast.
+  const diary = readDiary
+    ? "If they point at food they already LOGGED (\"save yesterday's breakfast\", \"make today's lunch a meal\"), first read it " +
+      "with coach_list_logged_meals (days_ago 0 today, 1 yesterday), then save exactly those foods, copying every name, amount " +
+      "and number, marking nothing as estimated, with log_now false because it is already in the diary. " +
+      "If that meal is empty, save nothing you did not read: build it from the text alone only if the text lists the foods. "
+    : "";
+  const res = await callWithDiaryReads({
     model: PARSE_MEAL_MODEL,
     max_tokens: 900,
     system:
@@ -364,12 +452,13 @@ async function draftFoodCreate(
       "Set log_now true only when they said they ate it; if they only asked to save it, log_now is false. " +
       "The summary is shown on a card the user has NOT tapped yet, so write it as an offer: never say it is saved or logged. " +
       (mealHint ? `If log_now is true, the meal is ${mealHint}. ` : "") +
+      diary +
       "Never use em dashes.",
     tools: [CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL],
     // "any" and not a named tool: which of the two it is IS the judgment.
     tool_choice: { type: "any" },
     messages: [{ role: "user", content: text }],
-  }, 12000);
+  }, readDiary, 12000);
   if (!res.ok) console.log(`[food_intent] create draft failed: ${res.status}`);
   return readDraftResult(res, Date.now() - t0);
 }
@@ -404,6 +493,7 @@ async function resolveFoodBarOutcome(args: {
   supportsCreate: boolean;
   text: string;
   mealHint: MealType | null;
+  readDiary?: DiaryReader | null;
 }): Promise<FoodBarOutcome> {
   if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", decision: null };
   const decision = await args.intentP.catch(() => null);
@@ -416,13 +506,13 @@ async function resolveFoodBarOutcome(args: {
   });
 
   if (action === "reply") {
-    const { reply, followup } = await replyToFoodBarChat(args.text, args.supportsCreate);
+    const { reply, followup } = await replyToFoodBarChat(args.text, args.supportsCreate, args.readDiary ?? null);
     return reply
       ? { action, planned: action, decision, reply, followup }
       : { action: "log", planned: action, decision, followup };
   }
   if (action === "create") {
-    const { create, followup } = await draftFoodCreate(args.text, args.mealHint);
+    const { create, followup } = await draftFoodCreate(args.text, args.mealHint, args.readDiary ?? null);
     return create
       ? { action, planned: action, decision, create, followup }
       : { action: "log", planned: action, decision, followup };
@@ -748,6 +838,42 @@ async function recordTrace(
   }
 }
 
+// ── Logged-meal reads ───────────────────────────────────────────────────────
+
+/** meals + their entries in a UTC window, through the user's own JWT client. */
+function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
+  return {
+    async mealsBetween(startIso, endIso) {
+      const { data, error } = await userClient
+        .from("meals")
+        .select("meal_type, logged_at, meal_entries(food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)")
+        .gte("logged_at", startIso)
+        .lte("logged_at", endIso)
+        .order("logged_at", { ascending: true })
+        .limit(40);
+      if (error) return { error: error.message };
+      return { rows: (data ?? []) as MealRowIn[] };
+    },
+  };
+}
+
+/** The user's clock for a coach read: their saved zone, plus whatever the
+ *  request itself carried. A missing zone is not an error; the result says it
+ *  fell back to UTC. */
+async function coachDayClock(
+  userClient: SupabaseClient,
+  extra: { todayLocal?: string | null; tzOffsetMin?: number | null } = {},
+): Promise<DayClock> {
+  let timeZone: string | null = null;
+  try {
+    const { data } = await userClient.from("user_profiles").select("timezone").maybeSingle();
+    timeZone = typeof data?.timezone === "string" ? data.timezone : null;
+  } catch {
+    // Fall through to the offset / UTC.
+  }
+  return { timeZone, todayLocal: extra.todayLocal ?? null, tzOffsetMin: extra.tzOffsetMin ?? null };
+}
+
 // ── Tool execution ──────────────────────────────────────────────────────────
 // Maps Anthropic tool_use blocks → Postgres RPC calls via the user's JWT
 // client (so every read is RLS-gated to the authenticated user).
@@ -817,6 +943,18 @@ async function executeTool(
   // and what it comes to, not every ingredient of every meal, and pulling the
   // full item rows would put a large blob in the tool result for no decision it
   // changes.
+  // What the user LOGGED on one day. The day is resolved in their own zone
+  // (user_profiles.timezone, kept current by the app), because "yesterday" on
+  // a UTC server moves an Indian dinner onto the wrong date. See loggedMeals.ts.
+  if (name === "coach_list_logged_meals") {
+    try {
+      const clock = await coachDayClock(userClient);
+      return await listLoggedMeals(input, clock, loggedMealsStore(userClient));
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
   if (name === "coach_list_saved_meals") {
     const q = String(input.query ?? "").trim();
     const limit = Math.min(Math.max(Number(input.limit ?? 40) || 40, 1), 100);
@@ -2424,6 +2562,15 @@ async function handleParseMealRequest(args: {
   const auto = readAutoLogRequest(body, localDate);
   const autoLogArmed = auto.autoLog && previousItems.length === 0;
 
+  // The diary, for "save yesterday's breakfast" and "what did I have for
+  // lunch". The phone's own date anchors "today"; the offset only when the
+  // client actually sent one (readAutoLogRequest defaults a missing one to 0,
+  // which would be a guess dressed as a fact).
+  const readDiary = makeDiaryReader(userClient, {
+    todayLocal: localDate,
+    tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,
+  });
+
   /** After a parse in auto mode: write the diary, or say why not. Never
    *  throws. Returns the fields the response carries (`logged` when the write
    *  happened, `auto_log_skipped` when it did not) and the step the trace
@@ -2632,7 +2779,7 @@ async function handleParseMealRequest(args: {
                 recentTurns,
               },
             );
-            const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint });
+            const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint, readDiary });
             // A create is NOT a log: the user asked to save, so "Just log it"
             // must not write the parsed meal behind the save card's back. A reply
             // has nothing to log. Only the log path runs the diary write.
@@ -2809,7 +2956,7 @@ async function handleParseMealRequest(args: {
       );
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
-      const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint });
+      const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint, readDiary });
       const autoRes = outcome.action === "log" ? await finishAutoLog(result) : null;
       return { result, autoRes, outcome };
     })();
@@ -3349,7 +3496,7 @@ Deno.serve(async (req) => {
   try {
     const { data: profileNotes, error: pnError } = await userClient
       .from("user_profiles")
-      .select("injury_notes, training_preferences")
+      .select("injury_notes, training_preferences, timezone")
       .maybeSingle();
     if (pnError) {
       console.log("[ai-coach] profile-notes error:", pnError.message);
@@ -3366,6 +3513,16 @@ Deno.serve(async (req) => {
         if (injuries) ctx.injury_notes = injuries;
         if (prefs) ctx.training_preferences = prefs;
         trace.has_user_context = true;
+      }
+      // The user's date, so "yesterday" and "on Monday" mean their days. Date
+      // and weekday only: a clock time here would change the cached
+      // user_context block every minute. Only set when we KNOW the zone; a
+      // UTC guess stated as their date would be wrong for half the world.
+      const tz = typeof profileNotes.timezone === "string" ? profileNotes.timezone : null;
+      const today = isTimeZone(tz) ? todayFor({ timeZone: tz }) : null;
+      if (tz && today) {
+        if (!userContext || typeof userContext !== "object") userContext = {};
+        (userContext as Record<string, unknown>).today = { date: today, weekday: weekdayOf(today), time_zone: tz };
       }
     }
   } catch (e) {
