@@ -20,6 +20,8 @@ import {
   shouldRouteFoodIntent,
   CREATE_ACTION_FLOOR,
   decideFoodAction,
+  STEPS_ACTION_FLOOR,
+  wantsFoodAgent,
 } from "./foodIntent.ts";
 import { JEV_ENDPOINT, type JevDeps } from "./jev.ts";
 
@@ -269,7 +271,7 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 
 // A compile-time reminder that the union is what the criteria advertise. If a
 // new intent is added to FoodIntent without a rubric, this stops being valid.
-const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true };
+const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true };
 void _exhaustive;
 
 // ── The gate: should we even ask? ───────────────────────────────────────────
@@ -464,7 +466,7 @@ Deno.test("Jev being down loses the match but never the log", async () => {
 // The rules that stop a calibrated guess from costing anyone a meal. Each one
 // is here because a real probe case walked straight into it.
 
-function dec(intent: "log" | "create" | "other", confidence: number | null, source: "jev" | "model" | "default" = "jev") {
+function dec(intent: "log" | "create" | "other" | "steps", confidence: number | null, source: "jev" | "model" | "default" = "jev") {
   return { intent, confidence, source, note: "", savedMatch: null };
 }
 const on = { mode: "on" as const, parseFoundFood: true, clientSupportsCreate: true };
@@ -529,4 +531,31 @@ Deno.test("policy: the create bar sits above the intent floor", () => {
   assertEquals(CREATE_ACTION_FLOOR > JEV_INTENT_FLOOR, true);
   // And above the measured false positive, or it catches nothing.
   assertEquals(CREATE_ACTION_FLOOR > 0.64, true);
+});
+
+// ── Policy: the steps label and the food agent ──────────────────────────────
+
+Deno.test("steps: a confident Jev hands the message to the agent", () => {
+  assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.95) }), "agent");
+  assertEquals(wantsFoodAgent(dec("steps", 0.95), true), true);
+});
+
+Deno.test("steps: an old build that cannot draw a save card never gets the agent", () => {
+  assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.99), clientSupportsCreate: false }), "log");
+  assertEquals(wantsFoodAgent(dec("steps", 0.99), false), false);
+});
+
+Deno.test("steps: only Jev may spend the agent, never the model rung", () => {
+  assertEquals(wantsFoodAgent(dec("steps", 0.99, "model"), true), false);
+  assertEquals(wantsFoodAgent(dec("steps", null, "model"), true), false);
+});
+
+Deno.test("steps: the floor is 0.6 and unsure steps fall to log or reply", () => {
+  assertEquals(STEPS_ACTION_FLOOR, 0.6);
+  assertEquals(wantsFoodAgent(dec("steps", 0.6), true), true);
+  assertEquals(wantsFoodAgent(dec("steps", 0.59), true), false);
+  // A question about earlier food came back as steps at 49%: no food in it,
+  // so it gets a spoken answer, not a decline.
+  assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.49), parseFoundFood: false }), "reply");
+  assertEquals(decideFoodAction({ ...on, decision: dec("steps", 0.49), parseFoundFood: true }), "log");
 });

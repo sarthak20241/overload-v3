@@ -14,8 +14,10 @@ import { isTimeZone } from "../_shared/wallClock.ts";
 import {
   type CandidateFood,
   type MealType,
+  mealForHour,
   type OffProduct,
   type ParseMealDeps,
+  type ParseMealInput,
   type ParseMealResult,
   type ParseStep,
   type PreviousItem,
@@ -40,8 +42,10 @@ import {
   skippedFollowup,
   type FoodAction,
   shouldRouteFoodIntent,
+  wantsFoodAgent,
 } from "./foodIntent.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
+import { type FoodAgentOutcome, runFoodAgent } from "./foodAgent.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import {
   type DayClock,
@@ -190,17 +194,18 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
       "a question about the app or about nutrition) is other.",
     tools: [{
       name: "route_food_text",
-      description: "Report which of the two things the user is asking for.",
+      description: "Report what the user is asking for.",
       input_schema: {
         type: "object",
         properties: {
           intent: {
             type: "string",
-            enum: ["log", "create", "other"],
+            enum: ["log", "create", "other", "steps"],
             description:
               "log: they are reporting food or drink they had. " +
               "create: they explicitly asked for a food or meal to be SAVED as a reusable entry. " +
-              "other: they reported no eating and asked to save nothing.",
+              "other: they reported no eating and asked to save nothing. " +
+              "steps: the food must be looked up in what they logged before, or they asked for two actions at once.",
           },
         },
         required: ["intent"],
@@ -215,7 +220,7 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
   }
   const block = (res.data?.content ?? []).find((b: { type?: string }) => b?.type === "tool_use");
   const intent = block?.input?.intent;
-  return intent === "log" || intent === "create" || intent === "other" ? intent : null;
+  return intent === "log" || intent === "create" || intent === "other" || intent === "steps" ? intent : null;
 }
 
 /** The user's saved foods and meals, for the match question. Headers only: the
@@ -504,6 +509,95 @@ interface FoodBarOutcome {
   followup?: FoodFollowup;
   reply?: string;
   create?: { tool: string; input: Record<string, unknown> };
+  /** The agent's meal, REPLACING the first parse. Set only when the agent
+   *  finished with log_food. */
+  result?: ParseMealResult;
+  /** What the agent did, for the trace. */
+  agent?: { kind: FoodAgentOutcome["kind"]; reason: string | null; turns: FoodAgentOutcome["turns"] };
+}
+
+/** What the box says when the agent could not finish. True, and it tells the
+ *  user the one thing that reliably works: the same ask in two plain messages. */
+const AGENT_FAILED_REPLY =
+  "I could not finish that one in a single go. Try it as two messages: first what to save or look up, then what to log.";
+
+/** "Tuesday 2026-09-22" from the client's YYYY-MM-DD, or null. The weekday is
+ *  computed from the date itself, so no server clock or time zone is involved. */
+function todayLabel(localDate: string | null): string | null {
+  if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
+  const d = new Date(`${localDate}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][d.getUTCDay()];
+  return `${day} ${localDate}`;
+}
+
+/**
+ * Start the food agent AS SOON AS the router answers, not after the parse: the
+ * parse is wasted work for a multi-step message, and waiting on it would add
+ * its whole time to the agent's. Resolves null when the message is not one
+ * for the agent (the common case, which costs nothing). Never rejects.
+ */
+function startFoodAgent(args: {
+  intentP: Promise<FoodIntentDecision | null>;
+  supportsCreate: boolean;
+  text: string;
+  mealHint: MealType | null;
+  localHour: number | null;
+  localDate: string | null;
+  mode: "fast" | "super" | null;
+  savedMealsP: Promise<SavedMealForParse[]>;
+  readDiary: DiaryReader;
+  contextPromise: ParseMealInput["contextPromise"];
+  userClient: SupabaseClient;
+  admin: any;
+  userId: string;
+  onStatus?: (label: string) => void;
+}): Promise<FoodAgentOutcome | null> {
+  return args.intentP.then(async (d) => {
+    if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate)) return null;
+    if (!ANTHROPIC_API_KEY) return null;
+    const t0 = Date.now();
+    const out = await runFoodAgent(
+      { text: args.text, defaultMeal: args.mealHint ?? mealForHour(args.localHour), today: todayLabel(args.localDate) },
+      {
+        model: MODEL,
+        callModel: (b) => callAnthropic(b, 15000),
+        readDiary: args.readDiary,
+        savedMeals: () => args.savedMealsP,
+        // A fresh parse without onProgress: the agent's parses must not paint
+        // rows on the card behind its back.
+        parseFood: (t) =>
+          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId), {
+            text: t,
+            localHour: args.localHour,
+            mealHint: args.mealHint,
+            mode: args.mode,
+            recentFoods: [],
+            savedMeals: args.savedMealsP,
+            todayTotals: null,
+            targets: null,
+            contextPromise: args.contextPromise,
+          }),
+        onStatus: args.onStatus,
+        log: (m) => console.log(m),
+      },
+    );
+    // Sonnet's own tokens. The parses it ran are costed in the parse result.
+    void logTokenUsage(args.admin, {
+      pipeline: "food_agent",
+      provider: "anthropic",
+      model: MODEL,
+      input_tokens: out.turns.reduce((n, t) => n + (t.input_tokens ?? 0), 0),
+      output_tokens: out.turns.reduce((n, t) => n + (t.output_tokens ?? 0), 0),
+      latency_ms: Date.now() - t0,
+      status: out.kind === "failed" ? "error" : "success",
+      metadata: { user_id: args.userId, kind: out.kind, turns: out.turns.length },
+    });
+    return out;
+  }).catch((e) => {
+    console.log(`[food_agent] threw: ${String(e).slice(0, 160)}`);
+    return { kind: "failed" as const, reason: "threw", turns: [] };
+  });
 }
 
 /**
@@ -525,6 +619,7 @@ async function resolveFoodBarOutcome(args: {
   text: string;
   mealHint: MealType | null;
   readDiary?: DiaryReader | null;
+  agentP?: Promise<FoodAgentOutcome | null>;
 }): Promise<FoodBarOutcome> {
   if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", decision: null };
   const decision = await args.intentP.catch(() => null);
@@ -536,6 +631,15 @@ async function resolveFoodBarOutcome(args: {
     clientSupportsCreate: args.supportsCreate,
   });
 
+  if (action === "agent") {
+    const o = args.agentP ? await args.agentP : null;
+    if (!o) return { action: "log", planned: action, decision };
+    const agent = { kind: o.kind, reason: o.kind === "failed" ? o.reason : null, turns: o.turns };
+    if (o.kind === "log") return { action: "log", planned: action, decision, result: o.result, agent };
+    if (o.kind === "create") return { action: "create", planned: action, decision, create: o.create, agent };
+    if (o.kind === "reply") return { action: "reply", planned: action, decision, reply: o.text, agent };
+    return { action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent };
+  }
   if (action === "reply") {
     const { reply, followup } = await replyToFoodBarChat(args.text, args.supportsCreate, args.readDiary ?? null);
     return reply
@@ -579,6 +683,8 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
       // The reply or create call in full: what the model wrote, what the user
       // was shown, the card it drafted, tokens, timing, and any error.
       followup: outcome?.followup ?? null,
+      // The agent's turns: which tools it called together, tokens and time.
+      agent: outcome?.agent ?? null,
       intent: d.intent,
       source: d.source,
       confidence: d.confidence,
@@ -2785,16 +2891,27 @@ async function handleParseMealRequest(args: {
         // synchronously. Awaiting inside onProgress would stall the stream.
         let settledIntent: FoodIntentDecision | null = null;
         void intentP.then((d) => { settledIntent = d; });
+        const agentP = startFoodAgent({
+          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
+          contextPromise, userClient, admin, userId,
+          // Builds that do not know this event skip it (dietData ignores
+          // unknown events), so this needs no capability of its own.
+          onStatus: (label) => send("status", { label }),
+        });
         const work = (async () => {
           try {
-            const result = await runParseMeal(
+            const firstParse = await runParseMeal(
               {
                 ...deps,
                 // Once a create this client can draw is certain, stop painting
                 // meal rows: a save card is about to replace them, and a meal
                 // flashing up first reads as "it logged it anyway".
                 onProgress: (p) => {
-                  if (!wouldDivertToCreate(settledIntent, supportsCreate)) send(p.kind, p);
+                  if (wouldDivertToCreate(settledIntent, supportsCreate)) return;
+                  // The agent answers this one; rows from the plain parse would
+                  // be a meal it is not going to log.
+                  if (FOOD_INTENT_MODE === "on" && wantsFoodAgent(settledIntent, supportsCreate)) return;
+                  send(p.kind, p);
                 },
               },
               {
@@ -2812,7 +2929,11 @@ async function handleParseMealRequest(args: {
                 recentTurns,
               },
             );
-            const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint, readDiary });
+            const outcome = await resolveFoodBarOutcome({
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP,
+            });
+            // The agent's meal replaces the first parse when it finished with a log.
+            const result = outcome.result ?? firstParse;
             // A create is NOT a log: the user asked to save, so "Just log it"
             // must not write the parsed meal behind the save card's back. A reply
             // has nothing to log. Only the log path runs the diary write.
@@ -2968,8 +3089,13 @@ async function handleParseMealRequest(args: {
     // Just log it on the JSON path: the parse AND the diary write stay alive
     // past the response, so a client that drops the connection mid-wait
     // still gets its meal logged. Same rule the stream applies.
+    const agentP = startFoodAgent({
+      intentP, supportsCreate, text, mealHint, localHour, localDate,
+      mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
+      savedMealsP, readDiary, contextPromise, userClient, admin, userId,
+    });
     const work = (async () => {
-      const result = await runParseMeal(
+      const firstParse = await runParseMeal(
         makeParseDeps(userClient, admin, userId),
         {
           text,
@@ -2993,7 +3119,11 @@ async function handleParseMealRequest(args: {
       );
       // Decided before the diary write, for the same reason as the stream: a
       // create or a reply must not log the parsed meal behind the user's back.
-      const outcome = await resolveFoodBarOutcome({ result, intentP, supportsCreate, text, mealHint, readDiary });
+      const outcome = await resolveFoodBarOutcome({
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP,
+      });
+      // The agent's meal replaces the first parse when it finished with a log.
+      const result = outcome.result ?? firstParse;
       const autoRes = outcome.action === "log" ? await finishAutoLog(result) : null;
       return { result, autoRes, outcome };
     })();
