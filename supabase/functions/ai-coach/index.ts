@@ -32,6 +32,10 @@ import {
   type SavedMealSummary,
   CREATE_ACTION_FLOOR,
   decideFoodAction,
+  type FoodFollowup,
+  readDraftResult,
+  readReplyResult,
+  skippedFollowup,
   type FoodAction,
   shouldRouteFoodIntent,
 } from "./foodIntent.ts";
@@ -303,8 +307,12 @@ function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
  * null on any failure, and the caller falls back to the parse's own decline, so
  * a broken reply is never worse than what shipped.
  */
-async function replyToFoodBarChat(text: string, supportsCreate: boolean): Promise<string | null> {
-  if (!ANTHROPIC_API_KEY) return null;
+async function replyToFoodBarChat(
+  text: string,
+  supportsCreate: boolean,
+): Promise<{ reply: string | null; followup: FoodFollowup }> {
+  if (!ANTHROPIC_API_KEY) return { reply: null, followup: skippedFollowup("reply") };
+  const t0 = Date.now();
   // What THIS box can do, stated as fact the reply has to get right. The first
   // version put "for longer answers, ask in Chat" beside it, and the model
   // over-applied that: asked "do you have tools to create meals", it sent the
@@ -325,18 +333,8 @@ async function replyToFoodBarChat(text: string, supportsCreate: boolean): Promis
       "Never claim you did anything: you logged nothing and saved nothing. Never use em dashes.",
     messages: [{ role: "user", content: text }],
   }, 6000);
-  if (!res.ok) {
-    console.log(`[food_intent] chat reply failed: ${res.status}`);
-    return null;
-  }
-  const out = (res.data?.content ?? [])
-    .filter((b: { type?: string }) => b?.type === "text")
-    .map((b: { text?: string }) => b.text ?? "")
-    .join("")
-    .trim()
-    // A stray em dash reads as machine-written. Belt on top of the prompt.
-    .replace(/\s*\u2014\s*/g, ", ");
-  return out.length > 0 ? out.slice(0, 400) : null;
+  if (!res.ok) console.log(`[food_intent] chat reply failed: ${res.status}`);
+  return readReplyResult(res, Date.now() - t0);
 }
 
 /**
@@ -352,8 +350,9 @@ async function replyToFoodBarChat(text: string, supportsCreate: boolean): Promis
 async function draftFoodCreate(
   text: string,
   mealHint: MealType | null,
-): Promise<{ tool: string; input: Record<string, unknown> } | null> {
-  if (!ANTHROPIC_API_KEY) return null;
+): Promise<{ create: { tool: string; input: Record<string, unknown> } | null; followup: FoodFollowup }> {
+  if (!ANTHROPIC_API_KEY) return { create: null, followup: skippedFollowup("create") };
+  const t0 = Date.now();
   const res = await callAnthropic({
     model: PARSE_MEAL_MODEL,
     max_tokens: 900,
@@ -371,18 +370,18 @@ async function draftFoodCreate(
     tool_choice: { type: "any" },
     messages: [{ role: "user", content: text }],
   }, 12000);
-  if (!res.ok) {
-    console.log(`[food_intent] create draft failed: ${res.status}`);
-    return null;
-  }
-  const block = (res.data?.content ?? []).find((b: { type?: string }) => b?.type === "tool_use");
-  if (!block || (block.name !== "create_custom_food" && block.name !== "create_custom_meal")) return null;
-  return { tool: String(block.name), input: (block.input ?? {}) as Record<string, unknown> };
+  if (!res.ok) console.log(`[food_intent] create draft failed: ${res.status}`);
+  return readDraftResult(res, Date.now() - t0);
 }
 
 interface FoodBarOutcome {
+  /** What the food bar DID. Differs from `planned` when a reply or a create
+   *  failed and the bar fell back to the log. */
   action: FoodAction;
+  planned: FoodAction;
   decision: FoodIntentDecision | null;
+  /** The reply or create call, as the trace keeps it. Absent on a plain log. */
+  followup?: FoodFollowup;
   reply?: string;
   create?: { tool: string; input: Record<string, unknown> };
 }
@@ -406,7 +405,7 @@ async function resolveFoodBarOutcome(args: {
   text: string;
   mealHint: MealType | null;
 }): Promise<FoodBarOutcome> {
-  if (FOOD_INTENT_MODE !== "on") return { action: "log", decision: null };
+  if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", decision: null };
   const decision = await args.intentP.catch(() => null);
   const parseFoundFood = !!args.result.parsed && args.result.parsed.items.length > 0;
   const action = decideFoodAction({
@@ -417,14 +416,18 @@ async function resolveFoodBarOutcome(args: {
   });
 
   if (action === "reply") {
-    const reply = await replyToFoodBarChat(args.text, args.supportsCreate);
-    return reply ? { action, decision, reply } : { action: "log", decision };
+    const { reply, followup } = await replyToFoodBarChat(args.text, args.supportsCreate);
+    return reply
+      ? { action, planned: action, decision, reply, followup }
+      : { action: "log", planned: action, decision, followup };
   }
   if (action === "create") {
-    const create = await draftFoodCreate(args.text, args.mealHint);
-    return create ? { action, decision, create } : { action: "log", decision };
+    const { create, followup } = await draftFoodCreate(args.text, args.mealHint);
+    return create
+      ? { action, planned: action, decision, create, followup }
+      : { action: "log", planned: action, decision, followup };
   }
-  return { action: "log", decision };
+  return { action: "log", planned: "log", decision };
 }
 
 /** True once the router has settled on a create this client can draw, so the
@@ -439,7 +442,7 @@ function wouldDivertToCreate(d: FoodIntentDecision | null, supportsCreate: boole
  *  already uses. parse_traces.steps is jsonb precisely so this needs no
  *  migration. This is the record we read after a week to find out whether a
  *  floor tuned on invented messages survives real ones. */
-function foodIntentStep(d: FoodIntentDecision | null, action?: FoodAction): ParseStep[] {
+function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome): ParseStep[] {
   if (!d) return [];
   return [{
     iter: 9,
@@ -448,7 +451,13 @@ function foodIntentStep(d: FoodIntentDecision | null, action?: FoodAction): Pars
       // What we DID, beside what we guessed. They differ whenever the policy
       // overrules Jev (a create under the bar, a parse vetoing an 'other'), and
       // those disagreements are the rows worth reading.
-      action: action ?? null,
+      action: outcome?.action ?? null,
+      // What the policy chose before the reply or create call ran. Differs
+      // from action only when that call failed and the bar fell back to log.
+      planned_action: outcome?.planned ?? null,
+      // The reply or create call in full: what the model wrote, what the user
+      // was shown, the card it drafted, tokens, timing, and any error.
+      followup: outcome?.followup ?? null,
       intent: d.intent,
       source: d.source,
       confidence: d.confidence,
@@ -2675,7 +2684,7 @@ async function handleParseMealRequest(args: {
               output_tokens: result.usage.output_tokens,
               web_search_requests: result.usage.web_search_requests,
               latency_ms: Date.now() - startedAtMs,
-            }, intentP.then((d) => foodIntentStep(d, outcome.action)));
+            }, intentP.then((d) => foodIntentStep(d, outcome)));
             // COST. recordTrace writes coach_traces; logTokenUsage writes the
             // token-cost table that cost_summary, cost_by_day and the admin
             // pages read. They are separate calls, and the SSE branch had
@@ -2871,7 +2880,7 @@ async function handleParseMealRequest(args: {
       output_tokens: result.usage.output_tokens,
       web_search_requests: result.usage.web_search_requests,
       latency_ms: Date.now() - startedAtMs,
-    }, intentP.then((d) => foodIntentStep(d, outcome.action)));
+    }, intentP.then((d) => foodIntentStep(d, outcome)));
 
     if (outcome.action === "create") {
       return respond(
