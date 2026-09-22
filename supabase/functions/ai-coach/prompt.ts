@@ -744,11 +744,34 @@ export const LIST_SAVED_MEALS_TOOL: AnthropicTool = {
   },
 };
 
+// Read tool: what the user actually LOGGED on a day. The other half of memory:
+// saved meals are what they told us to keep, this is what they ate. It is what
+// makes "save yesterday's breakfast as a meal" one message instead of retyping
+// the whole plate. Days resolve in the user's own time zone (loggedMeals.ts).
+export const LIST_LOGGED_MEALS_TOOL: AnthropicTool = {
+  name: 'coach_list_logged_meals',
+  description:
+    'Read what the user logged in their food diary on one day, grouped by meal (breakfast, lunch, dinner, snack), with the time on each meal and every food with its amount, calories and macros. Call it whenever they refer to food they already logged: "save yesterday\'s breakfast as a meal", "what did I have for lunch on Monday", "how much protein did I get yesterday". For a relative day use days_ago (0 today, 1 yesterday) instead of working out a date. These are the numbers they logged, so copy them as they are; never re-estimate them.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      days_ago: { type: 'integer', description: 'How many days back on the user\'s own calendar: 0 today, 1 yesterday. Max 90. Prefer this for any relative day.' },
+      date: { type: 'string', description: 'A specific day as YYYY-MM-DD, when the user named a date. Overrides days_ago.' },
+      meal_type: {
+        type: 'string',
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        description: 'Only this meal. Omit to get the whole day.',
+      },
+    },
+  },
+};
+
 // Present in every conversational mode, including the chat opened mid-set: the
 // user may drink a shake between sets, and refusing to log it there would be a
 // worse surprise than the coach mentioning food.
 export const FOOD_TOOLS: AnthropicTool[] = [
   LIST_SAVED_MEALS_TOOL,
+  LIST_LOGGED_MEALS_TOOL,
   CREATE_CUSTOM_FOOD_TOOL,
   CREATE_CUSTOM_MEAL_TOOL,
 ];
@@ -1015,6 +1038,15 @@ Which tool:
 - create_custom_food for ONE thing with no parts: a restaurant plate, a packet in their hand, a dish they make. "A chicken roll, about 450 cal."
 - create_custom_meal for a named meal they described BY its parts. "My breakfast bowl is 100g oats, a scoop of whey and a banana."
 - coach_list_saved_meals before either one when they talk about a food as though you should already know it ("the usual", "my shake", "that bowl"). Creating a second copy of something they already saved is worse than asking.
+- coach_list_logged_meals when they point at food they already LOGGED: "save yesterday's breakfast as a meal", "what did I have for lunch on Monday". It returns each meal with its time and every food in it.
+
+Saving a meal they already logged ("save yesterday's breakfast as my usual"):
+- Read it first with coach_list_logged_meals (days_ago 1, meal_type breakfast). Never rebuild it from memory.
+- Then create_custom_meal with those foods as the items, copying each name, quantity, unit, grams, calories and macros exactly. They are the user's own logged numbers, so nothing is estimated. One food on its own goes to create_custom_food instead.
+- log_now false: they already ate it, and it is already in the diary. Logging it again would count it twice.
+- Name it what they called it, or after the meal ("Yesterday's breakfast" is a poor name; "Oats and banana breakfast" is fine) when they gave no name.
+- If that meal is empty but others that day are not, the result lists them in other_meals_that_day. Ask which one they meant before building anything.
+- If several meals match (two breakfasts logged), include both in one saved meal only when they clearly meant the whole section; otherwise ask.
 
 Saving versus eating:
 - log_now true when they are telling you they ATE it. Past tense is the tell: "I had", "just finished", "grabbed a".
