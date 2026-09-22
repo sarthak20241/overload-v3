@@ -29,11 +29,14 @@
 import { asChoice, askJev, JEV_MODEL } from "../../supabase/functions/ai-coach/jev.ts";
 import { INTENT_CRITERIA, INTENT_INSTRUCTIONS } from "../../supabase/functions/ai-coach/foodIntent.ts";
 
-type Label = "log" | "create" | "other";
+type Label = "log" | "create" | "other" | "steps";
 
 interface Case {
   text: string;
   want: Label;
+  /** A second answer that is also right. Used where "save it and log it" names
+   *  the food: create (with log_now) and steps both end in the same card. */
+  alt?: Label;
   hard?: boolean;
 }
 
@@ -57,7 +60,7 @@ const DEV: Case[] = [
   { text: "chicken roll, about 450 cal", want: "log", hard: true },
   // WAS create. No instruction to save anywhere in it, so it is a log.
   { text: "my protein shake is 180 cal, 30g protein", want: "log", hard: true },
-  { text: "I had my usual breakfast bowl, save it too", want: "create", hard: true },
+  { text: "I had my usual breakfast bowl, save it too", want: "create", alt: "steps", hard: true },
   { text: "dosa 600 cal 20p 80c 20f", want: "log", hard: true },
   { text: "make a note that my office salad is around 320 calories", want: "create", hard: true },
   // WAS create. Describes a recurring dish but never asks for it to be kept.
@@ -96,7 +99,9 @@ const HELD_OUT: Case[] = [
 
   // Both in one message. The save is the new instruction, so create.
   { text: "two rotis and sabzi, and keep that as a meal", want: "create", hard: true },
-  { text: "logged my shake already, can you also save it for next time", want: "create", hard: true },
+  // Under the steps label (2026-09-22) this is steps too: the shake is in the
+  // diary, not the message, and the agent reads it instead of guessing.
+  { text: "logged my shake already, can you also save it for next time", want: "create", alt: "steps", hard: true },
 
   // Verbs that look like saving but are not, in a diary.
   { text: "add 2 bananas", want: "log", hard: true },
@@ -186,6 +191,27 @@ const HELD_OUT_3: Case[] = [
   { text: "could you add a coffee", want: "log", hard: true },
 ];
 
+// ── HELD_OUT_4: the steps label (2026-09-22) ────────────────────────────────
+// Fresh, written after the steps criteria, none of them in its examples. The
+// traps: a plain log naming several meals, a plain save with its parts, and a
+// QUESTION about earlier food, which is other (it gets a spoken answer).
+const HELD_OUT_4: Case[] = [
+  { text: "please save the oat meal I had yesterday as a meal", want: "steps" },
+  { text: "can you log what I ate for breakfast yesterday again today", want: "steps" },
+  { text: "repeat Tuesday's dinner", want: "steps" },
+  { text: "turn today's lunch into a saved meal and log it for dinner too", want: "steps" },
+  { text: "same as last night but no rice", want: "steps", hard: true },
+  { text: "save my breakfast from this morning", want: "steps", hard: true },
+  { text: "log yesterday's snacks for today as well", want: "steps" },
+
+  { text: "eggs for breakfast, dal rice at lunch, an apple in the evening", want: "log", hard: true },
+  { text: "had the same chai as always", want: "log", hard: true },
+  { text: "save a meal called gym lunch: 200g chicken, 1 cup rice", want: "create", hard: true },
+  { text: "what did I have for dinner on Sunday?", want: "other", hard: true },
+  { text: "how many calories was yesterday's breakfast", want: "other", hard: true },
+  { text: "two rotis and paneer", want: "log" },
+];
+
 function pct(n: number): string {
   return `${(n * 100).toFixed(0)}%`.padStart(4);
 }
@@ -223,7 +249,7 @@ async function runSet(name: string, cases: Case[], apiKey: string): Promise<Outc
     const ch = asChoice(res.response.answers.intent);
     if (!ch) { o.rows.push(`SHAPE ${c.text.slice(0, 44)}`); continue; }
 
-    const ok = ch.choice === c.want;
+    const ok = ch.choice === c.want || ch.choice === c.alt;
     if (ok) { o.right++; o.rightConf.push(ch.confidence); } else { o.wrongConf.push(ch.confidence); }
     if (c.hard) { o.hardTotal++; if (ok) o.hardRight++; }
 
@@ -282,11 +308,13 @@ async function main() {
   const held = await runSet("HELD_OUT", HELD_OUT, apiKey);
   const held2 = await runSet("HELD_OUT_2", HELD_OUT_2, apiKey);
   const held3 = await runSet("HELD_OUT_3", HELD_OUT_3, apiKey);
+  const held4 = await runSet("HELD_OUT_4", HELD_OUT_4, apiKey);
 
   report("DEV (seen, re-labelled)", dev);
   report("HELD OUT (seen last run, 2 labels moved to other)", held);
   report("HELD OUT 2 (three-way boundary, seen)", held2);
   report("HELD OUT 3 (ability + progress questions)", held3);
+  report("HELD OUT 4 (steps, fresh)", held4);
 
   console.log("\n══════ floor sweep, HELD OUT 2 ══════");
   sweep(held2);

@@ -47,13 +47,20 @@ fast path and today's latency.
 
 ## Steps
 
-1. **Saved-meal rules** (server only)
+1. **Saved-meal rules** (server only). DONE, PR #196, ai-coach v175.
    - Scenario 3 + 1A: whole-meal-only matching; `saved_suggestions` on the
      result for the chip.
    - Scenario 2: "not from saved meals" on a correction turn re-parses the
      original text without saved meals, in the same mode, replacing the card.
 2. **Agent** (server): Jev `steps` label + probe, Sonnet loop, parallel tools,
-   status SSE events, turn cap enforced in code, traces.
+   status SSE events, turn cap enforced in code, traces. BUILT.
+   - Jev: HELD_OUT_4 13/13, steps answers at 95-100%. Floor 0.6. Unsure steps
+     with no food = reply (questions about earlier food sat at 49-57%).
+   - Agent probe (`npx tsx scripts/food-agent/probe.mts`, Sonnet via claude -p):
+     6/6, then 4/4 of the runs the CLI completed. Every case took 2 turns.
+   - Gated on `food_create` (builds that draw save cards). Status events are
+     ignored by builds that do not know them, so no new capability was needed.
+   - No log to past days yet: log_food writes today only.
 3. **App**: status lines, save-and-log card, saved-meal chip. Capability gate.
 4. **Eval**: multi-step case set, via `claude -p` only.
 

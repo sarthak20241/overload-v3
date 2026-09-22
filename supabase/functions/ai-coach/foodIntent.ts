@@ -44,7 +44,7 @@ import {
  *  'improvise' (build me something from what I have) and 'challenge' (push back
  *  on what I logged) are still coming. They stay out until the downstream code
  *  can handle them: an option with nowhere to go is a route to nowhere. */
-export type FoodIntent = "log" | "create" | "other";
+export type FoodIntent = "log" | "create" | "other" | "steps";
 
 /** Where the answer came from. Carried so the logs can show the ladder working,
  *  and so a regression in routing can be attributed to a step rather than
@@ -124,6 +124,7 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "This is the default: a message about food is a log unless it contains an instruction to save or create.",
     not_for:
       "Messages that explicitly ask to save, create, or remember a food or meal for future use. " +
+      "Messages that point at food already logged on an earlier day or meal instead of naming it (\"same lunch as yesterday\"). " +
       "Also not for messages that report no eating at all, such as a greeting or a question about the app.",
     examples: [
       "a bowl of poha and chai",
@@ -141,7 +142,8 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "Merely describing a food, naming a dish, or giving its calories and macros. Numbers and present tense are NOT a request to save. " +
       "If you have to infer that they probably want it kept, they did not ask, and this is not the option. " +
       "A QUESTION about whether saving or creating is possible is not an instruction either: it asks about ability and names nothing to save. " +
-      "A polite request that names the specific food or meal to save (\"could you save X\") IS an instruction.",
+      "A polite request that names the specific food or meal to save (\"could you save X\") IS an instruction. " +
+      "If the food to save has to be looked up in what they logged before, or they also want it logged, that is not this option.",
     examples: [
       "create this as a new meal called Desk Lunch",
       "save this combination as a meal for later",
@@ -170,6 +172,23 @@ export const INTENT_CRITERIA: Record<FoodIntent, Record<string, unknown>> = {
       "is rice bad for cutting",
     ],
   },
+  steps: {
+    what:
+      "Doing what the user asked needs more than one step. Either the food is not in the message and has to be looked up " +
+      "in what they logged before (a meal on an earlier day, \"this morning's breakfast\", \"what I had on Monday\"), " +
+      "or they ask for two actions at once, such as saving a meal AND logging it, or logging an earlier meal again with a change.",
+    not_for:
+      "A plain log of food named in the message, even many foods across several meals. A plain request to save a food " +
+      "or meal whose parts or numbers are in the message. Questions, including questions about what they ate before: " +
+      "those get a spoken answer.",
+    examples: [
+      "save the dal chawal I had for dinner on Sunday as a meal",
+      "log the same breakfast as yesterday",
+      "make this morning's smoothie a saved meal and put it in lunch today too",
+      "same lunch as Monday but half the rice",
+      "add last night's dinner again, without the naan",
+    ],
+  },
 };
 
 export const INTENT_INSTRUCTIONS = {
@@ -180,7 +199,8 @@ export const INTENT_INSTRUCTIONS = {
     "Ignore whether the food sounds healthy, whether the numbers look plausible, and what the user should do next.",
   default_rule:
     "If the message reports eating or drinking and does not explicitly ask to save anything, the answer is log. " +
-    "If it reports no eating at all, the answer is other.",
+    "If it reports no eating at all, the answer is other. " +
+    "If the food has to be looked up in earlier logs, or two actions are asked for, the answer is steps.",
 };
 
 /**
@@ -339,7 +359,7 @@ function trimForState(text: string): string {
 }
 
 function isIntent(v: unknown): v is FoodIntent {
-  return v === "log" || v === "create" || v === "other";
+  return v === "log" || v === "create" || v === "other" || v === "steps";
 }
 
 /**
@@ -460,7 +480,7 @@ export async function routeFoodIntent(
 
 /** What the food bar does with a message. 'reply' is Drona answering in words,
  *  for a greeting or a question, instead of the canned "tell me what you ate". */
-export type FoodAction = "log" | "create" | "reply";
+export type FoodAction = "log" | "create" | "reply" | "agent";
 
 /**
  * The bar for letting 'create' pull a message out of the parse.
@@ -472,6 +492,11 @@ export type FoodAction = "log" | "create" | "reply";
  * and nothing is saved that the user did not ask for.
  */
 export const CREATE_ACTION_FLOOR = 0.7;
+
+/** The bar for handing a message to the food agent (Sonnet, several turns).
+ *  Jev only, like create: the agent costs seconds and a bigger model, so a
+ *  guess from the fallback rung does not get to spend them. */
+export const STEPS_ACTION_FLOOR = 0.6;
 
 export interface FoodActionInputs {
   /** The router's verdict. Null when it did not run (mode off, a correction). */
@@ -496,6 +521,15 @@ export interface FoodActionInputs {
  * shipped and because losing a meal the user sat down to record is the worst
  * outcome available here. Anything else has to earn its way past it.
  */
+/** Whether a decision hands the message to the food agent. Its own function
+ *  because the agent is STARTED as soon as the router answers, long before the
+ *  parse that decideFoodAction also looks at has finished. The agent can end in
+ *  a save card, so it needs a client that can draw one. */
+export function wantsFoodAgent(d: FoodIntentDecision | null, clientSupportsCreate: boolean): boolean {
+  return !!d && clientSupportsCreate && d.intent === "steps" && d.source === "jev" &&
+    d.confidence !== null && d.confidence >= STEPS_ACTION_FLOOR;
+}
+
 export function decideFoodAction(i: FoodActionInputs): FoodAction {
   // Not live, or nothing to go on: exactly today's behaviour.
   if (i.mode !== "on" || !i.decision) return "log";
@@ -509,6 +543,15 @@ export function decideFoodAction(i: FoodActionInputs): FoodAction {
     // definition, so neither of them gets to turn a meal into a save prompt.
     if (source !== "jev" || confidence === null || confidence < CREATE_ACTION_FLOOR) return "log";
     return "create";
+  }
+
+  if (intent === "steps") {
+    if (wantsFoodAgent(i.decision, i.clientSupportsCreate)) return "agent";
+    // Not confident enough to spend the agent. Unsure 'steps' sits beside
+    // questions about earlier food ("how many calories was yesterday's
+    // breakfast" came back at 49%), so a message with no food in it gets a
+    // spoken answer, which can read the diary, and one with food is logged.
+    return i.parseFoundFood ? "log" : "reply";
   }
 
   if (intent === "other") {
