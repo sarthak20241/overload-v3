@@ -296,10 +296,14 @@ Deno.test("rejecting the saved meal keeps the cost of BOTH calls", async () => {
 import { rejectsSavedMeal } from "./savedMeals.ts";
 
 Deno.test("plain words that turn the saved meal down are caught in code", () => {
-  for (const t of ["not from saved meals", "don't use my saved one", "do not use the saved meal", "without my saved meal", "no, not my meals"]) {
+  for (const t of ["not from saved meals", "don't use my saved one", "do not use the saved meal", "without my saved meal", "no, not my meals", "Don’t use my saved meal"]) {
     assertEquals(rejectsSavedMeal(t), true, t);
   }
-  for (const t of ["make it 2 servings", "save this as a meal", "add a banana", "not the milk"]) {
+  for (const t of [
+    "make it 2 servings", "save this as a meal", "add a banana", "not the milk",
+    // Confirmations that happen to contain a "no" word: never a rejection.
+    "no, keep my saved oats", "no, that's right, log my saved meal", "don't change anything, keep the saved oats",
+  ]) {
     assertEquals(rejectsSavedMeal(t), false, t);
   }
 });

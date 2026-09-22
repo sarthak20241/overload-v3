@@ -257,11 +257,17 @@ function words(s: string): string[] {
 /** Plain words that turn the saved meal down: "not from saved meals", "don't
  *  use my saved one", "without the saved meal". Checked in code so the obvious
  *  phrasing never depends on the model spotting it: seen on device, the model
- *  could not tell which card lines came from a saved meal and missed it. */
+ *  could not tell which card lines came from a saved meal and missed it.
+ *
+ *  Scoped tightly on purpose: only filler words may sit between the "no" word
+ *  and "saved", so a confirmation ("no, keep my saved oats", "no, that's right,
+ *  log my saved meal") is never read as a rejection. A miss here costs nothing,
+ *  the model can still flag it; a false hit throws away the user's own numbers. */
+const REJECT_SAVED =
+  /\b(?:not|don'?t|do not|no|without|instead of|never|skip|ignore)(?:\s+(?:from|use|using|the|my|a|any|of|those|that|this|with))*\s+(?:saved|my meals)\b/;
+
 export function rejectsSavedMeal(text: string): boolean {
-  const t = text.toLowerCase();
-  if (!/\bsaved\b|\bmy meals\b/.test(t)) return false;
-  return /\b(not|don'?t|do not|no|without|instead of|never|skip|ignore)\b/.test(t);
+  return REJECT_SAVED.test(text.toLowerCase().replace(/[’]/g, "'"));
 }
 
 function norm(s: string): string {

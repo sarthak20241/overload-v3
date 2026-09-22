@@ -4890,9 +4890,9 @@ async function runParseMealCore(
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
   // Handled in runParseMeal, which re-logs the original words without saved
   // meals. Nothing below would do anything useful with this turn.
-  // The code check only counts when the card really has saved-meal lines on it
-  // (they arrive as 'manual'); otherwise "no, not my meals" on an ordinary card
-  // would throw that card away.
+  // The code check only counts when the card has a 'manual' line, which is how
+  // saved-meal lines arrive. A hand-edited line is 'manual' too, so this is a
+  // floor, not proof: the user still has to say "not from saved" in so many words.
   const codeRejects = rejectsSavedMeal(input.text) && prevItems.some((p) => p.source === "manual");
   if (hasPrevious && (ext.rejects_saved === true || codeRejects) && input.previousText?.trim()) {
     // New food in the same message ("not my saved meal, add 2 eggs") must not be
