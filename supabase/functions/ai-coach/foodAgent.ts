@@ -205,9 +205,10 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
 
 // ── History ─────────────────────────────────────────────────────────────────
 
-/** How many earlier turns travel with a message. Four is what the parse already
- *  sends on a correction; enough for "yes" to have a question in front of it,
- *  short enough that the model is answering the newest message. */
+/** How many earlier turns travel with a message. A ceiling, not the usual
+ *  number: index.ts already caps `recent_turns` at 4 before this sees them, so
+ *  today nothing is trimmed here. It stands for the case where that cap moves,
+ *  and keeps the model answering the newest message rather than the history. */
 const MAX_TURNS_SENT = 6;
 const TURN_MAX_CHARS = 400;
 
