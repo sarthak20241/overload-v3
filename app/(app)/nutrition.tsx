@@ -449,6 +449,8 @@ export default function NutritionScreen() {
   // before the refetch lands, so keying on viewIso would stamp the previous
   // day's kcal onto the newly selected day's ring until the fetch resolved.
   useEffect(() => {
+    // '' means the numbers belong to no day yet (first load, nothing cached).
+    if (!totalsDayIso) return;
     livePatch.current = { day: totalsDayIso, kcal: totals.kcal };
     setWeekKcal((prev) => (
       prev[totalsDayIso] === totals.kcal ? prev : { ...prev, [totalsDayIso]: totals.kcal }

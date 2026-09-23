@@ -149,8 +149,11 @@ export function useDayNutrition(dayIso: string): DayData {
     : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   // The day `byMeal` belongs to. Seeded state is today's; every setByMeal below
-  // is followed by stamping the day it was fetched for.
-  const [totalsDayIso, setTotalsDayIso] = useState<string>(dayIso);
+  // is followed by stamping the day it was fetched for. With no seed, the empty
+  // byMeal belongs to NO day yet: '' can never equal a real iso, so a screen
+  // waiting for this to catch up keeps waiting (or shows the failure) instead
+  // of reading an empty first render as "you logged nothing".
+  const [totalsDayIso, setTotalsDayIso] = useState<string>(seed ? dayIso : '');
   const [loading, setLoading] = useState(!seed);
   const [failedDayIso, setFailedDayIso] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -165,6 +168,9 @@ export function useDayNutrition(dayIso: string): DayData {
   useEffect(() => {
     let cancelled = false;
     const fail = () => { if (!cancelled) { setFailedDayIso(dayIso); setLoading(false); } };
+    // A new attempt is under way, so a failure from the LAST attempt is no
+    // longer the news: Retry shows the loader, not the error, while it runs.
+    setFailedDayIso(null);
     (async () => {
       if (isToday) {
         // Hydration may not have finished by first render; re-seed once it has.
