@@ -50,6 +50,10 @@ export interface FoodAgentInput {
   /** The user's own today, e.g. "Tuesday 2026-09-22", so "Monday's lunch" can
    *  become a days_ago. Absent when the client sent no local date. */
   today?: string | null;
+  /** The last few turns of this food conversation, oldest first. Without them
+   *  "log the same meal in snacks too" has no meal and "yes" has no question:
+   *  seen live, both got a blank stare. */
+  recentTurns?: { role: "user" | "drona"; text: string }[];
 }
 
 export interface AgentTurn {
@@ -88,7 +92,8 @@ const LOG_FOOD_TOOL: AnthropicTool = {
   description:
     "FINISH: log food to TODAY's diary. Give `text` for food to be worked out (it runs parse_food, reusing a " +
     "parse you already did for the same text), and/or `items` to copy lines exactly as they are from the diary " +
-    "or a saved meal. Logs to today only.",
+    "or a saved meal (repeat a line with a different meal_type to put the same food in two sections). " +
+    "Logs to today only.",
   input_schema: {
     type: "object",
     properties: {
@@ -108,6 +113,11 @@ const LOG_FOOD_TOOL: AnthropicTool = {
             protein_g: { type: "number" },
             carb_g: { type: "number" },
             fat_g: { type: "number" },
+            meal_type: {
+              type: "string",
+              enum: ["breakfast", "lunch", "dinner", "snack"],
+              description: "This line's own section, when one message puts food in more than one (\"the same meal in breakfast and snacks\"). Omit to use meal_type above.",
+            },
           },
           required: ["food_name", "kcal"],
         },
@@ -193,6 +203,50 @@ export function statusFor(name: string, input: Record<string, unknown>): string 
   return null;
 }
 
+// ── History ─────────────────────────────────────────────────────────────────
+
+/** How many earlier turns travel with a message. Four is what the parse already
+ *  sends on a correction; enough for "yes" to have a question in front of it,
+ *  short enough that the model is answering the newest message. */
+const MAX_TURNS_SENT = 6;
+const TURN_MAX_CHARS = 400;
+
+/**
+ * The conversation as Messages-API turns, oldest first, with `text` last.
+ *
+ * Used by the agent AND by the food bar's plain reply and create calls: all
+ * three were sending the newest message alone, so a bar that had just drawn a
+ * card answered "log the same meal in snacks too" with "you haven't told me
+ * what meal to log". Drona's turns come back as `assistant` so the model reads
+ * them as its own words, not as something the user said.
+ */
+export function historyMessages(
+  turns: { role: "user" | "drona"; text: string }[] | undefined,
+  text: string,
+): { role: "user" | "assistant"; content: string }[] {
+  const out: { role: "user" | "assistant"; content: string }[] = [];
+  for (const t of (turns ?? []).slice(-MAX_TURNS_SENT)) {
+    const body = (t.text ?? "").trim().slice(0, TURN_MAX_CHARS);
+    if (!body) continue;
+    const role = t.role === "drona" ? "assistant" as const : "user" as const;
+    // The API rejects two turns in a row from the same side, and a history that
+    // starts with the assistant. Fold a repeat into the turn before it.
+    if (out.length === 0 && role === "assistant") continue;
+    if (out.length > 0 && out[out.length - 1].role === role) {
+      out[out.length - 1].content += `\n${body}`;
+      continue;
+    }
+    out.push({ role, content: body });
+  }
+  // The new message is the user speaking; fold it in if they spoke last too.
+  if (out.length > 0 && out[out.length - 1].role === "user") {
+    out[out.length - 1].content += `\n${text}`;
+  } else {
+    out.push({ role: "user", content: text });
+  }
+  return out;
+}
+
 // ── Dates ───────────────────────────────────────────────────────────────────
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -227,10 +281,10 @@ export async function runFoodAgent(input: FoodAgentInput, deps: FoodAgentDeps): 
   const turns: AgentTurn[] = [];
   // An undated `today` still goes in as written rather than being dropped.
   const days = input.today ? recentDays(input.today) ?? `Today is ${input.today}.` : null;
-  const messages: unknown[] = [{
-    role: "user",
-    content: days ? `(${days})\n${input.text}` : input.text,
-  }];
+  const messages: unknown[] = historyMessages(
+    input.recentTurns,
+    days ? `(${days})\n${input.text}` : input.text,
+  );
   // Every food line a read returned, by name, with the calories it carried.
   // A line the agent says it COPIED is checked against this: the model is told
   // never to invent numbers, and this is how the code knows whether it did.
@@ -435,7 +489,7 @@ async function finishWith(
   };
 }
 
-function copiedLine(raw: unknown, meal: MealType, seen: Seen): ParsedItem[] {
+function copiedLine(raw: unknown, mealDefault: MealType, seen: Seen): ParsedItem[] {
   if (!raw || typeof raw !== "object") return [];
   const o = raw as Record<string, unknown>;
   const rawName = typeof o.food_name === "string" ? o.food_name : typeof o.name === "string" ? o.name : "";
@@ -447,6 +501,9 @@ function copiedLine(raw: unknown, meal: MealType, seen: Seen): ParsedItem[] {
   // the reads never showed is a guess: both go on the card as something to check.
   const from = provenance(seen, name, kcal);
   const was = seen.get(foodKey(name));
+  // One message can fill two sections: the line's own meal wins over the
+  // message-level one ("the same meal in breakfast and snacks").
+  const meal: MealType = isMeal(o.meal_type) ? o.meal_type : mealDefault;
   return [{
     food_id: null,
     food_name: name,
