@@ -2894,10 +2894,6 @@ async function handleParseMealRequest(args: {
             // parse over: the trace below still records what happened.
           }
         };
-        // A silent stream gets dropped on the way to the phone (see
-        // streamHeartbeat.ts): replies and save cards send nothing until the
-        // answer, so this keeps bytes moving until the stream closes.
-        const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
         // Just log it: the user may have closed the app already, and the
         // runtime tears the isolate down once the stream is cancelled unless
         // the work is registered with waitUntil. Review mode is unchanged:
@@ -2919,6 +2915,12 @@ async function handleParseMealRequest(args: {
           onStatus: (label) => send("status", { label }),
         });
         const work = (async () => {
+          // A silent stream gets dropped on the way to the phone (see
+          // streamHeartbeat.ts): replies and save cards send nothing until the
+          // answer, so this keeps bytes moving until the stream closes. Started
+          // here, inside the block whose finally stops it, so no path between
+          // the two can leave the interval running.
+          const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
           try {
             const firstParse = await runParseMeal(
               {
