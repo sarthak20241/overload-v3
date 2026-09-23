@@ -71,6 +71,11 @@ export interface DayData {
    *  callers that mirror totals elsewhere must key off THIS, not their own iso. */
   totalsDayIso: string;
   loading: boolean;
+  /** The day whose last fetch FAILED, or null. A failed fetch keeps the old
+   *  day's numbers in state and never stamps totalsDayIso, so a screen that
+   *  waits for totalsDayIso to catch up would wait forever: this is how it
+   *  tells "still loading" from "gave up". Cleared by the next success. */
+  failedDayIso: string | null;
   reload: () => void;
 }
 
@@ -144,19 +149,28 @@ export function useDayNutrition(dayIso: string): DayData {
     : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   // The day `byMeal` belongs to. Seeded state is today's; every setByMeal below
-  // is followed by stamping the day it was fetched for.
-  const [totalsDayIso, setTotalsDayIso] = useState<string>(dayIso);
+  // is followed by stamping the day it was fetched for. With no seed, the empty
+  // byMeal belongs to NO day yet: '' can never equal a real iso, so a screen
+  // waiting for this to catch up keeps waiting (or shows the failure) instead
+  // of reading an empty first render as "you logged nothing".
+  const [totalsDayIso, setTotalsDayIso] = useState<string>(seed ? dayIso : '');
   const [loading, setLoading] = useState(!seed);
+  const [failedDayIso, setFailedDayIso] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   // Every byMeal write goes through here so totalsDayIso can never drift from it.
   const setByMealForDay = useCallback((next: Record<MealType, LoggedEntry[]>, forDay: string) => {
     setByMeal(next);
     setTotalsDayIso(forDay);
+    setFailedDayIso(null);
   }, []);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     let cancelled = false;
+    const fail = () => { if (!cancelled) { setFailedDayIso(dayIso); setLoading(false); } };
+    // A new attempt is under way, so a failure from the LAST attempt is no
+    // longer the news: Retry shows the loader, not the error, while it runs.
+    setFailedDayIso(null);
     (async () => {
       if (isToday) {
         // Hydration may not have finished by first render; re-seed once it has.
@@ -172,7 +186,7 @@ export function useDayNutrition(dayIso: string): DayData {
           setLoading(false);
         }
       }
-      if (!supabase) { setLoading(false); return; }
+      if (!supabase) { fail(); return; }
       const cached = isToday && _navCache && _navCache.key === key;
       // Only show the loading state on a true cold load; a same-key cache means we
       // already painted real numbers, so revalidate silently (no zeros flash).
@@ -186,7 +200,7 @@ export function useDayNutrition(dayIso: string): DayData {
       // meals logged" would blank the day AND persist those zeros to the day
       // cache, so an offline blip would keep painting an empty ring after the
       // network came back. Keep what we have and stop.
-      if (mealsErr) { setLoading(false); return; }
+      if (mealsErr) { fail(); return; }
       if (!meals || meals.length === 0) {
         const empty = emptyByMeal();
         if (isToday) {
@@ -204,7 +218,7 @@ export function useDayNutrition(dayIso: string): DayData {
       if (cancelled) return;
       // Same reasoning: meals exist, so an entries failure must not be cached
       // as a day with meals but no food in them.
-      if (entriesErr) { setLoading(false); return; }
+      if (entriesErr) { fail(); return; }
       const grouped = emptyByMeal();
       for (const e of entries ?? []) {
         const mt = typeOf.get((e as any).meal_id) ?? 'snack';
@@ -222,7 +236,7 @@ export function useDayNutrition(dayIso: string): DayData {
       }
       setByMealForDay(grouped, dayIso);
       setLoading(false);
-    })();
+    })().catch(fail);
     return () => { cancelled = true; };
   }, [supabase, tick, key, dayIso, isToday]);
 
@@ -247,7 +261,7 @@ export function useDayNutrition(dayIso: string): DayData {
     return t;
   }, [byMeal]);
 
-  return { byMeal, totals, totalsDayIso, loading, reload };
+  return { byMeal, totals, totalsDayIso, loading, failedDayIso, reload };
 }
 
 /** Today's diary — the dashboard + default diet view. Thin wrapper so existing

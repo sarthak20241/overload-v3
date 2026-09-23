@@ -30,6 +30,7 @@ import {
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
+import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
@@ -219,7 +220,17 @@ export default function NutritionScreen() {
   const weekStartIso = ymd(weekStart);
   const weekDays = Array.from({ length: 7 }, (_, i) =>
     new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
-  const { byMeal, totals, totalsDayIso, reload } = useDayNutrition(viewIso);
+  const { byMeal, totals, totalsDayIso, loading, failedDayIso, reload } = useDayNutrition(viewIso);
+  // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
+  // `viewIso` by a fetch, and the old day's ring, macros and food sat under the
+  // new day's header for a second or two. Shimmer until they agree: a stale
+  // number is a wrong number, and an empty ring would be a wrong claim too.
+  // A failed fetch never catches totalsDayIso up, so "waiting for it" alone
+  // would shimmer forever. A failure for THIS day gets a Retry instead, and
+  // still never the old day's numbers.
+  const dayFailed = failedDayIso === viewIso && totalsDayIso !== viewIso;
+  const dayLoading = !dayFailed && (loading || totalsDayIso !== viewIso);
+  const dayUnknown = dayLoading || dayFailed;
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
@@ -438,6 +449,8 @@ export default function NutritionScreen() {
   // before the refetch lands, so keying on viewIso would stamp the previous
   // day's kcal onto the newly selected day's ring until the fetch resolved.
   useEffect(() => {
+    // '' means the numbers belong to no day yet (first load, nothing cached).
+    if (!totalsDayIso) return;
     livePatch.current = { day: totalsDayIso, kcal: totals.kcal };
     setWeekKcal((prev) => (
       prev[totalsDayIso] === totals.kcal ? prev : { ...prev, [totalsDayIso]: totals.kcal }
@@ -1199,6 +1212,7 @@ export default function NutritionScreen() {
             <Feather name="sliders" size={12} color={isCustom ? C.textDim : C.accentText} />
             <Text style={[s.goalBtnTxt, { color: isCustom ? C.textDim : C.accentText }]}>{isCustom ? 'Goal' : 'Set goal'}</Text>
           </Pressable>
+          {dayFailed ? <DayLoadFailed onRetry={reload} /> : dayLoading ? <DaySummaryLoading /> : (
           <View style={s.summaryRow}>
             <MacroRing
               value={eaten.kcal} target={targets.kcal} color={C.macro.calories} valueColor={C.macro.calories}
@@ -1211,13 +1225,18 @@ export default function NutritionScreen() {
               <MacroBar label="F" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} valueMinWidth={52} />
             </View>
           </View>
+          )}
         </View>
 
-        {/* Drona line */}
-        <View style={s.drona}>
-          <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
-          <Text style={s.dronaTxt}>{dronaLine}</Text>
-        </View>
+        {/* Drona line. Hidden while the day loads: it is a sentence ABOUT the
+            totals, so showing the old day's verdict over a shimmering ring is
+            the same stale-number bug wearing a coach's voice. */}
+        {!dayUnknown && (
+          <View style={s.drona}>
+            <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
+            <Text style={s.dronaTxt}>{dronaLine}</Text>
+          </View>
+        )}
 
         {/* "Just log it" sends the server never took (a network drop on send,
             found by the reconcile). Visible, never silently re-sent: the user
@@ -1238,7 +1257,7 @@ export default function NutritionScreen() {
 
         {/* Meal sections */}
         {MEALS.map((m) => {
-          const entries = byMeal[m.type];
+          const entries = dayUnknown ? [] : byMeal[m.type];
           const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
           return (
             <View key={m.type} style={s.section}>
@@ -1250,6 +1269,8 @@ export default function NutritionScreen() {
                   <Text style={s.sectionSub}>{round(sub.protein)}g P · {round(sub.kcal)}</Text>
                 )}
               </View>
+
+              {dayLoading && <MealRowsLoading />}
 
               {entries.map((e) => {
                 // A row Drona added in "Just log it" this launch wears a quiet
