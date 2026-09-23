@@ -46,6 +46,7 @@ import {
 } from "./foodIntent.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
+import { startHeartbeat } from "./streamHeartbeat.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import {
   type DayClock,
@@ -2893,6 +2894,10 @@ async function handleParseMealRequest(args: {
             // parse over: the trace below still records what happened.
           }
         };
+        // A silent stream gets dropped on the way to the phone (see
+        // streamHeartbeat.ts): replies and save cards send nothing until the
+        // answer, so this keeps bytes moving until the stream closes.
+        const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
         // Just log it: the user may have closed the app already, and the
         // runtime tears the isolate down once the stream is cancelled unless
         // the work is registered with waitUntil. Review mode is unchanged:
@@ -3072,6 +3077,7 @@ async function handleParseMealRequest(args: {
             trace.error_message = String(e).slice(0, 300);
             try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
           } finally {
+            stopHeartbeat();
             controller.close();
           }
         })();
