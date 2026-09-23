@@ -46,6 +46,7 @@ import {
 } from "./foodIntent.ts";
 import type { SavedMealForParse } from "./savedMeals.ts";
 import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
+import { startHeartbeat } from "./streamHeartbeat.ts";
 import { searchFatSecret } from "./fatsecret.ts";
 import {
   type DayClock,
@@ -2914,6 +2915,12 @@ async function handleParseMealRequest(args: {
           onStatus: (label) => send("status", { label }),
         });
         const work = (async () => {
+          // A silent stream gets dropped on the way to the phone (see
+          // streamHeartbeat.ts): replies and save cards send nothing until the
+          // answer, so this keeps bytes moving until the stream closes. Started
+          // here, inside the block whose finally stops it, so no path between
+          // the two can leave the interval running.
+          const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
           try {
             const firstParse = await runParseMeal(
               {
@@ -3072,6 +3079,7 @@ async function handleParseMealRequest(args: {
             trace.error_message = String(e).slice(0, 300);
             try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
           } finally {
+            stopHeartbeat();
             controller.close();
           }
         })();
