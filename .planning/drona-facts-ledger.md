@@ -57,7 +57,7 @@ scale or a test rig. 25-400 kg drops the 5 and 6; the rest stay, and
 `typical_swing_kg` of about 15 tells the signal layer this scale is unusable.
 10 users have any weigh-in at all; 6 in the last 8 weeks.
 
-## 2. Food  [step 2]
+## 2. Food  [STEP 2, LIVE 2026-09-23, migration 0132]
 
 Source: `user_nutrition_stats` (one row per day), `meals`, targets from
 `user_profiles` rebuilt per week via `plan_changes`.
@@ -150,7 +150,7 @@ domain, added by its own migration. Wide is correct for a facts table.
 
 `0131_drona_week_facts_weight` applied. 270 week rows backfilled over 6 months
 for the 10 users who have ever weighed in. Read them with
-`npx tsx scripts/drona-facts/weight.mts` (add `USER_ID=` for one person,
+`npx tsx scripts/drona-facts/weeks.mts` (add `USER_ID=` for one person,
 `REBUILD=1` to recompute first).
 
 What the real data shows, before any signal exists:
@@ -172,6 +172,37 @@ the dirt, let the signal layer judge it.
 The first candidate signal writes itself, from data rather than from a guess:
 **scale trustworthy** = typical swing under some line between 0.65 and 21.8.
 Choosing that line is the signal step, not this one.
+
+## Step 2 is live (2026-09-23): food
+
+`0132_drona_week_facts_food` applied; 297 week rows for the 11 users who have
+logged a meal. Reconciled against a hand count over the raw meals: 81 local
+days and 465 entries, both exact. (The raw total is 82 and 466: the extra day
+belongs to a meal whose owner has no profile, an orphan the ledger rightly
+skips.) One week hand-checked line by line: 5 days, 16 entries, average 2139.2,
+1 within / 3 over / 1 under, highest 2824 on 2 July, 2 single-entry days. Exact.
+
+**Days are dated from meals in the user's zone.** `user_nutrition_stats` dates
+by `logged_at::date` in UTC, which put 16 of 195 meals (8%, 3 users in India)
+on the wrong day. The facts do not use it. The table itself feeds Drona's card
+facts, the coach and readiness, so its fix is a separate task.
+
+**Each day is judged against the target it had**, rebuilt from `plan_changes`,
+and every week says where its target came from. On the 31 weeks with food
+logged: 19 `assumed_current`, 8 `inferred`, 2 `recorded`, 2 `none`. The diary
+only started on 2026-09-17, so history is mostly assumed. That is exactly why
+the source is stored: a signal can refuse to judge an assumed target.
+
+What the food facts already show that a "days logged" count hides:
+- One user logged 7 of 7 days in a week at an average of **418 kcal** against
+  1800, and 27 of their 32 logged days are under target. Logging every day,
+  but logging a snack, not a day. "Days logged" says perfect; the average says
+  the log cannot be read.
+- One single-entry day holds 2824 kcal. A single entry is not always a
+  half-logged day: some people log a whole day in one line. The fact is
+  recorded as a count; a signal must read it together with the kcal.
+- Some accounts carry seeded demo data (see memory: demo account seed). Their
+  weeks look like a textbook. Signals must be checked on real users too.
 
 ## Build order
 
