@@ -7,7 +7,7 @@
 //   - every finish is a shape the app already draws
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
+import { FOOD_AGENT_SYSTEM, type FoodAgentDeps, historyMessages, LAST_TURN_NOTE, MAX_TURNS, recentDays, runFoodAgent, statusFor } from "./foodAgent.ts";
 import type { ParseMealResult } from "./parseMeal.ts";
 
 type Use = { name: string; input: Record<string, unknown> };
@@ -272,4 +272,82 @@ Deno.test("an adjusted line cites the logged number closest to it", async () => 
   d.readDiary = async (i) => ({ meals: [{ foods: [{ food_name: "rice", kcal: i.days_ago === 1 ? 300 : 150 }] }] });
   const out = await runFoodAgent(INPUT, d);
   assertEquals(out.kind === "log" && out.result.parsed!.items[0].assumption, "Adjusted from 150 kcal in your log.");
+});
+
+// ── Seen live 2026-09-23: the box forgot the card it had just drawn ─────────
+// "log the same meal in breakfast and snacks" answered "you haven't told me
+// what meal to log", and a bare "yes" got a greeting. The turns were being
+// sent by the app and dropped by the server.
+
+Deno.test("history: Drona's turns come back as the assistant, oldest first", () => {
+  assertEquals(
+    historyMessages([
+      { role: "user", text: "save my breakfast as a meal" },
+      { role: "drona", text: "Monday Breakfast, 1 item, 80 cal. Want it saved?" },
+    ], "yes"),
+    [
+      { role: "user", content: "save my breakfast as a meal" },
+      { role: "assistant", content: "Monday Breakfast, 1 item, 80 cal. Want it saved?" },
+      { role: "user", content: "yes" },
+    ],
+  );
+});
+
+Deno.test("history: no two turns in a row from one side, and never starts with Drona", () => {
+  const out = historyMessages([
+    { role: "drona", text: "leading drona turn" },
+    { role: "user", text: "one" },
+    { role: "user", text: "two" },
+    { role: "drona", text: "a" },
+    { role: "drona", text: "b" },
+  ], "three");
+  assertEquals(out, [
+    { role: "user", content: "one\ntwo" },
+    { role: "assistant", content: "a\nb" },
+    { role: "user", content: "three" },
+  ]);
+});
+
+Deno.test("history: empty turns, and only the last few travel", () => {
+  assertEquals(historyMessages(undefined, "hi"), [{ role: "user", content: "hi" }]);
+  assertEquals(historyMessages([{ role: "user", text: "  " }], "hi"), [{ role: "user", content: "hi" }]);
+  const many = Array.from({ length: 20 }, (_, i) => ({ role: (i % 2 ? "drona" : "user") as "user" | "drona", text: `t${i}` }));
+  const out = historyMessages(many, "now");
+  assertEquals(out.length <= 7, true);
+  assertEquals(out.at(-1), { role: "user", content: "now" });
+  assertEquals(out.some((m) => m.content.includes("t0")), false);
+});
+
+Deno.test("the agent is told what was said before, not just the new message", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await runFoodAgent(
+    { ...INPUT, text: "log the same meal in breakfast and snacks", recentTurns: [
+      { role: "user", text: "save my breakfast as a meal" },
+      { role: "drona", text: "Monday Breakfast, 1 item, 80 cal." },
+    ] },
+    deps(scripted([[{ name: "reply", input: { text: "ok" } }]], bodies)),
+  );
+  const msgs = bodies[0].messages as { role: string; content: string }[];
+  assertEquals(msgs.map((m) => m.role), ["user", "assistant", "user"]);
+  assert(msgs[1].content.includes("Monday Breakfast"));
+  assert(msgs[2].content.includes("breakfast and snacks"));
+});
+
+Deno.test("log_food can put one message's food in two sections", async () => {
+  const out = await runFoodAgent(INPUT, deps(scripted([
+    [{ name: "coach_list_logged_meals", input: { days_ago: 1 } }],
+    [{
+      name: "log_food",
+      input: {
+        summary: "Same oats twice.", meal_type: "breakfast",
+        items: [
+          { food_name: "oats", kcal: 180 },
+          { food_name: "oats", kcal: 180, meal_type: "snack" },
+        ],
+      },
+    }],
+  ])));
+  assertEquals(out.kind, "log");
+  if (out.kind !== "log") return;
+  assertEquals(out.result.parsed!.items.map((i) => [i.food_name, i.meal_type]), [["oats", "breakfast"], ["oats", "snack"]]);
 });
