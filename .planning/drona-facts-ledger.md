@@ -146,6 +146,33 @@ Source: `drona_cards`.
 domain, added by its own migration. Wide is correct for a facts table.
 `computed_at` and `source_version` on every row, so a rebuild is visible.
 
+## Step 1 is live (2026-09-23)
+
+`0131_drona_week_facts_weight` applied. 270 week rows backfilled over 6 months
+for the 10 users who have ever weighed in. Read them with
+`npx tsx scripts/drona-facts/weight.mts` (add `USER_ID=` for one person,
+`REBUILD=1` to recompute first).
+
+What the real data shows, before any signal exists:
+
+| user | weeks | readings | dropped | worst swing | source |
+|---|---|---|---|---|---|
+| user_3Gt86sdnx | 16 | 92 | 0 | 0.50 | manual |
+| user_3EGT2QEEg | 4 | 21 | 0 | 0.13 | health_connect |
+| user_3HKAcd0GK | 10 | 22 | 0 | 0.20 | manual |
+| **user_3J3WElv7R** | 5 | 21 | **2** | **21.82** | health_connect |
+
+One number separates a person from a broken scale: **typical swing**. Every real
+user is at or under 0.65 kg; the household scale is at 21.8, and its week
+averages jump 70 to 81 to 72 to 87. `w_dropped_impossible` caught the 5 kg and
+6 kg readings; the 31.8 and 35 kg ones are physically possible, so they stay in
+the facts and the swing exposes them. That is the layer doing its job: record
+the dirt, let the signal layer judge it.
+
+The first candidate signal writes itself, from data rather than from a guess:
+**scale trustworthy** = typical swing under some line between 0.65 and 21.8.
+Choosing that line is the signal step, not this one.
+
 ## Build order
 
 1. **Weight** (this step): table, weight columns, compute function, backfill 8
