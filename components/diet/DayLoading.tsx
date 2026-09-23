@@ -10,11 +10,11 @@
  * and it was wrong about half the time. A shimmer says "not known yet".
  */
 import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { ThinkingOrb } from 'expo-thinking-orbs';
 
-import { Radius, Spacing } from '@/constants/theme';
+import { FontSize, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
 
 /** One shimmering block standing in for a number or a row. */
@@ -75,11 +75,29 @@ export function MealRowsLoading() {
   );
 }
 
+/** The fetch for this day failed. Says so, offers the one useful action, and
+ *  shows no numbers: the ones in memory belong to a different day. */
+export function DayLoadFailed({ onRetry }: { onRetry: () => void }) {
+  const { C } = useTheme();
+  const s = makeStyles();
+  return (
+    <View style={s.failed}>
+      <Text style={[s.failedTxt, { color: C.textSecondary }]}>Couldn't load this day. Check your connection.</Text>
+      <Pressable onPress={onRetry} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry loading this day">
+        <Text style={[s.retry, { color: C.accentText }]}>Retry</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function makeStyles() {
   return StyleSheet.create({
     row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
     ringSlot: { alignItems: 'center', justifyContent: 'center' },
     rail: { flex: 1, gap: Spacing.sm },
     rows: { gap: Spacing.xs },
+    failed: { minHeight: 116, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
+    failedTxt: { fontSize: FontSize.sm, textAlign: 'center' },
+    retry: { fontSize: FontSize.sm, fontWeight: '600' },
   });
 }
