@@ -171,7 +171,7 @@ function dayBefore(iso: string, days: number): string {
  * left out: it is not over, and the app path asks at any hour, so today is
  * usually half logged and reads as a crash diet. That also makes the app see
  * the same days the Monday cron does. The facts functions end the window at
- * yesterday too (0134); this holds even when a caller's rows do not.
+ * yesterday too (0135); this holds even when a caller's rows do not.
  */
 export function completeFood(diet: DietFacts, asOf: string, days: number): NonNullable<DietFacts['food']> {
   const from = dayBefore(asOf, days);

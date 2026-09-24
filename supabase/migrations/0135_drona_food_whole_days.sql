@@ -1,4 +1,4 @@
--- 0134_drona_food_whole_days.sql: Drona reads food on whole days, never today
+-- 0135_drona_food_whole_days.sql: Drona reads food on whole days, never today
 --
 -- Both facts functions read food through TODAY (`day <= p_as_of`). The Monday
 -- cron runs just after local midnight, so today was empty and harmless there.

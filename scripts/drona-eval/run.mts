@@ -34,7 +34,7 @@ const baseDiet = (): DietFacts => ({
   body: { gender: "M", height_cm: 178, weight_kg: 72.4, age_years: 30 },
   targets: { kcal: 2100, protein_g: 150, carb_g: 210, fat_g: 60 },
   phase: { id: "ph1", kcal: 2100, protein_g: 150, carb_g: 210, fat_g: 60 },
-  // The 14 whole days before today, one skipped: today is never in the series (0134).
+  // The 14 whole days before today, one skipped: today is never in the series (0135).
   food: Array.from({ length: 12 }, (_, i) => ({ day: day(i < 3 ? i + 1 : i + 2), kcal: 2060 + (i % 4) * 30, protein_g: 148 })),
   weight: Array.from({ length: 10 }, (_, i) => ({ day: day(i), kg: Math.round((72.4 + ((i % 2) ? 0.15 : -0.1)) * 10) / 10 })),
   target_changes: [{ at: "2026-08-28T08:00:00Z", from: 2250, to: 2100, source: "chat", card_id: null }],
