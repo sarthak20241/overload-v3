@@ -46,7 +46,7 @@ import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
-  loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems,
+  loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
 import {
@@ -231,6 +231,9 @@ export default function NutritionScreen() {
   const dayFailed = failedDayIso === viewIso && totalsDayIso !== viewIso;
   const dayLoading = !dayFailed && (loading || totalsDayIso !== viewIso);
   const dayUnknown = dayLoading || dayFailed;
+  // The rest of this week, loaded in the background only once the day on
+  // screen has landed, so it never competes with it.
+  usePrefetchWeek(weekStartIso, !dayUnknown);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();

@@ -134,6 +134,66 @@ async function findOrCreateMeal(
 interface DayCache { key: string; byMeal: Record<MealType, LoggedEntry[]> }
 let _navCache: DayCache | null = null;
 
+/** Session memory of PAST days, keyed `${userId}:${dayIso}`. Filled by the
+ *  week prefetch and by every past-day load, so switching to a day you have
+ *  seen (or that the prefetch loaded) paints at once and then revalidates.
+ *  Today never lives here: it keeps its own cache and its own first-in-line
+ *  fetch, so nothing in here can slow today down. Memory only, cleared with
+ *  the process; keyed by user so an account switch cannot read another's. */
+const _dayCache = new Map<string, Record<MealType, LoggedEntry[]>>();
+
+type DayRangeResult = { ok: true; byDay: Map<string, Record<MealType, LoggedEntry[]>> } | { ok: false };
+
+/**
+ * Every day in [first, last] (local calendar days), grouped by meal, in ONE
+ * request: meals with their entries embedded. The day load used to be two
+ * round trips in a row (meals, then their entries), about 0.4 s each measured
+ * on the simulator against the US database. Days with nothing logged come back
+ * as empty, so an empty day is a known answer too, not a miss.
+ */
+async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<DayRangeResult> {
+  const { start } = dayRange(first);
+  const { end } = dayRange(last);
+  const { data, error } = await supabase
+    .from('meals')
+    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
+    .gte('logged_at', start).lte('logged_at', end);
+  // A failed query is NOT "nothing logged": the caller keeps what it has.
+  if (error || !data) return { ok: false };
+
+  const byDay = new Map<string, Record<MealType, LoggedEntry[]>>();
+  for (let d = new Date(first.getFullYear(), first.getMonth(), first.getDate()); d <= last; d.setDate(d.getDate() + 1)) {
+    byDay.set(ymd(d), emptyByMeal());
+  }
+  // Collected per day first, then ordered by position across the whole day:
+  // the two-query version ordered every entry of the day by position in one
+  // list, and the diary should not reshuffle because the query changed.
+  const rows = new Map<string, { mt: MealType; e: any }[]>();
+  for (const m of data as any[]) {
+    const iso = ymd(new Date(m.logged_at));
+    if (!byDay.has(iso)) continue;
+    const mt = (m.meal_type as MealType) ?? 'snack';
+    for (const e of (m.meal_entries ?? []) as any[]) {
+      if (!rows.has(iso)) rows.set(iso, []);
+      rows.get(iso)!.push({ mt, e });
+    }
+  }
+  for (const [iso, list] of rows) {
+    const grouped = byDay.get(iso)!;
+    list.sort((a, b) => num(a.e.position) - num(b.e.position));
+    for (const { mt, e } of list) {
+      grouped[mt].push({
+        id: e.id, meal_id: e.meal_id, meal_type: mt, food_name: e.food_name,
+        serving_unit: e.serving_unit, quantity: num(e.quantity),
+        grams_logged: e.grams_logged == null ? null : num(e.grams_logged),
+        kcal: num(e.kcal), protein_g: num(e.protein_g),
+        carb_g: num(e.carb_g), fat_g: num(e.fat_g),
+      });
+    }
+  }
+  return { ok: true, byDay };
+}
+
 /** Grouped entries + totals for a single calendar day (dayIso = YYYY-MM-DD). */
 export function useDayNutrition(dayIso: string): DayData {
   const supabase = useSupabaseClient();
@@ -144,9 +204,9 @@ export function useDayNutrition(dayIso: string): DayData {
   // In-memory nav cache first, then the on-disk read cache, so a cold start
   // paints today's real totals instead of an empty ring that fills in later.
   const diskSeed = isToday ? readCache<DayCache>('dayNutrition', user?.id) : null;
-  const seed = isToday && _navCache && _navCache.key === key
-    ? _navCache.byMeal
-    : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
+  const seed = isToday
+    ? (_navCache && _navCache.key === key ? _navCache.byMeal : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null)
+    : _dayCache.get(key) ?? null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   // The day `byMeal` belongs to. Seeded state is today's; every setByMeal below
   // is followed by stamping the day it was fetched for. With no seed, the empty
@@ -187,52 +247,24 @@ export function useDayNutrition(dayIso: string): DayData {
         }
       }
       if (!supabase) { fail(); return; }
-      const cached = isToday && _navCache && _navCache.key === key;
-      // Only show the loading state on a true cold load; a same-key cache means we
-      // already painted real numbers, so revalidate silently (no zeros flash).
+      // A day already in memory (today's cache, or a past day this session)
+      // painted real numbers at mount, so revalidate silently: no loader.
+      const cached = isToday ? !!_navCache && _navCache.key === key : _dayCache.has(key);
+      if (cached && !isToday) setByMealForDay(_dayCache.get(key)!, dayIso);
       if (!cached) setLoading(true);
-      const { start, end } = dayRange(dateFromYmd(dayIso));
-      const { data: meals, error: mealsErr } = await supabase
-        .from('meals').select('id, meal_type')
-        .gte('logged_at', start).lte('logged_at', end);
+      const day = dateFromYmd(dayIso);
+      const res = await fetchDayRange(supabase, day, day);
       if (cancelled) return;
-      // A FAILED query also lands here with data null. Treating that as "no
-      // meals logged" would blank the day AND persist those zeros to the day
-      // cache, so an offline blip would keep painting an empty ring after the
-      // network came back. Keep what we have and stop.
-      if (mealsErr) { fail(); return; }
-      if (!meals || meals.length === 0) {
-        const empty = emptyByMeal();
-        if (isToday) {
-          _navCache = { key, byMeal: empty };
-          writeCache<DayCache>('dayNutrition', user?.id, _navCache);
-        }
-        setByMealForDay(empty, dayIso); setLoading(false); return;
-      }
-      const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
-      const { data: entries, error: entriesErr } = await supabase
-        .from('meal_entries')
-        .select('id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g')
-        .in('meal_id', meals.map((m: any) => m.id))
-        .order('position');
-      if (cancelled) return;
-      // Same reasoning: meals exist, so an entries failure must not be cached
-      // as a day with meals but no food in them.
-      if (entriesErr) { fail(); return; }
-      const grouped = emptyByMeal();
-      for (const e of entries ?? []) {
-        const mt = typeOf.get((e as any).meal_id) ?? 'snack';
-        grouped[mt].push({
-          id: (e as any).id, meal_id: (e as any).meal_id, meal_type: mt, food_name: (e as any).food_name,
-          serving_unit: (e as any).serving_unit, quantity: num((e as any).quantity),
-          grams_logged: (e as any).grams_logged == null ? null : num((e as any).grams_logged),
-          kcal: num((e as any).kcal), protein_g: num((e as any).protein_g),
-          carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
-        });
-      }
+      // A FAILED query must not blank the day or be cached as "nothing logged":
+      // an offline blip would keep painting an empty ring after the network
+      // came back. Keep what we have and stop.
+      if (!res.ok) { fail(); return; }
+      const grouped = res.byDay.get(dayIso) ?? emptyByMeal();
       if (isToday) {
         _navCache = { key, byMeal: grouped };
         writeCache<DayCache>('dayNutrition', user?.id, _navCache);
+      } else {
+        _dayCache.set(key, grouped);
       }
       setByMealForDay(grouped, dayIso);
       setLoading(false);
@@ -251,17 +283,70 @@ export function useDayNutrition(dayIso: string): DayData {
     }, [reload]),
   );
 
+  // On a switch to a past day already in memory, state still holds the day we
+  // came from until the effect runs. Answer from memory in THIS render, so the
+  // screen goes straight from the old day to the new one with no loader frame.
+  const fromMemory = !isToday && totalsDayIso !== dayIso ? _dayCache.get(key) : undefined;
+  const shownByMeal = fromMemory ?? byMeal;
+  const shownDayIso = fromMemory ? dayIso : totalsDayIso;
+
   const totals = useMemo<DayTotals>(() => {
     const t = { kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 };
-    for (const mt of Object.keys(byMeal) as MealType[]) {
-      for (const e of byMeal[mt]) {
+    for (const mt of Object.keys(shownByMeal) as MealType[]) {
+      for (const e of shownByMeal[mt]) {
         t.kcal += e.kcal; t.protein_g += e.protein_g; t.carb_g += e.carb_g; t.fat_g += e.fat_g;
       }
     }
     return t;
-  }, [byMeal]);
+  }, [shownByMeal]);
 
-  return { byMeal, totals, totalsDayIso, loading, failedDayIso, reload };
+  return {
+    byMeal: shownByMeal, totals, totalsDayIso: shownDayIso,
+    loading: fromMemory ? false : loading, failedDayIso, reload,
+  };
+}
+
+/** Weeks already prefetched this session, with when, keyed `${userId}:${weekStartIso}`. */
+const _weekPrefetched = new Map<string, number>();
+/** Past days change rarely and every visit revalidates anyway, so a week is
+ *  worth re-reading only after a while. */
+const WEEK_PREFETCH_TTL_MS = 60_000;
+
+/**
+ * Load the other days of the visible week into memory, in ONE request, once
+ * `ready` says the day on screen has landed. Waiting for it is the point: the
+ * day the user is looking at (usually today) keeps the network to itself and
+ * its latency does not change; the rest of the week arrives behind it, so a
+ * tap on any other day of the strip paints at once.
+ *
+ * Today and future days are skipped: today has its own cache and fetch, and a
+ * future day has nothing to show.
+ */
+export function usePrefetchWeek(weekStartIso: string, ready: boolean) {
+  const supabase = useSupabaseClient();
+  const { user } = useClerkUser();
+  useEffect(() => {
+    if (!ready || !supabase || !user?.id) return;
+    const wk = `${user.id}:${weekStartIso}`;
+    const last = _weekPrefetched.get(wk);
+    if (last && Date.now() - last < WEEK_PREFETCH_TTL_MS) return;
+    _weekPrefetched.set(wk, Date.now());
+
+    const todayIso = ymd(new Date());
+    const first = dateFromYmd(weekStartIso);
+    const lastDay = new Date(first.getFullYear(), first.getMonth(), first.getDate() + 6);
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const end = lastDay < yesterday ? lastDay : yesterday;
+    if (end < first) return; // the week is all today-or-later
+    void fetchDayRange(supabase, first, end).then((res) => {
+      if (!res.ok) { _weekPrefetched.delete(wk); return; }
+      for (const [iso, byMeal] of res.byDay) {
+        if (iso === todayIso) continue;
+        _dayCache.set(`${user.id}:${iso}`, byMeal);
+      }
+    }).catch(() => { _weekPrefetched.delete(wk); });
+  }, [ready, supabase, user?.id, weekStartIso]);
 }
 
 /** Today's diary — the dashboard + default diet view. Thin wrapper so existing
