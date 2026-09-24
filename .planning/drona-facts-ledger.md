@@ -71,7 +71,7 @@ Source: `user_nutrition_stats` (one row per day), `meals`, targets from
 | highest_day_kcal / on, lowest_day_kcal / on | |
 | single_entry_days | a day with one entry is a half-logged day |
 
-## 3. Training  [step 3]
+## 3. Training  [STEP 3, LIVE 2026-09-24, migrations 0136 + 0137]
 
 Source: `workouts`, `workout_sets`, `routines`, `routine_exercises`,
 `coach_program_phases`. `started_at` is timestamptz, so convert with the profile
@@ -246,6 +246,67 @@ What the new facts already show:
   median of 2088, because one very light day pulled the mean down.
 - The current week's row includes today, which is still being logged. Signals
   should read complete weeks, or the windows, never the open week's averages.
+
+## Step 3 is live (2026-09-24): training
+
+`0136_drona_training_facts` + `0137_..._active_program`. Built around the
+owner's three questions:
+
+1. **Rest and train at the right times; the program or their own way.** Per day
+   (`drona_training_day_facts`) and per week: sessions, minutes, sets, volume;
+   sessions from the ACTIVE program's routines vs another routine vs freestyle;
+   early sessions (before the pattern's rest had passed) and overdue days (a
+   session due, none done); what TODAY picked, whether it was done, and how much
+   of the picked routine's exercises and muscles were trained anyway; longest
+   run of training days and of rest days; days the same parent muscle was
+   trained two days running; planned sessions from the phase pattern or the
+   weekly target; inside routine sessions, exercises planned / done / added and
+   sets planned / done.
+2. **Growing, stuck, or slipping.** One row per exercise per week
+   (`drona_exercise_week_facts`): best estimated 1RM (Epley, 1-12 reps, working
+   sets), top weight and its reps, best reps for bodyweight moves, longest hold
+   for timed ones, sets, volume, and whether it is in the active program.
+3. **Most trained and ignored muscles.** One row per raw muscle per week
+   (`drona_muscle_week_facts`), with its parent, and a parent view
+   (`drona_parent_muscle_week_facts`). Both levels are kept for the coach.
+
+Rest days follow the PERSON, not the calendar (`_shared/todayPick.ts`): after
+each session the pattern's rest days must pass. Early and overdue are computed
+from the session sequence, only for a phase of the ACTIVE program with a built
+split, and a phase whose routines were never opened is due from its first day.
+
+**Primary muscle only.** Each exercise has one muscle today, so a bench press
+counts for chest alone and triceps look under-trained for anyone who presses.
+Rows carry `role = 'primary'`; secondary muscles are a later step (owner's call:
+the coach gets told this in the meantime).
+
+**Checked.** Reconciled for all 23 people with workouts: 581 sessions and 9,014
+working sets, identical in the week, exercise and muscle tables
+(`scripts/drona-facts/reconcile-training.mts`). No tester has ever done a session
+from their active program's routines, so early and overdue were proved on a
+made-up person with a hand-worked schedule, 19 checks, all pass
+(`scripts/drona-facts/training-schedule.mts`). Read one person with
+`USER_ID=... npx tsx scripts/drona-facts/training.mts`.
+
+**What 0136 got wrong, found on the owner's own account the same day.** Six
+programs (five archived, three starting the same day), so "the program" meant
+any of six; and because the active program's routines were never opened, 0136
+computed no schedule at all and called nothing overdue. 0137 reads the active
+program only and treats an unopened built phase as due from its first day.
+
+What the training facts show, before any signal exists:
+- **Nobody follows the program through its routines.** Among all testers, zero
+  sessions from an active program's routine, zero TODAY picks done as picked.
+- **The owner goes their own way, and TODAY does not notice.** TODAY said
+  "Legs" for 12 days running; the owner trained 8 times, freestyle and their own
+  routines, and on 21 Sep a Full Body session covered 100% of the Legs routine's
+  muscles with 0% of its exercises. Overdue by the plan, not skipping: exactly
+  the distinction the pick-overlap facts exist for.
+- **Lifts mostly flat over 8 weeks** (lat pulldown 52-57, leg extension
+  118-123), and one slipping (ab crunch machine 120 to 96).
+- **Upper body dominates.** 8 weeks: Back 134 working sets, Hamstrings 19,
+  Calves 10, Glutes 0. And 42 sets are on exercises tagged "Other", which no
+  muscle count can see.
 
 ## Build order
 
