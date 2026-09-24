@@ -15,7 +15,7 @@
  * (EVAL_VIA_CLI=1) and pay with the subscription instead of API credit.
  */
 import type { DronaFacts } from './dronaCards.ts';
-import type { DietFacts } from './dronaCalories.ts';
+import { completeFood, type DietFacts } from './dronaCalories.ts';
 
 export const DRONA_CARD_MODEL = 'claude-sonnet-4-6';
 const TIMEOUT_MS = 25_000;
@@ -101,8 +101,8 @@ export function caloriePrompt(p: CaloriePack): string {
   lines.push(`Current targets: ${d.targets?.kcal ?? '?'} kcal, protein ${d.targets?.protein_g ?? '?'} g, carbs ${d.targets?.carb_g ?? '?'} g, fat ${d.targets?.fat_g ?? '?'} g.`);
   lines.push(`Floor (never go under): ${p.anchor.floor} kcal. Rules' anchor: ${p.anchor.to} kcal (10% or 150 off, whichever is less).`);
   lines.push('');
-  lines.push(`Food, last 28 days, newest first (${f.nutrition?.days_logged_14d ?? 0} of the last 14 days logged, ${f.nutrition?.on_target_days_14d ?? 0} of them within 10% of target):`);
-  for (const r of (d.food ?? []).slice(0, 28)) lines.push(`  ${r.day}  ${r.kcal} kcal  ${r.protein_g ?? '?'} g protein`);
+  lines.push(`Food, the 28 days before today, newest first. Today is not over, so it is left out (${f.nutrition?.days_logged_14d ?? 0} of the 14 days before today logged, ${f.nutrition?.on_target_days_14d ?? 0} of them within 10% of target):`);
+  for (const r of completeFood(d, f.as_of ?? d.as_of ?? '', 28)) lines.push(`  ${r.day}  ${r.kcal} kcal  ${r.protein_g ?? '?'} g protein`);
   lines.push('');
   lines.push(`Weight, last 28 days, newest first (14-day trend ${p.anchor.slope_14d ?? '?'} kg/week):`);
   for (const r of (d.weight ?? []).slice(0, 28)) lines.push(`  ${r.day}  ${r.kg} kg`);
