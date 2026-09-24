@@ -289,3 +289,135 @@ Deno.test("saved: when the server cannot be reached the card still shows the pho
   assertEquals(r.view.kind, "planned");
   assertEquals(r.view.routine?.id, "d1");
 });
+
+// ── Training a program day your own way ──
+// No tester had ever opened an active program's routine: they trained freestyle,
+// or from their own routines. The pick counted only sessions of the phase's own
+// routines, so it offered the same day forever (a tester was told "Legs" for 12
+// days straight, the day after a session that trained every one of its muscles).
+// Now a session counts as the program day it trained, and what comes next is the
+// day whose muscles the last 7 days left untrained.
+
+const ex = (...groups: string[]) => groups.map((g) => ({ exercises: { muscle_group: g } }));
+const push: PickRoutine = { id: "push", name: "Push", created_at: "2026-09-13T10:00:01Z", program_phase_id: "ph-1", routine_exercises: ex("Chest", "Upper Chest", "Side Delts", "Triceps") };
+const pull: PickRoutine = { id: "pull", name: "Pull", created_at: "2026-09-13T10:00:02Z", program_phase_id: "ph-1", routine_exercises: ex("Lats", "Upper Back", "Biceps", "Rear Delts") };
+const legs: PickRoutine = { id: "legs", name: "Legs", created_at: "2026-09-13T10:00:03Z", program_phase_id: "ph-1", routine_exercises: ex("Quads", "Hamstrings", "Calves", "Abs") };
+const legsAndAbs: PickRoutine = { id: "own-legs", name: "Legs and Abs 2 Office", created_at: "2026-08-01T10:00:00Z", program_phase_id: null, routine_exercises: ex("Quads", "Abs") };
+const ppl = [legsAndAbs, legs, pull, push];
+
+/** A session with no routine, training these muscle groups. */
+const freestyle = (n: number, ...groups: string[]): PickWorkout => ({
+  name: "Freestyle", routine_id: null, started_at: daysAgo(n), finished_at: daysAgo(n - 0.04),
+  sets: groups.map((g) => ({ completed: true, set_type: "normal", exercises: { muscle_group: g } })),
+});
+
+Deno.test("own way: a freestyle session that trained a program day counts as that day", () => {
+  const workouts = [did(push, 3), did(pull, 2), freestyle(1, "Quads", "Hamstrings", "Calves", "Abs")];
+  const pick = pickToday({ routines: ppl, workouts, program, now: NOW });
+  assertEquals(pick.routine?.id, "push");
+});
+
+Deno.test("own way: a session of the person's own routine counts as the program day it covers", () => {
+  // "Legs and Abs" trains quads and core: half of the program's Legs day.
+  const own = { name: legsAndAbs.name, routine_id: legsAndAbs.id, started_at: daysAgo(1),
+    sets: [{ completed: true, set_type: "normal", exercises: { muscle_group: "Quads" } }, { completed: true, set_type: "normal", exercises: { muscle_group: "Abs" } }] };
+  const pick = pickToday({ routines: ppl, workouts: [did(push, 3), did(pull, 2), own], program, now: NOW });
+  assertEquals(pick.routine?.id, "push");
+});
+
+Deno.test("own way: the dashboard's workout_sets shape counts the same as sets", () => {
+  const w = freestyle(1, "Quads", "Hamstrings");
+  const serverRow = { ...w, sets: undefined, workout_sets: w.sets };
+  const pick = pickToday({ routines: ppl, workouts: [did(push, 3), did(pull, 2), serverRow], program, now: NOW });
+  assertEquals(pick.routine?.id, "push");
+});
+
+Deno.test("own way: under half of a day's muscle groups is not that day", () => {
+  // Core and shoulders: a quarter of Legs, a third of Push and of Pull.
+  const workouts = [did(push, 3), did(pull, 2), freestyle(1, "Abs", "Side Delts")];
+  assertEquals(pickToday({ routines: ppl, workouts, program, now: NOW }).routine?.id, "legs");
+});
+
+Deno.test("own way: warm-up sets and unfinished sets train nothing", () => {
+  const w: PickWorkout = { name: "Freestyle", routine_id: null, started_at: daysAgo(1), sets: [
+    { completed: true, set_type: "warmup", exercises: { muscle_group: "Quads" } },
+    { completed: false, set_type: "normal", exercises: { muscle_group: "Hamstrings" } },
+    { completed: true, set_type: "normal", exercises: { muscle_group: "Abs" } },
+  ] };
+  assertEquals(pickToday({ routines: ppl, workouts: [did(push, 3), did(pull, 2), w], program, now: NOW }).routine?.id, "legs");
+});
+
+Deno.test("own way: a session counts once, as the day it covers best", () => {
+  // All of Push, and two of Pull's three groups: it was a push day, not a pull
+  // day. Pull's back and shoulders were trained, its biceps not; Legs was
+  // trained 3 days ago. Legs goes after Pull because it was done more lately.
+  const workouts = [{ ...did(legs, 3), ...freestyle(3, "Quads", "Hamstrings", "Calves", "Abs"), routine_id: "legs" }, freestyle(1, "Chest", "Side Delts", "Triceps", "Lats")];
+  assertEquals(pickToday({ routines: ppl, workouts, program, now: NOW }).routine?.id, "pull");
+});
+
+Deno.test("own way: a counted session takes its slot in the week, so the rest after it holds", () => {
+  // Pattern Push, Pull, Legs, Rest. Three sessions done the person's way on the
+  // first three days of the phase: the fourth day is rest, then Push.
+  const ppr: PickProgram = { ...program, phases: [{ ...program.phases[0], week_pattern: ["Push", "Pull", "Legs", "Rest", "Push", "Pull", "Rest"] }, program.phases[1]] };
+  const at = (isoDay: string, ...groups: string[]): PickWorkout => ({
+    name: "Freestyle", routine_id: null, started_at: `${isoDay}T08:00:00`, finished_at: `${isoDay}T09:00:00`,
+    sets: groups.map((g) => ({ completed: true, set_type: "normal", exercises: { muscle_group: g } })),
+  });
+  const workouts = [at("2026-09-10", "Chest", "Triceps"), at("2026-09-11", "Lats", "Biceps"), at("2026-09-12", "Quads", "Hamstrings")];
+  const pick = pickToday({ routines: ppl, workouts, program: ppr, now: NOW });
+  assertEquals(pick.kind, "rest");
+  if (pick.kind === "rest") {
+    assertEquals(pick.next.id, "push");
+    assertEquals(localDay(pick.resumesOn), "2026-09-14");
+  }
+});
+
+Deno.test("own way: a day whose muscles the week left untrained goes before one trained piecemeal", () => {
+  // Legs is the longest undone, but two small sessions this week trained half of
+  // it (abs, then calves). Pull's back and biceps are untouched: Pull goes first.
+  const workouts = [did(legs, 9), did(pull, 8), did(push, 2), freestyle(4, "Abs", "Rear Delts"), freestyle(1, "Calves", "Forearms")];
+  assertEquals(pickToday({ routines: ppl, workouts, program, now: NOW }).routine?.id, "pull");
+});
+
+Deno.test("own way: muscles trained over a week ago do not hold a day back", () => {
+  // The same two small sessions as above, but 8 and 9 days ago.
+  const workouts = [did(legs, 9), did(pull, 8), did(push, 2), freestyle(9, "Abs", "Rear Delts"), freestyle(8, "Calves", "Forearms")];
+  assertEquals(pickToday({ routines: ppl, workouts, program, now: NOW }).routine?.id, "legs");
+});
+
+Deno.test("own way: a fresh split still opens on Day 1 when other days share a muscle", () => {
+  // Push (shoulders) yesterday: Pull shares the shoulders, Legs shares nothing.
+  // One shared group of four is not "trained": the split's own order holds.
+  assertEquals(pickToday({ routines: ppl, workouts: [did(push, 1)], program, now: NOW }).routine?.id, "pull");
+});
+
+Deno.test("own way: the tester's fortnight, replayed, moves on from Legs", () => {
+  // 2026-09-13..24, Asia/Kolkata, from the live database. Program started 09-13,
+  // Push/Pull/Legs/Rest/Push/Pull/Rest. Before: "Legs" every day.
+  const p: PickProgram = { id: "prog", start_date: "2026-09-13", phases: [{ id: "ph-1", duration_weeks: 5, start_offset_weeks: 0, week_pattern: ["Push", "Pull", "Legs", "Rest", "Push", "Pull", "Rest"] }] };
+  const R = (id: string, n: number, ...g: string[]): PickRoutine => ({ id, name: id, created_at: `2026-09-13T15:50:5${n}Z`, program_phase_id: "ph-1", routine_exercises: ex(...g) });
+  const tester = [R("Push", 1, "Chest", "Shoulders", "Triceps"), R("Pull", 2, "Back", "Biceps", "Shoulders"), R("Legs", 3, "Calves", "Core", "Hamstrings", "Quads")];
+  const s = (isoDay: string, ...g: string[]): PickWorkout => ({ name: "x", routine_id: null, started_at: `${isoDay}T09:00:00`, finished_at: `${isoDay}T10:00:00`,
+    sets: g.map((m) => ({ completed: true, set_type: "normal", exercises: { muscle_group: m } })) });
+  const history = [
+    { name: "Legs", routine_id: "old-legs", started_at: "2026-08-09T18:48:00", finished_at: "2026-08-09T19:48:00" },
+    { name: "Pull", routine_id: "old-pull", started_at: "2026-08-30T21:26:00", finished_at: "2026-08-30T22:26:00" },
+    { name: "Push", routine_id: "old-push", started_at: "2026-09-09T08:57:00", finished_at: "2026-09-09T10:12:00" },
+    s("2026-09-14", "Chest", "Shoulders", "Triceps"),
+    s("2026-09-15", "Back", "Biceps", "Other"),
+    s("2026-09-16", "Core", "Quads"),
+    s("2026-09-18", "Core", "Shoulders"),
+    s("2026-09-20", "Back", "Biceps", "Shoulders"),
+    s("2026-09-21", "Calves", "Core", "Hamstrings", "Quads"),
+    s("2026-09-22", "Chest", "Shoulders", "Triceps"),
+  ];
+  const on = (isoDay: string) => {
+    const now = new Date(`${isoDay}T00:05:00`);
+    const before = history.filter((w) => new Date(w.finished_at!).getTime() < new Date(`${isoDay}T00:00:00`).getTime());
+    const pk = pickToday({ routines: tester, workouts: before, program: p, now });
+    return pk.kind === "rest" ? `rest>${pk.next.id}` : pk.routine?.id;
+  };
+  // The day after the full-body session trained all of Legs, Legs is not offered.
+  assertEquals(on("2026-09-22"), "rest>Push");
+  assertEquals(on("2026-09-23"), "Pull");
+});

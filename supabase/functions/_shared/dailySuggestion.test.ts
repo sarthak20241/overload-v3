@@ -106,3 +106,26 @@ Deno.test("the server's basis equals the phone's for the same data, so the app d
   const phoneBasis = suggestionBasis(planKey(phoneProgram, routines, now), latestWorkoutBeforeDay(workouts, now));
   assertEquals(row.basis, phoneBasis);
 });
+
+Deno.test("a freestyle session reads as the program day it trained", () => {
+  // The rows as the function reads them: exercises embedded under the routine,
+  // sets under the workout. Push A and Pull A from their routines, then legs
+  // with no routine: Legs A is done, so Push B is next.
+  const legsDay = { muscle_group: "Quads" };
+  const withMuscles = routines.map((x) => x.id === "Legs A"
+    ? { ...x, routine_exercises: [{ exercises: legsDay }, { exercises: { muscle_group: "Hamstrings" } }] }
+    : x);
+  const freestyle = {
+    name: "Evening", routine_id: null,
+    started_at: "2026-09-15T12:00:00Z", finished_at: "2026-09-15T13:00:00Z", created_at: "2026-09-15T12:00:00Z",
+    workout_sets: [{ completed: true, set_type: "normal", exercises: legsDay }, { completed: true, set_type: "normal", exercises: { muscle_group: "Hamstrings" } }],
+  };
+  const row = buildSuggestion({
+    routines: withMuscles,
+    workouts: [done("Push A", "2026-09-13T12:00:00Z"), done("Pull A", "2026-09-14T12:00:00Z"), freestyle],
+    program: { ...program, phases: [{ ...program.phases[0], training_block: {} }] },
+    timeZone: IST,
+    now: new Date("2026-09-15T18:30:00Z"),
+  })!;
+  assertEquals(row.routine_id, "Push B");
+});
