@@ -187,6 +187,30 @@ export interface ParseMealResult {
   // log_meal) with args + result summaries, plus how many loop turns it took.
   steps: ParseStep[];
   iterations: number;
+  /** The tier that actually answered, which is not always the one the user
+   *  picked: a correction runs Thorough whatever was asked for. Set by
+   *  runParseMeal; optional because the food agent builds its result by hand
+   *  and has none when it only copied lines it had already read. */
+  tier?: ParseTier;
+}
+
+/** The three tiers as the user sees them. On the wire Thorough is no mode at
+ *  all and Precise is "super", so cost queries would otherwise need that
+ *  mapping in their heads. */
+export type ParseTier = "fast" | "thorough" | "precise";
+
+/**
+ * Which tier a parse runs. Fast and Precise are first-shot only: with a meal on
+ * screen the turn may be a correction, removal, question or addition, and those
+ * need the previous meal resolved, which is the full pipeline's job. So both
+ * fall back to Thorough. runParseMealCore gates on this and runParseMeal
+ * reports it, so the logged tier and the tier that ran cannot drift apart.
+ */
+export function resolveParseTier(mode: ParseMealInput["mode"], hasPrevious: boolean): ParseTier {
+  if (hasPrevious) return "thorough";
+  if (mode === "fast") return "fast";
+  if (mode === "super") return "precise";
+  return "thorough";
 }
 
 export interface RecentFoodContext {
@@ -4610,6 +4634,9 @@ export async function runParseMeal(
   const hits: SavedHit[] = [];
   const suggestions: NonNullable<ParseMealResult["saved_suggestions"]> = [];
   const result = await runParseMealCore(deps, input, saved, hits, suggestions);
+  // Same inputs runParseMealCore gated on. The rerun below overwrites this with
+  // its own: that one is a first shot, so it runs the tier the user picked.
+  result.tier = resolveParseTier(input.mode, !firstShot);
 
   // "Not from saved meals": the user turned down the saved meal on the card.
   // Log their ORIGINAL words again as a first shot with saved meals switched
@@ -4720,13 +4747,14 @@ async function runParseMealCore(
   // Fast only ever handles a first-shot log. With a card on screen the turn may
   // be a correction, removal, question or addition, and those need the full
   // pipeline; silently degrading them to fast would eat the user's intent.
-  const fastMode = input.mode === "fast" && !hasPrevious;
-  // Super rides the SAME first-shot rule, and for the same reason: a correction
-  // needs the previous meal resolved, which is the full pipeline's job. Note it
-  // is deliberately not fastMode's sibling in behaviour - super keeps decide,
+  // Super rides the SAME first-shot rule, and for the same reason. Note it is
+  // deliberately not fastMode's sibling in behaviour - super keeps decide,
   // keeps the reranker, keeps every guard. The only thing it adds is where the
-  // numbers come from.
-  const superMode = input.mode === "super" && !hasPrevious;
+  // numbers come from. resolveParseTier holds the rule so runParseMeal can
+  // report the tier this gate actually chose.
+  const tier = resolveParseTier(input.mode, hasPrevious);
+  const fastMode = tier === "fast";
+  const superMode = tier === "precise";
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.

@@ -20,6 +20,7 @@ import {
   type ParseMealInput,
   type ParseMealResult,
   type ParseStep,
+  type ParseTier,
   type PreviousItem,
   type RecentFoodContext,
   runParseMeal,
@@ -2859,6 +2860,11 @@ async function handleParseMealRequest(args: {
   // parse - `pro_required` opens the upgrade sheet, and the free user's own
   // FREE_PARSE_LIMIT logging is untouched.
   const wantsSuper = body.speed === "super" && PARSE_SUPER_MODE !== "off";
+  // The tier the user PICKED, by its name in the app. Logged beside the tier
+  // that answered (result.tier) because the two differ: a correction runs
+  // Thorough, and a kill switch above turns Fast or Precise off. An old build
+  // that sends no speed reads as Thorough, which is what it gets.
+  const tierSelected: ParseTier = body.speed === "fast" ? "fast" : body.speed === "super" ? "precise" : "thorough";
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web
   // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
@@ -3030,6 +3036,9 @@ async function handleParseMealRequest(args: {
                 user_id: userId,
                 mode: "parse_meal",
                 streamed: true,
+                tier_selected: tierSelected,
+                tier_used: result.tier ?? null,
+                answered_by: outcome.result ? "food_agent" : "parse",
                 item_count: result.parsed?.items.length ?? 0,
                 sources: result.parsed?.items.map((i) => i.source) ?? [],
                 declined: result.declined !== null,
@@ -3072,7 +3081,7 @@ async function handleParseMealRequest(args: {
               latency_ms: Date.now() - startedAtMs,
               status: "error",
               error_message: String(e).slice(0, 300),
-              metadata: { user_id: userId, mode: "parse_meal", streamed: true },
+              metadata: { user_id: userId, mode: "parse_meal", streamed: true, tier_selected: tierSelected },
             });
             trace.status = "internal_error";
             trace.http_status = 200;
@@ -3178,6 +3187,9 @@ async function handleParseMealRequest(args: {
       metadata: {
         user_id: userId,
         mode: "parse_meal",
+        tier_selected: tierSelected,
+        tier_used: result.tier ?? null,
+        answered_by: outcome.result ? "food_agent" : "parse",
         item_count: result.parsed?.items.length ?? 0,
         sources: result.parsed?.items.map((i) => i.source) ?? [],
         declined: result.declined !== null,
@@ -3256,7 +3268,7 @@ async function handleParseMealRequest(args: {
       latency_ms: Date.now() - startedAtMs,
       status: "error",
       error_message: trace.error_message,
-      metadata: { user_id: userId, mode: "parse_meal" },
+      metadata: { user_id: userId, mode: "parse_meal", tier_selected: tierSelected },
     });
     void recordParseTrace(admin, {
       user_id: userId,
