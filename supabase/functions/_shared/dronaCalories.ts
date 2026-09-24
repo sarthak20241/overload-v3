@@ -38,7 +38,7 @@ export interface DietFacts {
   body?: DietBody;
   targets?: DietTargets;
   phase?: (DietTargets & { id?: string | null }) | null;
-  /** Newest first. */
+  /** Newest first. Whole days only: today is not over, so it is never here (see completeFood). */
   food?: { day: string; kcal: number; protein_g?: number }[];
   /** Newest first. */
   weight?: { day: string; kg: number }[];
@@ -167,6 +167,18 @@ function dayBefore(iso: string, days: number): string {
 }
 
 /**
+ * Food on the whole days in the `days` before `asOf`, newest first. Today is
+ * left out: it is not over, and the app path asks at any hour, so today is
+ * usually half logged and reads as a crash diet. That also makes the app see
+ * the same days the Monday cron does. The facts functions end the window at
+ * yesterday too (0135); this holds even when a caller's rows do not.
+ */
+export function completeFood(diet: DietFacts, asOf: string, days: number): NonNullable<DietFacts['food']> {
+  const from = dayBefore(asOf, days);
+  return (diet.food ?? []).filter((r) => r.day >= from && r.day < asOf);
+}
+
+/**
  * The ugliness a good mean hides. Four reads of the raw series, each a general
  * coaching rule, each computed here so the validator does not have to trust
  * the model to have looked:
@@ -195,7 +207,7 @@ export function uglyChecks(facts: DronaFacts, diet: DietFacts): UglyChecks {
   const proteinTarget = n(diet.targets?.protein_g);
   const failed: string[] = [];
 
-  const food14 = (diet.food ?? []).filter((r) => r.day > dayBefore(asOf, 14));
+  const food14 = completeFood(diet, asOf, 14);
   const worst = food14.length ? Math.max(...food14.map((r) => n(r.kcal) ?? 0)) : null;
   if (worst != null && target != null && worst > target * BLOWOUT_SHARE) failed.push('blowout_day');
 

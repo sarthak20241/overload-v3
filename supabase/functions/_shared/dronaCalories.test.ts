@@ -3,6 +3,7 @@ import {
   calorieGate, floorKcalFor, isProTier, validateTargets, caloriesCard, uglyChecks, type DietFacts,
 } from "./dronaCalories.ts";
 import type { DronaFacts } from "./dronaCards.ts";
+import { caloriePrompt } from "./dronaModel.ts";
 
 const AS_OF = "2026-09-18";
 const day = (back: number) => {
@@ -10,7 +11,7 @@ const day = (back: number) => {
   return d.toISOString().slice(0, 10);
 };
 
-/** A clean stall: 12 of 14 days logged near 2100, weight flat at 72.4, last change 21 days ago. */
+/** A clean stall: 12 of the 14 days before today logged near 2100, weight flat at 72.4, last change 21 days ago. */
 function facts(over: Partial<DronaFacts> = {}): DronaFacts {
   return {
     as_of: AS_OF, week_start: "2026-09-14", tier: "annual",
@@ -29,7 +30,7 @@ function diet(over: Partial<DietFacts> = {}): DietFacts {
     body: { gender: "M", height_cm: 178, weight_kg: 72.4, age_years: 30 },
     targets: { kcal: 2100, protein_g: 150, carb_g: 210, fat_g: 60 },
     phase: { id: "ph1", kcal: 2100, protein_g: 150, carb_g: 210, fat_g: 60 },
-    food: Array.from({ length: 12 }, (_, i) => ({ day: day(i), kcal: 2080 + (i % 3) * 40, protein_g: 145 })),
+    food: Array.from({ length: 12 }, (_, i) => ({ day: day(i + 1), kcal: 2080 + (i % 3) * 40, protein_g: 145 })),
     weight: Array.from({ length: 9 }, (_, i) => ({ day: day(i), kg: 72.4 + ((i % 2) ? 0.1 : -0.1) })),
     target_changes: [{ at: "2026-08-28T08:00:00Z", from: 2250, to: 2100, source: "chat", card_id: null }],
     days_since_target_change: 21,
@@ -134,6 +135,34 @@ Deno.test("the ugly checks read the series the mean hides", () => {
     { at: "2026-08-10T08:00:00Z", from: 2100, to: 1950, source: "card", card_id: "x" },
   ] }));
   assertEquals(raised.failed, ["raised_back"]);
+});
+
+// Today is not over. The app path asks at any hour, so today is usually half
+// logged: on 2026-09-24 a clean 13-day stall was held because today read 520 kcal.
+// The window is the 14 whole days before today, the same days the Monday cron sees.
+const PARTIAL_TODAY = { day: AS_OF, kcal: 520, protein_g: 30 };
+
+Deno.test("today's half-logged food is not read as a day", () => {
+  const complete = Array.from({ length: 13 }, (_, i) => ({ day: day(i + 1), kcal: 2100, protein_g: 125 }));
+  const checks = uglyChecks(facts(), diet({ food: [PARTIAL_TODAY, ...complete] }));
+  // With today in, protein averages 118 against a floor of 120 and the week is refused.
+  assertEquals(checks.mean_protein_g, 125);
+  assertEquals(checks.failed, []);
+});
+
+Deno.test("the model is not shown today's food", () => {
+  const complete = Array.from({ length: 13 }, (_, i) => ({ day: day(i + 1), kcal: 2100, protein_g: 145 }));
+  const d = diet({ food: [PARTIAL_TODAY, ...complete] });
+  const g = calorieGate(facts(), d);
+  const prompt = caloriePrompt({ facts: facts(), diet: d, anchor: g.anchor!, memory: [] });
+  assertEquals(prompt.includes(`${AS_OF}  520 kcal`), false, prompt);
+  assertEquals(prompt.includes(`${day(1)}  2100 kcal`), true);
+});
+
+Deno.test("the food window is the 14 days before today, not 13 plus today", () => {
+  // day(14) is the oldest day in the window; day(15) is out.
+  const food = [{ day: day(14), kcal: 3400, protein_g: 145 }, { day: day(15), kcal: 3600, protein_g: 145 }];
+  assertEquals(uglyChecks(facts(), diet({ food })).worst_day_kcal, 3400);
 });
 
 Deno.test("a proposal on an ugly week is refused whatever the model said", () => {
