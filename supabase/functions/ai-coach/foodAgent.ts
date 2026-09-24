@@ -467,9 +467,11 @@ async function finishWith(
     input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, web_search_requests: 0,
   };
   const steps: ParseStep[] = [];
+  let tier: ParseMealResult["tier"];
   if (typeof args.text === "string" && args.text.trim()) {
     const r = await parse(args.text);
     usage = r.usage;
+    tier = r.tier;
     steps.push(...r.steps);
     parsedLines = (r.parsed?.items ?? []).map((i) => ({ ...i, meal_type: meal }));
   }
@@ -485,6 +487,7 @@ async function finishWith(
       tool_calls: ["food_agent"],
       steps,
       iterations: turns.length,
+      tier,
     },
     turns,
   };
