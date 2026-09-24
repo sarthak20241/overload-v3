@@ -204,6 +204,49 @@ What the food facts already show that a "days logged" count hides:
 - Some accounts carry seeded demo data (see memory: demo account seed). Their
   weeks look like a textbook. Signals must be checked on real users too.
 
+## Step 2b is live (2026-09-24): the day is the atom
+
+`0134_drona_day_facts` applied. `drona_day_facts` holds one row per person per
+local day (97 days, 557 entries for 11 people). The week's food facts are now a
+ROLLUP of those days, and windows are read, not stored:
+`drona_food_windows(user)` gives the last 3 / 5 / 7 COMPLETE days and this week
+against last. Today is left out of the windows because it is still being logged:
+one person's week read 1045 kcal while their last three complete days averaged
+1288, because today was half done.
+
+**Proved the rewrite changed nothing it should not.** Snapshotted all 297 week
+rows first, rebuilt from days, compared field by field: 268 identical. Of the
+29 that differ, 5 gained meals logged since the snapshot, and 24 (one account)
+kept the same 2250 target while its label moved from `assumed_current` to
+`inferred`, because that account changed its target today and the diary now
+knows the earlier value. No count moved without new data behind it.
+
+New weekly facts: days missed, longest dark run, streak at week's end, weekday
+vs weekend days logged, days with breakfast / lunch / dinner / snack, days under
+half the target, days logged on the day itself, median and spread of kcal,
+weekday vs weekend average, the week's total against the sum of its days'
+targets, each macro's days met (90%+) and days under half, fiber, and how the
+entries were made (AI-parsed, catalog, estimate, typed, unknown).
+
+**Macros below a safe level (owner's question, 2026-09-24).** The fact is only a
+count against that day's own target: days each macro was under half of it.
+Whether that is unsafe is a signal, and needs body weight (fat under about
+0.5 g per kg is a real floor; a gram target alone is not). Whether it is a
+CHOICE is a behaviour: `user_profiles.diet_preference` and `coach_memory` say
+keto or a medical diet, and the behaviour layer lets that override the count.
+The fact never knows why a number is low.
+
+What the new facts already show:
+- The demo account's seeded weeks give themselves away: 7 of 7 days, every
+  meal, a spread of only 39 kcal, and **0 days logged on the day itself**.
+  "Logged same day" separates a real log from a backfill.
+- The 418 kcal person: 7 of 7 days under half the target, every macro under
+  half every day. The earlier "logs a snack, not a day" read, now one column.
+- The average hides what the median shows: one week averaged 1678 with a
+  median of 2088, because one very light day pulled the mean down.
+- The current week's row includes today, which is still being logged. Signals
+  should read complete weeks, or the windows, never the open week's averages.
+
 ## Build order
 
 1. **Weight** (this step): table, weight columns, compute function, backfill 8
