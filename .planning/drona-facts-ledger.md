@@ -71,7 +71,7 @@ Source: `user_nutrition_stats` (one row per day), `meals`, targets from
 | highest_day_kcal / on, lowest_day_kcal / on | |
 | single_entry_days | a day with one entry is a half-logged day |
 
-## 3. Training  [STEP 3, LIVE 2026-09-24, migrations 0136 + 0137]
+## 3. Training  [STEP 3, LIVE 2026-09-24, migrations 0136 + 0137 + 0138]
 
 Source: `workouts`, `workout_sets`, `routines`, `routine_exercises`,
 `coach_program_phases`. `started_at` is timestamptz, so convert with the profile
@@ -307,6 +307,46 @@ What the training facts show, before any signal exists:
 - **Upper body dominates.** 8 weeks: Back 134 working sets, Hamstrings 19,
   Calves 10, Glutes 0. And 42 sets are on exercises tagged "Other", which no
   muscle count can see.
+
+## Step 3b is live (2026-09-25): how much of the plan, in sets
+
+`0138_drona_plan_match_facts`. 0137 said whether a picked routine's muscles were
+touched at all, so one set of squats "touched" Legs as fully as nine. Owner's
+ask: did they hit the intended muscles 50%? 75%? And how far did the week drift
+from the plan, in numbers?
+
+**matched** = sum over parent muscles of least(planned sets, done sets). Capped
+per muscle, so extra chest never makes up for missed legs. **match** = matched /
+planned. The 50% and 75% lines are for the signal layer; the facts only count.
+
+| Where | Fact |
+|---|---|
+| `drona_pick_muscle_day_facts` | per day TODAY picked a routine, per raw muscle: planned sets, done sets (any session) |
+| day row | `pick_sets_planned`, `pick_sets_matched`, `pick_set_match` (parent), `pick_muscle_set_match` (raw: Upper Chest is not Chest), `pick_parents_missed`, `pick_parents_extra`, `pick_sets_extra` |
+| day row | `best_routine_id`, `best_routine_similarity`: the active program's routine the day looked most like (sets in common / sets in either) |
+| `drona_plan_muscle_week_facts` + `drona_parent_plan_week_facts` | the program's OWN week per muscle, independent of TODAY: a week holds (training slots / routines) of one pass through the phase's routines, spread over the week's days inside the phase, up to yesterday. Done sets from the same days. |
+| week row | `t_pick_days_trained`, `t_pick_sets_planned/matched`, `t_pick_set_match` (pick days with a session only), `t_plan_days`, `t_plan_sets_planned/matched`, `t_plan_set_match`, `t_plan_sets_extra`, `t_plan_parents_missed` |
+
+Two plans on purpose: TODAY can be stuck (it only moves on when its own routine
+is started), so its match says "did they do today's pick", and the program week
+says "are they doing the program at all". The training rebuild now ends by
+calling `drona_rebuild_plan_match_facts`, one entry point as before.
+
+Proved on a made-up person, 17 checks, all pass
+(`scripts/drona-facts/plan-match.mts`): the cap (1.00, not 1.20), raw vs parent
+(0.70 vs 1.00), warm-ups excluded, a Pull day on a Legs pick found as Pull 1.00,
+and the week's 43.4 planned / 26.7 matched worked by hand. Across all live
+people, done sets in the new rows equal the day and week working sets, 0
+mismatches (394 pick days, 6 plan weeks).
+
+**The owner's account says what 0137 could not.** TODAY picked Legs every day
+from 13 Sep. Against that pick: 13% of sets matched the week of 14 Sep, 20% the
+week of 21 Sep. Against the program's own week: 67% and 83%. The best-match
+routine explains it: the days looked like Push (0.68, 0.81), Pull (0.52, 0.64,
+0.78) and Legs (0.43, 0.52). **The owner IS doing the program's split, in their
+own order. TODAY is the one off the plan.** And 21 Sep, "100% of Legs muscles"
+in 0137, is 61% of Legs sets here. Still short across both weeks: Hamstrings 2
+of 15.7 planned, Calves 2 of 7.9.
 
 ## Build order
 
