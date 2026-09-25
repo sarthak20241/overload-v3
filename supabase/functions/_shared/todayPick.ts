@@ -152,8 +152,9 @@ for (const [parent, heads] of Object.entries({
   for (const head of heads) PARENT_OF[head] ??= parent;
 }
 
-/** The parent group of a muscle, lower case. "Other" and blanks say nothing. */
-function muscleParent(group: string | null | undefined): string | null {
+/** The parent group of a muscle, lower case. "Other" and blanks say nothing.
+ *  Kept in step with lib/exercises by a test in todayPick.test.ts. */
+export function muscleParent(group: string | null | undefined): string | null {
   const g = (group ?? '').trim().toLowerCase();
   if (!g || g === 'other') return null;
   return PARENT_OF[g] ?? g;
@@ -265,7 +266,10 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
     const at = doneAt(w);
     if (at >= since && at < startOfToday) for (const m of workoutMuscles(w)) lately.add(m);
   }
-  const trainedLately = (r: R) => (coverage(muscles.get(r)!, lately) >= COVERS_DAY ? 1 : 0);
+  // A day done in the window counts too: its sets may still be syncing, or it
+  // has no muscles to read.
+  const trainedLately = (r: R) =>
+    ((lastDone.get(r) ?? 0) >= since || coverage(muscles.get(r)!, lately) >= COVERS_DAY ? 1 : 0);
 
   const pick = [...candidates].sort(
     (a, b) => trainedLately(a) - trainedLately(b)

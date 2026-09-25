@@ -386,9 +386,30 @@ Deno.test("own way: muscles trained over a week ago do not hold a day back", () 
 });
 
 Deno.test("own way: a fresh split still opens on Day 1 when other days share a muscle", () => {
-  // Push (shoulders) yesterday: Pull shares the shoulders, Legs shares nothing.
-  // One shared group of four is not "trained": the split's own order holds.
-  assertEquals(pickToday({ routines: ppl, workouts: [did(push, 1)], program, now: NOW }).routine?.id, "pull");
+  // Push yesterday, with its sets: Pull shares the shoulders, Legs shares
+  // nothing. One shared group of Pull's three is not "trained": the split's own
+  // order holds.
+  const pushDay = { ...did(push, 1), ...freestyle(1, "Chest", "Side Delts", "Triceps"), routine_id: "push" };
+  assertEquals(pickToday({ routines: ppl, workouts: [pushDay], program, now: NOW }).routine?.id, "pull");
+});
+
+Deno.test("own way: a day done this week counts as trained, even before its sets arrive", () => {
+  // Legs 3 days ago with its sets; Push yesterday from its routine, sets still
+  // syncing (or a legacy row with none). Push was just done: Legs is next.
+  const legsDay = { ...did(legs, 3), ...freestyle(3, "Quads", "Hamstrings", "Calves", "Abs"), routine_id: "legs" };
+  assertEquals(pickToday({ routines: [legs, push], workouts: [legsDay, did(push, 1)], program, now: NOW }).routine?.id, "legs");
+});
+
+import { MUSCLE_GROUP_REFINEMENTS, muscleParentOf } from "../../../lib/exercises.ts";
+import { muscleParent } from "./todayPick.ts";
+
+Deno.test("own way: muscle groups roll up the same way the app's exercise picker does", () => {
+  // todayPick keeps its own copy (the shared module imports nothing). This
+  // fails the day lib/exercises gains a head the copy does not know.
+  for (const [parent, heads] of Object.entries(MUSCLE_GROUP_REFINEMENTS)) {
+    assertEquals(muscleParent(parent), parent.toLowerCase());
+    for (const head of heads) assertEquals(muscleParent(head), muscleParentOf(head)!.toLowerCase(), head);
+  }
 });
 
 Deno.test("own way: the tester's fortnight, replayed, moves on from Legs", () => {
