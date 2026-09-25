@@ -12,6 +12,16 @@
  * Day 1 first. So a fresh split opens on Day 1, and a skipped day stays due
  * instead of being jumped.
  *
+ * A session counts as the program day it trained, however it was logged. One
+ * of the phase's own routines counts as that routine. Any other session (no
+ * routine, or the person's own) counts as the day whose muscle groups it
+ * covers best, when it covers at least half of them. No tester had ever opened
+ * an active program's routine, so without this the pick never moved.
+ *
+ * What comes next weighs the last 7 days first: a day at least half of whose
+ * muscle groups were trained in them, by any mix of sessions, waits behind a
+ * day whose muscles were left alone. Then "most due", then day order.
+ *
  * Rest days come from the phase's week pattern (Day 1..Day 7, "Rest" for a day
  * off), and the pattern follows the user, not the calendar. The n-th session of
  * the phase sits on the n-th training day of the pattern; the rest days after
@@ -21,11 +31,27 @@
  * Pure: no imports, no React, no network. Unit-tested in todayPick.test.ts.
  */
 
+/**
+ * An embedded exercise row: all the pick reads is its muscle group. PostgREST
+ * sends a to-one embed as one object; supabase-js without generated types
+ * calls it a list, so both are read.
+ */
+type PickExercise = { muscle_group?: string | null } | { muscle_group?: string | null }[] | null;
+const muscleGroupOf = (e: PickExercise | undefined) => (Array.isArray(e) ? e[0] : e)?.muscle_group;
+
 export interface PickRoutine {
   id: string;
   name?: string | null;
   created_at?: string | null;
   program_phase_id?: string | null;
+  /** Its exercises, as `routine_exercises(exercises(...))` embeds them. Absent = muscles unknown. */
+  routine_exercises?: { exercises?: PickExercise }[] | null;
+}
+
+export interface PickSet {
+  completed?: boolean | null;
+  set_type?: string | null;
+  exercises?: PickExercise;
 }
 
 export interface PickWorkout {
@@ -35,6 +61,9 @@ export interface PickWorkout {
   /** Null on a legacy row, or while a finished workout is still syncing. */
   finished_at?: string | null;
   created_at?: string | null;
+  /** Its sets: the app names them `sets`, the database `workout_sets`. */
+  sets?: PickSet[] | null;
+  workout_sets?: PickSet[] | null;
 }
 
 /** The persisted program shape the pick needs: when it started, and its phases. */
@@ -102,6 +131,68 @@ export function currentPhaseId(program: PickProgram | null | undefined, now: Dat
   return currentPhase(program, now)?.id ?? null;
 }
 
+// ── Muscles ─────────────────────────────────────────────────────────────────
+// Compared at the parent group, so a day of Lats and a day of Back are the same
+// work. Heads follow lib/exercises MUSCLE_GROUP_REFINEMENTS (Adductors, listed
+// under three legs groups, goes to the first). An unknown name is its own group.
+const PARENT_OF: Record<string, string> = {};
+for (const [parent, heads] of Object.entries({
+  chest: ['upper chest', 'mid chest', 'lower chest'],
+  back: ['lats', 'upper back', 'lower back', 'traps'],
+  shoulders: ['front delts', 'side delts', 'rear delts', 'neck'],
+  biceps: ['biceps long head', 'biceps short head', 'brachialis'],
+  triceps: ['triceps long head', 'triceps lateral head', 'triceps medial head'],
+  forearms: ['wrist flexors', 'wrist extensors', 'brachioradialis', 'grip'],
+  core: ['abs', 'lower abs', 'obliques'],
+  quads: ['outer quads', 'inner quads', 'hip flexors', 'adductors'],
+  glutes: ['glute max', 'glute medius'],
+  calves: ['gastrocnemius', 'soleus', 'tibialis'],
+})) {
+  PARENT_OF[parent] = parent;
+  for (const head of heads) PARENT_OF[head] ??= parent;
+}
+
+/** The parent group of a muscle, lower case. "Other" and blanks say nothing.
+ *  Kept in step with lib/exercises by a test in todayPick.test.ts. */
+export function muscleParent(group: string | null | undefined): string | null {
+  const g = (group ?? '').trim().toLowerCase();
+  if (!g || g === 'other') return null;
+  return PARENT_OF[g] ?? g;
+}
+
+function routineMuscles(r: PickRoutine): Set<string> {
+  const out = new Set<string>();
+  for (const re of r.routine_exercises ?? []) {
+    const p = muscleParent(muscleGroupOf(re?.exercises));
+    if (p) out.add(p);
+  }
+  return out;
+}
+
+/** What a session trained: its completed working sets. Warm-ups train nothing. */
+function workoutMuscles(w: PickWorkout): Set<string> {
+  const out = new Set<string>();
+  for (const s of w.sets ?? w.workout_sets ?? []) {
+    if (!s || s.completed === false || s.set_type === 'warmup') continue;
+    const p = muscleParent(muscleGroupOf(s.exercises));
+    if (p) out.add(p);
+  }
+  return out;
+}
+
+/** Share of a day's muscle groups found in `trained`. */
+const coverage = (day: Set<string>, trained: Set<string>) => {
+  if (day.size === 0) return 0;
+  let hit = 0;
+  for (const m of day) if (trained.has(m)) hit += 1;
+  return hit / day.size;
+};
+
+/** At least this share of a day's muscle groups is that day's work. */
+const COVERS_DAY = 0.5;
+/** How far back "trained lately" looks, in days before today. */
+const LATELY_DAYS = 7;
+
 /** A local calendar day as a whole number, so day arithmetic never meets DST. */
 const dayNumber = (d: Date) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000);
 const fromDayNumber = (n: number) => {
@@ -139,19 +230,51 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
     return (!!w.routine_id && w.routine_id === r.id)
       || (!!name && (w.name ?? '').trim().toLowerCase() === name);
   };
-  const lastDoneAt = (r: R) => {
-    let last = 0; // never done -> most due
-    for (const w of workouts) {
-      if (isSessionOf(w, r)) last = Math.max(last, ms(w.started_at || w.created_at));
-    }
-    return last;
-  };
+  const muscles = new Map(candidates.map((r) => [r, routineMuscles(r)] as const));
+  const startedAt = (w: PickWorkout) => ms(w.started_at || w.created_at);
+  // Day order: a split's days by created_at; otherwise the list's own order
+  // (the dashboard's routines arrive newest first, and onboarding staggers
+  // created_at so Day A leads it).
+  const dayOrder = (a: R, b: R) =>
+    fromProgram ? ms(a.created_at) - ms(b.created_at) : candidates.indexOf(a) - candidates.indexOf(b);
 
-  // Without a program, ties keep the list's own order (the dashboard's routines
-  // arrive newest first, and onboarding staggers created_at so Day A leads it).
+  // Which day each session counts as, oldest first. A session of a candidate
+  // counts as it. Any other counts as the day it covers best (at least half),
+  // a tie going to the day that was due then.
+  const lastDone = new Map<R, number>(); // never done -> absent -> most due
+  const countsAs = new Map<PickWorkout, R>();
+  for (const w of [...workouts].sort((a, b) => startedAt(a) - startedAt(b))) {
+    let day = candidates.find((r) => isSessionOf(w, r));
+    if (!day) {
+      const trained = workoutMuscles(w);
+      day = candidates
+        .map((r) => ({ r, c: coverage(muscles.get(r)!, trained) }))
+        .filter((x) => x.c >= COVERS_DAY)
+        .sort((a, b) => b.c - a.c
+          || (lastDone.get(a.r) ?? 0) - (lastDone.get(b.r) ?? 0)
+          || dayOrder(a.r, b.r))[0]?.r;
+    }
+    if (!day) continue;
+    countsAs.set(w, day);
+    lastDone.set(day, Math.max(lastDone.get(day) ?? 0, startedAt(w)));
+  }
+
+  // Muscle groups trained in the last 7 days, by any session.
+  const since = startOfToday - LATELY_DAYS * 86_400_000;
+  const lately = new Set<string>();
+  for (const w of workouts) {
+    const at = doneAt(w);
+    if (at >= since && at < startOfToday) for (const m of workoutMuscles(w)) lately.add(m);
+  }
+  // A day done in the window counts too: its sets may still be syncing, or it
+  // has no muscles to read.
+  const trainedLately = (r: R) =>
+    ((lastDone.get(r) ?? 0) >= since || coverage(muscles.get(r)!, lately) >= COVERS_DAY ? 1 : 0);
+
   const pick = [...candidates].sort(
-    (a, b) => lastDoneAt(a) - lastDoneAt(b)
-      || (fromProgram ? ms(a.created_at) - ms(b.created_at) : 0),
+    (a, b) => trainedLately(a) - trainedLately(b)
+      || (lastDone.get(a) ?? 0) - (lastDone.get(b) ?? 0)
+      || (fromProgram ? dayOrder(a, b) : 0),
   )[0];
 
   // Rest days: only for a built split with a usable week pattern.
@@ -166,7 +289,7 @@ export function pickToday<R extends PickRoutine>(input: TodayPickInput<R>): Toda
   const programStartDay = dayNumber(now) - (daysSince(input.program.start_date, now) ?? 0);
   const phaseStartDay = programStartDay + phase!.start_offset_weeks * 7;
   const sessions = workouts
-    .filter((w) => phaseRoutines.some((r) => isSessionOf(w, r)))
+    .filter((w) => countsAs.has(w))
     .map((w) => doneAt(w))
     .filter((t) => t > 0 && dayNumber(new Date(t)) >= phaseStartDay)
     .sort((a, b) => a - b);

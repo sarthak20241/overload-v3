@@ -67,8 +67,10 @@ async function generate(
 ): Promise<{ row: SuggestionRow | null; saved: boolean; error?: string }> {
   const since = new Date(now.getTime() - WORKOUT_WINDOW_DAYS * 86_400_000).toISOString();
   const [routinesRes, workoutsRes, programRes] = await Promise.all([
-    retried(() => db.from("routines").select("id, name, created_at, program_phase_id").eq("user_id", userId)),
-    retried(() => db.from("workouts").select("name, routine_id, started_at, finished_at, created_at")
+    retried(() => db.from("routines")
+      .select("id, name, created_at, program_phase_id, routine_exercises(exercises(muscle_group))").eq("user_id", userId)),
+    retried(() => db.from("workouts")
+      .select("name, routine_id, started_at, finished_at, created_at, workout_sets(completed, set_type, exercises(muscle_group))")
       .eq("user_id", userId).gte("started_at", since)),
     retried(() => db.from("coach_programs").select("id, start_date").eq("user_id", userId).eq("status", "active").maybeSingle()),
   ]);

@@ -9,7 +9,7 @@
  *
  * Pure: the rules come from todayPick/weekPattern, shared with the app.
  */
-import { pickToday, planKey, suggestionBasis, type PickProgram } from './todayPick.ts';
+import { pickToday, planKey, suggestionBasis, type PickProgram, type PickRoutine, type PickSet } from './todayPick.ts';
 import { weekPatternFor } from './weekPattern.ts';
 import { wallClock } from './wallClock.ts';
 
@@ -18,6 +18,8 @@ export interface SuggestionRoutine {
   name: string | null;
   created_at: string | null;
   program_phase_id: string | null;
+  /** Its exercises' muscle groups: what the day trains. */
+  routine_exercises?: PickRoutine['routine_exercises'];
 }
 export interface SuggestionWorkout {
   name: string | null;
@@ -25,6 +27,8 @@ export interface SuggestionWorkout {
   started_at: string | null;
   finished_at: string | null;
   created_at: string | null;
+  /** Its sets' muscle groups: what the session trained. */
+  workout_sets?: PickSet[] | null;
 }
 export interface SuggestionProgram {
   id: string;
@@ -71,6 +75,7 @@ export function buildSuggestion(input: {
     started_at: wall(raw.started_at),
     finished_at: wall(raw.finished_at),
     created_at: wall(raw.created_at),
+    workout_sets: raw.workout_sets,
   }));
   const program: PickProgram | null = input.program
     ? {
