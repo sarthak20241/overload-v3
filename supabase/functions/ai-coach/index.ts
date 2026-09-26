@@ -741,6 +741,16 @@ const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "fals
 const PARSE_SUPER_MODE = Deno.env.get("PARSE_SUPER_MODE") ?? "off";
 const PARSE_PRECISE_CACHE = Deno.env.get("PARSE_PRECISE_CACHE") !== "false";
 const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
+// Precise's web lookup. "anthropic" (default) keeps the server-side web_search
+// lookup; "tavily" is Tavily search + Jev relevance + a small read
+// (tavilyLookup.ts). Asking for tavily with no key stays on anthropic, and a
+// Tavily outage mid-parse falls back to anthropic inside parseMeal.
+const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY") ?? "";
+const PRECISE_WEB_PROVIDER: "anthropic" | "tavily" =
+  Deno.env.get("PRECISE_WEB_PROVIDER") === "tavily" && TAVILY_API_KEY ? "tavily" : "anthropic";
+// Country boost for Precise's web search. One value for everyone today because
+// the users are in India; a per-user country is a later change.
+const PRECISE_SEARCH_COUNTRY = Deno.env.get("PRECISE_SEARCH_COUNTRY") ?? "india";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
 // users get metered AI instead of none: 3 chat messages and 3 meal parses
@@ -907,6 +917,19 @@ function preview(text: string | null | undefined): string | null {
 // ── Token usage logging (Phase 3 observability) ─────────────────────────────
 // Writes one row to token_usage_log per Anthropic / Voyage call. Best-effort:
 // any failure is swallowed so logging never breaks the coach turn.
+/** Tavily's cost for one parse, as its own row. server_tool_cost_usd prices a
+ *  row's metadata against server_tool_pricing rows of the SAME provider, so the
+ *  credits cannot ride on the Anthropic row: they would be priced at zero. */
+function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metadata: Record<string, unknown>): void {
+  if (!credits) return;
+  void logTokenUsage(admin, {
+    pipeline: "parse_meal",
+    provider: "tavily",
+    model: "tavily-search",
+    metadata: { ...metadata, tavily_credits: credits },
+  });
+}
+
 async function logTokenUsage(
   admin: SupabaseClient,
   rec: {
@@ -2420,6 +2443,14 @@ function makeParseDeps(
         if (error) console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
       }
       : undefined,
+    webLookup: PRECISE_WEB_PROVIDER,
+    tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
+    // Time is not Precise's constraint, so relevance gets a longer leash than
+    // the food-intent race does.
+    jev: JEV_API_KEY
+      ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
+      : undefined,
+    searchCountry: PRECISE_SEARCH_COUNTRY,
     skipDecideMode: PARSE_SKIP_DECIDE,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
@@ -3061,6 +3092,12 @@ async function handleParseMealRequest(args: {
                 tool_calls: result.tool_calls,
               },
             });
+            logTavilyCost(admin, result.usage.tavily_credits, {
+              user_id: userId,
+              tier_selected: tierSelected,
+              tier_used: result.tier ?? null,
+              streamed: true,
+            });
             // coach_traces too. The JSON path gets this for free because it
             // returns through respond(), which calls recordTrace; the SSE path
             // returns its own Response.
@@ -3211,6 +3248,11 @@ async function handleParseMealRequest(args: {
         web_search_requests: result.usage.web_search_requests,
         tool_calls: result.tool_calls,
       },
+    });
+    logTavilyCost(admin, result.usage.tavily_credits, {
+      user_id: userId,
+      tier_selected: tierSelected,
+      tier_used: result.tier ?? null,
     });
 
     // Full agent-flow trace (input -> tool trail -> resolved items) for
