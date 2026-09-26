@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   const { topicId, channel, steer } = (await req.json()) as { topicId: string; channel: Channel; steer?: string };
   if (!CHANNELS.includes(channel)) return NextResponse.json({ error: 'Unknown channel' }, { status: 400 });
-  const job = startJob('draft', 'Writing a draft', (log) => writeDraft({ topicId, channel, steer: steer?.trim() || undefined }, log));
+  const job = startJob('draft', `draft:${topicId}:${channel}`, 'Writing a draft', (log) => writeDraft({ topicId, channel, steer: steer?.trim() || undefined }, log));
   return NextResponse.json({ jobId: job.id });
 }
 

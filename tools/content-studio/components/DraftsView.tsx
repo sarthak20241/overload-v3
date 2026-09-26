@@ -82,21 +82,24 @@ function Editor({ d, s }: { d: Draft; s: StudioApi }) {
   const placeholders = parts.some((p) => /\[[^\]]+\](?!\()/.test(p)) || /\[[^\]]+\](?!\()/.test(title);
   const dashes = parts.some((p) => /[–—]/.test(p));
 
-  const save = async () => {
+  const save = async (): Promise<boolean> => {
     setSaving(true);
     setErr(null);
     try {
       await api('/api/drafts', 'PUT', { id: d.id, parts: parts.filter((p) => p.trim()), title: d.channel === 'reddit' ? title : undefined, subreddit: d.channel === 'reddit' ? sub : undefined });
       await s.reload();
+      return true;
     } catch (e) {
       setErr((e as Error).message);
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const refine = async (instruction: string) => {
-    if (dirty) await save();
+    // A rewrite of the old server text would throw away the unsaved edits.
+    if (dirty && !(await save())) return;
     s.run('/api/drafts/refine', { draftId: d.id, instruction }, { key: `refine:${d.id}`, label: `Rewriting: ${instruction.slice(0, 40)}` });
     setNote('');
   };

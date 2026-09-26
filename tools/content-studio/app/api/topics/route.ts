@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   const { pillars = [], count = 12, steer } = (await req.json()) as { pillars?: Pillar[]; count?: number; steer?: string };
   const n = Math.max(3, Math.min(30, Number(count) || 12));
-  const job = startJob('topics', `${n} topic ideas`, (log) => suggestTopics({ pillars, count: n, steer: steer?.trim() || undefined }, log));
+  const job = startJob('topics', 'topics', `${n} topic ideas`, (log) => suggestTopics({ pillars, count: n, steer: steer?.trim() || undefined }, log));
   return NextResponse.json({ jobId: job.id });
 }
 

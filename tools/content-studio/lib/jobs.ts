@@ -9,6 +9,8 @@ import { id } from './store';
 export interface Job {
   id: string;
   kind: string;
+  /** Same key the browser uses to disable the button that started it. */
+  key: string;
   label: string;
   status: 'running' | 'done' | 'error';
   progress: string[];
@@ -20,8 +22,8 @@ export interface Job {
 
 const jobs: Map<string, Job> = ((globalThis as any).__studioJobs ??= new Map());
 
-export function startJob(kind: string, label: string, fn: (log: (s: string) => void) => Promise<unknown>): Job {
-  const job: Job = { id: id('job'), kind, label, status: 'running', progress: [], startedAt: Date.now() };
+export function startJob(kind: string, key: string, label: string, fn: (log: (s: string) => void) => Promise<unknown>): Job {
+  const job: Job = { id: id('job'), kind, key, label, status: 'running', progress: [], startedAt: Date.now() };
   jobs.set(job.id, job);
   const log = (s: string) => {
     job.progress.push(s);

@@ -49,6 +49,13 @@ async function createPost(body: Record<string, unknown>): Promise<string> {
   return json.data.id as string;
 }
 
+/** Part of a thread went live before a later post failed. */
+export class PartialThreadError extends Error {
+  constructor(message: string, readonly url: string, readonly posted: number) {
+    super(message);
+  }
+}
+
 /** Posts one post or a thread. Returns the URL of the first post. */
 export async function postToX(parts: string[], opts: { communityId?: string } = {}): Promise<{ url: string; ids: string[] }> {
   const ids: string[] = [];
@@ -61,7 +68,8 @@ export async function postToX(parts: string[], opts: { communityId?: string } = 
     } catch (e) {
       if (i === 0) throw e;
       // Part of the thread is already live. Say exactly where it stopped.
-      throw new Error(`Posts 1 to ${i} went live (https://x.com/i/web/status/${ids[0]}), but post ${i + 1} failed: ${(e as Error).message}`);
+      const url = `https://x.com/i/web/status/${ids[0]}`;
+      throw new PartialThreadError(`Posts 1 to ${i} went live (${url}), but post ${i + 1} failed: ${(e as Error).message}`, url, i);
     }
   }
   return { url: `https://x.com/i/web/status/${ids[0]}`, ids };

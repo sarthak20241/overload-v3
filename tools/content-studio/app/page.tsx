@@ -60,7 +60,7 @@ export default function Page() {
     if (!state) return;
     setJobs((cur) => {
       const known = new Set(cur.map((j) => j.id));
-      const extra = state.jobs.filter((j) => !known.has(j.id)).map((j) => ({ ...j, key: j.kind, status: 'running' as const, progress: [], startedAt: Date.now() }));
+      const extra = state.jobs.filter((j) => !known.has(j.id)).map((j) => ({ ...j, status: 'running' as const, progress: [], startedAt: Date.now() }));
       return extra.length ? [...cur, ...extra] : cur;
     });
   }, [state]);

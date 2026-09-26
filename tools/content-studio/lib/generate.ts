@@ -13,6 +13,14 @@ import { id, read, update } from './store';
 import type { Channel, Draft, Pillar, Playbook, Topic } from './types';
 import { CHANNELS, PILLARS } from './types';
 
+/** Models sometimes return a string where a list belongs. A bad shape saved
+ *  here would crash every later prompt and the Research page. */
+function list<T = string>(v: unknown, keep: (x: unknown) => boolean = (x) => typeof x === 'string'): T[] {
+  return Array.isArray(v) ? (v.filter(keep) as T[]) : [];
+}
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+const obj = (x: unknown) => !!x && typeof x === 'object' && !Array.isArray(x);
+
 async function stickRules(): Promise<string> {
   return fs.readFile(path.join(process.cwd(), 'knowledge', 'made-to-stick.md'), 'utf8');
 }
@@ -97,21 +105,22 @@ When you are done, reply with ONLY this JSON (no fence, no prose):
 For X, communities means X Communities worth posting in. For LinkedIn it may be empty.`;
 
   const text = await runLLM({ system, prompt, web: true, onProgress: log, timeoutMs: 15 * 60_000 });
-  const raw = extractJson<Omit<Playbook, 'channel' | 'updatedAt'>>(text);
+  const raw = extractJson<Record<string, unknown>>(text);
+  if (!obj(raw)) throw new Error('The research came back in the wrong shape. Run it again.');
   const playbook: Playbook = {
     channel,
     updatedAt: new Date().toISOString(),
-    summary: cleanDashes(raw.summary ?? ''),
-    algorithm: raw.algorithm ?? [],
-    formats: raw.formats ?? [],
-    hooks: raw.hooks ?? [],
-    length: raw.length ?? '',
-    doList: raw.doList ?? [],
-    dontList: raw.dontList ?? [],
-    cadence: raw.cadence ?? '',
-    communities: raw.communities ?? [],
-    examples: raw.examples ?? [],
-    sources: raw.sources ?? [],
+    summary: cleanDashes(str(raw.summary)),
+    algorithm: list(raw.algorithm),
+    formats: list(raw.formats, obj),
+    hooks: list(raw.hooks),
+    length: str(raw.length),
+    doList: list(raw.doList),
+    dontList: list(raw.dontList),
+    cadence: str(raw.cadence),
+    communities: list(raw.communities, obj),
+    examples: list(raw.examples, obj),
+    sources: list(raw.sources, obj),
   };
   await update<Partial<Record<Channel, Playbook>>>('playbooks', {}, (cur) => ({ ...cur, [channel]: playbook }));
   log('Saved.');
@@ -158,7 +167,8 @@ Reply with ONLY a JSON array:
 In "stick", say in a few words how the topic uses each principle, or leave it "" if it does not.`;
 
   const text = await runLLM({ system, prompt, onProgress: log, timeoutMs: 8 * 60_000 });
-  const raw = extractJson<Partial<Topic>[]>(text);
+  const raw = list<Partial<Topic>>(extractJson<unknown>(text), obj);
+  if (!raw.length) throw new Error('No topics came back in the right shape. Try again.');
   const now = new Date().toISOString();
   const topics: Topic[] = raw.map((t) => ({
     id: id('t'),
@@ -169,9 +179,9 @@ In "stick", say in a few words how the topic uses each principle, or leave it ""
     angle: cleanDashes(t.angle ?? ''),
     stick: {
       simple: '', unexpected: '', concrete: '', credible: '', emotional: '', story: '',
-      ...Object.fromEntries(Object.entries(t.stick ?? {}).map(([k, v]) => [k, cleanDashes(String(v ?? ''))])),
+      ...Object.fromEntries(Object.entries(obj(t.stick) ? t.stick! : {}).map(([k, v]) => [k, cleanDashes(String(v ?? ''))])),
     },
-    channels: (t.channels ?? []).filter((c): c is Channel => CHANNELS.includes(c as Channel)),
+    channels: list<string>(t.channels).filter((c): c is Channel => CHANNELS.includes(c as Channel)),
     whyItWorks: cleanDashes(t.whyItWorks ?? ''),
     status: 'new',
     createdAt: now,
@@ -212,14 +222,15 @@ Score honestly: 2 = done well, 1 = partly, 0 = missing.`;
 
 async function writeWith(system: string, prompt: string, log: (s: string) => void): Promise<DraftJson> {
   const text = await runLLM({ system, prompt, onProgress: log, timeoutMs: 8 * 60_000 });
-  const raw = extractJson<DraftJson>(text);
+  const raw = extractJson<Record<string, unknown>>(text);
+  if (!obj(raw)) throw new Error('The draft came back in the wrong shape. Try again.');
   return {
-    ...raw,
-    title: raw.title ? cleanDashes(raw.title) : undefined,
-    parts: (raw.parts ?? []).map((p) => cleanDashes(String(p))).filter((p) => p.trim()),
-    rationale: cleanDashes(raw.rationale ?? ''),
-    altHooks: (raw.altHooks ?? []).map((h) => cleanDashes(String(h))),
-    scores: raw.scores ?? {},
+    title: str(raw.title) ? cleanDashes(str(raw.title)) : undefined,
+    subreddit: str(raw.subreddit) || undefined,
+    parts: list(raw.parts).map(cleanDashes).filter((p) => p.trim()),
+    rationale: cleanDashes(str(raw.rationale)),
+    altHooks: list(raw.altHooks).map(cleanDashes),
+    scores: obj(raw.scores) ? (raw.scores as Record<string, number>) : {},
   };
 }
 

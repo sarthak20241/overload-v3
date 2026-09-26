@@ -7,7 +7,7 @@ export interface StudioState {
   topics: Topic[];
   drafts: Draft[];
   recentWork: string[];
-  jobs: { id: string; kind: string; label: string }[];
+  jobs: { id: string; kind: string; key: string; label: string }[];
   status: {
     provider: 'claude' | 'codex';
     fallback: boolean;
