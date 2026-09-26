@@ -9,6 +9,11 @@
  *   no-days         the user names none: no phase invents any
  *   refine-keeps    a refine about calories only keeps the recap's fuel days
  *   carry-live      a new program keeps the fuel days the user already has
+ *   adjust-keeps    adjusting an existing program keeps each phase's OWN
+ *                   planned fuel days (they differ phase to phase)
+ *
+ * NO_PHASE_FUEL=1 strips the per-phase fuel days from the context, which is
+ * what ai-coach sent before it read them: adjust-keeps should then fail.
  *
  * Held out: none of these inputs appear in the prompt. Keep it that way.
  *
@@ -131,7 +136,48 @@ const CASES: Case[] = [
       return bad === -1 ? null : `phase ${bad + 1} dropped the live Saturday: ${fuelDaysText(phases[bad]!)}`;
     },
   },
+  {
+    id: "adjust-keeps",
+    mode: "discuss_program",
+    userContext: {
+      profile, today,
+      fuel_days: [{ day: "Tuesday", extra_kcal: 200, label: "Track session" }],
+      program: {
+        title: "Spring Recomp", goal: "general", start_date: "2026-09-07", total_weeks: 9,
+        current_phase: { seq: 1, name: "Intensity Block", week_in_phase: 2, weeks_total: 4, diet_targets: { calories: 2400, protein_g: 165 } },
+        phases: [
+          { seq: 0, name: "Base Block", duration_weeks: 3, start_offset_weeks: 0, calories: 2500, fuel_days: [] },
+          { seq: 1, name: "Intensity Block", duration_weeks: 4, start_offset_weeks: 3, calories: 2400, fuel_days: [{ day: "Tuesday", extra_kcal: 200, label: "Track session" }] },
+          { seq: 2, name: "Race Taper", duration_weeks: 2, start_offset_weeks: 7, calories: 2300, fuel_days: [{ day: "Tuesday", extra_kcal: 200, label: "Track session" }, { day: "Friday", extra_kcal: 450, label: "Race prep" }] },
+        ],
+      },
+    },
+    turns: [
+      { role: "user", content: "Can you drop the Race Taper calories to 2250? Leave the rest of my program exactly as it is." },
+      { role: "assistant", content: "Race Taper goes to 2250, every other part of the program stays the same. Want me to rebuild it with that change now?" },
+      { role: "user", content: "Yes, do it." },
+    ],
+    check: (phases) => {
+      if (phases.length !== 3) return `expected 3 phases, got ${phases.length}`;
+      const [base, intensity, taper] = phases;
+      const same = (p: FuelDay[] | undefined, want: [number, number][]) =>
+        p !== undefined && p.length === want.length && want.every(([dow, kcal]) => p.some((d) => d.dow === dow && d.kcal === kcal));
+      const shape = phases.map((f, i) => `P${i + 1}: ${f === undefined ? "omitted" : fuelDaysText(f)}`).join(" | ");
+      if (base !== undefined && base.length > 0) return `Base Block gained fuel days: ${shape}`;
+      if (!same(intensity, [[2, 200]])) return `Intensity Block changed: ${shape}`;
+      if (!same(taper, [[2, 200], [5, 450]])) return `Race Taper changed: ${shape}`;
+      return null;
+    },
+  },
 ];
+
+// What ai-coach sent before it read each phase's fuel days (the control run).
+if (process.env.NO_PHASE_FUEL === "1") {
+  for (const c of CASES) {
+    const prog = c.userContext.program as { phases?: Record<string, unknown>[] } | undefined;
+    prog?.phases?.forEach((ph) => { delete ph.fuel_days; });
+  }
+}
 
 async function runCase(c: Case): Promise<{ ok: boolean; note: string }> {
   const { system, tools } = buildSystemPrompt({ userContext: c.userContext, mode: c.mode } as never);

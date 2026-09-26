@@ -11,7 +11,8 @@ import {
 } from "./prompt.ts";
 import { envInt } from "../_shared/envInt.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
-import { dowOfISO, DAY_NAMES, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
+import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
+import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -3747,10 +3748,12 @@ Deno.serve(async (req) => {
     console.log("[ai-coach] profile-notes fetch threw:", String(e));
   }
 
-  // 4d. Fuel days (0139): the weekdays with extra calories on top of the base
-  // target. Its own select, same best-effort merge as 4c, so a database
-  // without the column (or any failure) only means Drona plans without them.
-  // Named days, not 0..6: the model should never have to decode a weekday.
+  // 4d. Fuel days (0139). Two reads, both best effort like 4c: a database
+  // without the columns (or any failure) only means Drona plans without them.
+  //   - the LIVE fuel days, from the profile: user_context.fuel_days
+  //   - each program phase's PLANNED fuel days, added to user_context.program
+  //     (get_user_coach_context lists phases without them). Without these,
+  //     "Adjust with Drona" rebuilt every phase guessing its fuel days.
   try {
     const { data: fuelRow, error: fuelError } = await userClient
       .from("user_profiles")
@@ -3760,12 +3763,24 @@ Deno.serve(async (req) => {
     if (fuelError) console.log("[ai-coach] fuel-days error:", fuelError.message);
     if (fuel.length > 0) {
       if (!userContext || typeof userContext !== "object") userContext = {};
-      (userContext as Record<string, unknown>).fuel_days = fuel.map((d) => ({
-        day: DAY_NAMES[d.dow],
-        extra_kcal: d.kcal,
-        ...(d.label ? { label: d.label } : {}),
-      }));
+      (userContext as Record<string, unknown>).fuel_days = fuelForPrompt(fuel);
       trace.has_user_context = true;
+    }
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      const { data: active } = await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("status", "active")
+        .maybeSingle();
+      if (active?.id) {
+        const { data: rows, error: phaseFuelError } = await userClient
+          .from("coach_program_phases")
+          .select("seq, diet_fuel_days")
+          .eq("program_id", active.id);
+        if (phaseFuelError) console.log("[ai-coach] phase fuel-days error:", phaseFuelError.message);
+        else if (rows) ctx.program = withPhaseFuelDays(ctx.program, rows);
+      }
     }
   } catch (e) {
     console.log("[ai-coach] fuel-days fetch threw:", String(e));
