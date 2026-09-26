@@ -118,8 +118,10 @@ function str(v: unknown): string {
 
 /**
  * One search. Costs 1 credit (basic) or 2 (advanced) whether or not it finds
- * anything, so `credits` is reported on failure too when the request reached
- * Tavily and was billed. A request refused before billing (no key, 4xx) is 0.
+ * anything. A failed request reports 0 credits: Tavily bills a completed
+ * search, and every failure we see (no key, 4xx, 5xx, timeout) returns before
+ * one completes, so the cost row can undercount only if Tavily ever bills a
+ * request that then errors.
  *
  * If Tavily rejects the optional knobs (a renamed parameter would do it), the
  * search is retried ONCE with only the query. Losing the country boost is a
