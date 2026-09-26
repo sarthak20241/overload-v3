@@ -65,8 +65,9 @@ export interface TavilyLookupOutcome {
   /** Tavily credits spent (search + extract), for cost logging. */
   credits: number;
   steps: LookupStep[];
-  /** True when Tavily itself could not be used (no key, auth, out of credits,
-   *  down). The caller then runs the old lookup, so Precise keeps working. */
+  /** True when a Tavily search failed (no key, auth, out of credits, down), on
+   *  either attempt. The caller then runs the old lookup, so Precise keeps
+   *  working. */
   unavailable: boolean;
 }
 
@@ -661,8 +662,8 @@ async function selectPages(
 /**
  * Look one food up on the web. Never throws.
  *
- * Returns unavailable=true only when Tavily could not be used at all, so the
- * caller can fall back to the Anthropic lookup. "Searched and found nothing" is
+ * Returns unavailable=true when a search failed, so the caller can fall back
+ * to the Anthropic lookup. "Searched and found nothing" is
  * NOT unavailable: it is an answer, and paying a second provider to hear the
  * same thing would double the cost of every obscure food.
  */
@@ -682,9 +683,11 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     credits += s.credits;
     if (!s.ok) {
       steps.push({ tool: "tavily_search", input: { q }, result: { failure: s.failure, detail: s.detail } });
-      // A first search that fails means Tavily is unusable right now. A second
-      // that fails still leaves the first's answer (none), so it is not.
-      return { finding: null, credits, steps, unavailable: attempt === 0 };
+      // A failed search means the lookup did not finish, whichever attempt it
+      // was: only a search that RAN and found nothing is an answer. So the
+      // caller falls back either way. The second attempt failing is the likely
+      // shape of a balance running out mid-lookup (caught on PR review).
+      return { finding: null, credits, steps, unavailable: true };
     }
     const fresh = s.results.filter((r) => !seen.has(r.url));
     fresh.forEach((r) => seen.add(r.url));

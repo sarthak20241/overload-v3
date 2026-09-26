@@ -238,6 +238,15 @@ Deno.test("out of credits is an outage too", async () => {
   assertEquals(out.unavailable, true);
 });
 
+Deno.test("credits running out on the second search still falls back", async () => {
+  const calls = newCalls();
+  const net = fakeNet({ searches: [{ results: [WRONG] }, { status: 432 }], jevYes: () => 0.1 }, calls);
+  const out = await runTavilyLookup(lookupDeps(net, calls), DAHI);
+  assertEquals(calls.search.length, 2);
+  assertEquals(out.unavailable, true);
+  assertEquals(out.finding, null);
+});
+
 Deno.test("no relevant page on the first search runs the second, and stops there", async () => {
   const calls = newCalls();
   const net = fakeNet({
