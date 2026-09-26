@@ -185,6 +185,12 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
         setSize(fmt(nextSize));
         total = nextSize * qtyNum;
       }
+    } else if (gramsOf(1, unit) !== null) {
+      // Leaving grams for a unit with no fixed weight (slice, tub, cup): the
+      // gram count means nothing as a size, so start at one serving. Without
+      // this 150 g retyped as "slice" saved as "150 slice".
+      setSize('1');
+      total = qtyNum;
     }
     // Rebase so the next size or quantity edit scales from what is on screen.
     base.current = {
@@ -230,8 +236,12 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     setter(v);
   };
 
+  // An empty or zero box has no amount to save. Save used to fall back to 1
+  // and keep the grams of the last real number, so the two disagreed.
+  const canSave = sizeNum > 0 && qtyNum > 0 && unit.trim().length > 0;
+
   function save() {
-    if (!item) return;
+    if (!item || !canSave) return;
     const stored = joinServing(
       { size: sizeNum, unit: unit.trim() || 'serving', count: qtyNum },
       item, isMeasurementUnit,
@@ -390,7 +400,11 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
             <Pressable onPress={onCancel} style={s.cancel} hitSlop={8}>
               <Text style={s.cancelTxt}>Cancel</Text>
             </Pressable>
-            <Pressable onPress={save} style={s.saveBtn} hitSlop={8}>
+            <Pressable
+              onPress={save} disabled={!canSave} hitSlop={8}
+              style={[s.saveBtn, !canSave && { opacity: 0.4 }]}
+              accessibilityRole="button" accessibilityState={{ disabled: !canSave }}
+            >
               <Text style={s.saveTxt}>Save</Text>
             </Pressable>
           </View>
