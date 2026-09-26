@@ -1552,6 +1552,16 @@ export async function saveFuelDays(
   phaseId?: string | null,
 ): Promise<{ error?: string }> {
   const clean = normalizeFuelDays(days);
+  // Two writes, not one transaction. Remember the live value first, so a
+  // failed phase write can put it back: otherwise the sheet says "did not
+  // save" while the live days changed and the plan did not.
+  let before: unknown = null;
+  if (phaseId) {
+    const { data, error: readErr } = await supabase
+      .from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle();
+    if (readErr) return { error: readErr.message };
+    before = (data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts ?? null;
+  }
   const { error } = await supabase.from('user_profiles').upsert({
     clerk_user_id: clerkId,
     calorie_day_boosts: clean.length > 0 ? clean : null,
@@ -1562,7 +1572,12 @@ export async function saveFuelDays(
       .from('coach_program_phases')
       .update({ diet_fuel_days: clean })
       .eq('id', phaseId);
-    if (phaseErr) return { error: phaseErr.message };
+    if (phaseErr) {
+      await supabase.from('user_profiles')
+        .update({ calorie_day_boosts: before })
+        .eq('clerk_user_id', clerkId);
+      return { error: phaseErr.message };
+    }
   }
   return {};
 }

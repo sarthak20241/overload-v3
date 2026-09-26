@@ -14,8 +14,9 @@
 --    exactly like diet_calorie_target. Null = the phase says nothing about fuel
 --    days (every phase written before this), so the profile is left alone; an
 --    empty array = this phase has none, and clears them.
--- 2. private.fuel_kcal_on(boosts, day): the extra on one date, clamped to what
---    the app can write (50..1000), so a hand-edited row cannot skew a check.
+-- 2. private.fuel_kcal_on(boosts, day): the extra on one date. Entries under
+--    50 are skipped and the rest capped at 1000 (what the app can write), so a
+--    hand-edited row cannot skew a check.
 -- 3. get_drona_facts: on_target_days_14d holds each day to its OWN target.
 --    Without this a user eating to plan on a +300 Sunday was counted off
 --    target, and B1 read it as a user who cannot hit their number.

@@ -102,5 +102,13 @@ Deno.test("silence keeps the live fuel days; an empty list clears them", () => {
 });
 
 Deno.test("a day the coach misnamed is dropped, not guessed", () => {
-  assertEquals(fuelDaysFromCoach([{ day: "Funday", extra_kcal: 300 }, { day: "Sunday", extra_kcal: 20 }]), []);
+  assertEquals(
+    fuelDaysFromCoach([{ day: "Funday", extra_kcal: 300 }, { day: "Sunday", extra_kcal: 300 }]),
+    [{ dow: 0, kcal: 300 }],
+  );
+});
+
+Deno.test("a list with nothing valid in it keeps the live fuel days, it does not clear them", () => {
+  // Only a truly empty list means "none". A garbled one means nothing.
+  assertEquals(fuelDaysFromCoach([{ day: "Funday", extra_kcal: 300 }, { day: "Sunday", extra_kcal: 20 }]), undefined);
 });

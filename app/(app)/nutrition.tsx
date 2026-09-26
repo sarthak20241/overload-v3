@@ -1505,7 +1505,8 @@ export default function NutritionScreen() {
         fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
         onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
-        onOpenFuelDays={() => { setGoalOpen(false); setFuelOpen(true); }}
+        // Guests have no profile to save fuel days to, so no door to the sheet.
+        onOpenFuelDays={isSignedIn ? () => { setGoalOpen(false); setFuelOpen(true); } : undefined}
       />
 
       {/* Fuel days: more on the weekdays the user works hardest. */}

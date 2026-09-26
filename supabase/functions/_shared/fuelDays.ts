@@ -117,11 +117,14 @@ export function fuelDayText(d: FuelDay): string {
  * The coach's emission (generate_program, per phase) as fuel days. The model
  * names days ("Sunday") and says `extra_kcal`, because it should never have to
  * count weekdays from zero. Returns undefined when the field is absent or not a
- * list: the phase says nothing about fuel days, so the live ones are kept. A
- * list, even an empty one, is an answer.
+ * list: the phase says nothing about fuel days, so the live ones are kept. An
+ * empty list is an answer ("none") and clears them. A list with entries of
+ * which none survive is NOT an answer: reading it as "none" would wipe the
+ * user's fuel days because the model misspelled a day, so it is undefined too.
  */
 export function fuelDaysFromCoach(v: unknown): FuelDay[] | undefined {
   if (!Array.isArray(v)) return undefined;
+  if (v.length === 0) return [];
   const raw = v.map((e) => {
     if (!e || typeof e !== 'object') return null;
     const r = e as Record<string, unknown>;
@@ -130,7 +133,8 @@ export function fuelDaysFromCoach(v: unknown): FuelDay[] | undefined {
     const dow = full >= 0 ? full : DAY_SHORT.findIndex((d) => d.toLowerCase() === name);
     return { dow, kcal: r.extra_kcal ?? r.kcal, label: r.label };
   });
-  return normalizeFuelDays(raw);
+  const days = normalizeFuelDays(raw);
+  return days.length > 0 ? days : undefined;
 }
 
 /** One line for a prompt or a card: "Sat Heavy legs +300, Sun Long run +300", or "none". */

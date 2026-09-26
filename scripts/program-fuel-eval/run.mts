@@ -132,8 +132,8 @@ const CASES: Case[] = [
     ],
     check: (phases) => {
       // Omitted is also a pass here: the app keeps the live days when a phase says nothing.
-      const bad = phases.findIndex((p) => p !== undefined && !has(p, 6));
-      return bad === -1 ? null : `phase ${bad + 1} dropped the live Saturday: ${fuelDaysText(phases[bad]!)}`;
+      const bad = phases.findIndex((p) => p !== undefined && p.find((d) => d.dow === 6)?.kcal !== 400);
+      return bad === -1 ? null : `phase ${bad + 1} did not carry the live Saturday +400: ${fuelDaysText(phases[bad]!)}`;
     },
   },
   {

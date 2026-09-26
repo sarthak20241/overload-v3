@@ -212,6 +212,8 @@ export function uglyChecks(facts: DronaFacts, diet: DietFacts): UglyChecks {
   const failed: string[] = [];
 
   const food14 = completeFood(diet, asOf, 14);
+  // The raw worst day, for the card and the validator's echo check. It is NOT
+  // fuel-adjusted on purpose: the blowout test below is.
   const worst = food14.length ? Math.max(...food14.map((r) => n(r.kcal) ?? 0)) : null;
   // Each day against its OWN target: a 2,600 kcal long-run Sunday on a 2,000
   // base with +300 fuel is a day eaten to plan, not a blowout.
