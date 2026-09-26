@@ -19,6 +19,7 @@ import { withChangeSource } from '@/lib/planChangeSource';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fillMissingMacros, DEFAULT_TARGETS } from '@/lib/dietData';
 import { normalizeWeekPattern } from '@/lib/weekPattern';
+import { fuelDaysFromCoach, normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
 import { track } from '@/lib/analytics';
 
 // ── Client shapes ────────────────────────────────────────────────────────────
@@ -46,6 +47,12 @@ export interface ProgramPhase {
   training_directive?: string;
   readiness_directive?: string;
   training_block?: ProgramTrainingBlock;
+  /**
+   * Weekdays with extra calories on top of diet.calories (lib/fuelDays), set
+   * by the coach when the user has a hard day on a fixed weekday. Undefined =
+   * the phase says nothing, so the user's live fuel days are kept; [] = none.
+   */
+  fuel_days?: FuelDay[];
 }
 
 /** The coach's emitted program (from the generate_program terminal tool). */
@@ -165,6 +172,7 @@ function normalizePhase(v: unknown, i: number): ProgramPhase {
     training_directive: strOrUndef(p.training_directive),
     readiness_directive: strOrUndef(p.readiness_directive),
     training_block: normalizeBlock(p.training_block),
+    fuel_days: fuelDaysFromCoach(p.fuel_days),
   };
 }
 
@@ -238,6 +246,10 @@ export async function applyPhaseTargets(
   supabase: Supa,
   clerkId: string,
   rawDiet: ProgramDiet,
+  // The phase's fuel days. Undefined or null = the phase says nothing, and the
+  // live ones stay (the column is not even sent, so a database before 0139
+  // still takes the targets). A list, even empty, replaces them.
+  fuelDays?: FuelDay[] | null,
 ): Promise<void> {
   // Clamp HERE, at the one function every write to user_profiles targets goes
   // through, not only at LLM-normalize time. reconcileActiveProgram mirrors
@@ -251,6 +263,10 @@ export async function applyPhaseTargets(
   if (diet.protein_g != null) payload.protein_target_g = diet.protein_g;
   if (diet.carb_g != null) payload.carb_target_g = diet.carb_g;
   if (diet.fat_g != null) payload.fat_target_g = diet.fat_g;
+  if (Array.isArray(fuelDays)) {
+    const clean = normalizeFuelDays(fuelDays);
+    payload.calorie_day_boosts = clean.length > 0 ? clean : null;
+  }
   // Nothing to set (a phase with no diet) → skip the round trip.
   if (Object.keys(payload).length === 1) return;
 
@@ -417,6 +433,9 @@ export async function saveProgram(
     training_directive: ph.training_directive ?? null,
     readiness_directive: ph.readiness_directive ?? null,
     training_block: ph.training_block ?? null,
+    // Only sent when the coach planned fuel days, so a program without them
+    // still saves on a database from before 0139.
+    ...(ph.fuel_days !== undefined ? { diet_fuel_days: ph.fuel_days } : {}),
   }));
   const { data: phaseInserted, error: phErr } = await supabase
     .from('coach_program_phases')
@@ -442,7 +461,7 @@ export async function saveProgram(
   //    foreground reconcile sees the cursor is unset and applies the phase.
   if (activeSeq != null) {
     try {
-      await applyPhaseTargets(supabase, clerkId, program.phases[activeSeq].diet);
+      await applyPhaseTargets(supabase, clerkId, program.phases[activeSeq].diet, program.phases[activeSeq].fuel_days);
       const { error: cursorErr } = await supabase
         .from('coach_programs')
         .update({ applied_phase_seq: activeSeq, updated_at: new Date().toISOString() })
@@ -479,6 +498,8 @@ export interface ActiveProgramPhaseRow {
   training_directive: string | null;
   readiness_directive: string | null;
   training_block: ProgramTrainingBlock | null;
+  /** The coach's planned fuel days for this phase; null = none planned (see ProgramPhase.fuel_days). */
+  diet_fuel_days: FuelDay[] | null;
   routine_id: string | null;
   // Routines built for this phase (linked via routines.program_phase_id).
   // Populated by loadActiveProgram; empty until a split is built.
@@ -520,13 +541,23 @@ export async function loadActiveProgram(
   if (progErr) throw progErr;
   if (!prog) return null;
 
-  const { data: phaseData, error: phaseErr } = await supabase
+  const PHASE_COLS = 'id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, diet_protein_g, diet_carb_g, diet_fat_g, diet_directive, training_directive, readiness_directive, training_block, routine_id';
+  const readPhases = (cols: string) => supabase
     .from('coach_program_phases')
-    .select('id, seq, name, duration_weeks, start_offset_weeks, diet_calorie_target, diet_protein_g, diet_carb_g, diet_fat_g, diet_directive, training_directive, readiness_directive, training_block, routine_id')
+    .select(cols)
     .eq('program_id', (prog as { id: string }).id)
     .order('seq', { ascending: true });
+  let { data: phaseData, error: phaseErr } = await readPhases(`${PHASE_COLS}, diet_fuel_days`);
+  // 42703 = undefined column: a database from before 0139. Read the rest, so
+  // Goal & Plan and the phase reconcile keep working without fuel days.
+  if (phaseErr && (phaseErr as { code?: string }).code === '42703') {
+    ({ data: phaseData, error: phaseErr } = await readPhases(PHASE_COLS));
+  }
   if (phaseErr) throw phaseErr;
-  const phases = (phaseData ?? []) as ActiveProgramPhaseRow[];
+  const phases = ((phaseData ?? []) as unknown as ActiveProgramPhaseRow[]).map((ph) => ({
+    ...ph,
+    diet_fuel_days: ph.diet_fuel_days == null ? null : normalizeFuelDays(ph.diet_fuel_days),
+  }));
   // An active program with no phases is corruption, not a real state:
   // saveProgram rejects zero-phase programs, so the only way to get one is a
   // failed phase insert whose rollback also failed. Rendering it gives a hero
@@ -650,7 +681,7 @@ export async function reconcileActiveProgram(
     protein_g: phase.diet_protein_g ?? undefined,
     carb_g: phase.diet_carb_g ?? undefined,
     fat_g: phase.diet_fat_g ?? undefined,
-  });
+  }, phase.diet_fuel_days);
   const { error: cursorError } = await supabase
     .from('coach_programs')
     .update({ applied_phase_seq: active.currentPhaseSeq, updated_at: new Date().toISOString() })

@@ -34,6 +34,8 @@ import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
+import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
+import { fuelOn } from '@/lib/fuelDays';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
@@ -307,7 +309,16 @@ export default function NutritionScreen() {
   }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
-  const { targets, isCustom, apply: applyTargets } = useNutritionTargets();
+  // `baseTargets` is an ordinary day. The viewed day may be a fuel day (a long
+  // run, a leg day) with more on top, so the ring, bars and Drona line all
+  // read `targets`, the viewed day's own numbers.
+  const {
+    targets: baseTargets, isCustom, apply: applyTargets,
+    fuelDays, applyFuelDays, targetsOn,
+  } = useNutritionTargets();
+  const targets = targetsOn(viewDate);
+  const viewFuel = fuelOn(fuelDays, viewDate.getDay());
+  const [fuelOpen, setFuelOpen] = useState(false);
   // Real logging streak (consecutive days with a meal). Pass today's kcal so the
   // first log of the day bumps it immediately, not just on the next screen focus.
   const streak = useNutritionStreak(totals.kcal);
@@ -1165,7 +1176,7 @@ export default function NutritionScreen() {
             const iso = ymd(d);
             const selected = iso === viewIso;
             const future = iso > todayIso;
-            const pct = Math.min((weekKcal[iso] ?? 0) / (targets.kcal || 1), 1);
+            const pct = Math.min((weekKcal[iso] ?? 0) / (targetsOn(d).kcal || 1), 1);
             const R = 16, CIRC = 2 * Math.PI * R;
             return (
               <Pressable
@@ -1223,6 +1234,20 @@ export default function NutritionScreen() {
             />
             <View style={s.macroRailSide}>
               <Text style={s.kcalLine}>{calCaption(eaten.kcal, targets.kcal)}</Text>
+              {viewFuel && (
+                <Pressable
+                  onPress={() => setFuelOpen(true)}
+                  hitSlop={6}
+                  style={s.fuelTag}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${viewFuel.label ?? 'Fuel'} day, ${viewFuel.kcal} extra calories. Edit fuel days`}
+                >
+                  <Feather name="zap" size={10} color={C.accentText} />
+                  <Text style={[s.fuelTagTxt, { color: C.accentText }]} numberOfLines={1}>
+                    {`${viewFuel.label ?? 'Fuel'} day · +${viewFuel.kcal}`}
+                  </Text>
+                </Pressable>
+              )}
               <MacroBar label="P" name="Protein" value={eaten.protein} target={targets.protein} color={C.macro.protein} delayMs={0} valueMinWidth={52} />
               <MacroBar label="C" name="Carbs" value={eaten.carb} target={targets.carb} color={C.macro.carbs} delayMs={70} valueMinWidth={52} />
               <MacroBar label="F" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} valueMinWidth={52} />
@@ -1476,9 +1501,21 @@ export default function NutritionScreen() {
       {/* Set daily calorie + macro goals (the ring/bars draw against these). */}
       <NutritionGoalSheet
         open={goalOpen}
-        initial={targets}
+        initial={baseTargets}
+        fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
         onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
+        onOpenFuelDays={() => { setGoalOpen(false); setFuelOpen(true); }}
+      />
+
+      {/* Fuel days: more on the weekdays the user works hardest. */}
+      <FuelDaysSheet
+        open={fuelOpen}
+        initial={fuelDays}
+        baseKcal={baseTargets.kcal}
+        source="nutrition"
+        onClose={() => setFuelOpen(false)}
+        onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); }}
       />
 
       {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
@@ -1558,6 +1595,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xxxl, marginTop: 0, paddingVertical: Spacing.xs },
     macroRailSide: { flex: 1, gap: Spacing.md },
     kcalLine: { fontSize: FontSize.xs, color: C.textMuted, fontVariant: ['tabular-nums'], marginBottom: 2 },
+    fuelTag: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: -Spacing.sm + 2, alignSelf: 'flex-start' },
+    fuelTagTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
 
     drona: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     avatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle, alignItems: 'center', justifyContent: 'center', marginTop: 1 },

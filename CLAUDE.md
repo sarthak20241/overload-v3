@@ -25,6 +25,10 @@ EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 # pipeline. Correctness and per-case pass/fail are identical either way.
 ANTHROPIC_API_KEY=sk-ant-... npx tsx scripts/parse-meal-eval/run.ts
 
+# Program coach fuel days: does Drona plan fuel days when the user names hard
+# weekdays, and only then? Same CLI rule as above.
+EVAL_VIA_CLI=1 npx tsx scripts/program-fuel-eval/run.mts
+
 # Edge function unit tests (the one real test suite).
 deno test --allow-all supabase/functions/ai-coach/
 deno test --allow-all supabase/functions/revenuecat-webhook/

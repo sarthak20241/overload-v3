@@ -16,6 +16,7 @@
  */
 import type { DronaFacts } from './dronaCards.ts';
 import { completeFood, type DietFacts } from './dronaCalories.ts';
+import { dowOfISO, fuelDayText, fuelOn, normalizeFuelDays } from './fuelDays.ts';
 
 export const DRONA_CARD_MODEL = 'claude-sonnet-4-6';
 const TIMEOUT_MS = 25_000;
@@ -100,9 +101,18 @@ export function caloriePrompt(p: CaloriePack): string {
   lines.push(`Body: ${d.body?.gender ?? '?'}, ${d.body?.weight_kg ?? '?'} kg, ${d.body?.height_cm ?? '?'} cm, age ${d.body?.age_years ?? '?'}. Goal weight: ${f.goal?.goal_weight_kg ?? f.goal?.target_weight_kg ?? '?'} kg.`);
   lines.push(`Current targets: ${d.targets?.kcal ?? '?'} kcal, protein ${d.targets?.protein_g ?? '?'} g, carbs ${d.targets?.carb_g ?? '?'} g, fat ${d.targets?.fat_g ?? '?'} g.`);
   lines.push(`Floor (never go under): ${p.anchor.floor} kcal. Rules' anchor: ${p.anchor.to} kcal (10% or 150 off, whichever is less).`);
+  // Only when the user has fuel days, so every other pack reads exactly as before.
+  const fuel = normalizeFuelDays(d.fuel_days);
+  if (fuel.length > 0) {
+    lines.push(`Fuel days, extra calories on top of the target on these weekdays: ${fuel.map(fuelDayText).join(', ')}. The target you set is the base; the fuel days stay on top of it.`);
+  }
   lines.push('');
   lines.push(`Food, the 28 days before today, newest first. Today is not over, so it is left out (${f.nutrition?.days_logged_14d ?? 0} of the 14 days before today logged, ${f.nutrition?.on_target_days_14d ?? 0} of them within 10% of target):`);
-  for (const r of completeFood(d, f.as_of ?? d.as_of ?? '', 28)) lines.push(`  ${r.day}  ${r.kcal} kcal  ${r.protein_g ?? '?'} g protein`);
+  for (const r of completeFood(d, f.as_of ?? d.as_of ?? '', 28)) {
+    const day = fuel.length > 0 ? fuelOn(fuel, dowOfISO(r.day)) : null;
+    const tag = day && d.targets?.kcal != null ? `  (fuel day, target ${d.targets.kcal + day.kcal})` : '';
+    lines.push(`  ${r.day}  ${r.kcal} kcal  ${r.protein_g ?? '?'} g protein${tag}`);
+  }
   lines.push('');
   lines.push(`Weight, last 28 days, newest first (14-day trend ${p.anchor.slope_14d ?? '?'} kg/week):`);
   for (const r of (d.weight ?? []).slice(0, 28)) lines.push(`  ${r.day}  ${r.kg} kg`);

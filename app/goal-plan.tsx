@@ -7,9 +7,10 @@
  *   1. HERO: the goal, the destination, and a segmented progress bar where each
  *      segment is a phase (width = its weeks) and the current segment fills to
  *      today. One glance answers "where am I in this".
- *   2. NOW: the current phase only, with its daily targets as chips, the three
- *      directives as icon rows, and the phase's split (built routines or the
- *      build button).
+ *   2. NOW: the current phase only, with its daily targets as chips, the fuel
+ *      week (what each weekday actually asks for, with the long-run and leg
+ *      days lifted), the three directives as icon rows, and the phase's split
+ *      (built routines or the build button).
  *   3. THE FULL PLAN: every phase as a compact rail row (done / now / ahead),
  *      expanding on tap to the same detail block.
  * "Adjust with Drona" opens the coach program flow; per-phase "Build workout
@@ -38,6 +39,9 @@ import {
 } from '@/lib/programData';
 import { weekPatternFor, shortDayLabel, REST } from '@/lib/weekPattern';
 import { AICoachModal } from '@/components/ai/AICoachModal';
+import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
+import { useNutritionTargets } from '@/lib/dietData';
+import { DAY_NAMES, WEEK_ORDER, fuelDaysText, fuelOn, kcalOnDow } from '@/lib/fuelDays';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { Colors, Spacing, Radius, FontSize, FontWeight, colorWithAlpha } from '@/constants/theme';
 
@@ -102,6 +106,10 @@ export default function GoalPlanScreen() {
   const [detailRoutine, setDetailRoutine] = useState<RoutineRaw | null>(null);
   const [ending, setEnding] = useState(false);
   const viewedRef = useRef(false);
+  // Fuel days live on the profile, not the phase: they ride on whatever the
+  // base target is, so a phase change keeps the long-run Sunday.
+  const { targets: profileTargets, fuelDays, applyFuelDays } = useNutritionTargets();
+  const [fuelOpen, setFuelOpen] = useState(false);
 
   const openRoutinePreview = useCallback(async (routineId: string) => {
     if (!supabase) return;
@@ -267,8 +275,87 @@ export default function GoalPlanScreen() {
     );
   };
 
+  // ── The fuel week: what each weekday asks you to eat ───────────────────────
+  // One phase target used to stand for every day, so a long-run Sunday read as
+  // "you went over". Seven columns, Monday first; a fuel day is lifted in the
+  // accent with its reason underneath. Weekdays are NAMED here, unlike the
+  // training line: a long run lives on a calendar day, not a rotation slot.
+  const renderFuelWeek = (baseKcal: number) => {
+    const todayDow = new Date().getDay();
+    const lifted = WEEK_ORDER.map((dow) => fuelOn(fuelDays, dow)).filter((d): d is NonNullable<typeof d> => d != null);
+    if (lifted.length === 0) {
+      return (
+        <Pressable
+          onPress={() => setFuelOpen(true)}
+          style={[styles.fuelEmpty, { borderColor: C.border }]}
+          accessibilityRole="button"
+          accessibilityLabel="Add fuel days"
+        >
+          <Feather name="plus" size={12} color={C.accentText} />
+          <Text style={[styles.fuelEmptyText, { color: C.mutedFg }]}>
+            <Text style={{ color: C.accentText, fontWeight: FontWeight.semibold }}>Fuel days</Text>
+            {'  '}More food on long-run or leg days
+          </Text>
+        </Pressable>
+      );
+    }
+    return (
+      <View style={styles.fuelBlock}>
+        <View style={styles.fuelHead}>
+          <Text style={[styles.directiveLabel, { color: C.mutedFg, marginBottom: 0 }]}>FUEL BY DAY</Text>
+          <Pressable onPress={() => setFuelOpen(true)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Edit fuel days">
+            <Text style={[styles.fuelEdit, { color: C.accentText }]}>Edit</Text>
+          </Pressable>
+        </View>
+        <View style={styles.fuelRow}>
+          {WEEK_ORDER.map((dow) => {
+            const fuel = fuelOn(fuelDays, dow);
+            const isToday = dow === todayDow;
+            return (
+              <View
+                key={dow}
+                style={[
+                  styles.fuelCell,
+                  fuel && { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.fuelDay,
+                    { color: isToday ? C.foreground : C.mutedFg, fontWeight: isToday ? FontWeight.bold : FontWeight.semibold },
+                  ]}
+                >
+                  {DAY_NAMES[dow].slice(0, 3).toUpperCase()}
+                </Text>
+                <Text
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  style={[styles.fuelKcal, { color: fuel ? C.accentText : C.foreground }]}
+                >
+                  {kcalOnDow(baseKcal, fuelDays, dow)}
+                </Text>
+                {isToday && <View style={[styles.fuelTodayDot, { backgroundColor: fuel ? C.accentText : C.mutedFg }]} />}
+              </View>
+            );
+          })}
+        </View>
+        <View style={styles.fuelLegend}>
+          {lifted.map((d) => (
+            <View key={d.dow} style={styles.fuelLegendItem}>
+              <Feather name="zap" size={10} color={C.accentText} />
+              <Text style={[styles.fuelLegendText, { color: C.mutedFg }]} numberOfLines={1}>
+                <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>{DAY_NAMES[d.dow]}</Text>
+                {d.label ? ` ${d.label}` : ''} · +{d.kcal} kcal, +{Math.round(d.kcal / 4)}g carbs
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
   // ── Shared detail block: targets + directives + split ──────────────────────
-  const renderPhaseDetail = (ph: ActiveProgramPhaseRow, opts?: { compact?: boolean }) => {
+  const renderPhaseDetail = (ph: ActiveProgramPhaseRow, opts?: { compact?: boolean; fuel?: boolean }) => {
     const directives: Array<{ icon: 'zap' | 'activity' | 'moon'; label: string; text: string | null }> = [
       { icon: 'zap', label: 'DIET', text: ph.diet_directive },
       {
@@ -288,7 +375,9 @@ export default function GoalPlanScreen() {
           {ph.diet_calorie_target != null && (
             <View style={[styles.chip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
               <Text style={[styles.chipValue, { color: C.accentText }]}>{ph.diet_calorie_target}</Text>
-              <Text style={[styles.chipLabel, { color: C.accentText }]}>KCAL / DAY</Text>
+              <Text style={[styles.chipLabel, { color: C.accentText }]}>
+                {fuelDays.length > 0 ? 'KCAL / BASE DAY' : 'KCAL / DAY'}
+              </Text>
             </View>
           )}
           {ph.diet_protein_g != null && (
@@ -310,6 +399,20 @@ export default function GoalPlanScreen() {
             </View>
           )}
         </View>
+
+        {/* NOW: the live fuel week, editable. Any other phase: the fuel days
+            Drona planned for it, which go live when that phase starts. */}
+        {opts?.fuel
+          ? renderFuelWeek(ph.diet_calorie_target ?? profileTargets.kcal)
+          : ph.diet_fuel_days && ph.diet_fuel_days.length > 0 && (
+            <View style={styles.fuelPlanned}>
+              <Feather name="zap" size={11} color={C.accentText} />
+              <Text style={[styles.fuelLegendText, { color: C.mutedFg }]}>
+                <Text style={{ color: C.foreground, fontWeight: FontWeight.semibold }}>Fuel days </Text>
+                {fuelDaysText(ph.diet_fuel_days)}
+              </Text>
+            </View>
+          )}
 
         {renderWeekStrip(ph)}
 
@@ -536,7 +639,7 @@ export default function GoalPlanScreen() {
                 </Text>
               </View>
               <Text style={[styles.phaseTitle, { color: C.foreground }]}>{currentPhase.name}</Text>
-              {renderPhaseDetail(currentPhase)}
+              {renderPhaseDetail(currentPhase, { fuel: true })}
             </Animated.View>
           )}
 
@@ -661,6 +764,16 @@ export default function GoalPlanScreen() {
         }}
       />
 
+      <FuelDaysSheet
+        open={fuelOpen}
+        initial={fuelDays}
+        baseKcal={currentPhase?.diet_calorie_target ?? profileTargets.kcal}
+        source="goal_plan"
+        phaseId={currentPhase?.id ?? null}
+        onClose={() => setFuelOpen(false)}
+        onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); load(); }}
+      />
+
       <AICoachModal
         visible={coachOpen}
         source="goal_plan"
@@ -739,6 +852,27 @@ const styles = StyleSheet.create({
   directiveIcon: { width: 24, height: 24, borderRadius: 7, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   directiveLabel: { fontSize: 9, fontWeight: FontWeight.semibold, letterSpacing: 0.8, marginBottom: 2 },
   directiveText: { fontSize: FontSize.sm, lineHeight: 19 },
+
+  fuelEmpty: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12,
+    borderWidth: 1, borderStyle: 'dashed', borderRadius: Radius.md, paddingVertical: 9, paddingHorizontal: 12,
+  },
+  fuelEmptyText: { fontSize: FontSize.xs, flexShrink: 1 },
+  fuelBlock: { marginTop: 14 },
+  fuelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  fuelEdit: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  fuelRow: { flexDirection: 'row', gap: 4, marginTop: 8 },
+  fuelCell: {
+    flex: 1, alignItems: 'center', gap: 3, paddingTop: 7, paddingBottom: 9,
+    borderRadius: Radius.sm, borderWidth: StyleSheet.hairlineWidth, borderColor: 'transparent',
+  },
+  fuelDay: { fontSize: 8.5, letterSpacing: 0.4 },
+  fuelKcal: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, fontVariant: ['tabular-nums'] },
+  fuelTodayDot: { position: 'absolute', bottom: 3, width: 3, height: 3, borderRadius: 2 },
+  fuelLegend: { marginTop: 8, gap: 4 },
+  fuelPlanned: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
+  fuelLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  fuelLegendText: { fontSize: FontSize.xs, flexShrink: 1 },
 
   weekBlock: { marginTop: 14 },
   weekStrip: { flexDirection: 'row', marginTop: 8 },

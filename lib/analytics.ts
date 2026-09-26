@@ -181,6 +181,8 @@ export type AnalyticsEvent =
   | 'meal_entry_updated'
   | 'meal_entry_deleted'
   | 'nutrition_targets_edited'
+  | 'fuel_days_saved'
+  | 'fuel_days_opened'
   | 'nutrition_day_changed'
   // ── Coach Drona ──────────────────────────────────────────────────────────
   | 'coach_opened'
