@@ -40,3 +40,9 @@ Deno.test("a new size or unit writes the size into the label", () => {
   const gram = { quantity: 15, serving_label: "g" };
   assertEquals(joinServing({ size: 1, unit: "tub", count: 1 }, gram, isM), { quantity: 1, serving_label: "1 tub" });
 });
+
+Deno.test("a small metric serving keeps its grams", () => {
+  // 65 g of roti moved to kg is 0.065 kg. Two decimals stored 0.07 kg (70 g).
+  const orig = { quantity: 1, serving_label: "1 roti" };
+  assertEquals(joinServing({ size: 0.065, unit: "kg", count: 1 }, orig, isM), { quantity: 0.065, serving_label: "kg" });
+});

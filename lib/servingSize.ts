@@ -48,7 +48,7 @@ export function splitServing(
   return { size: 1, unit: l || 'serving', count: q };
 }
 
-const fmt = (n: number) => String(Math.round(n * 100) / 100);
+const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 
 /** The three fields -> stored (quantity, label), in the shape the line
  *  already had, so an untouched line saves back byte for byte. */
@@ -67,7 +67,7 @@ export function joinServing(
   }
   // A gram line stays a gram line: 100 g x 1.5 is stored as 150 "g".
   if (isMeasurement(unit)) {
-    return { quantity: Math.round(size * count * 100) / 100, serving_label: unit };
+    return { quantity: Math.round(size * count * 1000) / 1000, serving_label: unit };
   }
   // Same serving, new count: keep its exact label.
   if (was.size === size && was.unit === unit && !isMeasurement(original.serving_label.trim())) {

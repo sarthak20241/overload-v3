@@ -51,7 +51,8 @@ const numOr = (s: string, fallback: number) => {
   const n = parseFloat(String(s).replace(',', '.'));
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
-const fmt = (n: number) => String(Math.round(n * 100) / 100);
+// Three decimals: a gram amount in kg or lb (130 g = 0.065 kg) must survive.
+const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 
 /** Grams a unit converts to on its own. Only mass and ml/l: a cup of rice is
  *  not 237 g, so every other unit scales from the line's own grams instead. */
@@ -169,12 +170,25 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   function onSizeChange(next: string) { setSize(next); recompute(next, qty); }
   function onQtyChange(next: string) { setQty(next); recompute(size, next); }
 
-  /** Renaming the unit changes no numbers ("slice" -> "tub" is a word). It
-   *  rebases instead, so the next size edit scales from what is on screen. */
+  /** A unit edit never changes how much food the line is. A word ("slice"
+   *  -> "tub") keeps every number. A unit that converts to grams (g, kg, oz,
+   *  lb, ml, l) rewrites the SIZE to hold the same grams: 150 g -> kg reads
+   *  0.15 kg, 2 roti of 140 g -> g reads 70 g x 2. Leaving the size alone let
+   *  "150 g" edited to kg save as 150 kg carrying 150 g of macros. */
   function onUnitChange(next: string) {
     setUnit(next);
+    let total = sizeNum * qtyNum;
+    const perUnit = gramsOf(1, next);
+    if (perUnit && grams > 0 && qtyNum > 0) {
+      const nextSize = Math.round((grams / perUnit / qtyNum) * 1000) / 1000;
+      if (nextSize > 0) {
+        setSize(fmt(nextSize));
+        total = nextSize * qtyNum;
+      }
+    }
+    // Rebase so the next size or quantity edit scales from what is on screen.
     base.current = {
-      total: sizeNum * qtyNum, grams,
+      total, grams,
       kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
     };
   }
@@ -205,8 +219,9 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     const total = sizeNum * qtyNum;
     const u = unit.trim();
     if (!(total > 0) || !u) return '';
-    const plainGrams = ['g', 'ml'].includes(u.toLowerCase());
-    const about = !plainGrams && grams > 0 ? `, about ${r0(grams)} g` : '';
+    // Mass and ml/l already say their grams; only other units get "about".
+    const exact = gramsOf(1, u) !== null;
+    const about = !exact && grams > 0 ? `, about ${r0(grams)} g` : '';
     return `Total ${fmt(total)} ${u}${about}`;
   }, [sizeNum, qtyNum, unit, grams]);
 
