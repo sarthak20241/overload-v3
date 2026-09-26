@@ -86,10 +86,14 @@ export async function handleCallback(origin: string, code: string, state: string
 
 /**
  * LinkedIn's "little text" format treats these as markup. Unescaped, a
- * bracket or a hashtag can cut the post short or mangle it.
+ * bracket or a stray # can cut the post short or mangle it. A real hashtag
+ * (#word) becomes LinkedIn's hashtag template, so it still links; escaping
+ * it would post a literal "\\#tag".
  */
 export function escapeLittle(text: string): string {
-  return text.replace(/[\\|{}@[\]()<>#*_~]/g, (c) => `\\${c}`);
+  return text
+    .replace(/[\\|{}@[\]()<>#*_~]/g, (c) => `\\${c}`)
+    .replace(/\\#(\p{L}[\p{L}\p{N}]*)/gu, (_m, tag: string) => `{hashtag|\\#|${tag}}`);
 }
 
 export async function postToLinkedIn(text: string): Promise<{ url: string }> {

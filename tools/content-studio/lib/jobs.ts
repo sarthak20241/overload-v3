@@ -30,7 +30,12 @@ export function startJob(kind: string, label: string, fn: (log: (s: string) => v
   fn(log)
     .then((r) => { job.status = 'done'; job.result = r; })
     .catch((e) => { job.status = 'error'; job.error = e instanceof Error ? e.message : String(e); })
-    .finally(() => { job.finishedAt = Date.now(); });
+    .finally(() => {
+      job.finishedAt = Date.now();
+      // Results are already saved to the store; the job record only exists
+      // for the browser to poll. Drop it after an hour so memory stays flat.
+      setTimeout(() => jobs.delete(job.id), 60 * 60_000).unref?.();
+    });
   return job;
 }
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { StudioApi } from '@/app/page';
 import { ago, api, CHANNEL_NAME } from '@/lib/client';
 import { partLength, SPECS } from '@/lib/channels';
+import { redditSubmitUrl } from '@/lib/publish/reddit';
 import type { Channel, Draft } from '@/lib/types';
 
 const QUICK = ['Shorter', 'Stronger first line', 'More concrete, add a specific detail', 'More personal', 'Less salesy', 'Make it a thread', 'Make it a single post'];
@@ -281,8 +282,7 @@ function Publish({ d, s, blocked, confirm, setConfirm }: { d: Draft; s: StudioAp
     let url: string;
     if (d.channel === 'reddit') {
       await copy(d.parts[0]);
-      const sub = (d.subreddit ?? '').replace(/^\/?r\//i, '');
-      url = `https://www.reddit.com/r/${encodeURIComponent(sub)}/submit?${new URLSearchParams({ selftext: 'true', title: d.title ?? '', text: d.parts[0] })}`;
+      url = redditSubmitUrl(d.subreddit ?? '', d.title ?? '', d.parts[0]);
     } else if (d.channel === 'linkedin') {
       await copy(text);
       url = `https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(text)}`;
