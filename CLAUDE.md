@@ -36,6 +36,7 @@ deno test --allow-all supabase/functions/_shared/   # TODAY pick rules, shared b
 deno test --allow-all lib/xp.test.ts
 deno test --allow-all lib/tiers.test.ts
 deno test --allow-all lib/coachErrors.test.ts  # which bucket a failure lands in
+deno test --allow-all lib/servingSize.test.ts # food editor portion <-> stored serving
 ```
 
 There are no configured lint or build scripts.
