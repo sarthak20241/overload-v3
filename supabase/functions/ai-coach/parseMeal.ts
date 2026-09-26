@@ -43,7 +43,7 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { runTavilyLookup } from "./tavilyLookup.ts";
+import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import type { TavilyDeps } from "./tavily.ts";
 import type { JevDeps } from "./jev.ts";
 
@@ -3074,7 +3074,10 @@ export async function superLookupOne(
   const servings = finding.serving_label && finding.serving_grams
     ? [{ label: finding.serving_label, grams: finding.serving_grams }]
     : [];
-  const display = item.brand ? `${item.brand} ${item.name}` : item.name;
+  // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
+  // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
+  // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
+  const display = foodLabel(item);
 
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
@@ -3309,7 +3312,7 @@ async function resolveOneItem(
     return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
-    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    const q = foodLabel(item);
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
     try {
@@ -3355,7 +3358,7 @@ async function resolveOneItem(
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
     if (!deps.searchFatSecret) return [];
-    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    const q = foodLabel(item);
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
     try {
@@ -5367,7 +5370,7 @@ async function runParseMealCore(
       kind: "items",
       items: toResolve.map((r) => ({
         // est carries line TOTALS now, so the shimmer numbers need no scaling.
-        name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        name: foodLabel(r),
         quantity: r.quantity,
         unit: r.unit,
         est_kcal: r.est ? round1(r.est.kcal) : null,
@@ -5425,7 +5428,7 @@ async function runParseMealCore(
         // Brand included: an estimate has no row name to display, so this IS
         // the display, and "multigrain bar" for a Yogabar loses the product
         // identity the user typed.
-        food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        food_name: foodLabel(r),
         quantity: r.quantity > 0 ? r.quantity : 1,
         serving_label: r.unit,
         // Display only. A wrong gram guess mislabels the line instead of
