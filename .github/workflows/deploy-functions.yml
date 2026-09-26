@@ -125,6 +125,7 @@ jobs:
           deno test --allow-all lib/xp.test.ts
           deno test --allow-all lib/tiers.test.ts
           deno test --allow-all lib/coachErrors.test.ts
+          deno test --allow-all lib/servingSize.test.ts
 
       - name: Pick functions
         id: pick

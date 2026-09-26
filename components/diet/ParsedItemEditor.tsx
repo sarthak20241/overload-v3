@@ -10,18 +10,27 @@
  *     macros recompute from its per-100 basis — the same math the parser used,
  *     so a corrected line stays as trustworthy as a parsed one.
  *   - ESTIMATE/web line (food_id null): no serving list exists, so the user
- *     edits the amount and macros directly.
+ *     edits the serving and macros directly.
+ * The portion reads as serving SIZE + UNIT, eaten QUANTITY times (100 g x 1.5,
+ * 1 slice x 2), with the total spelled out under it. It used to be "Quantity"
+ * beside "Amount", and on a gram line both boxes said 15.
  * Macro fields are always editable; touching one stops the auto-derive so the
  * user's numbers are never silently overwritten, and marks the line 'manual'
  * (migration 0084) so the card stops calling it "Drona's estimate".
  */
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, Pressable, TextInput, ScrollView, Modal, StyleSheet } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View, Text, Pressable, TextInput, ScrollView, Modal, StyleSheet,
+  Keyboard, Platform, useWindowDimensions,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { loadFoodForEdit, type ParsedMealItem, type Per100Macros } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import type { FoodServing, MealType } from '@/lib/foods';
+import { isMassUnit, isMeasurementUnit, massToGrams } from '@/lib/units';
+import { joinServing, splitServing } from '@/lib/servingSize';
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'breakfast', label: 'Breakfast' },
@@ -42,6 +51,22 @@ const numOr = (s: string, fallback: number) => {
   const n = parseFloat(String(s).replace(',', '.'));
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
+const fmt = (n: number) => String(Math.round(n * 100) / 100);
+
+/** Grams a unit converts to on its own. Only mass and ml/l: a cup of rice is
+ *  not 237 g, so every other unit scales from the line's own grams instead. */
+function gramsOf(total: number, unit: string): number | null {
+  const u = unit.trim().toLowerCase();
+  if (isMassUnit(u)) return massToGrams(total, u);
+  if (u === 'ml') return total;
+  if (u === 'l') return total * 1000;
+  return null;
+}
+
+/** What the numbers are scaled FROM: the line as it opened, or as a serving
+ *  chip or a unit change last left it. Scaling from here, not from the screen,
+ *  means clearing a box mid-edit and retyping it never drifts the macros. */
+interface Base { total: number; grams: number; kcal: number; protein: number; carb: number; fat: number }
 
 export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   const { C } = useTheme();
@@ -50,9 +75,11 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
 
   const [servings, setServings] = useState<FoodServing[]>([]);
   const [per100, setPer100] = useState<Per100Macros | null>(null);
-  const [label, setLabel] = useState('');
+  const [size, setSize] = useState('1');
+  const [unit, setUnit] = useState('');
   const [qty, setQty] = useState('1');
-  const [grams, setGrams] = useState('0');
+  const [grams, setGrams] = useState(0);
+  const base = useRef<Base>({ total: 1, grams: 0, kcal: 0, protein: 0, carb: 0, fat: 0 });
   const [kcal, setKcal] = useState('0');
   const [protein, setProtein] = useState('0');
   const [carb, setCarb] = useState('0');
@@ -64,13 +91,34 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   // this is where a single line gets re-homed without moving its group.
   const [section, setSection] = useState<MealType>('snack');
 
+  // The sheet lifts itself above the keyboard, as EntryEditSheet does. Without
+  // it the number pad covered every field under the meal chips, so the user
+  // typed a quantity they could not see.
+  const [kbHeight, setKbHeight] = useState(0);
+  const { height: winH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  useEffect(() => {
+    if (!item) { setKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
+    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [item]);
+
   // Seed from the item each time the sheet opens, then load the food's real
   // servings + per-100 basis (only for catalog-backed lines).
   useEffect(() => {
     if (!item) return;
-    setLabel(item.serving_label);
-    setQty(String(item.quantity));
-    setGrams(String(r1(item.grams)));
+    const p = splitServing(item.quantity, item.serving_label, isMeasurementUnit);
+    setSize(fmt(p.size));
+    setUnit(p.unit);
+    setQty(fmt(p.count));
+    setGrams(item.grams);
+    base.current = {
+      total: p.size * p.count, grams: item.grams,
+      kcal: item.kcal, protein: item.protein_g, carb: item.carb_g, fat: item.fat_g,
+    };
     setKcal(String(r0(item.kcal)));
     setProtein(String(r1(item.protein_g)));
     setCarb(String(r1(item.carb_g)));
@@ -88,8 +136,8 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     return () => { alive = false; };
   }, [item, supabase]);
 
-  const qtyNum = useMemo(() => numOr(qty, 1), [qty]);
-  const gramsNum = useMemo(() => numOr(grams, 0), [grams]);
+  const sizeNum = useMemo(() => numOr(size, 0), [size]);
+  const qtyNum = useMemo(() => numOr(qty, 0), [qty]);
 
   function deriveMacros(g: number, basis: Per100Macros | null) {
     if (!basis) return;
@@ -100,45 +148,67 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     setFat(String(r1(basis.fat_g * f)));
   }
 
-  /** Pick a serving: grams follow from serving × quantity, macros follow the
-   *  per-100 basis unless the user has taken the macros over. */
+  /** Size or quantity moved: grams and (unless the user owns them) macros
+   *  follow. Before this, estimate lines had no serving rows to recompute
+   *  from, and "1 samosa" edited to 3 saved as 3 carrying one samosa's macros. */
+  function recompute(nextSize: string, nextQty: string, u = unit) {
+    const total = numOr(nextSize, 0) * numOr(nextQty, 0);
+    if (!(total > 0)) return;              // a box mid-edit; wait for a number
+    const b = base.current;
+    const g = gramsOf(total, u) ?? (b.total > 0 ? b.grams * (total / b.total) : b.grams);
+    setGrams(g);
+    if (macrosTouched) return;
+    if (per100 && g > 0) { deriveMacros(g, per100); return; }
+    const ratio = b.grams > 0 && g > 0 ? g / b.grams : (b.total > 0 ? total / b.total : 1);
+    setKcal(String(r0(b.kcal * ratio)));
+    setProtein(String(r1(b.protein * ratio)));
+    setCarb(String(r1(b.carb * ratio)));
+    setFat(String(r1(b.fat * ratio)));
+  }
+
+  function onSizeChange(next: string) { setSize(next); recompute(next, qty); }
+  function onQtyChange(next: string) { setQty(next); recompute(size, next); }
+
+  /** Renaming the unit changes no numbers ("slice" -> "tub" is a word). It
+   *  rebases instead, so the next size edit scales from what is on screen. */
+  function onUnitChange(next: string) {
+    setUnit(next);
+    base.current = {
+      total: sizeNum * qtyNum, grams,
+      kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
+    };
+  }
+
+  /** Pick a catalog serving: it sets size + unit and its real grams. */
   function applyServing(sv: FoodServing) {
-    setLabel(sv.label);
-    const g = sv.grams * qtyNum;
-    setGrams(String(r1(g)));
+    const p = splitServing(1, sv.label, isMeasurementUnit);
+    setSize(fmt(p.size));
+    setUnit(p.unit);
+    const count = qtyNum > 0 ? qtyNum : 1;
+    if (!(qtyNum > 0)) setQty('1');
+    const g = sv.grams * count;
+    setGrams(g);
+    base.current = {
+      total: p.size * count, grams: g,
+      kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
+    };
     if (!macrosTouched) deriveMacros(g, per100);
   }
 
-  function onQtyChange(next: string) {
-    const prevQty = qtyNum;
-    setQty(next);
-    const nextQty = numOr(next, 1);
-    const sv = servings.find((x) => x.label === label);
-    if (sv) {
-      const g = sv.grams * nextQty;
-      setGrams(String(r1(g)));
-      if (!macrosTouched) deriveMacros(g, per100);
-      return;
-    }
-    // No serving rows behind this line (estimate and web items have no catalog
-    // food to load them from), so scale what is already on screen instead of
-    // doing nothing. Without this the field accepted input and moved only the
-    // displayed count: "1 samosa" edited to 3 saved as "3 x samosa" carrying
-    // one samosa's grams and macros.
-    if (!(prevQty > 0) || !(nextQty > 0)) return;
-    const ratio = nextQty / prevQty;
-    setGrams(String(r1(gramsNum * ratio)));
-    if (macrosTouched) return;
-    setKcal(String(r0(numOr(kcal, 0) * ratio)));
-    setProtein(String(r1(numOr(protein, 0) * ratio)));
-    setCarb(String(r1(numOr(carb, 0) * ratio)));
-    setFat(String(r1(numOr(fat, 0) * ratio)));
-  }
+  const servingOn = (sv: FoodServing) => {
+    const p = splitServing(1, sv.label, isMeasurementUnit);
+    return p.size === sizeNum && p.unit.toLowerCase() === unit.trim().toLowerCase();
+  };
 
-  function onGramsChange(next: string) {
-    setGrams(next);
-    if (!macrosTouched) deriveMacros(numOr(next, 0), per100);
-  }
+  // "Total 150 g", or "Total 2 slice, about 40 g" when the unit is not grams.
+  const totalLine = useMemo(() => {
+    const total = sizeNum * qtyNum;
+    const u = unit.trim();
+    if (!(total > 0) || !u) return '';
+    const plainGrams = ['g', 'ml'].includes(u.toLowerCase());
+    const about = !plainGrams && grams > 0 ? `, about ${r0(grams)} g` : '';
+    return `Total ${fmt(total)} ${u}${about}`;
+  }, [sizeNum, qtyNum, unit, grams]);
 
   const touch = (setter: (v: string) => void) => (v: string) => {
     setMacrosTouched(true);
@@ -147,17 +217,21 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
 
   function save() {
     if (!item) return;
+    const stored = joinServing(
+      { size: sizeNum, unit: unit.trim() || 'serving', count: qtyNum },
+      item, isMeasurementUnit,
+    );
     const changed =
       macrosTouched ||
-      label !== item.serving_label ||
-      qtyNum !== item.quantity ||
-      Math.abs(gramsNum - item.grams) > 0.5;
+      stored.serving_label !== item.serving_label ||
+      stored.quantity !== item.quantity ||
+      Math.abs(grams - item.grams) > 0.5;
     onSave({
       ...item,
       meal_type: section,
-      quantity: qtyNum || 1,
-      serving_label: label || item.serving_label,
-      grams: gramsNum,
+      quantity: stored.quantity,
+      serving_label: stored.serving_label,
+      grams: r1(grams),
       kcal: numOr(kcal, 0),
       protein_g: numOr(protein, 0),
       carb_g: numOr(carb, 0),
@@ -184,7 +258,15 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   return (
     <Modal visible={!!item} transparent animationType="slide" onRequestClose={onCancel}>
       <Pressable style={s.backdrop} onPress={onCancel} accessibilityLabel="Close editor" />
-      <View style={s.sheet}>
+      <View
+        style={[
+          s.sheet,
+          kbHeight > 0 && {
+            marginBottom: kbHeight, paddingBottom: Spacing.md,
+            maxHeight: winH - kbHeight - insets.top - Spacing.md,
+          },
+        ]}
+      >
         <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Text style={s.title} numberOfLines={1}>{item?.food_name ?? ''}</Text>
 
@@ -212,10 +294,10 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
 
           {servings.length > 0 && (
             <>
-              <Text style={s.eyebrow}>Serving</Text>
+              <Text style={s.eyebrow}>Pick a serving</Text>
               <View style={s.chipWrap}>
                 {servings.map((sv) => {
-                  const on = sv.label === label;
+                  const on = servingOn(sv);
                   return (
                     <Pressable
                       key={sv.label}
@@ -234,22 +316,36 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
             </>
           )}
 
-          <View style={s.row}>
-            <View style={s.field}>
+          {/* One row: [size | unit] x [quantity]. Size and unit share a box
+              because together they are ONE serving ("100 g", "1 slice"). */}
+          <View style={s.portionRow}>
+            <View style={s.servingCol}>
+              <Text style={s.eyebrow}>Serving</Text>
+              <View style={s.servingBox}>
+                <TextInput
+                  value={size} onChangeText={onSizeChange} keyboardType="decimal-pad"
+                  style={[s.inlineInput, s.sizeInput]} placeholderTextColor={C.textDim}
+                  accessibilityLabel="Serving size"
+                />
+                <View style={s.servingDivider} />
+                <TextInput
+                  value={unit} onChangeText={onUnitChange} placeholder="g, slice"
+                  autoCapitalize="none" autoCorrect={false}
+                  style={[s.inlineInput, s.unitInput]} placeholderTextColor={C.textDim}
+                  accessibilityLabel="Serving unit"
+                />
+              </View>
+            </View>
+            <Text style={s.times}>×</Text>
+            <View style={s.qtyCol}>
               <Text style={s.eyebrow}>Quantity</Text>
               <TextInput
                 value={qty} onChangeText={onQtyChange} keyboardType="decimal-pad"
-                style={s.input} placeholderTextColor={C.textDim} accessibilityLabel="Quantity"
-              />
-            </View>
-            <View style={s.field}>
-              <Text style={s.eyebrow}>Amount</Text>
-              <TextInput
-                value={grams} onChangeText={onGramsChange} keyboardType="decimal-pad"
-                style={s.input} placeholderTextColor={C.textDim} accessibilityLabel="Amount in grams or ml"
+                style={s.input} placeholderTextColor={C.textDim} accessibilityLabel="Number of servings"
               />
             </View>
           </View>
+          {!!totalLine && <Text style={s.totalTxt} numberOfLines={1}>{totalLine}</Text>}
 
           <Text style={[s.eyebrow, { marginTop: Spacing.sm }]}>
             {!macrosTouched && per100 ? 'Macros, auto from serving' : 'Macros'}
@@ -309,6 +405,25 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     chipTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
     row: { flexDirection: 'row', gap: Spacing.md },
     field: { flex: 1, marginBottom: Spacing.sm },
+    portionRow: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.sm },
+    servingCol: { flex: 2 },
+    qtyCol: { flex: 1 },
+    servingBox: {
+      flexDirection: 'row', alignItems: 'center',
+      borderWidth: 1, borderColor: C.border, borderRadius: Radius.md,
+    },
+    inlineInput: {
+      paddingHorizontal: Spacing.md, paddingVertical: 9,
+      color: C.foreground, fontSize: FontSize.base, fontVariant: ['tabular-nums'],
+    },
+    sizeInput: { flex: 2 },
+    unitInput: { flex: 3 },
+    servingDivider: { width: 1, alignSelf: 'stretch', backgroundColor: C.border },
+    times: { fontSize: FontSize.base, color: C.textMuted, paddingBottom: 10 },
+    totalTxt: {
+      fontSize: FontSize.sm, color: C.textSecondary, fontVariant: ['tabular-nums'],
+      marginTop: 6, marginBottom: Spacing.sm,
+    },
     macroLbl: { fontSize: FontSize.sm, color: C.textSecondary, marginBottom: 6 },
     input: {
       borderWidth: 1, borderColor: C.border, borderRadius: Radius.md,
