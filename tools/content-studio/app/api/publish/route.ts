@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   };
   const draft = (await read<Draft[]>('drafts', [])).find((d) => d.id === draftId);
   if (!draft) return NextResponse.json({ error: 'Draft not found.' }, { status: 404 });
-  if (draft.status === 'posted' && action === 'post') {
+  if (draft.status === 'posted') {
     return NextResponse.json({ error: 'This draft is already posted.' }, { status: 409 });
   }
 
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     const spec = SPECS[draft.channel];
     const tooLong = draft.parts.findIndex((p) => partLength(draft.channel, p) > spec.limit);
     if (tooLong >= 0) return NextResponse.json({ error: `Part ${tooLong + 1} is over the ${spec.limit} character limit.` }, { status: 400 });
-    if (draft.parts.some((p) => /\[[^\]]+\](?!\()/.test(p) && draft.channel !== 'reddit')) {
+    if (draft.parts.some((p) => /\[[^\]]+\](?!\()/.test(p))) {
       return NextResponse.json({ error: 'The draft still has a [placeholder]. Fill it in first.' }, { status: 400 });
     }
     if (draft.parts.some(hasDashes)) return NextResponse.json({ error: 'The draft has an em dash. Remove it first.' }, { status: 400 });

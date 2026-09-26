@@ -16,6 +16,7 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   const { id, status } = (await req.json()) as { id: string; status: Topic['status'] };
+  if (!['new', 'starred', 'used', 'archived'].includes(status)) return NextResponse.json({ error: 'Unknown status' }, { status: 400 });
   const topics = await update<Topic[]>('topics', [], (cur) => cur.map((t) => (t.id === id ? { ...t, status } : t)));
   return NextResponse.json(topics.find((t) => t.id === id) ?? null);
 }
