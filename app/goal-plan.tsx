@@ -375,9 +375,7 @@ export default function GoalPlanScreen() {
           {ph.diet_calorie_target != null && (
             <View style={[styles.chip, { backgroundColor: C.primarySubtle, borderColor: C.primaryBorder }]}>
               <Text style={[styles.chipValue, { color: C.accentText }]}>{ph.diet_calorie_target}</Text>
-              <Text style={[styles.chipLabel, { color: C.accentText }]}>
-                {fuelDays.length > 0 ? 'KCAL / BASE DAY' : 'KCAL / DAY'}
-              </Text>
+              <Text style={[styles.chipLabel, { color: C.accentText }]}>KCAL / DAY</Text>
             </View>
           )}
           {ph.diet_protein_g != null && (
