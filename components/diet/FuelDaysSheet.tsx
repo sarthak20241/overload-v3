@@ -19,6 +19,7 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import { saveFuelDays } from '@/lib/dietData';
+import { loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
@@ -33,7 +34,12 @@ interface Props {
   baseKcal: number;
   /** Where it was opened from, for analytics. */
   source: 'goal_plan' | 'nutrition';
-  /** The program phase running now, when opened from Goal & Plan: its plan is updated too. */
+  /**
+   * The program phase running now; its plan is saved too, so a later "Adjust
+   * with Drona" does not read stale days back. Goal & Plan passes it (null =
+   * no phase running). Left undefined (the nutrition screen), the sheet looks
+   * the current phase up itself at save time.
+   */
   phaseId?: string | null;
   onClose: () => void;
   onSaved: (saved: FuelDay[]) => void;
@@ -137,7 +143,24 @@ export function FuelDaysSheet({ open, initial, baseKcal, source, phaseId, onClos
     setBusy(true);
     setFailed(false);
     haptics.selection();
-    const { error } = await saveFuelDays(supabase, clerkId, chosen, phaseId);
+    // Find the phase running today when the caller did not say. A failed
+    // lookup fails the save: writing only the live days is exactly how the
+    // plan and the live days drifted apart.
+    let targetPhase = phaseId;
+    if (targetPhase === undefined) {
+      try {
+        const program = await loadActiveProgram(supabase, clerkId);
+        targetPhase = program && program.currentPhaseSeq != null
+          ? program.phases[program.currentPhaseSeq]?.id ?? null
+          : null;
+      } catch {
+        setBusy(false);
+        haptics.warning();
+        setFailed(true);
+        return;
+      }
+    }
+    const { error } = await saveFuelDays(supabase, clerkId, chosen, targetPhase);
     setBusy(false);
     if (error) { haptics.warning(); setFailed(true); return; }
     track('fuel_days_saved', {

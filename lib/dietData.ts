@@ -1496,9 +1496,18 @@ export function useNutritionTargets(): {
 
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
-      const { data } = clerkId
-        ? await supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
-        : await supabase.from('user_profiles').select(cols).limit(1).maybeSingle();
+      // Fuel days in their own read, in parallel: a build that ships before
+      // the column exists (0139) must still paint the base targets, so a
+      // failure there keeps whatever fuel days we had instead of taking the
+      // targets with it.
+      const [{ data }, fuelRes] = await Promise.all([
+        clerkId
+          ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
+          : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
+        clerkId
+          ? supabase.from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle()
+          : Promise.resolve(null),
+      ]);
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
@@ -1511,15 +1520,9 @@ export function useNutritionTargets(): {
       const nextIsCustom =
         d.daily_calorie_target != null || d.protein_target_g != null ||
         d.carb_target_g != null || d.fat_target_g != null;
-      // Fuel days in their own read: a build that ships before the column
-      // exists (0139) must still paint the base targets, so a failure here
-      // keeps whatever fuel days we had instead of taking the targets with it.
       let nextFuel = fuelRef.current;
-      if (clerkId) {
-        const fuelRes = await supabase
-          .from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle();
-        if (cancelled) return;
-        if (!fuelRes.error) nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
+      if (fuelRes && !fuelRes.error) {
+        nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
       }
       setTargets(next);
       setIsCustom(nextIsCustom);
