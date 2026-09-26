@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { computeReadiness, type BaselineStat, type ReadinessResult } from './readiness';
 import { syncHealthData } from './healthSync';
+import { dowOfISO, kcalOnDow, normalizeFuelDays } from './fuelDays';
 
 const BASELINE_DAYS = 28;
 // sleep_quality rides along for today's read only; it is a subjective modifier, so
@@ -120,7 +121,7 @@ async function loadNutritionFactor(
   try {
     const from = shiftDaysISO(today, -NUTRITION_LOOKBACK);
     const to = shiftDaysISO(today, -1);
-    const [statsRes, profileRes] = await Promise.all([
+    const [statsRes, profileRes, fuelRes] = await Promise.all([
       supabase
         .from('user_nutrition_stats')
         .select('day, kcal, protein_g')
@@ -132,16 +133,26 @@ async function loadNutritionFactor(
         .select('protein_target_g, daily_calorie_target')
         .eq('clerk_user_id', userId)
         .maybeSingle(),
+      // Its own read, best effort: a missing column (a build ahead of 0139)
+      // just scores every day against the base, as before.
+      supabase
+        .from('user_profiles')
+        .select('calorie_day_boosts')
+        .eq('clerk_user_id', userId)
+        .maybeSingle(),
     ]);
     // Either query erroring means we can't trust the ratios; skip the factor
     // rather than silently scoring against fallback targets (the "any failure
     // returns null" contract). A profile that simply has no custom targets set is
     // NOT an error, and legitimately uses the defaults below.
     if (statsRes.error || profileRes.error) return null;
-    const days = (statsRes.data ?? []) as { kcal: number | string; protein_g: number | string }[];
+    const days = (statsRes.data ?? []) as { day: string; kcal: number | string; protein_g: number | string }[];
+    const fuel = fuelRes.error
+      ? []
+      : normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
     // Only days with actual food logged count toward the average.
     const logged = days
-      .map((d) => ({ kcal: Number(d.kcal), protein: Number(d.protein_g) }))
+      .map((d) => ({ day: d.day, kcal: Number(d.kcal), protein: Number(d.protein_g) }))
       .filter((d) => (Number.isFinite(d.kcal) && d.kcal > 0) || (Number.isFinite(d.protein) && d.protein > 0));
     if (logged.length === 0) return null;
 
@@ -150,7 +161,11 @@ async function loadNutritionFactor(
 
     const prof = (profileRes.data ?? {}) as { protein_target_g?: number | string | null; daily_calorie_target?: number | string | null };
     const proteinTarget = Number(prof.protein_target_g) || DEFAULT_PROTEIN_TARGET;
-    const kcalTarget = Number(prof.daily_calorie_target) || DEFAULT_KCAL_TARGET;
+    const baseKcal = Number(prof.daily_calorie_target) || DEFAULT_KCAL_TARGET;
+    // Each logged day asked for its own amount: a long-run Sunday eaten to its
+    // +300 is on plan, not an over-fuelled day. So compare against the mean of
+    // the logged days' own targets.
+    const kcalTarget = logged.reduce((a, d) => a + kcalOnDow(baseKcal, fuel, dowOfISO(d.day)), 0) / logged.length;
     if (proteinTarget <= 0 || kcalTarget <= 0) return null;
 
     return { proteinRatio: avgProtein / proteinTarget, energyRatio: avgKcal / kcalTarget };

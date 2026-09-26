@@ -22,6 +22,7 @@ import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors
 import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
+import { normalizeFuelDays, targetsOnDow, type FuelDay } from '@/lib/fuelDays';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -1439,13 +1440,20 @@ export function fillMissingMacros(
   return out;
 }
 
-interface CachedTargets { targets: NutritionTargets; isCustom: boolean }
+interface CachedTargets { targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[] }
 
 /** Read the user's daily targets. isCustom = they've set at least one real goal
- *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
+ *  (vs pure defaults), so the UI can nudge first-timers to set theirs.
+ *
+ *  `targets` is the BASE day. Fuel days (lib/fuelDays) add calories on top on
+ *  their weekday, so anything that draws a specific day's ring or bars reads
+ *  `targetsOn(date)`, never `targets` directly. */
 export function useNutritionTargets(): {
   targets: NutritionTargets; isCustom: boolean; reload: () => void;
   apply: (t: NutritionTargets) => void;
+  fuelDays: FuelDay[];
+  applyFuelDays: (days: FuelDay[]) => void;
+  targetsOn: (date: Date) => NutritionTargets;
 } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
@@ -1455,14 +1463,26 @@ export function useNutritionTargets(): {
   const cachedSeed = readCache<CachedTargets>('nutritionTargets', clerkId);
   const [targets, setTargets] = useState<NutritionTargets>(cachedSeed?.targets ?? DEFAULT_TARGETS);
   const [isCustom, setIsCustom] = useState(cachedSeed?.isCustom ?? false);
+  const [fuelDays, setFuelDays] = useState<FuelDay[]>(cachedSeed?.fuelDays ?? []);
+  const fuelRef = useRef(fuelDays);
+  fuelRef.current = fuelDays;
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
   const apply = useCallback((t: NutritionTargets) => {
     setTargets(t); setIsCustom(true);
-    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true });
+    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true, fuelDays: fuelRef.current });
   }, [clerkId]);
+  const applyFuelDays = useCallback((days: FuelDay[]) => {
+    setFuelDays(days);
+    const cur = readCache<CachedTargets>('nutritionTargets', clerkId);
+    if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, fuelDays: days });
+  }, [clerkId]);
+  const targetsOn = useCallback(
+    (date: Date) => targetsOnDow(targets, fuelDays, date.getDay()),
+    [targets, fuelDays],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1472,13 +1492,22 @@ export function useNutritionTargets(): {
       await hydrateCache(clerkId);
       if (cancelled) return;
       const cached = readCache<CachedTargets>('nutritionTargets', clerkId);
-      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); }
+      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []); }
 
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
-      const { data } = clerkId
-        ? await supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
-        : await supabase.from('user_profiles').select(cols).limit(1).maybeSingle();
+      // Fuel days in their own read, in parallel: a build that ships before
+      // the column exists (0139) must still paint the base targets, so a
+      // failure there keeps whatever fuel days we had instead of taking the
+      // targets with it.
+      const [{ data }, fuelRes] = await Promise.all([
+        clerkId
+          ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
+          : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
+        clerkId
+          ? supabase.from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle()
+          : Promise.resolve(null),
+      ]);
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
@@ -1491,9 +1520,14 @@ export function useNutritionTargets(): {
       const nextIsCustom =
         d.daily_calorie_target != null || d.protein_target_g != null ||
         d.carb_target_g != null || d.fat_target_g != null;
+      let nextFuel = fuelRef.current;
+      if (fuelRes && !fuelRes.error) {
+        nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
+      }
       setTargets(next);
       setIsCustom(nextIsCustom);
-      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom });
+      setFuelDays(nextFuel);
+      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom, fuelDays: nextFuel });
     })();
     return () => { cancelled = true; };
   }, [supabase, clerkId, tick]);
@@ -1508,7 +1542,47 @@ export function useNutritionTargets(): {
     }, [reload]),
   );
 
-  return { targets, isCustom, reload, apply };
+  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn };
+}
+
+/** Persist the user's fuel days (an empty list clears them). With `phaseId`
+ *  (an edit made on Goal & Plan) the current phase's plan is updated too, so
+ *  the plan and the live days say the same thing and Drona refines from it. */
+export async function saveFuelDays(
+  supabase: Supa,
+  clerkId: string,
+  days: FuelDay[],
+  phaseId?: string | null,
+): Promise<{ error?: string }> {
+  const clean = normalizeFuelDays(days);
+  // Two writes, not one transaction. Remember the live value first, so a
+  // failed phase write can put it back: otherwise the sheet says "did not
+  // save" while the live days changed and the plan did not.
+  let before: unknown = null;
+  if (phaseId) {
+    const { data, error: readErr } = await supabase
+      .from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle();
+    if (readErr) return { error: readErr.message };
+    before = (data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts ?? null;
+  }
+  const { error } = await supabase.from('user_profiles').upsert({
+    clerk_user_id: clerkId,
+    calorie_day_boosts: clean.length > 0 ? clean : null,
+  }, { onConflict: 'clerk_user_id' });
+  if (error) return { error: error.message };
+  if (phaseId) {
+    const { error: phaseErr } = await supabase
+      .from('coach_program_phases')
+      .update({ diet_fuel_days: clean })
+      .eq('id', phaseId);
+    if (phaseErr) {
+      await supabase.from('user_profiles')
+        .update({ calorie_day_boosts: before })
+        .eq('clerk_user_id', clerkId);
+      return { error: phaseErr.message };
+    }
+  }
+  return {};
 }
 
 /** Persist daily targets to user_profiles (upsert on clerk_user_id, like the

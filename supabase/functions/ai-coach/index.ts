@@ -11,6 +11,8 @@ import {
 } from "./prompt.ts";
 import { envInt } from "../_shared/envInt.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
+import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
+import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -2809,9 +2811,22 @@ async function handleParseMealRequest(args: {
     localDate
       ? userClient.from("user_nutrition_stats").select("kcal, protein_g").eq("day", localDate).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-  ]).then(([recentFoods, targetsRes, totalsRes]) => {
+    // Fuel days in their own read: before 0139 the column is missing and this
+    // errors, which must not take the base targets down with it.
+    localDate
+      ? userClient.from("user_profiles").select("calorie_day_boosts").maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]).then(([recentFoods, targetsRes, totalsRes, fuelRes]) => {
     const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
     const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+    const fuelRow = (fuelRes as { data: Record<string, unknown> | null; error: unknown }).error
+      ? null
+      : (fuelRes as { data: Record<string, unknown> | null }).data;
+    // The logged day's OWN calorie target: a long-run Sunday has its fuel on
+    // top, so "you have 300 left" must not read as "you are at your limit".
+    const fuel = normalizeFuelDays(fuelRow?.calorie_day_boosts);
+    const baseKcal = targetsRow?.daily_calorie_target == null ? null : Number(targetsRow.daily_calorie_target);
+    const dayKcal = baseKcal != null && localDate ? kcalOnDow(baseKcal, fuel, dowOfISO(localDate)) : baseKcal;
     return {
       recentFoods,
       todayTotals: totalsRow
@@ -2819,7 +2834,7 @@ async function handleParseMealRequest(args: {
         : null,
       targets: targetsRow
         ? {
-          daily_calorie_target: targetsRow.daily_calorie_target === null ? null : Number(targetsRow.daily_calorie_target),
+          daily_calorie_target: dayKcal,
           protein_target_g: targetsRow.protein_target_g === null ? null : Number(targetsRow.protein_target_g),
         }
         : null,
@@ -3731,6 +3746,44 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     console.log("[ai-coach] profile-notes fetch threw:", String(e));
+  }
+
+  // 4d. Fuel days (0139). Two reads, both best effort like 4c: a database
+  // without the columns (or any failure) only means Drona plans without them.
+  //   - the LIVE fuel days, from the profile: user_context.fuel_days
+  //   - each program phase's PLANNED fuel days, added to user_context.program
+  //     (get_user_coach_context lists phases without them). Without these,
+  //     "Adjust with Drona" rebuilt every phase guessing its fuel days.
+  try {
+    const { data: fuelRow, error: fuelError } = await userClient
+      .from("user_profiles")
+      .select("calorie_day_boosts")
+      .maybeSingle();
+    const fuel = fuelError ? [] : normalizeFuelDays(fuelRow?.calorie_day_boosts);
+    if (fuelError) console.log("[ai-coach] fuel-days error:", fuelError.message);
+    if (fuel.length > 0) {
+      if (!userContext || typeof userContext !== "object") userContext = {};
+      (userContext as Record<string, unknown>).fuel_days = fuelForPrompt(fuel);
+      trace.has_user_context = true;
+    }
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      const { data: active } = await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("status", "active")
+        .maybeSingle();
+      if (active?.id) {
+        const { data: rows, error: phaseFuelError } = await userClient
+          .from("coach_program_phases")
+          .select("seq, diet_fuel_days")
+          .eq("program_id", active.id);
+        if (phaseFuelError) console.log("[ai-coach] phase fuel-days error:", phaseFuelError.message);
+        else if (rows) ctx.program = withPhaseFuelDays(ctx.program, rows);
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] fuel-days fetch threw:", String(e));
   }
 
   // 5. Validate messages (body was parsed once above, before the rate gate)

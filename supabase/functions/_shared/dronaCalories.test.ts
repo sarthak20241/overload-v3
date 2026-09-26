@@ -205,3 +205,27 @@ Deno.test("the card carries the numbers the user can check, and the move to undo
   assertEquals(card.evidence.map((e) => e.value), ["12", "10", "2100", "0.0 kg"]);
   assertEquals(card.title, "Let us try 1950 kcal");
 });
+
+// Fuel days: a long-run Sunday eaten to its own, higher target is not a blowout.
+// 2026-09-13 is a Sunday, day(5); 2026-09-14 is the Monday after it, day(4).
+Deno.test("a fuel day is held to its own target, not the base", () => {
+  const bigSunday = (diet().food ?? []).map((r) => (r.day === "2026-09-13" ? { ...r, kcal: 2900 } : r));
+  // No fuel days: 2900 is over 135% of 2100, as before.
+  assertEquals(uglyChecks(facts(), diet({ food: bigSunday })).failed, ["blowout_day"]);
+  // Sunday +600: that day's target is 2700, and 2900 is well inside it.
+  const sundayFuel = [{ dow: 0, kcal: 600, label: "Long run" }];
+  assertEquals(uglyChecks(facts(), diet({ food: bigSunday, fuel_days: sundayFuel })).failed, []);
+  // The same 2900 on the Monday is still a blowout: the fuel is Sunday's only.
+  const bigMonday = (diet().food ?? []).map((r) => (r.day === "2026-09-14" ? { ...r, kcal: 2900 } : r));
+  assertEquals(uglyChecks(facts(), diet({ food: bigMonday, fuel_days: sundayFuel })).failed, ["blowout_day"]);
+});
+
+Deno.test("the model sees which days are fuel days and their targets", () => {
+  const d = diet({ fuel_days: [{ dow: 0, kcal: 300, label: "Long run" }] });
+  const prompt = caloriePrompt({ facts: facts(), diet: d, anchor: calorieGate(facts(), d).anchor!, memory: [] });
+  assertEquals(prompt.includes("Fuel days, extra calories on top of the target on these weekdays: Sun Long run +300."), true, prompt);
+  assertEquals(prompt.includes("2026-09-13  2120 kcal  145 g protein  (fuel day, target 2400)"), true, prompt);
+  // Without fuel days the pack reads exactly as it always did.
+  const plain = caloriePrompt({ facts: facts(), diet: diet(), anchor: calorieGate(facts(), diet()).anchor!, memory: [] });
+  assertEquals(plain.includes("fuel"), false);
+});

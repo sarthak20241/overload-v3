@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
+import { fuelDaysText } from '@/lib/fuelDays';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -1974,6 +1975,9 @@ function programToText(p: GeneratedProgram): string {
       d.fat_g != null ? `${d.fat_g}g fat` : null,
     ].filter(Boolean).join(', ');
     if (macros) lines.push(`  Diet: ${macros}`);
+    // Same reason as the Week line: without it a refine about anything else
+    // would drop the long-run Sunday the user already settled.
+    if (ph.fuel_days !== undefined) lines.push(`  Fuel days: ${fuelDaysText(ph.fuel_days)}`);
     if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
     if (ph.training_block) {
       const b = ph.training_block;
@@ -2638,6 +2642,14 @@ function GenerateProgramScreen({
               </Text>
               {dietLine !== '' && (
                 <Text style={{ color: C.foreground, fontSize: FontSize.sm, marginTop: 8 }}>{dietLine}</Text>
+              )}
+              {ph.fuel_days && ph.fuel_days.length > 0 && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                  <Feather name="zap" size={11} color={C.accentText} />
+                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
+                    {fuelDaysText(ph.fuel_days)}
+                  </Text>
+                </View>
               )}
               {ph.diet_directive && (
                 <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Diet: {ph.diet_directive}</Text>
