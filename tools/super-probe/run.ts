@@ -7,6 +7,15 @@
 //   CONCURRENCY=4                 npx tsx tools/super-probe/run.ts
 //   KEEP=1                        npx tsx tools/super-probe/run.ts   # warm run
 //   RESTORE=<path>                npx tsx tools/super-probe/run.ts   # crash recovery
+//   WEB=tavily                    npx tsx tools/super-probe/run.ts   # Tavily + Jev lookup
+//
+// WEB=tavily needs TAVILY_API_KEY and JEV_API_KEY in .env.local. Without the
+// Jev key the lookup still runs, on Tavily's own ranking, and says so.
+//
+// EVAL_VIA_CLI=1 WEB=tavily routes the Haiku calls through `claude -p` (the
+// subscription, not API credit). Accuracy is real; tokens, cost and latency are
+// the CLI's and NOT comparable, so quote cost only from an API run. The default
+// provider cannot go through the CLI: web_search is a server-side API tool.
 //
 // COSTS REAL MONEY and this one cannot go through the Claude CLI. Super's
 // lookup uses Anthropic's SERVER-SIDE web_search tool, which only exists on the
@@ -29,6 +38,7 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { type ParseMealDeps, runParseMeal } from "../../supabase/functions/ai-coach/parseMeal";
 import { PROBE_CASES, type ProbeCase, type Range } from "./cases";
+import { makeClaudeCliFetch } from "../../scripts/parse-meal-eval/claude-cli-fetch";
 
 const dotenv: Record<string, string> = {};
 for (const line of readFileSync(".env.local", "utf8").split("\n")) {
@@ -64,6 +74,12 @@ function within(err: number | null, tol = TOL): boolean {
   return err !== null && Math.abs(err) <= tol;
 }
 
+const VIA_CLI = env("EVAL_VIA_CLI") === "1";
+if (VIA_CLI && env("WEB") !== "tavily") {
+  console.error("EVAL_VIA_CLI=1 needs WEB=tavily: Anthropic's web_search only exists on the API.");
+  process.exit(1);
+}
+
 const deps: ParseMealDeps = {
   anthropicApiKey: env("ANTHROPIC_API_KEY"),
   model: "claude-haiku-4-5",
@@ -86,6 +102,11 @@ const deps: ParseMealDeps = {
       .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" });
   },
   log: () => {},
+  webLookup: env("WEB") === "tavily" ? "tavily" : "anthropic",
+  tavily: env("TAVILY_API_KEY") ? { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20000 } : undefined,
+  jev: env("JEV_API_KEY") ? { apiKey: env("JEV_API_KEY"), timeoutMs: 8000 } : undefined,
+  searchCountry: "india",
+  ...(VIA_CLI ? { fetchFn: makeClaudeCliFetch("claude-haiku-4-5") } : {}),
 };
 
 interface Result {
@@ -101,6 +122,9 @@ interface Result {
   sources: number;
   verified: boolean | null;
   cached: boolean;
+  tokensIn: number;
+  tokensOut: number;
+  credits: number;
 }
 
 /** Find this case's cache row by token match on the key. Returns null rather
@@ -122,6 +146,7 @@ async function runOne(c: ProbeCase): Promise<Result> {
   const base: Omit<Result, "ok" | "reason"> = {
     c, name: "", per100: null, errKcal: null, errP: null,
     searches: 0, ms: 0, sources: 0, verified: null, cached: false,
+    tokensIn: 0, tokensOut: 0, credits: 0,
   };
   try {
     const r = await runParseMeal(deps, {
@@ -129,6 +154,9 @@ async function runOne(c: ProbeCase): Promise<Result> {
       recentFoods: [], todayTotals: null, targets: null,
     });
     const ms = Date.now() - t0;
+    base.tokensIn = r.usage.input_tokens;
+    base.tokensOut = r.usage.output_tokens;
+    base.credits = r.usage.tavily_credits ?? 0;
     const item = r.parsed?.items?.[0];
     if (!item) {
       return { ...base, ms, searches: r.usage.web_search_requests ?? 0,
@@ -305,7 +333,7 @@ async function deleteOwnRows(cases: ProbeCase[]): Promise<number> {
       const truth = `[want ${r.c.kcal.lo}-${r.c.kcal.hi}kcal/${r.c.protein_g.lo}-${r.c.protein_g.hi}p]`;
       console.log(
         `${mark}  ${r.c.id.padEnd(32)} ${nums.padEnd(18)} ${truth.padEnd(34)} ` +
-        `${(r.ms / 1000).toFixed(1)}s srch=${r.searches} src=${r.sources} ` +
+        `${(r.ms / 1000).toFixed(1)}s srch=${r.searches} tv=${r.credits} in=${r.tokensIn} src=${r.sources} ` +
         `ver=${r.verified === null ? "-" : r.verified}` + (r.ok ? "" : `  <- ${r.reason}`)
       );
       results.push(r);
@@ -318,8 +346,18 @@ async function deleteOwnRows(cases: ProbeCase[]): Promise<number> {
     a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : NaN;
   const signed = results.map((r) => r.errKcal).filter((e): e is number => e !== null);
 
-  console.log("\n──── SUPER ACCURACY ────");
+  // Cost at list prices: Haiku 4.5 $1/M in, $5/M out (model_pricing, 0024),
+  // web_search $0.01 (0113), Tavily $0.008 a credit (0140). The Tavily free
+  // plan's 1,000 credits a month are ignored on purpose.
+  const sum = (f: (r: Result) => number) => results.reduce((a, r) => a + f(r), 0);
+  const usd = sum((r) => r.tokensIn) / 1e6 + (sum((r) => r.tokensOut) * 5) / 1e6 +
+    sum((r) => r.searches) * 0.01 + sum((r) => r.credits) * 0.008;
+
+  console.log(`\n──── SUPER ACCURACY (web: ${deps.webLookup}${deps.webLookup === "tavily" && !deps.jev ? ", NO JEV" : ""}) ────`);
   console.log(`cases                  ${results.length}`);
+  console.log(`cost                   $${usd.toFixed(3)} total, $${(usd / (results.length || 1)).toFixed(4)} per case` +
+    (VIA_CLI ? "  (CLI RUN: tokens are the CLI's, cost NOT comparable)" : ""));
+  console.log(`input tokens           ${sum((r) => r.tokensIn)}  (${Math.round(sum((r) => r.tokensIn) / (results.length || 1))} per case)`);
   console.log(`passed                 ${pass}/${results.length}  (${((pass / results.length) * 100).toFixed(0)}%)`);
   console.log(`median |kcal error|    ${(median(kErrs) * 100).toFixed(1)}%`);
   console.log(`worst  |kcal error|    ${(Math.max(...kErrs, 0) * 100).toFixed(1)}%`);

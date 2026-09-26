@@ -43,6 +43,9 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
+import { runTavilyLookup } from "./tavilyLookup.ts";
+import type { TavilyDeps } from "./tavily.ts";
+import type { JevDeps } from "./jev.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -181,6 +184,10 @@ export interface ParseMealResult {
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
     web_search_requests: number;
+    /** Tavily credits spent by Precise's web lookup (search + extract). Its own
+     *  cost row, since token_usage_log prices server tools by provider. Optional
+     *  because the food agent builds its usage by hand. */
+    tavily_credits?: number;
   };
   tool_calls: string[];
   // The full tool-call trail (search_foods / lookup_packaged_food / web_search /
@@ -917,6 +924,18 @@ export interface ParseMealDeps {
    *  SERVICE-ROLE client, because 0109 grants precise_cache to service_role
    *  only and a user-scoped read would return nothing. */
   preciseCacheGet?(key: string): Promise<PreciseCacheRow | null>;
+
+  /** Precise's web lookup provider. "anthropic" (default) is runSuperLookup on
+   *  the server-side web_search tool; "tavily" is runTavilyLookup (Tavily search,
+   *  Jev relevance, a small Haiku read). Tavily falls back to anthropic when it
+   *  cannot be used at all, so a bad key or an empty balance never breaks
+   *  Precise. */
+  webLookup?: "anthropic" | "tavily";
+  tavily?: TavilyDeps;
+  /** Jev, for judging which search results are about exactly this food. */
+  jev?: JevDeps;
+  /** Tavily country boost ("india"). */
+  searchCountry?: string | null;
 
   /** Super only: store what a lookup cost us to learn, so the next person asking
    *  about this food does not pay for it again. Upsert on cache_key; a
@@ -2968,14 +2987,60 @@ export function reconcileReadings(
   return { reason: lastBad };
 }
 
+/**
+ * Precise's web lookup for one food, on whichever provider deps selects.
+ *
+ * Tavily falls back to the Anthropic lookup ONLY when Tavily could not be used
+ * at all (no key, auth, out of credits, down). "Searched and found nothing" is
+ * an answer, not an outage: re-asking a second provider would double the cost
+ * of every obscure food for the same null.
+ */
+async function webFindingFor(
+  deps: ParseMealDeps,
+  item: ExtractedItem,
+  onUsage: (data: any) => void,
+  onCall: () => void,
+  onStep?: (step: ParseStep) => void,
+): Promise<SuperFinding | undefined> {
+  if (deps.webLookup === "tavily" && deps.tavily) {
+    const out = await runTavilyLookup({
+      tavily: deps.tavily,
+      jev: deps.jev ?? null,
+      country: deps.searchCountry ?? null,
+      model: deps.model,
+      log: deps.log,
+      callModel: async (payload) => {
+        const r = await callAnthropicOnce(deps, payload);
+        if (!r.ok) {
+          deps.log?.(`[parse_meal] tavily read failed: ${r.status}`);
+          return null;
+        }
+        onCall();
+        onUsage(r.data);
+        return r.data;
+      },
+    }, { name: item.name, brand: item.brand ?? null });
+    // Counted through the same accumulator as tokens, so the credits land in
+    // usage and index.ts can write the Tavily cost row.
+    if (out.credits > 0) onUsage({ tavily_credits: out.credits });
+    for (const st of out.steps) {
+      onStep?.({ iter: 1, tool: st.tool, input: { item: item.name, ...(st.input as object) }, result: st.result });
+    }
+    if (!out.unavailable) return out.finding ?? undefined;
+    onStep?.({ iter: 1, tool: "web_fallback", input: { item: item.name, from: "tavily" }, result: null });
+  }
+  const found = await runSuperLookup(deps, [item], onUsage, onCall);
+  return found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+}
+
 export async function superLookupOne(
   deps: ParseMealDeps,
   item: ExtractedItem,
   onUsage: (data: any) => void,
   onCall: () => void,
+  onStep?: (step: ParseStep) => void,
 ): Promise<CandidateFood | null> {
-  const found = await runSuperLookup(deps, [item], onUsage, onCall);
-  const finding = found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+  const finding = await webFindingFor(deps, item, onUsage, onCall, onStep);
   if (!finding || finding.readings.length === 0) return null;
 
   const reconciled = reconcileReadings(finding.readings);
@@ -4667,7 +4732,7 @@ export async function runParseMeal(
     fresh.tool_calls = [...result.tool_calls, ...fresh.tool_calls];
     fresh.iterations += result.iterations;
     for (const k of Object.keys(fresh.usage) as (keyof ParseMealResult["usage"])[]) {
-      fresh.usage[k] += result.usage[k];
+      fresh.usage[k] = (fresh.usage[k] ?? 0) + (result.usage[k] ?? 0);
     }
     return fresh;
   }
@@ -4697,6 +4762,7 @@ async function runParseMealCore(
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
     web_search_requests: 0,
+    tavily_credits: 0,
   };
   const toolCalls: string[] = [];
   const steps: ParseStep[] = [];
@@ -4711,6 +4777,7 @@ async function runParseMealCore(
     usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
     usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
     usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
+    usage.tavily_credits += typeof data.tavily_credits === "number" ? data.tavily_credits : 0;
   };
   /** Section of a previous line, by the food_name decide was told to correct.
    *  Case-folded because the model echoes the name back with its own casing. */
@@ -5432,7 +5499,8 @@ async function runParseMealCore(
         // accumulate() is passed through so the web_search_requests these calls
         // spend land in usage, which is what 0113 prices.
         superMode
-          ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
+          ? (it: ExtractedItem) =>
+            superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st))
           : undefined,
       )
     ),
