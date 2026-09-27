@@ -159,7 +159,7 @@ export interface ParsedItem {
   meal_type?: MealType;
   /** The tier whose numbers this line carries, when that is not the tier the
    *  parse ran in: a line answered from the user's memory keeps the tier of
-   *  the entry it came from. Read by migration 0147's trigger off the trace. */
+   *  the entry it came from. Read by migration 0149's trigger off the trace. */
   numbers_tier?: ParseTier;
 }
 

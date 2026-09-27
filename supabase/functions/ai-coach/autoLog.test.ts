@@ -347,7 +347,7 @@ Deno.test("write: a line with no known weight is stored as null grams, never 0",
   assertEquals(store.entries.map((e) => e.grams_logged), [null, 48]);
 });
 
-Deno.test("write: each line records the tier whose numbers it carries (0147)", async () => {
+Deno.test("write: each line records the tier whose numbers it carries (0149)", async () => {
   // The trigger that stamps client-written lines cannot see auto-logged ones:
   // they land before the parse's trace. A line answered from the user's memory
   // keeps the tier of the entry it came from, not the tier this parse ran in.

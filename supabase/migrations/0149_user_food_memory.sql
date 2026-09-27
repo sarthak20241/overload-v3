@@ -1,4 +1,4 @@
--- 0147: remember which logging tier produced each logged food, so a user's own
+-- 0149: remember which logging tier produced each logged food, so a user's own
 -- recent foods can answer their next log consistently (userFoodMemory.ts).
 --
 -- WHY. The same person logging "grilled chicken breast" twice could get two

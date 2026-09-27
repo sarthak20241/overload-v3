@@ -750,7 +750,7 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // Jev match beside the web lookup and only record it on the trace) | on (serve
 // an accepted row and skip the web). Anything unrecognised is off: this can
 // only change what users are served when someone sets "on" on purpose.
-// The user's own food memory (userFoodMemory.ts, migration 0147): on unless
+// The user's own food memory (userFoodMemory.ts, migration 0149): on unless
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
 
@@ -3277,7 +3277,7 @@ async function handleParseMealRequest(args: {
             }
             void recordParseTrace(admin, {
               user_id: userId,
-              // The tier the parse ran in (0147): stamps the lines the client logs.
+              // The tier the parse ran in (0149): stamps the lines the client logs.
               tier: result.tier ?? null,
               input_text: text.slice(0, USER_TEXT_MAX_CHARS),
               meal_hint: mealHint,
@@ -3520,7 +3520,7 @@ async function handleParseMealRequest(args: {
     ];
     void recordParseTrace(admin, {
       user_id: userId,
-      // The tier the parse ran in (0147): stamps the lines the client logs.
+      // The tier the parse ran in (0149): stamps the lines the client logs.
       tier: result.tier ?? null,
       input_text: text.slice(0, USER_TEXT_MAX_CHARS),
       meal_hint: mealHint,

@@ -189,7 +189,7 @@ export interface AutoLogEntryRow {
   logged_via: "ai_auto";
   source: ParsedItem["source"];
   client_id: string;
-  /** The tier whose numbers the line carries (migration 0147). The trigger
+  /** The tier whose numbers the line carries (migration 0149). The trigger
    *  that stamps client-written lines cannot see these: they are written
    *  before the parse's trace. */
   tier: string | null;
