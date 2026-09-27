@@ -93,6 +93,8 @@ Deno.test("readingFromReport classifies FatSecret and Open Food Facts pages", ()
 
 interface Calls {
   search: string[];
+  /** The country each search asked Tavily to favour. */
+  countries: Array<string | null>;
   extract: number;
   jev: number;
   /** 1 or 2 per Jev call: which look it was. */
@@ -133,6 +135,7 @@ function fakeNet(opts: {
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     if (u.includes("api.tavily.com/search")) {
       calls.search.push(body.query);
+      calls.countries.push(body.country ?? null);
       const s = opts.searches?.[searchIdx++] ?? { results: [] };
       if (s.status && s.status !== 200) return new Response("nope", { status: s.status });
       return Response.json({ results: s.results ?? [] });
@@ -203,7 +206,7 @@ function lookupDeps(fetchFn: typeof fetch, calls: Calls, withJev = true): Tavily
   };
 }
 
-const newCalls = (): Calls => ({ search: [], extract: 0, jev: 0, jevLooks: [], read: 0, readPages: [], readTexts: [] });
+const newCalls = (): Calls => ({ search: [], countries: [], extract: 0, jev: 0, jevLooks: [], read: 0, readPages: [], readTexts: [] });
 const DAHI = { name: "masti dahi", brand: "Amul" };
 
 Deno.test("Jev drops the wrong product before the reader ever sees it", async () => {
@@ -488,4 +491,23 @@ Deno.test("a kept page with only a snippet is fetched in full before it is read"
   assertEquals(calls.extract, 1);
   assert(calls.readTexts[0][0].includes("Energy 72 kcal"));
   assertEquals(out.finding?.readings[0].per_100.kcal, 72);
+});
+
+Deno.test("Precise searches in the user's own country, and no country for an unknown zone", async () => {
+  const run = async (resolve: () => Promise<string | null>) => {
+    const calls = newCalls();
+    const net = fakeNet({ searches: [{ results: [RIGHT] }] }, calls);
+    const anthropic = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (!String(url).includes("anthropic")) return net(url, init);
+      return Response.json({
+        stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{ type: "tool_use", name: "report_page_panels", input: { pages: [] } }],
+      });
+    }) as typeof fetch;
+    const deps = { ...preciseDeps(anthropic, "tavily"), searchCountry: "india", resolveSearchCountry: resolve };
+    await superLookupOne(deps, ITEM, () => {}, () => {});
+    return calls.countries[0];
+  };
+  assertEquals(await run(async () => "united states"), "united states");
+  assertEquals(await run(async () => null), null);
 });

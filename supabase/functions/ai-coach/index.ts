@@ -71,6 +71,9 @@ import {
 import type { PreciseCacheRow } from "./preciseCache.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
+import { countryForTimezone } from "./searchCountry.ts";
+import { selectMatchRows } from "./ourSources.ts";
+import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
   buildAnonProgramMessage,
@@ -741,6 +744,14 @@ const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "fals
 const PARSE_SUPER_MODE = Deno.env.get("PARSE_SUPER_MODE") ?? "off";
 const PARSE_PRECISE_CACHE = Deno.env.get("PARSE_PRECISE_CACHE") !== "false";
 const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
+// Precise, our sources first (ourSources.ts). off (default) | shadow (run the
+// Jev match beside the web lookup and only record it on the trace) | on (serve
+// an accepted row and skip the web). Anything unrecognised is off: this can
+// only change what users are served when someone sets "on" on purpose.
+const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
+  const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
+  return v === "shadow" || v === "on" ? v : "off";
+})();
 // Precise's web lookup. "anthropic" (default) keeps the server-side web_search
 // lookup; "tavily" is Tavily search + Jev relevance + a small read
 // (tavilyLookup.ts). Asking for tavily with no key stays on anthropic, and a
@@ -748,8 +759,8 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY") ?? "";
 const PRECISE_WEB_PROVIDER: "anthropic" | "tavily" =
   Deno.env.get("PRECISE_WEB_PROVIDER") === "tavily" && TAVILY_API_KEY ? "tavily" : "anthropic";
-// Country boost for Precise's web search. One value for everyone today because
-// the users are in India; a per-user country is a later change.
+// Country boost for Precise's web search when a user has no time zone stored.
+// Each user's own zone decides otherwise (resolveSearchCountry below).
 const PRECISE_SEARCH_COUNTRY = Deno.env.get("PRECISE_SEARCH_COUNTRY") ?? "india";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
@@ -2106,23 +2117,20 @@ async function backfillOffFoodRow(admin: SupabaseClient, p: OffProduct): Promise
   }
 }
 
-async function searchCatalogWithServings(
-  userClient: SupabaseClient,
-  admin: SupabaseClient,
-  userId: string,
-  query: string,
-): Promise<CandidateFood[]> {
-  const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((s) => {
-      const o = s as Record<string, unknown>;
-      const label = typeof o?.label === "string" ? o.label : "";
-      const grams = Number(o?.grams);
-      if (!label || !Number.isFinite(grams)) return [];
-      return [{ label, grams, is_default: !!o.is_default }];
-    });
-  };
-  const toCandidate = (r: Record<string, unknown>): CandidateFood => ({
+function parseCatalogServings(raw: unknown): { label: string; grams: number; is_default: boolean }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((s) => {
+    const o = s as Record<string, unknown>;
+    const label = typeof o?.label === "string" ? o.label : "";
+    const grams = Number(o?.grams);
+    if (!label || !Number.isFinite(grams)) return [];
+    return [{ label, grams, is_default: !!o.is_default }];
+  });
+}
+
+/** One row of search_foods_*_with_servings as a parse candidate. */
+function catalogRowToCandidate(r: Record<string, unknown>): CandidateFood {
+  return {
     food_id: String(r.id),
     name: String(r.name),
     brand: r.brand ? String(r.brand) : null,
@@ -2132,9 +2140,69 @@ async function searchCatalogWithServings(
     carb_g: Number(r.carb_g ?? 0),
     fat_g: Number(r.fat_g ?? 0),
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
-    servings: parseServings(r.servings),
+    servings: parseCatalogServings(r.servings),
     source: "catalog" as const,
+  };
+}
+
+/**
+ * Candidate rows for Precise's our-sources match (ourSources.ts): the same two
+ * searches production runs (trigram + semantic), but a deeper trigram list so
+ * lab / curated rows ranked below branded packs can still be offered, plus the
+ * real foods.source of every row, which the search functions do not return and
+ * the match gate needs (a plain food may only take a lab or curated row).
+ */
+async function findMatchCandidates(
+  userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+  item: MatchItem,
+): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>> {
+  const query = item.brand && !item.name.toLowerCase().includes(item.brand.toLowerCase())
+    ? `${item.brand} ${item.name}`
+    : item.name;
+  const [trigram, semantic] = await Promise.all([
+    userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 30 })
+      .then((res: { data: unknown }) => (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>),
+    embedQuery(query, admin, userId).then(async (vec) => {
+      if (!vec) return [] as Array<Record<string, unknown>>;
+      const { data } = await userClient.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+  ]);
+  const withId = (rows: Array<Record<string, unknown>>) => rows.map((r) => ({ ...r, id: String(r.id) }));
+  const tri = withId(trigram);
+  const sem = withId(semantic);
+  const ids = [...new Set([...tri, ...sem].map((r) => r.id))];
+  if (ids.length === 0) return [];
+  const { data: srcRows } = await admin.from("foods").select("id, source").in("id", ids);
+  const sourceOf = new Map(((srcRows ?? []) as Array<{ id: string; source: string }>).map((r) => [r.id, r.source]));
+  return selectMatchRows(tri, sem, (id) => sourceOf.get(id)).map((r) => {
+    const food = catalogRowToCandidate(r);
+    return {
+      food,
+      meta: {
+        id: r.id,
+        name: food.name,
+        brand: food.brand,
+        source: sourceOf.get(r.id) ?? "catalog",
+        kcal: food.kcal,
+        protein_g: food.protein_g,
+      },
+    };
   });
+}
+
+async function searchCatalogWithServings(
+  userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+  query: string,
+): Promise<CandidateFood[]> {
+  const toCandidate = catalogRowToCandidate;
 
   // Trigram and semantic search run CONCURRENTLY, not trigram-then-fallback.
   // Trigram is precise on exact words; semantic bridges synonyms ("roasted
@@ -2390,6 +2458,7 @@ function makeParseDeps(
   admin: SupabaseClient,
   userId: string,
 ): ParseMealDeps {
+  let searchCountryP: Promise<string | null> | undefined;
   return {
     anthropicApiKey: ANTHROPIC_API_KEY!,
     model: PARSE_MEAL_MODEL,
@@ -2451,6 +2520,19 @@ function makeParseDeps(
       ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
       : undefined,
     searchCountry: PRECISE_SEARCH_COUNTRY,
+    preciseMatch: PRECISE_MATCH_MODE !== "off" && JEV_API_KEY
+      ? {
+        mode: PRECISE_MATCH_MODE,
+        findCandidates: (item: MatchItem) => findMatchCandidates(userClient, admin, userId, item),
+      }
+      : undefined,
+    // One profile read per request, only when a web search actually needs it.
+    resolveSearchCountry: () =>
+      (searchCountryP ??= Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
+        .then(({ data }: { data: { timezone?: unknown } | null }) =>
+          countryForTimezone(typeof data?.timezone === "string" ? data.timezone : null, PRECISE_SEARCH_COUNTRY)
+        )
+        .catch(() => PRECISE_SEARCH_COUNTRY)),
     skipDecideMode: PARSE_SKIP_DECIDE,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
