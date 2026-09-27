@@ -3106,6 +3106,9 @@ export async function superLookupOne(
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
   const display = foodLabel(item);
+  // The pages' brand when extract left it inside the name (brandFromPages):
+  // one value for the cache row and for this turn's candidate.
+  const brand = item.brand ?? finding.brand ?? null;
 
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
@@ -3114,9 +3117,8 @@ export async function superLookupOne(
       cache_key: cacheKey(item.name, item.brand),
       display_name: display,
       // The key stays on the line as extracted (cacheKey above), so the next
-      // identical line still hits; the brand column gets the pages' brand when
-      // extract left it inside the name.
-      brand: item.brand ?? finding.brand ?? null,
+      // identical line still hits.
+      brand,
       base_unit: "g",
       ...per100,
       fiber_g,
@@ -3130,7 +3132,7 @@ export async function superLookupOne(
   return {
     food_id: `${EPHEMERAL_ID_PREFIX}web_${cacheKey(item.name, item.brand)}`,
     name: display,
-    brand: item.brand,
+    brand,
     base_unit: "g",
     ...per100,
     fiber_g,

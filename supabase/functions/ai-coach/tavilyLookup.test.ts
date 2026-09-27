@@ -544,9 +544,11 @@ Deno.test("Precise writes the pages' brand to the cache when extract left it in 
     preciseCachePut: async (row: { brand: string | null; cache_key: string }) => { rows.push(row); },
   } as ParseMealDeps;
   const item = { name: "amul masti dahi", brand: null, quantity: 1, unit: "cup" } as never;
-  await superLookupOne(deps, item, () => {}, () => {});
+  const found = await superLookupOne(deps, item, () => {}, () => {});
   assertEquals(rows.length, 1);
   assertEquals(rows[0].brand, "Amul");
+  // And the same brand on this turn's candidate, not only on the cache row.
+  assertEquals(found?.brand, "Amul");
   // The key stays on the words as extracted, so the same line still hits.
   assertEquals(rows[0].cache_key, "amul masti dahi");
 });
