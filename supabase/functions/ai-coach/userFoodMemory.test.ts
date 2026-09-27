@@ -18,7 +18,7 @@ import {
   servesTier,
   shortlist,
 } from "./userFoodMemory.ts";
-import { memoryQuickItem, type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
+import { memoryLineName, memoryQuickItem, type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
@@ -181,7 +181,7 @@ function net(opts: { scores: Record<string, number>; calls: string[]; line: Reco
     const u = String(url);
     const body = JSON.parse(String(init?.body ?? "{}"));
     if (u.includes("typesafe.ai")) {
-      opts.calls.push("jev");
+      opts.calls.push(`jev:${body.state?.foods?.[0]?.name ?? ""}`);
       const answers: Record<string, unknown> = {};
       for (const [k, q] of Object.entries(body.questions as Record<string, { instructions: string }>)) {
         const name = /Logged before: (.+?)\. A match/.exec(q.instructions)?.[1] ?? "";
@@ -316,7 +316,7 @@ Deno.test("a follow-up turn never asks the memory: that is where 'double check' 
       previousItems: [{ food_name: "grilled chicken breast", quantity: 150, serving_label: "g", grams: 150, kcal: 226, protein_g: 46.5, carb_g: 0, fat_g: 4.8, food_id: null, source: "catalog" } as never],
     },
   ).catch(() => null);
-  assert(!calls.includes("jev") || !(r?.steps ?? []).some((s) => s.tool === "user_memory"));
+  assert(!calls.some((c) => c.startsWith("jev")) || !(r?.steps ?? []).some((s) => s.tool === "user_memory"));
   assert(!(r?.tool_calls ?? []).includes("user_memory_match"));
 });
 
@@ -355,4 +355,22 @@ Deno.test("the failure this prevents: an older food dropped before Jev could see
   const chicken = entry({ food_name: "raw chicken breast", logged_at: daysAgo(6) });
   const foods = buildMemory([...newer, chicken], "precise", NOW);
   assertEquals(shortlist(foods, "raw chicken breast", 5)[0].name, "raw chicken breast");
+});
+
+Deno.test("the preparation is part of what the memory compares", () => {
+  assertEquals(memoryLineName({ name: "chicken breast", prep: "grilled" }), "grilled chicken breast");
+  assertEquals(memoryLineName({ name: "grilled chicken breast", prep: "grilled" }), "grilled chicken breast");
+  assertEquals(memoryLineName({ name: "chicken breast", prep: null }), "chicken breast");
+});
+
+Deno.test("the failure this prevents: Quick splits 'grilled' out of the name and misses the memory", async () => {
+  // Sim test 2026-09-27: Quick extracted name "chicken breast", prep "grilled";
+  // Jev was asked about plain "chicken breast" and refused the grilled row.
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, { ...ESTIMATED, name: "chicken breast", prep: "grilled" }),
+    { ...BASE, text: "150g grilled chicken breast", mode: "fast" },
+  );
+  assert(calls.includes("jev:grilled chicken breast"), JSON.stringify(calls));
+  assertEquals(r.parsed!.items[0].numbers_tier, "precise");
 });

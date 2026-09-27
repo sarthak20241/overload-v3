@@ -4081,6 +4081,14 @@ export function memoryCandidate(food: MemoryFood): CandidateFood {
   };
 }
 
+/** The words the memory match compares: the preparation joined back onto the
+ *  name, unless the name already says it. */
+export function memoryLineName(it: { name: string; prep?: string | null }): string {
+  const prep = (it.prep ?? "").trim();
+  if (!prep || memoryKey(it.name).includes(memoryKey(prep))) return it.name;
+  return `${prep} ${it.name}`;
+}
+
 /** A unit, singular: "pieces" and "piece" are one unit. */
 const unitKey = (u: string) => {
   const k = memoryKey(u);
@@ -5558,7 +5566,13 @@ async function runParseMealCore(
       const foods = buildMemory(loaded.entries, tier);
       if (foods.length === 0) return toResolve.map(() => null);
       const matches = await Promise.all(
-        toResolve.map((it) => matchMemory(deps.jev!, foods, { name: it.name, brand: it.brand ?? null })),
+        // prep rides along ("grilled" + "chicken breast"): extract may split a
+        // preparation out of the name, and without it Jev compared plain
+        // "chicken breast" to a grilled row and rightly refused (sim test,
+        // 2026-09-27). Same join as codeFillItems' food_name.
+        toResolve.map((it) =>
+          matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
+        ),
       );
       for (const m of matches) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
       return matches;
