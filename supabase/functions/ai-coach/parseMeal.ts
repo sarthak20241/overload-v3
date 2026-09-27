@@ -3239,9 +3239,10 @@ async function resolveOneItem(
     const tWeb0 = Date.now();
     const found = await superLookup(item).catch(() => null);
     if (ours && pm?.mode === "shadow") {
-      // Shadow must never slow the answer the user is waiting for. By now the
-      // web lookup is done; the match gets a short grace period to finish, and
-      // is recorded as unfinished if it has not (it keeps running unobserved).
+      // Shadow adds at most SHADOW_GRACE_MS to the answer the user is waiting
+      // for, and usually nothing: the match runs beside the web lookup, which
+      // takes longer. Past the grace period the step is recorded unfinished
+      // and the match keeps running unobserved.
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<null>((res) => { timer = setTimeout(() => res(null), SHADOW_GRACE_MS); });
       const r = await Promise.race([ours, late]);

@@ -49,8 +49,11 @@ export interface MatchCandidate {
 // ── State: every food of the meal in one request ────────────────────────────
 //
 // Jev answers every question in a request against one state, and adding
-// questions barely moves its latency, so a whole meal goes in one call: foods
-// are keyed f1..fN and each question names its food.
+// questions barely moves its latency, so the questions are built to batch a
+// whole meal: foods are keyed f1..fN and each question names its food. The
+// eval batches this way. Production (ourSources.ts, called per item from
+// resolveOneItem) still asks one food per request, so a 3-item meal makes 3x
+// the calls; batching there means resolving a meal's items together first.
 
 export function foodKey(i: number): string {
   return `f${i + 1}`;
