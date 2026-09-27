@@ -228,7 +228,7 @@ function deps(entries: MemoryEntry[], scores: Record<string, number>, calls: str
     getFoodPer100: async () => null,
     preciseCacheGet: async (k) => { lookups.push(`precise:${k}`); return null; },
     jev: { apiKey: "jev", timeoutMs: 1000, fetchFn },
-    userMemory: { load: Promise.resolve({ entries, timeZone: "Asia/Kolkata" }) },
+    userMemory: { load: () => Promise.resolve({ entries, timeZone: "Asia/Kolkata" }) },
     fetchFn,
   };
 }
@@ -332,4 +332,18 @@ Deno.test("Quick: remembered numbers at an absurd amount are flagged, like an es
   const item = r.parsed!.items[0];
   assertEquals(item.kcal, 12000);
   assertEquals(item.confidence, "low");
+});
+
+Deno.test("a follow-up turn never even reads the user's log", async () => {
+  // Reviewer on #220: the 10-day read ran on every parse and was thrown away on
+  // follow-ups. It is now started only for a first-shot log.
+  let reads = 0;
+  const calls: string[] = [], lookups: string[] = [];
+  const d = deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED);
+  d.userMemory = { load: () => { reads++; return Promise.resolve({ entries: [live()], timeZone: null }); } };
+  await runParseMeal(d, {
+    ...BASE, text: "double check the chicken", mode: "super",
+    previousItems: [{ food_name: "grilled chicken breast", quantity: 150, serving_label: "g", grams: 150, kcal: 226, protein_g: 46.5, carb_g: 0, fat_g: 4.8, food_id: null, source: "catalog" } as never],
+  }).catch(() => null);
+  assertEquals(reads, 0);
 });

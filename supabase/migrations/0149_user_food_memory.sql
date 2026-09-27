@@ -59,6 +59,7 @@ begin
     and t.created_at > now() - interval '6 hours'
     and t.tier is not null
     and lower(i->>'food_name') = lower(new.food_name)
+    and (i->>'kcal') ~ '^-?[0-9]+(\.[0-9]+)?$'
     and round((i->>'kcal')::numeric) = round(new.kcal)
   order by t.created_at desc
   limit 1;
@@ -105,6 +106,7 @@ picked as (
     and e.logged_via in ('ai', 'ai_auto')
     and m.logged_at > now() - interval '11 days'
     and lower(i->>'food_name') = lower(e.food_name)
+    and (i->>'kcal') ~ '^-?[0-9]+(\.[0-9]+)?$'
     and round((i->>'kcal')::numeric) = round(e.kcal)
   order by e.id, abs(extract(epoch from (tr.created_at - m.created_at)))
 )

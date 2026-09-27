@@ -2679,7 +2679,7 @@ function makeParseDeps(
     // This user's own log, last 10 days, through THEIR client: RLS keeps it
     // theirs. Started now so it is ready by the time extract finishes.
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
-      ? { load: fetchMemoryEntries(userClient) }
+      ? { load: () => fetchMemoryEntries(userClient) }
       : undefined,
     preciseMatch: PRECISE_MATCH_MODE !== "off" && JEV_API_KEY
       ? {

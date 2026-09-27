@@ -912,7 +912,7 @@ export interface ParseMealDeps {
    *  through their own client so RLS keeps them theirs. A food Jev says IS a
    *  line answers it before any other source, in every tier, on a first-shot
    *  log only. Absent: no memory, the tiers run as before. */
-  userMemory?: { load: Promise<{ entries: MemoryEntry[]; timeZone: string | null }> };
+  userMemory?: { load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }> };
   anthropicApiKey: string;
   model: string;
   maxTokens: number;
@@ -5014,6 +5014,11 @@ async function runParseMealCore(
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
+  // The user's memory is read only for a first-shot log (see memoryP below),
+  // and started now so the read overlaps the extract call.
+  const memoryLoadP = (!hasPrevious && deps.userMemory && deps.jev)
+    ? deps.userMemory.load().catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }))
+    : null;
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -5546,9 +5551,9 @@ async function runParseMealCore(
   // what the user asked us not to do. Started now, awaited where each tier
   // needs it, so Quick still paints its rows first.
   let memTimeZone: string | null = null;
-  const memoryP: Promise<Array<MemoryMatch | null>> = (!hasPrevious && deps.userMemory && deps.jev)
+  const memoryP: Promise<Array<MemoryMatch | null>> = memoryLoadP && deps.jev
     ? (async () => {
-      const loaded = await deps.userMemory!.load.catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }));
+      const loaded = await memoryLoadP;
       memTimeZone = loaded.timeZone;
       const foods = buildMemory(loaded.entries, tier);
       if (foods.length === 0) return toResolve.map(() => null);
@@ -5603,7 +5608,9 @@ async function runParseMealCore(
   // food; what the catalog added was a way to be precisely wrong.
   //
   // So Quick makes NO lookup: no catalog search, no OFF, no FatSecret, no
-  // precise-cache read, and no row re-read in verifyItems. The rows were
+  // precise-cache read, and no row re-read in verifyItems. The one exception
+  // is the user's OWN memory (owner decision 2026-09-27): foods they logged
+  // in the last 10 days, one Jev call, and only when they have any. The rows were
   // painted above from these same estimates, so the fill below cannot move a
   // number the user has already seen. fastNoCatalog.test.ts counts every
   // lookup to keep it that way. Thorough and Precise are untouched.
