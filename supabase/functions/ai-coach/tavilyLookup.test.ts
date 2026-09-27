@@ -6,6 +6,7 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
+  brandFromPages,
   findPanelText,
   foodLabel,
   type PageReport,
@@ -51,7 +52,7 @@ Deno.test("foodLabel does not repeat a brand already in the name", () => {
 
 const report = (over: Partial<PageReport>): PageReport => ({
   page_id: "p1", same_food: true, basis: "per_100g", serving_grams: null, serving_label: null,
-  kcal: 72, energy_kj: null, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5, fiber_g: null, ...over,
+  kcal: 72, energy_kj: null, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5, fiber_g: null, brand: null, ...over,
 });
 
 Deno.test("readingFromReport keeps a per-100 g panel as printed", () => {
@@ -309,7 +310,7 @@ function preciseDeps(fetchFn: typeof fetch, provider: "anthropic" | "tavily"): P
 
 /** Routes Tavily/Jev to fakeNet and Anthropic to a canned answer, counting
  *  which Anthropic tool each call carried. */
-function preciseNet(tavilyStatus: number, anthropicTools: string[][]): typeof fetch {
+function preciseNet(tavilyStatus: number, anthropicTools: string[][], pageBrand: string | null = null): typeof fetch {
   const calls = newCalls();
   const tav = fakeNet({ searches: [{ status: tavilyStatus, results: [RIGHT] }] }, calls);
   return (async (url: string | URL | Request, init?: RequestInit) => {
@@ -324,7 +325,7 @@ function preciseNet(tavilyStatus: number, anthropicTools: string[][]): typeof fe
         usage: { input_tokens: 900, output_tokens: 80 },
         content: [{
           type: "tool_use", name: "report_page_panels",
-          input: { pages: [{ page_id: "p1", same_food: true, basis: "per_100g", kcal: 72, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5 }] },
+          input: { pages: [{ page_id: "p1", same_food: true, basis: "per_100g", kcal: 72, protein_g: 3.1, carb_g: 4.6, fat_g: 4.5, brand: pageBrand }] },
         }],
       });
     }
@@ -510,4 +511,44 @@ Deno.test("Precise searches in the user's own country, and no country for an unk
   };
   assertEquals(await run(async () => "united states"), "united states");
   assertEquals(await run(async () => null), null);
+});
+
+// ── Brand from the pages ────────────────────────────────────────────────────
+
+Deno.test("the failure this prevents: a brand left inside the name is stored as no brand", () => {
+  assertEquals(brandFromPages({ name: "Pintola rice cake", brand: null }, ["Pintola", "Pintola"]), "Pintola");
+});
+
+Deno.test("a page brand the user never typed is not stored", () => {
+  // "rice cake" asked for no brand; a Pintola page answering it must not brand the row.
+  assertEquals(brandFromPages({ name: "rice cake", brand: null }, ["Pintola"]), null);
+});
+
+Deno.test("a brand of several words is matched whole, in the page's spelling", () => {
+  assertEquals(brandFromPages({ name: "country delight low fat milk", brand: null }, ["Country Delight"]), "Country Delight");
+});
+
+Deno.test("the line's own brand is kept over the pages'", () => {
+  assertEquals(brandFromPages({ name: "masti dahi", brand: "Amul" }, ["Amul Dairy"]), "Amul");
+});
+
+Deno.test("the most common page brand wins", () => {
+  assertEquals(brandFromPages({ name: "sunfeast dark fantasy", brand: null }, ["Dark Fantasy", "Sunfeast", "Sunfeast"]), "Sunfeast");
+});
+
+Deno.test("Precise writes the pages' brand to the cache when extract left it in the name", async () => {
+  const tools: string[][] = [];
+  const rows: Array<{ brand: string | null; cache_key: string }> = [];
+  const deps = {
+    ...preciseDeps(preciseNet(200, tools, "Amul"), "tavily"),
+    preciseCachePut: async (row: { brand: string | null; cache_key: string }) => { rows.push(row); },
+  } as ParseMealDeps;
+  const item = { name: "amul masti dahi", brand: null, quantity: 1, unit: "cup" } as never;
+  const found = await superLookupOne(deps, item, () => {}, () => {});
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].brand, "Amul");
+  // And the same brand on this turn's candidate, not only on the cache row.
+  assertEquals(found?.brand, "Amul");
+  // The key stays on the words as extracted, so the same line still hits.
+  assertEquals(rows[0].cache_key, "amul masti dahi");
 });
