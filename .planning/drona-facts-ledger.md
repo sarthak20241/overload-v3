@@ -109,15 +109,27 @@ already the local day, sleep sits on the WAKE day. Built as
 | deltas vs previous week | sleep avg, steps avg, readiness avg |
 | readiness parts (0144) | per day: tier (A1 HRV+HR+sleep, A2 HR+sleep, A3 sleep, none), sleep vs own baseline or population, points each signal moved the score, why a signal did not count (no_reading / short_baseline / needs_rhr / needs_sleep), load and food points. Week: parts days, tier days, no-score days, unused-signal days, avg points. **Saved by the app from the next build on; history before it was never saved** |
 
-## 5. Plan  [step 4]
+## 5. Plan  [STEP 5, LIVE 2026-09-27, migration 0145]
 
-Source: `plan_changes`, `coach_programs`, `coach_program_phases`.
+Source: `plan_changes` (the diary, begun 2026-09-17), `coach_programs`,
+`coach_program_phases`, `routines`, `user_profiles`. `p_*` columns on the week.
 
 | Fact | Notes |
 |---|---|
-| changes | every change that week: entity, from, to, **who** (manual/chat/card/auto/onboarding) |
-| days_since_target_change | at week's end |
-| phase_seq, week_of_phase, weeks_left | where they are on the road |
+| p_diary_days | days of the week the diary covers (0-7). 0 changes on a 0-day week = not known |
+| p_changes, by source, by entity | who: manual / chat / card / auto / onboarding / system |
+| p_target_changes, goal, program, phase, routine, card changes | counts |
+| p_change_list | every change: on, entity, action, who, label, what changed (for the coach to read) |
+| p_days_since_target_change, _plan_change | at the week's last day; null = none recorded |
+| p_kcal_target, delta on the week, p_protein_target_g, p_target_src | as they stood THEN: recorded / inferred / assumed_current |
+| p_goal, goal weight, weekly sessions, p_goal_src | same rule, `private.drona_goal_on` |
+| p_program_* | the program running then: title, goal, start, total weeks, week number (<= 0 = not started), weeks left, target date and weight, src |
+| p_phase_* | the phase running then: seq, name, week of phase, weeks, weeks left, built (its routines existed yet), its own kcal and protein |
+| p_programs_created, _ended | this week |
+
+A program ran from its creation until its archive: the diary if recorded, else
+the next program's creation (saving a new one archives the old), else its last
+update. One active at a time (unique index).
 
 ## 6. Words  [step 4, the only domain Jev reads]
 
@@ -397,6 +409,23 @@ A first pass over the 115 old scores (today's data, not the data the app saw):
 85 compared sleep with the person's own nights, 30 with the population; 70 used
 HRV + resting HR + sleep; resting HR was read but unused on 7, HRV on 10; food
 nudged 22.
+
+## Step 5 is live (2026-09-27): plan
+
+`0145_drona_plan_facts`. All 116 diary rows are accounted for (by week, by
+source, by entity and in the lists). Proved on a made-up person, 14 checks, all
+pass (`scripts/drona-facts/plan.mts`), including a program edited after it
+ended, which must not move its end.
+
+What the plan facts show:
+- **Programs are rarely followable.** 15 of 16 people have a program this week;
+  only 2 have the current phase's routines built.
+- **The plan is changed by hand.** 105 of 116 changes manual, 8 chat, 2 auto,
+  1 card.
+- **Programs churn.** 25 created in all; the owner made 4 in one week.
+- **Goals disagree** for 2 people: the profile says hypertrophy, the program
+  fat_loss (the owner's "12-Week Cut to 59 kg" is itself goal hypertrophy).
+- **Fuel days are not in the diary** (0139): a fuel-day change is invisible.
 
 ## Build order
 
