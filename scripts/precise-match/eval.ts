@@ -24,12 +24,15 @@ import {
   decideKind,
   decideMatch,
   decideMatchNoul,
+  decideScoreStage,
+  decideTiebreak,
   foodKey,
   kindQuestion,
   type MatchCandidate,
   matchNoulQuestions,
   matchQuestion,
   matchScoreQuestions,
+  tiebreakQuestion,
   mealState,
 } from "../../supabase/functions/ai-coach/preciseMatch.ts";
 import { KIND_CASES } from "./kindCases.ts";
@@ -58,7 +61,10 @@ const DUMP = Deno.env.get("DUMP");
 // MATCH_MODE=noul asks one yes/no per candidate row instead of one choice.
 const MODE = Deno.env.get("MATCH_MODE") ?? "choice";
 // Both per-row forms (yes/no and graded score) share the per-row gate.
-const NOUL = MODE === "noul" || MODE === "score";
+const NOUL = MODE === "noul" || MODE === "score" || MODE === "tiebreak";
+// tiebreak: score each row (stage 1), then one side-by-side choice for foods
+// whose top rows disagree on numbers (stage 2). Owner's choice B.
+const TIEBREAK = MODE === "tiebreak";
 const dump: { kind: unknown[]; match: unknown[] } = { kind: [], match: [] };
 
 function chunks<T>(xs: T[], n: number): T[][] {
@@ -118,6 +124,18 @@ function noulAsAnswer(answers: Record<string, unknown>, key: string, n: number):
   const top = Object.entries(probs).sort((a, b) => b[1] - a[1])[0] ?? ["none", 0];
   return { type: "choice", choice: top[0], confidence: top[1], probabilities: probs };
 }
+function decideFor(
+  r: { cands: MatchCandidate[]; answer: JevChoiceAnswer | null; tieRows?: MatchCandidate[]; tieAnswer?: JevChoiceAnswer | null },
+  kind: Parameters<typeof decideMatch>[0],
+  item: { name: string; brand: string | null },
+  floor?: number,
+) {
+  if (!TIEBREAK) return decide(kind, item, r.cands, r.answer, floor);
+  const scores = r.cands.map((_, i) => r.answer?.probabilities?.[`c${i + 1}`] ?? null);
+  const st = decideScoreStage(kind, item, r.cands, scores, floor);
+  if ("decision" in st) return st.decision;
+  return decideTiebreak(kind, item, r.cands, st.tiebreak, scores, r.tieAnswer ?? null, floor);
+}
 const decide = (kind: Parameters<typeof decideMatch>[0], item: { name: string; brand: string | null }, cands: MatchCandidate[], a: JevChoiceAnswer | null, floor?: number) =>
   NOUL
     ? decideMatchNoul(kind, item, cands, cands.map((_, i) => a?.probabilities?.[`c${i + 1}`] ?? null), floor,
@@ -129,11 +147,14 @@ const CANDIDATES: Record<string, MatchCandidate[]> = JSON.parse(
 
 async function runMatch(group: "tune" | "fresh") {
   const qs = QUERIES.filter((q) => q.group === group && MATCH_LABELS[q.id]);
-  const results: Array<{ id: string; line: string; answer: ReturnType<typeof asChoice>; cands: MatchCandidate[] }> = [];
+  const results: Array<{
+    id: string; line: string; answer: ReturnType<typeof asChoice>; cands: MatchCandidate[];
+    tieRows?: MatchCandidate[]; tieAnswer?: JevChoiceAnswer | null;
+  }> = [];
   for (const batch of chunks(qs, BATCH)) {
     const questions: Record<string, JevQuestion> = {};
     batch.forEach((q, i) => {
-      if (MODE === "score") Object.assign(questions, matchScoreQuestions(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []));
+      if (MODE === "score" || TIEBREAK) Object.assign(questions, matchScoreQuestions(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []));
       else if (NOUL) Object.assign(questions, matchNoulQuestions(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []));
       else questions[`${foodKey(i)}_match`] = matchQuestion(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []);
     });
@@ -150,13 +171,38 @@ async function runMatch(group: "tune" | "fresh") {
     });
   }
 
-  console.log(`\n── MATCH ${MODE === "score" ? "per-row score" : NOUL ? "per-row yes/no" : "one choice"} (${group}, ${results.length}) ──`);
+  if (TIEBREAK) {
+    // Stage 2 for every food that needs one at the lowest floor tried; the tied
+    // rows do not depend on the floor, only whether the best row reached it.
+    const need = results
+      .map((r) => {
+        const label = MATCH_LABELS[r.id];
+        const q = QUERIES.find((x) => x.id === r.id)!;
+        const scores = r.cands.map((_, i) => r.answer?.probabilities?.[`c${i + 1}`] ?? null);
+        const st = decideScoreStage(label.kind, { name: q.name, brand: q.brand }, r.cands, scores, Math.min(...FLOORS));
+        return "tiebreak" in st ? { r, rows: st.tiebreak, kind: label.kind, q } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x);
+    for (const batch of chunks(need, BATCH)) {
+      const questions: Record<string, JevQuestion> = {};
+      batch.forEach((n, i) => { questions[`${foodKey(i)}_tie`] = tiebreakQuestion(foodKey(i), n.kind, n.rows); });
+      const res = await askJev(mealState(batch.map((n) => n.q)), questions, jev);
+      if (!res.ok) console.error(`  jev failed (tie-break): ${res.failure} ${res.detail}`);
+      batch.forEach((n, i) => {
+        n.r.tieRows = n.rows;
+        n.r.tieAnswer = res.ok ? asChoice(res.response.answers[`${foodKey(i)}_tie`]) : null;
+      });
+    }
+    console.log(`(tie-break asked for ${need.length} of ${results.length} foods)`);
+  }
+
+  console.log(`\n── MATCH ${TIEBREAK ? "score + tie-break" : MODE === "score" ? "per-row score" : NOUL ? "per-row yes/no" : "one choice"} (${group}, ${results.length}) ──`);
   for (const floor of FLOORS) {
     let right = 0, falseM = 0, miss = 0, rightNone = 0;
     for (const r of results) {
       const label = MATCH_LABELS[r.id];
       const q = QUERIES.find((x) => x.id === r.id)!;
-      const d = decide(label.kind, { name: q.name, brand: q.brand }, r.cands, r.answer, floor);
+      const d = decideFor(r, label.kind, { name: q.name, brand: q.brand }, floor);
       const anyOk = label.ok.length > 0;
       if (d.match) {
         if (label.ok.includes(d.match.id)) right++;
@@ -170,7 +216,7 @@ async function runMatch(group: "tune" | "fresh") {
   for (const r of results) {
     const label = MATCH_LABELS[r.id];
     const q = QUERIES.find((x) => x.id === r.id)!;
-    const d = decide(label.kind, { name: q.name, brand: q.brand }, r.cands, r.answer);
+    const d = decideFor(r, label.kind, { name: q.name, brand: q.brand });
     const picked = r.answer?.choice?.startsWith("c") ? r.cands[Number(r.answer.choice.slice(1)) - 1] : null;
     const verdict = d.match
       ? (label.ok.includes(d.match.id) ? "ok  " : "FALSE")
@@ -191,7 +237,9 @@ async function runMatch(group: "tune" | "fresh") {
     console.log(
       `  ${verdict} ${r.id.padEnd(18)} ${r.line.padEnd(34)} -> ${r.answer?.choice ?? "-"} @ ${(r.answer?.confidence ?? 0).toFixed(2)}` +
         `${picked ? ` "${picked.name}"${picked.brand ? ` [${picked.brand}]` : ""} ${picked.source}` : ""}${why}` +
-        `  | group ${d.confidence.toFixed(2)} | ${top3}`,
+        `  | group ${d.confidence.toFixed(2)} | ${top3}` +
+        (r.tieRows ? `  | TIE [${r.tieRows.map((c) => `${c.name.slice(0, 28)} ${c.kcal}`).join(" / ")}] -> ` +
+          `${r.tieAnswer?.choice ?? "-"} @ ${(r.tieAnswer?.confidence ?? 0).toFixed(2)}` : ""),
     );
   }
 }

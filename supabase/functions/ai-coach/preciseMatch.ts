@@ -255,6 +255,10 @@ export function decideMatch(
   candidates: MatchCandidate[],
   answer: JevChoiceAnswer | null,
   floor = MATCH_FLOOR,
+  /** Rows a crowd-sourced pick may be corroborated by. Defaults to the
+   *  candidates asked about; a tie-break asks about a subset but corroborates
+   *  against every row search returned. */
+  corroborateFrom: MatchCandidate[] = candidates,
 ): MatchDecision {
   if (!answer) return { match: null, reason: "no_answer", confidence: 0 };
   if (answer.choice === NO_MATCH) return { match: null, reason: "none", confidence: answer.confidence };
@@ -273,7 +277,7 @@ export function decideMatch(
     .filter((x) => gateReason(kind, item, x.c) === null)
     .sort((a, b) => b.p - a.p)[0];
   if (!served) return { match: null, reason: gateReason(kind, item, top) ?? "kind", confidence };
-  if (CROWD_SOURCES.has(served.c.source) && !candidates.some((c) => c.id !== served.c.id && sameNumbers(c, served.c))) {
+  if (CROWD_SOURCES.has(served.c.source) && !corroborateFrom.some((c) => c.id !== served.c.id && sameNumbers(c, served.c))) {
     return { match: null, reason: "uncorroborated", confidence };
   }
   return { match: served.c, confidence };
@@ -316,6 +320,85 @@ export function decideMatchNoul(
   }
   const why = gateReason(kind, item, best.c);
   return { match: null, reason: why ?? "uncorroborated", confidence: best.p };
+}
+
+// ── Score each row, then break ties side by side (owner's choice B) ─────────
+//
+// Stage 1 scores every row on its own (matchScoreQuestions), so two equally
+// right rows both score high instead of splitting one 100%. Judged alone, Jev
+// cannot tell close variants apart ("boiled sweet potato" scored the 82 kcal
+// row 0.96 and the 115 kcal "NS as to fat" row 0.99), so when the rows at the
+// top DISAGREE ON NUMBERS, stage 2 asks one multiple-choice question with only
+// those rows side by side, where Jev can compare them. Rows at the top that
+// agree on numbers need no tie-break: either gives the right answer.
+
+/** Rows within this much of the top score count as "at the top". */
+export const TOP_MARGIN = 0.1;
+/** At most this many rows go into a tie-break question. */
+export const MAX_TIEBREAK_ROWS = 5;
+/** The tie-break's pooled chance must reach this. Lower than MATCH_FLOOR on
+ *  purpose: every row in it already scored at the floor on its own, so this
+ *  only has to say WHICH, not WHETHER. */
+export const TIEBREAK_FLOOR = 0.6;
+
+export type ScoreStage =
+  | { decision: MatchDecision }
+  | { tiebreak: MatchCandidate[]; top: number };
+
+/**
+ * Stage 1. Returns a final decision, or the rows a tie-break must decide
+ * between. A food goes to a tie-break only when its best row reaches the floor
+ * and a row with DIFFERENT numbers sits within TOP_MARGIN of it.
+ */
+export function decideScoreStage(
+  kind: FoodKind,
+  item: MatchItem,
+  candidates: MatchCandidate[],
+  scores: Array<number | null>,
+  floor = MATCH_FLOOR,
+): ScoreStage {
+  const ranked = candidates.map((c, i) => ({ c, p: scores[i] ?? 0 })).sort((a, b) => b.p - a.p);
+  const best = ranked[0];
+  if (!best) return { decision: { match: null, reason: "no_answer", confidence: 0 } };
+  if (best.p < floor) return { decision: { match: null, reason: "below_floor", confidence: best.p } };
+  const top = ranked.filter((x) => x.p >= best.p - TOP_MARGIN);
+  if (top.some((x) => !sameNumbers(x.c, best.c))) {
+    return { tiebreak: top.slice(0, MAX_TIEBREAK_ROWS).map((x) => x.c), top: best.p };
+  }
+  for (const x of ranked) {
+    if (x.p < floor) break;
+    if (!sameNumbers(x.c, best.c)) continue;
+    if (gateReason(kind, item, x.c) !== null) continue;
+    if (CROWD_SOURCES.has(x.c.source) && !candidates.some((o) => o.id !== x.c.id && sameNumbers(o, x.c))) continue;
+    return { decision: { match: x.c, confidence: x.p } };
+  }
+  return { decision: { match: null, reason: gateReason(kind, item, best.c) ?? "uncorroborated", confidence: best.p } };
+}
+
+/** Stage 2 question: the tied rows only, side by side. */
+export function tiebreakQuestion(key: string, kind: FoodKind, rows: MatchCandidate[]): JevQuestion {
+  return matchQuestion(key, kind, rows);
+}
+
+/**
+ * Stage 2 decision: the choice gate over the tied rows (pooling rows with the
+ * same numbers, the same brand / plain-food / crowd rules), and the row served
+ * must itself have scored at the floor in stage 1.
+ */
+export function decideTiebreak(
+  kind: FoodKind,
+  item: MatchItem,
+  candidates: MatchCandidate[],
+  rows: MatchCandidate[],
+  scores: Array<number | null>,
+  answer: JevChoiceAnswer | null,
+  floor = MATCH_FLOOR,
+): MatchDecision {
+  const d = decideMatch(kind, item, rows, answer, TIEBREAK_FLOOR, candidates);
+  if (!d.match) return d;
+  const stage1 = scores[candidates.findIndex((c) => c.id === d.match!.id)] ?? 0;
+  if (stage1 < floor) return { match: null, reason: "below_floor", confidence: stage1 };
+  return d;
 }
 
 /** Jev's kind answer, or null below the floor (the caller then treats the

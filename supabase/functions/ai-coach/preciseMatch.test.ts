@@ -10,6 +10,8 @@ import {
   decideKind,
   decideMatch,
   decideMatchNoul,
+  decideScoreStage,
+  decideTiebreak,
   kindQuestion,
   matchQuestion,
   type MatchCandidate,
@@ -171,4 +173,53 @@ Deno.test("per-row: below the floor, gated rows and lone crowd rows are not serv
   const real: MatchCandidate = { id: "l2", name: "Lay's salted chips", brand: "Lay's", source: "off", kcal: 550, protein_g: 7 };
   const lone = decideMatchNoul("packaged", { name: "Lay's classic salted chips", brand: "Lay's" }, [perServing, real], [0.91, 0.43]);
   assertEquals(lone.match, null);
+});
+
+// ── Score each row, then a side-by-side tie-break (choice B) ─────────────────
+
+const SP_RIGHT: MatchCandidate = { id: "r", name: "Sweet potato, boiled, no added fat", brand: null, source: "usda", kcal: 82, protein_g: 1.4 };
+const SP_FAT: MatchCandidate = { id: "f", name: "Sweet potato, boiled, NS as to fat", brand: null, source: "usda", kcal: 115, protein_g: 1.4 };
+const SP_ITEM = { name: "boiled sweet potato", brand: null };
+
+Deno.test("stage 1: equally right rows with the same numbers are served, no tie-break", () => {
+  const a: MatchCandidate = { id: "a", name: "Banana", brand: null, source: "web_verified", kcal: 89, protein_g: 1.1 };
+  const b: MatchCandidate = { id: "b", name: "Banana, raw", brand: null, source: "usda", kcal: 97, protein_g: 0.7 };
+  const st = decideScoreStage("plain", { name: "banana", brand: null }, [a, b], [0.95, 0.92]);
+  assertEquals("decision" in st && st.decision.match?.id, "a");
+});
+
+Deno.test("stage 1: top rows that disagree on numbers go to a tie-break with both", () => {
+  const st = decideScoreStage("plain", SP_ITEM, [SP_RIGHT, SP_FAT], [0.96, 0.99]);
+  assertEquals("tiebreak" in st && st.tiebreak.map((c) => c.id).sort(), ["f", "r"]);
+});
+
+Deno.test("stage 1: a clear winner needs no tie-break; below the floor is a miss", () => {
+  const clear = decideScoreStage("plain", SP_ITEM, [SP_RIGHT, SP_FAT], [0.95, 0.5]);
+  assertEquals("decision" in clear && clear.decision.match?.id, "r");
+  const low = decideScoreStage("plain", SP_ITEM, [SP_RIGHT, SP_FAT], [0.6, 0.55]);
+  assertEquals("decision" in low && low.decision.match, null);
+});
+
+Deno.test("stage 2: a clear side-by-side pick is served, an unclear one is a miss", () => {
+  const rows = [SP_FAT, SP_RIGHT];
+  const scores = [0.96, 0.99];
+  const cands = [SP_RIGHT, SP_FAT];
+  const picked = decideTiebreak("plain", SP_ITEM, cands, rows, scores, split({ c2: 0.72, c1: 0.2, none: 0.08 }));
+  assertEquals(picked.match?.id, "r");
+  const unclear = decideTiebreak("plain", SP_ITEM, cands, rows, scores, split({ c2: 0.5, c1: 0.4, none: 0.1 }));
+  assertEquals(unclear.match, null);
+});
+
+Deno.test("stage 2: the winner must also have scored at the floor on its own", () => {
+  const d = decideTiebreak("plain", SP_ITEM, [SP_RIGHT, SP_FAT], [SP_FAT, SP_RIGHT], [0.7, 0.99], split({ c2: 0.9, none: 0.1 }));
+  assertEquals(d.match === null && d.reason, "below_floor");
+});
+
+Deno.test("stage 2: a crowd row is corroborated by any searched row, not only the tied ones", () => {
+  const off1: MatchCandidate = { id: "o1", name: "Kurkure Masala Munch", brand: "Kurkure", source: "off", kcal: 555, protein_g: 6.4 };
+  const off2: MatchCandidate = { id: "o2", name: "Masala munch", brand: null, source: "off", kcal: 558, protein_g: 6.4 };
+  const other: MatchCandidate = { id: "o3", name: "Kurkure Puffcorn", brand: "Kurkure", source: "off", kcal: 92, protein_g: 1.1 };
+  const item = { name: "Kurkure masala munch", brand: "Kurkure" };
+  const d = decideTiebreak("packaged", item, [off1, other, off2], [off1, other], [0.95, 0.9, 0.5], split({ c1: 0.9, none: 0.1 }));
+  assertEquals(d.match?.id, "o1");
 });
