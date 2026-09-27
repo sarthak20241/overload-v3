@@ -21,14 +21,28 @@
  * dependencies out of it and fails. Same flag for `deno check`.
  * Needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY: precise_cache is granted to
  * service_role and nobody else (see migration 0109).
+ *
+ * And JEV_API_KEY. Before a row is published, Jev is asked the same "is one of
+ * these catalog rows this food?" questions Precise asks live (ourSources.ts), so
+ * "eggs" links to USDA's egg instead of becoming a second egg. Without the key,
+ * or when Jev cannot answer, NOTHING new is published (skip:match-unavailable);
+ * links and refreshes of rows already published still run.
+ *
+ * --audit: also ask Jev about rows ALREADY published, and print the ones that
+ * duplicate another catalog row. Prints only; retiring a row is a human's call.
  */
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
+  applyCatalogMatch,
+  brandFromName,
+  type CatalogMatch,
   type CatalogRow,
   type PromotionCandidate,
   promotionDecision,
 } from "../../supabase/functions/ai-coach/promoteCache.ts";
+import { matchOurSources, selectMatchRows } from "../../supabase/functions/ai-coach/ourSources.ts";
+import type { MatchCandidate } from "../../supabase/functions/ai-coach/preciseMatch.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -37,8 +51,11 @@ if (!SUPABASE_URL || !SERVICE_KEY) {
   Deno.exit(1);
 }
 
+const JEV_API_KEY = Deno.env.get("JEV_API_KEY") ?? "";
+
 const args = Deno.args;
 const DRY_RUN = args.includes("--dry-run");
+const AUDIT = args.includes("--audit");
 // Validated, not just parsed. The workflow passes whatever an operator typed
 // into the Actions box straight through, and `Number("200 --dry-run")` is NaN,
 // which PostgREST turns into `.limit(NaN)` - a request that either errors far
@@ -78,6 +95,110 @@ async function catalogNeighbours(cand: PromotionCandidate): Promise<CatalogRow[]
     .in("id", [...ids]);
   if (rowsErr) throw new Error(`foods lookup failed: ${rowsErr.message}`);
   return (rows ?? []) as CatalogRow[];
+}
+
+/** Every page of a query, 1000 rows at a time (PostgREST's cap). */
+// deno-lint-ignore no-explicit-any
+async function allRows<T>(build: () => any): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await build().range(from, from + 999);
+    if (error) throw new Error(error.message);
+    out.push(...(data as T[]));
+    if ((data as T[]).length < 1000) return out;
+  }
+}
+
+const foldBrand = (s: string) =>
+  s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** What brandFromName needs: every brand the catalog and the cache know, and
+ *  every word of a lab or curated food name. Read once per run. */
+async function brandLexicon(): Promise<{ brands: Set<string>; foodWords: Set<string> }> {
+  const [catalogBrands, cacheBrands, labNames] = await Promise.all([
+    allRows<{ brand: string }>(() => db.from("foods").select("brand").not("brand", "is", null).is("created_by", null)),
+    allRows<{ brand: string }>(() => db.from("precise_cache").select("brand").not("brand", "is", null)),
+    allRows<{ name: string }>(() => db.from("foods").select("name").in("source", ["usda", "cofid", "ciqual", "curated"])),
+  ]);
+  const brands = new Set<string>();
+  for (const r of [...catalogBrands, ...cacheBrands]) {
+    const b = foldBrand(r.brand);
+    if (b.length >= 3) brands.add(b);
+  }
+  const foodWords = new Set<string>();
+  for (const r of labNames) for (const w of foldBrand(r.name).split(" ")) if (w) foodWords.add(w);
+  return { brands, foodWords };
+}
+
+/** Catalog rows Jev judges for this cache row: the same trigram + semantic mix
+ *  Precise's live match uses (selectMatchRows), minus `exclude` (the row we
+ *  published from it, when auditing). Semantic search uses the row's own 0141
+ *  embedding, so no embedding call is made here. */
+async function matchCandidates(
+  cand: PromotionCandidate,
+  exclude: string | null,
+): Promise<Array<{ food: MatchCandidate; meta: MatchCandidate }>> {
+  const query = cand.brand && !cand.display_name.toLowerCase().includes(cand.brand.toLowerCase())
+    ? `${cand.brand} ${cand.display_name}`
+    : cand.display_name;
+  const { data: embRow } = await db.from("precise_cache").select("embedding").eq("id", cand.id).maybeSingle();
+  const embedding = (embRow as { embedding?: string | null } | null)?.embedding ?? null;
+  const [tri, sem] = await Promise.all([
+    db.rpc("search_foods_ranked_with_servings", { q: query, lim: 30 }),
+    embedding
+      ? db.rpc("search_foods_semantic_with_servings", { p_query_embedding: embedding, lim: 6 })
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (tri.error) throw new Error(`trigram search failed for "${query}": ${tri.error.message}`);
+  if (sem.error) throw new Error(`semantic search failed for "${query}": ${sem.error.message}`);
+  type Hit = { id: string; name: string; brand: string | null; kcal: number | null; protein_g: number | null };
+  const keep = (rows: unknown) => ((rows ?? []) as Hit[]).filter((r) => r.id !== exclude);
+  const trigram = keep(tri.data);
+  const semantic = keep(sem.data);
+  const ids = [...new Set([...trigram, ...semantic].map((r) => r.id))];
+  if (ids.length === 0) return [];
+  const { data: srcRows, error } = await db.from("foods").select("id, source").in("id", ids);
+  if (error) throw new Error(`foods source lookup failed: ${error.message}`);
+  const sourceOf = new Map(((srcRows ?? []) as Array<{ id: string; source: string }>).map((r) => [r.id, r.source]));
+  return selectMatchRows(trigram, semantic, (id) => sourceOf.get(id)).map((r) => {
+    const meta: MatchCandidate = {
+      id: r.id,
+      name: r.name,
+      brand: r.brand,
+      source: sourceOf.get(r.id) ?? "catalog",
+      kcal: r.kcal === null ? null : Number(r.kcal),
+      protein_g: r.protein_g === null ? null : Number(r.protein_g),
+    };
+    return { food: meta, meta };
+  });
+}
+
+/** Jev's verdict on "is this food already in the catalog?". Anything short of a
+ *  clear answer is "unavailable", which publishes nothing. An unsure KIND counts
+ *  as unclear too: the match then falls back to the packaged rule, which can
+ *  never pick an unbranded lab row, so a plain food would look new every time. */
+async function catalogMatch(cand: PromotionCandidate, exclude: string | null = null): Promise<CatalogMatch> {
+  if (!JEV_API_KEY) return { status: "unavailable", detail: "no JEV_API_KEY" };
+  let searchError: string | null = null;
+  const res = await matchOurSources<MatchCandidate>({
+    jev: { apiKey: JEV_API_KEY, timeoutMs: 20_000 },
+    findCandidates: () =>
+      matchCandidates(cand, exclude).catch((e) => {
+        searchError = String(e instanceof Error ? e.message : e).slice(0, 160);
+        throw e;
+      }),
+  }, { name: cand.display_name, brand: cand.brand });
+  if (searchError) return { status: "unavailable", detail: searchError };
+  const t = res.trace as { kind?: string | null; candidates?: number; decision?: { reason?: string } };
+  if (res.match) {
+    const m = res.match.meta;
+    return { status: "matched", row: { id: m.id, name: m.name, source: m.source, kcal: Number(m.kcal ?? NaN) } };
+  }
+  if (t.candidates === 0) return { status: "none" };
+  if (!t.kind) return { status: "unavailable", detail: "Jev unsure what kind of food this is" };
+  const reason = t.decision?.reason ?? "";
+  if (reason.startsWith("jev")) return { status: "unavailable", detail: reason };
+  return { status: "none" };
 }
 
 async function markPromoted(cacheId: string, foodId: string) {
@@ -152,6 +273,8 @@ async function refreshFood(foodId: string, cand: PromotionCandidate, agreeing: s
   const { error } = await db
     .from("foods")
     .update({
+      // Only ever fills a brand in: a published brand is never overwritten.
+      ...(cand.brand ? { brand: cand.brand } : {}),
       kcal: cand.kcal,
       protein_g: cand.protein_g,
       carb_g: cand.carb_g,
@@ -194,9 +317,28 @@ async function main() {
   const count = (k: string) => (tally[k] = (tally[k] ?? 0) + 1);
 
   console.log(`${candidates.length} cache rows in scope${DRY_RUN ? " (dry run)" : ""}`);
+  if (!JEV_API_KEY) console.log("JEV_API_KEY is not set: no new rows will be published this run");
+
+  const { brands, foodWords } = await brandLexicon();
 
   for (const cand of candidates) {
-    const decision = promotionDecision(cand, await catalogNeighbours(cand), now);
+    if (!cand.brand) {
+      const found = brandFromName(cand.display_name, brands, foodWords);
+      if (found) {
+        console.log(`  brand "${found}" found in "${cand.display_name}"`);
+        cand.brand = found;
+      }
+    }
+    const neighbours = await catalogNeighbours(cand);
+    let decision = promotionDecision(cand, neighbours, now);
+    if (decision.action === "promote") decision = applyCatalogMatch(decision, cand, await catalogMatch(cand));
+
+    if (AUDIT && cand.promoted_food_id && neighbours.find((r) => r.id === cand.promoted_food_id)?.source === "web_verified") {
+      const dup = await catalogMatch(cand, cand.promoted_food_id);
+      if (dup.status === "matched") {
+        console.log(`? ${cand.display_name} (published ${cand.promoted_food_id}) duplicates ${dup.row.name} (${dup.row.source}, ${dup.row.kcal} kcal, ${dup.row.id})`);
+      }
+    }
 
     switch (decision.action) {
       case "promote": {
@@ -226,6 +368,9 @@ async function main() {
         // the web disagree about a food we are already serving.
         if (decision.reason === "catalog-conflict") {
           console.log(`! ${cand.display_name}: ${decision.detail}`);
+        }
+        if (decision.reason === "match-unavailable" || decision.reason === "unverified") {
+          console.log(`- ${cand.display_name}: ${decision.reason} (${decision.detail})`);
         }
         break;
       }
