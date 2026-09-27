@@ -131,18 +131,25 @@ A program ran from its creation until its archive: the diary if recorded, else
 the next program's creation (saving a new one archives the old), else its last
 update. One active at a time (unique index).
 
-## 6. Words  [step 4, the only domain Jev reads]
+## 6. Words  [STEP 6, LIVE 2026-09-27, migration 0146, the only domain Jev reads]
 
-Source: `workouts.notes`, `workout_exercise_notes`, `user_exercise_notes`,
-`meals.note`, `coach_memory`, `user_profiles.injury_notes`.
+`drona_word_facts`: one row per piece of text the person wrote, with its local
+day, kind and where it was written. `wd_*` columns on the week. The facts store
+and count the text; they never interpret it.
 
-| Fact | Notes |
-|---|---|
-| workout_notes, exercise_notes, meal_notes | counts AND the text |
-| memory_added, memory_changed | counts AND the text |
-| injury_notes | the profile text as it stood |
+| Kind | Source | Notes |
+|---|---|---|
+| workout_note | `workouts.notes` | day = the workout's local day |
+| exercise_note | `workout_exercise_notes` | one session; context = exercise name |
+| sticky_note | `user_exercise_notes` | latest text only (an edit overwrites); day = last edit |
+| meal_note | `meals.note` | context = meal type |
+| chat_message | `coach_traces.last_user_message_preview` | the server keeps only the first 200 characters (is_preview); answered = Drona replied; a resend within 2 minutes marks the earlier send is_repeat, the last attempt counts. App-written requests (generate_plan, onboarding) left out |
+| memory | `coach_memory` | category / status / source, "key: value" |
 
-Text is stored so Jev can read it later. The facts layer does not interpret it.
+Week: counts per kind, chat messages / unanswered / repeats / by mode, memory
+facts, days with words, characters, `wd_texts` (every text in time order), and
+injury notes + training preferences as they stand NOW, on the running week only
+(the profile keeps no history).
 
 ## 7. Cards and answers  [step 4]
 
@@ -426,6 +433,22 @@ What the plan facts show:
 - **Goals disagree** for 2 people: the profile says hypertrophy, the program
   fat_loss (the owner's "12-Week Cut to 59 kg" is itself goal hypertrophy).
 - **Fuel days are not in the diary** (0139): a fuel-day change is invisible.
+
+## Step 6 is live (2026-09-27): words
+
+`0146_drona_word_facts`. Every piece of text is accounted for: 27 workout, 9
+exercise, 28 sticky and 21 meal notes, 613 chat sends (583 messages after 30
+resends, 14 never answered). Proved on a made-up person in IST, 13 checks, all
+pass (`scripts/drona-facts/words.mts`).
+
+What the words facts show:
+- **Drona's memory is empty.** 0 rows for everyone, and `remember_fact` has
+  never been called since it went live on 19 Sep (task spawned to find out why).
+- **Chat is kept on the phone.** The server has only a 200-character preview of
+  each message, so long messages reach the facts cut short.
+- **People barely write notes.** 85 notes in all, from a handful of people;
+  one person wrote all 21 meal notes.
+- **Profile words need care.** One injury note says just "No".
 
 ## Build order
 
