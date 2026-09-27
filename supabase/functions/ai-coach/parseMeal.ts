@@ -44,6 +44,12 @@ import {
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
+import { matchOurSources } from "./ourSources.ts";
+import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
+
+/** How long shadow mode may keep the user waiting for the our-sources match
+ *  AFTER the web lookup has answered. Past it the step is recorded unfinished. */
+export const SHADOW_GRACE_MS = 1500;
 import type { TavilyDeps } from "./tavily.ts";
 import type { JevDeps } from "./jev.ts";
 
@@ -934,8 +940,19 @@ export interface ParseMealDeps {
   tavily?: TavilyDeps;
   /** Jev, for judging which search results are about exactly this food. */
   jev?: JevDeps;
-  /** Tavily country boost ("india"). */
+  /** Tavily country boost ("india"). Used when resolveSearchCountry is absent. */
   searchCountry?: string | null;
+  /** The country for THIS user's searches, from their time zone (see
+   *  searchCountry.ts). When present its answer wins, null included: null
+   *  means "no boost", which is right for a zone we cannot place. */
+  resolveSearchCountry?(): Promise<string | null>;
+  /** Precise, our sources first (ourSources.ts, PRECISE_MATCH_MODE). "shadow"
+   *  runs the Jev match beside the web lookup and only records it; "on" serves
+   *  an accepted row and skips the web. Needs `jev`. */
+  preciseMatch?: {
+    mode: "off" | "shadow" | "on";
+    findCandidates(item: MatchItem): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>>;
+  };
 
   /** Super only: store what a lookup cost us to learn, so the next person asking
    *  about this food does not pay for it again. Upsert on cache_key; a
@@ -3003,10 +3020,13 @@ async function webFindingFor(
   onStep?: (step: ParseStep) => void,
 ): Promise<SuperFinding | undefined> {
   if (deps.webLookup === "tavily" && deps.tavily) {
+    const country = deps.resolveSearchCountry
+      ? await deps.resolveSearchCountry().catch(() => deps.searchCountry ?? null)
+      : deps.searchCountry ?? null;
     const out = await runTavilyLookup({
       tavily: deps.tavily,
       jev: deps.jev ?? null,
-      country: deps.searchCountry ?? null,
+      country,
       model: deps.model,
       log: deps.log,
       callModel: async (payload) => {
@@ -3196,8 +3216,47 @@ async function resolveOneItem(
   // exactly like a hit would; the write-through inside superLookup is what
   // stops the next person paying again.
   if (superLookup) {
+    // Our sources first (PRECISE_MATCH_MODE, see ourSources.ts). "on": a row we
+    // already hold that Jev and the gate accept answers, and the web is never
+    // paid for. "shadow": the same judgement runs BESIDE the web lookup and is
+    // only recorded, with the web's answer next to it for comparison, so the
+    // user gets exactly what they would have got without it.
+    const pm = deps.preciseMatch;
+    const ours = pm && pm.mode !== "off" && deps.jev
+      ? matchOurSources(
+        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log },
+        { name: item.name, brand: item.brand ?? null },
+      )
+      : null;
+    if (ours && pm?.mode === "on") {
+      const r = await ours;
+      steps.push({ iter: 1, tool: "our_sources", input: { mode: "on" }, result: r.trace });
+      if (r.match) {
+        toolCalls.push("our_sources_match");
+        return { ...item, candidates: [synthesizeVolumeAnchors(r.match.food)] };
+      }
+    }
     const tWeb0 = Date.now();
     const found = await superLookup(item).catch(() => null);
+    if (ours && pm?.mode === "shadow") {
+      // Shadow adds at most SHADOW_GRACE_MS to the answer the user is waiting
+      // for, and usually nothing: the match runs beside the web lookup, which
+      // takes longer. Past the grace period the step is recorded unfinished
+      // and the match keeps running unobserved.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((res) => { timer = setTimeout(() => res(null), SHADOW_GRACE_MS); });
+      const r = await Promise.race([ours, late]);
+      clearTimeout(timer);
+      steps.push({
+        iter: 1,
+        tool: "our_sources",
+        input: { mode: "shadow" },
+        result: {
+          ...(r ? r.trace : { unfinished: true, grace_ms: SHADOW_GRACE_MS }),
+          web: found ? { name: found.name, kcal: found.kcal } : null,
+        },
+      });
+    }
     if (found) {
       toolCalls.push("super_lookup");
       steps.push({

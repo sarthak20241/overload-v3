@@ -5,6 +5,29 @@ lookup is BUILT (uncommitted, branch claude/precise-tier-logging-costs-9470b2),
 not yet probed against the live web, not deployed. The searchable cache and
 Jev calls 1-2 are not built.
 
+## Built: Jev match eval (step 1 of "our sources first"), 2026-09-27
+
+Branch `claude/precise-match-eval`. No production change.
+- `ai-coach/preciseMatch.ts`: Jev question 1 (kind: plain / packaged /
+  restaurant / dish) and question 2 (which candidate is exactly this food, or
+  none), batched per meal (foods f1..fN). Code gate `decideMatch`: rows that
+  give the same numbers (kcal within 10%, protein within 2 g or 20%) form one
+  answer and their probabilities add up; the served row is the most probable
+  gate-passing row in that group; plain food takes only unbranded reference
+  rows; packaged / restaurant need the same brand (brand may sit in the row's
+  name: OFF files Maggi under Nestle, USDA chain rows carry no brand); an Open
+  Food Facts row needs a second candidate with the same numbers (the Lay's
+  row at 100 kcal is a per-serving row that still adds up).
+- `scripts/precise-match/`: queries.ts (23 tune, 18 fresh), candidates.json
+  (snapshot of real search: trigram 8 + semantic 6 merged to 8, + macros),
+  matchLabels.ts (hand labels), kindCases.ts (32 tune, 27 fresh), eval.ts.
+- Results (Jev jev-1.13.0): kind tune 32/32, fresh 24/27 right, 0 wrong, 3
+  unsure. Match fresh at floor 0.75: 12 served right, 0 FALSE, 4 miss, 2
+  right-none; 0 FALSE at every floor 0.6-0.9. Tune 0 FALSE at every floor.
+- Retrieval gaps seen (step 2 must fix search, not Jev): "rolled oats"
+  returned only branded packs, "chole bhature" returned Starbucks chocolate,
+  "chicken tikka" only tikka masala.
+
 ## Built: Tavily + Jev web lookup (step 1 of the web plan)
 
 - `ai-coach/tavily.ts`: search + extract client, never throws, retries once

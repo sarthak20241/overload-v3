@@ -118,12 +118,15 @@ export const LABEL_SITES_INDIA = [
   "amazon.in",
   "flipkart.com",
 ];
+// fdc.nal.usda.gov was here and cost two of eight result slots on every plain
+// food: Tavily returned the FDC homepage and a search page, never a food's
+// detail page (seen on real cashew logs, 2026-09-27). USDA's numbers are in our
+// own `foods` table, which Precise checks before the web anyway.
 export const NUTRITION_DATABASES = [
   "openfoodfacts.org",
   "fatsecret.co.in",
   "healthifyme.com",
   "nutritionix.com",
-  "fdc.nal.usda.gov",
 ];
 
 export function preferDomainsFor(country: string | null): string[] {
