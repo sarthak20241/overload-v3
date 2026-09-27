@@ -120,9 +120,14 @@ const foldBrand = (s: string) => foldWords(s).map((w) => w.toLowerCase()).join("
  *  every word of a lab or curated food name. Read once per run. */
 async function brandLexicon(): Promise<{ brands: Set<string>; foodWords: Set<string> }> {
   const [catalogBrands, cacheBrands, labNames] = await Promise.all([
-    allRows<{ brand: string }>(() => db.from("foods").select("brand").not("brand", "is", null).is("created_by", null)),
-    allRows<{ brand: string }>(() => db.from("precise_cache").select("brand").not("brand", "is", null)),
-    allRows<{ name: string }>(() => db.from("foods").select("name").in("source", ["usda", "cofid", "ciqual", "curated"])),
+    // Ordered: pages of an unordered query can skip or repeat rows.
+    allRows<{ brand: string }>(() =>
+      db.from("foods").select("brand").not("brand", "is", null).is("created_by", null).order("id")
+    ),
+    allRows<{ brand: string }>(() => db.from("precise_cache").select("brand").not("brand", "is", null).order("id")),
+    allRows<{ name: string }>(() =>
+      db.from("foods").select("name").in("source", ["usda", "cofid", "ciqual", "curated"]).order("id")
+    ),
   ]);
   const brands = new Set<string>();
   for (const r of [...catalogBrands, ...cacheBrands]) {
@@ -274,12 +279,12 @@ async function insertFood(cand: PromotionCandidate, agreeing: string[]): Promise
   return foodId;
 }
 
-async function refreshFood(foodId: string, cand: PromotionCandidate, agreeing: string[]) {
+async function refreshFood(foodId: string, cand: PromotionCandidate, agreeing: string[], fillBrand: boolean) {
   const { error } = await db
     .from("foods")
     .update({
       // Only ever fills a brand in: a published brand is never overwritten.
-      ...(cand.brand ? { brand: cand.brand } : {}),
+      ...(fillBrand && cand.brand ? { brand: cand.brand } : {}),
       kcal: cand.kcal,
       protein_g: cand.protein_g,
       carb_g: cand.carb_g,
@@ -364,7 +369,8 @@ async function main() {
         count("refresh");
         console.log(`~ ${cand.display_name} -> ${cand.kcal} kcal (re-verified)`);
         if (DRY_RUN) break;
-        await refreshFood(decision.food_id, cand, decision.agreeing);
+        const published = neighbours.find((r) => r.id === decision.food_id);
+        await refreshFood(decision.food_id, cand, decision.agreeing, !published?.brand);
         break;
       }
       case "link": {
