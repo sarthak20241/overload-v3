@@ -347,3 +347,12 @@ Deno.test("a follow-up turn never even reads the user's log", async () => {
   }).catch(() => null);
   assertEquals(reads, 0);
 });
+
+Deno.test("the failure this prevents: an older food dropped before Jev could see it", () => {
+  // Live data, 2026-09-27: 30+ newer foods pushed a 6-day-old Precise
+  // "raw chicken breast" out of the list, so Precise never matched it.
+  const newer = Array.from({ length: 40 }, (_, i) => entry({ food_name: `snack ${i}`, logged_at: daysAgo(0.1 + i * 0.01) }));
+  const chicken = entry({ food_name: "raw chicken breast", logged_at: daysAgo(6) });
+  const foods = buildMemory([...newer, chicken], "precise", NOW);
+  assertEquals(shortlist(foods, "raw chicken breast", 5)[0].name, "raw chicken breast");
+});

@@ -23,7 +23,11 @@ import { MATCH_LEVELS } from "./preciseMatch.ts";
 export type ParseTierName = "fast" | "thorough" | "precise";
 
 export const MEMORY_DAYS = 10;
-export const MEMORY_MAX_FOODS = 30;
+/** A safety bound on the list, not a relevance cut: Jev only ever sees the
+ *  MEMORY_SHORTLIST closest names. An earlier cap of 30 dropped older foods
+ *  before the shortlist ran, and an active logger's Precise "raw chicken
+ *  breast" from 6 days back never reached Jev (found on live data, 2026-09-27). */
+export const MEMORY_MAX_FOODS = 300;
 /** Rows Jev scores per line, closest names first. */
 export const MEMORY_SHORTLIST = 10;
 /** Jev's chance that a remembered food IS this line, needed to serve it. Same
