@@ -88,16 +88,25 @@ timezone (the 0126 lesson).
 | days_since_last_session | at week's end |
 | longest_gap_days | inside the week |
 
-## 4. Recovery  [step 3]
+## 4. Recovery  [STEP 4, LIVE 2026-09-27, migrations 0142 + 0143]
 
-Source: `daily_metrics`. Available: `readiness_score` (16 users), `sleep_minutes`
-(18), `steps` (17), `hrv_sdnn_ms` (4), `resting_hr_bpm` (3), `sleep_quality` (13).
+Source: `daily_metrics`, one row per (user, local day, metric); `metric_date` is
+already the local day, sleep sits on the WAKE day. Built as
+`drona_recovery_day_facts` (one row per day) + `r_*` columns on the week.
 
-| Fact |
-|---|
-| readiness_days, readiness_avg |
-| sleep_days, sleep_avg_hours |
-| steps_days, steps_avg |
+| Fact | Notes |
+|---|---|
+| readiness days, avg, min, max, low days | as the app SHOWED it; low = the app's own band (< 40). Only exists on a day the app was opened with sleep present |
+| sleep nights, avg, min, max, stddev, sources | plausible nights only (1-16 h) |
+| sleep_implausible | nights outside 1-16 h: kept on the day row, never averaged |
+| sleep_matches_prefill / prefill nights | a hand-logged night equal to what the form prefilled (yesterday's sleep, else 8 h) |
+| sleep quality days, avg | 1-5, manual only |
+| steps days, avg, min, max, sources | complete, non-zero days only |
+| steps zero days | a 0 reading is "no data", not a rest day |
+| steps partial days | last synced on the day itself (local time), so the total stopped early; today is always partial |
+| resting HR, HRV, active kcal | days + avg |
+| dropped | every reading outside its plausible range, named per day |
+| deltas vs previous week | sleep avg, steps avg, readiness avg |
 
 ## 5. Plan  [step 4]
 
@@ -347,6 +356,27 @@ routine explains it: the days looked like Push (0.68, 0.81), Pull (0.52, 0.64,
 own order. TODAY is the one off the plan.** And 21 Sep, "100% of Legs muscles"
 in 0137, is 61% of Legs sets here. Still short across both weeks: Hamstrings 2
 of 15.7 planned, Calves 2 of 7.9.
+
+## Step 4 is live (2026-09-27): recovery
+
+`0142_drona_recovery_facts` + `0143_drona_recovery_prefill`. Every raw reading
+is accounted for: readiness 115, sleep 196, quality 28, steps 661, resting HR
+121, HRV 142, active kcal 217, all equal to the facts. Proved on a made-up
+person in IST, 19 checks, all pass (`scripts/drona-facts/recovery.mts`); the
+same person with the wrong timezone fails 3 of them, so the partial-steps rule
+really reads local time. `delete_user_data` now names 0138's tables and this one.
+
+What the recovery facts show:
+- **Most hand-logged sleep is the form's prefill.** 29 of 36 manual nights
+  equal it (13 people), and every one produced a readiness score: 29 of 115
+  readiness days (25%) rest on a night that may never have been entered. 8
+  people logged sleep once, ever, at exactly 8 h.
+- **Step totals are often cut short.** 20% of step days were last synced on the
+  day itself. The owner: 40 partial days against 43 complete. Another tester:
+  49 partial against 45.
+- **One Health Connect sleep source is broken**: 9 of 25 nights over 16 h (up
+  to 23 h), the sleep version of the broken scale.
+- Resting HR and HRV exist for only 4 people. Readiness for most is sleep alone.
 
 ## Build order
 
