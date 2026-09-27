@@ -424,7 +424,7 @@ export function promotionDecision(
 /** Brand spans are at most this many words ("milky mist", "country delight"). */
 const MAX_BRAND_WORDS = 3;
 
-const foldWords = (s: string) =>
+export const foldWords = (s: string) =>
   (s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
 
 /**

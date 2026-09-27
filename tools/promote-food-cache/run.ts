@@ -37,6 +37,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
   applyCatalogMatch,
   brandFromName,
+  foldWords,
   type CatalogMatch,
   type CatalogRow,
   noMatchMeans,
@@ -111,8 +112,9 @@ async function allRows<T>(build: () => any): Promise<T[]> {
   }
 }
 
-const foldBrand = (s: string) =>
-  s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+// One fold for the lexicon and for brandFromName, so a lookup can never miss
+// on tokenising two ways.
+const foldBrand = (s: string) => foldWords(s).map((w) => w.toLowerCase()).join(" ");
 
 /** What brandFromName needs: every brand the catalog and the cache know, and
  *  every word of a lab or curated food name. Read once per run. */
@@ -194,7 +196,10 @@ async function catalogMatch(cand: PromotionCandidate, exclude: string | null = n
   const t = res.trace as { kind?: string | null; candidates?: number; decision?: { reason?: string } };
   if (res.match) {
     const m = res.match.meta;
-    return { status: "matched", row: { id: m.id, name: m.name, source: m.source, kcal: Number(m.kcal ?? NaN) } };
+    if (typeof m.kcal !== "number" || !Number.isFinite(m.kcal)) {
+      return { status: "unavailable", detail: `matched ${m.name} has no kcal to compare` };
+    }
+    return { status: "matched", row: { id: m.id, name: m.name, source: m.source, kcal: m.kcal } };
   }
   if (t.candidates === 0) return { status: "none" };
   if (!t.kind) return { status: "unavailable", detail: "Jev unsure what kind of food this is" };
@@ -303,9 +308,11 @@ async function main() {
   //
   // promoted_food_id is null for unpromoted rows, so nullsFirst puts the work
   // that actually publishes ahead of the work that merely re-checks.
-  const { data, error } = await db
-    .from("precise_cache_promotable")
-    .select("*")
+  // --audit looks only at rows already published: with the promotion order
+  // below, unpromoted rows would fill the LIMIT and the audit would check none.
+  let query = db.from("precise_cache_promotable").select("*");
+  if (AUDIT) query = query.not("promoted_food_id", "is", null);
+  const { data, error } = await query
     .order("promoted_food_id", { ascending: true, nullsFirst: true })
     .order("last_verified_at", { ascending: false })
     .limit(LIMIT);
