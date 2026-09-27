@@ -11,6 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { computeReadiness, type BaselineStat, type ReadinessResult } from './readiness';
 import { syncHealthData } from './healthSync';
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from './fuelDays';
+import { storeReadinessParts } from './readinessParts';
 
 const BASELINE_DAYS = 28;
 // sleep_quality rides along for today's read only; it is a subjective modifier, so
@@ -255,6 +256,7 @@ export async function computeAndStoreReadiness(
     );
     if (upErr) throw upErr;
   }
+  if (result) await storeReadinessParts(supabase, userId, todayLocalISO(), result);
   return result;
 }
 

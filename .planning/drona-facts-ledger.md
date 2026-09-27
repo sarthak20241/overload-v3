@@ -107,6 +107,7 @@ already the local day, sleep sits on the WAKE day. Built as
 | resting HR, HRV, active kcal | days + avg |
 | dropped | every reading outside its plausible range, named per day |
 | deltas vs previous week | sleep avg, steps avg, readiness avg |
+| readiness parts (0144) | per day: tier (A1 HRV+HR+sleep, A2 HR+sleep, A3 sleep, none), sleep vs own baseline or population, points each signal moved the score, why a signal did not count (no_reading / short_baseline / needs_rhr / needs_sleep), load and food points. Week: parts days, tier days, no-score days, unused-signal days, avg points. **Saved by the app from the next build on; history before it was never saved** |
 
 ## 5. Plan  [step 4]
 
@@ -377,6 +378,25 @@ What the recovery facts show:
 - **One Health Connect sleep source is broken**: 9 of 25 nights over 16 h (up
   to 23 h), the sleep version of the broken scale.
 - Resting HR and HRV exist for only 4 people. Readiness for most is sleep alone.
+
+## Step 4b is live (2026-09-27): what went into each readiness score
+
+`0144_readiness_parts`. The app computed the parts of the score and saved only
+the number. Owner's call: have the app save the parts (a build ships anyway),
+rather than re-implement the formula in SQL. `lib/readiness.ts` now returns
+`parts` (with `READINESS_FORMULA_VERSION`), and `lib/readinessParts.ts` saves
+them beside the score, best effort. The facts read them.
+
+Proved three ways: `lib/readiness.test.ts`, 9 tests (4 of them fail with the
+shares, the load points or the needs_rhr reason broken on purpose);
+`scripts/drona-facts/readiness-parts.mts`, 18 checks, where the app's own code
+writes as a signed-in person through RLS, another person can neither write nor
+read the rows, and the facts carry them; and `recovery.mts` still passes.
+
+A first pass over the 115 old scores (today's data, not the data the app saw):
+85 compared sleep with the person's own nights, 30 with the population; 70 used
+HRV + resting HR + sleep; resting HR was read but unused on 7, HRV on 10; food
+nudged 22.
 
 ## Build order
 
