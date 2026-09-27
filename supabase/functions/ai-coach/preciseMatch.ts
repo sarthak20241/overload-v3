@@ -120,6 +120,55 @@ export function matchQuestion(key: string, kind: FoodKind, candidates: MatchCand
   };
 }
 
+/**
+ * The same judgement asked per row: "is THIS row exactly this food?", one
+ * yes/no each, keyed `${key}_c1..cN`. Each row gets its own chance instead of
+ * a share of one 100%, so two equally right rows can both score high and the
+ * highest wins (owner's proposal, 2026-09-27; measured against the choice form
+ * in scripts/precise-match/eval.ts with MATCH_MODE=noul).
+ */
+export function matchNoulQuestions(key: string, kind: FoodKind, candidates: MatchCandidate[]): Record<string, JevQuestion> {
+  const out: Record<string, JevQuestion> = {};
+  candidates.forEach((c, i) => {
+    out[`${key}_c${i + 1}`] = {
+      type: "noul",
+      instructions:
+        `Is this row exactly ${foodRef(key)}? Row: ${describe(c)}. It must be ${MATCH_RULE[kind]} ` +
+        "Word order matters: chocolate milk is not milk chocolate.",
+      criteria: {
+        true: "This row is exactly this food.",
+        false: "This row is a different food, state, variant, brand or dish.",
+      },
+    };
+  });
+  return out;
+}
+
+/** Levels for the graded form, lowest first. The served chance is the chance
+ *  of the top level. */
+export const MATCH_LEVELS = [
+  "A different food, or a dish or product made with it.",
+  "The same food in a different state, variant, flavour, brand or preparation, so its nutrition differs.",
+  "Exactly this food; any difference in wording does not change its nutrition.",
+];
+
+/** The per-row judgement as a graded score instead of yes/no, keyed
+ *  `${key}_c1..cN`. Measured in scripts/precise-match/eval.ts with
+ *  MATCH_MODE=score. */
+export function matchScoreQuestions(key: string, kind: FoodKind, candidates: MatchCandidate[]): Record<string, JevQuestion> {
+  const out: Record<string, JevQuestion> = {};
+  candidates.forEach((c, i) => {
+    out[`${key}_c${i + 1}`] = {
+      type: "score",
+      instructions:
+        `How well does this row match ${foodRef(key)}? Row: ${describe(c)}. A match must be ${MATCH_RULE[kind]} ` +
+        "Word order matters: chocolate milk is not milk chocolate.",
+      criteria: MATCH_LEVELS,
+    };
+  });
+  return out;
+}
+
 // ── The gate ────────────────────────────────────────────────────────────────
 
 /** Jev's pick must reach this to be served. A starting point for the eval to
@@ -151,7 +200,7 @@ export type MatchDecision =
   | { match: MatchCandidate; confidence: number }
   | {
     match: null;
-    reason: "no_answer" | "none" | "below_floor" | "unknown_pick" | "brand" | "kind" | "uncorroborated";
+    reason: "no_answer" | "none" | "below_floor" | "unknown_pick" | "brand" | "kind" | "uncorroborated" | "contested";
     confidence: number;
   };
 
@@ -228,6 +277,45 @@ export function decideMatch(
     return { match: null, reason: "uncorroborated", confidence };
   }
   return { match: served.c, confidence };
+}
+
+/**
+ * The gate for the per-row form: the highest-scoring row at or above the floor
+ * that passes the same rules as decideMatch (plain food takes only unbranded
+ * reference rows, same brand for packaged / restaurant, an Open Food Facts row
+ * needs a second row with the same numbers). No pooling: each row already has
+ * its own chance.
+ *
+ * CONTESTED: judged one at a time, Jev cannot always tell close variants apart.
+ * "Boiled sweet potato" scored the right row (82 kcal) 0.93 and "boiled, NS as
+ * to fat" (115 kcal) 0.92. So when a row whose numbers DIFFER from the winner's
+ * scores within CONTEST_MARGIN of it, the answer is unclear and nothing is
+ * served. Rows with the same numbers (two banana rows) never contest.
+ */
+export const CONTEST_MARGIN = 0.1;
+export function decideMatchNoul(
+  kind: FoodKind,
+  item: MatchItem,
+  candidates: MatchCandidate[],
+  scores: Array<number | null>,
+  floor = MATCH_FLOOR,
+  margin = CONTEST_MARGIN,
+): MatchDecision {
+  const ranked = candidates.map((c, i) => ({ c, p: scores[i] ?? 0 })).sort((a, b) => b.p - a.p);
+  const best = ranked[0];
+  if (!best) return { match: null, reason: "no_answer", confidence: 0 };
+  if (best.p < floor) return { match: null, reason: "below_floor", confidence: best.p };
+  for (const x of ranked) {
+    if (x.p < floor) break;
+    if (gateReason(kind, item, x.c) !== null) continue;
+    if (CROWD_SOURCES.has(x.c.source) && !candidates.some((o) => o.id !== x.c.id && sameNumbers(o, x.c))) continue;
+    if (margin >= 0 && ranked.some((o) => !sameNumbers(o.c, x.c) && o.p >= x.p - margin)) {
+      return { match: null, reason: "contested", confidence: x.p };
+    }
+    return { match: x.c, confidence: x.p };
+  }
+  const why = gateReason(kind, item, best.c);
+  return { match: null, reason: why ?? "uncorroborated", confidence: best.p };
 }
 
 /** Jev's kind answer, or null below the floor (the caller then treats the

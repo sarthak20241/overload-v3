@@ -19,14 +19,17 @@
 // kind mistakes are reported by the kind run. Batches mimic a meal: several
 // foods per request, which is how production asks.
 
-import { askJev, asChoice, type JevQuestion } from "../../supabase/functions/ai-coach/jev.ts";
+import { askJev, asChoice, asNoul, type JevChoiceAnswer, type JevQuestion } from "../../supabase/functions/ai-coach/jev.ts";
 import {
   decideKind,
   decideMatch,
+  decideMatchNoul,
   foodKey,
   kindQuestion,
   type MatchCandidate,
+  matchNoulQuestions,
   matchQuestion,
+  matchScoreQuestions,
   mealState,
 } from "../../supabase/functions/ai-coach/preciseMatch.ts";
 import { KIND_CASES } from "./kindCases.ts";
@@ -49,6 +52,14 @@ const groups = (GROUP ? [GROUP] : ["tune", "fresh"]) as Array<"tune" | "fresh">;
 const FLOORS = [0.6, 0.7, 0.75, 0.8, 0.9];
 const BATCH = 5;
 const pct = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "-");
+// DUMP=path writes every answer in full (question, options, probabilities,
+// decision) for reading outside the terminal.
+const DUMP = Deno.env.get("DUMP");
+// MATCH_MODE=noul asks one yes/no per candidate row instead of one choice.
+const MODE = Deno.env.get("MATCH_MODE") ?? "choice";
+// Both per-row forms (yes/no and graded score) share the per-row gate.
+const NOUL = MODE === "noul" || MODE === "score";
+const dump: { kind: unknown[]; match: unknown[] } = { kind: [], match: [] };
 
 function chunks<T>(xs: T[], n: number): T[][] {
   const out: T[][] = [];
@@ -59,14 +70,14 @@ function chunks<T>(xs: T[], n: number): T[][] {
 // ── Kind ────────────────────────────────────────────────────────────────────
 async function runKind(group: "tune" | "fresh") {
   const cases = KIND_CASES.filter((c) => c.group === group);
-  const answers: Array<{ c: (typeof cases)[number]; choice: string | null; conf: number }> = [];
+  const answers: Array<{ c: (typeof cases)[number]; choice: string | null; conf: number; probs: Record<string, number> }> = [];
   for (const batch of chunks(cases, BATCH)) {
     const questions: Record<string, JevQuestion> = {};
     batch.forEach((_, i) => { questions[`${foodKey(i)}_kind`] = kindQuestion(foodKey(i)); });
     const res = await askJev(mealState(batch), questions, jev);
     batch.forEach((c, i) => {
       const a = res.ok ? asChoice(res.response.answers[`${foodKey(i)}_kind`]) : null;
-      answers.push({ c, choice: a?.choice ?? null, conf: a?.confidence ?? 0 });
+      answers.push({ c, choice: a?.choice ?? null, conf: a?.confidence ?? 0, probs: a?.probabilities ?? {} });
     });
     if (!res.ok) console.error(`  jev failed: ${res.failure} ${res.detail}`);
   }
@@ -83,10 +94,35 @@ async function runKind(group: "tune" | "fresh") {
       console.log(`  ${ok ? "low " : "MISS"} ${a.c.name}${a.c.brand ? ` [${a.c.brand}]` : ""}: ${a.choice} @ ${a.conf.toFixed(2)} (want ${a.c.ok.join("/")})`);
     }
   }
+  for (const a of answers) {
+    dump.kind.push({
+      group, name: a.c.name, brand: a.c.brand, ok: a.c.ok, choice: a.choice, confidence: a.conf,
+      probabilities: a.probs, decided: decideKind(a.choice ? { type: "choice", choice: a.choice, confidence: a.conf, probabilities: {} } : null),
+    });
+  }
   return answers.map((a) => ({ ...a, kind: decideKind(a.choice ? { type: "choice", choice: a.choice, confidence: a.conf, probabilities: {} } : null) }));
 }
 
 // ── Match ───────────────────────────────────────────────────────────────────
+
+/** Per-row yes/no scores, carried in the same shape as a choice answer so the
+ *  report code is shared: `probabilities` holds each row's own chance (they do
+ *  NOT add up to 1), `choice` is the top row. */
+function noulAsAnswer(answers: Record<string, unknown>, key: string, n: number): JevChoiceAnswer {
+  const probs: Record<string, number> = {};
+  for (let i = 1; i <= n; i++) {
+    const a = answers[`${key}_c${i}`] as { type?: string; probabilities?: Record<string, number> } | undefined;
+    // score: the chance of the top level ("exactly this food"); noul: the yes.
+    probs[`c${i}`] = a?.type === "score" ? (a.probabilities?.["2"] ?? 0) : (asNoul(a as never) ?? 0);
+  }
+  const top = Object.entries(probs).sort((a, b) => b[1] - a[1])[0] ?? ["none", 0];
+  return { type: "choice", choice: top[0], confidence: top[1], probabilities: probs };
+}
+const decide = (kind: Parameters<typeof decideMatch>[0], item: { name: string; brand: string | null }, cands: MatchCandidate[], a: JevChoiceAnswer | null, floor?: number) =>
+  NOUL
+    ? decideMatchNoul(kind, item, cands, cands.map((_, i) => a?.probabilities?.[`c${i + 1}`] ?? null), floor,
+      Deno.env.get("CONTEST") === "off" ? -1 : undefined)
+    : decideMatch(kind, item, cands, a, floor);
 const CANDIDATES: Record<string, MatchCandidate[]> = JSON.parse(
   Deno.readTextFileSync("scripts/precise-match/candidates.json"),
 );
@@ -97,7 +133,9 @@ async function runMatch(group: "tune" | "fresh") {
   for (const batch of chunks(qs, BATCH)) {
     const questions: Record<string, JevQuestion> = {};
     batch.forEach((q, i) => {
-      questions[`${foodKey(i)}_match`] = matchQuestion(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []);
+      if (MODE === "score") Object.assign(questions, matchScoreQuestions(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []));
+      else if (NOUL) Object.assign(questions, matchNoulQuestions(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []));
+      else questions[`${foodKey(i)}_match`] = matchQuestion(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []);
     });
     const res = await askJev(mealState(batch), questions, jev);
     if (!res.ok) console.error(`  jev failed: ${res.failure} ${res.detail}`);
@@ -105,19 +143,20 @@ async function runMatch(group: "tune" | "fresh") {
       results.push({
         id: q.id,
         line: `${q.brand ? `${q.brand} | ` : ""}${q.name}`,
-        answer: res.ok ? asChoice(res.response.answers[`${foodKey(i)}_match`]) : null,
+        answer: !res.ok ? null : NOUL ? noulAsAnswer(res.response.answers, foodKey(i), (CANDIDATES[q.id] ?? []).length)
+          : asChoice(res.response.answers[`${foodKey(i)}_match`]),
         cands: CANDIDATES[q.id] ?? [],
       });
     });
   }
 
-  console.log(`\n── MATCH (${group}, ${results.length}) ──`);
+  console.log(`\n── MATCH ${MODE === "score" ? "per-row score" : NOUL ? "per-row yes/no" : "one choice"} (${group}, ${results.length}) ──`);
   for (const floor of FLOORS) {
     let right = 0, falseM = 0, miss = 0, rightNone = 0;
     for (const r of results) {
       const label = MATCH_LABELS[r.id];
       const q = QUERIES.find((x) => x.id === r.id)!;
-      const d = decideMatch(label.kind, { name: q.name, brand: q.brand }, r.cands, r.answer, floor);
+      const d = decide(label.kind, { name: q.name, brand: q.brand }, r.cands, r.answer, floor);
       const anyOk = label.ok.length > 0;
       if (d.match) {
         if (label.ok.includes(d.match.id)) right++;
@@ -131,7 +170,7 @@ async function runMatch(group: "tune" | "fresh") {
   for (const r of results) {
     const label = MATCH_LABELS[r.id];
     const q = QUERIES.find((x) => x.id === r.id)!;
-    const d = decideMatch(label.kind, { name: q.name, brand: q.brand }, r.cands, r.answer);
+    const d = decide(label.kind, { name: q.name, brand: q.brand }, r.cands, r.answer);
     const picked = r.answer?.choice?.startsWith("c") ? r.cands[Number(r.answer.choice.slice(1)) - 1] : null;
     const verdict = d.match
       ? (label.ok.includes(d.match.id) ? "ok  " : "FALSE")
@@ -140,6 +179,15 @@ async function runMatch(group: "tune" | "fresh") {
     const top3 = Object.entries(r.answer?.probabilities ?? {})
       .sort((a, b) => b[1] - a[1]).slice(0, 3)
       .map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ");
+    dump.match.push({
+      group, id: r.id, name: q.name, brand: q.brand, kind: label.kind,
+      question: matchQuestion("f1", label.kind, r.cands),
+      candidates: r.cands.map((c, i) => ({ key: `c${i + 1}`, ...c, ok: label.ok.includes(c.id) })),
+      probabilities: r.answer?.probabilities ?? {}, choice: r.answer?.choice ?? null,
+      served: d.match ? { id: d.match.id, name: d.match.name } : null,
+      reason: d.match ? null : d.reason, group_confidence: d.confidence,
+      verdict: verdict.trim(),
+    });
     console.log(
       `  ${verdict} ${r.id.padEnd(18)} ${r.line.padEnd(34)} -> ${r.answer?.choice ?? "-"} @ ${(r.answer?.confidence ?? 0).toFixed(2)}` +
         `${picked ? ` "${picked.name}"${picked.brand ? ` [${picked.brand}]` : ""} ${picked.source}` : ""}${why}` +
@@ -151,4 +199,8 @@ async function runMatch(group: "tune" | "fresh") {
 for (const g of groups) {
   if (ONLY !== "match") await runKind(g);
   if (ONLY !== "kind") await runMatch(g);
+}
+if (DUMP) {
+  Deno.writeTextFileSync(DUMP, JSON.stringify({ kindQuestion: kindQuestion("f1"), ...dump }, null, 2));
+  console.log(`\nwrote ${DUMP}`);
 }

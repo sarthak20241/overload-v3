@@ -9,6 +9,7 @@ import type { JevChoiceAnswer } from "./jev.ts";
 import {
   decideKind,
   decideMatch,
+  decideMatchNoul,
   kindQuestion,
   matchQuestion,
   type MatchCandidate,
@@ -141,4 +142,33 @@ Deno.test("a lone crowd-sourced row is not served; a corroborated one is", () =>
   assertEquals(lone.match === null && lone.reason, "uncorroborated");
   const agreed = decideMatch("packaged", item, [perServing, real1, real2], split({ c2: 0.85, none: 0.15 }));
   assertEquals(agreed.match?.id, "l2");
+});
+
+// ── Per-row yes/no form ─────────────────────────────────────────────────────
+
+Deno.test("per-row: two right rows both score high and the highest is served", () => {
+  const a: MatchCandidate = { id: "a", name: "Banana", brand: null, source: "web_verified", kcal: 89, protein_g: 1.1 };
+  const b: MatchCandidate = { id: "b", name: "Banana, raw", brand: null, source: "usda", kcal: 97, protein_g: 0.7 };
+  const d = decideMatchNoul("plain", { name: "banana", brand: null }, [a, b], [0.83, 0.79]);
+  assertEquals(d.match?.id, "a");
+});
+
+Deno.test("per-row: a row with different numbers scoring close to the winner is contested", () => {
+  const right: MatchCandidate = { id: "r", name: "Sweet potato, boiled, no added fat", brand: null, source: "usda", kcal: 82, protein_g: 1.4 };
+  const fat: MatchCandidate = { id: "f", name: "Sweet potato, boiled, NS as to fat", brand: null, source: "usda", kcal: 115, protein_g: 1.4 };
+  const d = decideMatchNoul("plain", { name: "boiled sweet potato", brand: null }, [right, fat], [0.93, 0.92]);
+  assertEquals(d.match === null && d.reason, "contested");
+  const clear = decideMatchNoul("plain", { name: "boiled sweet potato", brand: null }, [right, fat], [0.93, 0.5]);
+  assertEquals(clear.match?.id, "r");
+});
+
+Deno.test("per-row: below the floor, gated rows and lone crowd rows are not served", () => {
+  const usda: MatchCandidate = { id: "u", name: "Bananas, raw", brand: null, source: "usda", kcal: 89, protein_g: 1.1 };
+  assertEquals(decideMatchNoul("plain", { name: "banana", brand: null }, [usda], [0.6]).match, null);
+  const offOnly: MatchCandidate = { id: "o", name: "Banana", brand: null, source: "off", kcal: 89, protein_g: 1.1 };
+  assertEquals(decideMatchNoul("plain", { name: "banana", brand: null }, [offOnly], [0.95]).match, null);
+  const perServing: MatchCandidate = { id: "l1", name: "Lay's classic salted chips", brand: "Lay's", source: "off", kcal: 100, protein_g: 1.3 };
+  const real: MatchCandidate = { id: "l2", name: "Lay's salted chips", brand: "Lay's", source: "off", kcal: 550, protein_g: 7 };
+  const lone = decideMatchNoul("packaged", { name: "Lay's classic salted chips", brand: "Lay's" }, [perServing, real], [0.91, 0.43]);
+  assertEquals(lone.match, null);
 });
