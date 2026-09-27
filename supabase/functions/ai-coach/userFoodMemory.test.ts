@@ -319,3 +319,17 @@ Deno.test("a follow-up turn never asks the memory: that is where 'double check' 
   assert(!calls.includes("jev") || !(r?.steps ?? []).some((s) => s.tool === "user_memory"));
   assert(!(r?.tool_calls ?? []).includes("user_memory_match"));
 });
+
+Deno.test("Quick: remembered numbers at an absurd amount are flagged, like an estimate would be", async () => {
+  // Reviewer on #220: a mistyped "2000g" of a remembered 600 kcal/100 g food
+  // shipped at high confidence, past the guard every estimate goes through.
+  const calls: string[] = [], lookups: string[] = [];
+  const nuts = live({ food_name: "peanut butter", kcal: 600, protein_g: 25, carb_g: 20, fat_g: 50, grams: 100, quantity: 100 });
+  const r = await runParseMeal(
+    deps([nuts], { "peanut butter": 0.97 }, calls, lookups, { ...ESTIMATED, name: "peanut butter", quantity: 2000, est_total_g: 2000 }),
+    { ...BASE, text: "2000g peanut butter", mode: "fast" },
+  );
+  const item = r.parsed!.items[0];
+  assertEquals(item.kcal, 12000);
+  assertEquals(item.confidence, "low");
+});

@@ -5618,7 +5618,12 @@ async function runParseMealCore(
       if (remembered) {
         toolCalls.push("user_memory_match");
         steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "memory" } });
-        return remembered;
+        // The same guard an estimate gets: remembered numbers at a mistyped
+        // amount ("2000g" peanut butter) still log, but visibly unsure.
+        const odd = implausibleLine(remembered);
+        if (!odd) return remembered;
+        deps.log?.(`[parse_meal] remembered line implausible for "${r.name}": ${odd}`);
+        return { ...remembered, confidence: "low" as const };
       }
       // Per-item verdict in the trace. The harness prints fast_fill lines, and
       // "fallback" is the one worth seeing: a line with no usable estimate.
