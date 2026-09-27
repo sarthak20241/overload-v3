@@ -151,14 +151,22 @@ facts, days with words, characters, `wd_texts` (every text in time order), and
 injury notes + training preferences as they stand NOW, on the running week only
 (the profile keeps no history).
 
-## 7. Cards and answers  [step 4]
+## 7. Cards and answers  [STEP 7, LIVE 2026-09-27, migrations 0147 + 0148]
 
-Source: `drona_cards`.
+Source: `drona_cards` (one per user per week), `plan_changes.card_id`, and the
+logs a request card asks for. `c_*` columns on the card's week.
 
-| Fact |
-|---|
-| card shown: kind, topic, status, what was tapped, when |
-| talk answer given |
+| Fact | Notes |
+|---|---|
+| c_card_id, kind, topic, title, signals, action | what Drona said, and the signals it was made from |
+| c_status | as stored: applied / dismissed / undone / done / held / pending |
+| c_outcome | as it ENDED: a pending card past its expiry or week is expired, else waiting |
+| c_seen_possible | false for a hold (the model or validator said nothing) |
+| c_deferred, c_hours_to_later, c_hours_to_answer | Later, and how fast |
+| c_plan_changes | diary rows the card made |
+| c_followed_through, c_hours_to_follow | the request card's test: log_weight = a weigh-in, start_session = a finished workout, log_food = a meal, after the card and inside its week. Null when the card has no test |
+| c_done_before_card | log_weight: a weigh-in dated earlier in the week that reached the server only after the card |
+| c_cards_to_date, answered, later, ignored, holds | running totals up to the week |
 
 ## 8. Not possible yet  [blocked]
 
@@ -449,6 +457,24 @@ What the words facts show:
 - **People barely write notes.** 85 notes in all, from a handful of people;
   one person wrote all 21 meal notes.
 - **Profile words need care.** One injury note says just "No".
+
+## Step 7 is live (2026-09-27): cards. The facts layer is complete.
+
+`0147_drona_card_facts` + `0148_drona_card_done_before`. Proved on a made-up
+person, 9 checks, all pass (`scripts/drona-facts/cards.mts`).
+
+What the cards facts show (6 cards, since 18 Sep):
+- **Tapping is not doing.** 3 request cards were tapped or deferred; none was
+  followed by the thing asked for inside its week. One tester tapped "start
+  session" within a second and has trained 0 times since.
+- **A card asked for a weigh-in already done.** The owner weighed in on 15 Sep;
+  it reached the server on 22 Sep, so the 18 Sep card saw no weight (0148).
+- **A Later ran out.** One deferred card expired unanswered.
+
+**Nothing rebuilds the facts yet.** Every domain was backfilled by hand (26
+weeks). Before signals read them, a rebuild must run on a schedule: the
+functions are `drona_rebuild_{weight,food,training,recovery,plan,word,card}_facts`
+(training also rebuilds plan match).
 
 ## Build order
 
