@@ -74,6 +74,7 @@ import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
 import { selectMatchRows } from "./ourSources.ts";
+import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
@@ -749,6 +750,10 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // Jev match beside the web lookup and only record it on the trace) | on (serve
 // an accepted row and skip the web). Anything unrecognised is off: this can
 // only change what users are served when someone sets "on" on purpose.
+// The user's own food memory (userFoodMemory.ts, migration 0149): on unless
+// set to "off", a kill switch that needs no deploy.
+const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+
 const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
   const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
   return v === "shadow" || v === "on" ? v : "off";
@@ -2388,6 +2393,59 @@ interface MealRow {
   entries: Array<Record<string, unknown>>;
 }
 
+/**
+ * This user's logged lines from the last MEMORY_DAYS days, for their food
+ * memory, and their zone (the card note names the day they logged it). Through
+ * the USER's client, never the service role: RLS is what makes the memory
+ * theirs alone. Any failure is an empty memory, never a failed parse.
+ */
+async function fetchMemoryEntries(
+  userClient: SupabaseClient,
+): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
+  const sinceIso = new Date(Date.now() - MEMORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const [mealsRes, profileRes] = await Promise.all([
+    userClient
+      .from("meals")
+      .select(
+        "logged_at, meal_entries(food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier)",
+      )
+      .gte("logged_at", sinceIso)
+      .order("logged_at", { ascending: false })
+      .limit(300),
+    userClient.from("user_profiles").select("timezone").maybeSingle(),
+  ]).catch(() => [{ data: null, error: true }, { data: null }] as const);
+  const timeZone = typeof (profileRes as { data?: { timezone?: unknown } | null })?.data?.timezone === "string"
+    ? (profileRes as { data: { timezone: string } }).data.timezone
+    : null;
+  const rows = (mealsRes as { data?: unknown; error?: unknown });
+  if (rows.error || !Array.isArray(rows.data)) return { entries: [], timeZone };
+  const num = (v: unknown) => (typeof v === "number" ? v : v == null ? NaN : Number(v));
+  const entries: MemoryEntry[] = [];
+  for (const m of rows.data as Array<Record<string, unknown>>) {
+    const at = typeof m.logged_at === "string" ? m.logged_at : null;
+    if (!at || !Array.isArray(m.meal_entries)) continue;
+    for (const e of m.meal_entries as Array<Record<string, unknown>>) {
+      entries.push({
+        food_name: typeof e.food_name === "string" ? e.food_name : "",
+        food_id: typeof e.food_id === "string" ? e.food_id : null,
+        kcal: num(e.kcal),
+        protein_g: num(e.protein_g) || 0,
+        carb_g: num(e.carb_g) || 0,
+        fat_g: num(e.fat_g) || 0,
+        fiber_g: e.fiber_g == null ? null : num(e.fiber_g),
+        grams: e.grams_logged == null ? null : num(e.grams_logged),
+        quantity: e.quantity == null ? null : num(e.quantity),
+        serving_unit: typeof e.serving_unit === "string" ? e.serving_unit : null,
+        source: typeof e.source === "string" ? e.source : null,
+        logged_via: typeof e.logged_via === "string" ? e.logged_via : null,
+        tier: typeof e.tier === "string" ? e.tier : null,
+        logged_at: at,
+      });
+    }
+  }
+  return { entries, timeZone };
+}
+
 async function mealsWithin(userClient: SupabaseClient, days: number): Promise<MealRow[]> {
   const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await userClient
@@ -2618,6 +2676,11 @@ function makeParseDeps(
       ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
       : undefined,
     searchCountry: PRECISE_SEARCH_COUNTRY,
+    // This user's own log, last 10 days, through THEIR client: RLS keeps it
+    // theirs. Started now so it is ready by the time extract finishes.
+    userMemory: USER_FOOD_MEMORY && JEV_API_KEY
+      ? { load: () => fetchMemoryEntries(userClient) }
+      : undefined,
     preciseMatch: PRECISE_MATCH_MODE !== "off" && JEV_API_KEY
       ? {
         mode: PRECISE_MATCH_MODE,
@@ -2974,6 +3037,7 @@ async function handleParseMealRequest(args: {
           fallbackMeal: result.parsed.meal_type,
           logDate: auto.logDate ?? new Date().toISOString().slice(0, 10),
           tzOffsetMin: auto.tzOffsetMin,
+          tier: result.tier ?? null,
         });
         if ("error" in write) {
           reason = write.error;
@@ -3213,6 +3277,8 @@ async function handleParseMealRequest(args: {
             }
             void recordParseTrace(admin, {
               user_id: userId,
+              // The tier the parse ran in (0149): stamps the lines the client logs.
+              tier: result.tier ?? null,
               input_text: text.slice(0, USER_TEXT_MAX_CHARS),
               meal_hint: mealHint,
               model: PARSE_MEAL_MODEL,
@@ -3454,6 +3520,8 @@ async function handleParseMealRequest(args: {
     ];
     void recordParseTrace(admin, {
       user_id: userId,
+      // The tier the parse ran in (0149): stamps the lines the client logs.
+      tier: result.tier ?? null,
       input_text: text.slice(0, USER_TEXT_MAX_CHARS),
       meal_hint: mealHint,
       model: PARSE_MEAL_MODEL,

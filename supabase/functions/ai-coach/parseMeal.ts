@@ -45,6 +45,15 @@ import {
 } from "./preciseCache.ts";
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import { matchOurSources } from "./ourSources.ts";
+import {
+  buildMemory,
+  matchMemory,
+  type MemoryEntry,
+  type MemoryFood,
+  type MemoryMatch,
+  memoryKey,
+  memoryNote,
+} from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 
 /** How long shadow mode may keep the user waiting for the our-sources match
@@ -148,6 +157,10 @@ export interface ParsedItem {
    *  always present. A line that already carries one (a corrected previous
    *  line) keeps it unless the new text names a meal for that line. */
   meal_type?: MealType;
+  /** The tier whose numbers this line carries, when that is not the tier the
+   *  parse ran in: a line answered from the user's memory keeps the tier of
+   *  the entry it came from. Read by migration 0149's trigger off the trace. */
+  numbers_tier?: ParseTier;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -895,6 +908,11 @@ export type ParseProgress =
   | { kind: "fill"; items: ParsedItem[]; meal_type: MealType; drona_line: string };
 
 export interface ParseMealDeps {
+  /** This user's logged lines from the last 10 days (userFoodMemory.ts), read
+   *  through their own client so RLS keeps them theirs. A food Jev says IS a
+   *  line answers it before any other source, in every tier, on a first-shot
+   *  log only. Absent: no memory, the tiers run as before. */
+  userMemory?: { load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }> };
   anthropicApiKey: string;
   model: string;
   maxTokens: number;
@@ -4022,16 +4040,111 @@ export function retargetMismatchedIds(
  * along with the strip also inherits its one real guarantee - that every return
  * path calls it - instead of adding a second step each path could forget.
  */
+/** What a line answered from the user's memory carries onto the card. */
+export interface MemoryStamp {
+  note: string;
+  level: ParseTier;
+  source: ParsedItem["source"];
+}
+
+const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+
+/** The ephemeral candidate id for a remembered food: unique per food, so the
+ *  final line maps back to it exactly, and stripped before the client sees it. */
+export function memoryFoodId(food: MemoryFood): string {
+  return `${EPHEMERAL_ID_PREFIX}mem_${food.key}`;
+}
+
+export function memoryStamp(food: MemoryFood, timeZone?: string | null): MemoryStamp {
+  const src = (food.source ?? "") as ParsedItem["source"];
+  return {
+    note: memoryNote(food, timeZone),
+    level: food.level,
+    source: MEMORY_SOURCES.has(src) ? src : "catalog",
+  };
+}
+
+/** A remembered food as a catalog candidate, for Thorough and Precise. */
+export function memoryCandidate(food: MemoryFood): CandidateFood {
+  return {
+    food_id: memoryFoodId(food),
+    name: food.name,
+    brand: null,
+    base_unit: "g",
+    kcal: food.per100.kcal,
+    protein_g: food.per100.protein_g,
+    carb_g: food.per100.carb_g,
+    fat_g: food.per100.fat_g,
+    fiber_g: food.per100.fiber_g,
+    servings: food.serving ? [{ label: food.serving.label, grams: food.serving.grams, is_default: true }] : [],
+    source: "catalog",
+  };
+}
+
+/** A unit, singular: "pieces" and "piece" are one unit. */
+const unitKey = (u: string) => {
+  const k = memoryKey(u);
+  if (k.endsWith("ies")) return `${k.slice(0, -3)}y`;
+  if (k.endsWith("s") && !k.endsWith("ss")) return k.slice(0, -1);
+  return k;
+};
+
+/**
+ * A Quick line answered from the user's memory, or null when the amount cannot
+ * be turned into grams without guessing past the model's own weight. A typed
+ * weight wins; a unit the user logged it in before ("2 pieces" when they logged
+ * "1 piece" = 50 g) converts exactly; otherwise the model's gram estimate for
+ * THIS line is used, as Quick already does for its display weight.
+ */
+export function memoryQuickItem(
+  food: MemoryFood,
+  line: { name: string; brand: string | null; quantity: number; unit: string; est?: { total_g: number } | null },
+  timeZone?: string | null,
+): ParsedItem | null {
+  const qty = line.quantity > 0 ? line.quantity : 1;
+  const unit = line.unit.trim().toLowerCase();
+  let grams: number | null = null;
+  if (MASS_UNITS.has(unit)) grams = qty;
+  else if (food.serving && unitKey(food.serving.label) === unitKey(unit)) grams = qty * food.serving.grams;
+  else if (line.est && line.est.total_g > 0) grams = line.est.total_g;
+  if (!grams || !(grams > 0) || grams > 5000) return null;
+  const f = grams / 100;
+  const stamp = memoryStamp(food, timeZone);
+  return {
+    food_id: null,
+    food_name: food.name,
+    quantity: qty,
+    serving_label: line.unit,
+    grams: round1(grams),
+    kcal: round1(food.per100.kcal * f),
+    protein_g: round1(food.per100.protein_g * f),
+    carb_g: round1(food.per100.carb_g * f),
+    fat_g: round1(food.per100.fat_g * f),
+    fiber_g: food.per100.fiber_g == null ? null : round1(food.per100.fiber_g * f),
+    source: stamp.source,
+    assumption: stamp.note,
+    confidence: "high",
+    numbers_tier: stamp.level,
+  };
+}
+
 export function stripEphemeralIds(
   items: ParsedItem[],
   /** food_id -> did the evidence behind that candidate clear the bar. Only
    *  researched candidates appear (see verifiedForItems); a line matched to
    *  anything else is left unstamped rather than stamped false. */
   verifiedByFood?: Map<string, boolean>,
+  /** food_id -> the user's remembered food behind that candidate. Stamped here
+   *  for the same reason as `verified`: the id is about to be erased. */
+  memoryByFood?: Map<string, MemoryStamp>,
 ): ParsedItem[] {
   return items.map((it) => {
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
-    const marked = verdict === undefined ? it : { ...it, verified: verdict };
+    const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
+    const base = mem
+      ? { ...it, assumption: mem.note, numbers_tier: mem.level, source: mem.source, confidence: "high" as const }
+      : it;
+    const marked = verdict === undefined ? base : { ...base, verified: verdict };
     return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
   });
 }
@@ -4901,6 +5014,11 @@ async function runParseMealCore(
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
+  // The user's memory is read only for a first-shot log (see memoryP below),
+  // and started now so the read overlaps the extract call.
+  const memoryLoadP = (!hasPrevious && deps.userMemory && deps.jev)
+    ? deps.userMemory.load().catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }))
+    : null;
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -5425,6 +5543,28 @@ async function runParseMealCore(
     });
   }
   const tResolve0 = Date.now();
+  // ── The user's own memory, before every other source ─────────────────────
+  // Foods THIS user logged in the last 10 days (userFoodMemory.ts). A food Jev
+  // says IS the line answers it in every tier, so the same person gets the same
+  // number every time. First-shot logs only: a follow-up turn is where "double
+  // check" and "that's wrong" live, and repeating ourselves there is exactly
+  // what the user asked us not to do. Started now, awaited where each tier
+  // needs it, so Quick still paints its rows first.
+  let memTimeZone: string | null = null;
+  const memoryP: Promise<Array<MemoryMatch | null>> = memoryLoadP && deps.jev
+    ? (async () => {
+      const loaded = await memoryLoadP;
+      memTimeZone = loaded.timeZone;
+      const foods = buildMemory(loaded.entries, tier);
+      if (foods.length === 0) return toResolve.map(() => null);
+      const matches = await Promise.all(
+        toResolve.map((it) => matchMemory(deps.jev!, foods, { name: it.name, brand: it.brand ?? null })),
+      );
+      for (const m of matches) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
+      return matches;
+    })().catch(() => toResolve.map(() => null))
+    : Promise.resolve(toResolve.map(() => null));
+  const memoryByFood = new Map<string, MemoryStamp>();
   // Only foods with a repeat count are staples; the recency fallback list has
   // no `times` and must not be treated as habit.
   const stapleNames = new Set(
@@ -5468,14 +5608,30 @@ async function runParseMealCore(
   // food; what the catalog added was a way to be precisely wrong.
   //
   // So Quick makes NO lookup: no catalog search, no OFF, no FatSecret, no
-  // precise-cache read, and no row re-read in verifyItems. The rows were
+  // precise-cache read, and no row re-read in verifyItems. The one exception
+  // is the user's OWN memory (owner decision 2026-09-27): foods they logged
+  // in the last 10 days, one Jev call, and only when they have any. The rows were
   // painted above from these same estimates, so the fill below cannot move a
   // number the user has already seen. fastNoCatalog.test.ts counts every
   // lookup to keep it that way. Thorough and Precise are untouched.
   if (fastMode) {
+    const memory = await memoryP;
     T.resolve_ms = 0;
     const tPost0 = Date.now();
-    const fastItems: ParsedItem[] = toResolve.map((r) => {
+    const fastItems: ParsedItem[] = toResolve.map((r, idx) => {
+      const remembered = memory[idx]?.food
+        ? memoryQuickItem(memory[idx]!.food!, { ...r, est: r.est ?? null }, memTimeZone)
+        : null;
+      if (remembered) {
+        toolCalls.push("user_memory_match");
+        steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "memory" } });
+        // The same guard an estimate gets: remembered numbers at a mistyped
+        // amount ("2000g" peanut butter) still log, but visibly unsure.
+        const odd = implausibleLine(remembered);
+        if (!odd) return remembered;
+        deps.log?.(`[parse_meal] remembered line implausible for "${r.name}": ${odd}`);
+        return { ...remembered, confidence: "low" as const };
+      }
       // Per-item verdict in the trace. The harness prints fast_fill lines, and
       // "fallback" is the one worth seeing: a line with no usable estimate.
       steps.push({
@@ -5565,9 +5721,17 @@ async function runParseMealCore(
     };
   }
 
+  const memory = await memoryP;
   const resolved: ResolvedItem[] = await Promise.all(
-    toResolve.map((item) =>
-      resolveOneItem(
+    toResolve.map((item, idx) => {
+      const remembered = memory[idx]?.food;
+      if (remembered) {
+        toolCalls.push("user_memory_match");
+        const cand = memoryCandidate(remembered);
+        memoryByFood.set(cand.food_id as string, memoryStamp(remembered, memTimeZone));
+        return Promise.resolve({ ...item, candidates: [cand] } as ResolvedItem);
+      }
+      return resolveOneItem(
         deps,
         item,
         steps,
@@ -5581,8 +5745,8 @@ async function runParseMealCore(
           ? (it: ExtractedItem) =>
             superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st))
           : undefined,
-      )
-    ),
+      );
+    }),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
@@ -5629,6 +5793,7 @@ async function runParseMealCore(
           prepForItems(resolved),
         ),
         verifiedForItems(resolved),
+        memoryByFood,
       ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
@@ -5815,7 +5980,7 @@ async function runParseMealCore(
   // See stripEphemeralIds: every path that returns items to the client must
   // strip them, not just this one. The verification map goes in with them,
   // because the id it keys on is what this call is about to erase.
-  items = stripEphemeralIds(items, verifiedForItems(resolved));
+  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
