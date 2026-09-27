@@ -11,6 +11,7 @@ import {
   badDisplayName,
   brandFromName,
   type CatalogRow,
+  noMatchMeans,
   findDuplicate,
   isSameFood,
   type PromotionCandidate,
@@ -508,4 +509,20 @@ Deno.test("no trustworthy answer: nothing is published", () => {
 Deno.test("only a promotion is changed by the match", () => {
   const skip = { action: "skip" as const, reason: "expired" as const };
   assertEquals(applyCatalogMatch(skip, { kcal: 1 }, { status: "unavailable", detail: "x" }), skip);
+});
+
+Deno.test("the failure this prevents: a failed tie-break read as 'not in the catalog'", () => {
+  // Flagged on #217: a tie-break call that fails comes back as reason "no_answer",
+  // exactly on the close calls (Banana vs "Banana, raw") the tie-break exists for.
+  assertEquals(noMatchMeans("no_answer").status, "unavailable");
+  assertEquals(noMatchMeans("contested").status, "unavailable");
+  assertEquals(noMatchMeans("uncorroborated").status, "unavailable");
+  assertEquals(noMatchMeans("some_reason_added_later").status, "unavailable");
+  assertEquals(noMatchMeans(undefined).status, "unavailable");
+});
+
+Deno.test("Jev looking and finding no row lets the promotion stand", () => {
+  for (const r of ["none", "below_floor", "no_candidates", "brand", "kind"]) {
+    assertEquals(noMatchMeans(r).status, "none");
+  }
 });

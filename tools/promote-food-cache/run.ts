@@ -28,8 +28,9 @@
  * or when Jev cannot answer, NOTHING new is published (skip:match-unavailable);
  * links and refreshes of rows already published still run.
  *
- * --audit: also ask Jev about rows ALREADY published, and print the ones that
- * duplicate another catalog row. Prints only; retiring a row is a human's call.
+ * --audit: INSTEAD of promoting, ask Jev about rows already published and print
+ * the ones that duplicate another catalog row. Writes nothing; retiring a row is
+ * a human's call.
  */
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -38,6 +39,7 @@ import {
   brandFromName,
   type CatalogMatch,
   type CatalogRow,
+  noMatchMeans,
   type PromotionCandidate,
   promotionDecision,
 } from "../../supabase/functions/ai-coach/promoteCache.ts";
@@ -196,9 +198,7 @@ async function catalogMatch(cand: PromotionCandidate, exclude: string | null = n
   }
   if (t.candidates === 0) return { status: "none" };
   if (!t.kind) return { status: "unavailable", detail: "Jev unsure what kind of food this is" };
-  const reason = t.decision?.reason ?? "";
-  if (reason.startsWith("jev")) return { status: "unavailable", detail: reason };
-  return { status: "none" };
+  return noMatchMeans(t.decision?.reason);
 }
 
 async function markPromoted(cacheId: string, foodId: string) {
@@ -330,15 +330,20 @@ async function main() {
       }
     }
     const neighbours = await catalogNeighbours(cand);
+
+    if (AUDIT) {
+      if (cand.promoted_food_id && neighbours.find((r) => r.id === cand.promoted_food_id)?.source === "web_verified") {
+        const dup = await catalogMatch(cand, cand.promoted_food_id);
+        count(`audit:${dup.status}`);
+        if (dup.status === "matched") {
+          console.log(`? ${cand.display_name} (published ${cand.promoted_food_id}) duplicates ${dup.row.name} (${dup.row.source}, ${dup.row.kcal} kcal, ${dup.row.id})`);
+        }
+      }
+      continue;
+    }
+
     let decision = promotionDecision(cand, neighbours, now);
     if (decision.action === "promote") decision = applyCatalogMatch(decision, cand, await catalogMatch(cand));
-
-    if (AUDIT && cand.promoted_food_id && neighbours.find((r) => r.id === cand.promoted_food_id)?.source === "web_verified") {
-      const dup = await catalogMatch(cand, cand.promoted_food_id);
-      if (dup.status === "matched") {
-        console.log(`? ${cand.display_name} (published ${cand.promoted_food_id}) duplicates ${dup.row.name} (${dup.row.source}, ${dup.row.kcal} kcal, ${dup.row.id})`);
-      }
-    }
 
     switch (decision.action) {
       case "promote": {

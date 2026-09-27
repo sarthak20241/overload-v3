@@ -425,7 +425,7 @@ export function promotionDecision(
 const MAX_BRAND_WORDS = 3;
 
 const foldWords = (s: string) =>
-  (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+  (s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
 
 /**
  * The brand hiding in a food's name, when the row has none: "Pintola rice cake"
@@ -509,4 +509,27 @@ export function applyCatalogMatch(
     reason: "catalog-conflict",
     detail: `${r.name} (${r.source}) has ${r.kcal} kcal, we have ${cand.kcal}`,
   };
+}
+
+/**
+ * Whether a "no match" from matchOurSources means Jev LOOKED and found no row
+ * for this food, or that we simply have no answer. An allow-list on purpose:
+ * any reason not named here, including one added later, publishes nothing.
+ *
+ *   none          Jev chose "none of these"
+ *   below_floor   no row scored as the same food with enough confidence
+ *   no_candidates the catalog search found nothing to compare
+ *   brand, kind   the best row is a different brand, or the wrong kind of row
+ *                 (a branded pack for a plain food), so it is not this food
+ *
+ * Everything else is unclear: no_answer (a Jev call failed or timed out,
+ * including the tie-break's), contested (two rows with different numbers both
+ * look right), uncorroborated (an Open Food Facts row looks like this food but
+ * nothing backs its numbers), unknown_pick, jev_*.
+ */
+const LOOKED_AND_FOUND_NOTHING = new Set(["none", "below_floor", "no_candidates", "brand", "kind"]);
+export function noMatchMeans(reason: string | null | undefined): CatalogMatch {
+  return reason && LOOKED_AND_FOUND_NOTHING.has(reason)
+    ? { status: "none" }
+    : { status: "unavailable", detail: reason || "no reason given" };
 }
