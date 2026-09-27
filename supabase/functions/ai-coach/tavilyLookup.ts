@@ -38,6 +38,9 @@ export interface WebFinding {
   serving_label: string | null;
   serving_grams: number | null;
   source_note: string | null;
+  /** The brand the pages sell this product under, when the user's own words
+   *  name it too (brandFromPages). Null otherwise. */
+  brand: string | null;
 }
 
 export interface TavilyLookupDeps {
@@ -255,6 +258,8 @@ export interface PageReport {
   carb_g: number | null;
   fat_g: number | null;
   fiber_g: number | null;
+  /** The brand the page's product is sold under, as printed. */
+  brand: string | null;
 }
 
 const num = (v: unknown): number | null =>
@@ -295,6 +300,36 @@ export function readingFromReport(r: PageReport, url: string): SourceReading | n
   return { source: providerFor(url), ref: url.slice(0, 500), via: "web_search", per_100 };
 }
 
+const brandWords = (s: string) =>
+  s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * The brand to store for this lookup, from the brands the kept pages printed.
+ *
+ * The extract step often leaves a brand inside the name ("Pintola rice cake",
+ * brand null), and a cache row without a brand reads as a plain food to every
+ * later match. The pages know the brand. But a page brand is only taken when
+ * the USER's words name it too: someone who typed "rice cake" asked for no
+ * brand, and a Pintola page that answered them must not make their row
+ * "Pintola". The most common qualifying brand wins, in the page's spelling.
+ * A brand the line already carries is kept as is.
+ */
+export function brandFromPages(item: WebFoodItem, pageBrands: string[]): string | null {
+  if (item.brand?.trim()) return item.brand.trim();
+  const name = ` ${brandWords(item.name)} `;
+  const tally = new Map<string, { n: number; spelling: string }>();
+  for (const b of pageBrands) {
+    const key = brandWords(b);
+    if (key.length < 2 || !name.includes(` ${key} `)) continue;
+    const t = tally.get(key) ?? { n: 0, spelling: b.trim() };
+    t.n++;
+    tally.set(key, t);
+  }
+  let best: { n: number; spelling: string } | null = null;
+  for (const t of tally.values()) if (!best || t.n > best.n) best = t;
+  return best?.spelling ?? null;
+}
+
 function parsePageReports(input: unknown): PageReport[] {
   const pages = (input as { pages?: unknown })?.pages;
   if (!Array.isArray(pages)) return [];
@@ -317,6 +352,7 @@ function parsePageReports(input: unknown): PageReport[] {
       carb_g: num(o.carb_g),
       fat_g: num(o.fat_g),
       fiber_g: num(o.fiber_g),
+      brand: typeof o.brand === "string" && o.brand.trim() ? o.brand.trim().slice(0, 40) : null,
     });
   }
   return out;
@@ -358,6 +394,11 @@ const READ_TOOL = {
             carb_g: { type: ["number", "null"] },
             fat_g: { type: ["number", "null"] },
             fiber_g: { type: ["number", "null"] },
+            brand: {
+              type: ["string", "null"],
+              description: 'The brand this page\'s product is sold under, as printed (e.g. "Pintola"). ' +
+                "null for an unbranded food, or when the page names no brand.",
+            },
           },
           required: ["page_id", "same_food", "basis"],
         },
@@ -728,6 +769,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const reports = parsePageReports(block?.input);
 
     const readings: SourceReading[] = [];
+    const pageBrands: string[] = [];
     let serving: { label: string; grams: number } | null = null;
     for (const rep of reports) {
       const url = byId.get(rep.page_id);
@@ -735,6 +777,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       const reading = readingFromReport(rep, url);
       if (!reading) continue;
       readings.push(reading);
+      if (rep.brand) pageBrands.push(rep.brand);
       if (!serving && rep.serving_label && rep.serving_grams && rep.serving_grams > 0 && rep.serving_grams <= 5000) {
         serving = { label: rep.serving_label, grams: rep.serving_grams };
       }
@@ -756,6 +799,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
         serving_label: serving?.label ?? null,
         serving_grams: serving?.grams ?? null,
         source_note: sites.length ? `from ${sites.slice(0, 2).join(" and ")}`.slice(0, 80) : null,
+        brand: brandFromPages(item, pageBrands),
       },
       credits,
       steps,

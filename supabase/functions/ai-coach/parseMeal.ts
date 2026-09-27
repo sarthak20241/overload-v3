@@ -1742,6 +1742,8 @@ export interface SuperFinding {
   serving_label: string | null;
   serving_grams: number | null;
   source_note: string | null;
+  /** Brand the pages printed, when the line's words name it (Tavily path). */
+  brand?: string | null;
 }
 
 /**
@@ -3111,7 +3113,10 @@ export async function superLookupOne(
     await deps.preciseCachePut({
       cache_key: cacheKey(item.name, item.brand),
       display_name: display,
-      brand: item.brand,
+      // The key stays on the line as extracted (cacheKey above), so the next
+      // identical line still hits; the brand column gets the pages' brand when
+      // extract left it inside the name.
+      brand: item.brand ?? finding.brand ?? null,
       base_unit: "g",
       ...per100,
       fiber_g,
