@@ -227,3 +227,44 @@ Deno.test("on: a row our sources accept answers, and the web is never paid for",
 
 // superLookupOne is imported so a rename of the web step breaks this file loudly.
 void superLookupOne;
+
+// ── The searchable Precise cache (migration 0141) ───────────────────────────
+
+Deno.test("selectMatchRows puts Precise cache rows first", () => {
+  const cached = [{ id: "pc1" }];
+  const tri = Array.from({ length: 9 }, (_, i) => ({ id: `t${i}` }));
+  const picked = selectMatchRows(tri, [], (id) => (id === "pc1" ? "precise" : "off"), cached);
+  assertEquals(picked[0].id, "pc1");
+  assertEquals(picked.length, 8);
+});
+
+const CACHED_EGGS: Row = row("pc-eggs", "whole eggs", "precise", 143, 12.6);
+
+function aliasDeps(mode: "shadow" | "on", candidates: Row[], aliases: Array<[string, string]>) {
+  const web: string[] = [];
+  const seen = { calls: [] as string[] };
+  const deps = parseDeps(mode, web, seen);
+  deps.jev = jevDeps({ scores: [0.95] }, seen);
+  deps.preciseMatch = { mode, findCandidates: async () => candidates };
+  deps.preciseAliasPut = async (key, rowId) => { aliases.push([key, rowId]); };
+  return { deps, web };
+}
+
+Deno.test("on: a cache row Jev accepts remembers the user's words for next time", async () => {
+  const aliases: Array<[string, string]> = [];
+  const { deps, web } = aliasDeps("on", [CACHED_EGGS], aliases);
+  await runParseMeal(deps, { ...INPUT, text: "100g banana" });
+  assertEquals(web.length, 0);
+  assertEquals(aliases, [["banana", "pc-eggs"]]);
+});
+
+Deno.test("shadow never writes an alias, and a catalog row never does", async () => {
+  const shadowAliases: Array<[string, string]> = [];
+  const shadow = aliasDeps("shadow", [CACHED_EGGS], shadowAliases);
+  await runParseMeal(shadow.deps, INPUT);
+  assertEquals(shadowAliases, []);
+  const catalogAliases: Array<[string, string]> = [];
+  const onCatalog = aliasDeps("on", [BANANA], catalogAliases);
+  await runParseMeal(onCatalog.deps, INPUT);
+  assertEquals(catalogAliases, []);
+});

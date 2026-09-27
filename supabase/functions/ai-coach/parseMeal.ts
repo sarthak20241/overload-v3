@@ -953,6 +953,12 @@ export interface ParseMealDeps {
     mode: "off" | "shadow" | "on";
     findCandidates(item: MatchItem): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>>;
   };
+  /** Remember that these words (cacheKey form) mean this Precise cache row, so
+   *  the next person typing them gets an exact hit with no Jev call and no web
+   *  lookup (migration 0141's precise_alias; first mapping wins). Called only
+   *  when PRECISE_MATCH_MODE=on serves a cache row: in shadow it would change
+   *  what users are served. */
+  preciseAliasPut?(aliasKey: string, rowId: string, confidence: number): Promise<void>;
 
   /** Super only: store what a lookup cost us to learn, so the next person asking
    *  about this food does not pay for it again. Upsert on cache_key; a
@@ -3233,6 +3239,10 @@ async function resolveOneItem(
       steps.push({ iter: 1, tool: "our_sources", input: { mode: "on" }, result: r.trace });
       if (r.match) {
         toolCalls.push("our_sources_match");
+        if (r.match.meta.source === "precise" && deps.preciseAliasPut) {
+          await deps.preciseAliasPut(cacheKey(item.name, item.brand), r.match.meta.id, r.match.confidence)
+            .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
+        }
         return { ...item, candidates: [synthesizeVolumeAnchors(r.match.food)] };
       }
     }
