@@ -189,6 +189,10 @@ export interface AutoLogEntryRow {
   logged_via: "ai_auto";
   source: ParsedItem["source"];
   client_id: string;
+  /** The tier whose numbers the line carries (migration 0147). The trigger
+   *  that stamps client-written lines cannot see these: they are written
+   *  before the parse's trace. */
+  tier: string | null;
 }
 
 /** What the write needs from the database. index.ts adapts the user-scoped
@@ -245,6 +249,9 @@ export async function writeAutoLog(
     logDate: string;
     tzOffsetMin: number;
     nowMs?: number;
+    /** The tier the parse ran in. A line answered from the user's memory
+     *  carries its own (ParsedItem.numbers_tier), which wins. */
+    tier?: string | null;
   },
 ): Promise<AutoLogWrite> {
   const clientId = args.clientId.toLowerCase();
@@ -344,6 +351,7 @@ export async function writeAutoLog(
       logged_via: "ai_auto",
       source: it.source,
       client_id: clientId,
+      tier: it.numbers_tier ?? args.tier ?? null,
     }));
     const inserted = await store.insertEntries(rows);
     if ("conflict" in inserted) {
