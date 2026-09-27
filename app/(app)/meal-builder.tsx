@@ -15,13 +15,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
 import { useSupabaseClient } from '@/lib/supabase';
 import {
-  searchCatalog, createSavedMeal, updateSavedMeal, logSavedMeal, loadServings, getLogMeal,
+  searchCatalog, createSavedMeal, updateSavedMeal, logSavedMeal, loadServings, getLogMeal, takeBuilderMeal,
   type PickerFood, type ParsedMealItem, type SavedMeal, type SavedMealItem,
 } from '@/lib/dietData';
 import { defaultServing, resolveBaseAmount, nutrientsForAmount, formatServing, type FoodServing, type ResolvedNutrients, type MealType } from '@/lib/foods';
@@ -62,19 +62,18 @@ export default function MealBuilderScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const supabase = useSupabaseClient();
-  const params = useLocalSearchParams<{ saved?: string }>();
 
-  // Edit mode: reached by tapping a saved meal. Parse it once so the form
-  // preloads with its name + items (create mode leaves both empty).
-  const [saved] = useState<SavedMeal | null>(() => {
-    if (!params.saved) return null;
-    try { return JSON.parse(decodeURIComponent(params.saved)) as SavedMeal; } catch { return null; }
-  });
+  // Edit mode: reached by tapping a saved meal (create mode leaves the form
+  // empty). This is a RETAINED Tabs screen, so it mounts once and a route param
+  // read at mount stays frozen for the whole session — the first visit's mode
+  // used to win every later visit, both ways. The mode comes from the module
+  // store instead, consumed on focus (same fix as food-search / quick-add).
+  const [saved, setSaved] = useState<SavedMeal | null>(null);
   const isEdit = !!saved;
   const targetMeal = getLogMeal(); // which day section a "Log" writes to
 
-  const [name, setName] = useState(saved?.name ?? '');
-  const [items, setItems] = useState<ParsedMealItem[]>(saved ? saved.items.map(savedItemToParsed) : []);
+  const [name, setName] = useState('');
+  const [items, setItems] = useState<ParsedMealItem[]>([]);
   const [saving, setSaving] = useState(false);
 
   // Inline food search (mode = 'adding')
@@ -91,6 +90,23 @@ export default function MealBuilderScreen() {
   const [pickQty, setPickQty] = useState('1');
   const [pickLoading, setPickLoading] = useState(false);
   const [editIndex, setEditIndex] = useState(-1);
+
+  // Entering afresh from food-search leaves a pending entry in the store: adopt
+  // it and rebuild the form. A focus with NOTHING pending is a return to a
+  // screen we never left for good (the tab bar, a back gesture), so the form —
+  // including unsaved edits — is left exactly as it was.
+  useFocusEffect(
+    useCallback(() => {
+      const { pending, meal } = takeBuilderMeal();
+      if (!pending) return;
+      setSaved(meal);
+      setName(meal?.name ?? '');
+      setItems(meal ? meal.items.map(savedItemToParsed) : []);
+      // Transient modes never survive a fresh entry.
+      setAdding(false); setQuery(''); setResults([]);
+      setPicking(null); setEditIndex(-1); setSaving(false);
+    }, []),
+  );
 
   useEffect(() => {
     const qq = query.trim();

@@ -4,26 +4,52 @@
     {
       "name": "Expo Dev Server",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start"],
+      "runtimeArgs": [
+        "expo",
+        "start"
+      ],
       "port": 8081
     },
     {
       "name": "Expo iOS",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start", "--ios"],
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--ios"
+      ],
       "port": 8081
     },
     {
       "name": "Expo Android",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start", "--android"],
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--android"
+      ],
       "port": 8081
     },
     {
       "name": "Expo Web",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start", "--web"],
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--web"
+      ],
       "port": 19006
+    },
+    {
+      "name": "Content Studio",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "tools/content-studio",
+        "run",
+        "dev"
+      ],
+      "port": 4747
     }
   ]
 }

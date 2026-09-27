@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Portal } from '@/components/ui/Portal';
 import { weekPatternFor, weekPatternText } from '@/lib/weekPattern';
+import { fuelDaysText } from '@/lib/fuelDays';
 import { track } from '@/lib/analytics';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/hooks/useTheme';
@@ -27,6 +28,14 @@ import { isSupabaseConfigured, useSupabaseClient } from '@/lib/supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { addGuestRoutine } from '@/lib/guestStore';
 import { structuredToProgram, saveProgram, applyPhaseTargets, clampDiet, type GeneratedProgram } from '@/lib/programData';
+import {
+  applyCoachFoodCreate,
+  parseCoachFoodCreate,
+  type CoachFoodCreate,
+  type CoachFoodCreateResult,
+} from '@/lib/coachFoodCreate';
+import { FoodCreateCard } from './FoodCreateCard';
+import { getLogMeal } from '@/lib/dietData';
 import { useToast } from '@/components/ui/Toast';
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import { CoachAccessGate, isCoachContentAllowed } from './CoachAccessGate';
@@ -996,6 +1005,12 @@ function ChatScreen({
   const [edits, setEdits] = useState<
     { messageId: string; edit: CoachWorkoutEdit; result: CoachEditApplyResult | null }[]
   >([]);
+  // Foods and meals Drona offered to save. Same shape as `edits` and for the
+  // same reason: the card is attached to the message that proposed it, so a
+  // conversation with two proposals keeps them straight.
+  const [creates, setCreates] = useState<
+    { messageId: string; create: CoachFoodCreate; result: CoachFoodCreateResult | null; busy: boolean }[]
+  >([]);
   // Both kinds, not just 'live': the review chat opens from the finish sheet
   // with the session still unsaved and still editable, so a coach without the
   // tool there could promise a change it can't make. Same hole, other door.
@@ -1010,6 +1025,7 @@ function ChatScreen({
     if (!workoutContext) return;
     setMessages([{ id: 'wc-starter', role: 'assistant', content: workoutCoachStarter(workoutContext) }]);
     setEdits([]);
+    setCreates([]);
     setInput('');
   }, [workoutContext]);
   const [input, setInput] = useState('');
@@ -1207,6 +1223,25 @@ function ChatScreen({
           handledEdit = true;
           track('coach_workout_edit_proposed', { ops_count: edit.operations.length });
           setEdits(prev => [...prev, { messageId: assistantId, edit, result: null }]);
+          return;
+        }
+        // Drona built a food or meal out of what the user said. Attach a
+        // confirm card; nothing reaches My Meals or the diary until it is
+        // tapped. Available in every chat, including the one opened mid-set:
+        // a shake between sets is still food.
+        if (name === 'create_custom_food' || name === 'create_custom_meal') {
+          const create = parseCoachFoodCreate(name, input);
+          // A proposal we cannot act on (no calories, no items) stays as plain
+          // text rather than becoming a card with a dead button.
+          if (!create) return;
+          track('drona_food_create_proposed', {
+            kind: create.kind,
+            item_count: create.lines.length,
+            kcal: create.totals.kcal,
+            log_now: create.logNow,
+            estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
+          });
+          setCreates(prev => [...prev, { messageId: assistantId, create, result: null, busy: false }]);
           return;
         }
         // P4: the coach proposed a nutrition-target change. Surface it as an
@@ -1450,6 +1485,32 @@ function ChatScreen({
     setEdits((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, result } : e)));
   }, [edits, onApplyWorkoutEdit]);
 
+  // Save (and maybe log) one proposed food. Guarded against a double tap the
+  // same way the workout edit is: a second tap would create a second row in My
+  // Meals, which is a duplicate the user then has to find and delete.
+  const creatingRef = useRef<Set<string>>(new Set());
+  const handleApplyCreate = useCallback(async (messageId: string) => {
+    const entry = creates.find((e) => e.messageId === messageId);
+    if (!entry || entry.result || !supabase) return;
+    if (creatingRef.current.has(messageId)) return;
+    creatingRef.current.add(messageId);
+    setCreates((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, busy: true } : e)));
+    const result = await applyCoachFoodCreate(supabase, entry.create, getLogMeal());
+    if (result.error && !result.savedMealId) {
+      // Nothing was written, so let them try again rather than stranding the
+      // card on a transient network failure.
+      creatingRef.current.delete(messageId);
+    }
+    track('drona_food_create_applied', {
+      kind: entry.create.kind,
+      logged: result.logged,
+      ok: !result.error,
+    });
+    setCreates((prev) =>
+      prev.map((e) => (e.messageId === messageId ? { ...e, result, busy: false } : e))
+    );
+  }, [creates, supabase]);
+
   // Note: keyboard avoidance is handled by AICoachModal's sheet sizing — the
   // parent shrinks the sheet and lifts it via marginBottom (both platforms)
   // so the input naturally sits above the keyboard. No KeyboardAvoidingView
@@ -1520,7 +1581,9 @@ function ChatScreen({
           // The coach is told to precede the tool call with a short line, but
           // it may emit the tool alone. Then the card IS the message: an empty
           // bubble would otherwise sit above it stuck on "Thinking".
-          const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === '' && !!edit;
+          const create = creates.find((c) => c.messageId === msg.id);
+          const bubbleOnlyHoldsTheCard = msg.role === 'assistant' && msg.content === ''
+            && (!!edit || !!create);
           // No copy icon under a reply still being written: it would copy half
           // a sentence. It appears the moment the turn finishes.
           // While a turn runs, its assistant bubble is always the last message.
@@ -1579,6 +1642,16 @@ function ChatScreen({
                   onApply={() => handleApplyEdit(msg.id)}
                 />
               )}
+              {creates.filter((c) => c.messageId === msg.id).map((c, i) => (
+                <FoodCreateCard
+                  key={i}
+                  create={c.create}
+                  result={c.result}
+                  busy={c.busy}
+                  fallbackMeal={getLogMeal()}
+                  onApply={() => void handleApplyCreate(msg.id)}
+                />
+              ))}
             </View>
           );
         })}
@@ -1902,6 +1975,9 @@ function programToText(p: GeneratedProgram): string {
       d.fat_g != null ? `${d.fat_g}g fat` : null,
     ].filter(Boolean).join(', ');
     if (macros) lines.push(`  Diet: ${macros}`);
+    // Same reason as the Week line: without it a refine about anything else
+    // would drop the long-run Sunday the user already settled.
+    if (ph.fuel_days !== undefined) lines.push(`  Fuel days: ${fuelDaysText(ph.fuel_days)}`);
     if (ph.diet_directive) lines.push(`  Diet note: ${ph.diet_directive}`);
     if (ph.training_block) {
       const b = ph.training_block;
@@ -2566,6 +2642,14 @@ function GenerateProgramScreen({
               </Text>
               {dietLine !== '' && (
                 <Text style={{ color: C.foreground, fontSize: FontSize.sm, marginTop: 8 }}>{dietLine}</Text>
+              )}
+              {ph.fuel_days && ph.fuel_days.length > 0 && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                  <Feather name="zap" size={11} color={C.accentText} />
+                  <Text style={{ color: C.accentText, fontSize: FontSize.sm, flexShrink: 1 }}>
+                    {fuelDaysText(ph.fuel_days)}
+                  </Text>
+                </View>
               )}
               {ph.diet_directive && (
                 <Text style={{ color: C.mutedFg, fontSize: FontSize.sm, marginTop: 4 }}>Diet: {ph.diet_directive}</Text>

@@ -122,6 +122,9 @@ interface Props {
    *  "adding", not "reading": send already committed, and the card should
    *  not read as if a review step were coming. */
   autoLogging?: boolean;
+  /** What Drona is doing on a multi-step message ("Checking yesterday's
+   *  breakfast"), shown in place of "Drona is reading that". */
+  statusLabel?: string | null;
 }
 
 const r0 = (n: number) => Math.round(n);
@@ -172,7 +175,7 @@ export function ParsedMealCard({
   checkingIndex, onCheckItem,
   onMealTypeChange, onMoveGroup, onAcceptProposal, onDismissNotice, onEditItem, onRemoveItem, onAdd, onSave, onRetry, onDismiss,
   minimized, onToggleMinimize,
-  autoLogging,
+  autoLogging, statusLabel,
 }: Props) {
   const busyChecking = checkingIndex !== null && checkingIndex !== undefined;
   const { C } = useTheme();
@@ -205,7 +208,9 @@ export function ParsedMealCard({
    *  or grouped, which is what keeps edit/remove/check pointed at the right
    *  line when groups reorder the display. */
   const renderRow = (it: ParsedMealItem, i: number, divider: boolean) => {
-    const prov = provenance(it.source);
+    // A saved meal's own rows are the user's numbers from My Meals, not an
+    // edit: "edited" on them read as if something had been changed.
+    const prov = it.saved_meal ? 'saved meal' : provenance(it.source);
     return (
       <Pressable
         key={i}
@@ -347,7 +352,7 @@ export function ParsedMealCard({
         </View>
       )}
 
-      {state === 'analysing' && <Analysing C={C} autoLogging={!!autoLogging} />}
+      {state === 'analysing' && <Analysing C={C} autoLogging={!!autoLogging} label={statusLabel ?? null} />}
 
       {state === 'streaming' && !!streamingRows && (
         <View>
@@ -495,9 +500,7 @@ export function ParsedMealCard({
           )}
 
           {meal.drona_line ? (
-            // flex:0 override: dronaRow's shared flex:1 (basis 0) would collapse
-            // this row to nothing once the card sits at its maxHeight cap.
-            <View style={[s.dronaRow, { flex: 0 }]}>
+            <View style={s.dronaRow}>
               <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
               <Text style={s.dronaTxt} numberOfLines={2}>{meal.drona_line}</Text>
             </View>
@@ -658,7 +661,7 @@ function useSettling(target: number | null): number {
   return shown;
 }
 
-function Analysing({ C, autoLogging }: { C: ReturnType<typeof useTheme>['C']; autoLogging: boolean }) {
+function Analysing({ C, autoLogging, label }: { C: ReturnType<typeof useTheme>['C']; autoLogging: boolean; label: string | null }) {
   const s = makeStyles(C);
   const pulse = useSharedValue(0.4);
   const reduced = useReducedMotion();
@@ -676,7 +679,9 @@ function Analysing({ C, autoLogging }: { C: ReturnType<typeof useTheme>['C']; au
   return (
     <Animated.View style={[s.dronaRow, style]}>
       <View style={s.avatar}><DronaMark size={10} color={C.accentText} state="static" /></View>
-      <Text style={s.dronaTxt}>{autoLogging ? 'Drona is adding that...' : 'Drona is reading that...'}</Text>
+      <Text style={s.dronaTxt}>
+        {label ? `${label}...` : autoLogging ? 'Drona is adding that...' : 'Drona is reading that...'}
+      </Text>
     </Animated.View>
   );
 }
@@ -783,7 +788,15 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     chipOff: { backgroundColor: 'transparent', borderColor: C.border },
     chipTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 
-    dronaRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: Spacing.md },
+    // NO flex here. This is a row of content inside a column, so it must size
+    // to what it holds. `flex: 1` means flexBasis 0 plus grow, and in an
+    // auto-height column there is no free space to grow into, so the row
+    // collapsed to zero: the fixed-size avatar still drew and the flex:1 text
+    // beside it got no width at all. That is why "hey" in the food bar showed
+    // Drona's mark and no reply, for every decline, every 'sent' notice, and
+    // the reading indicator. The review row already carried a local `flex: 0`
+    // override for exactly this, which fixed one of the four places it bites.
+    dronaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: Spacing.md },
     avatar: {
       width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle,
       alignItems: 'center', justifyContent: 'center',

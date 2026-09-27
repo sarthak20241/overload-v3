@@ -45,6 +45,7 @@ import { weekPatternFor } from '@/lib/weekPattern';
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { useTodayNutrition, useNutritionTargets } from '@/lib/dietData';
+import { fuelOn } from '@/lib/fuelDays';
 import { RoutineDetailSheet, type RoutineRaw } from '@/components/routines/RoutineDetailSheet';
 import { PressableScale } from '@/components/ui/PressableScale';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
@@ -142,7 +143,10 @@ export default function DashboardScreen() {
   // `reload` too: a calories card changes the targets underneath this ring,
   // and so does a chat with Drona on another screen. Re-read on every focus
   // and right after a card lands, or the ring keeps showing the old goal.
-  const { targets: fuelTargets, reload: reloadFuel } = useNutritionTargets();
+  // Today's own targets: a fuel day (long run, leg day) has more on top.
+  const { targetsOn: fuelTargetsOn, fuelDays, reload: reloadFuel } = useNutritionTargets();
+  const fuelTargets = fuelTargetsOn(new Date());
+  const todayFuel = fuelOn(fuelDays, new Date().getDay());
   // Coach card uses the flat, on-brand lime signature. The purple/teal gradient +
   // glow orbs were removed in the design polish: the coach's own menu is flat/lime,
   // so the dashboard entry now matches the room it opens into (and survives light mode).
@@ -1050,6 +1054,14 @@ export default function DashboardScreen() {
             <View style={styles.statHeader}>
               <Feather name="zap" size={12} color={C.macro.calories} />
               <Text style={[styles.statLabel, { color: C.macro.calories }]}>FUEL</Text>
+              {todayFuel && (
+                <Text
+                  style={[styles.statLabel, { color: C.macro.calories, opacity: 0.7 }]}
+                  accessibilityLabel={`Fuel day, ${todayFuel.kcal} extra calories today`}
+                >
+                  +{todayFuel.kcal}
+                </Text>
+              )}
               <View style={{ flex: 1 }} />
               <Feather name="chevron-right" size={13} color={C.textDim} />
             </View>

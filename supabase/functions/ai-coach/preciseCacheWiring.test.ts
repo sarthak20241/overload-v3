@@ -104,7 +104,7 @@ const reading = (url: string | null, kcal: number) => ({
 function stubDeps(
   readings: unknown[],
   captured: { row?: Record<string, unknown> },
-  opts: { putThrows?: boolean; serving?: [string, number] } = {},
+  opts: { putThrows?: boolean; serving?: [string, number]; forItem?: string } = {},
 ): ParseMealDeps {
   return {
     anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000,
@@ -122,7 +122,7 @@ function stubDeps(
         name: "report_sources",
         input: {
           results: [{
-            for_item: "protein bar",
+            for_item: opts.forItem ?? "protein bar",
             found: true,
             readings,
             ...(opts.serving ? { serving_label: opts.serving[0], serving_grams: opts.serving[1] } : {}),
@@ -201,6 +201,33 @@ Deno.test("a failed cache write does not cost the user their line", () => {
     stubDeps([reading("https://a.com", 380), reading("https://b.com", 390)], cap, { putThrows: true }),
     ITEM, () => {}, () => {},
   ).then((c) => assertEquals(c?.kcal, 385));
+});
+
+Deno.test("a brand already in the name is not doubled on the card or the cache row", () => {
+  // Live on v186: extract gave brand "Parle" AND name "Parle Hide and Seek
+  // biscuits", and both the Precise card and precise_cache.display_name read
+  // "Parle Parle Hide and Seek biscuits".
+  const cap: { row?: Record<string, unknown> } = {};
+  const item = { name: "Parle Hide and Seek biscuits", brand: "Parle", quantity: 2, unit: "piece", prep: null };
+  return superLookupOne(
+    stubDeps([reading("https://a.com", 480), reading("https://b.com", 490)], cap, { forItem: item.name }),
+    item, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.name, "Parle Hide and Seek biscuits");
+    assertEquals(cap.row?.display_name, "Parle Hide and Seek biscuits");
+  });
+});
+
+Deno.test("a brand missing from the name is still put in front of it", () => {
+  const cap: { row?: Record<string, unknown> } = {};
+  const item = { name: "rice cake", brand: "Pintola", quantity: 1, unit: "piece", prep: null };
+  return superLookupOne(
+    stubDeps([reading("https://a.com", 380), reading("https://b.com", 390)], cap, { forItem: item.name }),
+    item, () => {}, () => {},
+  ).then((c) => {
+    assertEquals(c?.name, "Pintola rice cake");
+    assertEquals(cap.row?.display_name, "Pintola rice cake");
+  });
 });
 
 Deno.test("no readings means no candidate and no write", () => {

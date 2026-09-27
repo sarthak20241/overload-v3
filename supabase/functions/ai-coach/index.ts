@@ -1,21 +1,65 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { createRemoteJWKSet, jwtVerify } from "npm:jose@5";
-import { buildSystemPrompt, STRUCTURED_TOOLS, TERMINAL_TOOLS } from "./prompt.ts";
+import {
+  buildSystemPrompt,
+  CREATE_CUSTOM_FOOD_TOOL,
+  CREATE_CUSTOM_MEAL_TOOL,
+  LIST_LOGGED_MEALS_TOOL,
+  STRUCTURED_TOOLS,
+  TERMINAL_TOOLS,
+} from "./prompt.ts";
 import { envInt } from "../_shared/envInt.ts";
+import { isTimeZone } from "../_shared/wallClock.ts";
+import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
+import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
 import {
   type CandidateFood,
   type MealType,
+  mealForHour,
   type OffProduct,
   type ParseMealDeps,
+  type ParseMealInput,
   type ParseMealResult,
   type ParseStep,
+  type ParseTier,
   type PreviousItem,
   type RecentFoodContext,
+  cacheRowToCandidate,
   runParseMeal,
   USER_TEXT_MAX_CHARS,
 } from "./parseMeal.ts";
+import {
+  type FoodIntent,
+  type FoodIntentDecision,
+  type FoodIntentDeps,
+  JEV_INTENT_FLOOR,
+  parseFoodIntentMode,
+  routeFoodIntent,
+  SAVED_MATCH_FLOOR,
+  type SavedMealSummary,
+  CREATE_ACTION_FLOOR,
+  decideFoodAction,
+  type FoodFollowup,
+  readDraftResult,
+  readReplyResult,
+  skippedFollowup,
+  type FoodAction,
+  shouldRouteFoodIntent,
+  wantsFoodAgent,
+} from "./foodIntent.ts";
+import type { SavedMealForParse } from "./savedMeals.ts";
+import { type FoodAgentOutcome, historyMessages, runFoodAgent } from "./foodAgent.ts";
+import { startHeartbeat } from "./streamHeartbeat.ts";
 import { searchFatSecret } from "./fatsecret.ts";
+import {
+  type DayClock,
+  listLoggedMeals,
+  type LoggedMealsStore,
+  type MealRowIn,
+  todayFor,
+  weekdayOf,
+} from "./loggedMeals.ts";
 import {
   type AutoLogSkip,
   type AutoLogStore,
@@ -28,6 +72,9 @@ import {
 import type { PreciseCacheRow } from "./preciseCache.ts";
 import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
+import { countryForTimezone } from "./searchCountry.ts";
+import { selectMatchRows } from "./ourSources.ts";
+import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
   buildAnonProgramMessage,
@@ -108,6 +155,574 @@ const RETRIEVAL_QUERY_TIMEOUT_MS = envInt("RETRIEVAL_QUERY_TIMEOUT_MS", 8000);
 // eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
 // it can be killed without a redeploy if costs or quality surprise us.
 const PARSE_MEAL_MODEL = "claude-haiku-4-5";
+
+// ── Food intent routing (log vs create) ─────────────────────────────────────
+// TypeSafe's Jev decides whether a message is "I ate this" or "save this for
+// later". Absent key = the rung simply does not exist and the ladder starts at
+// the model, which is a supported state rather than an error.
+const JEV_API_KEY = Deno.env.get("JEV_API_KEY");
+
+/**
+ * off    | never runs, costs nothing. The kill switch.
+ * shadow | runs and is RECORDED on the trace, but the parse proceeds exactly as
+ *          today. Nothing a user sees changes.
+ * on     | a 'create' answer diverts out of the parse.
+ *
+ * Defaults to shadow, and will until the create path it would divert INTO
+ * exists. Flipping to 'on' before then would route a message to nothing, which
+ * is worse than logging it. The shadow week is also how a threshold measured on
+ * 46 messages I wrote myself gets checked against messages real people type.
+ */
+const FOOD_INTENT_MODE = parseFoodIntentMode(Deno.env.get("FOOD_INTENT_MODE"));
+
+/** Jev gets a tighter timeout than the parse it runs beside. It is the FAST leg
+ *  of a race it is supposed to win (measured ~700ms against a parse of 1.2s and
+ *  up); one that takes longer than this has already lost its reason to exist,
+ *  and the ladder below it is cheap. */
+// envInt has no range, so the bounds are applied here: a 50ms override would
+// make the rung useless and a 60s one would keep the trace open long after
+// anyone cared.
+const JEV_TIMEOUT_MS = Math.min(Math.max(envInt("JEV_TIMEOUT_MS", 2500), 500), 10_000);
+
+/** Step 2 of the ladder: a small forced-tool Haiku call, used when Jev is
+ *  absent, rate limited, or honest about not knowing. Forced tool_choice so the
+ *  answer is an enum rather than a sentence we would have to parse. Cheap
+ *  enough to be the thing we do when unsure: it fires on a few percent of
+ *  messages, and only ever on the ones that were genuinely ambiguous. */
+async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | null> {
+  if (!ANTHROPIC_API_KEY) return null;
+  const res = await callAnthropic({
+    model: PARSE_MEAL_MODEL,
+    max_tokens: 64,
+    system:
+      "You route messages typed into a food tracking app. Decide on the INSTRUCTION in the message, " +
+      "not on the food it describes. Creating requires an EXPLICIT ask to save, create, or remember a " +
+      "food for later use. Reporting eating or drinking, even without naming a specific food and even " +
+      "with calories attached, is logging. A message that reports no eating at all (a greeting, thanks, " +
+      "a question about the app or about nutrition) is other.",
+    tools: [{
+      name: "route_food_text",
+      description: "Report what the user is asking for.",
+      input_schema: {
+        type: "object",
+        properties: {
+          intent: {
+            type: "string",
+            enum: ["log", "create", "other", "steps"],
+            description:
+              "log: they are reporting food or drink they had. " +
+              "create: they explicitly asked for a food or meal to be SAVED as a reusable entry. " +
+              "other: they reported no eating and asked to save nothing. " +
+              "steps: the food must be looked up in what they logged before, or they asked for two actions at once.",
+          },
+        },
+        required: ["intent"],
+      },
+    }],
+    tool_choice: { type: "tool", name: "route_food_text" },
+    messages: [{ role: "user", content: text }],
+  }, 6000);
+  if (!res.ok) {
+    console.log(`[food_intent] model fallback failed: ${res.status}`);
+    return null;
+  }
+  const block = (res.data?.content ?? []).find((b: { type?: string }) => b?.type === "tool_use");
+  const intent = block?.input?.intent;
+  return intent === "log" || intent === "create" || intent === "other" || intent === "steps" ? intent : null;
+}
+
+/** The user's saved foods and meals, for the match question. Headers only: the
+ *  question is "which of these is this", and the ingredient rows of every meal
+ *  would be state that changes no answer while making every other answer worse
+ *  (the jaggedness page is explicit that accuracy falls as the state fills with
+ *  irrelevant detail).
+ *
+ *  Never throws. A user with no saved meals, a slow query, a missing table: all
+ *  of them mean the same thing here, which is that the match question is not
+ *  asked. Nothing about it may cost someone their meal log. */
+/** The user's saved meals WITH their rows, read once per food message. The
+ *  parser logs these rows when the message names one (savedMeals.ts), and the
+ *  router gets its summary from the same read. Never throws: a failed read is
+ *  an empty list, which is exactly the behaviour before saved meals existed. */
+async function fetchSavedMealsForParse(userClient: SupabaseClient): Promise<SavedMealForParse[]> {
+  try {
+    const { data, error } = await userClient
+      .from("saved_meals")
+      .select(
+        "id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, " +
+          "saved_meal_items(food_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, fiber_g, position)",
+      )
+      .order("created_at", { ascending: false })
+      .limit(60);
+    if (error || !data) return [];
+    const n = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? 0 : Number(v));
+    const nn = (v: unknown) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
+    return (data as unknown as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id),
+      name: String(r.name ?? ""),
+      kind: r.kind === "recipe" ? "recipe" as const : "meal" as const,
+      servings: n(r.servings) > 0 ? n(r.servings) : 1,
+      serving_label: typeof r.serving_label === "string" ? r.serving_label : null,
+      kcal: n(r.kcal),
+      protein_g: n(r.protein_g),
+      carb_g: n(r.carb_g),
+      fat_g: n(r.fat_g),
+      items: ((r.saved_meal_items as Record<string, unknown>[] | undefined) ?? [])
+        .slice()
+        .sort((a, b) => n(a.position) - n(b.position))
+        .map((i) => ({
+          food_id: typeof i.food_id === "string" ? i.food_id : null,
+          food_name: String(i.food_name ?? ""),
+          quantity: n(i.quantity) || 1,
+          serving_unit: String(i.serving_unit ?? "serving"),
+          grams: nn(i.grams_logged),
+          kcal: n(i.kcal),
+          protein_g: nn(i.protein_g),
+          carb_g: nn(i.carb_g),
+          fat_g: nn(i.fat_g),
+          fiber_g: nn(i.fiber_g),
+        })),
+    })).filter((m) => m.name.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function toSavedSummaries(saved: SavedMealForParse[]): SavedMealSummary[] {
+  return saved.map((m) => ({ id: m.id, name: m.name, kcal: m.kcal, protein_g: m.protein_g, item_count: m.items.length }));
+}
+
+function makeFoodIntentDeps(
+  savedMeals: SavedMealSummary[],
+  abortSignal?: AbortSignal,
+): FoodIntentDeps {
+  return {
+    savedMeals,
+    jev: JEV_API_KEY
+      ? { apiKey: JEV_API_KEY, timeoutMs: JEV_TIMEOUT_MS, abortSignal, log: (m) => console.log(m) }
+      : undefined,
+    classify: classifyFoodIntentWithModel,
+    log: (m) => console.log(m),
+  };
+}
+
+/**
+ * Start the router CONCURRENTLY with the parse, never in front of it.
+ *
+ * Measured, and it is the reason for this shape: Jev answers in about 700ms and
+ * a parse takes 1.2s and up. Run in sequence that is 700ms added to every meal
+ * anyone logs, to answer a question that is 'log' almost every time. Run
+ * alongside, the common path pays nothing and only a create wastes a call it
+ * was going to make anyway.
+ *
+ * Returns null when there is nothing to decide, so the caller can tell "we did
+ * not ask" from "we asked and it said log":
+ *   - the switch is off
+ *   - this turn is a CORRECTION, with a parsed meal already on screen. "no, the
+ *     other one" is neither logging nor creating, it is editing, and routing it
+ *     as either would be wrong.
+ */
+function startFoodIntent(
+  savedMealsP: Promise<SavedMealForParse[]>,
+  text: string,
+  isCorrection: boolean,
+  abortSignal?: AbortSignal,
+): Promise<FoodIntentDecision | null> {
+  if (!shouldRouteFoodIntent(FOOD_INTENT_MODE, isCorrection)) return Promise.resolve(null);
+  // The same saved-meal read the parser uses, so one query serves both.
+  return savedMealsP
+    .then((saved) => routeFoodIntent(text, makeFoodIntentDeps(toSavedSummaries(saved), abortSignal)))
+    // routeFoodIntent is documented never to throw. This is the belt on top of
+    // the braces: nothing about a shadow measurement may fail a meal log.
+    .catch((e) => {
+      console.log(`[food_intent] router threw: ${String(e).slice(0, 120)}`);
+      return null;
+    });
+}
+
+/** The capability a client sends to say it can draw a create card in the food
+ *  bar. Builds 110 (iOS) and 107 (Android) do not send it and cannot draw one,
+ *  so for them a create is served as a log: exactly what they do today. */
+const CLIENT_CAP_FOOD_CREATE = "food_create";
+
+function clientSupportsFoodCreate(body: Record<string, unknown>): boolean {
+  return Array.isArray(body?.supports) && (body.supports as unknown[]).includes(CLIENT_CAP_FOOD_CREATE);
+}
+
+/** Reads the food box may do before it answers: the user's diary, so "save
+ *  yesterday's breakfast" and "what did I have for lunch" work here the same as
+ *  in Chat. Null when the box has no user to read for. */
+type DiaryReader = (input: Record<string, unknown>) => Promise<unknown>;
+
+function makeDiaryReader(userClient: SupabaseClient, extra: { todayLocal?: string | null; tzOffsetMin?: number | null }): DiaryReader {
+  let clockP: Promise<DayClock> | null = null;
+  return async (input) => {
+    clockP ??= coachDayClock(userClient, extra);
+    try {
+      return await listLoggedMeals(input, await clockP, loggedMealsStore(userClient));
+    } catch (e) {
+      return { error: String(e) };
+    }
+  };
+}
+
+/** Most diary reads one answer needs: one day, and one retry on a second day
+ *  when the first was empty. Past it the model has to answer with what it has. */
+const FOOD_BAR_MAX_DIARY_READS = 2;
+
+/**
+ * One model call that may first read the diary. Runs the call; while it asks
+ * for coach_list_logged_meals, answers that and calls again, up to the cap.
+ * Any other tool_use, or text, is the final answer and comes back as-is. After
+ * the cap the diary tool is taken away so the next call HAS to answer.
+ */
+async function callWithDiaryReads(
+  payload: Record<string, unknown>,
+  readDiary: DiaryReader | null,
+  timeoutMs: number,
+): Promise<{ ok: true; data: any; reads: number } | { ok: false; status: number; body: string }> {
+  const messages = [...(payload.messages as unknown[])];
+  let reads = 0;
+  const tools = (payload.tools as { name: string }[] | undefined) ?? [];
+  for (;;) {
+    const canRead = readDiary !== null && reads < FOOD_BAR_MAX_DIARY_READS;
+    const body: Record<string, unknown> = { ...payload, messages };
+    // Once a read is in the history the tool stays DEFINED (the API wants a
+    // definition for every tool_use it is shown), but past the cap a plain
+    // reply is told it may not call it again.
+    const offered = canRead || reads > 0 ? [LIST_LOGGED_MEALS_TOOL, ...tools] : tools;
+    if (offered.length > 0) body.tools = offered;
+    if (!canRead && reads > 0 && tools.length === 0) body.tool_choice = { type: "none" };
+    const res = await callAnthropic(body, timeoutMs);
+    if (!res.ok) return res;
+    const blocks = (res.data?.content ?? []) as { type?: string; name?: string; id?: string; input?: unknown }[];
+    const readCalls = blocks.filter((b) => b.type === "tool_use" && b.name === LIST_LOGGED_MEALS_TOOL.name);
+    const otherCalls = blocks.filter((b) => b.type === "tool_use" && b.name !== LIST_LOGGED_MEALS_TOOL.name);
+    // Past the cap a create draft that reaches for the diary again comes back
+    // with no create in it, and the caller serves the parse as a log.
+    if (readCalls.length === 0 || otherCalls.length > 0 || !canRead) return { ok: true, data: res.data, reads };
+    const results = await Promise.all(readCalls.map(async (b) => ({
+      type: "tool_result",
+      tool_use_id: b.id ?? "",
+      content: JSON.stringify(await readDiary!((b.input ?? {}) as Record<string, unknown>)),
+    })));
+    reads += readCalls.length;
+    messages.push({ role: "assistant", content: blocks }, { role: "user", content: results });
+  }
+}
+
+/**
+ * Drona answering a message that is not food: a greeting, thanks, a question.
+ *
+ * Replaces the canned "tell me what you ate" that every such message used to
+ * get, which was actively wrong for "do you have tools to create meals": it
+ * told the user it could only log, the day it learned to create.
+ *
+ * Every claim in this prompt has to be TRUE for the client asking. An old build
+ * cannot create from the food bar, so it is never told that it can. Returns
+ * null on any failure, and the caller falls back to the parse's own decline, so
+ * a broken reply is never worse than what shipped.
+ */
+async function replyToFoodBarChat(
+  text: string,
+  supportsCreate: boolean,
+  readDiary: DiaryReader | null = null,
+  recentTurns: { role: "user" | "drona"; text: string }[] = [],
+): Promise<{ reply: string | null; followup: FoodFollowup }> {
+  if (!ANTHROPIC_API_KEY) return { reply: null, followup: skippedFollowup("reply") };
+  const t0 = Date.now();
+  // What THIS box can do, stated as fact the reply has to get right. The first
+  // version put "for longer answers, ask in Chat" beside it, and the model
+  // over-applied that: asked "do you have tools to create meals", it sent the
+  // user to Chat to do something this box had just learned to do. Seen live.
+  const canDo = supportsCreate
+    ? "This box does two things, and if the user asks what you can do you must describe both accurately: " +
+      "it logs food they describe (\"two eggs and toast\"), and it saves a food or meal for later when they ask " +
+      "(\"save my shake, 180 cal\"). Both happen right here. Never tell them to go anywhere else to log, save or create a meal."
+    : "This box logs food the user describes (\"two eggs and toast\"). Describe only that if they ask what you can do.";
+  // With a diary to read, questions about what they already logged ("what did
+  // I have for lunch yesterday") get a real answer instead of a shrug.
+  const diary = readDiary
+    ? "You can read their food diary with coach_list_logged_meals: use it when they ask about food they already logged " +
+      "(\"what did I have for lunch yesterday\", \"how much protein yesterday\"), and answer from what it returns. "
+    : "";
+  const res = await callWithDiaryReads({
+    model: PARSE_MEAL_MODEL,
+    max_tokens: 300,
+    system:
+      "You are Coach Drona, answering inside the food logging box of a fitness app. The user typed something that is not a meal. " +
+      `${canDo} ${diary}` +
+      "Reply in one to three short sentences, warm and direct, like a coach. If they asked a real question, answer it briefly. " +
+      "Only a long nutrition or training question is worth sending to Chat, never a question about logging or saving food. " +
+      "Never claim you did anything: you logged nothing and saved nothing. Never use em dashes. " +
+      "Earlier turns of this conversation come with the message: a bare \"yes\" answers whatever you last asked.",
+    messages: historyMessages(recentTurns, text),
+  }, readDiary, 6000);
+  if (!res.ok) console.log(`[food_intent] chat reply failed: ${res.status}`);
+  return readReplyResult(res, Date.now() - t0);
+}
+
+/**
+ * Drona building the food or meal the user asked to save.
+ *
+ * Forced onto the SAME two tools the coach chat uses, so a food-bar create and a
+ * chat create are the same shape and the client needs one card for both. The
+ * model picks food versus meal itself, fills in the macros it was not given, and
+ * says which ones it filled. Returns null on any failure and the caller serves
+ * the parse as a log instead: a create that could not be drafted must never cost
+ * the user the meal.
+ */
+async function draftFoodCreate(
+  text: string,
+  mealHint: MealType | null,
+  readDiary: DiaryReader | null = null,
+  recentTurns: { role: "user" | "drona"; text: string }[] = [],
+): Promise<{ create: { tool: string; input: Record<string, unknown> } | null; followup: FoodFollowup }> {
+  if (!ANTHROPIC_API_KEY) return { create: null, followup: skippedFollowup("create") };
+  const t0 = Date.now();
+  // "Save yesterday's breakfast as a meal": the foods are in the diary, not in
+  // the message. Without the read the model would invent a breakfast.
+  const diary = readDiary
+    ? "If they point at food they already LOGGED (\"save yesterday's breakfast\", \"make today's lunch a meal\"), first read it " +
+      "with coach_list_logged_meals (days_ago 0 today, 1 yesterday), then save exactly those foods, copying every name, amount " +
+      "and number, marking nothing as estimated, with log_now false because it is already in the diary. " +
+      "If that meal is empty, save nothing you did not read: build it from the text alone only if the text lists the foods. "
+    : "";
+  const res = await callWithDiaryReads({
+    model: PARSE_MEAL_MODEL,
+    max_tokens: 900,
+    system:
+      "The user asked to SAVE a food or meal in a fitness app. Call exactly one tool. " +
+      "create_custom_food for one thing with no parts; create_custom_meal for a named dish described by its ingredients. " +
+      "Use every number the user gave. Estimate any calories or macros they did not give, and mark each estimate " +
+      "(the estimated list on a food, estimated true on a meal line). " +
+      "Set log_now true only when they said they ate it; if they only asked to save it, log_now is false. " +
+      "The summary is shown on a card the user has NOT tapped yet, so write it as an offer: never say it is saved or logged. " +
+      (mealHint ? `If log_now is true, the meal is ${mealHint}. ` : "") +
+      diary +
+      "Earlier turns of this conversation come with the message, so \"yes, save it\" refers to what was just discussed. " +
+      "Never use em dashes.",
+    tools: [CREATE_CUSTOM_FOOD_TOOL, CREATE_CUSTOM_MEAL_TOOL],
+    // "any" and not a named tool: which of the two it is IS the judgment.
+    tool_choice: { type: "any" },
+    messages: historyMessages(recentTurns, text),
+  }, readDiary, 12000);
+  if (!res.ok) console.log(`[food_intent] create draft failed: ${res.status}`);
+  return readDraftResult(res, Date.now() - t0);
+}
+
+interface FoodBarOutcome {
+  /** What the food bar DID. Differs from `planned` when a reply or a create
+   *  failed and the bar fell back to the log. */
+  action: FoodAction;
+  planned: FoodAction;
+  decision: FoodIntentDecision | null;
+  /** The reply or create call, as the trace keeps it. Absent on a plain log. */
+  followup?: FoodFollowup;
+  reply?: string;
+  create?: { tool: string; input: Record<string, unknown> };
+  /** The agent's meal, REPLACING the first parse. Set only when the agent
+   *  finished with log_food. */
+  result?: ParseMealResult;
+  /** What the agent did, for the trace. */
+  agent?: { kind: FoodAgentOutcome["kind"]; reason: string | null; turns: FoodAgentOutcome["turns"] };
+}
+
+/** What the box says when the agent could not finish. True, and it tells the
+ *  user the one thing that reliably works: the same ask in two plain messages. */
+const AGENT_FAILED_REPLY =
+  "I could not finish that one in a single go. Try it as two messages: first what to save or look up, then what to log.";
+
+/** "Tuesday 2026-09-22" from the client's YYYY-MM-DD, or null. The weekday is
+ *  computed from the date itself, so no server clock or time zone is involved. */
+function todayLabel(localDate: string | null): string | null {
+  if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
+  const d = new Date(`${localDate}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][d.getUTCDay()];
+  return `${day} ${localDate}`;
+}
+
+/**
+ * Start the food agent AS SOON AS the router answers, not after the parse: the
+ * parse is wasted work for a multi-step message, and waiting on it would add
+ * its whole time to the agent's. Resolves null when the message is not one
+ * for the agent (the common case, which costs nothing). Never rejects.
+ */
+function startFoodAgent(args: {
+  intentP: Promise<FoodIntentDecision | null>;
+  supportsCreate: boolean;
+  text: string;
+  mealHint: MealType | null;
+  localHour: number | null;
+  localDate: string | null;
+  mode: "fast" | "super" | null;
+  savedMealsP: Promise<SavedMealForParse[]>;
+  readDiary: DiaryReader;
+  contextPromise: ParseMealInput["contextPromise"];
+  userClient: SupabaseClient;
+  admin: any;
+  userId: string;
+  recentTurns: { role: "user" | "drona"; text: string }[];
+  onStatus?: (label: string) => void;
+}): Promise<FoodAgentOutcome | null> {
+  return args.intentP.then(async (d) => {
+    if (FOOD_INTENT_MODE !== "on" || !wantsFoodAgent(d, args.supportsCreate)) return null;
+    if (!ANTHROPIC_API_KEY) return null;
+    const t0 = Date.now();
+    const out = await runFoodAgent(
+      {
+        text: args.text,
+        defaultMeal: args.mealHint ?? mealForHour(args.localHour),
+        today: todayLabel(args.localDate),
+        recentTurns: args.recentTurns,
+      },
+      {
+        model: MODEL,
+        callModel: (b) => callAnthropic(b, 15000),
+        readDiary: args.readDiary,
+        savedMeals: () => args.savedMealsP,
+        // A fresh parse without onProgress: the agent's parses must not paint
+        // rows on the card behind its back.
+        parseFood: (t) =>
+          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId), {
+            text: t,
+            localHour: args.localHour,
+            mealHint: args.mealHint,
+            mode: args.mode,
+            recentFoods: [],
+            savedMeals: args.savedMealsP,
+            todayTotals: null,
+            targets: null,
+            contextPromise: args.contextPromise,
+          }),
+        onStatus: args.onStatus,
+        log: (m) => console.log(m),
+      },
+    );
+    // Sonnet's own tokens. The parses it ran are costed in the parse result.
+    void logTokenUsage(args.admin, {
+      pipeline: "food_agent",
+      provider: "anthropic",
+      model: MODEL,
+      input_tokens: out.turns.reduce((n, t) => n + (t.input_tokens ?? 0), 0),
+      output_tokens: out.turns.reduce((n, t) => n + (t.output_tokens ?? 0), 0),
+      latency_ms: Date.now() - t0,
+      status: out.kind === "failed" ? "error" : "success",
+      metadata: { user_id: args.userId, kind: out.kind, turns: out.turns.length },
+    });
+    return out;
+  }).catch((e) => {
+    console.log(`[food_agent] threw: ${String(e).slice(0, 160)}`);
+    return { kind: "failed" as const, reason: "threw", turns: [] };
+  });
+}
+
+/**
+ * What the food bar sends back, decided AFTER the parse.
+ *
+ * Outside 'on' this returns straight away WITHOUT awaiting the router, so shadow
+ * keeps its promise of costing the response path nothing. In 'on' it waits for
+ * the router, which has usually long since answered: it started alongside the
+ * parse and is the faster of the two.
+ *
+ * Every branch degrades to 'log', the parse result exactly as it shipped. A
+ * reply that could not be written, a create that could not be drafted: the user
+ * still gets their meal.
+ */
+async function resolveFoodBarOutcome(args: {
+  result: ParseMealResult;
+  intentP: Promise<FoodIntentDecision | null>;
+  supportsCreate: boolean;
+  text: string;
+  mealHint: MealType | null;
+  readDiary?: DiaryReader | null;
+  agentP?: Promise<FoodAgentOutcome | null>;
+  recentTurns?: { role: "user" | "drona"; text: string }[];
+}): Promise<FoodBarOutcome> {
+  if (FOOD_INTENT_MODE !== "on") return { action: "log", planned: "log", decision: null };
+  const decision = await args.intentP.catch(() => null);
+  const parseFoundFood = !!args.result.parsed && args.result.parsed.items.length > 0;
+  const action = decideFoodAction({
+    decision,
+    mode: FOOD_INTENT_MODE,
+    parseFoundFood,
+    clientSupportsCreate: args.supportsCreate,
+  });
+
+  if (action === "agent") {
+    const o = args.agentP ? await args.agentP : null;
+    if (!o) return { action: "log", planned: action, decision };
+    const agent = { kind: o.kind, reason: o.kind === "failed" ? o.reason : null, turns: o.turns };
+    if (o.kind === "log") return { action: "log", planned: action, decision, result: o.result, agent };
+    if (o.kind === "create") return { action: "create", planned: action, decision, create: o.create, agent };
+    if (o.kind === "reply") return { action: "reply", planned: action, decision, reply: o.text, agent };
+    return { action: "reply", planned: action, decision, reply: AGENT_FAILED_REPLY, agent };
+  }
+  if (action === "reply") {
+    const { reply, followup } = await replyToFoodBarChat(
+      args.text, args.supportsCreate, args.readDiary ?? null, args.recentTurns ?? [],
+    );
+    return reply
+      ? { action, planned: action, decision, reply, followup }
+      : { action: "log", planned: action, decision, followup };
+  }
+  if (action === "create") {
+    const { create, followup } = await draftFoodCreate(
+      args.text, args.mealHint, args.readDiary ?? null, args.recentTurns ?? [],
+    );
+    return create
+      ? { action, planned: action, decision, create, followup }
+      : { action: "log", planned: action, decision, followup };
+  }
+  return { action: "log", planned: "log", decision };
+}
+
+/** True once the router has settled on a create this client can draw, so the
+ *  stream can stop painting meal rows that are about to be replaced by a save
+ *  card. Read synchronously from a settled flag, never awaited on the hot path. */
+function wouldDivertToCreate(d: FoodIntentDecision | null, supportsCreate: boolean): boolean {
+  return FOOD_INTENT_MODE === "on" && supportsCreate && !!d && d.intent === "create" &&
+    d.source === "jev" && d.confidence !== null && d.confidence >= CREATE_ACTION_FLOOR;
+}
+
+/** The router's answer as a trace pseudo-step, in the same shape __edge_timing
+ *  already uses. parse_traces.steps is jsonb precisely so this needs no
+ *  migration. This is the record we read after a week to find out whether a
+ *  floor tuned on invented messages survives real ones. */
+function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome): ParseStep[] {
+  if (!d) return [];
+  return [{
+    iter: 9,
+    tool: "__food_intent",
+    input: {
+      // What we DID, beside what we guessed. They differ whenever the policy
+      // overrules Jev (a create under the bar, a parse vetoing an 'other'), and
+      // those disagreements are the rows worth reading.
+      action: outcome?.action ?? null,
+      // What the policy chose before the reply or create call ran. Differs
+      // from action only when that call failed and the bar fell back to log.
+      planned_action: outcome?.planned ?? null,
+      // The reply or create call in full: what the model wrote, what the user
+      // was shown, the card it drafted, tokens, timing, and any error.
+      followup: outcome?.followup ?? null,
+      // The agent's turns: which tools it called together, tokens and time.
+      agent: outcome?.agent ?? null,
+      intent: d.intent,
+      source: d.source,
+      confidence: d.confidence,
+      note: d.note,
+      saved_match: d.savedMatch
+        ? { id: d.savedMatch.id, name: d.savedMatch.name, confidence: d.savedMatch.confidence }
+        : null,
+      saved_floor: SAVED_MATCH_FLOOR,
+      mode: FOOD_INTENT_MODE,
+      // Recorded per row rather than assumed from the constant, so a trace read
+      // months from now still says what bar it was judged against.
+      floor: JEV_INTENT_FLOOR,
+    },
+  }] as ParseStep[];
+}
 // The DECIDE call's budget. It writes one line per item plus the Drona line,
 // so it scales with the item count, and that ceiling went from 12 to 50
 // (MAX_ITEMS_PER_PARSE). 1600 was sized for twelve; a long day would have been
@@ -130,6 +745,24 @@ const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "fals
 const PARSE_SUPER_MODE = Deno.env.get("PARSE_SUPER_MODE") ?? "off";
 const PARSE_PRECISE_CACHE = Deno.env.get("PARSE_PRECISE_CACHE") !== "false";
 const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on";
+// Precise, our sources first (ourSources.ts). off (default) | shadow (run the
+// Jev match beside the web lookup and only record it on the trace) | on (serve
+// an accepted row and skip the web). Anything unrecognised is off: this can
+// only change what users are served when someone sets "on" on purpose.
+const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
+  const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
+  return v === "shadow" || v === "on" ? v : "off";
+})();
+// Precise's web lookup. "anthropic" (default) keeps the server-side web_search
+// lookup; "tavily" is Tavily search + Jev relevance + a small read
+// (tavilyLookup.ts). Asking for tavily with no key stays on anthropic, and a
+// Tavily outage mid-parse falls back to anthropic inside parseMeal.
+const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY") ?? "";
+const PRECISE_WEB_PROVIDER: "anthropic" | "tavily" =
+  Deno.env.get("PRECISE_WEB_PROVIDER") === "tavily" && TAVILY_API_KEY ? "tavily" : "anthropic";
+// Country boost for Precise's web search when a user has no time zone stored.
+// Each user's own zone decides otherwise (resolveSearchCountry below).
+const PRECISE_SEARCH_COUNTRY = Deno.env.get("PRECISE_SEARCH_COUNTRY") ?? "india";
 
 // Paywall v3 free tier (migration 0088, .planning/paywall-plan.md). Free
 // users get metered AI instead of none: 3 chat messages and 3 meal parses
@@ -296,6 +929,19 @@ function preview(text: string | null | undefined): string | null {
 // ── Token usage logging (Phase 3 observability) ─────────────────────────────
 // Writes one row to token_usage_log per Anthropic / Voyage call. Best-effort:
 // any failure is swallowed so logging never breaks the coach turn.
+/** Tavily's cost for one parse, as its own row. server_tool_cost_usd prices a
+ *  row's metadata against server_tool_pricing rows of the SAME provider, so the
+ *  credits cannot ride on the Anthropic row: they would be priced at zero. */
+function logTavilyCost(admin: SupabaseClient, credits: number | undefined, metadata: Record<string, unknown>): void {
+  if (!credits) return;
+  void logTokenUsage(admin, {
+    pipeline: "parse_meal",
+    provider: "tavily",
+    model: "tavily-search",
+    metadata: { ...metadata, tavily_credits: credits },
+  });
+}
+
 async function logTokenUsage(
   admin: SupabaseClient,
   rec: {
@@ -383,6 +1029,42 @@ async function recordTrace(
   }
 }
 
+// ── Logged-meal reads ───────────────────────────────────────────────────────
+
+/** meals + their entries in a UTC window, through the user's own JWT client. */
+function loggedMealsStore(userClient: SupabaseClient): LoggedMealsStore {
+  return {
+    async mealsBetween(startIso, endIso) {
+      const { data, error } = await userClient
+        .from("meals")
+        .select("meal_type, logged_at, meal_entries(food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)")
+        .gte("logged_at", startIso)
+        .lte("logged_at", endIso)
+        .order("logged_at", { ascending: true })
+        .limit(40);
+      if (error) return { error: error.message };
+      return { rows: (data ?? []) as MealRowIn[] };
+    },
+  };
+}
+
+/** The user's clock for a coach read: their saved zone, plus whatever the
+ *  request itself carried. A missing zone is not an error; the result says it
+ *  fell back to UTC. */
+async function coachDayClock(
+  userClient: SupabaseClient,
+  extra: { todayLocal?: string | null; tzOffsetMin?: number | null } = {},
+): Promise<DayClock> {
+  let timeZone: string | null = null;
+  try {
+    const { data } = await userClient.from("user_profiles").select("timezone").maybeSingle();
+    timeZone = typeof data?.timezone === "string" ? data.timezone : null;
+  } catch {
+    // Fall through to the offset / UTC.
+  }
+  return { timeZone, todayLocal: extra.todayLocal ?? null, tzOffsetMin: extra.tzOffsetMin ?? null };
+}
+
 // ── Tool execution ──────────────────────────────────────────────────────────
 // Maps Anthropic tool_use blocks → Postgres RPC calls via the user's JWT
 // client (so every read is RLS-gated to the authenticated user).
@@ -440,6 +1122,52 @@ async function executeTool(
           note:
             "No catalog exercise matched. Try a shorter, more generic query (one word) before concluding it does not exist. Never invent a name for edit_active_workout.",
         };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  // The user's own saved foods and meals. A plain RLS-gated PostgREST read for
+  // the same reason the catalog search is: saved_meals is already scoped to the
+  // caller by policy (0075), so no security-definer function and no migration.
+  // Headers only plus an item count — the coach needs to know WHAT the user has
+  // and what it comes to, not every ingredient of every meal, and pulling the
+  // full item rows would put a large blob in the tool result for no decision it
+  // changes.
+  // What the user LOGGED on one day. The day is resolved in their own zone
+  // (user_profiles.timezone, kept current by the app), because "yesterday" on
+  // a UTC server moves an Indian dinner onto the wrong date. See loggedMeals.ts.
+  if (name === "coach_list_logged_meals") {
+    try {
+      const clock = await coachDayClock(userClient);
+      return await listLoggedMeals(input, clock, loggedMealsStore(userClient));
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  if (name === "coach_list_saved_meals") {
+    const q = String(input.query ?? "").trim();
+    const limit = Math.min(Math.max(Number(input.limit ?? 40) || 40, 1), 100);
+    try {
+      let query = userClient
+        .from("saved_meals")
+        .select("id, name, kind, servings, serving_label, kcal, protein_g, carb_g, fat_g, created_at, saved_meal_items(count)")
+        .order("created_at", { ascending: false });
+      if (q) query = query.ilike("name", `%${q.replace(/[%_]/g, "\\$&")}%`);
+      const { data, error } = await query.limit(limit);
+      if (error) return { error: error.message };
+      const rows = (data ?? []).map((r: Record<string, unknown>) => {
+        const counted = r.saved_meal_items as { count: number }[] | undefined;
+        const { saved_meal_items: _drop, ...rest } = r;
+        return { ...rest, item_count: counted?.[0]?.count ?? 0 };
+      });
+      return rows.length > 0 ? { saved: rows } : {
+        saved: [],
+        note: q
+          ? "Nothing saved matches that name. List without a query before concluding they have not saved it."
+          : "This user has not saved any foods or meals yet.",
+      };
     } catch (e) {
       return { error: String(e) };
     }
@@ -1390,23 +2118,20 @@ async function backfillOffFoodRow(admin: SupabaseClient, p: OffProduct): Promise
   }
 }
 
-async function searchCatalogWithServings(
-  userClient: SupabaseClient,
-  admin: SupabaseClient,
-  userId: string,
-  query: string,
-): Promise<CandidateFood[]> {
-  const parseServings = (raw: unknown): { label: string; grams: number; is_default: boolean }[] => {
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((s) => {
-      const o = s as Record<string, unknown>;
-      const label = typeof o?.label === "string" ? o.label : "";
-      const grams = Number(o?.grams);
-      if (!label || !Number.isFinite(grams)) return [];
-      return [{ label, grams, is_default: !!o.is_default }];
-    });
-  };
-  const toCandidate = (r: Record<string, unknown>): CandidateFood => ({
+function parseCatalogServings(raw: unknown): { label: string; grams: number; is_default: boolean }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((s) => {
+    const o = s as Record<string, unknown>;
+    const label = typeof o?.label === "string" ? o.label : "";
+    const grams = Number(o?.grams);
+    if (!label || !Number.isFinite(grams)) return [];
+    return [{ label, grams, is_default: !!o.is_default }];
+  });
+}
+
+/** One row of search_foods_*_with_servings as a parse candidate. */
+function catalogRowToCandidate(r: Record<string, unknown>): CandidateFood {
+  return {
     food_id: String(r.id),
     name: String(r.name),
     brand: r.brand ? String(r.brand) : null,
@@ -1416,9 +2141,136 @@ async function searchCatalogWithServings(
     carb_g: Number(r.carb_g ?? 0),
     fat_g: Number(r.fat_g ?? 0),
     fiber_g: r.fiber_g === null || r.fiber_g === undefined ? null : Number(r.fiber_g),
-    servings: parseServings(r.servings),
+    servings: parseCatalogServings(r.servings),
     source: "catalog" as const,
+  };
+}
+
+/**
+ * Candidate rows for Precise's our-sources match (ourSources.ts): the same two
+ * searches production runs (trigram + semantic), but a deeper trigram list so
+ * lab / curated rows ranked below branded packs can still be offered, plus the
+ * real foods.source of every row, which the search functions do not return and
+ * the match gate needs (a plain food may only take a lab or curated row).
+ */
+async function findMatchCandidates(
+  userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+  item: MatchItem,
+): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>> {
+  const query = item.brand && !item.name.toLowerCase().includes(item.brand.toLowerCase())
+    ? `${item.brand} ${item.name}`
+    : item.name;
+  // One query embedding, shared by the foods semantic search and the Precise
+  // cache search (0141), both in the voyage-3 space.
+  const vecP = embedQuery(query, admin, userId);
+  const [trigram, semantic, cached] = await Promise.all([
+    userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 30 })
+      .then((res: { data: unknown }) => (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>),
+    vecP.then(async (vec) => {
+      if (!vec) return [] as Array<Record<string, unknown>>;
+      const { data } = await userClient.rpc("search_foods_semantic_with_servings", {
+        p_query_embedding: JSON.stringify(vec),
+        lim: 6,
+      });
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+    // Service role: 0141 grants the cache search to service_role only. A
+    // missing function (migration not applied yet) is just no cache rows.
+    vecP.then(async (vec) => {
+      const { data, error } = await admin.rpc("precise_cache_candidates", {
+        p_query: query,
+        p_embedding: vec ? JSON.stringify(vec) : null,
+        lim: 3,
+      });
+      if (error) {
+        console.log(`[our_sources] precise_cache_candidates failed: ${error.message}`);
+        return [] as Array<Record<string, unknown>>;
+      }
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
+  ]);
+  type CandidatePick = { id: string; origin: "catalog" | "precise"; raw: Record<string, unknown> };
+  const picks = (rows: Array<Record<string, unknown>>, origin: CandidatePick["origin"]): CandidatePick[] =>
+    rows.map((r) => ({ id: String(r.id), origin, raw: r }));
+  const tri = picks(trigram, "catalog");
+  const sem = picks(semantic, "catalog");
+  const cache = picks(cached, "precise");
+  const ids = [...new Set([...tri, ...sem].map((r) => r.id))];
+  if (ids.length === 0 && cache.length === 0) return [];
+  const { data: srcRows } = ids.length
+    ? await admin.from("foods").select("id, source").in("id", ids)
+    : { data: [] as Array<{ id: string; source: string }> };
+  const sourceOf = new Map(((srcRows ?? []) as Array<{ id: string; source: string }>).map((r) => [r.id, r.source]));
+  const cacheIds = new Set(cache.map((c) => c.id));
+  return selectMatchRows(tri, sem, (id) => (cacheIds.has(id) ? "precise" : sourceOf.get(id)), cache).map((p) => {
+    const food = p.origin === "precise"
+      ? cacheRowToCandidate(p.raw as unknown as PreciseCacheRow)
+      : catalogRowToCandidate(p.raw);
+    return {
+      food,
+      meta: {
+        id: p.id,
+        name: food.name,
+        brand: food.brand,
+        source: p.origin === "precise" ? "precise" : sourceOf.get(p.id) ?? "catalog",
+        kcal: food.kcal,
+        protein_g: food.protein_g,
+      },
+    };
   });
+}
+
+/**
+ * A voyage-3 DOCUMENT embedding of a Precise cache row's name, so the cache's
+ * meaning search (0141) can find it. Documents and queries are embedded with
+ * their own input_type, the asymmetric setup foods and research_kb use.
+ * Returns null on any failure: a row without an embedding is still found by
+ * name, and the backfill script fills it later.
+ */
+async function embedCacheDocument(text: string, admin: SupabaseClient): Promise<number[] | null> {
+  if (!VOYAGE_API_KEY) return null;
+  const trimmed = (text ?? "").trim().slice(0, 300);
+  if (!trimmed) return null;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), VOYAGE_TIMEOUT_MS);
+  const startMs = Date.now();
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
+      body: JSON.stringify({ input: [trimmed], model: "voyage-3", input_type: "document" }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.log(`[parse_meal] precise_cache embed failed: ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    void logTokenUsage(admin, {
+      pipeline: "embed_precise_cache",
+      provider: "voyage",
+      model: "voyage-3",
+      input_tokens: data.usage?.total_tokens ?? 0,
+      latency_ms: Date.now() - startMs,
+      status: "success",
+    });
+    return data.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function searchCatalogWithServings(
+  userClient: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+  query: string,
+): Promise<CandidateFood[]> {
+  const toCandidate = catalogRowToCandidate;
 
   // Trigram and semantic search run CONCURRENTLY, not trigram-then-fallback.
   // Trigram is precise on exact words; semantic bridges synonyms ("roasted
@@ -1627,9 +2479,28 @@ function staplesFrom(
 // Full agent-flow observability for parse_meal: one parse_traces row per request
 // (logged or not), capturing the input, the tool-call trail, and the resolved
 // items. Fire-and-forget; never let a trace failure break the parse response.
-function recordParseTrace(admin: SupabaseClient, row: Record<string, unknown>): void {
+/**
+ * @param lateSteps Steps that are not ready when the row is built. The food
+ *   intent router resolves on its own clock beside the parse, and awaiting it at
+ *   the call site would hold the SSE stream open for as long as it took, which
+ *   is precisely the latency this design exists to avoid. Awaited HERE instead,
+ *   inside work that is already kept alive past the response, so a slow or
+ *   hanging router costs the trace its timeliness and the user nothing.
+ */
+function recordParseTrace(
+  admin: SupabaseClient,
+  row: Record<string, unknown>,
+  lateSteps?: Promise<ParseStep[]>,
+): void {
   const p = (async () => {
     try {
+      if (lateSteps) {
+        const extra = await lateSteps.catch(() => [] as ParseStep[]);
+        if (extra.length) {
+          const existing = Array.isArray(row.steps) ? row.steps as ParseStep[] : [];
+          row = { ...row, steps: [...existing, ...extra] };
+        }
+      }
       await admin.from("parse_traces").insert(row);
     } catch (e) {
       console.log("[parse_meal] parse_trace insert failed:", String(e));
@@ -1655,6 +2526,7 @@ function makeParseDeps(
   admin: SupabaseClient,
   userId: string,
 ): ParseMealDeps {
+  let searchCountryP: Promise<string | null> | undefined;
   return {
     anthropicApiKey: ANTHROPIC_API_KEY!,
     model: PARSE_MEAL_MODEL,
@@ -1692,7 +2564,11 @@ function makeParseDeps(
           console.log(`[parse_meal] precise_cache_get failed: ${error.message}`);
           return null;
         }
-        return (data as PreciseCacheRow | null) ?? null;
+        if (data) return data as PreciseCacheRow;
+        // Not a row's own key: maybe a phrase that already led to a row (0141).
+        // A missing function (migration not applied) is simply a miss.
+        const alias = await admin.rpc("precise_cache_by_alias", { p_key: key }).maybeSingle();
+        return (alias.error ? null : (alias.data as PreciseCacheRow | null)) ?? null;
       }
       : undefined,
     // Service role again, and upsert on cache_key so a re-verification refreshes
@@ -1702,12 +2578,59 @@ function makeParseDeps(
     // despite having just been confirmed.
     preciseCachePut: PARSE_PRECISE_CACHE
       ? async (row) => {
-        const { error } = await admin
+        const { data, error } = await admin
           .from("precise_cache")
-          .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" });
-        if (error) console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
+          .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" })
+          .select("id, embedding")
+          .maybeSingle();
+        if (error) {
+          console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
+          return;
+        }
+        // The meaning-search embedding (0141). Awaited so the isolate does not
+        // drop it, but never allowed to fail the write that already landed.
+        // A re-verified row keeps its embedding (the upsert does not touch that
+        // column), so only a row without one is embedded.
+        const written = data as { id?: string; embedding?: unknown } | null;
+        const id = written?.embedding ? undefined : written?.id;
+        if (id) {
+          const vec = await embedCacheDocument(row.display_name, admin);
+          if (vec) {
+            const up = await admin.from("precise_cache").update({ embedding: JSON.stringify(vec) }).eq("id", id);
+            if (up.error) console.log(`[parse_meal] precise_cache embedding update failed: ${up.error.message}`);
+          }
+        }
       }
       : undefined,
+    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number) => {
+      // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
+      const { error } = await admin.from("precise_alias").upsert(
+        { alias_key: aliasKey, row_id: rowId, source: "jev", confidence },
+        { onConflict: "alias_key", ignoreDuplicates: true },
+      );
+      if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);
+    },
+    webLookup: PRECISE_WEB_PROVIDER,
+    tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
+    // Time is not Precise's constraint, so relevance gets a longer leash than
+    // the food-intent race does.
+    jev: JEV_API_KEY
+      ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
+      : undefined,
+    searchCountry: PRECISE_SEARCH_COUNTRY,
+    preciseMatch: PRECISE_MATCH_MODE !== "off" && JEV_API_KEY
+      ? {
+        mode: PRECISE_MATCH_MODE,
+        findCandidates: (item: MatchItem) => findMatchCandidates(userClient, admin, userId, item),
+      }
+      : undefined,
+    // One profile read per request, only when a web search actually needs it.
+    resolveSearchCountry: () =>
+      (searchCountryP ??= Promise.resolve(userClient.from("user_profiles").select("timezone").maybeSingle())
+        .then(({ data }: { data: { timezone?: unknown } | null }) =>
+          countryForTimezone(typeof data?.timezone === "string" ? data.timezone : null, PRECISE_SEARCH_COUNTRY)
+        )
+        .catch(() => PRECISE_SEARCH_COUNTRY)),
     skipDecideMode: PARSE_SKIP_DECIDE,
     rerankCandidates: PARSE_RERANK_ENABLED && VOYAGE_API_KEY
       ? (q: string, docs: string[]) =>
@@ -2006,6 +2929,15 @@ async function handleParseMealRequest(args: {
   const auto = readAutoLogRequest(body, localDate);
   const autoLogArmed = auto.autoLog && previousItems.length === 0;
 
+  // The diary, for "save yesterday's breakfast" and "what did I have for
+  // lunch". The phone's own date anchors "today"; the offset only when the
+  // client actually sent one (readAutoLogRequest defaults a missing one to 0,
+  // which would be a guess dressed as a fact).
+  const readDiary = makeDiaryReader(userClient, {
+    todayLocal: localDate,
+    tzOffsetMin: typeof body.tz_offset_min === "number" ? auto.tzOffsetMin : null,
+  });
+
   /** After a parse in auto mode: write the diary, or say why not. Never
    *  throws. Returns the fields the response carries (`logged` when the write
    *  happened, `auto_log_skipped` when it did not) and the step the trace
@@ -2090,9 +3022,22 @@ async function handleParseMealRequest(args: {
     localDate
       ? userClient.from("user_nutrition_stats").select("kcal, protein_g").eq("day", localDate).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-  ]).then(([recentFoods, targetsRes, totalsRes]) => {
+    // Fuel days in their own read: before 0139 the column is missing and this
+    // errors, which must not take the base targets down with it.
+    localDate
+      ? userClient.from("user_profiles").select("calorie_day_boosts").maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]).then(([recentFoods, targetsRes, totalsRes, fuelRes]) => {
     const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
     const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
+    const fuelRow = (fuelRes as { data: Record<string, unknown> | null; error: unknown }).error
+      ? null
+      : (fuelRes as { data: Record<string, unknown> | null }).data;
+    // The logged day's OWN calorie target: a long-run Sunday has its fuel on
+    // top, so "you have 300 left" must not read as "you are at your limit".
+    const fuel = normalizeFuelDays(fuelRow?.calorie_day_boosts);
+    const baseKcal = targetsRow?.daily_calorie_target == null ? null : Number(targetsRow.daily_calorie_target);
+    const dayKcal = baseKcal != null && localDate ? kcalOnDow(baseKcal, fuel, dowOfISO(localDate)) : baseKcal;
     return {
       recentFoods,
       todayTotals: totalsRow
@@ -2100,7 +3045,7 @@ async function handleParseMealRequest(args: {
         : null,
       targets: targetsRow
         ? {
-          daily_calorie_target: targetsRow.daily_calorie_target === null ? null : Number(targetsRow.daily_calorie_target),
+          daily_calorie_target: dayKcal,
           protein_target_g: targetsRow.protein_target_g === null ? null : Number(targetsRow.protein_target_g),
         }
         : null,
@@ -2141,6 +3086,11 @@ async function handleParseMealRequest(args: {
   // parse - `pro_required` opens the upgrade sheet, and the free user's own
   // FREE_PARSE_LIMIT logging is untouched.
   const wantsSuper = body.speed === "super" && PARSE_SUPER_MODE !== "off";
+  // The tier the user PICKED, by its name in the app. Logged beside the tier
+  // that answered (result.tier) because the two differ: a correction runs
+  // Thorough, and a kill switch above turns Fast or Precise off. An old build
+  // that sends no speed reads as Thorough, which is what it gets.
+  const tierSelected: ParseTier = body.speed === "fast" ? "fast" : body.speed === "super" ? "precise" : "thorough";
   // Streaming is Fast's alone, deliberately: the stream exists to paint rows
   // while the numbers settle, and Super's answer arrives whole after a web
   // lookup, so there is nothing to trickle. `&& wantsFast` is therefore not a
@@ -2180,16 +3130,51 @@ async function handleParseMealRequest(args: {
         // runtime tears the isolate down once the stream is cancelled unless
         // the work is registered with waitUntil. Review mode is unchanged:
         // the client leaving aborts the parse (see parseAbortFor above).
+        // Kicked off BEFORE the parse is awaited, so the two overlap and the
+        // common path (log, almost always) pays nothing for the question.
+        const savedMealsP = fetchSavedMealsForParse(userClient);
+        const intentP = startFoodIntent(savedMealsP, text, previousItems.length > 0, abort.signal);
+        const supportsCreate = clientSupportsFoodCreate(body);
+        // Settled into a plain variable so the progress gate below can read it
+        // synchronously. Awaiting inside onProgress would stall the stream.
+        let settledIntent: FoodIntentDecision | null = null;
+        void intentP.then((d) => { settledIntent = d; });
+        const agentP = startFoodAgent({
+          intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
+          contextPromise, userClient, admin, userId, recentTurns,
+          // Builds that do not know this event skip it (dietData ignores
+          // unknown events), so this needs no capability of its own.
+          onStatus: (label) => send("status", { label }),
+        });
         const work = (async () => {
+          // A silent stream gets dropped on the way to the phone (see
+          // streamHeartbeat.ts): replies and save cards send nothing until the
+          // answer, so this keeps bytes moving until the stream closes. Started
+          // here, inside the block whose finally stops it, so no path between
+          // the two can leave the interval running.
+          const stopHeartbeat = startHeartbeat((frame) => controller.enqueue(enc.encode(frame)));
           try {
-            const result = await runParseMeal(
-              { ...deps, onProgress: (p) => send(p.kind, p) },
+            const firstParse = await runParseMeal(
+              {
+                ...deps,
+                // Once a create this client can draw is certain, stop painting
+                // meal rows: a save card is about to replace them, and a meal
+                // flashing up first reads as "it logged it anyway".
+                onProgress: (p) => {
+                  if (wouldDivertToCreate(settledIntent, supportsCreate)) return;
+                  // The agent answers this one; rows from the plain parse would
+                  // be a meal it is not going to log.
+                  if (FOOD_INTENT_MODE === "on" && wantsFoodAgent(settledIntent, supportsCreate)) return;
+                  send(p.kind, p);
+                },
+              },
               {
                 text,
                 localHour,
                 mealHint,
                 mode: "fast",
                 recentFoods: [],
+                savedMeals: savedMealsP,
                 todayTotals: null,
                 targets: null,
                 contextPromise,
@@ -2198,16 +3183,34 @@ async function handleParseMealRequest(args: {
                 recentTurns,
               },
             );
-            // The diary write happens BEFORE `end` so a connected client's
-            // strip goes straight to "Added" with the ids Undo needs.
-            const autoRes = await finishAutoLog(result);
-            send("end", {
-              parsed: result.parsed,
-              declined: result.declined,
-              proposal: result.proposal ?? null,
-              // Just log it: `logged` when the diary was written, else why not.
-              ...autoRes.extra,
+            const outcome = await resolveFoodBarOutcome({
+              result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns,
             });
+            // The agent's meal replaces the first parse when it finished with a log.
+            const result = outcome.result ?? firstParse;
+            // A create is NOT a log: the user asked to save, so "Just log it"
+            // must not write the parsed meal behind the save card's back. A reply
+            // has nothing to log. Only the log path runs the diary write.
+            let autoRes: Awaited<ReturnType<typeof finishAutoLog>> | null = null;
+            if (outcome.action === "create") {
+              send("end", { parsed: null, declined: null, proposal: null, create: outcome.create });
+            } else if (outcome.action === "reply") {
+              // The existing decline channel, which every build already draws.
+              send("end", { parsed: null, declined: { message: outcome.reply }, proposal: null });
+            } else {
+              // The diary write happens BEFORE `end` so a connected client's
+              // strip goes straight to "Added" with the ids Undo needs.
+              autoRes = await finishAutoLog(result);
+              send("end", {
+                parsed: result.parsed,
+                declined: result.declined,
+                proposal: result.proposal ?? null,
+                // "Use your saved X?" chips: a food that is only part of a saved meal.
+                saved_suggestions: result.saved_suggestions ?? [],
+                // Just log it: `logged` when the diary was written, else why not.
+                ...autoRes.extra,
+              });
+            }
             void recordParseTrace(admin, {
               user_id: userId,
               input_text: text.slice(0, USER_TEXT_MAX_CHARS),
@@ -2221,7 +3224,7 @@ async function handleParseMealRequest(args: {
               // unexplained latency. pre_parse_ms is auth + the rate-limit write
               // before the parse starts; run_parse_ms brackets the parse itself,
               // so latency - pre - run is what the response and trace cost.
-              steps: [...result.steps, ...(autoRes.step ? [autoRes.step] : []), {
+              steps: [...result.steps, ...(autoRes?.step ? [autoRes.step] : []), {
                 iter: 9,
                 tool: "__edge_timing",
                 input: {
@@ -2238,7 +3241,7 @@ async function handleParseMealRequest(args: {
               output_tokens: result.usage.output_tokens,
               web_search_requests: result.usage.web_search_requests,
               latency_ms: Date.now() - startedAtMs,
-            });
+            }, intentP.then((d) => foodIntentStep(d, outcome)));
             // COST. recordTrace writes coach_traces; logTokenUsage writes the
             // token-cost table that cost_summary, cost_by_day and the admin
             // pages read. They are separate calls, and the SSE branch had
@@ -2259,12 +3262,21 @@ async function handleParseMealRequest(args: {
                 user_id: userId,
                 mode: "parse_meal",
                 streamed: true,
+                tier_selected: tierSelected,
+                tier_used: result.tier ?? null,
+                answered_by: outcome.result ? "food_agent" : "parse",
                 item_count: result.parsed?.items.length ?? 0,
                 sources: result.parsed?.items.map((i) => i.source) ?? [],
                 declined: result.declined !== null,
                 web_search_requests: result.usage.web_search_requests,
                 tool_calls: result.tool_calls,
               },
+            });
+            logTavilyCost(admin, result.usage.tavily_credits, {
+              user_id: userId,
+              tier_selected: tierSelected,
+              tier_used: result.tier ?? null,
+              streamed: true,
             });
             // coach_traces too. The JSON path gets this for free because it
             // returns through respond(), which calls recordTrace; the SSE path
@@ -2301,13 +3313,14 @@ async function handleParseMealRequest(args: {
               latency_ms: Date.now() - startedAtMs,
               status: "error",
               error_message: String(e).slice(0, 300),
-              metadata: { user_id: userId, mode: "parse_meal", streamed: true },
+              metadata: { user_id: userId, mode: "parse_meal", streamed: true, tier_selected: tierSelected },
             });
             trace.status = "internal_error";
             trace.http_status = 200;
             trace.error_message = String(e).slice(0, 300);
             try { await recordTrace(admin, trace, startedAtMs); } catch { /* swallow */ }
           } finally {
+            stopHeartbeat();
             controller.close();
           }
         })();
@@ -2327,12 +3340,26 @@ async function handleParseMealRequest(args: {
     });
   }
 
+  // Same concurrency rule as the streaming path: started before the parse is
+  // awaited, so the answer is ready by the time the trace wants it and the user
+  // waits for neither. Declared OUTSIDE the try because the catch traces it too:
+  // a parse that blew up is exactly when knowing what the user was asking for is
+  // most useful.
+  const savedMealsP = fetchSavedMealsForParse(userClient);
+  const intentP = startFoodIntent(savedMealsP, text, previousItems.length > 0);
+  const supportsCreate = clientSupportsFoodCreate(body);
+
   try {
     // Just log it on the JSON path: the parse AND the diary write stay alive
     // past the response, so a client that drops the connection mid-wait
     // still gets its meal logged. Same rule the stream applies.
+    const agentP = startFoodAgent({
+      intentP, supportsCreate, text, mealHint, localHour, localDate,
+      mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
+      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns,
+    });
     const work = (async () => {
-      const result = await runParseMeal(
+      const firstParse = await runParseMeal(
         makeParseDeps(userClient, admin, userId),
         {
           text,
@@ -2345,6 +3372,7 @@ async function handleParseMealRequest(args: {
           // Placeholders; the real values are awaited from contextPromise inside
           // runParseMeal (after extract), so these queries overlap extraction.
           recentFoods: [],
+          savedMeals: savedMealsP,
           todayTotals: null,
           targets: null,
           contextPromise,
@@ -2353,10 +3381,18 @@ async function handleParseMealRequest(args: {
           recentTurns,
         },
       );
-      return { result, autoRes: await finishAutoLog(result) };
+      // Decided before the diary write, for the same reason as the stream: a
+      // create or a reply must not log the parsed meal behind the user's back.
+      const outcome = await resolveFoodBarOutcome({
+        result: firstParse, intentP, supportsCreate, text, mealHint, readDiary, agentP, recentTurns,
+      });
+      // The agent's meal replaces the first parse when it finished with a log.
+      const result = outcome.result ?? firstParse;
+      const autoRes = outcome.action === "log" ? await finishAutoLog(result) : null;
+      return { result, autoRes, outcome };
     })();
     if (autoLogArmed) keepAlive(work);
-    const { result, autoRes } = await work;
+    const { result, autoRes, outcome } = await work;
 
     trace.status = "success";
     trace.input_tokens = result.usage.input_tokens || null;
@@ -2383,6 +3419,9 @@ async function handleParseMealRequest(args: {
       metadata: {
         user_id: userId,
         mode: "parse_meal",
+        tier_selected: tierSelected,
+        tier_used: result.tier ?? null,
+        answered_by: outcome.result ? "food_agent" : "parse",
         item_count: result.parsed?.items.length ?? 0,
         sources: result.parsed?.items.map((i) => i.source) ?? [],
         declined: result.declined !== null,
@@ -2390,12 +3429,17 @@ async function handleParseMealRequest(args: {
         tool_calls: result.tool_calls,
       },
     });
+    logTavilyCost(admin, result.usage.tavily_credits, {
+      user_id: userId,
+      tier_selected: tierSelected,
+      tier_used: result.tier ?? null,
+    });
 
     // Full agent-flow trace (input -> tool trail -> resolved items) for
     // observability + eval, whether or not the user ends up logging it.
     const edgeSteps = [
       ...result.steps,
-      ...(autoRes.step ? [autoRes.step] : []),
+      ...(autoRes?.step ? [autoRes.step] : []),
       {
         iter: 9,
         tool: "__edge_timing",
@@ -2422,16 +3466,30 @@ async function handleParseMealRequest(args: {
       output_tokens: result.usage.output_tokens,
       web_search_requests: result.usage.web_search_requests,
       latency_ms: Date.now() - startedAtMs,
-    });
+    }, intentP.then((d) => foodIntentStep(d, outcome)));
 
+    if (outcome.action === "create") {
+      return respond(
+        { parsed: null, declined: null, proposal: null, create: outcome.create, usage: result.usage, tool_calls: result.tool_calls },
+        200,
+      );
+    }
+    if (outcome.action === "reply") {
+      return respond(
+        { parsed: null, declined: { message: outcome.reply }, proposal: null, usage: result.usage, tool_calls: result.tool_calls },
+        200,
+      );
+    }
     return respond(
       {
         parsed: result.parsed,
         declined: result.declined,
         // Researched alternative for the user to accept or reject on the card.
         proposal: result.proposal ?? null,
+        // "Use your saved X?" chips: a food that is only part of a saved meal.
+        saved_suggestions: result.saved_suggestions ?? [],
         // Just log it: `logged` when the diary was written, else why not.
-        ...autoRes.extra,
+        ...(autoRes?.extra ?? {}),
         usage: result.usage,
         tool_calls: result.tool_calls,
       },
@@ -2447,7 +3505,7 @@ async function handleParseMealRequest(args: {
       latency_ms: Date.now() - startedAtMs,
       status: "error",
       error_message: trace.error_message,
-      metadata: { user_id: userId, mode: "parse_meal" },
+      metadata: { user_id: userId, mode: "parse_meal", tier_selected: tierSelected },
     });
     void recordParseTrace(admin, {
       user_id: userId,
@@ -2457,7 +3515,7 @@ async function handleParseMealRequest(args: {
       outcome: "error",
       message: trace.error_message,
       latency_ms: Date.now() - startedAtMs,
-    });
+    }, intentP.then(foodIntentStep));
     return respond(
       {
         error: "parse_failed",
@@ -2879,7 +3937,7 @@ Deno.serve(async (req) => {
   try {
     const { data: profileNotes, error: pnError } = await userClient
       .from("user_profiles")
-      .select("injury_notes, training_preferences")
+      .select("injury_notes, training_preferences, timezone")
       .maybeSingle();
     if (pnError) {
       console.log("[ai-coach] profile-notes error:", pnError.message);
@@ -2897,9 +3955,57 @@ Deno.serve(async (req) => {
         if (prefs) ctx.training_preferences = prefs;
         trace.has_user_context = true;
       }
+      // The user's date, so "yesterday" and "on Monday" mean their days. Date
+      // and weekday only: a clock time here would change the cached
+      // user_context block every minute. Only set when we KNOW the zone; a
+      // UTC guess stated as their date would be wrong for half the world.
+      const tz = typeof profileNotes.timezone === "string" ? profileNotes.timezone : null;
+      const today = isTimeZone(tz) ? todayFor({ timeZone: tz }) : null;
+      if (tz && today) {
+        if (!userContext || typeof userContext !== "object") userContext = {};
+        (userContext as Record<string, unknown>).today = { date: today, weekday: weekdayOf(today), time_zone: tz };
+      }
     }
   } catch (e) {
     console.log("[ai-coach] profile-notes fetch threw:", String(e));
+  }
+
+  // 4d. Fuel days (0139). Two reads, both best effort like 4c: a database
+  // without the columns (or any failure) only means Drona plans without them.
+  //   - the LIVE fuel days, from the profile: user_context.fuel_days
+  //   - each program phase's PLANNED fuel days, added to user_context.program
+  //     (get_user_coach_context lists phases without them). Without these,
+  //     "Adjust with Drona" rebuilt every phase guessing its fuel days.
+  try {
+    const { data: fuelRow, error: fuelError } = await userClient
+      .from("user_profiles")
+      .select("calorie_day_boosts")
+      .maybeSingle();
+    const fuel = fuelError ? [] : normalizeFuelDays(fuelRow?.calorie_day_boosts);
+    if (fuelError) console.log("[ai-coach] fuel-days error:", fuelError.message);
+    if (fuel.length > 0) {
+      if (!userContext || typeof userContext !== "object") userContext = {};
+      (userContext as Record<string, unknown>).fuel_days = fuelForPrompt(fuel);
+      trace.has_user_context = true;
+    }
+    const ctx = userContext as Record<string, unknown> | null;
+    if (ctx && ctx.program && typeof ctx.program === "object") {
+      const { data: active } = await userClient
+        .from("coach_programs")
+        .select("id")
+        .eq("status", "active")
+        .maybeSingle();
+      if (active?.id) {
+        const { data: rows, error: phaseFuelError } = await userClient
+          .from("coach_program_phases")
+          .select("seq, diet_fuel_days")
+          .eq("program_id", active.id);
+        if (phaseFuelError) console.log("[ai-coach] phase fuel-days error:", phaseFuelError.message);
+        else if (rows) ctx.program = withPhaseFuelDays(ctx.program, rows);
+      }
+    }
+  } catch (e) {
+    console.log("[ai-coach] fuel-days fetch threw:", String(e));
   }
 
   // 5. Validate messages (body was parsed once above, before the rate gate)

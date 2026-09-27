@@ -32,7 +32,8 @@ ok('probe profiles exist', !prof.error, prof.error?.message);
 // A calorie change 21 days ago, from chat: the diary row the model will read.
 await service.from('plan_changes').insert({ user_id: UID, entity: 'targets', entity_id: UID, action: 'changed', source: 'chat',
   changes: { daily_calorie_target: { from: 2250, to: 2100 } }, occurred_at: new Date(Date.now() - 21*86400000).toISOString() });
-const food = Array.from({ length: 14 }, (_, i) => i).filter((i) => i !== 3 && i !== 9).map((i) => ({ user_id: UID, day: dayISO(i), kcal: 2080 + (i % 3) * 40, protein_g: 145, carb_g: 200, fat_g: 60, entry_count: 3 }));
+// The 14 whole days before today: today is not over, so the facts never read it (0135).
+const food = Array.from({ length: 14 }, (_, i) => i + 1).filter((i) => i !== 4 && i !== 10).map((i) => ({ user_id: UID, day: dayISO(i), kcal: 2080 + (i % 3) * 40, protein_g: 145, carb_g: 200, fat_g: 60, entry_count: 3 }));
 await service.from('user_nutrition_stats').insert(food);
 const weights = Array.from({ length: 10 }, (_, i) => ({ user_id: UID, metric_date: dayISO(i), metric_type: 'bodyweight_kg', value: 72.4 + ((i % 2) ? 0.1 : -0.1), source: 'manual' }));
 await service.from('daily_metrics').insert(weights);

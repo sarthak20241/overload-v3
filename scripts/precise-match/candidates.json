@@ -1,0 +1,2824 @@
+{
+  "t-banana": [
+    {
+      "id": "00bc2f28-2366-402a-b762-efc8e1a09b23",
+      "name": "Banana",
+      "brand": null,
+      "source": "web_verified",
+      "kcal": 89,
+      "protein_g": 1.1,
+      "carb_g": 23,
+      "fat_g": 0.33
+    },
+    {
+      "id": "9ccc7c1a-2ada-417b-ba1b-ba3096b2cf71",
+      "name": "Banana, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 97,
+      "protein_g": 0.7,
+      "carb_g": 22.7,
+      "fat_g": 0.3
+    },
+    {
+      "id": "b3248cbb-3c7e-4b8a-bed3-667034b2d8bc",
+      "name": "Banana chips",
+      "brand": null,
+      "source": "usda",
+      "kcal": 519,
+      "protein_g": 2.3,
+      "carb_g": 58.4,
+      "fat_g": 33.6
+    },
+    {
+      "id": "1f3a9231-fba2-43e7-a5e9-17a3a7bfbc3b",
+      "name": "Banana split",
+      "brand": null,
+      "source": "usda",
+      "kcal": 199,
+      "protein_g": 2.4,
+      "carb_g": 32.6,
+      "fat_g": 6.9
+    },
+    {
+      "id": "7c3937a9-052c-4c9c-84cc-88dd9f96b8be",
+      "name": "Banana nectar",
+      "brand": null,
+      "source": "usda",
+      "kcal": 74,
+      "protein_g": 0.3,
+      "carb_g": 18,
+      "fat_g": 0.1
+    },
+    {
+      "id": "f9842f06-1e50-4769-a84a-cf5f8b36aff1",
+      "name": "Banana, baked",
+      "brand": null,
+      "source": "usda",
+      "kcal": 161,
+      "protein_g": 0.8,
+      "carb_g": 32.4,
+      "fat_g": 3.2
+    },
+    {
+      "id": "ebc3e536-d828-4765-a55d-64a0df07365c",
+      "name": "Banana pudding",
+      "brand": null,
+      "source": "usda",
+      "kcal": 160,
+      "protein_g": 2.6,
+      "carb_g": 28,
+      "fat_g": 4.3
+    },
+    {
+      "id": "0575da7c-b11d-431e-823a-46056c13a805",
+      "name": "Banana bread, homemade",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 331,
+      "protein_g": 4.4,
+      "carb_g": 53.9,
+      "fat_g": 12.4
+    }
+  ],
+  "t-cashews": [
+    {
+      "id": "cb72d2bd-06da-4306-af73-1bec6b9794c3",
+      "name": "Cashews, NFS",
+      "brand": null,
+      "source": "usda",
+      "kcal": 574,
+      "protein_g": 15.3,
+      "carb_g": 32.7,
+      "fat_g": 46.4
+    },
+    {
+      "id": "83554d99-1df8-42ae-917a-1e31b6452a8e",
+      "name": "Cashews, salted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 578,
+      "protein_g": 14.7,
+      "carb_g": 31.4,
+      "fat_g": 47.5
+    },
+    {
+      "id": "23444f8f-664e-4390-b8b2-4876607bc696",
+      "name": "Cashews, unsalted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 584,
+      "protein_g": 14.9,
+      "carb_g": 31.7,
+      "fat_g": 48
+    },
+    {
+      "id": "2a32e01f-3ee5-447a-a05a-37def81cd86c",
+      "name": "Cashews, unroasted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 574,
+      "protein_g": 15.3,
+      "carb_g": 32.7,
+      "fat_g": 46.4
+    },
+    {
+      "id": "f81b4fa2-1d61-4179-a68c-7cd2b8a7cd75",
+      "name": "Cashews, honey roasted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 563,
+      "protein_g": 10.3,
+      "carb_g": 43.7,
+      "fat_g": 41.2
+    },
+    {
+      "id": "e4352c8c-835f-4dcd-96b0-fe5595c96454",
+      "name": "Cashews, lightly salted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 581,
+      "protein_g": 14.8,
+      "carb_g": 31.6,
+      "fat_g": 47.7
+    },
+    {
+      "id": "26329e29-3966-465f-a015-1ff9741b42d6",
+      "name": "Alesto Cashews",
+      "brand": "Alesto",
+      "source": "off",
+      "kcal": 600,
+      "protein_g": 20.5,
+      "carb_g": 19.8,
+      "fat_g": 47.6
+    },
+    {
+      "id": "8d3ff44a-6102-40a9-817d-b59a577827e1",
+      "name": "Kalbavi Cashews",
+      "brand": "Kalbavi",
+      "source": "off",
+      "kcal": 553,
+      "protein_g": 18,
+      "carb_g": 30,
+      "fat_g": 44
+    }
+  ],
+  "t-cucumber": [
+    {
+      "id": "72c7e489-5533-4c81-a9ef-6a15e9002df7",
+      "name": "Cucumber, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 16,
+      "protein_g": 0.6,
+      "carb_g": 3,
+      "fat_g": 0.2
+    },
+    {
+      "id": "0d500ed0-8349-4b4e-89f3-fc0699336c19",
+      "name": "Cucumber, cooked",
+      "brand": null,
+      "source": "usda",
+      "kcal": 45,
+      "protein_g": 0.7,
+      "carb_g": 3.4,
+      "fat_g": 3.2
+    },
+    {
+      "id": "3016260b-551e-4f30-804f-8e5d5aa2d64e",
+      "name": "Cucumber, peeled, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 10,
+      "protein_g": 0.6,
+      "carb_g": 2.2,
+      "fat_g": 0.2
+    },
+    {
+      "id": "002e863a-fadf-4fa5-b1bd-1ebaca6f1a63",
+      "name": "Cucumber, with peel, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 15,
+      "protein_g": 0.7,
+      "carb_g": 3.6,
+      "fat_g": 0.1
+    },
+    {
+      "id": "ef351297-446f-4cd6-b9e5-d18f5a199da1",
+      "name": "Cucumber and vegetable namasu",
+      "brand": null,
+      "source": "usda",
+      "kcal": 56,
+      "protein_g": 0.5,
+      "carb_g": 12.2,
+      "fat_g": 0.2
+    },
+    {
+      "id": "b3829b14-01e4-4c0b-84c5-8162ebbf0382",
+      "name": "Cucumber, raw, flesh and skin",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 14,
+      "protein_g": 1,
+      "carb_g": 1.2,
+      "fat_g": 0.6
+    },
+    {
+      "id": "c495426e-84ac-4d76-adde-7bccc77eff28",
+      "name": "Cucumber, for use on a sandwich",
+      "brand": null,
+      "source": "usda",
+      "kcal": 16,
+      "protein_g": 0.6,
+      "carb_g": 3,
+      "fat_g": 0.2
+    },
+    {
+      "id": "d8cd69ea-785e-4a50-a5e3-c8549dd49b43",
+      "name": "Cucumber salad, made with Italian dressing",
+      "brand": null,
+      "source": "usda",
+      "kcal": 120,
+      "protein_g": 0.5,
+      "carb_g": 6.2,
+      "fat_g": 10
+    }
+  ],
+  "t-oats": [
+    {
+      "id": "a949d508-ff09-44c5-88d3-3aafe8aa8ff8",
+      "name": "Quaker Rolled Oats",
+      "brand": "Quaker",
+      "source": "off",
+      "kcal": 374,
+      "protein_g": 11,
+      "carb_g": 60,
+      "fat_g": 8
+    },
+    {
+      "id": "5ba90970-2cc3-4287-b20d-e250b3820382",
+      "name": "Millville Rolled Oats",
+      "brand": "Millville",
+      "source": "off",
+      "kcal": 375,
+      "protein_g": 12.5,
+      "carb_g": 67.5,
+      "fat_g": 6.3
+    },
+    {
+      "id": "b2d1bb0e-fb7d-45a7-b1d4-8e7bd72f9fe0",
+      "name": "Patanjali Rolled Oats",
+      "brand": "Patanjali",
+      "source": "off",
+      "kcal": 411,
+      "protein_g": 12.1,
+      "carb_g": 66.9,
+      "fat_g": 10.5
+    },
+    {
+      "id": "063a0141-4165-43aa-aafb-c92e2ef876e6",
+      "name": "Eco valley rolled oats",
+      "brand": "Eco valley",
+      "source": "off",
+      "kcal": 407,
+      "protein_g": 11.8,
+      "carb_g": 68.5,
+      "fat_g": 9.5
+    },
+    {
+      "id": "99d436c2-b46d-47bf-82f7-6d727df822fc",
+      "name": "Gardenvale Rolled oats",
+      "brand": "Gardenvale",
+      "source": "off",
+      "kcal": 398,
+      "protein_g": 11.8,
+      "carb_g": 68.2,
+      "fat_g": 10.4
+    },
+    {
+      "id": "13c32f91-a897-4fce-a179-8991c5b0ce52",
+      "name": "Uncle Tobys Rolled Oats",
+      "brand": "Uncle Tobys",
+      "source": "off",
+      "kcal": 382,
+      "protein_g": 12.8,
+      "carb_g": 56.7,
+      "fat_g": 9.2
+    },
+    {
+      "id": "43b821b0-bd8a-4a96-a087-fdf67ba38990",
+      "name": "Quaker Jumbo Rolled Oats",
+      "brand": "Quaker",
+      "source": "off",
+      "kcal": 375,
+      "protein_g": 11,
+      "carb_g": 60,
+      "fat_g": 8
+    },
+    {
+      "id": "0e0f6590-0e09-40a4-a319-db88d55a1591",
+      "name": "True Elements Rolled Oats",
+      "brand": "True Elements",
+      "source": "off",
+      "kcal": 363,
+      "protein_g": 13.1,
+      "carb_g": 62.5,
+      "fat_g": 6.7
+    }
+  ],
+  "t-paneer": [
+    {
+      "id": "790b68bd-298f-40de-97de-fc13132b5bfd",
+      "name": "Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 265,
+      "protein_g": 18,
+      "carb_g": 1.2,
+      "fat_g": 20
+    },
+    {
+      "id": "5356b2f4-6ee9-4200-80db-39416bbb9117",
+      "name": "Paneer Butter Masala",
+      "brand": null,
+      "source": "curated",
+      "kcal": 173,
+      "protein_g": 7.8,
+      "carb_g": 3.3,
+      "fat_g": 14.1
+    },
+    {
+      "id": "8e316a25-7459-4978-baa3-02e22752878a",
+      "name": "Low Fat Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 190,
+      "protein_g": 25,
+      "carb_g": 6.7,
+      "fat_g": 7
+    },
+    {
+      "id": "4c73dcb6-b058-4818-8095-36d870d0e29c",
+      "name": "Amul Paneer",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 323,
+      "protein_g": 20,
+      "carb_g": 4.5,
+      "fat_g": 25
+    },
+    {
+      "id": "3c66c82d-81ac-4be6-9c16-e3a66b01a542",
+      "name": "Kadai Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 179,
+      "protein_g": 8,
+      "carb_g": 3.4,
+      "fat_g": 14.7
+    },
+    {
+      "id": "07b8cfe4-b35d-403f-973c-c10e46d709d8",
+      "name": "Matar Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 166,
+      "protein_g": 7.6,
+      "carb_g": 6.2,
+      "fat_g": 12.1
+    },
+    {
+      "id": "6ebb7171-f936-4aea-af1c-9bcc44f47e96",
+      "name": "Palak Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 123,
+      "protein_g": 6.2,
+      "carb_g": 3.4,
+      "fat_g": 9.6
+    },
+    {
+      "id": "cfe3a294-0692-4cfc-a374-e1fb7da5f305",
+      "name": "Shahi Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 237,
+      "protein_g": 10.7,
+      "carb_g": 4.2,
+      "fat_g": 19.8
+    }
+  ],
+  "t-curd": [
+    {
+      "id": "5574b22c-b098-4c8a-8861-a17bcd07a955",
+      "name": "Curd",
+      "brand": null,
+      "source": "off",
+      "kcal": 62,
+      "protein_g": 3.5,
+      "carb_g": 5.2,
+      "fat_g": 3
+    },
+    {
+      "id": "480855a1-cb7f-41da-ae07-1c480c2a027a",
+      "name": "Curd / Dahi",
+      "brand": null,
+      "source": "curated",
+      "kcal": 60,
+      "protein_g": 3.1,
+      "carb_g": 4.7,
+      "fat_g": 3.3
+    },
+    {
+      "id": "251782b5-5fff-4ba1-92d1-ebf7cc05ab06",
+      "name": "Curd Rice",
+      "brand": null,
+      "source": "curated",
+      "kcal": 113,
+      "protein_g": 2.8,
+      "carb_g": 17.3,
+      "fat_g": 3.4
+    },
+    {
+      "id": "d27a90a2-9a4f-4901-8bfe-7b6e9c3dda96",
+      "name": "Amul Curd",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 53,
+      "protein_g": 3,
+      "carb_g": 3.5,
+      "fat_g": 3
+    },
+    {
+      "id": "7596720a-a57f-4eb1-9a57-4256efa22e2e",
+      "name": "Lemon curd",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 266,
+      "protein_g": 0.6,
+      "carb_g": 58.4,
+      "fat_g": 4.9
+    },
+    {
+      "id": "9a1dc046-3353-4e2e-9537-6dd18226eb62",
+      "name": "Soybean curd",
+      "brand": null,
+      "source": "usda",
+      "kcal": 61,
+      "protein_g": 7.2,
+      "carb_g": 1.2,
+      "fat_g": 3.7
+    },
+    {
+      "id": "3383015d-830c-427f-8ce1-96e10447b1c2",
+      "name": "Milky Mist Curd",
+      "brand": "Milky Mist",
+      "source": "off",
+      "kcal": 61,
+      "protein_g": 3.5,
+      "carb_g": 4.8,
+      "fat_g": 3
+    },
+    {
+      "id": "abba386f-51d9-4b72-b382-456bdbef9457",
+      "name": "Mother Dairy Curd",
+      "brand": "Mother Dairy",
+      "source": "off",
+      "kcal": 62,
+      "protein_g": 3.7,
+      "carb_g": 5,
+      "fat_g": 3
+    }
+  ],
+  "t-sweet-potato": [
+    {
+      "id": "7a713fb8-0db7-4280-b201-4853fbf4d751",
+      "name": "Sweet potato, boiled, fat added",
+      "brand": null,
+      "source": "usda",
+      "kcal": 115,
+      "protein_g": 1.6,
+      "carb_g": 17.1,
+      "fat_g": 4.5
+    },
+    {
+      "id": "5e5127b0-d8b1-4b58-a703-ba314d8be3c5",
+      "name": "Sweet potato, boiled, no added fat",
+      "brand": null,
+      "source": "usda",
+      "kcal": 82,
+      "protein_g": 1.6,
+      "carb_g": 18,
+      "fat_g": 0.4
+    },
+    {
+      "id": "b7e5cabc-72ef-4043-80fe-b502d91efc3d",
+      "name": "Sweet potato, boiled, NS as to fat",
+      "brand": null,
+      "source": "usda",
+      "kcal": 115,
+      "protein_g": 1.6,
+      "carb_g": 17.1,
+      "fat_g": 4.5
+    },
+    {
+      "id": "1dfbdc8b-abcc-47f3-a85b-29331a296cc1",
+      "name": "Sweet potato, cooked, boiled, without skin",
+      "brand": null,
+      "source": "usda",
+      "kcal": 76,
+      "protein_g": 1.4,
+      "carb_g": 17.7,
+      "fat_g": 0.1
+    },
+    {
+      "id": "f0ef24d1-b49a-484c-a654-d1bcc44da322",
+      "name": "Sweet potato, cooked, boiled, without skin, with salt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 76,
+      "protein_g": 1.4,
+      "carb_g": 17.7,
+      "fat_g": 0.1
+    },
+    {
+      "id": "8f800d20-ec8b-46da-a31f-5a8933f527b4",
+      "name": "Sweet potato, flesh only, boiled in unsalted water",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 58,
+      "protein_g": 1.7,
+      "carb_g": 13,
+      "fat_g": 0.2
+    },
+    {
+      "id": "cc99298e-371a-469f-b81f-2eb46c0e1528",
+      "name": "Sweet potato, cooked, as ingredient",
+      "brand": null,
+      "source": "usda",
+      "kcal": 82,
+      "protein_g": 1.7,
+      "carb_g": 18.1,
+      "fat_g": 0.4
+    },
+    {
+      "id": "1e8a49b0-e353-4281-956c-7b9d90433ecb",
+      "name": "Potato, boiled, from fresh, peel eaten, made with oil",
+      "brand": null,
+      "source": "usda",
+      "kcal": 131,
+      "protein_g": 2.4,
+      "carb_g": 20.1,
+      "fat_g": 4.9
+    }
+  ],
+  "t-brown-rice": [
+    {
+      "id": "18f53974-455f-449a-a6a5-d1140518e0fb",
+      "name": "Rice, brown, cooked, no added fat",
+      "brand": null,
+      "source": "usda",
+      "kcal": 123,
+      "protein_g": 2.4,
+      "carb_g": 25.8,
+      "fat_g": 1.1
+    },
+    {
+      "id": "20867960-373a-472b-a8c5-b3447e6ae765",
+      "name": "Rice, brown, cooked, NS as to fat",
+      "brand": null,
+      "source": "usda",
+      "kcal": 123,
+      "protein_g": 2.4,
+      "carb_g": 25.8,
+      "fat_g": 1.1
+    },
+    {
+      "id": "58853621-f145-4d4a-8710-76682b0986f3",
+      "name": "Rice, brown, cooked, as ingredient",
+      "brand": null,
+      "source": "usda",
+      "kcal": 124,
+      "protein_g": 2.5,
+      "carb_g": 25.9,
+      "fat_g": 1.1
+    },
+    {
+      "id": "187fcf82-0ed2-4553-985b-820258d04951",
+      "name": "Rice, brown, cooked, made with butter",
+      "brand": null,
+      "source": "usda",
+      "kcal": 137,
+      "protein_g": 2.4,
+      "carb_g": 25.2,
+      "fat_g": 3
+    },
+    {
+      "id": "72058718-e99f-4597-87ef-6a050007de85",
+      "name": "Rice, brown, cooked, made with margarine",
+      "brand": null,
+      "source": "usda",
+      "kcal": 134,
+      "protein_g": 2.4,
+      "carb_g": 25.2,
+      "fat_g": 2.6
+    },
+    {
+      "id": "6d93a0a9-fd91-495c-ab00-eef801db0903",
+      "name": "Rice, brown, cooked, fat added, made with oil",
+      "brand": null,
+      "source": "usda",
+      "kcal": 141,
+      "protein_g": 2.4,
+      "carb_g": 25.2,
+      "fat_g": 3.4
+    },
+    {
+      "id": "23bce2b7-9c17-43e2-97ad-d1d715501595",
+      "name": "Rice, brown, cooked, fat added, NS as to fat type",
+      "brand": null,
+      "source": "usda",
+      "kcal": 138,
+      "protein_g": 2.4,
+      "carb_g": 25.2,
+      "fat_g": 3.1
+    },
+    {
+      "id": "36c097e9-15a6-4e9e-b14d-c474670ad5fa",
+      "name": "Pasta, gluten-free, brown rice flour, cooked, TINKYADA",
+      "brand": null,
+      "source": "usda",
+      "kcal": 138,
+      "protein_g": 3.5,
+      "carb_g": 32.2,
+      "fat_g": 1.7
+    }
+  ],
+  "t-raw-chicken": [
+    {
+      "id": "7ae88e5e-cd79-4592-9a1d-f8f6351f34f4",
+      "name": "raw chicken breast",
+      "brand": null,
+      "source": "web_verified",
+      "kcal": 114,
+      "protein_g": 21.6,
+      "carb_g": 0,
+      "fat_g": 3.4
+    },
+    {
+      "id": "2a72ebfa-d25e-4c38-bbdb-a2cb8bb7b932",
+      "name": "Chicken, breast, meat and skin, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 133,
+      "protein_g": 21.4,
+      "carb_g": -0.4,
+      "fat_g": 4.8
+    },
+    {
+      "id": "5fae36dc-912a-4ecf-b42d-1793ae0286a1",
+      "name": "Chicken, breast, boneless, skinless, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 106,
+      "protein_g": 22.5,
+      "carb_g": 0,
+      "fat_g": 1.9
+    },
+    {
+      "id": "1411ee1d-b2df-47d3-b1a5-eb715b392203",
+      "name": "Chicken breast, fried, coated, skin / coating eaten, from raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 243,
+      "protein_g": 21.5,
+      "carb_g": 6,
+      "fat_g": 14.1
+    },
+    {
+      "id": "5741e1f0-f6b9-42bb-bf9b-c90a4d562791",
+      "name": "Chicken breast, baked, broiled, or roasted, skin eaten, from raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 192,
+      "protein_g": 26.3,
+      "carb_g": 0,
+      "fat_g": 8.8
+    },
+    {
+      "id": "9193b3eb-5d86-43bc-b0b8-0fa54539415c",
+      "name": "Chicken breast, fried, coated, skin / coating not eaten, from raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 176,
+      "protein_g": 29.6,
+      "carb_g": 0,
+      "fat_g": 5.5
+    },
+    {
+      "id": "7bde979e-ee5d-4d65-98d7-78d84fdf1e95",
+      "name": "Chicken breast, baked, broiled, or roasted, skin not eaten, from raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 161,
+      "protein_g": 30.2,
+      "carb_g": 0,
+      "fat_g": 3.5
+    },
+    {
+      "id": "68724773-2415-4fd7-9860-ea87b689a2cf",
+      "name": "Chicken breast, fried, coated, prepared skinless, coating eaten, from raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 219,
+      "protein_g": 24.6,
+      "carb_g": 6,
+      "fat_g": 10
+    }
+  ],
+  "t-peanut-butter": [
+    {
+      "id": "7a50ae55-3879-42c1-8163-57e04229507f",
+      "name": "Peanut butter",
+      "brand": null,
+      "source": "usda",
+      "kcal": 598,
+      "protein_g": 22.2,
+      "carb_g": 22.3,
+      "fat_g": 51.4
+    },
+    {
+      "id": "a5e6d23b-5fcb-4c07-a593-5e8a137734bb",
+      "name": "Peanut butter crunch",
+      "brand": null,
+      "source": "off",
+      "kcal": 453,
+      "protein_g": 34.9,
+      "carb_g": 30.2,
+      "fat_g": 20.9
+    },
+    {
+      "id": "8a231516-01b1-482b-9101-563a0fba75c5",
+      "name": "Peanut butter, creamy",
+      "brand": null,
+      "source": "usda",
+      "kcal": 632,
+      "protein_g": 24,
+      "carb_g": 22.7,
+      "fat_g": 49.4
+    },
+    {
+      "id": "4f72d934-59f7-46ab-a3c5-579e8956a001",
+      "name": "Peanut butter, smooth",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 607,
+      "protein_g": 22.8,
+      "carb_g": 13.1,
+      "fat_g": 51.8
+    },
+    {
+      "id": "2f9cc6d7-348c-4d7f-90b6-b52fad8be12b",
+      "name": "Peanut butter and jelly",
+      "brand": null,
+      "source": "usda",
+      "kcal": 432,
+      "protein_g": 11.2,
+      "carb_g": 46.1,
+      "fat_g": 25.7
+    },
+    {
+      "id": "3a547c83-d5f5-4abc-8e61-ae47e3172dcb",
+      "name": "Peanut butter, lower sugar",
+      "brand": null,
+      "source": "usda",
+      "kcal": 650,
+      "protein_g": 24.8,
+      "carb_g": 14.2,
+      "fat_g": 54.9
+    },
+    {
+      "id": "18b9341a-0781-4fb0-b0a0-e9cba07c467f",
+      "name": "Peanut butter, reduced fat",
+      "brand": null,
+      "source": "usda",
+      "kcal": 520,
+      "protein_g": 25.9,
+      "carb_g": 35.7,
+      "fat_g": 34
+    },
+    {
+      "id": "7304de95-12b1-4f8c-aeab-c1c8097c77ff",
+      "name": "Peanut butter sandwich, NFS",
+      "brand": null,
+      "source": "usda",
+      "kcal": 382,
+      "protein_g": 13.9,
+      "carb_g": 39.9,
+      "fat_g": 20.2
+    }
+  ],
+  "t-parle-g": [
+    {
+      "id": "7eadc236-af54-4616-b4d9-1d6d098cbf2c",
+      "name": "Parle G Gluco Biscuits Milk wheat",
+      "brand": "Parle",
+      "source": "off",
+      "kcal": 454,
+      "protein_g": 6.9,
+      "carb_g": 77.3,
+      "fat_g": 13
+    },
+    {
+      "id": "f23124a5-ce4d-4a55-bd19-aad580066208",
+      "name": "Parle-G Original Gluco Biscuits",
+      "brand": "Parle",
+      "source": "off",
+      "kcal": 454,
+      "protein_g": 6.9,
+      "carb_g": 77.3,
+      "fat_g": 13
+    },
+    {
+      "id": "e4ee2c0a-d2b3-42a0-9734-f2a28f13ed73",
+      "name": "Parle Monaco Classic Biscuits",
+      "brand": "Parle",
+      "source": "off",
+      "kcal": 492,
+      "protein_g": 7.9,
+      "carb_g": 68.8,
+      "fat_g": 20.6
+    },
+    {
+      "id": "af96d8ec-71da-4a8c-b77b-a946d6d97c74",
+      "name": "Parle Hide&seek bisc",
+      "brand": "Parle",
+      "source": "off",
+      "kcal": 479,
+      "protein_g": 5.9,
+      "carb_g": 73.3,
+      "fat_g": 18
+    },
+    {
+      "id": "aef08387-0288-4d77-9018-2564381b76c2",
+      "name": "Parle-G Oats & berries",
+      "brand": "Parle",
+      "source": "off",
+      "kcal": 445,
+      "protein_g": 7.2,
+      "carb_g": 78.8,
+      "fat_g": 11.2
+    },
+    {
+      "id": "c1d1f556-d7b0-4bf8-b327-a131dc914c0a",
+      "name": "Parle-G",
+      "brand": "Parle",
+      "source": "off",
+      "kcal": 454,
+      "protein_g": 6.9,
+      "carb_g": 77.3,
+      "fat_g": 13
+    }
+  ],
+  "t-amul-cheese": [
+    {
+      "id": "1dc84e50-f29c-43f3-849f-4e3a02bba7c4",
+      "name": "Amul Cheese Slice A",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 316,
+      "protein_g": 18,
+      "carb_g": 4.8,
+      "fat_g": 25
+    },
+    {
+      "id": "cf53cf05-d0a9-49cb-b877-d27652d4508d",
+      "name": "Amul Cheese slices",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 311,
+      "protein_g": 20,
+      "carb_g": 1.5,
+      "fat_g": 25
+    },
+    {
+      "id": "2df46fe7-2460-438f-ae65-4a5c006c228b",
+      "name": "Amul Cheese Chiplet",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 320,
+      "protein_g": 20,
+      "carb_g": 0,
+      "fat_g": 28
+    },
+    {
+      "id": "22e6daf9-b29b-41da-8e16-d5168634b92f",
+      "name": "Amul Cheese Cube",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 311,
+      "protein_g": 20,
+      "carb_g": 1.5,
+      "fat_g": 25
+    },
+    {
+      "id": "213dcc83-f3cf-4cbe-9a7e-455e1caca690",
+      "name": "Amul Pure Milk Cheese",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 311,
+      "protein_g": 20,
+      "carb_g": 1.5,
+      "fat_g": 25
+    },
+    {
+      "id": "6711a984-b8ee-442b-ad6e-3513487a430c",
+      "name": "Fol Épi Cheese Slices",
+      "brand": "Fol Épi",
+      "source": "off",
+      "kcal": 352,
+      "protein_g": 25.2,
+      "carb_g": 0.5,
+      "fat_g": 28.1
+    }
+  ],
+  "t-maggi": [
+    {
+      "id": "b195ebca-28eb-43ad-99e5-f787e53aeddc",
+      "name": "Nestle Maggi Masala Noodles",
+      "brand": "Nestle",
+      "source": "off",
+      "kcal": 427,
+      "protein_g": 8,
+      "carb_g": 63.5,
+      "fat_g": 15.7
+    },
+    {
+      "id": "e764535a-3f73-44c1-b480-c204be1fa812",
+      "name": "Nestle Maggi noodles masala",
+      "brand": "Nestle",
+      "source": "off",
+      "kcal": 389,
+      "protein_g": 8.1,
+      "carb_g": 59.6,
+      "fat_g": 13.6
+    },
+    {
+      "id": "c5b1b302-a6e1-42f8-bba9-b1dfaa56b0fe",
+      "name": "Nestlé Maggi maggi Masala Oats Noodles",
+      "brand": "Nestlé Maggi",
+      "source": "off",
+      "kcal": 337,
+      "protein_g": 9.8,
+      "carb_g": 40.1,
+      "fat_g": 11.5
+    },
+    {
+      "id": "4945848a-30c0-4868-bc3c-9bd17dd67ad4",
+      "name": "Maggi Veg Atta Masala Noodles",
+      "brand": "Maggi",
+      "source": "off",
+      "kcal": 393,
+      "protein_g": 8,
+      "carb_g": 63.3,
+      "fat_g": 13
+    },
+    {
+      "id": "c799cea3-8471-4e0c-9156-28deb685df55",
+      "name": "Sunfeast Yippee magic masala noodles four in one pack",
+      "brand": "Sunfeast",
+      "source": "off",
+      "kcal": 459,
+      "protein_g": 9,
+      "carb_g": 62.6,
+      "fat_g": 20.1
+    },
+    {
+      "id": "4ea4929e-81a4-47be-a6a3-bf65c7bae0ca",
+      "name": "Itc Sunfeast Yippee! noodles Magic Masala",
+      "brand": "Itc",
+      "source": "off",
+      "kcal": 459,
+      "protein_g": 9,
+      "carb_g": 62.6,
+      "fat_g": 20.1
+    },
+    {
+      "id": "14bc7f1b-28e3-4149-9950-db30d85cbe14",
+      "name": "Nestle Maggi Masala 2 Minute 2 Noodles - 280 GM",
+      "brand": "Nestle",
+      "source": "off",
+      "kcal": 427,
+      "protein_g": 8,
+      "carb_g": 63.5,
+      "fat_g": 15.7
+    },
+    {
+      "id": "4af060b4-cd9d-45f6-bdd8-8ea9cb2fb5e9",
+      "name": "Maggi Atta noodle - Masala",
+      "brand": "Maggi",
+      "source": "off",
+      "kcal": 422,
+      "protein_g": 12,
+      "carb_g": 60.6,
+      "fat_g": 14.6
+    }
+  ],
+  "t-lays": [
+    {
+      "id": "0400da87-4c91-48b4-862c-73c87eba51ef",
+      "name": "Lay's classic salted chips",
+      "brand": "Lay's",
+      "source": "off",
+      "kcal": 100,
+      "protein_g": 1.3,
+      "carb_g": 9.4,
+      "fat_g": 6.3
+    },
+    {
+      "id": "cdc7cfc1-f051-44df-9724-34477ba4c44a",
+      "name": "Lay's Lays salted Chips 30",
+      "brand": "Lay's",
+      "source": "off",
+      "kcal": 550,
+      "protein_g": 7,
+      "carb_g": 54,
+      "fat_g": 34
+    },
+    {
+      "id": "8a6b259e-a4af-433c-8173-fac09dbf1dbd",
+      "name": "Lay's Salt Chips",
+      "brand": "Lay's",
+      "source": "off",
+      "kcal": 549,
+      "protein_g": 6.1,
+      "carb_g": 53,
+      "fat_g": 34
+    },
+    {
+      "id": "089f1c46-cfa1-4ee2-b8e1-8930b05cb973",
+      "name": "Lay's Chips paysanne nature",
+      "brand": "Lay's",
+      "source": "off",
+      "kcal": 514,
+      "protein_g": 6.2,
+      "carb_g": 54,
+      "fat_g": 30
+    },
+    {
+      "id": "e344fada-659f-4743-a629-d52efd70859d",
+      "name": "Lay's Lays Classics Salted 20rs",
+      "brand": "Lay's",
+      "source": "off",
+      "kcal": 554,
+      "protein_g": 7,
+      "carb_g": 51.7,
+      "fat_g": 35.5
+    },
+    {
+      "id": "895481f8-59dd-4e7b-9623-e3bdfed6a740",
+      "name": "Lay's Chips nature",
+      "brand": "Lay's",
+      "source": "off",
+      "kcal": 508,
+      "protein_g": 6.1,
+      "carb_g": 53,
+      "fat_g": 30
+    }
+  ],
+  "t-bhujia": [
+    {
+      "id": "eeef6691-bf06-42ee-adce-0be77d8eff47",
+      "name": "Haldiram's Aloo bhujia",
+      "brand": "Haldiram's",
+      "source": "off",
+      "kcal": 569,
+      "protein_g": 8.7,
+      "carb_g": 46.1,
+      "fat_g": 38.1
+    },
+    {
+      "id": "470f159f-eaac-49ae-9059-85a73f8ae153",
+      "name": "Haldiram's Haldiram aloo bhujia 220g",
+      "brand": "Haldiram's",
+      "source": "off",
+      "kcal": 584,
+      "protein_g": 10.3,
+      "carb_g": 42.4,
+      "fat_g": 41.5
+    },
+    {
+      "id": "4892f8ee-c71e-48b8-8e7a-500a6c629124",
+      "name": "Haldirams Aloo Bhujia",
+      "brand": "Haldiram",
+      "source": "off",
+      "kcal": 557,
+      "protein_g": 9.7,
+      "carb_g": 44.4,
+      "fat_g": 40.1
+    },
+    {
+      "id": "b20483ae-f0e4-4b6c-aac3-a33537881c78",
+      "name": "Haldiram's Haldirams Alu Bhujia",
+      "brand": "Haldiram's",
+      "source": "off",
+      "kcal": 562,
+      "protein_g": 8.7,
+      "carb_g": 46.1,
+      "fat_g": 38.1
+    },
+    {
+      "id": "38876d1d-ce1a-41fa-9eac-d6c8da119c3b",
+      "name": "Haldiram's Bhujia",
+      "brand": "Haldiram",
+      "source": "off",
+      "kcal": 581,
+      "protein_g": 20,
+      "carb_g": 39.5,
+      "fat_g": 40.8
+    },
+    {
+      "id": "5585234f-ee15-45a9-8ad9-a88e42719b8d",
+      "name": "Haldiram's Bhujia sev",
+      "brand": "Haldiram's",
+      "source": "off",
+      "kcal": 601,
+      "protein_g": 12.9,
+      "carb_g": 37.1,
+      "fat_g": 43.5
+    }
+  ],
+  "t-low-fat-paneer": [
+    {
+      "id": "4c73dcb6-b058-4818-8095-36d870d0e29c",
+      "name": "Amul Paneer",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 323,
+      "protein_g": 20,
+      "carb_g": 4.5,
+      "fat_g": 25
+    },
+    {
+      "id": "1da394c0-3a43-4b5d-be65-286419126c0c",
+      "name": "Amul High Protein Paneer",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 170,
+      "protein_g": 25,
+      "carb_g": 4,
+      "fat_g": 6
+    },
+    {
+      "id": "a72340da-a85d-4eba-a4d7-f9e69694ab7e",
+      "name": "Amul malai paneer fresh",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 312,
+      "protein_g": 20,
+      "carb_g": 4,
+      "fat_g": 24
+    },
+    {
+      "id": "231c84c6-5b36-4ac7-8cf3-7a94b7528eda",
+      "name": "Amul Malai Paneer",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 312,
+      "protein_g": 20,
+      "carb_g": 4,
+      "fat_g": 24
+    },
+    {
+      "id": "9c360784-87e0-4574-90c2-69e739442d1f",
+      "name": "Amul Butter Nankhatai",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 511,
+      "protein_g": 6.5,
+      "carb_g": 63,
+      "fat_g": 27
+    },
+    {
+      "id": "213dcc83-f3cf-4cbe-9a7e-455e1caca690",
+      "name": "Amul Pure Milk Cheese",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 311,
+      "protein_g": 20,
+      "carb_g": 1.5,
+      "fat_g": 25
+    }
+  ],
+  "t-mcaloo": [
+    {
+      "id": "1ef8d661-8ec2-4bf8-a0ae-08f583661fd3",
+      "name": "McDonald’s Cheeseburger",
+      "brand": "McDonald’s",
+      "source": "off",
+      "kcal": 261,
+      "protein_g": 13,
+      "carb_g": 27.8,
+      "fat_g": 10.4
+    },
+    {
+      "id": "86524e15-7610-44e4-a0b4-d1d2dc3c0079",
+      "name": "McDonald’s McNuggetd",
+      "brand": "McDonald’s",
+      "source": "off",
+      "kcal": 251,
+      "protein_g": 15.6,
+      "carb_g": 17,
+      "fat_g": 13.1
+    },
+    {
+      "id": "afc362fa-f114-4faf-8045-ec07fba0ea50",
+      "name": "Turkey or chicken burger, on white bun",
+      "brand": null,
+      "source": "usda",
+      "kcal": 234,
+      "protein_g": 20,
+      "carb_g": 20.7,
+      "fat_g": 7.7
+    },
+    {
+      "id": "a65bd361-6b10-4cbe-aaea-1ec0a8cc75ed",
+      "name": "Turkey or chicken burger, on wheat bun",
+      "brand": null,
+      "source": "usda",
+      "kcal": 227,
+      "protein_g": 20.7,
+      "carb_g": 18.7,
+      "fat_g": 7.7
+    },
+    {
+      "id": "0d7fdd4c-d229-4770-a62f-d9a85a079c25",
+      "name": "McDONALD'S, Cheeseburger",
+      "brand": null,
+      "source": "usda",
+      "kcal": 263,
+      "protein_g": 13,
+      "carb_g": 27.8,
+      "fat_g": 11.8
+    },
+    {
+      "id": "6ce7f7c3-0c8a-4cb5-a678-d32d3c1f13d3",
+      "name": "Cheeseburger (McDonalds)",
+      "brand": null,
+      "source": "usda",
+      "kcal": 270,
+      "protein_g": 13.5,
+      "carb_g": 25.5,
+      "fat_g": 12.9
+    }
+  ],
+  "t-dominos": [
+    {
+      "id": "dc1b03e7-84bc-490c-9af2-da445f4161a4",
+      "name": "DOMINO'S 14\" Cheese Pizza, Classic Hand-Tossed Crust",
+      "brand": null,
+      "source": "usda",
+      "kcal": 257,
+      "protein_g": 10.8,
+      "carb_g": 33.2,
+      "fat_g": 9
+    },
+    {
+      "id": "fefeec5c-e18b-49a8-9149-96760588a9d2",
+      "name": "DOMINO'S 14\" Cheese Pizza, Crunchy Thin Crust",
+      "brand": null,
+      "source": "usda",
+      "kcal": 298,
+      "protein_g": 12.3,
+      "carb_g": 28.2,
+      "fat_g": 15.1
+    },
+    {
+      "id": "acd183e1-c518-4865-a391-168b4442611b",
+      "name": "DOMINO'S 14\" Cheese Pizza, Ultimate Deep Dish Crust",
+      "brand": null,
+      "source": "usda",
+      "kcal": 265,
+      "protein_g": 10.8,
+      "carb_g": 33.5,
+      "fat_g": 9.8
+    },
+    {
+      "id": "fcfeedfe-b741-4196-9775-b13da8fc520a",
+      "name": "DOMINO'S 14\" Pepperoni Pizza, Classic Hand-Tossed Crust",
+      "brand": null,
+      "source": "usda",
+      "kcal": 273,
+      "protein_g": 11.3,
+      "carb_g": 31.9,
+      "fat_g": 11.2
+    },
+    {
+      "id": "0f186f03-2315-48bd-a193-1973f728a5dd",
+      "name": "DOMINO'S 14\" EXTRAVAGANZZA FEAST Pizza, Classic Hand-Tossed Crust",
+      "brand": null,
+      "source": "usda",
+      "kcal": 244,
+      "protein_g": 10.3,
+      "carb_g": 25.7,
+      "fat_g": 11.1
+    },
+    {
+      "id": "6cdd2584-bbf1-4855-b684-ba44fe8522a0",
+      "name": "DOMINO'S 14\" Pepperoni Pizza, Ultimate Deep Dish Crust",
+      "brand": null,
+      "source": "usda",
+      "kcal": 283,
+      "protein_g": 11.5,
+      "carb_g": 31.9,
+      "fat_g": 12.1
+    }
+  ],
+  "t-chole-bhature": [
+    {
+      "id": "750fc5e9-cda7-48a4-acbf-267df648408e",
+      "name": "Starbucks signature chocolat",
+      "brand": "Starbucks",
+      "source": "off",
+      "kcal": 392,
+      "protein_g": 8.6,
+      "carb_g": 62.3,
+      "fat_g": 8.9
+    },
+    {
+      "id": "e57f8aab-4381-46df-a3c0-f68d18bb7573",
+      "name": "Starbucks Signature Chocolate",
+      "brand": "Starbucks",
+      "source": "off",
+      "kcal": 391,
+      "protein_g": 8.6,
+      "carb_g": 62.3,
+      "fat_g": 8.9
+    },
+    {
+      "id": "028d91ef-e25f-42ab-b4cf-6b5ca9e7b86c",
+      "name": "Starbucks Signature chocolat 70% 300g",
+      "brand": "Starbucks",
+      "source": "off",
+      "kcal": 381,
+      "protein_g": 14.6,
+      "carb_g": 38.6,
+      "fat_g": 13.2
+    },
+    {
+      "id": "eaf5bc4f-0c42-4a09-a7ee-e977b2d7a160",
+      "name": "Kirkland signature Chocolate Complete Nutrition Shake",
+      "brand": "Kirkland signature",
+      "source": "off",
+      "kcal": 83,
+      "protein_g": 6.2,
+      "carb_g": 9.1,
+      "fat_g": 2.5
+    },
+    {
+      "id": "078d6af9-a432-46de-8cdf-47358a7786f8",
+      "name": "Kirkland Signature Protein Bar Chocolate Brownie",
+      "brand": "Kirkland Signature",
+      "source": "off",
+      "kcal": 317,
+      "protein_g": 35,
+      "carb_g": 36.7,
+      "fat_g": 10
+    },
+    {
+      "id": "c140e236-7941-42e1-8e3e-c16bc79f98ea",
+      "name": "Nature's Bounty Complete protien & vitamin shake mix Decadent Chocolate",
+      "brand": "Nature's Bounty",
+      "source": "off",
+      "kcal": 333,
+      "protein_g": 45.5,
+      "carb_g": 33.3,
+      "fat_g": 9.1
+    },
+    {
+      "id": "2c780391-b7e6-486c-aeec-cb5b2d9e2445",
+      "name": "Nature's own whole grain bread -oz",
+      "brand": "Nature's Own",
+      "source": "off",
+      "kcal": 269,
+      "protein_g": 15.4,
+      "carb_g": 46.2,
+      "fat_g": 5.8
+    },
+    {
+      "id": "f371dd24-9c6f-4283-b930-40005b8e8ad4",
+      "name": "Nature's Own 100% Whole Wheat Bread",
+      "brand": "Nature's Own",
+      "source": "off",
+      "kcal": 231,
+      "protein_g": 11.5,
+      "carb_g": 46.2,
+      "fat_g": 1.9
+    }
+  ],
+  "t-rajma-chawal": [
+    {
+      "id": "a1705abf-7c43-40b1-915c-7dc129e68f60",
+      "name": "Rajma Chawal",
+      "brand": null,
+      "source": "curated",
+      "kcal": 132,
+      "protein_g": 4.6,
+      "carb_g": 21.8,
+      "fat_g": 2.8
+    },
+    {
+      "id": "dd546601-0184-4433-8f4a-c311728e8f79",
+      "name": "Daawat Cuppa Rice Rajma Chawal",
+      "brand": "Daawat",
+      "source": "off",
+      "kcal": 284.8275862069,
+      "protein_g": 13.103448275862,
+      "carb_g": 64.712643678161,
+      "fat_g": 10
+    },
+    {
+      "id": "4d7084c8-b560-4dde-b302-2bb31cb1eecb",
+      "name": "Rajma Masala",
+      "brand": null,
+      "source": "curated",
+      "kcal": 135,
+      "protein_g": 6.2,
+      "carb_g": 16.8,
+      "fat_g": 4.9
+    }
+  ],
+  "t-masala-dosa": [
+    {
+      "id": "96b37e18-953d-45ee-b77b-1f11b9309913",
+      "name": "Masala Dosa",
+      "brand": null,
+      "source": "curated",
+      "kcal": 139,
+      "protein_g": 2.5,
+      "carb_g": 20.8,
+      "fat_g": 5.1
+    }
+  ],
+  "t-pbm": [
+    {
+      "id": "5356b2f4-6ee9-4200-80db-39416bbb9117",
+      "name": "Paneer Butter Masala",
+      "brand": null,
+      "source": "curated",
+      "kcal": 173,
+      "protein_g": 7.8,
+      "carb_g": 3.3,
+      "fat_g": 14.1
+    },
+    {
+      "id": "cfe3a294-0692-4cfc-a374-e1fb7da5f305",
+      "name": "Shahi Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 237,
+      "protein_g": 10.7,
+      "carb_g": 4.2,
+      "fat_g": 19.8
+    },
+    {
+      "id": "6ebb7171-f936-4aea-af1c-9bcc44f47e96",
+      "name": "Palak Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 123,
+      "protein_g": 6.2,
+      "carb_g": 3.4,
+      "fat_g": 9.6
+    },
+    {
+      "id": "07b8cfe4-b35d-403f-973c-c10e46d709d8",
+      "name": "Matar Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 166,
+      "protein_g": 7.6,
+      "carb_g": 6.2,
+      "fat_g": 12.1
+    },
+    {
+      "id": "231c84c6-5b36-4ac7-8cf3-7a94b7528eda",
+      "name": "Amul Malai Paneer",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 312,
+      "protein_g": 20,
+      "carb_g": 4,
+      "fat_g": 24
+    },
+    {
+      "id": "3c66c82d-81ac-4be6-9c16-e3a66b01a542",
+      "name": "Kadai Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 179,
+      "protein_g": 8,
+      "carb_g": 3.4,
+      "fat_g": 14.7
+    }
+  ],
+  "t-egg-bhurji": [
+    {
+      "id": "d52868e8-1c34-4302-872f-6a296d5a12e5",
+      "name": "Egg Bhurji",
+      "brand": null,
+      "source": "curated",
+      "kcal": 154,
+      "protein_g": 8.5,
+      "carb_g": 2.7,
+      "fat_g": 12.3
+    }
+  ],
+  "f-pear": [
+    {
+      "id": "9d7b04cd-f59e-4630-9ce2-a320e34fccc4",
+      "name": "pear",
+      "brand": null,
+      "source": "web_verified",
+      "kcal": 57,
+      "protein_g": 0.4,
+      "carb_g": 15.2,
+      "fat_g": 0.1
+    },
+    {
+      "id": "a8e7eb4d-7f6b-4841-950e-18712187727e",
+      "name": "Pear, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 59,
+      "protein_g": 0.4,
+      "carb_g": 15.2,
+      "fat_g": 0.2
+    },
+    {
+      "id": "1594a2cc-8c98-43cf-ac50-f0ff944f3c0b",
+      "name": "Pear nectar",
+      "brand": null,
+      "source": "usda",
+      "kcal": 60,
+      "protein_g": 0.1,
+      "carb_g": 15.8,
+      "fat_g": 0
+    },
+    {
+      "id": "99f05442-41f7-4772-b898-46c28d3e7269",
+      "name": "Pear, dried",
+      "brand": null,
+      "source": "usda",
+      "kcal": 262,
+      "protein_g": 1.9,
+      "carb_g": 69.7,
+      "fat_g": 0.6
+    },
+    {
+      "id": "ead327e6-ece2-4ce2-b5fe-b3d63f25cdbc",
+      "name": "Pear, Asian, raw",
+      "brand": null,
+      "source": "usda",
+      "kcal": 42,
+      "protein_g": 0.5,
+      "carb_g": 10.7,
+      "fat_g": 0.2
+    },
+    {
+      "id": "9ff756e3-ff3a-4a1b-88f2-60bac67480a6",
+      "name": "Pear, canned, NFS",
+      "brand": null,
+      "source": "usda",
+      "kcal": 52,
+      "protein_g": 0.2,
+      "carb_g": 13.5,
+      "fat_g": 0.1
+    },
+    {
+      "id": "b4dae9eb-2cbc-460a-a0e5-0b9eb0a21120",
+      "name": "Pear, canned, in syrup",
+      "brand": null,
+      "source": "usda",
+      "kcal": 59,
+      "protein_g": 0.2,
+      "carb_g": 15.2,
+      "fat_g": 0.1
+    },
+    {
+      "id": "f561261c-31e4-4cdb-bea6-f1216f634079",
+      "name": "Pear, canned, juice pack",
+      "brand": null,
+      "source": "usda",
+      "kcal": 45,
+      "protein_g": 0.2,
+      "carb_g": 11.8,
+      "fat_g": 0.1
+    }
+  ],
+  "f-walnuts": [
+    {
+      "id": "4cb2fcad-b749-4fc2-bb54-2a739220daaa",
+      "name": "Walnuts, kernel only",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 688,
+      "protein_g": 14.7,
+      "carb_g": 3.3,
+      "fat_g": 68.5
+    },
+    {
+      "id": "93872d22-348a-4838-b816-d95a9a68424b",
+      "name": "Walnuts, excluding honey roasted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 730,
+      "protein_g": 14.6,
+      "carb_g": 10.9,
+      "fat_g": 69.7
+    },
+    {
+      "id": "3c24ded1-0d66-496f-8e4e-6e850f96702d",
+      "name": "Walnuts, honey roasted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 668,
+      "protein_g": 9.8,
+      "carb_g": 29,
+      "fat_g": 56.9
+    },
+    {
+      "id": "02c41a44-4420-4a4d-80df-09510ec526fc",
+      "name": "Walnuts, kernel only, weighed with shells",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 295,
+      "protein_g": 6.3,
+      "carb_g": 1.4,
+      "fat_g": 29.4
+    },
+    {
+      "id": "d84582a2-30c4-4e8e-83cd-6c29ce36144e",
+      "name": "Tesco Walnuts",
+      "brand": "Tesco",
+      "source": "off",
+      "kcal": 701,
+      "protein_g": 14.7,
+      "carb_g": 3.3,
+      "fat_g": 68.5
+    },
+    {
+      "id": "2f9c93ed-a966-4dc4-a50d-b5a154ecb4db",
+      "name": "Alesto Walnuts",
+      "brand": "Alesto",
+      "source": "off",
+      "kcal": 712,
+      "protein_g": 15.5,
+      "carb_g": 3.7,
+      "fat_g": 69.1
+    },
+    {
+      "id": "553a889e-7f6e-40aa-8a77-b12da957eb65",
+      "name": "Nuts, walnuts, glazed",
+      "brand": null,
+      "source": "usda",
+      "kcal": 500,
+      "protein_g": 8.3,
+      "carb_g": 47.6,
+      "fat_g": 35.7
+    },
+    {
+      "id": "75f265a8-cbdc-48da-a896-8924dc14e4f6",
+      "name": "Nuts, walnuts, english",
+      "brand": null,
+      "source": "usda",
+      "kcal": 654,
+      "protein_g": 15.2,
+      "carb_g": 13.7,
+      "fat_g": 65.2
+    }
+  ],
+  "f-broccoli": [
+    {
+      "id": "155eb662-d840-45fb-b411-a7285808c8f4",
+      "name": "Broccoli, green, steamed",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 34,
+      "protein_g": 4.1,
+      "carb_g": 3.5,
+      "fat_g": 0.5
+    },
+    {
+      "id": "c0155e8e-2cd0-4aaa-8c8b-690228429ec5",
+      "name": "Broccoli, cooked, from restaurant",
+      "brand": null,
+      "source": "usda",
+      "kcal": 77,
+      "protein_g": 2.6,
+      "carb_g": 6.2,
+      "fat_g": 4.7
+    },
+    {
+      "id": "2571d93d-dc2a-48b1-bad6-89bf011971f7",
+      "name": "Broccoli, fresh, cooked with oil",
+      "brand": null,
+      "source": "usda",
+      "kcal": 67,
+      "protein_g": 2.6,
+      "carb_g": 6.3,
+      "fat_g": 3.4
+    },
+    {
+      "id": "28aca3a0-b865-4cd2-b35b-180f5366418c",
+      "name": "Broccoli, fresh, cooked with butter or margarine",
+      "brand": null,
+      "source": "usda",
+      "kcal": 60,
+      "protein_g": 2.6,
+      "carb_g": 6.3,
+      "fat_g": 2.6
+    },
+    {
+      "id": "e8ea2ac1-f0ef-4bf7-8301-2311d4d28e92",
+      "name": "Broccoli, cooked, as ingredient",
+      "brand": null,
+      "source": "usda",
+      "kcal": 41,
+      "protein_g": 2.7,
+      "carb_g": 6.5,
+      "fat_g": 0.4
+    },
+    {
+      "id": "643cf816-92bc-4e0e-892e-5aa002a784a5",
+      "name": "Broccoli, fresh, cooked, no added fat",
+      "brand": null,
+      "source": "usda",
+      "kcal": 41,
+      "protein_g": 2.7,
+      "carb_g": 6.5,
+      "fat_g": 0.4
+    },
+    {
+      "id": "27edda4d-4136-4658-b2f5-1e5db2e9f82a",
+      "name": "Broccoli, frozen, cooked with butter or margarine",
+      "brand": null,
+      "source": "usda",
+      "kcal": 47,
+      "protein_g": 3,
+      "carb_g": 5.2,
+      "fat_g": 2.3
+    }
+  ],
+  "f-tofu": [
+    {
+      "id": "8fefdbca-e75f-4fe9-ac0b-901dbd0cfdf6",
+      "name": "Tofu spread",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 208,
+      "protein_g": 4.4,
+      "carb_g": 2.4,
+      "fat_g": 20.1
+    },
+    {
+      "id": "8bfb18f2-64af-4559-bc75-ef71b7b451c3",
+      "name": "Tofu yogurt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 94,
+      "protein_g": 3.5,
+      "carb_g": 16,
+      "fat_g": 1.8
+    },
+    {
+      "id": "1c092449-9f8d-4246-a720-776999f92788",
+      "name": "Tofu, fried",
+      "brand": null,
+      "source": "usda",
+      "kcal": 270,
+      "protein_g": 18.8,
+      "carb_g": 8.9,
+      "fat_g": 20.2
+    },
+    {
+      "id": "1ea13748-8e9d-48f5-bc22-b79c44cf26f4",
+      "name": "Tofu burger, baked",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 115,
+      "protein_g": 7.3,
+      "carb_g": 13.2,
+      "fat_g": 4
+    },
+    {
+      "id": "0bfe6f2e-bd53-45ba-ae42-21526ccc0e63",
+      "name": "Tofu fumé, préemballé",
+      "brand": null,
+      "source": "ciqual",
+      "kcal": 164,
+      "protein_g": 14.9,
+      "carb_g": 2.9,
+      "fat_g": 9.5
+    },
+    {
+      "id": "68602e9f-2454-4019-9fbf-e5373ca65749",
+      "name": "Tofu nature, préemballé",
+      "brand": null,
+      "source": "ciqual",
+      "kcal": 148,
+      "protein_g": 13.4,
+      "carb_g": 2.9,
+      "fat_g": 8.5
+    },
+    {
+      "id": "1a2df721-4601-43be-8fc7-419632561cc5",
+      "name": "Tofu soyeux, préemballé",
+      "brand": null,
+      "source": "ciqual",
+      "kcal": 54,
+      "protein_g": 4.6,
+      "carb_g": 1.5,
+      "fat_g": 2.9
+    },
+    {
+      "id": "0a28e708-dacb-4e0e-8913-45f74d44eac6",
+      "name": "Tofu, soya bean, steamed",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 73,
+      "protein_g": 8.1,
+      "carb_g": 0.7,
+      "fat_g": 4.2
+    }
+  ],
+  "f-quinoa": [
+    {
+      "id": "51d83ce2-04a8-4850-b213-0b3ea524cba0",
+      "name": "Quinoa, cooked",
+      "brand": null,
+      "source": "usda",
+      "kcal": 120,
+      "protein_g": 4.4,
+      "carb_g": 21.3,
+      "fat_g": 1.9
+    },
+    {
+      "id": "cc9ae865-5e4d-43b7-a0f9-30ed011429d6",
+      "name": "Pasta, gluten-free, corn flour and quinoa flour, cooked, ANCIENT HARVEST",
+      "brand": null,
+      "source": "usda",
+      "kcal": 152,
+      "protein_g": 3.2,
+      "carb_g": 31.1,
+      "fat_g": 2.1
+    },
+    {
+      "id": "b60b537e-56a9-4b35-b0c1-653678c4b974",
+      "name": "Quinoa, uncooked",
+      "brand": null,
+      "source": "usda",
+      "kcal": 368,
+      "protein_g": 14.1,
+      "carb_g": 64.2,
+      "fat_g": 6.1
+    },
+    {
+      "id": "bf68b8c8-58f1-468d-bfc6-4a84233a35cd",
+      "name": "Cereals, corn grits, yellow, regular, quick, enriched, cooked with water, with salt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 65,
+      "protein_g": 1.2,
+      "carb_g": 13.9,
+      "fat_g": 0.4
+    },
+    {
+      "id": "b0c6343e-0cc9-409a-9c6f-5e1ce1d132c3",
+      "name": "Cereals, corn grits, white, regular and quick, enriched, cooked with water, with salt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 71,
+      "protein_g": 1.7,
+      "carb_g": 14.8,
+      "fat_g": 0.5
+    },
+    {
+      "id": "1bc1a33b-cd7b-424b-95c3-d26104eb29b7",
+      "name": "Cereals, corn grits, white, regular and quick, enriched, cooked with water, without salt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 71,
+      "protein_g": 1.7,
+      "carb_g": 14.8,
+      "fat_g": 0.5
+    },
+    {
+      "id": "f9effaff-d9ee-4633-8116-c1deabc2cf31",
+      "name": "Cereals, corn grits, yellow, regular and quick, enriched, cooked with water, without salt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 65,
+      "protein_g": 1.2,
+      "carb_g": 13.9,
+      "fat_g": 0.4
+    },
+    {
+      "id": "b3b31fb3-2631-4dd3-b2f3-8f25ceea9cdd",
+      "name": "Cereals, oats, regular and quick, unenriched, cooked with water (includes boiling and microwaving), without salt",
+      "brand": null,
+      "source": "usda",
+      "kcal": 71,
+      "protein_g": 2.5,
+      "carb_g": 12,
+      "fat_g": 1.5
+    }
+  ],
+  "f-roasted-peanuts": [
+    {
+      "id": "70124581-30e8-44b1-88b4-96f59a1795b6",
+      "name": "KP Dry Roasted Peanuts",
+      "brand": "KP",
+      "source": "off",
+      "kcal": 595,
+      "protein_g": 30,
+      "carb_g": 7.3,
+      "fat_g": 47
+    },
+    {
+      "id": "064ecbdd-dbbc-45d4-b8de-bca7be270010",
+      "name": "Diamond Roasted Peanuts",
+      "brand": "Diamond",
+      "source": "off",
+      "kcal": 633,
+      "protein_g": 23.7,
+      "carb_g": 22.7,
+      "fat_g": 49.7
+    },
+    {
+      "id": "18181ec9-94ee-4566-8979-81347cae809e",
+      "name": "Jabsons Roasted peanuts",
+      "brand": "Jabsons",
+      "source": "off",
+      "kcal": 630,
+      "protein_g": 20,
+      "carb_g": 21,
+      "fat_g": 52
+    },
+    {
+      "id": "f4005796-088e-4bf2-ac5b-cb1d29513a88",
+      "name": "Planters dry, roasted peanuts",
+      "brand": "Planters",
+      "source": "off",
+      "kcal": 571,
+      "protein_g": 25,
+      "carb_g": 17.9,
+      "fat_g": 50
+    },
+    {
+      "id": "223fc4fd-f6e8-4b4e-98cd-304f00cbb44a",
+      "name": "Planter’s Lightly salted dry roasted peanuts imp",
+      "brand": "Planter’s",
+      "source": "off",
+      "kcal": 607,
+      "protein_g": 25,
+      "carb_g": 17.9,
+      "fat_g": 50
+    },
+    {
+      "id": "c33f5bd7-5010-4aba-b865-8d8e93db4100",
+      "name": "Southern Grove Dry Roasted Peanuts, Honey Roasted",
+      "brand": "Southern Grove",
+      "source": "off",
+      "kcal": 571,
+      "protein_g": 21.4,
+      "carb_g": 28.6,
+      "fat_g": 42.9
+    },
+    {
+      "id": "8bafef67-576b-4e34-b780-13ce7d28fb39",
+      "name": "Peanuts, roasted, salted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 599,
+      "protein_g": 28,
+      "carb_g": 15.3,
+      "fat_g": 52.5
+    },
+    {
+      "id": "756c953b-20ee-49b0-a5b3-08835d1d6e4c",
+      "name": "Peanuts, roasted, unsalted",
+      "brand": null,
+      "source": "usda",
+      "kcal": 599,
+      "protein_g": 28,
+      "carb_g": 15.3,
+      "fat_g": 52.5
+    }
+  ],
+  "f-skimmed-milk": [
+    {
+      "id": "0f229dc7-4100-4ba7-9e41-93263ffdbd32",
+      "name": "Skimmed Milk",
+      "brand": null,
+      "source": "curated",
+      "kcal": 38.5,
+      "protein_g": 3.5,
+      "carb_g": 5,
+      "fat_g": 0.5
+    },
+    {
+      "id": "fd423395-5e1c-4f9f-8429-032bdb3df92f",
+      "name": "Amul slim 'n' trim Skimmed Milk",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 35,
+      "protein_g": 3.5,
+      "carb_g": 5,
+      "fat_g": 0.1
+    },
+    {
+      "id": "50d77f43-f4d6-478d-a50f-5e6a208cd560",
+      "name": "Semi Skimmed Milk",
+      "brand": "Tesco",
+      "source": "off",
+      "kcal": 50,
+      "protein_g": 3.6,
+      "carb_g": 4.8,
+      "fat_g": 1.8
+    },
+    {
+      "id": "e8ca3eed-f0d0-4a60-893c-419b66f457ce",
+      "name": "Aldi Semi-Skimmed Milk",
+      "brand": "Aldi",
+      "source": "off",
+      "kcal": 49,
+      "protein_g": 3.6,
+      "carb_g": 4.8,
+      "fat_g": 1.7
+    },
+    {
+      "id": "6968f0a0-041a-4d38-b404-819b911a99ee",
+      "name": "Coop Semi-Skimmed Milk",
+      "brand": "Coop",
+      "source": "off",
+      "kcal": 50,
+      "protein_g": 3.4,
+      "carb_g": 5,
+      "fat_g": 1.7
+    },
+    {
+      "id": "6cfd102f-4aaf-42fb-a5f6-356274684fcb",
+      "name": "Jelly, made with skimmed milk",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 73,
+      "protein_g": 2.6,
+      "carb_g": 16.8,
+      "fat_g": 0
+    },
+    {
+      "id": "84fe99da-92f8-4471-a3d4-d88bd38aa731",
+      "name": "Sainsbury's Semi Skimmed Milk",
+      "brand": "Sainsbury's",
+      "source": "off",
+      "kcal": 50,
+      "protein_g": 3.6,
+      "carb_g": 4.8,
+      "fat_g": 1.8
+    },
+    {
+      "id": "b79711ac-07d2-4c09-8af0-ec134cdad070",
+      "name": "Amul Sagar Skimmed Milk Powder",
+      "brand": "Amul",
+      "source": "off",
+      "kcal": 357,
+      "protein_g": 35,
+      "carb_g": 52,
+      "fat_g": 1
+    }
+  ],
+  "f-fried-egg": [
+    {
+      "id": "80afcaee-ab83-406e-a8a7-e32680958d84",
+      "name": "Fried eggplant",
+      "brand": null,
+      "source": "usda",
+      "kcal": 218,
+      "protein_g": 3.7,
+      "carb_g": 22.3,
+      "fat_g": 12.8
+    },
+    {
+      "id": "052e2c35-5acd-4406-bd20-0be4288617f5",
+      "name": "Rice, egg fried, takeaway",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 186,
+      "protein_g": 4.3,
+      "carb_g": 33.3,
+      "fat_g": 4.9
+    },
+    {
+      "id": "f867e81a-f2b1-4865-948e-00b6f6fc0d9b",
+      "name": "Sweet-Land Egg Fried Rice",
+      "brand": "Sweet-Land",
+      "source": "off",
+      "kcal": 138,
+      "protein_g": 2.9,
+      "carb_g": 27.2,
+      "fat_g": 1.8
+    },
+    {
+      "id": "9501f37f-d414-46da-a4ba-da0cad613a42",
+      "name": "Noodles, egg, fried with spring onions, homemade",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 244,
+      "protein_g": 5,
+      "carb_g": 30.5,
+      "fat_g": 12.2
+    },
+    {
+      "id": "f797588a-cf6a-4108-8e30-9f8330792851",
+      "name": "Rice, egg fried, ready cooked, re-heated, retail, not takeaway",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 169,
+      "protein_g": 3.9,
+      "carb_g": 28.1,
+      "fat_g": 5.3
+    },
+    {
+      "id": "9c0c8239-6cfb-4fca-b932-9a8dd0a82244",
+      "name": "Potatoes with onions and eggs, fried",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 316,
+      "protein_g": 7.8,
+      "carb_g": 19.1,
+      "fat_g": 23.8
+    },
+    {
+      "id": "3f610fda-4c85-41c3-8e35-a56cbf876b0e",
+      "name": "Egg, whole, fried with oil",
+      "brand": null,
+      "source": "usda",
+      "kcal": 192,
+      "protein_g": 11.6,
+      "carb_g": 0.9,
+      "fat_g": 15.8
+    },
+    {
+      "id": "293a714a-41bd-4fb1-ba38-c308f9a12bb2",
+      "name": "Egg, whole, fried with butter",
+      "brand": null,
+      "source": "usda",
+      "kcal": 182,
+      "protein_g": 11.6,
+      "carb_g": 0.9,
+      "fat_g": 14.6
+    }
+  ],
+  "f-dark-fantasy": [
+    {
+      "id": "8f2f3846-f804-4688-b655-86727d4e3402",
+      "name": "Sunfeast Dark Fantasy Choco Fills",
+      "brand": "Sunfeast",
+      "source": "off",
+      "kcal": 513,
+      "protein_g": 5.3,
+      "carb_g": 64.3,
+      "fat_g": 26.5
+    },
+    {
+      "id": "01354a8a-ffba-4a08-92fe-990283a5bd00",
+      "name": "Sunfeast Dark Fantasy Big Choco Fills",
+      "brand": "Sunfeast",
+      "source": "off",
+      "kcal": 512,
+      "protein_g": 6.4,
+      "carb_g": 63.2,
+      "fat_g": 26
+    },
+    {
+      "id": "bddc4d13-e604-40a7-9f10-c66a8bbbe9d4",
+      "name": "Dark Fantasy Choco Fills",
+      "brand": "Dark Fantasy",
+      "source": "off",
+      "kcal": 513,
+      "protein_g": 5.3,
+      "carb_g": 64.3,
+      "fat_g": 26.5
+    },
+    {
+      "id": "6211d317-5210-4db9-b904-809374db58e4",
+      "name": "Sunfeast Dark Fantasy Desserts Choco Chunks",
+      "brand": "Sunfeast",
+      "source": "off",
+      "kcal": 508,
+      "protein_g": 5.4,
+      "carb_g": 66.3,
+      "fat_g": 24.6
+    },
+    {
+      "id": "5023d46f-3841-44d6-b691-6a905a5d5776",
+      "name": "Sunfeast Dark Fantasy Desserts Choco Nut Dipped",
+      "brand": "Sunfeast",
+      "source": "off",
+      "kcal": 548,
+      "protein_g": 5.2,
+      "carb_g": 61.1,
+      "fat_g": 31.5
+    },
+    {
+      "id": "98e26745-9afe-433d-a7cf-3d7213fc6ed1",
+      "name": "Sunfeast Bounce Choco Twist",
+      "brand": "Sunfeast",
+      "source": "off",
+      "kcal": 467,
+      "protein_g": 6.8,
+      "carb_g": 74.3,
+      "fat_g": 15.9
+    }
+  ],
+  "f-md-toned": [
+    {
+      "id": "5c13d08f-4b76-4d3e-a48c-8fc0c09afb8e",
+      "name": "Mother Dairy Toned Milk",
+      "brand": "Mother Dairy",
+      "source": "off",
+      "kcal": 59,
+      "protein_g": 3.1,
+      "carb_g": 4.7,
+      "fat_g": 3.1
+    },
+    {
+      "id": "778462ba-a4e4-4af2-9aa9-e0df3ee64971",
+      "name": "Toned Milk",
+      "brand": null,
+      "source": "curated",
+      "kcal": 58.6,
+      "protein_g": 3.2,
+      "carb_g": 4.7,
+      "fat_g": 3
+    },
+    {
+      "id": "879dcadf-a1b1-4481-93d1-6af86793d23d",
+      "name": "Heritage Daily Health Toned Milk",
+      "brand": "Heritage",
+      "source": "off",
+      "kcal": 58,
+      "protein_g": 3.1,
+      "carb_g": 4.6,
+      "fat_g": 3
+    },
+    {
+      "id": "d6aff40f-59b0-4b42-b675-27c94c937f49",
+      "name": "Verka toned homogenized milk",
+      "brand": "Verka",
+      "source": "off",
+      "kcal": 58,
+      "protein_g": 3,
+      "carb_g": 4.8,
+      "fat_g": 3
+    },
+    {
+      "id": "0a616add-f704-4161-8430-fcf79cfbc691",
+      "name": "Dodla toned milk",
+      "brand": "Dodla",
+      "source": "off",
+      "kcal": 59,
+      "protein_g": 3.1,
+      "carb_g": 4.8,
+      "fat_g": 3
+    },
+    {
+      "id": "83f4268a-f5bc-4620-a394-ab4db032b240",
+      "name": "Nandini Pasteurised Toned Milk",
+      "brand": "Nandini",
+      "source": "off",
+      "kcal": 60,
+      "protein_g": 3.3,
+      "carb_g": 4.8,
+      "fat_g": 3.1
+    }
+  ],
+  "f-bournvita": [
+    {
+      "id": "ef73f69f-810d-43c5-a0fb-eb0f0ee6c449",
+      "name": "cadbury Bournvita",
+      "brand": "cadbury",
+      "source": "off",
+      "kcal": 387,
+      "protein_g": 7,
+      "carb_g": 86.7,
+      "fat_g": 1.8
+    },
+    {
+      "id": "c850d92a-867f-463e-855b-1bcc7ea4db24",
+      "name": "Cadbury Bournvita biscuit",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 457,
+      "protein_g": 7.3,
+      "carb_g": 73.6,
+      "fat_g": 15.3
+    },
+    {
+      "id": "e53bc4d1-9c0b-444e-9af2-ce31b6158670",
+      "name": "Cadbury Bournvita Biscuits",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 455,
+      "protein_g": 6.7,
+      "carb_g": 73.5,
+      "fat_g": 15.1
+    },
+    {
+      "id": "2930ca0b-c263-47c7-93ba-ef97f52cd43f",
+      "name": "Cadbury Bournville 50 Dark",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 533,
+      "protein_g": 6.4,
+      "carb_g": 56.8,
+      "fat_g": 32.8
+    },
+    {
+      "id": "d934381f-2508-4c58-ac50-7ba7ff09d238",
+      "name": "Cadbury bournville premium chocolate",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 544,
+      "protein_g": 5.5,
+      "carb_g": 55.1,
+      "fat_g": 35
+    },
+    {
+      "id": "87a0bb80-b0c8-4c83-a5ec-6ff1da0d934a",
+      "name": "Cadbury Bournville Dark Chocolate bar",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 523,
+      "protein_g": 4.1,
+      "carb_g": 60,
+      "fat_g": 28
+    },
+    {
+      "id": "c695f25b-97ac-4f2c-9cc5-254d902edc8f",
+      "name": "Cadbury Bourn Vita",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 455,
+      "protein_g": 6.7,
+      "carb_g": 73.5,
+      "fat_g": 15.1
+    },
+    {
+      "id": "bbb52b5d-cf70-4dc4-86d0-7de1cb5262c4",
+      "name": "Cadbury Bourn Vita biscuits",
+      "brand": "Cadbury",
+      "source": "off",
+      "kcal": 455,
+      "protein_g": 6.7,
+      "carb_g": 73.5,
+      "fat_g": 15.1
+    }
+  ],
+  "f-kurkure": [
+    {
+      "id": "074a05cb-403e-4c5b-b4bc-f2b9b9f194b8",
+      "name": "Kurkure Masala Munch 20rs",
+      "brand": "Kurkure",
+      "source": "off",
+      "kcal": 555,
+      "protein_g": 6.4,
+      "carb_g": 57.3,
+      "fat_g": 33.6
+    },
+    {
+      "id": "cf9b11d1-1909-431c-b7ec-77bf12796633",
+      "name": "Kurkure Chaat Fills Bhel Chutney Twist",
+      "brand": "Kurkure",
+      "source": "off",
+      "kcal": 517,
+      "protein_g": 5.1,
+      "carb_g": 62.8,
+      "fat_g": 27.3
+    },
+    {
+      "id": "bd8d339f-d290-4ea0-a1c1-f0c2ae3e740f",
+      "name": "Masala munch",
+      "brand": null,
+      "source": "off",
+      "kcal": 558,
+      "protein_g": 6.4,
+      "carb_g": 55.2,
+      "fat_g": 34.6
+    },
+    {
+      "id": "689fdeba-054e-43ab-ae43-4bbe246d379c",
+      "name": "Kurkure Bikaneri Bhujia",
+      "brand": "Kurkure",
+      "source": "off",
+      "kcal": 627,
+      "protein_g": 11.8,
+      "carb_g": 33.5,
+      "fat_g": 49.5
+    },
+    {
+      "id": "07520f54-dbb6-48a7-aa99-096b2b79ebc8",
+      "name": "Kurkure Puffcorn",
+      "brand": "Kurkure",
+      "source": "off",
+      "kcal": 92,
+      "protein_g": 1.1,
+      "carb_g": 11.5,
+      "fat_g": 4.7
+    },
+    {
+      "id": "83d3fc18-41c7-4cae-8c08-0cdebb50be62",
+      "name": "Kurkure Green chutney",
+      "brand": null,
+      "source": "off",
+      "kcal": 561,
+      "protein_g": 5.9,
+      "carb_g": 56.3,
+      "fat_g": 34.7
+    }
+  ],
+  "f-bk-whopper": [
+    {
+      "id": "e22bef6e-596e-4ccf-bdb4-27f83819f348",
+      "name": "Burger King Whopper",
+      "brand": "Burger King",
+      "source": "off",
+      "kcal": 234,
+      "protein_g": 11,
+      "carb_g": 18.9,
+      "fat_g": 14.3
+    },
+    {
+      "id": "e8a49fbe-30b2-4359-8332-5f2ff052b327",
+      "name": "Whopper (Burger King)",
+      "brand": null,
+      "source": "usda",
+      "kcal": 226,
+      "protein_g": 11.3,
+      "carb_g": 17.3,
+      "fat_g": 12.4
+    },
+    {
+      "id": "712951e6-aed3-4690-b035-437864ff5f3f",
+      "name": "BURGER KING, WHOPPER, no cheese",
+      "brand": null,
+      "source": "usda",
+      "kcal": 233,
+      "protein_g": 10.7,
+      "carb_g": 18.6,
+      "fat_g": 12.8
+    },
+    {
+      "id": "2e367aa2-3bd8-4530-ae09-6c708c1c38e2",
+      "name": "BURGER KING, WHOPPER, with cheese",
+      "brand": null,
+      "source": "usda",
+      "kcal": 250,
+      "protein_g": 11.2,
+      "carb_g": 16.7,
+      "fat_g": 15.3
+    },
+    {
+      "id": "e986b272-4eb7-4944-b36e-453bcad998d5",
+      "name": "Whopper Jr (Burger King)",
+      "brand": null,
+      "source": "usda",
+      "kcal": 216,
+      "protein_g": 10.7,
+      "carb_g": 21.1,
+      "fat_g": 9.6
+    },
+    {
+      "id": "eb24e212-2be7-4ea2-90c1-2a353c0051d8",
+      "name": "Burger King Double Whopper Cheese",
+      "brand": "Burger King",
+      "source": "off",
+      "kcal": 256,
+      "protein_g": 13.9,
+      "carb_g": 12.9,
+      "fat_g": 16.4
+    },
+    {
+      "id": "2aa838d6-b6fa-47c0-b0bb-ef4df40b5d09",
+      "name": "BURGER KING, DOUBLE WHOPPER, no cheese",
+      "brand": null,
+      "source": "usda",
+      "kcal": 252,
+      "protein_g": 13.9,
+      "carb_g": 13.7,
+      "fat_g": 15.7
+    },
+    {
+      "id": "303c8237-0c32-4729-aaf4-37bb81683d8a",
+      "name": "BURGER KING, DOUBLE WHOPPER, with cheese",
+      "brand": null,
+      "source": "usda",
+      "kcal": 266,
+      "protein_g": 14.5,
+      "carb_g": 13.5,
+      "fat_g": 17.1
+    }
+  ],
+  "f-aloo-gobi": [
+    {
+      "id": "6761cfd3-a10b-4301-a4b1-bcade24fe62d",
+      "name": "Aloo Gobi",
+      "brand": null,
+      "source": "curated",
+      "kcal": 97,
+      "protein_g": 1.6,
+      "carb_g": 11.5,
+      "fat_g": 5.3
+    },
+    {
+      "id": "002b5421-4a98-4f43-9004-03860dabbb42",
+      "name": "Snacks, granola bars, QUAKER OATMEAL TO GO, all flavors",
+      "brand": null,
+      "source": "usda",
+      "kcal": 389,
+      "protein_g": 6.7,
+      "carb_g": 75.5,
+      "fat_g": 6.7
+    },
+    {
+      "id": "8bf3c989-99c4-4610-af54-8b6e1d9f344d",
+      "name": "Candies, HERSHEY'S POT OF GOLD Almond Bar",
+      "brand": null,
+      "source": "usda",
+      "kcal": 577,
+      "protein_g": 12.8,
+      "carb_g": 44.9,
+      "fat_g": 38.5
+    },
+    {
+      "id": "3b728d62-0a4f-4599-8f7a-6782d44a727b",
+      "name": "Sanitarium So Good Almond Milk (Original)",
+      "brand": "Sanitarium",
+      "source": "off",
+      "kcal": 30,
+      "protein_g": 0.6,
+      "carb_g": 3.6,
+      "fat_g": 1.4
+    },
+    {
+      "id": "3cb0ded0-2a85-46db-948b-4b91aeddf740",
+      "name": "Alpro goût chocolat noisette",
+      "brand": "Alpro",
+      "source": "off",
+      "kcal": 48,
+      "protein_g": 0.6,
+      "carb_g": 7.1,
+      "fat_g": 1.8
+    },
+    {
+      "id": "12c9c949-e421-4114-85e1-f9f6a142334e",
+      "name": "Alpro Go On Jordbær/Bringebær",
+      "brand": "Alpro",
+      "source": "off",
+      "kcal": 84,
+      "protein_g": 4.9,
+      "carb_g": 9.1,
+      "fat_g": 2.7
+    },
+    {
+      "id": "192315c1-cb45-4143-a95d-7cc969489049",
+      "name": "Danone AS Alpro Go On Plain Soya Naturell 400g",
+      "brand": "Danone AS",
+      "source": "off",
+      "kcal": 68,
+      "protein_g": 5.8,
+      "carb_g": 2.6,
+      "fat_g": 3.3
+    },
+    {
+      "id": "43b1921d-a2b2-4841-b67d-d68c97d1d029",
+      "name": "Candies, HERSHEY'S GOLDEN ALMOND SOLITAIRES",
+      "brand": null,
+      "source": "usda",
+      "kcal": 569,
+      "protein_g": 12,
+      "carb_g": 46.9,
+      "fat_g": 37.1
+    }
+  ],
+  "f-kadhi": [
+    {
+      "id": "a8f099bf-e9bb-4e9b-8a2e-960ccc25534f",
+      "name": "Kadhi",
+      "brand": null,
+      "source": "curated",
+      "kcal": 129,
+      "protein_g": 4.9,
+      "carb_g": 10.4,
+      "fat_g": 7.6
+    },
+    {
+      "id": "ba82e6f4-a302-43d0-94d8-67adcced2fd4",
+      "name": "Khadhi",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 63,
+      "protein_g": 3.4,
+      "carb_g": 6.6,
+      "fat_g": 2.8
+    },
+    {
+      "id": "3c66c82d-81ac-4be6-9c16-e3a66b01a542",
+      "name": "Kadai Paneer",
+      "brand": null,
+      "source": "curated",
+      "kcal": 179,
+      "protein_g": 8,
+      "carb_g": 3.4,
+      "fat_g": 14.7
+    },
+    {
+      "id": "40d20878-f95b-477a-b232-df98a7bd8fd9",
+      "name": "Dev Kadalamavu Mixture",
+      "brand": "Dev",
+      "source": "off",
+      "kcal": 560,
+      "protein_g": 19.6,
+      "carb_g": 35,
+      "fat_g": 37.6
+    },
+    {
+      "id": "a899773b-33ca-4609-838e-ef69842198e1",
+      "name": "Curry, dudhi, kofta, homemade",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 111,
+      "protein_g": 2.6,
+      "carb_g": 9.3,
+      "fat_g": 6.9
+    }
+  ],
+  "f-chicken-tikka": [
+    {
+      "id": "eaffdfce-f614-4b19-8d8c-94ed2f76e9a3",
+      "name": "Curry, chicken tikka masala, retail, reheated",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 156,
+      "protein_g": 12.4,
+      "carb_g": 4.9,
+      "fat_g": 9.8
+    },
+    {
+      "id": "b0e70097-1ca3-4f33-821d-3778f12f48e0",
+      "name": "Chicken Curry",
+      "brand": null,
+      "source": "curated",
+      "kcal": 154,
+      "protein_g": 17.9,
+      "carb_g": 2.4,
+      "fat_g": 7.8
+    },
+    {
+      "id": "29b587dd-d169-4527-81fe-2b5c6b8ea5de",
+      "name": "Chicken curry with rice",
+      "brand": null,
+      "source": "usda",
+      "kcal": 116,
+      "protein_g": 5,
+      "carb_g": 15.1,
+      "fat_g": 4
+    },
+    {
+      "id": "96226e87-5be6-4f36-8ca2-687718e29516",
+      "name": "Biryani with chicken",
+      "brand": null,
+      "source": "usda",
+      "kcal": 104,
+      "protein_g": 7.2,
+      "carb_g": 13.6,
+      "fat_g": 2.4
+    },
+    {
+      "id": "ce843571-c404-4782-933f-9e1e077d1948",
+      "name": "Chicken Keema",
+      "brand": null,
+      "source": "curated",
+      "kcal": 156,
+      "protein_g": 17.8,
+      "carb_g": 3.6,
+      "fat_g": 7.4
+    },
+    {
+      "id": "a0b760c6-639f-45c9-9333-bf48bd4b3292",
+      "name": "Chicken Biryani",
+      "brand": null,
+      "source": "curated",
+      "kcal": 160,
+      "protein_g": 10.6,
+      "carb_g": 17,
+      "fat_g": 5.1
+    }
+  ],
+  "f-besan-chilla": [
+    {
+      "id": "27b167a8-7423-460f-b067-5af6f0b1590a",
+      "name": "Chickpea flour (besan)",
+      "brand": null,
+      "source": "usda",
+      "kcal": 387,
+      "protein_g": 22.4,
+      "carb_g": 57.8,
+      "fat_g": 6.7
+    },
+    {
+      "id": "35d85d2c-38f4-4a7f-8513-5155e587faae",
+      "name": "Restaurant, Italian, chicken parmesan without pasta",
+      "brand": null,
+      "source": "usda",
+      "kcal": 204,
+      "protein_g": 16.2,
+      "carb_g": 10.9,
+      "fat_g": 10.6
+    },
+    {
+      "id": "0f86f22d-6ed9-475c-9861-8cfcfb23ad69",
+      "name": "CARRABBA'S ITALIAN GRILL, chicken parmesan without cavatappi pasta",
+      "brand": null,
+      "source": "usda",
+      "kcal": 206,
+      "protein_g": 19,
+      "carb_g": 7.8,
+      "fat_g": 11
+    }
+  ],
+  "f-dal-makhani": [
+    {
+      "id": "c7ce5907-fe6f-4494-b14a-0ba8ce48d103",
+      "name": "Dal Makhani",
+      "brand": null,
+      "source": "curated",
+      "kcal": 140,
+      "protein_g": 5.9,
+      "carb_g": 14.9,
+      "fat_g": 6.2
+    },
+    {
+      "id": "085e2709-0689-4bf6-8259-db93b80f16a8",
+      "name": "Kohinoor Dal makhani",
+      "brand": "Kohinoor",
+      "source": "off",
+      "kcal": 91,
+      "protein_g": 5.1,
+      "carb_g": 9.1,
+      "fat_g": 2.9
+    },
+    {
+      "id": "437ffa14-289b-486f-b654-3ece174fc9a5",
+      "name": "Dal Tadka",
+      "brand": null,
+      "source": "curated",
+      "kcal": 134,
+      "protein_g": 5.7,
+      "carb_g": 16.5,
+      "fat_g": 4.4
+    },
+    {
+      "id": "7d946503-6f19-4286-8084-61826125735c",
+      "name": "Dal Dhokari, homemade",
+      "brand": null,
+      "source": "cofid",
+      "kcal": 123,
+      "protein_g": 5.6,
+      "carb_g": 19.2,
+      "fat_g": 3.3
+    },
+    {
+      "id": "db1af0e9-06d8-4e13-bf17-fcdad76dbb6a",
+      "name": "Chana Dal",
+      "brand": null,
+      "source": "curated",
+      "kcal": 133,
+      "protein_g": 6.3,
+      "carb_g": 18.2,
+      "fat_g": 4.2
+    },
+    {
+      "id": "2995dd53-0dbd-477b-b684-2acba86f4348",
+      "name": "Dal",
+      "brand": null,
+      "source": "usda",
+      "kcal": 145,
+      "protein_g": 8.6,
+      "carb_g": 19.2,
+      "fat_g": 4.3
+    }
+  ]
+}

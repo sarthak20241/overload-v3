@@ -13,9 +13,11 @@
  *   card       the act card, with the numbers the user can check and the four
  *              targets Undo will need
  *
- * Pure: no imports beyond a type, no Date. Unit-tested in dronaCalories.test.ts.
+ * Pure: no imports beyond a type and the pure fuel-day rules, no Date.
+ * Unit-tested in dronaCalories.test.ts.
  */
 import type { DronaFacts } from './dronaCards.ts';
+import { dowOfISO, type FuelDay, kcalOnDow, normalizeFuelDays } from './fuelDays.ts';
 
 export interface DietBody {
   gender?: 'M' | 'F' | 'O' | string | null;
@@ -38,13 +40,15 @@ export interface DietFacts {
   body?: DietBody;
   targets?: DietTargets;
   phase?: (DietTargets & { id?: string | null }) | null;
-  /** Newest first. */
+  /** Newest first. Whole days only: today is not over, so it is never here (see completeFood). */
   food?: { day: string; kcal: number; protein_g?: number }[];
   /** Newest first. */
   weight?: { day: string; kg: number }[];
   /** Newest first: what the calorie target was moved from and to, by whom. */
   target_changes?: { at: string; from: number | null; to: number | null; source: string; card_id?: string | null }[];
   days_since_target_change?: number | null;
+  /** Weekdays with extra calories on top of targets.kcal (see fuelDays.ts). */
+  fuel_days?: FuelDay[] | null;
 }
 
 const PRO_TIERS = new Set(['monthly', 'annual', 'founding_lifetime', 'appsumo_lifetime']);
@@ -167,6 +171,18 @@ function dayBefore(iso: string, days: number): string {
 }
 
 /**
+ * Food on the whole days in the `days` before `asOf`, newest first. Today is
+ * left out: it is not over, and the app path asks at any hour, so today is
+ * usually half logged and reads as a crash diet. That also makes the app see
+ * the same days the Monday cron does. The facts functions end the window at
+ * yesterday too (0135); this holds even when a caller's rows do not.
+ */
+export function completeFood(diet: DietFacts, asOf: string, days: number): NonNullable<DietFacts['food']> {
+  const from = dayBefore(asOf, days);
+  return (diet.food ?? []).filter((r) => r.day >= from && r.day < asOf);
+}
+
+/**
  * The ugliness a good mean hides. Four reads of the raw series, each a general
  * coaching rule, each computed here so the validator does not have to trust
  * the model to have looked:
@@ -195,9 +211,16 @@ export function uglyChecks(facts: DronaFacts, diet: DietFacts): UglyChecks {
   const proteinTarget = n(diet.targets?.protein_g);
   const failed: string[] = [];
 
-  const food14 = (diet.food ?? []).filter((r) => r.day > dayBefore(asOf, 14));
+  const food14 = completeFood(diet, asOf, 14);
+  // The raw worst day, for the card and the validator's echo check. It is NOT
+  // fuel-adjusted on purpose: the blowout test below is.
   const worst = food14.length ? Math.max(...food14.map((r) => n(r.kcal) ?? 0)) : null;
-  if (worst != null && target != null && worst > target * BLOWOUT_SHARE) failed.push('blowout_day');
+  // Each day against its OWN target: a 2,600 kcal long-run Sunday on a 2,000
+  // base with +300 fuel is a day eaten to plan, not a blowout.
+  const fuel = normalizeFuelDays(diet.fuel_days);
+  const blowout = target != null && food14.some((r) =>
+    (n(r.kcal) ?? 0) > kcalOnDow(target, fuel, dowOfISO(r.day)) * BLOWOUT_SHARE);
+  if (blowout) failed.push('blowout_day');
 
   const w14 = (diet.weight ?? []).filter((p) => p.day > dayBefore(asOf, 14)).map((p) => n(p.kg)).filter((v): v is number => v != null);
   const range = w14.length >= 2 ? Math.round((Math.max(...w14) - Math.min(...w14)) * 10) / 10 : null;

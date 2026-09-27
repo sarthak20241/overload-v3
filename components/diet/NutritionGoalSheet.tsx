@@ -24,6 +24,7 @@ import {
 } from '@/lib/dietData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
+import { fuelDayText, type FuelDay } from '@/lib/fuelDays';
 
 interface Field { key: keyof NutritionTargets; label: string; unit: string; color: (c: any) => string; min: number; max: number }
 const FIELDS: Field[] = [
@@ -38,9 +39,12 @@ interface Props {
   initial: NutritionTargets;
   onClose: () => void;
   onSaved: (saved: NutritionTargets) => void;
+  /** The weekdays that get more on top of this goal. Shown as a door to FuelDaysSheet. */
+  fuelDays?: FuelDay[];
+  onOpenFuelDays?: () => void;
 }
 
-export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
+export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, onOpenFuelDays }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
@@ -241,6 +245,27 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved }: Props) {
                 {`Macros add up to ${sumKcal} kcal. ${driftNote}`}
               </Text>
             </View>
+
+            {/* This is the ordinary day. Harder days get more on top. */}
+            {onOpenFuelDays && (
+              <Pressable
+                onPress={onOpenFuelDays}
+                style={[s.fuelRow, { borderColor: C.borderSubtle }]}
+                accessibilityRole="button"
+                accessibilityLabel="Fuel days"
+              >
+                <Feather name="zap" size={13} color={C.accentText} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.fuelTitle, { color: C.foreground }]}>Fuel days</Text>
+                  <Text style={[s.fuelSub, { color: C.mutedFg }]} numberOfLines={1}>
+                    {fuelDays && fuelDays.length > 0
+                      ? fuelDays.map(fuelDayText).join(', ')
+                      : 'More food on long-run or leg days'}
+                  </Text>
+                </View>
+                <Feather name="chevron-right" size={15} color={C.textMuted} />
+              </Pressable>
+            )}
           </ScrollView>
 
           <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
@@ -272,6 +297,10 @@ const s = StyleSheet.create({
 
   summary: { paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
   summaryTxt: { fontSize: FontSize.sm, lineHeight: 18 },
+
+  fuelRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
+  fuelTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  fuelSub: { fontSize: FontSize.xs, marginTop: 1 },
 
   saveBtn: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary, borderRadius: Radius.md, paddingVertical: 14, marginTop: Spacing.lg },
   saveTxt: { fontSize: FontSize.base, color: Colors.primaryFg, fontWeight: FontWeight.bold },

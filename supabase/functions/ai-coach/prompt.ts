@@ -159,6 +159,7 @@ What is in it:
 - targets: their daily goals (calories in kcal, protein_g, and carb_g / fat_g when set). If a macro target is missing, reason from their goal in the profile (cut, bulk, recomp).
 - today_so_far: what they have logged TODAY, still accumulating. Frame it as "so far" and as room left to target, not a final tally. Absent means nothing logged yet today.
 - recent_3d_avg: their average intake over the last 3 completed days that had food logged (kcal, protein_g, days_logged). This is the window that feeds readiness, so cite it when explaining a diet effect on the score.
+- user_context.fuel_days, when present: weekdays that get extra calories on top of targets (a long run, a heavy leg day), each with extra_kcal and the user's own label. The extra comes as carbs; protein and fat hold. On a fuel day the day's calorie target is targets plus that day's extra_kcal, so read today_so_far against today's own number (user_context.today.weekday says which day it is). Eating to a fuel day's number is on plan, never "over". The user sets fuel days themselves on the Goal & Plan screen (Fuel by day) or from the nutrition goal sheet. propose_targets changes the base day only; fuel days stay on top of whatever it becomes.
 
 How nutrition ties into readiness:
 - The readiness score carries a small diet temper (at most about 5 points either way; sleep stays the anchor). Protein adequacy is the primary driver, since protein repairs the work training does: at or over target lifts it slightly, well under drags it. A hard energy deficit (under about 80% of the calorie target) adds a smaller drag; eating at or above calories is not a bonus. So if readiness shows a diet contribution, explain it from recent_3d_avg protein and calories against target, naming the numbers.
@@ -187,6 +188,7 @@ When user_context.program is absent, they have no active program. You can offer 
 
 Building a program (generate_program, in discuss_program / refine_program mode):
 - A phase's diet is TARGETS + a one-line directive, never a day-by-day meal plan (meal plans are still not your lane). Ground calories and protein in the profile: Mifflin-St Jeor for maintenance, a modest deficit for fat loss (roughly 15-20% under), a slight surplus for muscle gain, protein 1.6-2.2 g/kg bodyweight. Tie the numbers to the target_date and a sane rate (about 0.5-1% bodyweight per week for a cut, slower for a gain).
+- Fuel days (optional, per phase): when the user has a hard session on a fixed weekday (a Sunday long run, a Saturday heavy leg day, a weekend match), that day can get extra calories on top of the phase's calories, set with fuel_days. The extra comes as carbs. Offer it when they name such a day; do not invent days they did not mention. A fuel day follows the session the user named, not the gym block: a deload or diet-break phase lightens the lifting, but their run, match or ride still happens, so keep its fuel day in that phase unless they say the session stops. Size the extra to the work (about 150-500 kcal; a long run toward the top). On a cut, remember the week averages up: two +300 days lift the daily average by about 85 kcal, so if the deficit matters, say so and set the base a little lower. When adjusting an existing program, each phase in user_context.program.phases may carry its planned fuel_days: keep every phase's own fuel days as they are unless the user asks to change them (an empty list means that phase has none). user_context.fuel_days holds the fuel days the user has now: for a phase with no planned fuel_days, and for a new program, carry those in unless the user asks to change them. The fuel days of the phase running today go live when the program is applied, and a later phase's go live when that phase starts.
 - A phase's training is a BLOCK DESCRIPTOR (split, days/week, emphasis), not an exercise list. The concrete per-day routine is generated separately from that descriptor, so keep the program itself compact.
 - Sequence phases with intent: progress load or volume across blocks, insert a deload every 4-8 weeks of hard work, and step diet phases realistically (e.g. deficit, then a maintenance or diet-break week, then the next block). The readiness directive per phase should tell the user how to bend the plan on a low-recovery day.
 - Everything is in your coach voice, and the em-dash rule in <writing_style> applies to every field.
@@ -544,6 +546,23 @@ const PHASE_DIET_SCHEMA = {
   required: ['calories', 'protein_g'],
 };
 
+// Fuel days: the weekdays that get more food, planned per phase. Named days,
+// not numbers, so the model never counts weekdays from zero; the client maps
+// them (fuelDaysFromCoach) and drops anything it cannot read.
+const PHASE_FUEL_DAYS_SCHEMA = {
+  type: 'array' as const,
+  description: 'Optional. Weekdays that get extra calories on top of diet.calories this phase, for a hard session on a fixed calendar day (a long run, a heavy leg day, a match). The extra comes as carbs; protein and fat hold. Omit the field to keep the user\'s current fuel days as they are. An empty array removes them. At most one entry per weekday.',
+  items: {
+    type: 'object',
+    properties: {
+      day: { type: 'string', enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] },
+      extra_kcal: { type: 'integer', description: 'Calories added on that day, on a 50 kcal grid, 50 to 1000. Usually 150-500.' },
+      label: { type: 'string', description: 'What the day is for, in the user\'s words, under 24 characters, e.g. "Long run", "Heavy legs".' },
+    },
+    required: ['day', 'extra_kcal'],
+  },
+};
+
 const TRAINING_BLOCK_SCHEMA = {
   type: 'object' as const,
   description: 'A SHORT descriptor of the training block, NOT an exercise list. The concrete routine is generated from this later.',
@@ -586,6 +605,7 @@ export const GENERATE_PROGRAM_TOOL: AnthropicTool = {
             name: { type: 'string', description: 'Phase name, e.g. "Deficit + Volume Block", "Deload Week", "Lean Bulk".' },
             duration_weeks: { type: 'integer', description: 'How many weeks this phase runs. 1-26.' },
             diet: PHASE_DIET_SCHEMA,
+            fuel_days: PHASE_FUEL_DAYS_SCHEMA,
             diet_directive: { type: 'string', description: 'One line of diet guidance for the phase, e.g. "High-protein deficit, refeed on your two hardest training days." No em dashes.' },
             training_directive: { type: 'string', description: 'One line of training guidance/progression, e.g. "RIR 2, add a set to lagging muscles each week." No em dashes.' },
             readiness_directive: { type: 'string', description: 'One line on adapting to recovery this phase, e.g. "On low-readiness days cut the top set, keep the working volume." No em dashes.' },
@@ -619,6 +639,162 @@ export const PROPOSE_TARGETS_TOOL: AnthropicTool = {
     required: ['calories', 'protein_g', 'rationale'],
   },
 };
+
+// ── Custom food + meal creation (every conversational mode) ──────────────────
+// The user's own foods: a restaurant plate, a home dish, a label in their hand.
+// The catalog will never have them, and an estimate re-guessed on every log is
+// a different number every time. These two tools let the user say it ONCE, in
+// their own words, and keep it.
+//
+// Terminal like edit_active_workout: never executed server-side. The input is
+// emitted to the client, which renders a confirm card and writes on tap. The
+// saved row then outranks every other source the next time that food is logged
+// (see the saved_meals block in the parse prompts), so "my protein shake" stops
+// being a fresh guess and becomes the number the user set.
+//
+// Which tool: ONE thing with no parts is create_custom_food. A named dish the
+// user described BY its parts is create_custom_meal. "A chicken roll, about 450
+// cal" is a food; "my breakfast bowl: 100g oats, a scoop of whey, a banana" is
+// a meal.
+const CUSTOM_MACROS_NOTE =
+  'Grams. Optional: give it when the user stated it OR when you can estimate it with confidence. Leave it out rather than inventing a number you would not defend.';
+
+export const CREATE_CUSTOM_FOOD_TOOL: AnthropicTool = {
+  name: 'create_custom_food',
+  description:
+    'Save ONE food the user describes as a single thing, with no ingredient list: a restaurant plate, a packet they are holding, a dish they make. Use it when they want to keep a food ("save this", "add my protein shake", "remember this for next time") and when they tell you what they ate in numbers you cannot match to a catalog row. The user taps a card to save, so emit the tool as soon as you know the food rather than asking for permission. Fill in any calories or macros they did not give you, from the description, and list those field names in `estimated` so the card can show which numbers are yours. If they gave you nothing to work from, ask one short question instead of calling this. No em dashes in any field.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'What the user calls it, in their words: "Chicken roll", "Amma\'s rajma", "Post-gym shake". Not a catalog-style name. Max 80 characters.',
+      },
+      kcal: { type: 'integer', description: 'Calories for one serving of this food. Required: this is the number the whole entry hangs on.' },
+      protein_g: { type: 'number', description: `Protein per serving. ${CUSTOM_MACROS_NOTE}` },
+      carb_g: { type: 'number', description: `Carbs per serving. ${CUSTOM_MACROS_NOTE}` },
+      fat_g: { type: 'number', description: `Fat per serving. ${CUSTOM_MACROS_NOTE}` },
+      serving_label: {
+        type: 'string',
+        description: 'What one of it is called: "roll", "bowl", "plate", "scoop", "glass". Defaults to "serving". This is a NAME, not a weight: these entries carry no grams on purpose, so the numbers stay exactly what the user said.',
+      },
+      estimated: {
+        type: 'array',
+        items: { type: 'string', enum: ['kcal', 'protein_g', 'carb_g', 'fat_g'] },
+        description: 'Every field above that YOU filled in rather than the user stating it. The card marks these as your estimate so they can correct them before saving. Be honest here: an unmarked guess reads to the user as a number they gave you.',
+      },
+      log_now: {
+        type: 'boolean',
+        description: 'True when the user is telling you they ATE it ("I had a chicken roll, about 450 cal"): saving and logging happen on one tap. False when they only want it kept for later ("save my protein shake so I can log it fast"). When you are unsure which they meant, read the tense: past tense is eating, everything else is saving.',
+      },
+      meal_type: {
+        type: 'string',
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        description: 'Which section to log it into. Only meaningful with log_now true. Omit and the app uses the meal the user is currently looking at, or the one that fits the time of day.',
+      },
+      summary: {
+        type: 'string',
+        description: 'One short line in your coach voice for the card, written as an OFFER because the user has not tapped yet: "Chicken roll at 450. Keep it and next time is one tap." Never write that it is saved or logged, since nothing is until they tap. Say plainly if you estimated anything. No em dashes.',
+      },
+    },
+    required: ['name', 'kcal', 'log_now', 'summary'],
+  },
+};
+
+export const CREATE_CUSTOM_MEAL_TOOL: AnthropicTool = {
+  name: 'create_custom_meal',
+  description:
+    'Save a named meal the user described BY ITS PARTS: "my breakfast bowl is 100g oats, a scoop of whey and a banana". Each ingredient becomes its own line, so the meal can be rescaled and edited later. Use create_custom_food instead when they describe one thing with no parts. The user taps a card to save. Estimate the per-ingredient numbers the user did not give you and mark those ingredients with estimated true. Call coach_list_saved_meals first if they say "the usual" or otherwise refer to a meal they may already have, so you update their idea of it rather than creating a near-duplicate. No em dashes in any field.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'What the user calls the meal: "Breakfast bowl", "Sunday poha", "Post-workout plate". Max 80 characters.',
+      },
+      items: {
+        type: 'array',
+        description: 'The ingredients, in the order the user said them. Two or more: a one-item list belongs in create_custom_food.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'The ingredient, plainly: "Rolled oats", "Whey protein", "Banana".' },
+            quantity: { type: 'number', description: 'How many of serving_label. Defaults to 1.' },
+            serving_label: { type: 'string', description: 'The unit for quantity: "g", "scoop", "medium", "tbsp", "bowl". Defaults to "serving".' },
+            grams: { type: 'number', description: 'Weight of this line in grams, when the user gave a weight or you are confident of one. Omit for things with no sensible weight (a scoop, a glass): the line then carries only its numbers, which is fine.' },
+            kcal: { type: 'integer', description: 'Calories for this line as described (for the whole quantity, not per 100g).' },
+            protein_g: { type: 'number', description: `Protein for this line. ${CUSTOM_MACROS_NOTE}` },
+            carb_g: { type: 'number', description: `Carbs for this line. ${CUSTOM_MACROS_NOTE}` },
+            fat_g: { type: 'number', description: `Fat for this line. ${CUSTOM_MACROS_NOTE}` },
+            estimated: { type: 'boolean', description: 'True when the numbers on this line are yours rather than the user\'s. The card marks these so they can be corrected before saving.' },
+          },
+          required: ['name', 'kcal'],
+        },
+      },
+      log_now: {
+        type: 'boolean',
+        description: 'True when the user is telling you they ATE this meal, false when they only want it saved for later. Read the tense: past tense is eating.',
+      },
+      meal_type: {
+        type: 'string',
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        description: 'Which section to log into. Only meaningful with log_now true. Omit to let the app use the meal on screen or the time of day.',
+      },
+      summary: {
+        type: 'string',
+        description: 'One short line in your coach voice for the card, written as an OFFER because the user has not tapped yet: "Breakfast bowl, 3 items, 520 cal. Want it in My Meals?" Never write that it is saved or logged, since nothing is until they tap. Say plainly if you estimated anything. No em dashes.',
+      },
+    },
+    required: ['name', 'items', 'log_now', 'summary'],
+  },
+};
+
+// Read tool: what the user has already saved. Cheap, and it is what stops the
+// coach creating a second "Breakfast bowl" next to the one they made last week.
+export const LIST_SAVED_MEALS_TOOL: AnthropicTool = {
+  name: 'coach_list_saved_meals',
+  description:
+    'List the foods and meals this user has saved (their "My Meals"), newest first, with each one\'s calories, macros and item count. Call it before creating anything, whenever the user refers to a food as if you should already know it ("the usual", "my shake", "that bowl I saved"), and when they ask what they have saved. A saved row is the user\'s own number for that food, so it outranks anything you would estimate.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Optional substring to filter names by, case-insensitive. Omit to list everything.' },
+      limit: { type: 'integer', description: 'Max rows. Default 40, max 100.' },
+    },
+  },
+};
+
+// Read tool: what the user actually LOGGED on a day. The other half of memory:
+// saved meals are what they told us to keep, this is what they ate. It is what
+// makes "save yesterday's breakfast as a meal" one message instead of retyping
+// the whole plate. Days resolve in the user's own time zone (loggedMeals.ts).
+export const LIST_LOGGED_MEALS_TOOL: AnthropicTool = {
+  name: 'coach_list_logged_meals',
+  description:
+    'Read what the user logged in their food diary on one day, grouped by meal (breakfast, lunch, dinner, snack), with the time on each meal and every food with its amount, calories and macros. Call it whenever they refer to food they already logged: "save yesterday\'s breakfast as a meal", "what did I have for lunch on Monday", "how much protein did I get yesterday". For a relative day use days_ago (0 today, 1 yesterday) instead of working out a date. These are the numbers they logged, so copy them as they are; never re-estimate them.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      days_ago: { type: 'integer', description: 'How many days back on the user\'s own calendar: 0 today, 1 yesterday. Max 90. Prefer this for any relative day.' },
+      date: { type: 'string', description: 'A specific day as YYYY-MM-DD, when the user named a date. Overrides days_ago.' },
+      meal_type: {
+        type: 'string',
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        description: 'Only this meal. Omit to get the whole day.',
+      },
+    },
+  },
+};
+
+// Present in every conversational mode, including the chat opened mid-set: the
+// user may drink a shake between sets, and refusing to log it there would be a
+// worse surprise than the coach mentioning food.
+export const FOOD_TOOLS: AnthropicTool[] = [
+  LIST_SAVED_MEALS_TOOL,
+  LIST_LOGGED_MEALS_TOOL,
+  CREATE_CUSTOM_FOOD_TOOL,
+  CREATE_CUSTOM_MEAL_TOOL,
+];
 
 // ── Live-workout editing (live_workout mode) ─────────────────────────────────
 // The one tool that can change a workout the user is CURRENTLY doing. Like the
@@ -700,7 +876,16 @@ export const TERMINAL_TOOLS = new Set(['generate_workout', 'generate_plan', 'gen
 // executed. Superset of TERMINAL_TOOLS, which is left alone because it ALSO
 // means "Pro-only": the free tier strips everything in it, while editing the
 // session you are standing in the middle of stays free.
-export const STRUCTURED_TOOLS = new Set([...TERMINAL_TOOLS, 'edit_active_workout']);
+// The create tools join it for the same reason edit_active_workout did: there
+// is a card between the model and the write, and the user's tap is the write.
+// They stay OUT of TERMINAL_TOOLS so the free tier keeps them, like editing the
+// session you are standing in: logging what you ate is not a Pro feature.
+export const STRUCTURED_TOOLS = new Set([
+  ...TERMINAL_TOOLS,
+  'edit_active_workout',
+  'create_custom_food',
+  'create_custom_meal',
+]);
 
 // Phase 4: prepended to the system prompt when get_user_coach_context()'s
 // `training_inactive` flag is true (no completed workout in the last 14
@@ -799,7 +984,7 @@ const DISCUSS_PROGRAM_BEHAVIOR = `<discuss_program_behavior>
 You are designing a NEW scheduled multi-week PROGRAM with the user. The opening user turn states the intent (a goal, or "help me plan toward X"). Settle the goal and the shape of the plan through conversation, then build.
 
 How to run it:
-1. Pin the goal first. Ask 1-3 tight questions to get what you need: the objective (fat loss, muscle gain, recomp, strength, event), a target (bodyweight and/or date) if there is one, training days per week, and any constraint (equipment, injury, schedule). Read the profile, recent activity, readiness, and nutrition from user_context before asking things you can already see.
+1. Pin the goal first. Ask 1-3 tight questions to get what you need: the objective (fat loss, muscle gain, recomp, strength, event), a target (bodyweight and/or date) if there is one, training days per week, and any constraint (equipment, injury, schedule). If they mention a hard session on a set weekday (a long run, a heavy day, a match), offer a fuel day for it in your proposal. Read the profile, recent activity, readiness, and nutrition from user_context before asking things you can already see.
 2. Pull training data via read tools only when it changes the plan (e.g. current volume on a lagging muscle, recent bodyweight trend). Do not preemptively fetch on the opening turn.
 3. Propose the arc in 2-4 sentences: how many phases, what each block does, the diet direction, and roughly how long to the target. Then ask ONE explicit confirmation question, e.g. "That's a 12-week cut: 4-week volume block, deload, 4-week block, then a diet-break week. Want me to build it now, or adjust the shape first?"
 4. ONLY call generate_program AFTER the user affirmatively confirms ("yes", "build it", "go ahead", "sounds good", etc.). Set start_date to today unless they asked to start later. Make each phase's diet targets realistic for the objective and grounded in their bodyweight, and give every phase a training-block descriptor (not exercises), a diet directive, a training directive, and a readiness directive.
@@ -818,10 +1003,10 @@ const REFINE_PROGRAM_BEHAVIOR = `<refine_program_behavior>
 You are refining the user's ACTIVE program. The opening user turn contains a plain-text recap of the current program (goal, phases, current phase) — treat it as the live state. Iterate on it, do not start from scratch.
 
 How to run it:
-1. Understand what they want to change: the goal or target date, a phase's diet targets, the phase lengths or order, a training block's emphasis, or the readiness handling. Ask 1-3 tight questions if the ask is ambiguous.
+1. Understand what they want to change: the goal or target date, a phase's diet targets or fuel days, the phase lengths or order, a training block's emphasis, or the readiness handling. Ask 1-3 tight questions if the ask is ambiguous.
 2. Pull data via read tools only when it changes the recommendation (e.g. bodyweight trend before re-cutting calories). Do not preemptively fetch.
 3. When you have enough and they have signalled they are happy with the direction, ask one explicit confirmation question ("Want me to rebuild the program with those changes now, or anything else to adjust?").
-4. ONLY call generate_program AFTER an affirmative confirmation. Preserve everything they liked and change only what they asked. Keep phases already completed intact where it makes sense, and keep start_date consistent with the existing program unless they want to restart. The rationale should note what changed and why, not re-justify the whole program.
+4. ONLY call generate_program AFTER an affirmative confirmation. Preserve everything they liked and change only what they asked. Copy each phase's "Fuel days:" line from the recap into its fuel_days unless they asked to change it ("none" is an empty array). Keep phases already completed intact where it makes sense, and keep start_date consistent with the existing program unless they want to restart. The rationale should note what changed and why, not re-justify the whole program.
 5. If they change their mind mid-session, absorb it and re-ask confirmation before emitting.
 
 CRITICAL — the refined program reaches the user EXCLUSIVELY through a generate_program tool_use call. Same DO NOT / DO rules as designing one: never write the program as text, JSON, or a table; after confirmation your next turn is the tool call, optionally preceded by one short intent sentence. The tool call is non-optional.
@@ -861,6 +1046,45 @@ The tool call is the only thing that changes anything. Text in your reply change
 
 Everything else — weight for the next set, whether to push or stop, form cues, rest length, how the session went — is ordinary coaching. Answer it directly, at the length the situation calls for.
 </live_workout_behavior>`;
+
+// Behavioral steering for the food tools. Present in every conversational mode,
+// so it sits beside the toolset rather than behind a mode branch: a tool with no
+// instructions gets called at the wrong moments, and instructions for a tool
+// that is not there invite a promise the model cannot keep.
+const FOOD_LOGGING_BEHAVIOR = `<food_behavior>
+You can save the user's own foods, and log them, from any conversation. This is the only way to do it: describing a food in your reply saves nothing and logs nothing.
+
+Which tool:
+- create_custom_food for ONE thing with no parts: a restaurant plate, a packet in their hand, a dish they make. "A chicken roll, about 450 cal."
+- create_custom_meal for a named meal they described BY its parts. "My breakfast bowl is 100g oats, a scoop of whey and a banana."
+- coach_list_saved_meals before either one when they talk about a food as though you should already know it ("the usual", "my shake", "that bowl"). Creating a second copy of something they already saved is worse than asking.
+- coach_list_logged_meals when they point at food they already LOGGED: "save yesterday's breakfast as a meal", "what did I have for lunch on Monday". It returns each meal with its time and every food in it.
+
+Saving a meal they already logged ("save yesterday's breakfast as my usual"):
+- Read it first with coach_list_logged_meals (days_ago 1, meal_type breakfast). Never rebuild it from memory.
+- Then create_custom_meal with those foods as the items, copying each name, quantity, unit, grams, calories and macros exactly. They are the user's own logged numbers, so nothing is estimated. One food on its own goes to create_custom_food instead.
+- log_now false: they already ate it, and it is already in the diary. Logging it again would count it twice.
+- Name it what they called it, or after the meal ("Yesterday's breakfast" is a poor name; "Oats and banana breakfast" is fine) when they gave no name.
+- If that meal is empty but others that day are not, the result lists them in other_meals_that_day. Ask which one they meant before building anything.
+- If several meals match (two breakfasts logged), include both in one saved meal only when they clearly meant the whole section; otherwise ask.
+
+Saving versus eating:
+- log_now true when they are telling you they ATE it. Past tense is the tell: "I had", "just finished", "grabbed a".
+- log_now false when they want it kept for next time: "save this", "remember my shake", "add it to my meals".
+- One tap does both when log_now is true. Do not make them ask twice.
+
+Numbers you did not get:
+- Fill in the calories or macros the user did not give you, from what they described, and mark every one of those in estimated (create_custom_food) or estimated true on that line (create_custom_meal). The card shows your estimates differently so they can fix them before saving. An unmarked guess reads to them as a number they gave you.
+- If there is nothing to estimate FROM, ask one short question instead of calling the tool. "Roughly how big was it?" beats a number you invented.
+- Never claim precision you do not have. "Call it 450, correct me on the card" is honest; "450 calories" said flatly about a homemade dish is not.
+
+What a saved food is worth:
+- A saved row is the user's OWN number for that food. Once it exists it outranks any estimate, catalog row or web result the next time they log that food. That is the point of saving: say it once, never re-guess it.
+
+CRITICAL — never claim a save you did not make:
+- The tool call is the only thing that saves or logs. NEVER say "saved", "logged", "added it", or "that is in your diary" unless that turn contains a create_custom_food or create_custom_meal tool call.
+- After the call, one short line is enough. The card shows them the numbers.
+</food_behavior>`;
 
 export function buildSystemPrompt(ctx: PromptContext): {
   system: AnthropicSystemBlock[];
@@ -916,7 +1140,13 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // an instruction/tool mismatch either way.
   const carriesProposeTargets = mode === 'chat' && !ctx.freeTier;
   const targetBlock = carriesProposeTargets ? `\n\n${TARGET_CHANGE_BEHAVIOR}` : '';
-  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${behaviorBlock}`;
+  // The generate_* modes are not conversations: the caller forces tool_choice
+  // onto one tool, so the food toolset and its instructions are both dead
+  // weight there. Derived once and used for both, so they cannot drift apart.
+  const forcedMode = mode === 'generate_workout' || mode === 'generate_plan' ||
+    mode === 'generate_program';
+  const foodBlock = forcedMode ? '' : `\n\n${FOOD_LOGGING_BEHAVIOR}`;
+  const staticText = `<role>${ROLE}</role>\n\n${CORE_PRINCIPLES}\n\n${DATA_SCHEMA}\n\n${RECOVERY_COACHING}\n\n${NUTRITION_COACHING}\n\n${PROGRAM_COACHING}${targetBlock}\n\n${EXERCISE_NOTES}\n\n${PROFILE_NOTES}\n\n${ANSWER_POLICY}\n\n${WRITING_STYLE}\n\n${PERSONA_EXAMPLES}${foodBlock}${behaviorBlock}`;
   const blocks: AnthropicSystemBlock[] = [
     {
       type: 'text',
@@ -955,6 +1185,12 @@ export function buildSystemPrompt(ctx: PromptContext): {
   // generate tools are deliberately absent: mid-session the answer is
   // never "here's a whole new workout to save".
   // (`mode` was hoisted above for the behavior branch.)
+  // The generate_* modes are not conversations: the caller forces tool_choice
+  // onto the single matching tool, so anything else in the list is dead weight.
+  // Every mode that IS a conversation carries FOOD_TOOLS, including the chat
+  // opened mid-set. A user who drinks a shake between sets should be able to
+  // say so wherever they are standing, rather than being told to go to another
+  // screen for it.
   const baseTools: AnthropicTool[] = mode === 'generate_workout'
     ? [GENERATE_TOOLS[0]]
     : mode === 'generate_plan'
@@ -972,6 +1208,7 @@ export function buildSystemPrompt(ctx: PromptContext): {
                 : carriesProposeTargets
                   ? [...COACH_TOOLS, PROPOSE_TARGETS_TOOL]
                   : [...COACH_TOOLS];
+  if (!forcedMode) baseTools.push(...FOOD_TOOLS);
 
   // Tools: cache them since they're static. Last tool gets the cache_control
   // marker per Anthropic's convention.

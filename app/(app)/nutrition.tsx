@@ -30,9 +30,12 @@ import {
 import { MacroRing } from '@/components/ui/MacroRing';
 import { MacroBar } from '@/components/diet/MacroBar';
 import { ParsedMealCard, type ParseCardState } from '@/components/diet/ParsedMealCard';
+import { DayLoadFailed, DaySummaryLoading, MealRowsLoading } from '@/components/diet/DayLoading';
 import { ParsedItemEditor } from '@/components/diet/ParsedItemEditor';
 import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
+import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
+import { fuelOn } from '@/lib/fuelDays';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
@@ -45,9 +48,17 @@ import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
   parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
-  loadNutritionRange, dateFromYmd,
+  loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
+import {
+  applyCoachFoodCreate,
+  parseCoachFoodCreate,
+  type CoachFoodCreate,
+  type CoachFoodCreateResult,
+} from '@/lib/coachFoodCreate';
+import { FoodCreateCard } from '@/components/ai/FoodCreateCard';
+import { haptics } from '@/lib/haptics';
 import {
   getAutoLog, setAutoLog, newAutoLogClientId, addPending, removePending, touchPending,
   reconcilePending, markAddedByDrona, addedByDronaRef, forgetAddedByDrona,
@@ -67,7 +78,9 @@ type ParseFlow =
   | { status: 'idle' }
   // `auto`: this parse was sent in "Just log it" mode, so the card says
   // "adding" rather than "reading" while it waits.
-  | { status: 'analysing'; raw: string; auto?: boolean }
+  // `statusLabel`: a multi-step message, and what Drona is doing for it now
+  // ("Checking yesterday's breakfast"). Sent by the food agent only.
+  | { status: 'analysing'; raw: string; auto?: boolean; statusLabel?: string }
   // Fast mode only: the names are known and the numbers are still settling, so
   // the card shows real rows with shimmering figures instead of a spinner.
   // Named rows arrive ~1.2s ahead of the finished parse; this is that window.
@@ -102,7 +115,43 @@ type ParseFlow =
   | {
       status: 'error'; raw: string; message: string; meal?: ParsedMeal; mealType?: MealType;
       clientId?: string; logDate?: string;
+    }
+  // The user asked to SAVE a food or meal, and Drona drafted it. Nothing is
+  // written until the card is tapped; `result` is what came back from that tap.
+  | {
+      status: 'create'; raw: string; create: CoachFoodCreate;
+      result: CoachFoodCreateResult | null; busy: boolean;
     };
+
+/** The "use your saved meal?" offer for a reviewed card, or null. The FIRST
+ *  suggestion whose line is still on the card wins; the proposal is the whole
+ *  card with that one line replaced by the saved meal's own rows, which is the
+ *  shape onAcceptProposal already applies. Any failure is just no offer. */
+async function savedMealOffer(
+  supabase: Parameters<typeof listSavedMeals>[0],
+  items: ParsedMealItem[],
+  suggestions: { food_name: string; saved_id: string; saved_name: string }[],
+): Promise<{ notice: string; proposal: { items: ParsedMealItem[]; note: string } } | null> {
+  if (suggestions.length === 0) return null;
+  try {
+    const saved = await listSavedMeals(supabase);
+    const key = (n: string) => n.trim().toLowerCase();
+    for (const sug of suggestions) {
+      const meal = saved.find((m) => m.id === sug.saved_id);
+      const at = items.findIndex((it) => key(it.food_name) === key(sug.food_name));
+      if (!meal || at < 0) continue;
+      const swapped = savedMealAsItems(meal, items[at].meal_type);
+      const kcal = Math.round(swapped.reduce((a, it) => a + it.kcal, 0));
+      return {
+        notice: `You have ${meal.name} saved, ${kcal} kcal with your own numbers. Want that instead of ${items[at].food_name}?`,
+        proposal: { items: [...items.slice(0, at), ...swapped, ...items.slice(at + 1)], note: 'Use my saved meal' },
+      };
+    }
+  } catch {
+    // No offer. The card is right as it is.
+  }
+  return null;
+}
 
 const fmtK = (n: number) => Math.round(n).toLocaleString();
 const calCaption = (eaten: number, goal: number) =>
@@ -173,7 +222,20 @@ export default function NutritionScreen() {
   const weekStartIso = ymd(weekStart);
   const weekDays = Array.from({ length: 7 }, (_, i) =>
     new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
-  const { byMeal, totals, totalsDayIso, reload } = useDayNutrition(viewIso);
+  const { byMeal, totals, totalsDayIso, loading, failedDayIso, reload } = useDayNutrition(viewIso);
+  // The numbers on screen belong to `totalsDayIso`. On a day switch that lags
+  // `viewIso` by a fetch, and the old day's ring, macros and food sat under the
+  // new day's header for a second or two. Shimmer until they agree: a stale
+  // number is a wrong number, and an empty ring would be a wrong claim too.
+  // A failed fetch never catches totalsDayIso up, so "waiting for it" alone
+  // would shimmer forever. A failure for THIS day gets a Retry instead, and
+  // still never the old day's numbers.
+  const dayFailed = failedDayIso === viewIso && totalsDayIso !== viewIso;
+  const dayLoading = !dayFailed && (loading || totalsDayIso !== viewIso);
+  const dayUnknown = dayLoading || dayFailed;
+  // The rest of this week, loaded in the background only once the day on
+  // screen has landed, so it never competes with it.
+  usePrefetchWeek(weekStartIso, !dayUnknown);
   const supabase = useSupabaseClient();
   const { isSignedIn } = useClerkUser();
   const { kbHeight } = useKeyboardAwareScroll();
@@ -247,7 +309,16 @@ export default function NutritionScreen() {
   }, []);
   const [adding, setAdding] = useState(false);
   const [editEntry, setEditEntry] = useState<LoggedEntry | null>(null);
-  const { targets, isCustom, apply: applyTargets } = useNutritionTargets();
+  // `baseTargets` is an ordinary day. The viewed day may be a fuel day (a long
+  // run, a leg day) with more on top, so the ring, bars and Drona line all
+  // read `targets`, the viewed day's own numbers.
+  const {
+    targets: baseTargets, isCustom, apply: applyTargets,
+    fuelDays, applyFuelDays, targetsOn,
+  } = useNutritionTargets();
+  const targets = targetsOn(viewDate);
+  const viewFuel = fuelOn(fuelDays, viewDate.getDay());
+  const [fuelOpen, setFuelOpen] = useState(false);
   // Real logging streak (consecutive days with a meal). Pass today's kcal so the
   // first log of the day bumps it immediately, not just on the next screen focus.
   const streak = useNutritionStreak(totals.kcal);
@@ -392,6 +463,8 @@ export default function NutritionScreen() {
   // before the refetch lands, so keying on viewIso would stamp the previous
   // day's kcal onto the newly selected day's ring until the fetch resolved.
   useEffect(() => {
+    // '' means the numbers belong to no day yet (first load, nothing cached).
+    if (!totalsDayIso) return;
     livePatch.current = { day: totalsDayIso, kcal: totals.kcal };
     setWeekKcal((prev) => (
       prev[totalsDayIso] === totals.kcal ? prev : { ...prev, [totalsDayIso]: totals.kcal }
@@ -471,6 +544,8 @@ export default function NutritionScreen() {
       previous: pending,
       turns,
       autoLog: auto,
+      // The food bar can draw a save card, so it asks for creates.
+      canCreate: true,
     };
     // Streaming is only worth it on a first-shot log: a correction needs the
     // full pipeline anyway, and parseMealStreaming falls back on its own, but
@@ -490,8 +565,12 @@ export default function NutritionScreen() {
       is_correction: !!pending,
       chars: t.length,
     });
+    // A Quick follow-up still says it is Quick. The correction itself runs the
+    // full pipeline either way, but a fresh re-parse it triggers ("not from
+    // saved meals") has to come back in the tier the user picked.
+    const followUpSpeed = precise ? { speed: 'super' as const } : pending && tier === 'quick' ? { speed: 'fast' as const } : {};
     const res = pending || tier !== 'quick'
-      ? await parseMeal(supabase, { ...args, ...(precise ? { speed: 'super' as const } : {}) })
+      ? await parseMeal(supabase, { ...args, ...followUpSpeed })
       : await parseMealStreaming(supabase, args, (rows) => {
         // A stream that resolves after the user has moved on must not repaint
         // the card they are now looking at.
@@ -499,7 +578,10 @@ export default function NutritionScreen() {
         setFlow((cur) => (
           cur.status === 'analysing' && cur.raw === t ? { status: 'streaming', raw: t, rows, auto: cur.auto } : cur
         ));
-      }, ac.signal);
+      }, ac.signal, (label) => {
+        if (parseTokenRef.current !== token) return;
+        setFlow((cur) => (cur.status === 'analysing' && cur.raw === t ? { ...cur, statusLabel: label } : cur));
+      });
     // From here on we are writing to the card. If another parse has started, or
     // the user discarded this one, this result is stale - drop it whole rather
     // than let any branch below (declined, cap, error, review) speak for a
@@ -560,6 +642,27 @@ export default function NutritionScreen() {
         status: 'error', raw: t, message: res.message,
         ...(auto ? { clientId: auto.clientId, logDate: auto.logDate } : {}),
       });
+      return;
+    }
+    // Drona drafted a food or meal the user asked to save. Normalized with the
+    // same function the chat uses, so a draft that cannot be acted on (no
+    // calories, no items) becomes a plain reply instead of a card with a dead
+    // button.
+    if (res.kind === 'create') {
+      const create = parseCoachFoodCreate(res.tool, res.input);
+      if (!create) {
+        setFlow({ status: 'declined', raw: t, message: 'I could not put that one together. Give me the name and the calories and I will save it.' });
+        return;
+      }
+      track('drona_food_create_proposed', {
+        kind: create.kind,
+        item_count: create.lines.length,
+        kcal: create.totals.kcal,
+        log_now: create.logNow,
+        estimated: create.estimated.length > 0 || create.lines.some((l) => l.estimated),
+      });
+      pushTurn('drona', create.summary || `Save ${create.name}?`);
+      setFlow({ status: 'create', raw: t, create, result: null, busy: false });
       return;
     }
     pushTurn('drona', res.meal.drona_line);
@@ -647,7 +750,19 @@ export default function NutritionScreen() {
             mealTypePicked: prevReview?.mealTypePicked,
           };
         })();
-    setFlow(skippedNotice ? { ...reviewFlow, notice: skippedNotice } : reviewFlow);
+    // A food that is only PART of a saved meal was searched as asked ("oats",
+    // saved "Oats with milk"). Offer the saved meal as a choice, never a swap:
+    // the numbers on the card do not change unless the user taps. Loaded
+    // BEFORE the card is set, so the card appears once, whole (I15 below).
+    const offer = !skippedNotice && reviewFlow.status === 'review'
+      ? await savedMealOffer(supabase, reviewFlow.meal.items, res.savedSuggestions ?? [])
+      : null;
+    if (parseTokenRef.current !== token) return;
+    setFlow(
+      skippedNotice ? { ...reviewFlow, notice: skippedNotice }
+      : offer && reviewFlow.status === 'review' ? { ...reviewFlow, notice: offer.notice, proposal: offer.proposal }
+      : reviewFlow,
+    );
     // I15: NOTHING fires after this point. The card the user is reading is the
     // card they will log. The automatic web refine that used to run here swapped
     // numbers in while Add was already live, so a user could tap Add on 180 kcal
@@ -944,6 +1059,24 @@ export default function NutritionScreen() {
     }
   }, [flow, runParse]);
 
+  // Save the food or meal Drona drafted, and log it too when the user said they
+  // ate it. Guarded against a double tap, which would put a duplicate in My
+  // Meals. Logs to the day on screen, same as every other add from this box.
+  const onApplyCreate = useCallback(async () => {
+    if (flow.status !== 'create' || flow.busy || flow.result || !supabase) return;
+    const { create } = flow;
+    setFlow({ ...flow, busy: true });
+    const res = await applyCoachFoodCreate(supabase, create, mealForNow(), viewDate);
+    track('drona_food_create_applied', { kind: create.kind, logged: res.logged, ok: !res.error });
+    setFlow((cur) => (cur.status === 'create' && cur.create === create ? { ...cur, busy: false, result: res } : cur));
+    if (res.savedMealId) {
+      if (res.logged) reload();
+      haptics.success();
+    } else {
+      haptics.warning();
+    }
+  }, [flow, supabase, viewDate, reload]);
+
   const onDismiss = useCallback(() => {
     track('parse_proposal_rejected', {
       flow_status: flow.status,
@@ -1043,7 +1176,7 @@ export default function NutritionScreen() {
             const iso = ymd(d);
             const selected = iso === viewIso;
             const future = iso > todayIso;
-            const pct = Math.min((weekKcal[iso] ?? 0) / (targets.kcal || 1), 1);
+            const pct = Math.min((weekKcal[iso] ?? 0) / (targetsOn(d).kcal || 1), 1);
             const R = 16, CIRC = 2 * Math.PI * R;
             return (
               <Pressable
@@ -1093,6 +1226,7 @@ export default function NutritionScreen() {
             <Feather name="sliders" size={12} color={isCustom ? C.textDim : C.accentText} />
             <Text style={[s.goalBtnTxt, { color: isCustom ? C.textDim : C.accentText }]}>{isCustom ? 'Goal' : 'Set goal'}</Text>
           </Pressable>
+          {dayFailed ? <DayLoadFailed onRetry={reload} /> : dayLoading ? <DaySummaryLoading /> : (
           <View style={s.summaryRow}>
             <MacroRing
               value={eaten.kcal} target={targets.kcal} color={C.macro.calories} valueColor={C.macro.calories}
@@ -1100,18 +1234,37 @@ export default function NutritionScreen() {
             />
             <View style={s.macroRailSide}>
               <Text style={s.kcalLine}>{calCaption(eaten.kcal, targets.kcal)}</Text>
+              {viewFuel && (
+                <Pressable
+                  onPress={() => setFuelOpen(true)}
+                  hitSlop={6}
+                  style={s.fuelTag}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${viewFuel.label ?? 'Fuel'} day, ${viewFuel.kcal} extra calories. Edit fuel days`}
+                >
+                  <Feather name="zap" size={10} color={C.accentText} />
+                  <Text style={[s.fuelTagTxt, { color: C.accentText }]} numberOfLines={1}>
+                    {`${viewFuel.label ?? 'Fuel'} day · +${viewFuel.kcal}`}
+                  </Text>
+                </Pressable>
+              )}
               <MacroBar label="P" name="Protein" value={eaten.protein} target={targets.protein} color={C.macro.protein} delayMs={0} valueMinWidth={52} />
               <MacroBar label="C" name="Carbs" value={eaten.carb} target={targets.carb} color={C.macro.carbs} delayMs={70} valueMinWidth={52} />
               <MacroBar label="F" name="Fat" value={eaten.fat} target={targets.fat} color={C.macro.fat} delayMs={140} valueMinWidth={52} />
             </View>
           </View>
+          )}
         </View>
 
-        {/* Drona line */}
-        <View style={s.drona}>
-          <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
-          <Text style={s.dronaTxt}>{dronaLine}</Text>
-        </View>
+        {/* Drona line. Hidden while the day loads: it is a sentence ABOUT the
+            totals, so showing the old day's verdict over a shimmering ring is
+            the same stale-number bug wearing a coach's voice. */}
+        {!dayUnknown && (
+          <View style={s.drona}>
+            <View style={s.avatar}><DronaMark size={11} color={C.accentText} state="static" /></View>
+            <Text style={s.dronaTxt}>{dronaLine}</Text>
+          </View>
+        )}
 
         {/* "Just log it" sends the server never took (a network drop on send,
             found by the reconcile). Visible, never silently re-sent: the user
@@ -1132,7 +1285,7 @@ export default function NutritionScreen() {
 
         {/* Meal sections */}
         {MEALS.map((m) => {
-          const entries = byMeal[m.type];
+          const entries = dayUnknown ? [] : byMeal[m.type];
           const sub = entries.reduce((a, e) => ({ kcal: a.kcal + e.kcal, protein: a.protein + e.protein_g }), { kcal: 0, protein: 0 });
           return (
             <View key={m.type} style={s.section}>
@@ -1144,6 +1297,8 @@ export default function NutritionScreen() {
                   <Text style={s.sectionSub}>{round(sub.protein)}g P · {round(sub.kcal)}</Text>
                 )}
               </View>
+
+              {dayLoading && <MealRowsLoading />}
 
               {entries.map((e) => {
                 // A row Drona added in "Just log it" this launch wears a quiet
@@ -1204,7 +1359,20 @@ export default function NutritionScreen() {
         s.inputWrap,
         { bottom: kbHeight, paddingBottom: kbHeight > 0 ? Spacing.sm : insets.bottom + 12 },
       ]}>
-        {flow.status !== 'idle' && (
+        {flow.status === 'create' && (
+          <View style={{ marginBottom: Spacing.sm }}>
+            <FoodCreateCard
+              create={flow.create}
+              result={flow.result}
+              busy={flow.busy}
+              fallbackMeal={mealForNow()}
+              onApply={() => void onApplyCreate()}
+              onDismiss={() => setFlow({ status: 'idle' })}
+              fullWidth
+            />
+          </View>
+        )}
+        {flow.status !== 'idle' && flow.status !== 'create' && (
           <View style={{ marginBottom: Spacing.sm }}>
             <ParsedMealCard
               state={flow.status as ParseCardState}
@@ -1219,6 +1387,7 @@ export default function NutritionScreen() {
                 flow.status === 'declined' || flow.status === 'error' || flow.status === 'sent' ? flow.message : null
               }
               autoLogging={(flow.status === 'analysing' || flow.status === 'streaming') && !!flow.auto}
+              statusLabel={flow.status === 'analysing' ? flow.statusLabel ?? null : null}
               onMealTypeChange={onMealTypeChange}
               onMoveGroup={flow.status === 'review' ? onMoveGroup : undefined}
               notice={flow.status === 'review' ? flow.notice ?? null : null}
@@ -1332,9 +1501,22 @@ export default function NutritionScreen() {
       {/* Set daily calorie + macro goals (the ring/bars draw against these). */}
       <NutritionGoalSheet
         open={goalOpen}
-        initial={targets}
+        initial={baseTargets}
+        fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
         onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
+        // Guests have no profile to save fuel days to, so no door to the sheet.
+        onOpenFuelDays={isSignedIn ? () => { setGoalOpen(false); setFuelOpen(true); } : undefined}
+      />
+
+      {/* Fuel days: more on the weekdays the user works hardest. */}
+      <FuelDaysSheet
+        open={fuelOpen}
+        initial={fuelDays}
+        baseKcal={baseTargets.kcal}
+        source="nutrition"
+        onClose={() => setFuelOpen(false)}
+        onSaved={(saved) => { setFuelOpen(false); applyFuelDays(saved); }}
       />
 
       {/* Correct a parsed line (serving / quantity / macros) before adding it. */}
@@ -1414,6 +1596,8 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xxxl, marginTop: 0, paddingVertical: Spacing.xs },
     macroRailSide: { flex: 1, gap: Spacing.md },
     kcalLine: { fontSize: FontSize.xs, color: C.textMuted, fontVariant: ['tabular-nums'], marginBottom: 2 },
+    fuelTag: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: -Spacing.sm + 2, alignSelf: 'flex-start' },
+    fuelTagTxt: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
 
     drona: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     avatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.primarySubtle, alignItems: 'center', justifyContent: 'center', marginTop: 1 },

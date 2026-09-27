@@ -23,7 +23,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import {
   searchCatalog, recentFoods, logFood, getLogMeal, setLogMeal, setQuickAddSeed,
-  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext,
+  listSavedMeals, logSavedMeal, parseMeal, capNotice, capUpgradeContext, setBuilderMeal,
   type PickerFood, type SavedMeal, type ParsedMealItem,
 } from '@/lib/dietData';
 import { defaultServing, searchFoods, type MealType } from '@/lib/foods';
@@ -142,6 +142,7 @@ export default function FoodSearchScreen() {
   function openBuilder() {
     Keyboard.dismiss();
     setLogMeal(meal);
+    setBuilderMeal(null); // blank form — the builder reads this on focus, not params
     router.push({ pathname: '/meal-builder', params: { meal } });
   }
 
@@ -184,6 +185,13 @@ export default function FoodSearchScreen() {
     // 'sent' only comes back from a "Just log it" stream, which this path never
     // opens; handled so the type narrows to the parsed meal below.
     if (res.kind === 'error' || res.kind === 'sent') { setAiError(res.message); haptics.warning(); return; }
+    // Never sent by the server here: this call does not ask for creates. Handled
+    // so the type narrows, and so a future change that sends one anyway points
+    // the user somewhere that works rather than failing silently.
+    if (res.kind === 'create') {
+      setAiError('To save a food, use Quick add above, or tell Drona on the Nutrition screen.');
+      return;
+    }
     if (!res.meal.items.length) { setAiError('Drona could not pin that one down. Try a fuller name.'); haptics.warning(); return; }
     haptics.success();
     openDetailFromParsed(res.meal.items);
@@ -274,7 +282,8 @@ export default function FoodSearchScreen() {
   function openEditMeal(m: SavedMeal) {
     Keyboard.dismiss();
     setLogMeal(meal); // the builder's "Log" writes to this section
-    router.push({ pathname: '/meal-builder', params: { saved: encodeURIComponent(JSON.stringify(m)), meal } });
+    setBuilderMeal(m); // edit mode — via the store, because builder params go stale
+    router.push({ pathname: '/meal-builder', params: { meal } });
   }
 
   const savedFiltered = savedMeals.filter((m) => {

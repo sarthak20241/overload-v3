@@ -22,6 +22,7 @@ import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors
 import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
+import { normalizeFuelDays, targetsOnDow, type FuelDay } from '@/lib/fuelDays';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -71,6 +72,11 @@ export interface DayData {
    *  callers that mirror totals elsewhere must key off THIS, not their own iso. */
   totalsDayIso: string;
   loading: boolean;
+  /** The day whose last fetch FAILED, or null. A failed fetch keeps the old
+   *  day's numbers in state and never stamps totalsDayIso, so a screen that
+   *  waits for totalsDayIso to catch up would wait forever: this is how it
+   *  tells "still loading" from "gave up". Cleared by the next success. */
+  failedDayIso: string | null;
   reload: () => void;
 }
 
@@ -129,6 +135,66 @@ async function findOrCreateMeal(
 interface DayCache { key: string; byMeal: Record<MealType, LoggedEntry[]> }
 let _navCache: DayCache | null = null;
 
+/** Session memory of PAST days, keyed `${userId}:${dayIso}`. Filled by the
+ *  week prefetch and by every past-day load, so switching to a day you have
+ *  seen (or that the prefetch loaded) paints at once and then revalidates.
+ *  Today never lives here: it keeps its own cache and its own first-in-line
+ *  fetch, so nothing in here can slow today down. Memory only, cleared with
+ *  the process; keyed by user so an account switch cannot read another's. */
+const _dayCache = new Map<string, Record<MealType, LoggedEntry[]>>();
+
+type DayRangeResult = { ok: true; byDay: Map<string, Record<MealType, LoggedEntry[]>> } | { ok: false };
+
+/**
+ * Every day in [first, last] (local calendar days), grouped by meal, in ONE
+ * request: meals with their entries embedded. The day load used to be two
+ * round trips in a row (meals, then their entries), about 0.4 s each measured
+ * on the simulator against the US database. Days with nothing logged come back
+ * as empty, so an empty day is a known answer too, not a miss.
+ */
+async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<DayRangeResult> {
+  const { start } = dayRange(first);
+  const { end } = dayRange(last);
+  const { data, error } = await supabase
+    .from('meals')
+    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
+    .gte('logged_at', start).lte('logged_at', end);
+  // A failed query is NOT "nothing logged": the caller keeps what it has.
+  if (error || !data) return { ok: false };
+
+  const byDay = new Map<string, Record<MealType, LoggedEntry[]>>();
+  for (let d = new Date(first.getFullYear(), first.getMonth(), first.getDate()); d <= last; d.setDate(d.getDate() + 1)) {
+    byDay.set(ymd(d), emptyByMeal());
+  }
+  // Collected per day first, then ordered by position across the whole day:
+  // the two-query version ordered every entry of the day by position in one
+  // list, and the diary should not reshuffle because the query changed.
+  const rows = new Map<string, { mt: MealType; e: any }[]>();
+  for (const m of data as any[]) {
+    const iso = ymd(new Date(m.logged_at));
+    if (!byDay.has(iso)) continue;
+    const mt = (m.meal_type as MealType) ?? 'snack';
+    for (const e of (m.meal_entries ?? []) as any[]) {
+      if (!rows.has(iso)) rows.set(iso, []);
+      rows.get(iso)!.push({ mt, e });
+    }
+  }
+  for (const [iso, list] of rows) {
+    const grouped = byDay.get(iso)!;
+    list.sort((a, b) => num(a.e.position) - num(b.e.position));
+    for (const { mt, e } of list) {
+      grouped[mt].push({
+        id: e.id, meal_id: e.meal_id, meal_type: mt, food_name: e.food_name,
+        serving_unit: e.serving_unit, quantity: num(e.quantity),
+        grams_logged: e.grams_logged == null ? null : num(e.grams_logged),
+        kcal: num(e.kcal), protein_g: num(e.protein_g),
+        carb_g: num(e.carb_g), fat_g: num(e.fat_g),
+      });
+    }
+  }
+  return { ok: true, byDay };
+}
+
 /** Grouped entries + totals for a single calendar day (dayIso = YYYY-MM-DD). */
 export function useDayNutrition(dayIso: string): DayData {
   const supabase = useSupabaseClient();
@@ -139,24 +205,33 @@ export function useDayNutrition(dayIso: string): DayData {
   // In-memory nav cache first, then the on-disk read cache, so a cold start
   // paints today's real totals instead of an empty ring that fills in later.
   const diskSeed = isToday ? readCache<DayCache>('dayNutrition', user?.id) : null;
-  const seed = isToday && _navCache && _navCache.key === key
-    ? _navCache.byMeal
-    : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null;
+  const seed = isToday
+    ? (_navCache && _navCache.key === key ? _navCache.byMeal : diskSeed && diskSeed.key === key ? diskSeed.byMeal : null)
+    : _dayCache.get(key) ?? null;
   const [byMeal, setByMeal] = useState<Record<MealType, LoggedEntry[]>>(seed ?? emptyByMeal());
   // The day `byMeal` belongs to. Seeded state is today's; every setByMeal below
-  // is followed by stamping the day it was fetched for.
-  const [totalsDayIso, setTotalsDayIso] = useState<string>(dayIso);
+  // is followed by stamping the day it was fetched for. With no seed, the empty
+  // byMeal belongs to NO day yet: '' can never equal a real iso, so a screen
+  // waiting for this to catch up keeps waiting (or shows the failure) instead
+  // of reading an empty first render as "you logged nothing".
+  const [totalsDayIso, setTotalsDayIso] = useState<string>(seed ? dayIso : '');
   const [loading, setLoading] = useState(!seed);
+  const [failedDayIso, setFailedDayIso] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   // Every byMeal write goes through here so totalsDayIso can never drift from it.
   const setByMealForDay = useCallback((next: Record<MealType, LoggedEntry[]>, forDay: string) => {
     setByMeal(next);
     setTotalsDayIso(forDay);
+    setFailedDayIso(null);
   }, []);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     let cancelled = false;
+    const fail = () => { if (!cancelled) { setFailedDayIso(dayIso); setLoading(false); } };
+    // A new attempt is under way, so a failure from the LAST attempt is no
+    // longer the news: Retry shows the loader, not the error, while it runs.
+    setFailedDayIso(null);
     (async () => {
       if (isToday) {
         // Hydration may not have finished by first render; re-seed once it has.
@@ -172,57 +247,29 @@ export function useDayNutrition(dayIso: string): DayData {
           setLoading(false);
         }
       }
-      if (!supabase) { setLoading(false); return; }
-      const cached = isToday && _navCache && _navCache.key === key;
-      // Only show the loading state on a true cold load; a same-key cache means we
-      // already painted real numbers, so revalidate silently (no zeros flash).
+      if (!supabase) { fail(); return; }
+      // A day already in memory (today's cache, or a past day this session)
+      // painted real numbers at mount, so revalidate silently: no loader.
+      const cached = isToday ? !!_navCache && _navCache.key === key : _dayCache.has(key);
+      if (cached && !isToday) setByMealForDay(_dayCache.get(key)!, dayIso);
       if (!cached) setLoading(true);
-      const { start, end } = dayRange(dateFromYmd(dayIso));
-      const { data: meals, error: mealsErr } = await supabase
-        .from('meals').select('id, meal_type')
-        .gte('logged_at', start).lte('logged_at', end);
+      const day = dateFromYmd(dayIso);
+      const res = await fetchDayRange(supabase, day, day);
       if (cancelled) return;
-      // A FAILED query also lands here with data null. Treating that as "no
-      // meals logged" would blank the day AND persist those zeros to the day
-      // cache, so an offline blip would keep painting an empty ring after the
-      // network came back. Keep what we have and stop.
-      if (mealsErr) { setLoading(false); return; }
-      if (!meals || meals.length === 0) {
-        const empty = emptyByMeal();
-        if (isToday) {
-          _navCache = { key, byMeal: empty };
-          writeCache<DayCache>('dayNutrition', user?.id, _navCache);
-        }
-        setByMealForDay(empty, dayIso); setLoading(false); return;
-      }
-      const typeOf = new Map<string, MealType>(meals.map((m: any) => [m.id, m.meal_type as MealType]));
-      const { data: entries, error: entriesErr } = await supabase
-        .from('meal_entries')
-        .select('id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g')
-        .in('meal_id', meals.map((m: any) => m.id))
-        .order('position');
-      if (cancelled) return;
-      // Same reasoning: meals exist, so an entries failure must not be cached
-      // as a day with meals but no food in them.
-      if (entriesErr) { setLoading(false); return; }
-      const grouped = emptyByMeal();
-      for (const e of entries ?? []) {
-        const mt = typeOf.get((e as any).meal_id) ?? 'snack';
-        grouped[mt].push({
-          id: (e as any).id, meal_id: (e as any).meal_id, meal_type: mt, food_name: (e as any).food_name,
-          serving_unit: (e as any).serving_unit, quantity: num((e as any).quantity),
-          grams_logged: (e as any).grams_logged == null ? null : num((e as any).grams_logged),
-          kcal: num((e as any).kcal), protein_g: num((e as any).protein_g),
-          carb_g: num((e as any).carb_g), fat_g: num((e as any).fat_g),
-        });
-      }
+      // A FAILED query must not blank the day or be cached as "nothing logged":
+      // an offline blip would keep painting an empty ring after the network
+      // came back. Keep what we have and stop.
+      if (!res.ok) { fail(); return; }
+      const grouped = res.byDay.get(dayIso) ?? emptyByMeal();
       if (isToday) {
         _navCache = { key, byMeal: grouped };
         writeCache<DayCache>('dayNutrition', user?.id, _navCache);
+      } else {
+        _dayCache.set(key, grouped);
       }
       setByMealForDay(grouped, dayIso);
       setLoading(false);
-    })();
+    })().catch(fail);
     return () => { cancelled = true; };
   }, [supabase, tick, key, dayIso, isToday]);
 
@@ -237,17 +284,70 @@ export function useDayNutrition(dayIso: string): DayData {
     }, [reload]),
   );
 
+  // On a switch to a past day already in memory, state still holds the day we
+  // came from until the effect runs. Answer from memory in THIS render, so the
+  // screen goes straight from the old day to the new one with no loader frame.
+  const fromMemory = !isToday && totalsDayIso !== dayIso ? _dayCache.get(key) : undefined;
+  const shownByMeal = fromMemory ?? byMeal;
+  const shownDayIso = fromMemory ? dayIso : totalsDayIso;
+
   const totals = useMemo<DayTotals>(() => {
     const t = { kcal: 0, protein_g: 0, carb_g: 0, fat_g: 0 };
-    for (const mt of Object.keys(byMeal) as MealType[]) {
-      for (const e of byMeal[mt]) {
+    for (const mt of Object.keys(shownByMeal) as MealType[]) {
+      for (const e of shownByMeal[mt]) {
         t.kcal += e.kcal; t.protein_g += e.protein_g; t.carb_g += e.carb_g; t.fat_g += e.fat_g;
       }
     }
     return t;
-  }, [byMeal]);
+  }, [shownByMeal]);
 
-  return { byMeal, totals, totalsDayIso, loading, reload };
+  return {
+    byMeal: shownByMeal, totals, totalsDayIso: shownDayIso,
+    loading: fromMemory ? false : loading, failedDayIso, reload,
+  };
+}
+
+/** Weeks already prefetched this session, with when, keyed `${userId}:${weekStartIso}`. */
+const _weekPrefetched = new Map<string, number>();
+/** Past days change rarely and every visit revalidates anyway, so a week is
+ *  worth re-reading only after a while. */
+const WEEK_PREFETCH_TTL_MS = 60_000;
+
+/**
+ * Load the other days of the visible week into memory, in ONE request, once
+ * `ready` says the day on screen has landed. Waiting for it is the point: the
+ * day the user is looking at (usually today) keeps the network to itself and
+ * its latency does not change; the rest of the week arrives behind it, so a
+ * tap on any other day of the strip paints at once.
+ *
+ * Today and future days are skipped: today has its own cache and fetch, and a
+ * future day has nothing to show.
+ */
+export function usePrefetchWeek(weekStartIso: string, ready: boolean) {
+  const supabase = useSupabaseClient();
+  const { user } = useClerkUser();
+  useEffect(() => {
+    if (!ready || !supabase || !user?.id) return;
+    const wk = `${user.id}:${weekStartIso}`;
+    const last = _weekPrefetched.get(wk);
+    if (last && Date.now() - last < WEEK_PREFETCH_TTL_MS) return;
+    _weekPrefetched.set(wk, Date.now());
+
+    const todayIso = ymd(new Date());
+    const first = dateFromYmd(weekStartIso);
+    const lastDay = new Date(first.getFullYear(), first.getMonth(), first.getDate() + 6);
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const end = lastDay < yesterday ? lastDay : yesterday;
+    if (end < first) return; // the week is all today-or-later
+    void fetchDayRange(supabase, first, end).then((res) => {
+      if (!res.ok) { _weekPrefetched.delete(wk); return; }
+      for (const [iso, byMeal] of res.byDay) {
+        if (iso === todayIso) continue;
+        _dayCache.set(`${user.id}:${iso}`, byMeal);
+      }
+    }).catch(() => { _weekPrefetched.delete(wk); });
+  }, [ready, supabase, user?.id, weekStartIso]);
 }
 
 /** Today's diary — the dashboard + default diet view. Thin wrapper so existing
@@ -552,6 +652,11 @@ export interface ParsedMealItem {
    *  worth putting a mark on the card for. */
   verified?: boolean;
 
+  /** The name of the user's saved meal this line came from, when the server
+   *  logged a saved meal's own rows. The card labels these "saved meal"
+   *  instead of "edited": the numbers are the user's, from My Meals. */
+  saved_meal?: string | null;
+
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
    *  belong to different sections. The server stamps every line; the client
@@ -577,6 +682,11 @@ export interface ParsedMeal {
  *  falls back to the review card in every case; the value picks the notice. */
 export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
 
+/** What this build's food bar can render, sent with every parse. A list rather
+ *  than a boolean so the next capability (improvise, challenge) is one more
+ *  string, not a second flag the server has to learn to read. */
+export const FOOD_BAR_CAPABILITIES = ['food_create'] as const;
+
 export type ParseMealResult =
   | {
     kind: 'parsed';
@@ -586,6 +696,8 @@ export type ParseMealResult =
     logged?: LoggedParseRef | null;
     /** "Just log it" was asked for and the server declined to write. */
     autoLogSkipped?: AutoLogSkipped | null;
+    /** Saved meals to offer as a one-tap swap. Empty from an older server. */
+    savedSuggestions?: SavedSuggestion[];
   }
   // "Just log it" only: the request left and no answer came back (a dropped
   // stream). The server keeps working without us, so this is NOT retried
@@ -603,6 +715,10 @@ export type ParseMealResult =
     cleared?: boolean;
   }
   | { kind: 'error'; message: string }
+  // The user asked to SAVE a food or meal. Drona drafted it with the same tools
+  // the coach chat uses, so this is the chat's tool name and raw input, and the
+  // card normalizes it with parseCoachFoodCreate exactly as the chat does.
+  | { kind: 'create'; tool: string; input: Record<string, unknown> }
   // A 402 the paywall answers, not an error. `scope` says WHICH wall was hit:
   // 'free' is the daily allowance spent, 'pro' is a Pro-only feature. Both open
   // /upgrade, on different copy, instead of the app blaming itself.
@@ -666,7 +782,31 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // and absent from an older server build, so the badge simply does not
     // render rather than claiming a cross-check that never happened.
     verified: i.verified === true,
+    ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
   };
+}
+
+/** A saved meal to OFFER as a swap for one line on the card: the line names a
+ *  food that is only part of a saved meal ("oats", saved "Oats with milk"). */
+export interface SavedSuggestion { food_name: string; saved_id: string; saved_name: string }
+
+/** A saved meal as card lines, one serving, the same numbers logSavedMeal
+ *  writes. Marked as the user's own (manual) and named after the saved meal. */
+export function savedMealAsItems(saved: SavedMeal, mealType: MealType): ParsedMealItem[] {
+  const base = { source: 'manual' as const, assumption: null, confidence: 'high' as const, meal_type: mealType, saved_meal: saved.name };
+  if (saved.kind === 'recipe' || saved.items.length === 0) {
+    const f = saved.kind === 'recipe' && saved.servings > 0 ? 1 / saved.servings : 1;
+    return [{
+      food_id: null, food_name: saved.name, quantity: 1, serving_label: saved.serving_label ?? 'serving', grams: 0,
+      kcal: Math.round(saved.kcal * f), protein_g: r1(saved.protein_g * f), carb_g: r1(saved.carb_g * f), fat_g: r1(saved.fat_g * f),
+      fiber_g: null, ...base,
+    }];
+  }
+  return saved.items.map((it) => ({
+    food_id: it.food_id, food_name: it.food_name, quantity: num(it.quantity) || 1, serving_label: it.serving_unit,
+    grams: num(it.grams_logged), kcal: num(it.kcal), protein_g: num(it.protein_g), carb_g: num(it.carb_g), fat_g: num(it.fat_g),
+    fiber_g: it.fiber_g == null ? null : num(it.fiber_g), ...base,
+  }));
 }
 
 /**
@@ -677,6 +817,9 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
  * honoured on one path and silently dropped on the other.
  */
 function toParseResult(data: any): ParseMealResult {
+  if (data?.create && typeof data.create.tool === 'string' && data.create.input && typeof data.create.input === 'object') {
+    return { kind: 'create', tool: data.create.tool, input: data.create.input };
+  }
   if (data?.declined?.message) {
     const p = data?.proposal;
     const proposal = p && Array.isArray(p.items) && p.items.length > 0
@@ -725,11 +868,18 @@ function toParseResult(data: any): ParseMealResult {
     meal: {
       meal_type: mealType,
       items: (parsed.items as any[]).map((i) => toParsedItem(i, mealType)),
-      drona_line: String(parsed.drona_line ?? 'Logged. Keep the protein coming.'),
+      drona_line: String(parsed.drona_line ?? 'Here it is. Keep the protein coming.'),
       corrects_previous: parsed.corrects_previous === true,
     },
     logged,
     autoLogSkipped: skipped === 'declined' || skipped === 'implausible' || skipped === 'write_error' ? skipped : null,
+    savedSuggestions: Array.isArray(data?.saved_suggestions)
+      ? (data.saved_suggestions as any[]).flatMap((x) => (
+        typeof x?.food_name === 'string' && typeof x?.saved_id === 'string' && typeof x?.saved_name === 'string'
+          ? [{ food_name: x.food_name, saved_id: x.saved_id, saved_name: x.saved_name }]
+          : []
+      ))
+      : [],
   };
 }
 
@@ -802,6 +952,9 @@ export async function parseMealStreaming(
   args: Parameters<typeof parseMeal>[1],
   onItems: (items: StreamedItem[]) => void,
   signal?: AbortSignal,
+  /** What Drona is doing right now on a multi-step message ("Checking
+   *  yesterday's breakfast"). Only the food agent sends these. */
+  onStatus?: (label: string) => void,
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
   if (!text) return { kind: 'error', message: 'Type what you ate first.' };
@@ -842,6 +995,10 @@ export async function parseMealStreaming(
         // made streaming unreachable, since `mode` is always 'parse_meal' here.
         speed: 'fast',
         stream: true,
+        // This build can draw a save card in the food bar. Builds without this
+        // flag get a create served as a log, because they have nothing to draw
+        // one with (see clientSupportsFoodCreate in the edge function).
+        supports: FOOD_BAR_CAPABILITIES,
         text,
         local_hour: now.getHours(),
         local_date: localDate,
@@ -890,6 +1047,8 @@ export async function parseMealStreaming(
             est_carb_g: num(i.est_carb_g),
             est_fat_g: num(i.est_fat_g),
           })));
+        } else if (ev === 'status' && typeof payload.label === 'string') {
+          onStatus?.(payload.label.slice(0, 80));
         } else if (ev === 'end') {
           final = toParseResult(payload);
         } else if (ev === 'error') {
@@ -955,11 +1114,16 @@ export async function parseMeal(
      *  a fresh uuid per send (the idempotency key: a Retry re-uses it and the
      *  server writes once), `logDate` the diary day (YYYY-MM-DD) to land on. */
     autoLog?: { clientId: string; logDate: string } | null;
+    /** This caller can draw a save card. ONLY the food bar sets it. Food
+     *  search's "Ask Drona" is a one-food lookup with nowhere to put a save
+     *  card, so it must not claim it can and gets a create served as a log. */
+    canCreate?: boolean;
     /** Pipeline tier. Omitted means smart, which is what every existing caller
-     *  wants and what the server assumes when the field is absent. Only
-     *  'super' (Precise) is passed here - 'fast' rides the streaming call
-     *  instead, because the whole point of that tier is the stream. */
-    speed?: 'super';
+     *  wants and what the server assumes when the field is absent. 'super' is
+     *  Precise. 'fast' is passed only on a Quick FOLLOW-UP: the correction
+     *  itself still runs the full pipeline, but a fresh re-parse it triggers
+     *  ("not from saved meals") must come back in the user's tier. */
+    speed?: 'super' | 'fast';
   },
 ): Promise<ParseMealResult> {
   const text = args.text.trim();
@@ -979,6 +1143,7 @@ export async function parseMeal(
       region: FunctionRegion.UsEast1,
       body: {
         mode: 'parse_meal',
+        ...(args.canCreate ? { supports: FOOD_BAR_CAPABILITIES } : {}),
         text,
         local_hour: now.getHours(),
         local_date: localDate,
@@ -1130,7 +1295,9 @@ async function logSection(
     food_name: it.food_name,
     quantity: it.quantity,
     serving_unit: it.serving_label,
-    grams_logged: r1(it.grams),
+    // 0 means "no weight known" (a saved line from a quick add or a recipe).
+    // The column allows null or > 0, never 0 (migration 0069), so 0 is null here.
+    grams_logged: it.grams > 0 ? r1(it.grams) : null,
     kcal: r0(it.kcal), protein_g: r1(it.protein_g), carb_g: r1(it.carb_g), fat_g: r1(it.fat_g),
     // The parser returns fiber per line; sugar/sat_fat/sodium aren't parsed, so
     // they stay null (meal_entries snapshot columns are nullable as of 0069).
@@ -1273,13 +1440,20 @@ export function fillMissingMacros(
   return out;
 }
 
-interface CachedTargets { targets: NutritionTargets; isCustom: boolean }
+interface CachedTargets { targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[] }
 
 /** Read the user's daily targets. isCustom = they've set at least one real goal
- *  (vs pure defaults), so the UI can nudge first-timers to set theirs. */
+ *  (vs pure defaults), so the UI can nudge first-timers to set theirs.
+ *
+ *  `targets` is the BASE day. Fuel days (lib/fuelDays) add calories on top on
+ *  their weekday, so anything that draws a specific day's ring or bars reads
+ *  `targetsOn(date)`, never `targets` directly. */
 export function useNutritionTargets(): {
   targets: NutritionTargets; isCustom: boolean; reload: () => void;
   apply: (t: NutritionTargets) => void;
+  fuelDays: FuelDay[];
+  applyFuelDays: (days: FuelDay[]) => void;
+  targetsOn: (date: Date) => NutritionTargets;
 } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
@@ -1289,14 +1463,26 @@ export function useNutritionTargets(): {
   const cachedSeed = readCache<CachedTargets>('nutritionTargets', clerkId);
   const [targets, setTargets] = useState<NutritionTargets>(cachedSeed?.targets ?? DEFAULT_TARGETS);
   const [isCustom, setIsCustom] = useState(cachedSeed?.isCustom ?? false);
+  const [fuelDays, setFuelDays] = useState<FuelDay[]>(cachedSeed?.fuelDays ?? []);
+  const fuelRef = useRef(fuelDays);
+  fuelRef.current = fuelDays;
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
   const apply = useCallback((t: NutritionTargets) => {
     setTargets(t); setIsCustom(true);
-    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true });
+    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true, fuelDays: fuelRef.current });
   }, [clerkId]);
+  const applyFuelDays = useCallback((days: FuelDay[]) => {
+    setFuelDays(days);
+    const cur = readCache<CachedTargets>('nutritionTargets', clerkId);
+    if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, fuelDays: days });
+  }, [clerkId]);
+  const targetsOn = useCallback(
+    (date: Date) => targetsOnDow(targets, fuelDays, date.getDay()),
+    [targets, fuelDays],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1306,13 +1492,22 @@ export function useNutritionTargets(): {
       await hydrateCache(clerkId);
       if (cancelled) return;
       const cached = readCache<CachedTargets>('nutritionTargets', clerkId);
-      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); }
+      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []); }
 
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
-      const { data } = clerkId
-        ? await supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
-        : await supabase.from('user_profiles').select(cols).limit(1).maybeSingle();
+      // Fuel days in their own read, in parallel: a build that ships before
+      // the column exists (0139) must still paint the base targets, so a
+      // failure there keeps whatever fuel days we had instead of taking the
+      // targets with it.
+      const [{ data }, fuelRes] = await Promise.all([
+        clerkId
+          ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
+          : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
+        clerkId
+          ? supabase.from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle()
+          : Promise.resolve(null),
+      ]);
       if (cancelled || !data) return;
       const d = data as Record<string, unknown>;
       const pick = (v: unknown, def: number) => (v == null ? def : Number(v));
@@ -1325,9 +1520,14 @@ export function useNutritionTargets(): {
       const nextIsCustom =
         d.daily_calorie_target != null || d.protein_target_g != null ||
         d.carb_target_g != null || d.fat_target_g != null;
+      let nextFuel = fuelRef.current;
+      if (fuelRes && !fuelRes.error) {
+        nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
+      }
       setTargets(next);
       setIsCustom(nextIsCustom);
-      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom });
+      setFuelDays(nextFuel);
+      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom, fuelDays: nextFuel });
     })();
     return () => { cancelled = true; };
   }, [supabase, clerkId, tick]);
@@ -1342,7 +1542,47 @@ export function useNutritionTargets(): {
     }, [reload]),
   );
 
-  return { targets, isCustom, reload, apply };
+  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn };
+}
+
+/** Persist the user's fuel days (an empty list clears them). With `phaseId`
+ *  (an edit made on Goal & Plan) the current phase's plan is updated too, so
+ *  the plan and the live days say the same thing and Drona refines from it. */
+export async function saveFuelDays(
+  supabase: Supa,
+  clerkId: string,
+  days: FuelDay[],
+  phaseId?: string | null,
+): Promise<{ error?: string }> {
+  const clean = normalizeFuelDays(days);
+  // Two writes, not one transaction. Remember the live value first, so a
+  // failed phase write can put it back: otherwise the sheet says "did not
+  // save" while the live days changed and the plan did not.
+  let before: unknown = null;
+  if (phaseId) {
+    const { data, error: readErr } = await supabase
+      .from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle();
+    if (readErr) return { error: readErr.message };
+    before = (data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts ?? null;
+  }
+  const { error } = await supabase.from('user_profiles').upsert({
+    clerk_user_id: clerkId,
+    calorie_day_boosts: clean.length > 0 ? clean : null,
+  }, { onConflict: 'clerk_user_id' });
+  if (error) return { error: error.message };
+  if (phaseId) {
+    const { error: phaseErr } = await supabase
+      .from('coach_program_phases')
+      .update({ diet_fuel_days: clean })
+      .eq('id', phaseId);
+    if (phaseErr) {
+      await supabase.from('user_profiles')
+        .update({ calorie_day_boosts: before })
+        .eq('clerk_user_id', clerkId);
+      return { error: phaseErr.message };
+    }
+  }
+  return {};
 }
 
 /** Persist daily targets to user_profiles (upsert on clerk_user_id, like the
@@ -1473,8 +1713,10 @@ export async function logSavedMeal(
   servings = 1,
   date: Date = getLogDate(),
   /** Which surface logged it. The builder can log a meal that was never saved,
-   *  which is a different behaviour from re-logging a saved one. */
-  source: 'search_tab' | 'saved_sheet' | 'builder' = 'search_tab',
+   *  which is a different behaviour from re-logging a saved one. 'drona_create'
+   *  is a meal Drona built from what the user said and logged in the same tap,
+   *  so it is both a create and a log and deserves to be tellable from either. */
+  source: 'search_tab' | 'saved_sheet' | 'builder' | 'drona_create' = 'search_tab',
 ): Promise<{ error?: string }> {
   const m = await findOrCreateMeal(supabase, mealType, date);
   if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
@@ -1700,6 +1942,24 @@ export const QUICK_ADD_SERVING = 'serving';
 let _quickAddSeed = '';
 export const setQuickAddSeed = (name: string) => { _quickAddSeed = name.trim().slice(0, 60); };
 export const takeQuickAddSeed = (): string => { const v = _quickAddSeed; _quickAddSeed = ''; return v; };
+
+/** What the meal builder should open with: a saved meal to EDIT, or null for a
+ *  blank "create a meal". /meal-builder is a retained Tabs screen, so its route
+ *  params are read once at mount and then stay frozen for the session — the
+ *  first visit's mode won a whole session in both directions. Set this right
+ *  before navigating; the builder consumes it on focus.
+ *
+ *  Reading it CONSUMES it, which is also how the builder tells "entered afresh
+ *  from search" (reset the form) from "regained focus" (keep unsaved edits). */
+let _builderMeal: SavedMeal | null = null;
+let _builderPending = false;
+export const setBuilderMeal = (m: SavedMeal | null) => { _builderMeal = m; _builderPending = true; };
+/** `pending` false means no fresh entry happened — leave the form alone. */
+export const takeBuilderMeal = (): { pending: boolean; meal: SavedMeal | null } => {
+  const out = { pending: _builderPending, meal: _builderMeal };
+  _builderMeal = null; _builderPending = false;
+  return out;
+};
 
 export interface QuickAddDraft {
   /** Blank falls back to QUICK_ADD_NAME. */

@@ -26,6 +26,16 @@
 
 import { nearWord } from "./textMatch.ts";
 import {
+  findSavedMeal,
+  mergeSavedLines,
+  savedCount,
+  type SavedHit,
+  type SavedMealForParse,
+  rejectsSavedMeal,
+  savedMealsBlock,
+  suggestSavedMeal,
+} from "./savedMeals.ts";
+import {
   cacheKey,
   kcalSpread,
   meetsVerificationBar,
@@ -33,6 +43,15 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
+import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
+import { matchOurSources } from "./ourSources.ts";
+import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
+
+/** How long shadow mode may keep the user waiting for the our-sources match
+ *  AFTER the web lookup has answered. Past it the step is recorded unfinished. */
+export const SHADOW_GRACE_MS = 1500;
+import type { TavilyDeps } from "./tavily.ts";
+import type { JevDeps } from "./jev.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -119,6 +138,9 @@ export interface ParsedItem {
    *  answered no, so a badge belongs on `true` alone. Stamped in
    *  stripEphemeralIds, the one step every return path already owes. */
   verified?: boolean;
+  /** Set on lines that are a saved meal's own rows (savedMeals.ts): the name
+   *  of that saved meal. The card labels them "saved meal". */
+  saved_meal?: string;
   /** Which diary section this line belongs in. Optional on the type because
    *  lines are built in a dozen places (fill, fallback, decide, corrections,
    *  research) and none of them knows the meal; assignItemMeals stamps it in
@@ -159,18 +181,49 @@ export interface ParseMealResult {
    *  usually a different variant of the same product. The client offers it as
    *  "use these / keep mine"; applying it costs no further round trip. */
   proposal?: { items: ParsedItem[]; note: string } | null;
+  /** Saved meals to OFFER as a one-tap swap, never logged: the line names one
+   *  food that is part of a saved meal (decision 1A, savedMeals.ts). */
+  saved_suggestions?: { food_name: string; saved_id: string; saved_name: string }[];
   usage: {
     input_tokens: number;
     output_tokens: number;
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
     web_search_requests: number;
+    /** Tavily credits spent by Precise's web lookup (search + extract). Its own
+     *  cost row, since token_usage_log prices server tools by provider. Optional
+     *  because the food agent builds its usage by hand. */
+    tavily_credits?: number;
   };
   tool_calls: string[];
   // The full tool-call trail (search_foods / lookup_packaged_food / web_search /
   // log_meal) with args + result summaries, plus how many loop turns it took.
   steps: ParseStep[];
   iterations: number;
+  /** The tier that actually answered, which is not always the one the user
+   *  picked: a correction runs Thorough whatever was asked for. Set by
+   *  runParseMeal; optional because the food agent builds its result by hand
+   *  and has none when it only copied lines it had already read. */
+  tier?: ParseTier;
+}
+
+/** The three tiers as the user sees them. On the wire Thorough is no mode at
+ *  all and Precise is "super", so cost queries would otherwise need that
+ *  mapping in their heads. */
+export type ParseTier = "fast" | "thorough" | "precise";
+
+/**
+ * Which tier a parse runs. Fast and Precise are first-shot only: with a meal on
+ * screen the turn may be a correction, removal, question or addition, and those
+ * need the previous meal resolved, which is the full pipeline's job. So both
+ * fall back to Thorough. runParseMealCore gates on this and runParseMeal
+ * reports it, so the logged tier and the tier that ran cannot drift apart.
+ */
+export function resolveParseTier(mode: ParseMealInput["mode"], hasPrevious: boolean): ParseTier {
+  if (hasPrevious) return "thorough";
+  if (mode === "fast") return "fast";
+  if (mode === "super") return "precise";
+  return "thorough";
 }
 
 export interface RecentFoodContext {
@@ -639,14 +692,16 @@ function prepForItems(
   return byFood;
 }
 
-/** Coach line without a model call, keyed on what the meal actually is. */
+/** Coach line without a model call, keyed on what the meal actually is.
+ *  Never says "logged": the card is still waiting for a tap when this shows,
+ *  and on device it read "Logged." above an Add button. */
 export function templateDronaLine(items: ParsedItem[]): string {
   const protein = Math.round(items.reduce((a, it) => a + (it.protein_g || 0), 0));
   const kcal = Math.round(items.reduce((a, it) => a + (it.kcal || 0), 0));
   if (protein >= 30) return `${protein}g protein in there. That is how you build.`;
-  if (protein >= 15) return `${protein}g protein logged. Solid, keep stacking.`;
+  if (protein >= 15) return `${protein}g protein in this one. Solid, keep stacking.`;
   if (kcal >= 400) return `${kcal} calories, light on protein. Add a protein hit next.`;
-  return "Logged. Keep the protein coming.";
+  return "Here it is. Keep the protein coming.";
 }
 
 /**
@@ -785,6 +840,11 @@ export interface ParseMealInput {
    *  "yes do that" or "no the other one" has nothing to attach to. */
   recentTurns?: { role: "user" | "drona"; text: string }[];
   recentFoods: RecentFoodContext[];
+  /** The user's saved meals. When the message names one, that meal's own rows
+   *  are logged and nothing else is consulted for it: not the estimate, not the
+   *  catalog, not the web (savedMeals.ts). A promise so the read can start
+   *  alongside everything else; it is awaited just before the first call. */
+  savedMeals?: SavedMealForParse[] | Promise<SavedMealForParse[]>;
   todayTotals: { kcal: number; protein_g: number } | null;
   targets: { daily_calorie_target: number | null; protein_target_g: number | null } | null;
   // Optional: when set, the recents/targets/totals above are placeholders and
@@ -870,6 +930,35 @@ export interface ParseMealDeps {
    *  SERVICE-ROLE client, because 0109 grants precise_cache to service_role
    *  only and a user-scoped read would return nothing. */
   preciseCacheGet?(key: string): Promise<PreciseCacheRow | null>;
+
+  /** Precise's web lookup provider. "anthropic" (default) is runSuperLookup on
+   *  the server-side web_search tool; "tavily" is runTavilyLookup (Tavily search,
+   *  Jev relevance, a small Haiku read). Tavily falls back to anthropic when it
+   *  cannot be used at all, so a bad key or an empty balance never breaks
+   *  Precise. */
+  webLookup?: "anthropic" | "tavily";
+  tavily?: TavilyDeps;
+  /** Jev, for judging which search results are about exactly this food. */
+  jev?: JevDeps;
+  /** Tavily country boost ("india"). Used when resolveSearchCountry is absent. */
+  searchCountry?: string | null;
+  /** The country for THIS user's searches, from their time zone (see
+   *  searchCountry.ts). When present its answer wins, null included: null
+   *  means "no boost", which is right for a zone we cannot place. */
+  resolveSearchCountry?(): Promise<string | null>;
+  /** Precise, our sources first (ourSources.ts, PRECISE_MATCH_MODE). "shadow"
+   *  runs the Jev match beside the web lookup and only records it; "on" serves
+   *  an accepted row and skips the web. Needs `jev`. */
+  preciseMatch?: {
+    mode: "off" | "shadow" | "on";
+    findCandidates(item: MatchItem): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>>;
+  };
+  /** Remember that these words (cacheKey form) mean this Precise cache row, so
+   *  the next person typing them gets an exact hit with no Jev call and no web
+   *  lookup (migration 0141's precise_alias; first mapping wins). Called only
+   *  when PRECISE_MATCH_MODE=on serves a cache row: in shadow it would change
+   *  what users are served. */
+  preciseAliasPut?(aliasKey: string, rowId: string, confidence: number): Promise<void>;
 
   /** Super only: store what a lookup cost us to learn, so the next person asking
    *  about this food does not pay for it again. Upsert on cache_key; a
@@ -1066,6 +1155,14 @@ const EXTRACT_TOOL = {
   input_schema: {
     type: "object",
     properties: {
+      rejects_saved: {
+        type: "boolean",
+        description:
+          "Only with a previous meal: true when the user turns down using their SAVED meal " +
+          '("not from saved meals", "don\'t use my saved one", "estimate it fresh instead of my meal"), ' +
+          "even when you cannot tell which lines on the card came from a saved meal. " +
+          "Their original words are then logged again without saved meals. false otherwise.",
+      },
       declined: {
         type: "boolean",
         description:
@@ -1197,6 +1294,17 @@ const EXTRACT_TOOL = {
                 "null when the text ties no meal to THIS item, and null when the message " +
                 "names ONE meal for everything (that goes in meal_type_from_text instead). " +
                 "Never infer a meal from the FOOD itself.",
+            },
+            saved_meal: {
+              type: ["string", "null"],
+              description:
+                "Only when a <saved_meals> list follows the message: the EXACT name from that " +
+                "list when this item IS one of the user's saved meals as a WHOLE - they say its " +
+                'name, a dish name for it ("the oat meal" for a saved "Oats with milk"), or ' +
+                '"my usual" for it. Then name/quantity/unit are the saved meal and how many servings.\n' +
+                'null when they name a single food that is only PART of a saved meal: "oats" or ' +
+                '"my oats" is oats, not a saved "Oats with milk". null for anything not on the ' +
+                "list, and whenever there is no list.",
             },
           },
           required: ["name", "quantity", "unit"],
@@ -2077,7 +2185,7 @@ const FAST_EXTRACT_TOOL = (() => {
   // a previous meal was given". Leaving them in the schema asks Haiku to
   // consider, and often emit, five fields whose answer is fixed. Latency here is
   // output tokens, so a field the model cannot need is pure delay.
-  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names"]) {
+  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names", "rejects_saved"]) {
     delete t.input_schema.properties[dead];
   }
   delete item.properties.corrects_food_name;
@@ -2490,6 +2598,9 @@ export interface ExtractedItem {
    *  total_g a display label that never feeds the math. Null when any field
    *  was missing or negative: a partial estimate is not an estimate. */
   est?: { kcal: number; protein_g: number; carb_g: number; fat_g: number; total_g: number } | null;
+  /** The exact name of the user's saved meal this item IS, when the message
+   *  referred to one (see savedMeals.ts). First-shot only. */
+  savedMeal?: string | null;
 }
 
 export interface ResolvedItem extends ExtractedItem {
@@ -2899,14 +3010,63 @@ export function reconcileReadings(
   return { reason: lastBad };
 }
 
+/**
+ * Precise's web lookup for one food, on whichever provider deps selects.
+ *
+ * Tavily falls back to the Anthropic lookup ONLY when Tavily could not be used
+ * at all (no key, auth, out of credits, down). "Searched and found nothing" is
+ * an answer, not an outage: re-asking a second provider would double the cost
+ * of every obscure food for the same null.
+ */
+async function webFindingFor(
+  deps: ParseMealDeps,
+  item: ExtractedItem,
+  onUsage: (data: any) => void,
+  onCall: () => void,
+  onStep?: (step: ParseStep) => void,
+): Promise<SuperFinding | undefined> {
+  if (deps.webLookup === "tavily" && deps.tavily) {
+    const country = deps.resolveSearchCountry
+      ? await deps.resolveSearchCountry().catch(() => deps.searchCountry ?? null)
+      : deps.searchCountry ?? null;
+    const out = await runTavilyLookup({
+      tavily: deps.tavily,
+      jev: deps.jev ?? null,
+      country,
+      model: deps.model,
+      log: deps.log,
+      callModel: async (payload) => {
+        const r = await callAnthropicOnce(deps, payload);
+        if (!r.ok) {
+          deps.log?.(`[parse_meal] tavily read failed: ${r.status}`);
+          return null;
+        }
+        onCall();
+        onUsage(r.data);
+        return r.data;
+      },
+    }, { name: item.name, brand: item.brand ?? null });
+    // Counted through the same accumulator as tokens, so the credits land in
+    // usage and index.ts can write the Tavily cost row.
+    if (out.credits > 0) onUsage({ tavily_credits: out.credits });
+    for (const st of out.steps) {
+      onStep?.({ iter: 1, tool: st.tool, input: { item: item.name, ...(st.input as object) }, result: st.result });
+    }
+    if (!out.unavailable) return out.finding ?? undefined;
+    onStep?.({ iter: 1, tool: "web_fallback", input: { item: item.name, from: "tavily" }, result: null });
+  }
+  const found = await runSuperLookup(deps, [item], onUsage, onCall);
+  return found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+}
+
 export async function superLookupOne(
   deps: ParseMealDeps,
   item: ExtractedItem,
   onUsage: (data: any) => void,
   onCall: () => void,
+  onStep?: (step: ParseStep) => void,
 ): Promise<CandidateFood | null> {
-  const found = await runSuperLookup(deps, [item], onUsage, onCall);
-  const finding = found?.get(item.name) ?? (found ? [...found.values()][0] : undefined);
+  const finding = await webFindingFor(deps, item, onUsage, onCall, onStep);
   if (!finding || finding.readings.length === 0) return null;
 
   const reconciled = reconcileReadings(finding.readings);
@@ -2940,7 +3100,10 @@ export async function superLookupOne(
   const servings = finding.serving_label && finding.serving_grams
     ? [{ label: finding.serving_label, grams: finding.serving_grams }]
     : [];
-  const display = item.brand ? `${item.brand} ${item.name}` : item.name;
+  // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
+  // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
+  // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
+  const display = foodLabel(item);
 
   if (deps.preciseCachePut) {
     // Never let a cache write cost the user their meal: the lookup already
@@ -3059,8 +3222,51 @@ async function resolveOneItem(
   // exactly like a hit would; the write-through inside superLookup is what
   // stops the next person paying again.
   if (superLookup) {
+    // Our sources first (PRECISE_MATCH_MODE, see ourSources.ts). "on": a row we
+    // already hold that Jev and the gate accept answers, and the web is never
+    // paid for. "shadow": the same judgement runs BESIDE the web lookup and is
+    // only recorded, with the web's answer next to it for comparison, so the
+    // user gets exactly what they would have got without it.
+    const pm = deps.preciseMatch;
+    const ours = pm && pm.mode !== "off" && deps.jev
+      ? matchOurSources(
+        { jev: deps.jev, findCandidates: pm.findCandidates, log: deps.log },
+        { name: item.name, brand: item.brand ?? null },
+      )
+      : null;
+    if (ours && pm?.mode === "on") {
+      const r = await ours;
+      steps.push({ iter: 1, tool: "our_sources", input: { mode: "on" }, result: r.trace });
+      if (r.match) {
+        toolCalls.push("our_sources_match");
+        if (r.match.meta.source === "precise" && deps.preciseAliasPut) {
+          await deps.preciseAliasPut(cacheKey(item.name, item.brand), r.match.meta.id, r.match.confidence)
+            .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
+        }
+        return { ...item, candidates: [synthesizeVolumeAnchors(r.match.food)] };
+      }
+    }
     const tWeb0 = Date.now();
     const found = await superLookup(item).catch(() => null);
+    if (ours && pm?.mode === "shadow") {
+      // Shadow adds at most SHADOW_GRACE_MS to the answer the user is waiting
+      // for, and usually nothing: the match runs beside the web lookup, which
+      // takes longer. Past the grace period the step is recorded unfinished
+      // and the match keeps running unobserved.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((res) => { timer = setTimeout(() => res(null), SHADOW_GRACE_MS); });
+      const r = await Promise.race([ours, late]);
+      clearTimeout(timer);
+      steps.push({
+        iter: 1,
+        tool: "our_sources",
+        input: { mode: "shadow" },
+        result: {
+          ...(r ? r.trace : { unfinished: true, grace_ms: SHADOW_GRACE_MS }),
+          web: found ? { name: found.name, kcal: found.kcal } : null,
+        },
+      });
+    }
     if (found) {
       toolCalls.push("super_lookup");
       steps.push({
@@ -3175,7 +3381,7 @@ async function resolveOneItem(
     return merged.slice(0, 10);
   };
   const runOff = async (): Promise<CandidateFood[]> => {
-    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    const q = foodLabel(item);
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
     try {
@@ -3221,7 +3427,7 @@ async function resolveOneItem(
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
     if (!deps.searchFatSecret) return [];
-    const q = item.brand ? `${item.brand} ${item.name}` : item.name;
+    const q = foodLabel(item);
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
     try {
@@ -4550,12 +4756,85 @@ export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
+  // First-shot only. With a card on screen the turn is an edit of that card, and
+  // the correction paths own it; a saved line already on the card is 'manual',
+  // so those paths keep its numbers as they are.
+  const firstShot = (input.previousItems ?? []).length === 0;
+  let saved: SavedMealForParse[] = [];
+  if (firstShot && input.savedMeals) {
+    try {
+      saved = await input.savedMeals;
+    } catch {
+      saved = [];
+    }
+  }
+  const hits: SavedHit[] = [];
+  const suggestions: NonNullable<ParseMealResult["saved_suggestions"]> = [];
+  const result = await runParseMealCore(deps, input, saved, hits, suggestions);
+  // Same inputs runParseMealCore gated on. The rerun below overwrites this with
+  // its own: that one is a first shot, so it runs the tier the user picked.
+  result.tier = resolveParseTier(input.mode, !firstShot);
+
+  // "Not from saved meals": the user turned down the saved meal on the card.
+  // Log their ORIGINAL words again as a first shot with saved meals switched
+  // off, in the same mode, and replace the card. The correction paths are the
+  // wrong tool here: a saved meal is several lines standing for one thing they
+  // said, and only the original words say what that thing was.
+  const rejection = result.steps.find((s) => s.tool === "rejects_saved");
+  if (!firstShot && rejection && input.previousText?.trim()) {
+    const newItems = Number((rejection.input as { new_items?: number } | null)?.new_items ?? 0);
+    const fresh = await runParseMeal(deps, {
+      ...input,
+      // Only the original words, unless this message added food of its own.
+      text: newItems > 0 ? `${input.previousText.trim()}. ${input.text.trim()}` : input.previousText,
+      previousText: null,
+      previousItems: [],
+      recentTurns: [],
+      savedMeals: undefined,
+    });
+    if (fresh.parsed) {
+      fresh.parsed = {
+        ...fresh.parsed,
+        corrects_previous: true,
+        drona_line: `Fresh numbers, not your saved meal. ${fresh.parsed.drona_line}`.slice(0, 240),
+      };
+    }
+    // The call that noticed the rejection was billed too: keep its cost.
+    fresh.steps = [...result.steps, ...fresh.steps];
+    fresh.tool_calls = [...result.tool_calls, ...fresh.tool_calls];
+    fresh.iterations += result.iterations;
+    for (const k of Object.keys(fresh.usage) as (keyof ParseMealResult["usage"])[]) {
+      fresh.usage[k] = (fresh.usage[k] ?? 0) + (result.usage[k] ?? 0);
+    }
+    return fresh;
+  }
+
+  if (suggestions.length > 0) result.saved_suggestions = suggestions;
+  if (hits.length === 0) return result;
+  const merged = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
+  merged.steps = [...merged.steps, {
+    iter: 0,
+    tool: "saved_meal",
+    input: { offered: saved.length },
+    result: hits.map((h) => ({ id: h.meal.id, name: h.meal.name, count: h.count })),
+  }];
+  return merged;
+}
+
+async function runParseMealCore(
+  deps: ParseMealDeps,
+  input: ParseMealInput,
+  saved: SavedMealForParse[],
+  hits: SavedHit[],
+  suggestions: NonNullable<ParseMealResult["saved_suggestions"]>,
+): Promise<ParseMealResult> {
   const usage = {
     input_tokens: 0,
     output_tokens: 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
     web_search_requests: 0,
+    tavily_credits: 0,
   };
   const toolCalls: string[] = [];
   const steps: ParseStep[] = [];
@@ -4570,6 +4849,7 @@ export async function runParseMeal(
     usage.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0;
     usage.cache_read_input_tokens += u.cache_read_input_tokens ?? 0;
     usage.web_search_requests += u.server_tool_use?.web_search_requests ?? 0;
+    usage.tavily_credits += typeof data.tavily_credits === "number" ? data.tavily_credits : 0;
   };
   /** Section of a previous line, by the food_name decide was told to correct.
    *  Case-folded because the model echoes the name back with its own casing. */
@@ -4606,13 +4886,14 @@ export async function runParseMeal(
   // Fast only ever handles a first-shot log. With a card on screen the turn may
   // be a correction, removal, question or addition, and those need the full
   // pipeline; silently degrading them to fast would eat the user's intent.
-  const fastMode = input.mode === "fast" && !hasPrevious;
-  // Super rides the SAME first-shot rule, and for the same reason: a correction
-  // needs the previous meal resolved, which is the full pipeline's job. Note it
-  // is deliberately not fastMode's sibling in behaviour - super keeps decide,
+  // Super rides the SAME first-shot rule, and for the same reason. Note it is
+  // deliberately not fastMode's sibling in behaviour - super keeps decide,
   // keeps the reranker, keeps every guard. The only thing it adds is where the
-  // numbers come from.
-  const superMode = input.mode === "super" && !hasPrevious;
+  // numbers come from. resolveParseTier holds the rule so runParseMeal can
+  // report the tier this gate actually chose.
+  const tier = resolveParseTier(input.mode, hasPrevious);
+  const fastMode = tier === "fast";
+  const superMode = tier === "precise";
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -4675,7 +4956,7 @@ export async function runParseMeal(
             })),
           },
         })
-        : userText.text,
+        : userText.text + savedMealsBlock(saved),
     }],
   });
   if (extractRes && !extractRes.ok) {
@@ -4772,10 +5053,24 @@ export async function runParseMeal(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
+        savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
+  // Handled in runParseMeal, which re-logs the original words without saved
+  // meals. Nothing below would do anything useful with this turn.
+  // The code check only counts when the card has a 'manual' line, which is how
+  // saved-meal lines arrive. A hand-edited line is 'manual' too, so this is a
+  // floor, not proof: the user still has to say "not from saved" in so many words.
+  const codeRejects = rejectsSavedMeal(input.text) && prevItems.some((p) => p.source === "manual");
+  if (hasPrevious && (ext.rejects_saved === true || codeRejects) && input.previousText?.trim()) {
+    // New food in the same message ("not my saved meal, add 2 eggs") must not be
+    // lost: runParseMeal re-logs the original words WITH this message.
+    const newFood = extItems.filter((it) => !it.correctsFoodName).length;
+    steps.push({ iter: 0, tool: "rejects_saved", input: { new_items: newFood, by: ext.rejects_saved === true ? "model" : "code" }, result: null });
+    return declineResult("Logging that again without your saved meal.");
+  }
   // Previous lines the user explicitly re-targeted. These are deliberately
   // replaced, so the no-drop guard must not resurrect them.
   // ONLY a tag naming a DIFFERENT line counts as a replacement.
@@ -4858,6 +5153,32 @@ export async function runParseMeal(
     ext.meal_type_from_text === "dinner" || ext.meal_type_from_text === "snack"
       ? ext.meal_type_from_text
       : null;
+  // The user's saved meals come out HERE, before any lookup can run on them.
+  // Nothing past this line sees a saved item: no estimate, no catalog, no web.
+  if (!hasPrevious && saved.length > 0) {
+    extItems = extItems.filter((it) => {
+      const meal = findSavedMeal(it.savedMeal, saved);
+      if (!meal) {
+        const offer = suggestSavedMeal(it.name, saved);
+        if (offer) suggestions.push({ food_name: it.name, saved_id: offer.id, saved_name: offer.name });
+        return true;
+      }
+      hits.push({ meal, count: savedCount(it.quantity, it.unit), mealType: it.meal ?? mealFromText ?? null });
+      return false;
+    });
+    // Everything they said was a saved meal. There is nothing left to look up,
+    // so return now: runParseMeal fills the lines in from the stored rows.
+    if (hits.length > 0 && extItems.length === 0) {
+      return {
+        parsed: { meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour), items: [], drona_line: "" },
+        declined: null,
+        usage,
+        tool_calls: toolCalls,
+        steps,
+        iterations: anthropicCalls,
+      };
+    }
+  }
   steps.push({
     iter: 0,
     tool: fastMode ? "estimate_meal" : "extract_meal",
@@ -5118,7 +5439,7 @@ export async function runParseMeal(
       kind: "items",
       items: toResolve.map((r) => ({
         // est carries line TOTALS now, so the shimmer numbers need no scaling.
-        name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        name: foodLabel(r),
         quantity: r.quantity,
         unit: r.unit,
         est_kcal: r.est ? round1(r.est.kcal) : null,
@@ -5176,7 +5497,7 @@ export async function runParseMeal(
         // Brand included: an estimate has no row name to display, so this IS
         // the display, and "multigrain bar" for a Yogabar loses the product
         // identity the user typed.
-        food_name: r.brand ? `${r.brand} ${r.name}` : r.name,
+        food_name: foodLabel(r),
         quantity: r.quantity > 0 ? r.quantity : 1,
         serving_label: r.unit,
         // Display only. A wrong gram guess mislabels the line instead of
@@ -5250,7 +5571,8 @@ export async function runParseMeal(
         // accumulate() is passed through so the web_search_requests these calls
         // spend land in usage, which is what 0113 prices.
         superMode
-          ? (it: ExtractedItem) => superLookupOne(deps, it, accumulate, () => { anthropicCalls++; })
+          ? (it: ExtractedItem) =>
+            superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st))
           : undefined,
       )
     ),
@@ -5529,7 +5851,7 @@ export async function runParseMeal(
       input.todayTotals,
       input.targets,
     )
-    : "Logged. Keep the protein coming.";
+    : "Here it is. Keep the protein coming.";
   T.decide_ms = Date.now() - tDecide0;
 
   steps.push({ iter: 9, tool: "__timing", input: { ...T } });
