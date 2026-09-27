@@ -2191,8 +2191,8 @@ async function findMatchCandidates(
       return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
     }),
   ]);
-  type Pick = { id: string; origin: "catalog" | "precise"; raw: Record<string, unknown> };
-  const picks = (rows: Array<Record<string, unknown>>, origin: Pick["origin"]): Pick[] =>
+  type CandidatePick = { id: string; origin: "catalog" | "precise"; raw: Record<string, unknown> };
+  const picks = (rows: Array<Record<string, unknown>>, origin: CandidatePick["origin"]): CandidatePick[] =>
     rows.map((r) => ({ id: String(r.id), origin, raw: r }));
   const tri = picks(trigram, "catalog");
   const sem = picks(semantic, "catalog");
@@ -2581,7 +2581,7 @@ function makeParseDeps(
         const { data, error } = await admin
           .from("precise_cache")
           .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" })
-          .select("id")
+          .select("id, embedding")
           .maybeSingle();
         if (error) {
           console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
@@ -2589,7 +2589,10 @@ function makeParseDeps(
         }
         // The meaning-search embedding (0141). Awaited so the isolate does not
         // drop it, but never allowed to fail the write that already landed.
-        const id = (data as { id?: string } | null)?.id;
+        // A re-verified row keeps its embedding (the upsert does not touch that
+        // column), so only a row without one is embedded.
+        const written = data as { id?: string; embedding?: unknown } | null;
+        const id = written?.embedding ? undefined : written?.id;
         if (id) {
           const vec = await embedCacheDocument(row.display_name, admin);
           if (vec) {
