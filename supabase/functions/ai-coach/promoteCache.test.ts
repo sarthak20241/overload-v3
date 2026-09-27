@@ -7,8 +7,11 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  applyCatalogMatch,
   badDisplayName,
+  brandFromName,
   type CatalogRow,
+  noMatchMeans,
   findDuplicate,
   isSameFood,
   type PromotionCandidate,
@@ -306,7 +309,7 @@ Deno.test("re-verified evidence updates the row we published", () => {
 });
 
 Deno.test("an unchanged row is not rewritten every night", () => {
-  const published = row({ id: "food-1", kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12, source: "web_verified", last_verified_at: daysAgo(200) });
+  const published = row({ id: "food-1", brand: "Milky Mist", kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12, source: "web_verified", last_verified_at: daysAgo(200) });
   const d = promotionDecision(cand({ promoted_food_id: "food-1" }), [published], NOW);
   assertEquals(d.action, "skip");
   if (d.action === "skip") assertEquals(d.reason, "already-current");
@@ -388,4 +391,138 @@ Deno.test("two FatSecret pages on one host are still one source at promotion", (
   );
   assertEquals(d.action, "skip");
   if (d.action === "skip") assertEquals(d.reason, "unverified");
+});
+
+
+// ── weak sources (2026-09-27) ──────────────────────────────────────────────
+// Rows this job really published on a seller listing, an AI calorie app, or two
+// user-typed databases. Those pages may still answer one meal; they may not be
+// one of the two sources that publish to everyone.
+
+Deno.test("the failure this prevents: a seller's listing as the second source", () => {
+  const d = promotionDecision(
+    cand({ evidence: [off(190), web(192, "https://spice.alibaba.com/sweet-potato")] }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") {
+    assertEquals(d.reason, "unverified");
+    assertEquals(d.detail, "only off (not counted: spice.alibaba.com)");
+  }
+});
+
+Deno.test("two user-typed databases agreeing are not two sources", () => {
+  const d = promotionDecision(
+    cand({ evidence: [web(44, "https://www.carbmanager.com/food/x"), web(44, "https://prospre.io/y")], kcal: 44, protein_g: 1.5, carb_g: 8, fat_g: 0.3 }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "unverified");
+});
+
+Deno.test("a weak page beside two good sources does not block, and is not credited", () => {
+  const d = promotionDecision(
+    cand({ evidence: [off(190), web(191, "https://milkymist.com/p"), web(190, "https://nutriscan.app/p")] }),
+    [],
+    NOW,
+  );
+  assertEquals(d.action, "promote");
+  if (d.action === "promote") assertEquals(d.agreeing, ["off", "web:milkymist.com"]);
+});
+
+// ── brand from the name ────────────────────────────────────────────────────
+
+const BRANDS = new Set(["pintola", "yogabar", "raw", "sunfeast", "dark fantasy", "banana", "amul"]);
+const FOOD_WORDS = new Set(["raw", "chicken", "breast", "rice", "cake", "banana", "dark", "milk", "oats"]);
+
+Deno.test("the failure this prevents: a packaged product published as a plain food", () => {
+  assertEquals(brandFromName("Pintola rice cake", BRANDS, FOOD_WORDS), "Pintola");
+});
+
+Deno.test("a brand at the end of the name is found, in the name's spelling", () => {
+  assertEquals(brandFromName("Kesar pista oats yogabar", BRANDS, FOOD_WORDS), "Yogabar");
+});
+
+Deno.test("a junk brand that is really a food word is not a brand", () => {
+  assertEquals(brandFromName("raw chicken breast", BRANDS, FOOD_WORDS), null);
+});
+
+Deno.test("the whole name is never its own brand", () => {
+  // A product logged by brand alone names the product, not a brand of something.
+  assertEquals(brandFromName("Yogabar", BRANDS, FOOD_WORDS), null);
+});
+
+Deno.test("the earliest brand wins", () => {
+  assertEquals(brandFromName("Sunfeast Dark Fantasy Choco Fills", BRANDS, FOOD_WORDS), "Sunfeast");
+});
+
+Deno.test("an unknown brand stays unknown", () => {
+  assertEquals(brandFromName("Country delight low fat milk", BRANDS, FOOD_WORDS), null);
+});
+
+Deno.test("a brand found after publishing is written to the row we published", () => {
+  const published = row({ id: "food-1", name: "Pintola rice cake", brand: null, kcal: 190, protein_g: 18, carb_g: 2, fat_g: 12, source: "web_verified", last_verified_at: daysAgo(1) });
+  const d = promotionDecision(cand({ promoted_food_id: "food-1", brand: "Pintola" }), [published], NOW);
+  assertEquals(d.action, "refresh");
+});
+
+Deno.test("a link to someone else's row is never 'refreshed'", () => {
+  const usda = row({ id: "food-1", name: "Egg, whole, raw, fresh", kcal: 143, source: "usda", last_verified_at: null });
+  const d = promotionDecision(cand({ promoted_food_id: "food-1", kcal: 150, evidence: [off(150), web(149, "https://a.com/x")] }), [usda], NOW);
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "linked");
+});
+
+// ── the Jev catalog match ──────────────────────────────────────────────────
+
+const promote = { action: "promote" as const, agreeing: ["off", "web:a.com"] };
+
+Deno.test("the failure this prevents: 'eggs' published beside USDA's egg", () => {
+  const d = applyCatalogMatch(promote, { kcal: 143 }, {
+    status: "matched",
+    row: { id: "usda-egg", name: "Egg, whole, raw, fresh", source: "usda", kcal: 143 },
+  });
+  assertEquals(d, { action: "link", food_id: "usda-egg" });
+});
+
+Deno.test("the same food with different energy is a conflict, not a link", () => {
+  const d = applyCatalogMatch(promote, { kcal: 190 }, {
+    status: "matched",
+    row: { id: "p", name: "Paneer", source: "curated", kcal: 283 },
+  });
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "catalog-conflict");
+});
+
+Deno.test("no matching row: the promotion stands", () => {
+  assertEquals(applyCatalogMatch(promote, { kcal: 190 }, { status: "none" }), promote);
+});
+
+Deno.test("no trustworthy answer: nothing is published", () => {
+  const d = applyCatalogMatch(promote, { kcal: 190 }, { status: "unavailable", detail: "no JEV_API_KEY" });
+  assertEquals(d.action, "skip");
+  if (d.action === "skip") assertEquals(d.reason, "match-unavailable");
+});
+
+Deno.test("only a promotion is changed by the match", () => {
+  const skip = { action: "skip" as const, reason: "expired" as const };
+  assertEquals(applyCatalogMatch(skip, { kcal: 1 }, { status: "unavailable", detail: "x" }), skip);
+});
+
+Deno.test("the failure this prevents: a failed tie-break read as 'not in the catalog'", () => {
+  // Flagged on #217: a tie-break call that fails comes back as reason "no_answer",
+  // exactly on the close calls (Banana vs "Banana, raw") the tie-break exists for.
+  assertEquals(noMatchMeans("no_answer").status, "unavailable");
+  assertEquals(noMatchMeans("contested").status, "unavailable");
+  assertEquals(noMatchMeans("uncorroborated").status, "unavailable");
+  assertEquals(noMatchMeans("some_reason_added_later").status, "unavailable");
+  assertEquals(noMatchMeans(undefined).status, "unavailable");
+});
+
+Deno.test("Jev looking and finding no row lets the promotion stand", () => {
+  for (const r of ["none", "below_floor", "no_candidates", "brand", "kind"]) {
+    assertEquals(noMatchMeans(r).status, "none");
+  }
 });
