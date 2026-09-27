@@ -25,6 +25,7 @@ import {
   type ParseTier,
   type PreviousItem,
   type RecentFoodContext,
+  cacheRowToCandidate,
   runParseMeal,
   USER_TEXT_MAX_CHARS,
 } from "./parseMeal.ts";
@@ -2161,10 +2162,13 @@ async function findMatchCandidates(
   const query = item.brand && !item.name.toLowerCase().includes(item.brand.toLowerCase())
     ? `${item.brand} ${item.name}`
     : item.name;
-  const [trigram, semantic] = await Promise.all([
+  // One query embedding, shared by the foods semantic search and the Precise
+  // cache search (0141), both in the voyage-3 space.
+  const vecP = embedQuery(query, admin, userId);
+  const [trigram, semantic, cached] = await Promise.all([
     userClient.rpc("search_foods_ranked_with_servings", { q: query, lim: 30 })
       .then((res: { data: unknown }) => (Array.isArray(res.data) ? res.data : []) as Array<Record<string, unknown>>),
-    embedQuery(query, admin, userId).then(async (vec) => {
+    vecP.then(async (vec) => {
       if (!vec) return [] as Array<Record<string, unknown>>;
       const { data } = await userClient.rpc("search_foods_semantic_with_servings", {
         p_query_embedding: JSON.stringify(vec),
@@ -2172,28 +2176,92 @@ async function findMatchCandidates(
       });
       return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
     }),
+    // Service role: 0141 grants the cache search to service_role only. A
+    // missing function (migration not applied yet) is just no cache rows.
+    vecP.then(async (vec) => {
+      const { data, error } = await admin.rpc("precise_cache_candidates", {
+        p_query: query,
+        p_embedding: vec ? JSON.stringify(vec) : null,
+        lim: 3,
+      });
+      if (error) {
+        console.log(`[our_sources] precise_cache_candidates failed: ${error.message}`);
+        return [] as Array<Record<string, unknown>>;
+      }
+      return (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>;
+    }),
   ]);
-  const withId = (rows: Array<Record<string, unknown>>) => rows.map((r) => ({ ...r, id: String(r.id) }));
-  const tri = withId(trigram);
-  const sem = withId(semantic);
+  type CandidatePick = { id: string; origin: "catalog" | "precise"; raw: Record<string, unknown> };
+  const picks = (rows: Array<Record<string, unknown>>, origin: CandidatePick["origin"]): CandidatePick[] =>
+    rows.map((r) => ({ id: String(r.id), origin, raw: r }));
+  const tri = picks(trigram, "catalog");
+  const sem = picks(semantic, "catalog");
+  const cache = picks(cached, "precise");
   const ids = [...new Set([...tri, ...sem].map((r) => r.id))];
-  if (ids.length === 0) return [];
-  const { data: srcRows } = await admin.from("foods").select("id, source").in("id", ids);
+  if (ids.length === 0 && cache.length === 0) return [];
+  const { data: srcRows } = ids.length
+    ? await admin.from("foods").select("id, source").in("id", ids)
+    : { data: [] as Array<{ id: string; source: string }> };
   const sourceOf = new Map(((srcRows ?? []) as Array<{ id: string; source: string }>).map((r) => [r.id, r.source]));
-  return selectMatchRows(tri, sem, (id) => sourceOf.get(id)).map((r) => {
-    const food = catalogRowToCandidate(r);
+  const cacheIds = new Set(cache.map((c) => c.id));
+  return selectMatchRows(tri, sem, (id) => (cacheIds.has(id) ? "precise" : sourceOf.get(id)), cache).map((p) => {
+    const food = p.origin === "precise"
+      ? cacheRowToCandidate(p.raw as unknown as PreciseCacheRow)
+      : catalogRowToCandidate(p.raw);
     return {
       food,
       meta: {
-        id: r.id,
+        id: p.id,
         name: food.name,
         brand: food.brand,
-        source: sourceOf.get(r.id) ?? "catalog",
+        source: p.origin === "precise" ? "precise" : sourceOf.get(p.id) ?? "catalog",
         kcal: food.kcal,
         protein_g: food.protein_g,
       },
     };
   });
+}
+
+/**
+ * A voyage-3 DOCUMENT embedding of a Precise cache row's name, so the cache's
+ * meaning search (0141) can find it. Documents and queries are embedded with
+ * their own input_type, the asymmetric setup foods and research_kb use.
+ * Returns null on any failure: a row without an embedding is still found by
+ * name, and the backfill script fills it later.
+ */
+async function embedCacheDocument(text: string, admin: SupabaseClient): Promise<number[] | null> {
+  if (!VOYAGE_API_KEY) return null;
+  const trimmed = (text ?? "").trim().slice(0, 300);
+  if (!trimmed) return null;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), VOYAGE_TIMEOUT_MS);
+  const startMs = Date.now();
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${VOYAGE_API_KEY}` },
+      body: JSON.stringify({ input: [trimmed], model: "voyage-3", input_type: "document" }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.log(`[parse_meal] precise_cache embed failed: ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    void logTokenUsage(admin, {
+      pipeline: "embed_precise_cache",
+      provider: "voyage",
+      model: "voyage-3",
+      input_tokens: data.usage?.total_tokens ?? 0,
+      latency_ms: Date.now() - startMs,
+      status: "success",
+    });
+    return data.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function searchCatalogWithServings(
@@ -2496,7 +2564,11 @@ function makeParseDeps(
           console.log(`[parse_meal] precise_cache_get failed: ${error.message}`);
           return null;
         }
-        return (data as PreciseCacheRow | null) ?? null;
+        if (data) return data as PreciseCacheRow;
+        // Not a row's own key: maybe a phrase that already led to a row (0141).
+        // A missing function (migration not applied) is simply a miss.
+        const alias = await admin.rpc("precise_cache_by_alias", { p_key: key }).maybeSingle();
+        return (alias.error ? null : (alias.data as PreciseCacheRow | null)) ?? null;
       }
       : undefined,
     // Service role again, and upsert on cache_key so a re-verification refreshes
@@ -2506,12 +2578,38 @@ function makeParseDeps(
     // despite having just been confirmed.
     preciseCachePut: PARSE_PRECISE_CACHE
       ? async (row) => {
-        const { error } = await admin
+        const { data, error } = await admin
           .from("precise_cache")
-          .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" });
-        if (error) console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
+          .upsert({ ...row, last_verified_at: new Date().toISOString() }, { onConflict: "cache_key" })
+          .select("id, embedding")
+          .maybeSingle();
+        if (error) {
+          console.log(`[parse_meal] precise_cache upsert failed: ${error.message}`);
+          return;
+        }
+        // The meaning-search embedding (0141). Awaited so the isolate does not
+        // drop it, but never allowed to fail the write that already landed.
+        // A re-verified row keeps its embedding (the upsert does not touch that
+        // column), so only a row without one is embedded.
+        const written = data as { id?: string; embedding?: unknown } | null;
+        const id = written?.embedding ? undefined : written?.id;
+        if (id) {
+          const vec = await embedCacheDocument(row.display_name, admin);
+          if (vec) {
+            const up = await admin.from("precise_cache").update({ embedding: JSON.stringify(vec) }).eq("id", id);
+            if (up.error) console.log(`[parse_meal] precise_cache embedding update failed: ${up.error.message}`);
+          }
+        }
       }
       : undefined,
+    preciseAliasPut: async (aliasKey: string, rowId: string, confidence: number) => {
+      // ignoreDuplicates: the first mapping of a phrase wins and is never repointed.
+      const { error } = await admin.from("precise_alias").upsert(
+        { alias_key: aliasKey, row_id: rowId, source: "jev", confidence },
+        { onConflict: "alias_key", ignoreDuplicates: true },
+      );
+      if (error) console.log(`[parse_meal] precise_alias upsert failed: ${error.message}`);
+    },
     webLookup: PRECISE_WEB_PROVIDER,
     tavily: TAVILY_API_KEY ? { apiKey: TAVILY_API_KEY, timeoutMs: 20_000, log: (m) => console.log(m) } : undefined,
     // Time is not Precise's constraint, so relevance gets a longer leash than

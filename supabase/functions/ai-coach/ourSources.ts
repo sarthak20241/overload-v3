@@ -57,18 +57,21 @@ export const EXTRA_REFERENCE_ROWS = 4;
 const EXTRA_SOURCES = new Set(["usda", "cofid", "ciqual", "curated", "web_verified"]);
 
 /**
- * Which search rows Jev sees, in order: production's own merge (trigram rows
- * first, then semantic rows not already in), capped at MAIN_ROWS, then up to
- * EXTRA_REFERENCE_ROWS lab or curated rows that ranked lower. Pure, by id.
+ * Which search rows Jev sees, in order: Precise cache rows first (foods we
+ * researched on the web before; migration 0141's precise_cache_candidates),
+ * then production's own merge (trigram rows, then semantic rows not already
+ * in), capped at MAIN_ROWS, then up to EXTRA_REFERENCE_ROWS lab or curated rows
+ * that ranked lower. Pure, by id.
  */
 export function selectMatchRows<R extends { id: string }>(
   trigram: R[],
   semantic: R[],
   sourceOf: (id: string) => string | undefined,
+  cached: R[] = [],
 ): R[] {
   const seen = new Set<string>();
   const ordered: R[] = [];
-  for (const r of [...trigram, ...semantic]) {
+  for (const r of [...cached, ...trigram, ...semantic]) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     ordered.push(r);
