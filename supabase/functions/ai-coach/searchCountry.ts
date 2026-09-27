@@ -50,7 +50,8 @@ const MEXICO = new Set(["America/Mexico_City", "America/Monterrey", "America/Tij
 export function countryForTimezone(tz: string | null | undefined, fallback: string | null): string | null {
   const zone = (tz ?? "").trim();
   if (!zone) return fallback;
-  if (EXACT[zone]) return EXACT[zone];
+  // Own properties only: a zone string like "constructor" must not read Object.prototype.
+  if (Object.hasOwn(EXACT, zone)) return EXACT[zone];
   if (US.has(zone) || zone.startsWith("America/Indiana/") || zone.startsWith("America/Kentucky/") ||
     zone.startsWith("America/North_Dakota/") || zone.startsWith("US/")) return "united states";
   if (CANADA.has(zone) || zone.startsWith("Canada/")) return "canada";

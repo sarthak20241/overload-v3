@@ -4,13 +4,20 @@
 //
 //   npx tsx scripts/precise-match/build-candidates.mts
 //
-// Mirrors production retrieval (searchCatalogWithServings in ai-coach
-// index.ts): trigram top 8 + semantic top 6, trigram first, merged to 8. Reads
-// only; writes scripts/precise-match/candidates.json. Costs one Voyage query
-// embedding per line (fractions of a cent).
+// Mirrors production's our-sources retrieval (findMatchCandidates in ai-coach
+// index.ts): trigram top 30 + semantic top 6, merged by selectMatchRows (the
+// production helper) into 8 main rows plus up to 4 lab / curated rows. Reads
+// only; writes scripts/precise-match/candidates.json, and ONLY when every
+// search for every line succeeded: a snapshot with a silently empty leg would
+// measure Jev against fewer rows than production offers.
+//
+// The committed candidates.json predates the extra lab rows (8 rows per line).
+// Rebuilding changes candidate ids, so matchLabels.ts must be relabelled by
+// hand after a rebuild, never remapped.
 import { readFileSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { QUERIES } from "./queries";
+import { selectMatchRows } from "../../supabase/functions/ai-coach/ourSources";
 
 const dotenv: Record<string, string> = {};
 for (const line of readFileSync(".env.local", "utf8").split("\n")) {
@@ -46,34 +53,49 @@ async function embed(q: string): Promise<number[] | null> {
   return null;
 }
 
-const out: Record<string, Array<{ id: string; name: string; brand: string | null; source: string; kcal: number | null }>> = {};
+const out: Record<string, Array<{
+  id: string; name: string; brand: string | null; source: string; kcal: number | null; protein_g: number | null;
+}>> = {};
+const failures: string[] = [];
 for (const q of QUERIES) {
   const text = q.brand && !q.name.toLowerCase().includes(q.brand.toLowerCase()) ? `${q.brand} ${q.name}` : q.name;
-  const tri = await admin.rpc("search_foods_ranked", { q: text, lim: 8 });
-  if (tri.error) console.error(`trigram error for "${text}": ${tri.error.message}`);
+  const tri = await admin.rpc("search_foods_ranked", { q: text, lim: 30 });
+  if (tri.error) failures.push(`${q.id}: trigram ${tri.error.message}`);
   const vec = await embed(text);
+  if (!vec) failures.push(`${q.id}: no query embedding`);
   const sem = vec
     ? await admin.rpc("search_foods_semantic", { p_query_embedding: JSON.stringify(vec), lim: 6 })
     : { data: [], error: null };
-  if (sem.error) console.error(`semantic error for "${text}": ${sem.error.message}`);
+  if (sem.error) failures.push(`${q.id}: semantic ${sem.error.message}`);
 
-  const seen = new Set<string>();
-  const ids: string[] = [];
-  for (const r of [...(tri.data ?? []), ...(sem.data ?? [])] as Array<{ id: string }>) {
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
-    ids.push(r.id);
-    if (ids.length >= 8) break;
-  }
-  // The search RPCs do not return `source`; read it, keeping search order.
-  const { data: rows } = await admin.from("foods").select("id, name, brand, source, kcal").in("id", ids);
+  const triRows = ((tri.data ?? []) as Array<{ id: string }>).map((r) => ({ id: String(r.id) }));
+  const semRows = ((sem.data ?? []) as Array<{ id: string }>).map((r) => ({ id: String(r.id) }));
+  const allIds = [...new Set([...triRows, ...semRows].map((r) => r.id))];
+  // The search RPCs do not return `source`; read it for every row, then let
+  // the production helper choose.
+  const { data: srcRows, error: srcErr } = allIds.length
+    ? await admin.from("foods").select("id, source").in("id", allIds)
+    : { data: [], error: null };
+  if (srcErr) failures.push(`${q.id}: foods read ${srcErr.message}`);
+  const sourceOf = new Map((srcRows ?? []).map((r: any) => [r.id, r.source]));
+  const ids = selectMatchRows(triRows, semRows, (id) => sourceOf.get(id)).map((r) => r.id);
+  const { data: rows, error: rowErr } = ids.length
+    ? await admin.from("foods").select("id, name, brand, source, kcal, protein_g").in("id", ids)
+    : { data: [], error: null };
+  if (rowErr) failures.push(`${q.id}: foods read ${rowErr.message}`);
   const byId = new Map((rows ?? []).map((r: any) => [r.id, r]));
   out[q.id] = ids.map((id) => byId.get(id)).filter(Boolean).map((r: any) => ({
     id: r.id, name: r.name, brand: r.brand, source: r.source, kcal: r.kcal === null ? null : Number(r.kcal),
+    protein_g: r.protein_g === null ? null : Number(r.protein_g),
   }));
   console.log(`${q.id.padEnd(20)} ${out[q.id].length} candidates`);
   // Voyage free tier is rate limited; a short gap keeps the snapshot whole.
   await new Promise((r) => setTimeout(r, 400));
+}
+if (failures.length) {
+  console.error(`\n${failures.length} retrieval failure(s); candidates.json NOT written:`);
+  for (const f of failures) console.error(`  ${f}`);
+  process.exit(1);
 }
 writeFileSync("scripts/precise-match/candidates.json", JSON.stringify(out, null, 2) + "\n");
 console.log("wrote scripts/precise-match/candidates.json");

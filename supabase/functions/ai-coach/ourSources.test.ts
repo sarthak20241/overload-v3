@@ -139,7 +139,7 @@ Deno.test("selectMatchRows keeps production's top 8, then adds lab rows from fur
 // resolveOneItem. These drive the hook through runParseMeal is heavy, so the
 // integration check below exercises the real resolve path with a stub web.
 
-import { runParseMeal } from "./parseMeal.ts";
+import { runParseMeal, SHADOW_GRACE_MS } from "./parseMeal.ts";
 
 function parseDeps(mode: "shadow" | "on", webCalls: string[], seen: { calls: string[] }): ParseMealDeps {
   return {
@@ -194,6 +194,26 @@ Deno.test("shadow: the web still answers, and the trace records what our sources
   assertEquals((step?.input as { mode: string }).mode, "shadow");
   assertEquals(((step?.result as { decision: { match: string } }).decision).match, "Bananas, raw");
   assertEquals(((step?.result as { web: { kcal: number } }).web).kcal, 95);
+});
+
+Deno.test("shadow: a slow match never holds the answer past the grace period", async () => {
+  const web: string[] = [];
+  const seen = { calls: [] as string[] };
+  const deps = parseDeps("shadow", web, seen);
+  let release: () => void = () => {};
+  const blocked = new Promise<void>((res) => { release = res; });
+  deps.preciseMatch = {
+    mode: "shadow",
+    findCandidates: async () => { await blocked; return [BANANA]; },
+  };
+  const t0 = Date.now();
+  const r = await runParseMeal(deps, INPUT);
+  const ms = Date.now() - t0;
+  release();
+  assert(ms < SHADOW_GRACE_MS + 1500, `took ${ms} ms`);
+  assert(r.tool_calls.includes("super_lookup"));
+  const step = r.steps.find((s) => s.tool === "our_sources");
+  assertEquals((step?.result as { unfinished?: boolean }).unfinished, true);
 });
 
 Deno.test("on: a row our sources accept answers, and the web is never paid for", async () => {

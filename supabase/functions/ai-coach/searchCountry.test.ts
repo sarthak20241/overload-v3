@@ -24,3 +24,8 @@ Deno.test("Australia and the UK", () => {
   assertEquals(countryForTimezone("Australia/Sydney", null), "australia");
   assertEquals(countryForTimezone("Europe/London", null), "united kingdom");
 });
+
+Deno.test("a zone named like an Object property is not a country", () => {
+  assertEquals(countryForTimezone("constructor", "india"), null);
+  assertEquals(countryForTimezone("toString", "india"), null);
+});

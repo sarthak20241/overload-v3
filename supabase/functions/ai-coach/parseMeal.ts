@@ -46,6 +46,10 @@ import {
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import { matchOurSources } from "./ourSources.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
+
+/** How long shadow mode may keep the user waiting for the our-sources match
+ *  AFTER the web lookup has answered. Past it the step is recorded unfinished. */
+export const SHADOW_GRACE_MS = 1500;
 import type { TavilyDeps } from "./tavily.ts";
 import type { JevDeps } from "./jev.ts";
 
@@ -3235,12 +3239,21 @@ async function resolveOneItem(
     const tWeb0 = Date.now();
     const found = await superLookup(item).catch(() => null);
     if (ours && pm?.mode === "shadow") {
-      const r = await ours;
+      // Shadow must never slow the answer the user is waiting for. By now the
+      // web lookup is done; the match gets a short grace period to finish, and
+      // is recorded as unfinished if it has not (it keeps running unobserved).
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((res) => { timer = setTimeout(() => res(null), SHADOW_GRACE_MS); });
+      const r = await Promise.race([ours, late]);
+      clearTimeout(timer);
       steps.push({
         iter: 1,
         tool: "our_sources",
         input: { mode: "shadow" },
-        result: { ...r.trace, web: found ? { name: found.name, kcal: found.kcal } : null },
+        result: {
+          ...(r ? r.trace : { unfinished: true, grace_ms: SHADOW_GRACE_MS }),
+          web: found ? { name: found.name, kcal: found.kcal } : null,
+        },
       });
     }
     if (found) {

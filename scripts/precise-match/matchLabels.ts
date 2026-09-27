@@ -65,8 +65,8 @@ export const MATCH_LABELS: Record<string, { kind: FoodKind; ok: string[] }> = {
   "f-walnuts": { kind: "plain", ok: ["4cb2fcad-b749-4fc2-bb54-2a739220daaa", "75f265a8-cbdc-48da-a896-8924dc14e4f6"] },
   // f-broccoli: Broccoli, green, steamed, Broccoli, cooked, as ingredient, Broccoli, fresh, cooked, no added fat. cooked with fat is another state
   "f-broccoli": { kind: "plain", ok: ["155eb662-d840-45fb-b411-a7285808c8f4", "e8ea2ac1-f0ef-4bf7-8301-2311d4d28e92", "643cf816-92bc-4e0e-892e-5aa002a784a5"] },
-  // f-tofu: Tofu nature, préemballé, Tofu, soya bean, steamed. plain tofu (firm and soft); fried / smoked / silken / spread / yogurt / burger are other forms
-  "f-tofu": { kind: "plain", ok: ["68602e9f-2454-4019-9fbf-e5373ca65749", "0a28e708-dacb-4e0e-8913-45f74d44eac6"] },
+  // f-tofu: Tofu nature, préemballé. Plain firm tofu (148 kcal). The CoFID steamed row is 73 kcal: a softer tofu, half the energy, so one query cannot accept both (relabelled on PR review; tofu was a miss in every run, so no count moved).
+  "f-tofu": { kind: "plain", ok: ["68602e9f-2454-4019-9fbf-e5373ca65749"] },
   // f-quinoa: Quinoa, cooked. uncooked is another state
   "f-quinoa": { kind: "plain", ok: ["51d83ce2-04a8-4850-b213-0b3ea524cba0"] },
   // f-roasted-peanuts: Peanuts, roasted, salted, Peanuts, roasted, unsalted. branded packs; honey roasted is flavoured

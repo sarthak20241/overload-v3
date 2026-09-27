@@ -66,6 +66,9 @@ const NOUL = MODE === "noul" || MODE === "score" || MODE === "tiebreak";
 // whose top rows disagree on numbers (stage 2). Owner's choice B.
 const TIEBREAK = MODE === "tiebreak";
 const dump: { kind: unknown[]; match: unknown[] } = { kind: [], match: [] };
+// A failed Jev request would otherwise read as a string of misses. Any failure
+// makes the whole run invalid: it is reported and the process exits non-zero.
+const jevFailures: string[] = [];
 
 function chunks<T>(xs: T[], n: number): T[][] {
   const out: T[][] = [];
@@ -85,7 +88,7 @@ async function runKind(group: "tune" | "fresh") {
       const a = res.ok ? asChoice(res.response.answers[`${foodKey(i)}_kind`]) : null;
       answers.push({ c, choice: a?.choice ?? null, conf: a?.confidence ?? 0, probs: a?.probabilities ?? {} });
     });
-    if (!res.ok) console.error(`  jev failed: ${res.failure} ${res.detail}`);
+    if (!res.ok) jevFailures.push(`kind: ${res.failure} ${res.detail}`);
   }
   console.log(`\n── KIND (${group}, ${cases.length}) ──`);
   for (const f of [0.5, 0.6, 0.7]) {
@@ -159,7 +162,7 @@ async function runMatch(group: "tune" | "fresh") {
       else questions[`${foodKey(i)}_match`] = matchQuestion(foodKey(i), MATCH_LABELS[q.id].kind, CANDIDATES[q.id] ?? []);
     });
     const res = await askJev(mealState(batch), questions, jev);
-    if (!res.ok) console.error(`  jev failed: ${res.failure} ${res.detail}`);
+    if (!res.ok) jevFailures.push(`match: ${res.failure} ${res.detail}`);
     batch.forEach((q, i) => {
       results.push({
         id: q.id,
@@ -187,7 +190,7 @@ async function runMatch(group: "tune" | "fresh") {
       const questions: Record<string, JevQuestion> = {};
       batch.forEach((n, i) => { questions[`${foodKey(i)}_tie`] = tiebreakQuestion(foodKey(i), n.kind, n.rows); });
       const res = await askJev(mealState(batch.map((n) => n.q)), questions, jev);
-      if (!res.ok) console.error(`  jev failed (tie-break): ${res.failure} ${res.detail}`);
+      if (!res.ok) jevFailures.push(`tie-break: ${res.failure} ${res.detail}`);
       batch.forEach((n, i) => {
         n.r.tieRows = n.rows;
         n.r.tieAnswer = res.ok ? asChoice(res.response.answers[`${foodKey(i)}_tie`]) : null;
@@ -247,6 +250,11 @@ async function runMatch(group: "tune" | "fresh") {
 for (const g of groups) {
   if (ONLY !== "match") await runKind(g);
   if (ONLY !== "kind") await runMatch(g);
+}
+if (jevFailures.length) {
+  console.error(`\nINVALID RUN: ${jevFailures.length} Jev request(s) failed, so the counts above are not a measurement:`);
+  for (const f of jevFailures) console.error(`  ${f}`);
+  Deno.exit(1);
 }
 if (DUMP) {
   Deno.writeTextFileSync(DUMP, JSON.stringify({ kindQuestion: kindQuestion("f1"), ...dump }, null, 2));
