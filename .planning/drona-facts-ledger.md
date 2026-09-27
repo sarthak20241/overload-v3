@@ -471,10 +471,25 @@ What the cards facts show (6 cards, since 18 Sep):
   it reached the server on 22 Sep, so the 18 Sep card saw no weight (0148).
 - **A Later ran out.** One deferred card expired unanswered.
 
-**Nothing rebuilds the facts yet.** Every domain was backfilled by hand (26
-weeks). Before signals read them, a rebuild must run on a schedule: the
-functions are `drona_rebuild_{weight,food,training,recovery,plan,word,card}_facts`
-(training also rebuilds plan match).
+## The facts rebuild themselves (2026-09-27, migration 0149)
+
+pg_cron job `drona-facts-rebuild`, every 15 minutes: `drona_rebuild_facts_due(25)`
+rebuilds the people whose local day has turned since their last rebuild (and
+it is past 00:15 there), for this week and last. A missed run is caught by the
+next. `drona_rebuild_all_facts` runs the 7 domains each in its own
+sub-transaction, so one failure is recorded and the rest still run.
+`drona_facts_runs` holds, per person: last day done, when, how long, errors.
+
+First full pass: 50 people, 0 errors, about 0.5 s each (25 s in all). A second
+pass gives identical facts, and weeks older than the two rebuilt stayed
+byte-identical. `scripts/drona-facts/schedule.mts`, 6 checks, all pass.
+
+Word facts keep chat messages older than 85 days: `coach_traces` is pruned at
+90 (`prune_coach_traces_daily`), and after that the facts are the only record.
+
+To rebuild everything by hand (for example after a formula change):
+`select public.drona_rebuild_all_facts(user_id, current_date - 182, current_date)`
+per person. A rebuild further back than 85 days keeps the old chat rows.
 
 ## Build order
 
