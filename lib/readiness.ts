@@ -85,6 +85,45 @@ export interface ReadinessResult {
    * read"; it flips false once >= MIN_BASELINE_DAYS of personal sleep exist.
    */
   provisional: boolean;
+  /** Every input and what it did to the score, stored with it (lib/readinessSync.ts). */
+  parts: ReadinessParts;
+}
+
+/**
+ * Bump when computeReadiness changes how a score is made, so stored parts say
+ * which formula produced them.
+ */
+export const READINESS_FORMULA_VERSION = 1;
+
+/** Why a heart signal did or did not count toward the score. */
+export type SignalWhy = 'used' | 'no_reading' | 'short_baseline' | 'needs_rhr' | 'needs_sleep';
+
+/**
+ * The score taken apart. `points` is what each signal moved the score from the
+ * neutral 50 (share of the blend x its z x 15, the same scale zToScore uses),
+ * so base = 50 + sleep + rhr + hrv points, before rounding and clamping, and the
+ * final score = base + load + diet points, clamped to 0-100.
+ */
+export interface ReadinessParts {
+  formula: number;
+  sleep: {
+    minutes: number | null;
+    quality: number | null;
+    /** personal = the user's own baseline; population = the cold-start prior. */
+    basis: 'personal' | 'population' | null;
+    baselineN: number;
+    zDuration: number | null;
+    zQuality: number | null;
+    z: number | null;
+    share: number;
+    points: number;
+  };
+  rhr: { value: number | null; baselineN: number; z: number | null; why: SignalWhy; share: number; points: number };
+  hrv: { value: number | null; baselineN: number; z: number | null; why: SignalWhy; share: number; points: number };
+  baseScore: number | null;
+  load: { last7dSets: number; typicalWeeklySets: number; ratio: number; points: number } | null;
+  diet: { proteinRatio: number; energyRatio: number; points: number } | null;
+  score: number | null;
 }
 
 /** Min days of baseline before a PERSONAL signal is trusted. */
@@ -212,17 +251,6 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
     : zDur != null ? zDur
     : null;
 
-  if (zSleep == null) {
-    return {
-      score: null,
-      tier: 'none',
-      band: null,
-      provisional: false,
-      rationale: 'No sleep yet. Log last night or wear your tracker to bed, and readiness kicks in.',
-      contributors,
-    };
-  }
-
   // ── Layered recovery signals (personal baseline only) ───────────────────────
   const zHrv = zPersonal(input.today.hrvMs, input.baseline.hrvMs, SD_FLOOR.hrv);
   const zRhr = zPersonal(input.today.restingHrBpm, input.baseline.restingHrBpm, SD_FLOOR.rhr, true);
@@ -232,6 +260,56 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
   // folds HRV into the score when resting HR is absent. A lone HRV reading (rare)
   // falls through to sleep-only rather than inventing a half-A1.
   const haveHrv = zHrv != null && haveRhr;
+
+  const parts: ReadinessParts = {
+    formula: READINESS_FORMULA_VERSION,
+    sleep: {
+      minutes: input.today.sleepMinutes ?? null,
+      quality: input.today.sleepQuality ?? null,
+      basis: zDur == null ? null : provisional ? 'population' : 'personal',
+      baselineN: sleepBase?.n ?? 0,
+      zDuration: zDur,
+      zQuality: zQual,
+      z: zSleep,
+      share: 0,
+      points: 0,
+    },
+    rhr: {
+      value: input.today.restingHrBpm ?? null,
+      baselineN: input.baseline.restingHrBpm?.n ?? 0,
+      z: zRhr,
+      why: input.today.restingHrBpm == null ? 'no_reading' : zRhr == null ? 'short_baseline' : 'used',
+      share: 0,
+      points: 0,
+    },
+    hrv: {
+      value: input.today.hrvMs ?? null,
+      baselineN: input.baseline.hrvMs?.n ?? 0,
+      z: zHrv,
+      why: input.today.hrvMs == null ? 'no_reading' : zHrv == null ? 'short_baseline' : haveHrv ? 'used' : 'needs_rhr',
+      share: 0,
+      points: 0,
+    },
+    baseScore: null,
+    load: null,
+    diet: null,
+    score: null,
+  };
+
+  if (zSleep == null) {
+    // No sleep, no score: the heart signals cannot count either.
+    if (parts.rhr.why === 'used') parts.rhr.why = 'needs_sleep';
+    if (parts.hrv.why === 'used') parts.hrv.why = 'needs_sleep';
+    return {
+      score: null,
+      tier: 'none',
+      band: null,
+      provisional: false,
+      rationale: 'No sleep yet. Log last night or wear your tracker to bed, and readiness kicks in.',
+      contributors,
+      parts,
+    };
+  }
 
   // Tier weights; renormalized below over the signals actually present.
   const weights = haveHrv ? { hrv: 0.5, rhr: 0.3, sleep: 0.2 } : { hrv: 0, rhr: 0.5, sleep: 0.5 };
@@ -243,12 +321,21 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
 
   const weightedZ = wSum > 0 ? zSum / wSum : 0;
   let score = zToScore(weightedZ);
+  // Each signal's share of the blend, and the points it moved the score from 50.
+  const shareOf = (w: number) => (wSum > 0 ? w / wSum : 0);
+  parts.sleep.share = shareOf(weights.sleep);
+  parts.sleep.points = 15 * parts.sleep.share * zSleep;
+  if (zRhr != null) { parts.rhr.share = shareOf(weights.rhr); parts.rhr.points = 15 * parts.rhr.share * zRhr; }
+  if (haveHrv && zHrv != null) { parts.hrv.share = shareOf(weights.hrv); parts.hrv.points = 15 * parts.hrv.share * zHrv; }
+  parts.baseScore = score;
 
   // Acute-load temper: well above typical weekly volume eats into headroom.
   if (input.acuteLoad && input.acuteLoad.typicalWeeklySets > 0) {
     const ratio = input.acuteLoad.last7dSets / input.acuteLoad.typicalWeeklySets;
+    parts.load = { last7dSets: input.acuteLoad.last7dSets, typicalWeeklySets: input.acuteLoad.typicalWeeklySets, ratio, points: 0 };
     if (ratio > 1.3) {
       const penalty = Math.round(clamp((ratio - 1.3) * 20, 0, 10));
+      parts.load.points = -penalty;
       if (penalty > 0) {
         score = clamp(score - penalty, 0, 100);
         contributors.push({ key: 'load', dir: -1, note: `recent training load ${Math.round(ratio * 100)}% of typical` });
@@ -262,13 +349,15 @@ export function computeReadiness(input: ReadinessInput): ReadinessResult {
   // UI can honestly say nutrition is being factored in.
   if (input.nutrition) {
     const delta = dietAdjustment(input.nutrition);
+    parts.diet = { proteinRatio: input.nutrition.proteinRatio, energyRatio: input.nutrition.energyRatio, points: delta };
     if (delta !== 0) score = clamp(score + delta, 0, 100);
     contributors.push({ key: 'diet', dir: Math.sign(delta) as -1 | 0 | 1, note: dietNote(delta) });
   }
 
   const tier: ReadinessTier = haveHrv ? 'A1' : haveRhr ? 'A2' : 'A3';
   const band = bandFor(score);
-  return { score, tier, band, provisional, rationale: rationaleFor(score, band, tier), contributors };
+  parts.score = score;
+  return { score, tier, band, provisional, rationale: rationaleFor(score, band, tier), contributors, parts };
 }
 
 function rationaleFor(score: number, band: ReadinessBand, tier: ReadinessTier): string {
