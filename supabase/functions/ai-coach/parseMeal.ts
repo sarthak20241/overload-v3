@@ -4190,6 +4190,8 @@ export function statedQuickItem(s: StatedPer100, it: ExtractedItem): ParsedItem 
     source: stamp.source,
     assumption: stamp.note,
     confidence: "high",
+    // The user's own numbers serve every tier, however they were logged.
+    numbers_tier: stamp.level,
   };
 }
 
@@ -5678,7 +5680,9 @@ async function runParseMealCore(
         toResolve.map((it) =>
           // The user's own numbers win over their memory too: no call for a
           // line that carries them.
-          it.stated
+          // Numbers we can actually use, not merely numbers written: a total
+          // with no typed weight falls back to the memory like any line.
+          statedFor(it)
             ? Promise.resolve(null)
             : matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
         ),

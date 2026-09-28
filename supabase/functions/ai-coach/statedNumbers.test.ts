@@ -155,6 +155,7 @@ Deno.test("Quick uses the user's numbers over its own estimate and over the memo
   const it = r.parsed!.items[0];
   assertEquals(Math.round(it.kcal), 81);
   assertEquals(it.source, "manual");
+  assertEquals(it.numbers_tier, "precise");
   assert(!calls.includes("jev"));
 });
 
@@ -181,4 +182,16 @@ Deno.test("a line total with no typed weight is not turned into 'your numbers' o
   // Reviewer on #223: "1 bar, 200 kcal" would have been divided by the model's
   // own gram guess and labelled as the user's.
   assertEquals(statedFor({ name: "protein bar", brand: null, quantity: 1, unit: "bar", prep: null, stated: readStated({ basis: "total", kcal: 200 }), est: { kcal: 200, protein_g: 20, carb_g: 20, fat_g: 7, total_g: 60 } } as never), null);
+});
+
+Deno.test("numbers that cannot be used do not cost the line its memory", async () => {
+  // Reviewer on #223: the skip checked for ANY stated field, so an unusable
+  // one (a total with no typed weight) skipped the memory for nothing.
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps({ ...LINE, quantity: 1, unit: "piece", ...EST, stated: { basis: "total", kcal: 80 } }, calls, lookups),
+    { ...BASE, text: "1 piece raw skinless chicken breast, 80 kcal", mode: "fast" },
+  );
+  assert(calls.includes("jev"), JSON.stringify(calls));
+  void r;
 });
