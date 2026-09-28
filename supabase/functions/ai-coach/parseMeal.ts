@@ -45,6 +45,7 @@ import {
 } from "./preciseCache.ts";
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import { matchOurSources } from "./ourSources.ts";
+import { fillStated, readStated, type StatedPer100, statedNote, statedPer100, type StatedRaw } from "./statedNumbers.ts";
 import {
   buildMemory,
   matchMemory,
@@ -1169,7 +1170,8 @@ const EXTRACT_TOOL = {
   name: "extract_meal",
   description:
     "Report every distinct food or drink in the text as a separate item. Extraction only: " +
-    "no nutrition numbers, no serving-size guessing beyond what the text says.",
+    "no nutrition numbers of your own (numbers the USER wrote go in stated), no serving-size " +
+    "guessing beyond what the text says.",
   input_schema: {
     type: "object",
     properties: {
@@ -1297,6 +1299,28 @@ const EXTRACT_TOOL = {
               description:
                 'Preparation state the text implies: "roasted", "fried", "cooked", "raw", ' +
                 "etc. null when unstated.",
+            },
+            stated: {
+              type: ["object", "null"],
+              description:
+                "ONLY when the user's own text gives nutrition numbers for THIS food (a label " +
+                'they read out, or their own tracking: "per 100 g: 130 kcal, 22.5 g protein"). ' +
+                "Copy them exactly as written; never estimate, recall or complete them - a " +
+                "number they did not write is null. Omit or null when they wrote none.",
+              properties: {
+                basis: {
+                  type: "string",
+                  enum: ["per_100g", "per_100ml", "per_serving", "total"],
+                  description: "What the numbers are for: per 100 g, per 100 ml, per one serving " +
+                    "(serving_g grams), or the total for this line.",
+                },
+                serving_g: { type: ["number", "null"], description: "Grams in that serving, when the text says it." },
+                kcal: { type: ["number", "null"] },
+                protein_g: { type: ["number", "null"] },
+                carb_g: { type: ["number", "null"] },
+                fat_g: { type: ["number", "null"] },
+                fiber_g: { type: ["number", "null"] },
+              },
             },
             meal: {
               type: ["string", "null"],
@@ -2331,7 +2355,7 @@ const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lif
  *  buy output tokens for numbers the second call overwrites anyway. In FAST
  *  there IS no second call, so this sentence must not be sent: it told the
  *  model not to do the exact thing FAST_EXTRACT_TOOL makes required. */
-const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition.`;
+const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition. The one exception is numbers the user wrote themselves for a food ("per 100 g: 130 kcal, 22 g protein"): copy them into that item's stated field exactly as written, never estimated or completed.`;
 
 /** Smart only, since fast carries its own standalone prompt below. quantity
  *  and unit mirror what the user SAID; inventing an amount nobody typed is
@@ -2378,6 +2402,8 @@ Keep names faithful: correct spelling ("panner" is "paneer"), and keep words tha
 One item per food the user LISTED. A composite dish is one item ("rajma chawal"), but an add-on named alongside a dish is its own line, never folded in - the user edits and deletes lines one at a time. Never drop an item, never merge two named foods into one.
 
 Indian context: plain "tea" or "chai" is milk tea; plain "coffee" is milk coffee.
+
+When the user writes nutrition numbers for a food themselves (a label they read out, or their own tracking), copy them into that item's stated field exactly as written, with what they are per, and base the est_ numbers on them. Never fill in a number they did not write. Leave stated out otherwise.
 
 If there is nothing to log (a question, chatter, a workout), decline.
 
@@ -2621,6 +2647,9 @@ export interface ExtractedItem {
   /** The exact name of the user's saved meal this item IS, when the message
    *  referred to one (see savedMeals.ts). First-shot only. */
   savedMeal?: string | null;
+  /** Nutrition numbers the USER wrote for this food, as written
+   *  (statedNumbers.ts). They win over every source. */
+  stated?: StatedRaw | null;
 }
 
 export interface ResolvedItem extends ExtractedItem {
@@ -4089,6 +4118,79 @@ export function memoryLineName(it: { name: string; prep?: string | null }): stri
   return `${prep} ${it.name}`;
 }
 
+/** The user's own numbers for a line, per 100 g, or null when they gave none
+ *  or they cannot be put on a per-100 basis without guessing. */
+export function statedFor(it: ExtractedItem): StatedPer100 | null {
+  if (!it.stated) return null;
+  const unit = it.unit.trim().toLowerCase();
+  const lineGrams = MASS_UNITS.has(unit) && it.quantity > 0 ? it.quantity : (it.est?.total_g ?? null);
+  return statedPer100(it.stated, lineGrams);
+}
+
+/** What a line answered by the user's own numbers carries onto the card. They
+ *  are the user's, so the saved line is 'manual' and serves every tier. */
+export function statedStamp(s: StatedPer100, filled: "looked up" | "estimated"): MemoryStamp {
+  return { note: statedNote(s, filled), level: "precise", source: "manual" };
+}
+
+/** A Thorough/Precise candidate carrying the user's numbers: all of them for a
+ *  full panel, or theirs over `base` for the fields they gave. */
+export function statedCandidate(s: StatedPer100, it: ExtractedItem, base?: CandidateFood): CandidateFood {
+  const per = base ? fillStated(s, base) : fillStated(s, { protein_g: 0, carb_g: 0, fat_g: 0, fiber_g: null });
+  const unit = it.unit.trim().toLowerCase();
+  const printed = s.serving_g && !MASS_UNITS.has(unit)
+    ? [{ label: it.unit, grams: s.serving_g, is_default: true }]
+    : [];
+  return {
+    food_id: `${EPHEMERAL_ID_PREFIX}user_${memoryKey(foodLabel(it))}`,
+    name: foodLabel(it),
+    brand: it.brand ?? null,
+    base_unit: base?.base_unit ?? "g",
+    kcal: per.kcal,
+    protein_g: per.protein_g,
+    carb_g: per.carb_g,
+    fat_g: per.fat_g,
+    fiber_g: per.fiber_g,
+    servings: [...printed, ...(base?.servings ?? []).map((sv) => ({ ...sv, is_default: printed.length ? false : sv.is_default }))],
+    source: "catalog",
+  };
+}
+
+/** A Quick line from the user's own numbers, or null when the amount has no
+ *  weight to scale them by. Missing fields come from Quick's own estimate. */
+export function statedQuickItem(s: StatedPer100, it: ExtractedItem): ParsedItem | null {
+  const qty = it.quantity > 0 ? it.quantity : 1;
+  const unit = it.unit.trim().toLowerCase();
+  let grams: number | null = null;
+  if (MASS_UNITS.has(unit)) grams = qty;
+  else if (s.serving_g) grams = qty * s.serving_g;
+  else if (it.est && it.est.total_g > 0) grams = it.est.total_g;
+  if (!grams || grams > 5000) return null;
+  let per: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+  if (s.complete) per = fillStated(s, { protein_g: 0, carb_g: 0, fat_g: 0, fiber_g: null });
+  else if (it.est && it.est.total_g > 0) {
+    const k = 100 / it.est.total_g;
+    per = fillStated(s, { protein_g: it.est.protein_g * k, carb_g: it.est.carb_g * k, fat_g: it.est.fat_g * k, fiber_g: null });
+  } else return null;
+  const f = grams / 100;
+  const stamp = statedStamp(s, "estimated");
+  return {
+    food_id: null,
+    food_name: foodLabel(it),
+    quantity: qty,
+    serving_label: it.unit,
+    grams: round1(grams),
+    kcal: round1(per.kcal * f),
+    protein_g: round1(per.protein_g * f),
+    carb_g: round1(per.carb_g * f),
+    fat_g: round1(per.fat_g * f),
+    fiber_g: per.fiber_g == null ? null : round1(per.fiber_g * f),
+    source: stamp.source,
+    assumption: stamp.note,
+    confidence: "high",
+  };
+}
+
 /** A unit, singular: "pieces" and "piece" are one unit. */
 const unitKey = (u: string) => {
   const k = memoryKey(u);
@@ -5186,6 +5288,7 @@ async function runParseMealCore(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
+        stated: readStated(o.stated),
         savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
@@ -5571,10 +5674,14 @@ async function runParseMealCore(
         // "chicken breast" to a grilled row and rightly refused (sim test,
         // 2026-09-27). Same join as codeFillItems' food_name.
         toResolve.map((it) =>
-          matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
+          // The user's own numbers win over their memory too: no call for a
+          // line that carries them.
+          it.stated
+            ? Promise.resolve(null)
+            : matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
         ),
       );
-      for (const m of matches) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
+      for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
       return matches;
     })().catch(() => toResolve.map(() => null))
     : Promise.resolve(toResolve.map(() => null));
@@ -5633,6 +5740,16 @@ async function runParseMealCore(
     T.resolve_ms = 0;
     const tPost0 = Date.now();
     const fastItems: ParsedItem[] = toResolve.map((r, idx) => {
+      // The user's own numbers first: over the memory, over the estimate.
+      const statedLine = (() => {
+        const st = statedFor(r);
+        return st ? statedQuickItem(st, r) : null;
+      })();
+      if (statedLine) {
+        toolCalls.push("user_stated");
+        steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "stated" } });
+        return statedLine;
+      }
       const remembered = memory[idx]?.food
         ? memoryQuickItem(memory[idx]!.food!, { ...r, est: r.est ?? null }, memTimeZone)
         : null;
@@ -5737,7 +5854,32 @@ async function runParseMealCore(
 
   const memory = await memoryP;
   const resolved: ResolvedItem[] = await Promise.all(
-    toResolve.map((item, idx) => {
+    toResolve.map(async (item, idx) => {
+      // The user's own numbers first. A full panel answers with no lookup; a
+      // partial one keeps theirs and lets the tier fill only what is missing.
+      const st = statedFor(item);
+      if (st) {
+        toolCalls.push("user_stated");
+        steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { per100_kcal: st.kcal, complete: st.complete } });
+        if (st.complete) {
+          const cand = statedCandidate(st, item);
+          memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
+          return { ...item, candidates: [cand] } as ResolvedItem;
+        }
+        const looked = await resolveOneItem(
+          deps, item, steps, toolCalls, stapleNames,
+          superMode
+            ? (it: ExtractedItem) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st2) => steps.push(st2))
+            : undefined,
+        );
+        // Nothing to fill the missing fields from: the lookup's own answer
+        // stands rather than inventing zeros for what the user did not give.
+        if (!looked.candidates[0]) return looked;
+        const cand = statedCandidate(st, item, looked.candidates[0]);
+        memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
+        return { ...item, candidates: [cand] } as ResolvedItem;
+      }
       const remembered = memory[idx]?.food;
       if (remembered) {
         toolCalls.push("user_memory_match");
