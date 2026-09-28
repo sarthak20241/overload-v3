@@ -7,7 +7,7 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { readStated, statedPer100 } from "./statedNumbers.ts";
-import { type ParseMealDeps, runParseMeal } from "./parseMeal.ts";
+import { type ParseMealDeps, runParseMeal, statedFor } from "./parseMeal.ts";
 
 // ── Reading and per-100 ─────────────────────────────────────────────────────
 
@@ -38,6 +38,13 @@ Deno.test("no kcal, no stated numbers", () => {
 
 Deno.test("a per-pack number taken as per 100 g is refused, not logged", () => {
   assertEquals(statedPer100(readStated({ basis: "per_100g", kcal: 1800 })!, null), null);
+  // The parser's own ceiling, not a looser one: 930 is past pure fat.
+  assertEquals(statedPer100(readStated({ basis: "per_100g", kcal: 930 })!, null), null);
+});
+
+Deno.test("a line total converts against a typed weight", () => {
+  const s = statedPer100(readStated({ basis: "total", kcal: 200, protein_g: 20, carb_g: 20, fat_g: 4 })!, 50)!;
+  assertEquals([s.kcal, s.label], [400, "200 kcal for 50 g"]);
 });
 
 // ── End to end ──────────────────────────────────────────────────────────────
@@ -168,4 +175,10 @@ Deno.test("a partial panel with nothing to fill from never invents zeros under t
     { ...BASE, text: "62 g raw chicken breast, 130 kcal and 22.5 g protein per 100 g", mode: null },
   );
   assert(r.parsed!.items[0].source !== "manual");
+});
+
+Deno.test("a line total with no typed weight is not turned into 'your numbers' on a guessed weight", () => {
+  // Reviewer on #223: "1 bar, 200 kcal" would have been divided by the model's
+  // own gram guess and labelled as the user's.
+  assertEquals(statedFor({ name: "protein bar", brand: null, quantity: 1, unit: "bar", prep: null, stated: readStated({ basis: "total", kcal: 200 }), est: { kcal: 200, protein_g: 20, carb_g: 20, fat_g: 7, total_g: 60 } } as never), null);
 });

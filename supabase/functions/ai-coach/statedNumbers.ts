@@ -74,7 +74,13 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
  * or a line total with no weight for the line. `lineGrams` is the line's weight
  * when the user typed it (a mass unit), else null.
  */
-export function statedPer100(s: StatedRaw, lineGrams: number | null): StatedPer100 | null {
+export function statedPer100(
+  s: StatedRaw,
+  lineGrams: number | null,
+  /** The parser's own ceiling (PLAUSIBLE.maxKcalPer100), passed in so there
+   *  is one definition of "no food carries more". */
+  maxKcalPer100 = 920,
+): StatedPer100 | null {
   let factor: number;
   let label: string;
   let serving: number | null = null;
@@ -93,10 +99,10 @@ export function statedPer100(s: StatedRaw, lineGrams: number | null): StatedPer1
   }
   const scale = (v: number | null) => (v === null ? null : r1(v * factor));
   const kcal = r1((s.kcal as number) * factor);
-  // Physics, same ceilings as the rest of the parser: no food carries more than
-  // ~900 kcal or more than 100 g of macros per 100 g. A reading past that is a
-  // misread basis (per pack taken as per 100 g), not the user's label.
-  if (kcal > 950) return null;
+  // Physics, the parser's own ceilings: no food carries more kcal than
+  // maxKcalPer100 or more than 100 g of macros per 100 g. A reading past that
+  // is a misread basis (per pack taken as per 100 g), not the user's label.
+  if (kcal > maxKcalPer100) return null;
   const out = {
     kcal,
     protein_g: scale(s.protein_g),

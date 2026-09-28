@@ -4123,8 +4123,10 @@ export function memoryLineName(it: { name: string; prep?: string | null }): stri
 export function statedFor(it: ExtractedItem): StatedPer100 | null {
   if (!it.stated) return null;
   const unit = it.unit.trim().toLowerCase();
-  const lineGrams = MASS_UNITS.has(unit) && it.quantity > 0 ? it.quantity : (it.est?.total_g ?? null);
-  return statedPer100(it.stated, lineGrams);
+  // A line total converts only against a weight the user TYPED. The model's
+  // own gram guess would make "Your numbers: 200 kcal for 60 g" half ours.
+  const lineGrams = MASS_UNITS.has(unit) && it.quantity > 0 ? it.quantity : null;
+  return statedPer100(it.stated, lineGrams, PLAUSIBLE.maxKcalPer100);
 }
 
 /** What a line answered by the user's own numbers carries onto the card. They
