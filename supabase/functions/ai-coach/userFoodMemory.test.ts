@@ -374,3 +374,29 @@ Deno.test("the failure this prevents: Quick splits 'grilled' out of the name and
   assert(calls.includes("jev:grilled chicken breast"), JSON.stringify(calls));
   assertEquals(r.parsed!.items[0].numbers_tier, "precise");
 });
+
+Deno.test("the trace says when the memory had nothing this tier may use", async () => {
+  // A Precise parse for a user whose foods are all Quick guesses used to leave
+  // no user_memory step at all, which read the same as "never ran".
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([live({ tier: "fast", source: "estimate" })], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED),
+    { ...BASE, text: "150g grilled chicken breast", mode: "super" },
+  );
+  const step = r.steps.find((s) => s.tool === "user_memory");
+  assertEquals((step?.result as { decision: { reason: string } }).decision.reason, "no_usable_foods");
+  assertEquals((step?.result as { logged_lines: number }).logged_lines, 1);
+});
+
+Deno.test("the trace says when a follow-up turn skipped the memory", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED),
+    {
+      ...BASE, text: "double check the chicken", mode: "super",
+      previousItems: [{ food_name: "grilled chicken breast", quantity: 150, serving_label: "g", grams: 150, kcal: 226, protein_g: 46.5, carb_g: 0, fat_g: 4.8, food_id: null, source: "catalog" } as never],
+    },
+  ).catch(() => null);
+  const step = (r?.steps ?? []).find((s) => s.tool === "user_memory");
+  assertEquals((step?.result as { skipped: string }).skipped, "follow_up");
+});

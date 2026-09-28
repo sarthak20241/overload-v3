@@ -5133,6 +5133,16 @@ async function runParseMealCore(
   const memoryLoadP = (!hasPrevious && deps.userMemory && deps.jev)
     ? deps.userMemory.load().catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }))
     : null;
+  // Every parse says whether the memory ran, so "it had nothing to offer" and
+  // "it never ran" cannot look the same in the traces.
+  if (deps.userMemory && !memoryLoadP) {
+    steps.push({
+      iter: 0,
+      tool: "user_memory",
+      input: { tier },
+      result: { skipped: hasPrevious ? "follow_up" : "no_jev" },
+    });
+  }
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -5671,7 +5681,19 @@ async function runParseMealCore(
       const loaded = await memoryLoadP;
       memTimeZone = loaded.timeZone;
       const foods = buildMemory(loaded.entries, tier);
-      if (foods.length === 0) return toResolve.map(() => null);
+      if (foods.length === 0) {
+        steps.push({
+          iter: 1,
+          tool: "user_memory",
+          input: { tier },
+          result: {
+            remembered: 0,
+            logged_lines: loaded.entries.length,
+            decision: { match: null, reason: "no_usable_foods" },
+          },
+        });
+        return toResolve.map(() => null);
+      }
       const matches = await Promise.all(
         // prep rides along ("grilled" + "chicken breast"): extract may split a
         // preparation out of the name, and without it Jev compared plain
