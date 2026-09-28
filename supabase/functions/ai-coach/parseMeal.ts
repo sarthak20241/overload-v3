@@ -5582,7 +5582,7 @@ async function runParseMealCore(
           result: {
             remembered: 0,
             logged_lines: loaded.entries.length,
-            decision: { match: null, reason: "none_usable_for_tier" },
+            decision: { match: null, reason: "no_usable_foods" },
           },
         });
         return toResolve.map(() => null);

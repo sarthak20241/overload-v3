@@ -384,7 +384,7 @@ Deno.test("the trace says when the memory had nothing this tier may use", async 
     { ...BASE, text: "150g grilled chicken breast", mode: "super" },
   );
   const step = r.steps.find((s) => s.tool === "user_memory");
-  assertEquals((step?.result as { decision: { reason: string } }).decision.reason, "none_usable_for_tier");
+  assertEquals((step?.result as { decision: { reason: string } }).decision.reason, "no_usable_foods");
   assertEquals((step?.result as { logged_lines: number }).logged_lines, 1);
 });
 
