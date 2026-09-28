@@ -57,7 +57,7 @@ const EST = {
 };
 const BASE = { localHour: 20, mealHint: null, recentFoods: [], todayTotals: null, targets: null };
 
-function deps(line: Record<string, unknown>, calls: string[], lookups: string[], catalogRow = true): ParseMealDeps {
+function deps(line: Record<string, unknown>, calls: string[], lookups: string[], catalogRow = true, rowName = "Chicken, breast, raw"): ParseMealDeps {
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     const body = JSON.parse(String(init?.body ?? "{}"));
@@ -94,7 +94,7 @@ function deps(line: Record<string, unknown>, calls: string[], lookups: string[],
     searchFoods: async (q) => {
       lookups.push(`search:${q}`);
       return catalogRow
-        ? [{ food_id: "usda-1", name: "Chicken, breast, raw", brand: null, base_unit: "g", kcal: 106, protein_g: 20, carb_g: 0, fat_g: 1.9, fiber_g: null, servings: [], source: "catalog" }]
+        ? [{ food_id: "usda-1", name: rowName, brand: null, base_unit: "g", kcal: 106, protein_g: 20, carb_g: 0, fat_g: 1.9, fiber_g: null, servings: [], source: "catalog" }]
         : [];
     },
     backfillOffFood: async () => null,
@@ -194,4 +194,15 @@ Deno.test("numbers that cannot be used do not cost the line its memory", async (
   );
   assert(calls.includes("jev"), JSON.stringify(calls));
   void r;
+});
+
+Deno.test("the failure this prevents: a wrong-variant row filling in the user's missing numbers", async () => {
+  // Reviewer on #223: "raw" chicken filled from a fried row, then saved as her
+  // own numbers, would serve every tier from her memory.
+  const calls: string[] = [], lookups: string[] = [];
+  const r = await runParseMeal(
+    deps({ ...LINE, prep: "raw", stated: { basis: "per_100g", kcal: 130, protein_g: 22.5 } }, calls, lookups, true, "Chicken breast, fried"),
+    { ...BASE, text: "62 g raw chicken breast, 130 kcal and 22.5 g protein per 100 g", mode: null },
+  );
+  assert(r.parsed!.items[0].source !== "manual");
 });

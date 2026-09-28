@@ -5882,6 +5882,16 @@ async function runParseMealCore(
         // Nothing to fill the missing fields from: the lookup's own answer
         // stands rather than inventing zeros for what the user did not give.
         if (!looked.candidates[0]) return looked;
+        // The row that fills the missing fields must be the food she named: a
+        // fried row filling "raw" chicken's fat, saved as HER numbers, would
+        // then serve every tier from her memory. A clash or a grade the row
+        // does not honour leaves the lookup's own answer, unlabelled.
+        const said = [item.prep, foodLabel(item)].filter(Boolean).join(" ");
+        const rowName = looked.candidates[0].name;
+        if (variantClash(said, rowName) || unhonouredGrade(said, rowName)) {
+          steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { merged: false, row: rowName.slice(0, 60) } });
+          return looked;
+        }
         const cand = statedCandidate(st, item, looked.candidates[0]);
         memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
         return { ...item, candidates: [cand] } as ResolvedItem;
