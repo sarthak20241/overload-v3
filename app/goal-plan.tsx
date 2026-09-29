@@ -73,8 +73,13 @@ export default function GoalPlanScreen() {
   const router = useRouter();
   // ?build=phase arrives from the dashboard prompt that sends a fresh account
   // straight here to build phase 1. It fires once, after the program loads.
-  const { build: buildParam } = useLocalSearchParams<{ build?: string }>();
+  const { build: buildParam, drona: dronaParam, kcal: kcalParam } =
+    useLocalSearchParams<{ build?: string; drona?: string; kcal?: string }>();
   const autoBuildFired = useRef(false);
+  // ?drona=calories&kcal=N arrives from the goal sheet's "Change my whole plan
+  // with Drona": open the program chat once, the request typed and unsent.
+  const [programDraft, setProgramDraft] = useState<string | undefined>(undefined);
+  const dronaFired = useRef(false);
   const { C } = useTheme();
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
@@ -232,6 +237,19 @@ export default function GoalPlanScreen() {
     autoBuildFired.current = true;
     if (phase.routines.length === 0) buildSplitFor(phase);
   }, [buildParam, currentPhase, program, buildSplitFor]);
+
+  useEffect(() => {
+    if (dronaParam !== 'calories' || dronaFired.current || loading) return;
+    dronaFired.current = true;
+    const n = parseInt(kcalParam ?? '', 10);
+    setProgramDraft(Number.isFinite(n)
+      ? `I want my daily calories at ${n}. Update my plan to match.`
+      : 'I want to change my daily calories. Update my plan to match.');
+    setBuildSeed(null);
+    setBuildPhaseId(null);
+    track('program_calories_from_goal_sheet', { kcal: Number.isFinite(n) ? n : null });
+    setCoachOpen(true);
+  }, [dronaParam, kcalParam, loading]);
 
   // ── The week, as one line ──────────────────────────────────────────────────
   // A phase used to say only "Push/Pull/Legs, 5 days a week", which leaves the
@@ -775,9 +793,10 @@ export default function GoalPlanScreen() {
       <AICoachModal
         visible={coachOpen}
         source="goal_plan"
-        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); load(); }}
+        onClose={() => { setCoachOpen(false); setBuildSeed(null); setBuildPhaseId(null); setProgramDraft(undefined); load(); }}
         initialScreen={buildSeed ? 'plan' : 'program'}
         planSeed={buildSeed ?? undefined}
+        programDraft={programDraft}
         linkRoutinesToPhaseId={buildPhaseId ?? undefined}
         onRoutineCreated={() => load()}
         // Fires after saveProgram actually commits. The load() in onClose runs

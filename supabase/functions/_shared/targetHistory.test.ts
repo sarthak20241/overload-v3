@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { historyRowOn, targetsForDay, type TargetHistoryRow } from "./targetHistory.ts";
+import { type DayTargetRow, historyRowOn, targetsForDay, type TargetHistoryRow } from "./targetHistory.ts";
 
 const DEFAULTS = { kcal: 2000, protein: 125, carb: 250, fat: 56 };
 const LIVE = { kcal: 1350, protein: 97, carb: 148, fat: 41 };
@@ -57,4 +57,29 @@ Deno.test("the row in force is the latest that started on or before the day", ()
   assertEquals(historyRowOn(HISTORY, "2026-09-27")?.effective_from, "2026-09-18");
   // Order of the rows does not matter.
   assertEquals(historyRowOn([...HISTORY].reverse(), "2026-09-27")?.effective_from, "2026-09-18");
+});
+
+// "Today only" on the goal sheet: a goal for one day, the plan untouched.
+const ONE_DAY: DayTargetRow[] = [{ day: TODAY, kcal: 1800, protein_g: 110, carb_g: 200, fat_g: 60 }];
+const withOverride = (dayISO: string, dow = 1, liveFuel: { dow: number; kcal: number }[] = []) =>
+  targetsForDay({ dayISO, todayISO: TODAY, dow, live: LIVE, liveFuel, history: HISTORY, defaults: DEFAULTS, overrides: ONE_DAY });
+
+Deno.test("a one-day goal holds for its day and nowhere else", () => {
+  assertEquals(withOverride(TODAY), { kcal: 1800, protein: 110, carb: 200, fat: 60 });
+  // Tomorrow is back on the live goal (the plan).
+  assertEquals(withOverride("2026-09-29"), LIVE);
+  // Yesterday keeps its history.
+  assertEquals(withOverride("2026-09-27").kcal, 1300);
+});
+
+Deno.test("a one-day goal on a past day wins over that day's history", () => {
+  const past: DayTargetRow[] = [{ day: "2026-09-20", kcal: "1700", protein_g: null, carb_g: null, fat_g: null }];
+  const t = targetsForDay({ dayISO: "2026-09-20", todayISO: TODAY, dow: 0, live: LIVE, liveFuel: [], history: HISTORY, defaults: DEFAULTS, overrides: past });
+  // Calories from the one-day goal, macros it left empty from the day's history.
+  assertEquals(t, { kcal: 1700, protein: 94, carb: 150, fat: 36 });
+});
+
+Deno.test("fuel days still add on top of a one-day goal", () => {
+  // Today is a Sunday fuel day at +300.
+  assertEquals(withOverride(TODAY, 0, [{ dow: 0, kcal: 300 }]), { kcal: 2100, protein: 110, carb: 275, fat: 60 });
 });

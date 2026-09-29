@@ -314,7 +314,7 @@ export default function NutritionScreen() {
   // read `targets`, the viewed day's own numbers.
   const {
     targets: baseTargets, isCustom, apply: applyTargets,
-    fuelDays, applyFuelDays, targetsOn,
+    fuelDays, applyFuelDays, targetsOn, todayOverride, applyDayTarget,
   } = useNutritionTargets();
   const targets = targetsOn(viewDate);
   const viewFuel = fuelOn(fuelDays, viewDate.getDay());
@@ -1501,10 +1501,27 @@ export default function NutritionScreen() {
       {/* Set daily calorie + macro goals (the ring/bars draw against these). */}
       <NutritionGoalSheet
         open={goalOpen}
-        initial={baseTargets}
+        // Today's own goal when it was set for today only, else the lasting one.
+        initial={todayOverride ?? baseTargets}
+        firstGoal={!isCustom}
         fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
-        onSaved={(saved) => { setGoalOpen(false); applyTargets(saved); }}
+        onSaved={(saved, scope) => {
+          setGoalOpen(false);
+          const today = ymd(new Date());
+          if (scope === 'today') {
+            applyDayTarget(today, saved);
+          } else {
+            applyTargets(saved);
+            applyDayTarget(today, null);
+          }
+        }}
+        // A change to the whole plan is Drona's job: open the program chat on
+        // Goal & Plan with the new number already typed, sent by the user.
+        onOpenDronaPlan={(kcal) => {
+          setGoalOpen(false);
+          router.push({ pathname: '/goal-plan', params: { drona: 'calories', kcal: String(kcal) } } as any);
+        }}
         // Guests have no profile to save fuel days to, so no door to the sheet.
         onOpenFuelDays={isSignedIn ? () => { setGoalOpen(false); setFuelOpen(true); } : undefined}
       />

@@ -3,9 +3,15 @@
  *
  * The nutrition hero (calorie ring + protein/carb/fat bars) draws against these;
  * until they're set the app falls back to sensible defaults, so this is how a
- * user makes the framing theirs. Writes the four nullable columns on
- * user_profiles (the ai-coach parse_meal fn reads the same values for Drona's
- * day-aware line). Portal sheet, matching EntryEditSheet / SetTypeSheet.
+ * user makes the framing theirs. Portal sheet, matching EntryEditSheet.
+ *
+ * Where a change lands (asked once a goal exists, "Today only" first):
+ *   - Today only         -> user_day_targets for today; the plan is untouched
+ *   - Rest of this phase -> the profile AND the current program phase, so the
+ *                           plan and the ring agree (with a program)
+ *   - From today on      -> the profile (no program)
+ * A first goal skips the question: there is nothing to go back to. A bigger
+ * change to the plan is Drona's job, through the "whole plan" link.
  */
 import { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, ScrollView, Pressable, TouchableOpacity, StyleSheet, BackHandler, Keyboard, Platform, useWindowDimensions } from 'react-native';
@@ -19,9 +25,10 @@ import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
 import { haptics } from '@/lib/haptics';
 import {
-  saveNutritionTargets, energySplit, macrosForKcal, macroKcal,
+  saveNutritionTargets, saveDayTarget, clearDayTarget, energySplit, macrosForKcal, macroKcal, ymd,
   type NutritionTargets, type EnergySplit,
 } from '@/lib/dietData';
+import { loadActiveProgram } from '@/lib/programData';
 import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { fuelDayText, type FuelDay } from '@/lib/fuelDays';
@@ -34,17 +41,26 @@ const FIELDS: Field[] = [
   { key: 'fat', label: 'Fat', unit: 'g', color: (c) => c.macro.fat, min: 0, max: 400 },
 ];
 
+export type GoalScope = 'today' | 'lasting';
+
 interface Props {
   open: boolean;
   initial: NutritionTargets;
   onClose: () => void;
-  onSaved: (saved: NutritionTargets) => void;
+  /** `today`: a goal for today only; `lasting`: from today on (and the phase, with a program). */
+  onSaved: (saved: NutritionTargets, scope: GoalScope) => void;
+  /** No goal set yet: save it as the lasting goal without asking. */
+  firstGoal?: boolean;
+  /** With a program: hand the new calories to Drona to rework the whole plan. */
+  onOpenDronaPlan?: (kcal: number) => void;
   /** The weekdays that get more on top of this goal. Shown as a door to FuelDaysSheet. */
   fuelDays?: FuelDay[];
   onOpenFuelDays?: () => void;
 }
 
-export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, onOpenFuelDays }: Props) {
+export function NutritionGoalSheet({
+  open, initial, onClose, onSaved, fuelDays, onOpenFuelDays, firstGoal, onOpenDronaPlan,
+}: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
@@ -56,6 +72,14 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
     kcal: '', protein: '', carb: '', fat: '',
   });
   const [busy, setBusy] = useState(false);
+  const [scope, setScope] = useState<GoalScope>('today');
+  // The program phase running today, if any: "Rest of this phase" writes it too.
+  const [phase, setPhase] = useState<{ id: string; name: string } | null>(null);
+  // Until the program lookup answers, the choice is unknown: showing "From
+  // today on" and flipping to "Rest of this phase" read as a glitch, and a
+  // lasting save before it answered would skip the phase.
+  const [phaseReady, setPhaseReady] = useState(false);
+  const [failed, setFailed] = useState(false);
   // The split the calorie field scales against. Seeded from the saved goal and
   // re-read whenever the user edits a macro by hand, so their own ratio sticks.
   const splitRef = useRef<EnergySplit>(energySplit(initial));
@@ -87,9 +111,25 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
       });
       splitRef.current = energySplit(initial);
       setBusy(false);
+      setFailed(false);
+      setScope(firstGoal ? 'lasting' : 'today');
+      setPhase(null);
+      setPhaseReady(false);
+      const clerkId = user?.id;
+      if (supabase && clerkId) {
+        loadActiveProgram(supabase, clerkId)
+          .then((p) => {
+            const ph = p && p.currentPhaseSeq != null ? p.phases[p.currentPhaseSeq] : null;
+            setPhase(ph ? { id: ph.id, name: ph.name } : null);
+          })
+          .catch(() => setPhase(null))
+          .finally(() => setPhaseReady(true));
+      } else {
+        setPhaseReady(true);
+      }
     }
     wasOpen.current = open;
-  }, [open, initial]);
+  }, [open, initial, firstGoal, supabase, user?.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -148,6 +188,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
   const onSave = async () => {
     const clerkId = user?.id;
     if (!supabase || !clerkId || busy) { onClose(); return; }
+    if (!phaseReady && !firstGoal) return;
     setBusy(true);
     haptics.selection();
     // Clamp each field into its sane range; blank/garbage falls back to the
@@ -175,17 +216,48 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
       next.carb = m.carb;
       next.fat = m.fat;
     }
-    const { error } = await saveNutritionTargets(supabase, clerkId, next);
+    const today = ymd(new Date());
+    let error: string | undefined;
+    if (scope === 'today') {
+      ({ error } = await saveDayTarget(supabase, clerkId, today, next));
+    } else {
+      ({ error } = await saveNutritionTargets(supabase, clerkId, next));
+      // With a program, the phase moves with it, so Goal & Plan, the next
+      // phase change and Drona all read the same number as the ring.
+      if (!error && phase) {
+        const { error: phaseErr } = await supabase
+          .from('coach_program_phases')
+          .update({
+            diet_calorie_target: next.kcal,
+            diet_protein_g: next.protein,
+            diet_carb_g: next.carb,
+            diet_fat_g: next.fat,
+          })
+          .eq('id', phase.id);
+        error = phaseErr?.message;
+      }
+      // A lasting goal ends any "today only" one, or today would still show it.
+      if (!error) ({ error } = await clearDayTarget(supabase, clerkId, today));
+    }
     setBusy(false);
-    if (error) { haptics.warning(); return; }
+    if (error) { haptics.warning(); setFailed(true); return; }
     track('nutrition_targets_edited', {
       kcal: next.kcal,
       kcal_delta: next.kcal - initial.kcal,
       protein_delta: next.protein - initial.protein,
       clamped: kcal !== parseInt(vals.kcal, 10),
+      scope: scope === 'today' ? 'today' : phase ? 'phase' : 'from_today',
     });
-    onSaved(next);
+    onSaved(next, scope);
   };
+
+  const lastingLabel = phase ? 'Rest of this phase' : 'From today on';
+  const scopeNote = scope === 'today'
+    ? (phase ? 'Just for today. Tomorrow you are back on your plan.' : 'Just for today. Tomorrow goes back to your usual goal.')
+    : (phase ? `Every day until ${phase.name} ends. Your plan changes to match.` : 'Every day from today on.');
+  const saveLabel = busy
+    ? 'Saving...'
+    : firstGoal ? 'Save goal' : scope === 'today' ? 'Save for today' : phase ? 'Save for this phase' : 'Save goal';
 
   return (
     <Portal>
@@ -214,7 +286,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
           <View style={s.header}>
             <View style={{ flex: 1 }}>
               <Text style={[s.title, { color: C.foreground }]}>Daily goal</Text>
-              <Text style={[s.subtitle, { color: C.mutedFg }]}>Starts today. Past days keep the goal they had.</Text>
+              <Text style={[s.subtitle, { color: C.mutedFg }]}>Past days keep the goal they had.</Text>
             </View>
             <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
               <Feather name="x" size={15} color={C.foreground} />
@@ -268,8 +340,57 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
             )}
           </ScrollView>
 
-          <Pressable onPress={onSave} disabled={busy} style={[s.saveBtn, { opacity: busy ? 0.5 : 1 }]}>
-            <Text style={s.saveTxt}>{busy ? 'Saving...' : 'Save goal'}</Text>
+          {/* Where the change lands. Asked once a goal exists; "Today only" first,
+              so a one-off day never quietly rewrites the plan. */}
+          {!firstGoal && phaseReady && (
+            <View style={s.scopeWrap}>
+              <View style={[s.scopeTrack, { backgroundColor: C.muted }]}>
+                {(['today', 'lasting'] as const).map((k) => {
+                  const on = scope === k;
+                  return (
+                    <Pressable
+                      key={k}
+                      onPress={() => { haptics.selection(); setScope(k); }}
+                      style={[s.scopeOpt, on && { backgroundColor: C.elevated }]}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: on }}
+                    >
+                      <Text style={[s.scopeTxt, { color: on ? C.foreground : C.mutedFg }]}>
+                        {k === 'today' ? 'Today only' : lastingLabel}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={[s.scopeNote, { color: C.mutedFg }]}>{scopeNote}</Text>
+              {phase && onOpenDronaPlan && (
+                <Pressable
+                  onPress={() => {
+                    const n = parseInt(vals.kcal, 10);
+                    onOpenDronaPlan(Number.isFinite(n) ? n : initial.kcal);
+                  }}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change my whole plan with Drona"
+                >
+                  <Text style={[s.dronaLink, { color: C.accentText }]}>Change my whole plan with Drona ›</Text>
+                </Pressable>
+              )}
+            </View>
+          )}
+
+          {failed && (
+            <Text style={[s.scopeNote, { color: C.dangerText, marginTop: Spacing.sm }]}>
+              That did not save. Check your connection and try again.
+            </Text>
+          )}
+
+          <Pressable
+            onPress={onSave}
+            disabled={busy || (!phaseReady && !firstGoal)}
+            style={[s.saveBtn, { opacity: busy || (!phaseReady && !firstGoal) ? 0.5 : 1 }]}
+          >
+            <Text style={s.saveTxt}>{saveLabel}</Text>
           </Pressable>
         </Animated.View>
       </View>
@@ -301,6 +422,13 @@ const s = StyleSheet.create({
   fuelRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
   fuelTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   fuelSub: { fontSize: FontSize.xs, marginTop: 1 },
+
+  scopeWrap: { marginTop: Spacing.md, gap: 6 },
+  scopeTrack: { flexDirection: 'row', borderRadius: Radius.md, padding: 3 },
+  scopeOpt: { flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: Radius.sm },
+  scopeTxt: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  scopeNote: { fontSize: FontSize.xs, lineHeight: 17 },
+  dronaLink: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, marginTop: 2 },
 
   saveBtn: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary, borderRadius: Radius.md, paddingVertical: 14, marginTop: Spacing.lg },
   saveTxt: { fontSize: FontSize.base, color: Colors.primaryFg, fontWeight: FontWeight.bold },
