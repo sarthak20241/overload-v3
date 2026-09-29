@@ -45,7 +45,14 @@ export type GoalScope = 'today' | 'lasting';
 
 interface Props {
   open: boolean;
+  /** Today's goal: a one-day goal when today has one, else the lasting goal. */
   initial: NutritionTargets;
+  /**
+   * The lasting goal. Switching to the lasting choice before typing reseeds the
+   * fields from it, so a one-day number is never saved to the whole phase just
+   * because it was on screen. Defaults to `initial`.
+   */
+  lasting?: NutritionTargets;
   onClose: () => void;
   /** `today`: a goal for today only; `lasting`: from today on (and the phase, with a program). */
   onSaved: (saved: NutritionTargets, scope: GoalScope) => void;
@@ -59,7 +66,7 @@ interface Props {
 }
 
 export function NutritionGoalSheet({
-  open, initial, onClose, onSaved, fuelDays, onOpenFuelDays, firstGoal, onOpenDronaPlan,
+  open, initial, lasting, onClose, onSaved, fuelDays, onOpenFuelDays, firstGoal, onOpenDronaPlan,
 }: Props) {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
@@ -74,7 +81,9 @@ export function NutritionGoalSheet({
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<GoalScope>('today');
   // The program phase running today, if any: "Rest of this phase" writes it too.
-  const [phase, setPhase] = useState<{ id: string; name: string } | null>(null);
+  const [phase, setPhase] = useState<{ id: string; name: string; before: NutritionTargets } | null>(null);
+  // True once the user types: from then on switching the choice keeps their numbers.
+  const [dirty, setDirty] = useState(false);
   // Until the program lookup answers, the choice is unknown: showing "From
   // today on" and flipping to "Rest of this phase" read as a glitch, and a
   // lasting save before it answered would skip the phase.
@@ -112,6 +121,7 @@ export function NutritionGoalSheet({
       splitRef.current = energySplit(initial);
       setBusy(false);
       setFailed(false);
+      setDirty(false);
       setScope(firstGoal ? 'lasting' : 'today');
       setPhase(null);
       setPhaseReady(false);
@@ -120,7 +130,19 @@ export function NutritionGoalSheet({
         loadActiveProgram(supabase, clerkId)
           .then((p) => {
             const ph = p && p.currentPhaseSeq != null ? p.phases[p.currentPhaseSeq] : null;
-            setPhase(ph ? { id: ph.id, name: ph.name } : null);
+            setPhase(ph
+              ? {
+                  id: ph.id,
+                  name: ph.name,
+                  // What the phase held, so a failed profile write can put it back.
+                  before: {
+                    kcal: ph.diet_calorie_target ?? 0,
+                    protein: ph.diet_protein_g ?? 0,
+                    carb: ph.diet_carb_g ?? 0,
+                    fat: ph.diet_fat_g ?? 0,
+                  },
+                }
+              : null);
           })
           .catch(() => setPhase(null))
           .finally(() => setPhaseReady(true));
@@ -144,7 +166,25 @@ export function NutritionGoalSheet({
   // may replay or discard an updater, and a discarded one that had written
   // splitRef would leave the split describing values that never committed.
   // Updaters stay pure; the ref is written from the handler, which runs once.
+  const seed = (t: NutritionTargets) => {
+    setVals({
+      kcal: String(Math.round(t.kcal)),
+      protein: String(Math.round(t.protein)),
+      carb: String(Math.round(t.carb)),
+      fat: String(Math.round(t.fat)),
+    });
+    splitRef.current = energySplit(t);
+  };
+  // Untouched fields follow the choice: today's goal for "Today only", the
+  // lasting goal otherwise. Typed numbers stay whatever the choice.
+  const pickScope = (k: GoalScope) => {
+    haptics.selection();
+    setScope(k);
+    if (!dirty) seed(k === 'today' ? initial : (lasting ?? initial));
+  };
+
   const onChangeField = (key: keyof NutritionTargets, raw: string) => {
+    setDirty(true);
     const txt = raw.replace(/[^0-9]/g, '').slice(0, 5);
     if (key === 'kcal') {
       const n = parseInt(txt, 10);
@@ -221,20 +261,26 @@ export function NutritionGoalSheet({
     if (scope === 'today') {
       ({ error } = await saveDayTarget(supabase, clerkId, today, next));
     } else {
-      ({ error } = await saveNutritionTargets(supabase, clerkId, next));
-      // With a program, the phase moves with it, so Goal & Plan, the next
-      // phase change and Drona all read the same number as the ring.
-      if (!error && phase) {
-        const { error: phaseErr } = await supabase
+      // With a program, the phase moves too, so Goal & Plan, the next phase
+      // change and Drona all read the same number as the ring. Phase first,
+      // and it must really match a row: an RLS or stale-id miss returns no
+      // error, and the profile alone would leave the ring and plan apart.
+      const writePhase = async (t: NutritionTargets) => {
+        if (!phase) return undefined;
+        const { data, error: phaseErr } = await supabase
           .from('coach_program_phases')
-          .update({
-            diet_calorie_target: next.kcal,
-            diet_protein_g: next.protein,
-            diet_carb_g: next.carb,
-            diet_fat_g: next.fat,
-          })
-          .eq('id', phase.id);
-        error = phaseErr?.message;
+          .update({ diet_calorie_target: t.kcal, diet_protein_g: t.protein, diet_carb_g: t.carb, diet_fat_g: t.fat })
+          .eq('id', phase.id)
+          .select('id');
+        if (phaseErr) return phaseErr.message;
+        return (data?.length ?? 0) === 0 ? 'phase not updated' : undefined;
+      };
+      error = await writePhase(next);
+      if (!error) {
+        ({ error } = await saveNutritionTargets(supabase, clerkId, next));
+        // The profile write failed after the phase moved: put the phase back,
+        // so "did not save" is true of both.
+        if (error && phase) await writePhase(phase.before);
       }
       // A lasting goal ends any "today only" one, or today would still show it.
       if (!error) ({ error } = await clearDayTarget(supabase, clerkId, today));
@@ -350,7 +396,7 @@ export function NutritionGoalSheet({
                   return (
                     <Pressable
                       key={k}
-                      onPress={() => { haptics.selection(); setScope(k); }}
+                      onPress={() => pickScope(k)}
                       style={[s.scopeOpt, on && { backgroundColor: C.elevated }]}
                       accessibilityRole="radio"
                       accessibilityState={{ selected: on }}
@@ -367,7 +413,9 @@ export function NutritionGoalSheet({
                 <Pressable
                   onPress={() => {
                     const n = parseInt(vals.kcal, 10);
-                    onOpenDronaPlan(Number.isFinite(n) ? n : initial.kcal);
+                    // Same bounds Save uses: never hand the chat a number the sheet would refuse.
+                    const kcal = Number.isFinite(n) ? Math.min(Math.max(n, FIELDS[0].min), FIELDS[0].max) : initial.kcal;
+                    onOpenDronaPlan(kcal);
                   }}
                   hitSlop={6}
                   accessibilityRole="button"

@@ -1503,6 +1503,7 @@ export default function NutritionScreen() {
         open={goalOpen}
         // Today's own goal when it was set for today only, else the lasting one.
         initial={todayOverride ?? baseTargets}
+        lasting={baseTargets}
         firstGoal={!isCustom}
         fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}

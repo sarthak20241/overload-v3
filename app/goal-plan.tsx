@@ -241,7 +241,9 @@ export default function GoalPlanScreen() {
   useEffect(() => {
     if (dronaParam !== 'calories' || dronaFired.current || loading) return;
     dronaFired.current = true;
-    const n = parseInt(kcalParam ?? '', 10);
+    const raw = parseInt(kcalParam ?? '', 10);
+    // A deep link can carry anything: hold it to the goal sheet's bounds.
+    const n = Number.isFinite(raw) ? Math.min(8000, Math.max(800, raw)) : NaN;
     setProgramDraft(Number.isFinite(n)
       ? `I want my daily calories at ${n}. Update my plan to match.`
       : 'I want to change my daily calories. Update my plan to match.');
