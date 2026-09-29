@@ -1507,14 +1507,16 @@ export default function NutritionScreen() {
         firstGoal={!isCustom}
         fuelDays={fuelDays}
         onClose={() => setGoalOpen(false)}
-        onSaved={(saved, scope) => {
+        onSaved={(saved, scope, clearedToday) => {
           setGoalOpen(false);
           const today = ymd(new Date());
           if (scope === 'today') {
             applyDayTarget(today, saved);
           } else {
             applyTargets(saved);
-            applyDayTarget(today, null);
+            // Only drop today's one-day goal on screen when the server really
+            // did; otherwise it would come back on the next refetch.
+            if (clearedToday) applyDayTarget(today, null);
           }
         }}
         // A change to the whole plan is Drona's job: open the program chat on

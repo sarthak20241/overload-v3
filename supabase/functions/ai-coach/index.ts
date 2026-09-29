@@ -3121,7 +3121,8 @@ async function handleParseMealRequest(args: {
       todayTotals: totalsRow
         ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
         : null,
-      targets: targetsRow
+      // A one-day goal counts even for a profile with no lasting targets.
+      targets: targetsRow || dayRow
         ? {
           daily_calorie_target: dayKcal,
           protein_target_g: dayProtein,

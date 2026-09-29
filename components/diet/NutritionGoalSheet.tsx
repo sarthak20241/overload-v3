@@ -54,8 +54,13 @@ interface Props {
    */
   lasting?: NutritionTargets;
   onClose: () => void;
-  /** `today`: a goal for today only; `lasting`: from today on (and the phase, with a program). */
-  onSaved: (saved: NutritionTargets, scope: GoalScope) => void;
+  /**
+   * `today`: a goal for today only; `lasting`: from today on (and the phase,
+   * with a program). `clearedToday`: a lasting save also removed today's
+   * one-day goal, so the caller can drop it locally; false when that delete
+   * failed and the row is still there.
+   */
+  onSaved: (saved: NutritionTargets, scope: GoalScope, clearedToday: boolean) => void;
   /** No goal set yet: save it as the lasting goal without asking. */
   firstGoal?: boolean;
   /** With a program: hand the new calories to Drona to rework the whole plan. */
@@ -263,6 +268,7 @@ export function NutritionGoalSheet({
     }
     const today = ymd(new Date());
     let error: string | undefined;
+    let clearedToday = false;
     if (scope === 'today') {
       ({ error } = await saveDayTarget(supabase, clerkId, today, next));
     } else {
@@ -293,6 +299,7 @@ export function NutritionGoalSheet({
       if (!error) {
         const { error: clearErr } = await clearDayTarget(supabase, clerkId, today);
         if (clearErr) console.warn('[goal] could not clear today\'s one-day goal', clearErr);
+        else clearedToday = true;
       }
     }
     setBusy(false);
@@ -304,7 +311,7 @@ export function NutritionGoalSheet({
       clamped: kcal !== parseInt(vals.kcal, 10),
       scope: scope === 'today' ? 'today' : phase ? 'phase' : 'from_today',
     });
-    onSaved(next, scope);
+    onSaved(next, scope, clearedToday);
   };
 
   const lastingLabel = phase ? 'Rest of this phase' : 'From today on';
