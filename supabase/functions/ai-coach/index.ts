@@ -13,6 +13,7 @@ import { envInt } from "../_shared/envInt.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
+import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -3091,7 +3092,11 @@ async function handleParseMealRequest(args: {
     localDate
       ? userClient.from("user_profiles").select("calorie_day_boosts").maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-  ]).then(([recentFoods, targetsRes, totalsRes, fuelRes]) => {
+    // A goal set for this day only (0151, "Today only" on the goal sheet).
+    localDate
+      ? userClient.from("user_day_targets").select("day, kcal, protein_g, carb_g, fat_g").eq("day", localDate).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]).then(([recentFoods, targetsRes, totalsRes, fuelRes, dayRes]) => {
     const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
     const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
     const fuelRow = (fuelRes as { data: Record<string, unknown> | null; error: unknown }).error
@@ -3100,17 +3105,27 @@ async function handleParseMealRequest(args: {
     // The logged day's OWN calorie target: a long-run Sunday has its fuel on
     // top, so "you have 300 left" must not read as "you are at your limit".
     const fuel = normalizeFuelDays(fuelRow?.calorie_day_boosts);
-    const baseKcal = targetsRow?.daily_calorie_target == null ? null : Number(targetsRow.daily_calorie_target);
+    const dayRow = (dayRes as { data: DayTargetRow | null; error: unknown }).error
+      ? null
+      : (dayRes as { data: DayTargetRow | null }).data;
+    // The day's own goal replaces the base when one was set for it; fuel adds on top either way.
+    const baseKcal = dayRow
+      ? Number(dayRow.kcal)
+      : targetsRow?.daily_calorie_target == null ? null : Number(targetsRow.daily_calorie_target);
     const dayKcal = baseKcal != null && localDate ? kcalOnDow(baseKcal, fuel, dowOfISO(localDate)) : baseKcal;
+    const dayProtein = dayRow?.protein_g != null
+      ? Number(dayRow.protein_g)
+      : targetsRow?.protein_target_g == null ? null : Number(targetsRow.protein_target_g);
     return {
       recentFoods,
       todayTotals: totalsRow
         ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
         : null,
-      targets: targetsRow
+      // A one-day goal counts even for a profile with no lasting targets.
+      targets: targetsRow || dayRow
         ? {
           daily_calorie_target: dayKcal,
-          protein_target_g: targetsRow.protein_target_g === null ? null : Number(targetsRow.protein_target_g),
+          protein_target_g: dayProtein,
         }
         : null,
     };
@@ -4057,6 +4072,26 @@ Deno.serve(async (req) => {
       trace.has_user_context = true;
     }
     const ctx = userContext as Record<string, unknown> | null;
+    // A goal the user set for today only (0151). user_context.nutrition.targets
+    // is the lasting goal, so Drona needs to know today is different. Only when
+    // 4c knows the user's date: a UTC guess would name the wrong day.
+    const todayDate = (ctx?.today as { date?: string } | undefined)?.date;
+    if (ctx && todayDate) {
+      const { data: one, error: oneError } = await userClient
+        .from("user_day_targets")
+        .select("kcal, protein_g, carb_g, fat_g")
+        .eq("day", todayDate)
+        .maybeSingle();
+      if (oneError) console.log("[ai-coach] day-target error:", oneError.message);
+      else if (one) {
+        ctx.today_goal_override = {
+          calories: Number(one.kcal),
+          ...(one.protein_g != null ? { protein_g: Number(one.protein_g) } : {}),
+          ...(one.carb_g != null ? { carb_g: Number(one.carb_g) } : {}),
+          ...(one.fat_g != null ? { fat_g: Number(one.fat_g) } : {}),
+        };
+      }
+    }
     if (ctx && ctx.program && typeof ctx.program === "object") {
       const { data: active } = await userClient
         .from("coach_programs")

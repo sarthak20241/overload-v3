@@ -2526,10 +2526,12 @@ function GenerateProgramScreen({
   onBack,
   onApply,
   onRequestUpgrade,
+  initialDraft,
 }: {
   onBack: () => void;
   onApply: (program: GeneratedProgram) => void;
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
+  initialDraft?: string;
 }) {
   const { C } = useTheme();
   const [result, setResult] = useState<GeneratedProgram | null>(null);
@@ -2544,6 +2546,7 @@ function GenerateProgramScreen({
         onBack={onBack}
         onRefined={(next) => setResult(next as GeneratedProgram)}
         onRequestUpgrade={onRequestUpgrade}
+        initialDraft={initialDraft}
       />
     );
   }
@@ -3186,6 +3189,7 @@ function RefineChatScreen({
   onBack,
   onRefined,
   onRequestUpgrade,
+  initialDraft,
 }: {
   // 'refine' — iterating on an already-generated workout/plan (workout or
   // plan must be provided). 'discuss' — talking with Coach Drona BEFORE any
@@ -3208,6 +3212,9 @@ function RefineChatScreen({
   // Free-tier 402 handler: a Pro-only mode (or a spent daily cap) routes here so
   // the caller can open the paywall instead of surfacing a generic error.
   onRequestUpgrade?: (kind: 'cap' | 'pro') => void;
+  // Typed into the box on open, NOT sent: the user reads it and taps send
+  // (e.g. the goal sheet's "Change my whole plan with Drona").
+  initialDraft?: string;
 }) {
   const { C } = useTheme();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -3258,7 +3265,7 @@ function RefineChatScreen({
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: 'starter', role: 'assistant', content: starterText },
   ]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(initialDraft ?? '');
   const [loading, setLoading] = useState(false);
   // Header mark: traces while waiting on the coach, releases when the reply
   // lands, static until the first send.
@@ -3661,6 +3668,7 @@ export function AICoachModal({
   initialScreen = 'menu',
   initialPrompt,
   planSeed,
+  programDraft,
   linkRoutinesToPhaseId,
   workoutContext,
   onApplyWorkoutEdit,
@@ -3683,6 +3691,9 @@ export function AICoachModal({
   // plan generator's form + prompt to a specific program phase. Pass
   // initialScreen="plan" alongside it.
   planSeed?: { goal?: string; days?: string; note?: string };
+  // When set, the program chat opens with this typed in, unsent (the goal
+  // sheet's "Change my whole plan with Drona"). Pass initialScreen="program".
+  programDraft?: string;
   // When set, routines saved from this session are linked to the program phase
   // (routines.program_phase_id), so the Goal & Plan screen shows the phase's
   // split as built. Paired with planSeed for a "Build workout split" flow.
@@ -4317,6 +4328,7 @@ export function AICoachModal({
                 <GenerateProgramScreen
                   onBack={() => setScreen('menu')}
                   onApply={handleSaveProgram}
+                  initialDraft={programDraft}
                   onRequestUpgrade={(kind) =>
                     handleRequestUpgrade(kind === 'pro' ? 'pro_feature' : 'cap_chat')
                   }

@@ -159,6 +159,7 @@ What is in it:
 - targets: their daily goals (calories in kcal, protein_g, and carb_g / fat_g when set). If a macro target is missing, reason from their goal in the profile (cut, bulk, recomp).
 - today_so_far: what they have logged TODAY, still accumulating. Frame it as "so far" and as room left to target, not a final tally. Absent means nothing logged yet today.
 - recent_3d_avg: their average intake over the last 3 completed days that had food logged (kcal, protein_g, days_logged). This is the window that feeds readiness, so cite it when explaining a diet effect on the score.
+- user_context.today_goal_override, when present: the user set a different goal for TODAY ONLY (calories, and any macros it lists). Today is held to it instead of targets; tomorrow goes back to targets and the plan is unchanged. Fuel days still add on top of it.
 - user_context.fuel_days, when present: weekdays that get extra calories on top of targets (a long run, a heavy leg day), each with extra_kcal and the user's own label. The extra comes as carbs; protein and fat hold. On a fuel day the day's calorie target is targets plus that day's extra_kcal, so read today_so_far against today's own number (user_context.today.weekday says which day it is). Eating to a fuel day's number is on plan, never "over". The user sets fuel days themselves on the Goal & Plan screen (Fuel by day) or from the nutrition goal sheet. propose_targets changes the base day only; fuel days stay on top of whatever it becomes.
 
 How nutrition ties into readiness:

@@ -23,7 +23,7 @@ import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
 import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
-import { targetsForDay, type TargetHistoryRow } from '@/lib/targetHistory';
+import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from '@/lib/targetHistory';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -1441,7 +1441,10 @@ export function fillMissingMacros(
   return out;
 }
 
-interface CachedTargets { targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[]; history?: TargetHistoryRow[] }
+interface CachedTargets {
+  targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[];
+  history?: TargetHistoryRow[]; dayTargets?: DayTargetRow[];
+}
 
 /** Read the user's daily targets. isCustom = they've set at least one real goal
  *  (vs pure defaults), so the UI can nudge first-timers to set theirs.
@@ -1456,6 +1459,9 @@ export function useNutritionTargets(): {
   fuelDays: FuelDay[];
   applyFuelDays: (days: FuelDay[]) => void;
   targetsOn: (date: Date) => NutritionTargets;
+  /** The goal set for today only ("Today only" on the goal sheet), if any. */
+  todayOverride: NutritionTargets | null;
+  applyDayTarget: (dayISO: string, t: NutritionTargets | null) => void;
 } {
   const supabase = useSupabaseClient();
   const { user } = useClerkUser();
@@ -1473,6 +1479,10 @@ export function useNutritionTargets(): {
   const [history, setHistory] = useState<TargetHistoryRow[] | null>(cachedSeed?.history ?? null);
   const historyRef = useRef(history);
   historyRef.current = history;
+  // Goals set for one day only (0151). Same fail-open rule as the history.
+  const [dayTargets, setDayTargets] = useState<DayTargetRow[]>(cachedSeed?.dayTargets ?? []);
+  const dayTargetsRef = useRef(dayTargets);
+  dayTargetsRef.current = dayTargets;
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
@@ -1481,7 +1491,18 @@ export function useNutritionTargets(): {
     setTargets(t); setIsCustom(true);
     writeCache<CachedTargets>('nutritionTargets', clerkId, {
       targets: t, isCustom: true, fuelDays: fuelRef.current, history: historyRef.current ?? undefined,
+      dayTargets: dayTargetsRef.current,
     });
+  }, [clerkId]);
+  // Optimistic set/clear of one day's goal, so the ring moves on Save.
+  const applyDayTarget = useCallback((dayISO: string, t: NutritionTargets | null) => {
+    const rest = dayTargetsRef.current.filter((r) => r.day !== dayISO);
+    const next = t
+      ? [...rest, { day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat }]
+      : rest;
+    setDayTargets(next);
+    const cur = readCache<CachedTargets>('nutritionTargets', clerkId);
+    if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, dayTargets: next });
   }, [clerkId]);
   const applyFuelDays = useCallback((days: FuelDay[]) => {
     setFuelDays(days);
@@ -1497,9 +1518,19 @@ export function useNutritionTargets(): {
       liveFuel: fuelDays,
       history,
       defaults: DEFAULT_TARGETS,
+      overrides: dayTargets,
     }),
-    [targets, fuelDays, history],
+    [targets, fuelDays, history, dayTargets],
   );
+  const todayRow = dayTargets.find((r) => r.day === ymd(new Date()));
+  const todayOverride: NutritionTargets | null = todayRow
+    ? {
+        kcal: Number(todayRow.kcal),
+        protein: todayRow.protein_g == null ? targets.protein : Number(todayRow.protein_g),
+        carb: todayRow.carb_g == null ? targets.carb : Number(todayRow.carb_g),
+        fat: todayRow.fat_g == null ? targets.fat : Number(todayRow.fat_g),
+      }
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -1512,6 +1543,7 @@ export function useNutritionTargets(): {
       if (cached) {
         setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []);
         if (cached.history) setHistory(cached.history);
+        if (cached.dayTargets) setDayTargets(cached.dayTargets);
       }
 
       if (!supabase) return;
@@ -1522,7 +1554,7 @@ export function useNutritionTargets(): {
       // targets with it.
       // The history the same way: its own read, so a build ahead of 0150 only
       // loses the past-day goals, never today's.
-      const [{ data }, fuelRes, historyRes] = await Promise.all([
+      const [{ data }, fuelRes, historyRes, dayRes] = await Promise.all([
         clerkId
           ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
           : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
@@ -1534,6 +1566,14 @@ export function useNutritionTargets(): {
             .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
             .eq('user_id', clerkId)
             .order('effective_from', { ascending: true })
+          : Promise.resolve(null),
+        // One-day goals from the last 90 days: far enough back for any day the
+        // app lets you scroll to without paging, and small.
+        clerkId
+          ? supabase.from('user_day_targets')
+            .select('day, kcal, protein_g, carb_g, fat_g')
+            .eq('user_id', clerkId)
+            .gte('day', ymd(new Date(Date.now() - 90 * 86_400_000)))
           : Promise.resolve(null),
       ]);
       if (cancelled || !data) return;
@@ -1558,8 +1598,12 @@ export function useNutritionTargets(): {
       setIsCustom(nextIsCustom);
       setFuelDays(nextFuel);
       setHistory(nextHistory);
+      let nextDays = dayTargetsRef.current;
+      if (dayRes && !dayRes.error) nextDays = (dayRes.data ?? []) as DayTargetRow[];
+      setDayTargets(nextDays);
       writeCache<CachedTargets>('nutritionTargets', clerkId, {
         targets: next, isCustom: nextIsCustom, fuelDays: nextFuel, history: nextHistory ?? undefined,
+        dayTargets: nextDays,
       });
     })();
     return () => { cancelled = true; };
@@ -1575,7 +1619,30 @@ export function useNutritionTargets(): {
     }, [reload]),
   );
 
-  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn };
+  return { targets, isCustom, reload, apply, fuelDays, applyFuelDays, targetsOn, todayOverride, applyDayTarget };
+}
+
+/** "Today only": a goal for one local day. The plan and the profile are untouched. */
+export async function saveDayTarget(
+  supabase: Supa,
+  clerkId: string,
+  dayISO: string,
+  t: NutritionTargets,
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from('user_day_targets').upsert({
+    user_id: clerkId, day: dayISO, kcal: t.kcal, protein_g: t.protein, carb_g: t.carb, fat_g: t.fat,
+  }, { onConflict: 'user_id,day' });
+  return error ? { error: error.message } : {};
+}
+
+/** Drop a day's one-day goal, so the day reads the lasting goal again. */
+export async function clearDayTarget(
+  supabase: Supa,
+  clerkId: string,
+  dayISO: string,
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from('user_day_targets').delete().eq('user_id', clerkId).eq('day', dayISO);
+  return error ? { error: error.message } : {};
 }
 
 /** Persist the user's fuel days (an empty list clears them). With `phaseId`
