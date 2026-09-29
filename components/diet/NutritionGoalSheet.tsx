@@ -214,7 +214,7 @@ export function NutritionGoalSheet({ open, initial, onClose, onSaved, fuelDays, 
           <View style={s.header}>
             <View style={{ flex: 1 }}>
               <Text style={[s.title, { color: C.foreground }]}>Daily goal</Text>
-              <Text style={[s.subtitle, { color: C.mutedFg }]}>What Drona coaches you toward</Text>
+              <Text style={[s.subtitle, { color: C.mutedFg }]}>Starts today. Past days keep the goal they had.</Text>
             </View>
             <TouchableOpacity onPress={onClose} style={[s.closeBtn, { backgroundColor: C.closeBtn }]} accessibilityLabel="Close">
               <Feather name="x" size={15} color={C.foreground} />

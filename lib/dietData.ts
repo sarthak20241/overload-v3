@@ -22,7 +22,8 @@ import { coachInvokeErrorMessage, coachInvokeCapSignal } from '@/lib/coachErrors
 import { isMeasurementUnit } from '@/lib/units';
 import { hydrateCache, readCache, writeCache } from '@/lib/localCache';
 import { track } from '@/lib/analytics';
-import { normalizeFuelDays, targetsOnDow, type FuelDay } from '@/lib/fuelDays';
+import { normalizeFuelDays, type FuelDay } from '@/lib/fuelDays';
+import { targetsForDay, type TargetHistoryRow } from '@/lib/targetHistory';
 import {
   type MealType, type FoodDef, type FoodServing,
   nutrientsForAmount, resolveBaseAmount, foodCategoryOf, searchFoods,
@@ -1440,14 +1441,15 @@ export function fillMissingMacros(
   return out;
 }
 
-interface CachedTargets { targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[] }
+interface CachedTargets { targets: NutritionTargets; isCustom: boolean; fuelDays?: FuelDay[]; history?: TargetHistoryRow[] }
 
 /** Read the user's daily targets. isCustom = they've set at least one real goal
  *  (vs pure defaults), so the UI can nudge first-timers to set theirs.
  *
- *  `targets` is the BASE day. Fuel days (lib/fuelDays) add calories on top on
- *  their weekday, so anything that draws a specific day's ring or bars reads
- *  `targetsOn(date)`, never `targets` directly. */
+ *  `targets` is TODAY's base day. Anything that draws a specific day's ring or
+ *  bars reads `targetsOn(date)`, never `targets` directly: fuel days
+ *  (lib/fuelDays) add calories on their weekday, and a PAST day is held to the
+ *  goal it had then (lib/targetHistory), not to today's. */
 export function useNutritionTargets(): {
   targets: NutritionTargets; isCustom: boolean; reload: () => void;
   apply: (t: NutritionTargets) => void;
@@ -1466,13 +1468,20 @@ export function useNutritionTargets(): {
   const [fuelDays, setFuelDays] = useState<FuelDay[]>(cachedSeed?.fuelDays ?? []);
   const fuelRef = useRef(fuelDays);
   fuelRef.current = fuelDays;
+  // The goal as it stood on each past day (0150). Null until read; a failed or
+  // missing read leaves past days on today's goal, as they were before.
+  const [history, setHistory] = useState<TargetHistoryRow[] | null>(cachedSeed?.history ?? null);
+  const historyRef = useRef(history);
+  historyRef.current = history;
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // Optimistic update so the ring/pill reflect a saved goal instantly, without
   // waiting out read-after-write lag on the refetch.
   const apply = useCallback((t: NutritionTargets) => {
     setTargets(t); setIsCustom(true);
-    writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: t, isCustom: true, fuelDays: fuelRef.current });
+    writeCache<CachedTargets>('nutritionTargets', clerkId, {
+      targets: t, isCustom: true, fuelDays: fuelRef.current, history: historyRef.current ?? undefined,
+    });
   }, [clerkId]);
   const applyFuelDays = useCallback((days: FuelDay[]) => {
     setFuelDays(days);
@@ -1480,8 +1489,16 @@ export function useNutritionTargets(): {
     if (cur) writeCache<CachedTargets>('nutritionTargets', clerkId, { ...cur, fuelDays: days });
   }, [clerkId]);
   const targetsOn = useCallback(
-    (date: Date) => targetsOnDow(targets, fuelDays, date.getDay()),
-    [targets, fuelDays],
+    (date: Date) => targetsForDay({
+      dayISO: ymd(date),
+      todayISO: ymd(new Date()),
+      dow: date.getDay(),
+      live: targets,
+      liveFuel: fuelDays,
+      history,
+      defaults: DEFAULT_TARGETS,
+    }),
+    [targets, fuelDays, history],
   );
 
   useEffect(() => {
@@ -1492,7 +1509,10 @@ export function useNutritionTargets(): {
       await hydrateCache(clerkId);
       if (cancelled) return;
       const cached = readCache<CachedTargets>('nutritionTargets', clerkId);
-      if (cached) { setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []); }
+      if (cached) {
+        setTargets(cached.targets); setIsCustom(cached.isCustom); setFuelDays(cached.fuelDays ?? []);
+        if (cached.history) setHistory(cached.history);
+      }
 
       if (!supabase) return;
       const cols = 'daily_calorie_target, protein_target_g, carb_target_g, fat_target_g';
@@ -1500,12 +1520,20 @@ export function useNutritionTargets(): {
       // the column exists (0139) must still paint the base targets, so a
       // failure there keeps whatever fuel days we had instead of taking the
       // targets with it.
-      const [{ data }, fuelRes] = await Promise.all([
+      // The history the same way: its own read, so a build ahead of 0150 only
+      // loses the past-day goals, never today's.
+      const [{ data }, fuelRes, historyRes] = await Promise.all([
         clerkId
           ? supabase.from('user_profiles').select(cols).eq('clerk_user_id', clerkId).maybeSingle()
           : supabase.from('user_profiles').select(cols).limit(1).maybeSingle(),
         clerkId
           ? supabase.from('user_profiles').select('calorie_day_boosts').eq('clerk_user_id', clerkId).maybeSingle()
+          : Promise.resolve(null),
+        clerkId
+          ? supabase.from('user_target_history')
+            .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
+            .eq('user_id', clerkId)
+            .order('effective_from', { ascending: true })
           : Promise.resolve(null),
       ]);
       if (cancelled || !data) return;
@@ -1524,10 +1552,15 @@ export function useNutritionTargets(): {
       if (fuelRes && !fuelRes.error) {
         nextFuel = normalizeFuelDays((fuelRes.data as { calorie_day_boosts?: unknown } | null)?.calorie_day_boosts);
       }
+      let nextHistory = historyRef.current;
+      if (historyRes && !historyRes.error) nextHistory = (historyRes.data ?? []) as TargetHistoryRow[];
       setTargets(next);
       setIsCustom(nextIsCustom);
       setFuelDays(nextFuel);
-      writeCache<CachedTargets>('nutritionTargets', clerkId, { targets: next, isCustom: nextIsCustom, fuelDays: nextFuel });
+      setHistory(nextHistory);
+      writeCache<CachedTargets>('nutritionTargets', clerkId, {
+        targets: next, isCustom: nextIsCustom, fuelDays: nextFuel, history: nextHistory ?? undefined,
+      });
     })();
     return () => { cancelled = true; };
   }, [supabase, clerkId, tick]);
