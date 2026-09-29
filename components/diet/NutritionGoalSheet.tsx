@@ -81,7 +81,10 @@ export function NutritionGoalSheet({
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<GoalScope>('today');
   // The program phase running today, if any: "Rest of this phase" writes it too.
-  const [phase, setPhase] = useState<{ id: string; name: string; before: NutritionTargets } | null>(null);
+  // `before` keeps the phase's own values, nulls included, so an undo restores
+  // exactly what was there.
+  type PhaseDiet = { kcal: number | null; protein: number | null; carb: number | null; fat: number | null };
+  const [phase, setPhase] = useState<{ id: string; name: string; before: PhaseDiet } | null>(null);
   // True once the user types: from then on switching the choice keeps their numbers.
   const [dirty, setDirty] = useState(false);
   // Until the program lookup answers, the choice is unknown: showing "From
@@ -136,10 +139,10 @@ export function NutritionGoalSheet({
                   name: ph.name,
                   // What the phase held, so a failed profile write can put it back.
                   before: {
-                    kcal: ph.diet_calorie_target ?? 0,
-                    protein: ph.diet_protein_g ?? 0,
-                    carb: ph.diet_carb_g ?? 0,
-                    fat: ph.diet_fat_g ?? 0,
+                    kcal: ph.diet_calorie_target,
+                    protein: ph.diet_protein_g,
+                    carb: ph.diet_carb_g,
+                    fat: ph.diet_fat_g,
                   },
                 }
               : null);
@@ -228,7 +231,9 @@ export function NutritionGoalSheet({
   const onSave = async () => {
     const clerkId = user?.id;
     if (!supabase || !clerkId || busy) { onClose(); return; }
-    if (!phaseReady && !firstGoal) return;
+    // Every save waits for the program lookup: a lasting save made before it
+    // answers would skip the phase, even a first goal's.
+    if (!phaseReady) return;
     setBusy(true);
     haptics.selection();
     // Clamp each field into its sane range; blank/garbage falls back to the
@@ -265,7 +270,7 @@ export function NutritionGoalSheet({
       // change and Drona all read the same number as the ring. Phase first,
       // and it must really match a row: an RLS or stale-id miss returns no
       // error, and the profile alone would leave the ring and plan apart.
-      const writePhase = async (t: NutritionTargets) => {
+      const writePhase = async (t: NutritionTargets | PhaseDiet) => {
         if (!phase) return undefined;
         const { data, error: phaseErr } = await supabase
           .from('coach_program_phases')
@@ -283,7 +288,12 @@ export function NutritionGoalSheet({
         if (error && phase) await writePhase(phase.before);
       }
       // A lasting goal ends any "today only" one, or today would still show it.
-      if (!error) ({ error } = await clearDayTarget(supabase, clerkId, today));
+      // Not fatal: the goal itself is saved, and a "did not save" here would
+      // be untrue. The caller clears it locally either way.
+      if (!error) {
+        const { error: clearErr } = await clearDayTarget(supabase, clerkId, today);
+        if (clearErr) console.warn('[goal] could not clear today\'s one-day goal', clearErr);
+      }
     }
     setBusy(false);
     if (error) { haptics.warning(); setFailed(true); return; }
@@ -435,8 +445,8 @@ export function NutritionGoalSheet({
 
           <Pressable
             onPress={onSave}
-            disabled={busy || (!phaseReady && !firstGoal)}
-            style={[s.saveBtn, { opacity: busy || (!phaseReady && !firstGoal) ? 0.5 : 1 }]}
+            disabled={busy || !phaseReady}
+            style={[s.saveBtn, { opacity: busy || !phaseReady ? 0.5 : 1 }]}
           >
             <Text style={s.saveTxt}>{saveLabel}</Text>
           </Pressable>
