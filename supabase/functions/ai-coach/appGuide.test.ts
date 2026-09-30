@@ -21,6 +21,12 @@ Deno.test("the words a user would say resolve to the right topic", () => {
     ["apple health", "health_readiness"],
     ["barcode", "nutrition"],
     ["log food", "nutrition"],
+    ["how do I set a fuel day", "fuel_days"],
+    ["fuel days", "fuel_days"],
+    ["Fuel by day", "fuel_days"],
+    ["extra calories on Sunday", "fuel_days"],
+    ["more calories on leg days", "fuel_days"],
+    ["calorie cycling", "fuel_days"],
     ["hevy", "import"],
     ["pro", "pro_and_free"],
     ["how do supersets work", "workout_logging"],
@@ -61,4 +67,15 @@ Deno.test("the body log guide names every tape site", () => {
   for (const site of ["chest", "shoulders", "neck", "bicep", "forearm", "waist", "hips", "thigh", "calf"]) {
     assertStringIncludes(g, site);
   }
+});
+
+Deno.test("fuel days are discoverable and explain setup and target behavior", () => {
+  assertStringIncludes(APP_FEATURES, "(topic fuel_days)");
+  const r = lookupAppGuide("fuel_days");
+  assert("guide" in r);
+  assertStringIncludes(r.guide, '"Goal and plan"');
+  assertStringIncludes(r.guide, '"Daily goal"');
+  assertStringIncludes(r.guide, '"Save fuel days"');
+  assertStringIncludes(r.guide, "protein and fat stay the same");
+  assertStringIncludes(r.guide, "propose_targets changes only the base");
 });
