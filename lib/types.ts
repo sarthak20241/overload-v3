@@ -1,4 +1,5 @@
-export type CoachGoal = 'hypertrophy' | 'strength' | 'fat_loss' | 'endurance' | 'general';
+import type { CoachGoal } from './fitnessGoals';
+export type { CoachGoal } from './fitnessGoals';
 
 /** Phase B — per-set type. 'normal' is the default; 'warmup' is excluded from
  * working volume / 1RM / PR detection. See SET_TYPE_META in components/workout. */

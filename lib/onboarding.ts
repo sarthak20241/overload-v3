@@ -31,7 +31,7 @@ import {
   type GuestProfile,
 } from '@/lib/guestStore';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
-import { primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
+import { missingGoalsColumn, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
 
 // ─── Answers ─────────────────────────────────────────────────────────────────
 
@@ -394,9 +394,17 @@ export async function saveOnboardingProfile(
   if (prefs) row.training_preferences = prefs.slice(0, 500);
   if (Object.keys(row).length === 1) return; // nothing beyond the id
   try {
-    await withChangeSource(opts.client, 'onboarding')
+    const { error } = await withChangeSource(opts.client, 'onboarding')
       .from('user_profiles')
       .upsert(row, { onConflict: 'clerk_user_id' });
+    // A client may arrive before the migration/cache refresh. Preserve the
+    // rest of its intake and scalar primary goal during that short window.
+    if (missingGoalsColumn(error)) {
+      const { goals: _goals, ...legacyRow } = row;
+      await withChangeSource(opts.client, 'onboarding')
+        .from('user_profiles')
+        .upsert(legacyRow, { onConflict: 'clerk_user_id' });
+    }
   } catch {
     /* best-effort; see docstring */
   }

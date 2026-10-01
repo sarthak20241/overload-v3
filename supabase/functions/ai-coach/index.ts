@@ -4171,10 +4171,18 @@ Deno.serve(async (req) => {
   // so the prompt builder needs no new parameter. Best-effort: a failure just
   // means the coach plans without them, exactly as it did before.
   try {
-    const { data: profileNotes, error: pnError } = await userClient
+    let { data: profileNotes, error: pnError } = await userClient
       .from("user_profiles")
       .select("injury_notes, training_preferences, timezone, goals")
       .maybeSingle();
+    if (pnError && ["42703", "PGRST204"].includes(pnError.code)
+      && /\bgoals\b/i.test(pnError.message)) {
+      // Keep injury constraints, preferences and local dates during rollout.
+      const legacy = await userClient.from("user_profiles")
+        .select("injury_notes, training_preferences, timezone").maybeSingle();
+      profileNotes = legacy.data ? { ...legacy.data, goals: null } : null;
+      pnError = legacy.error;
+    }
     if (pnError) {
       console.log("[ai-coach] profile-notes error:", pnError.message);
     } else if (profileNotes) {

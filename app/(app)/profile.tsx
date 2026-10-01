@@ -1168,7 +1168,7 @@ export default function ProfileScreen() {
           <View style={styles.section}>
             <SectionLabel icon="zap">TRAINING PROFILE</SectionLabel>
             <Text style={[styles.coachHint, { color: C.textMuted }]}>
-              Choose all your training goals. Coach Drona uses these and your experience to tailor recommendations.
+              Choose all your training goals and keep at least one selected. Coach Drona uses these and your experience to tailor recommendations.
             </Text>
 
             {/* Goals — horizontal scroll because 5 options */}
@@ -1189,7 +1189,10 @@ export default function ProfileScreen() {
                       key={opt.value}
                       onPress={() => {
                         const patch = toggleGoal({ goals: coachGoals }, opt.value);
-                        if (!patch.goals.length) return;
+                        if (!patch.goals.length) {
+                          setShowErrorAlert('Keep at least one training goal selected. Add another goal before removing this one.');
+                          return;
+                        }
                         track('profile_field_changed', { field: 'goals', value: patch.goals.join(',') });
                         setCoachGoals(patch.goals);
                         // Preserve tap order when users toggle several goals quickly.

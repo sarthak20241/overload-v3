@@ -102,7 +102,7 @@ import {
 import type { GeneratedProgram } from '@/lib/programData';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
 import { MedicalDisclaimer } from '@/components/health/MedicalDisclaimer';
-import { selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
+import { joinGoals, selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 
 const LBS_PER_KG = 2.20462;
 const MIN_AGE_YEARS = 13;
@@ -145,7 +145,7 @@ const EXPERIENCE_OPTIONS: { value: ExperienceLevel; icon: keyof typeof Feather.g
 const GOAL_PHRASES: Record<CoachGoal, string> = {
   hypertrophy: 'Building muscle',
   strength: 'Getting stronger',
-  fat_loss: 'Cutting fat, keeping muscle',
+  fat_loss: 'Cutting fat while keeping muscle',
   endurance: 'Building endurance',
   general: 'Training for life',
 };
@@ -770,7 +770,9 @@ export default function OnboardingScreen() {
             stepKey="goal"
             question="What are you training for?"
             sub="Choose all that apply. Your goals shape your training and nutrition."
-            caption="Tap a selected goal to remove it. You can change your goals anytime."
+            caption={selectedGoals(answers).includes('fat_loss')
+              ? 'With fat loss selected, nutrition starts with a deficit while training supports muscle and strength. Your target weight and pace refine it.'
+              : 'Tap a selected goal to remove it. You can change your goals anytime.'}
             footer={<PrimaryCta label="Continue" disabled={selectedGoals(answers).length === 0} onPress={() => goTo('experience')} />}
           >
             <View style={s.options}>
@@ -1138,7 +1140,7 @@ export default function OnboardingScreen() {
           >
               <CommitmentHold
                 pledgeTitle="I'm in."
-                pledgeBody={`${selectedGoals(answers).map((g) => GOAL_PHRASES[g]).join(', ')}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
+                pledgeBody={`${joinGoals(selectedGoals(answers).map((g, i) => i === 0 ? GOAL_PHRASES[g] : GOAL_PHRASES[g].toLowerCase()))}, ${answers.frequency ?? 3} days a week${paceCtx && paceDate ? `, ${Math.abs(toKg(targetVal) - toKg(weightVal)).toFixed(1)} kg ${targetVal < weightVal ? 'down' : 'up'} by ${paceDate}` : ''}. I log my sessions, even the rough ones.`}
                 onCommitted={() => goTo('build')}
               />
           </QuestionStep>

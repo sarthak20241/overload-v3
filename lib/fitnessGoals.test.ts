@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@1';
-import { goalLabels, primaryGoal, selectedGoals, toggleGoal } from './fitnessGoals.ts';
+import { goalLabels, joinGoals, missingGoalsColumn, primaryGoal, selectedGoals, toggleGoal } from './fitnessGoals.ts';
 
 Deno.test('muscle, fat loss and strength remain selected together', () => {
   let a = toggleGoal({ goals: [] }, 'hypertrophy');
@@ -33,4 +33,16 @@ Deno.test('legacy intakes and profiles retain their scalar goal', () => {
 Deno.test('invalid goals and duplicates never reach plan labels', () => {
   assertEquals(selectedGoals({ goals: ['strength', 'strength', '__proto__', 'constructor', 7] }), ['strength']);
   assertEquals(selectedGoals({ goals: [], goal: 'strength' }), []);
+});
+
+Deno.test('legacy retry only covers a missing goals column', () => {
+  assertEquals(missingGoalsColumn({ code: 'PGRST204', message: "Could not find the 'goals' column" }), true);
+  assertEquals(missingGoalsColumn({ code: '42703', message: 'column user_profiles.goals does not exist' }), true);
+  assertEquals(missingGoalsColumn({ code: '42703', message: 'column timezone does not exist' }), false);
+  assertEquals(missingGoalsColumn({ code: '42501', message: 'goals permission denied' }), false);
+});
+
+Deno.test('commitment copy joins goals naturally', () => {
+  assertEquals(joinGoals(['Building muscle', 'getting stronger']), 'Building muscle and getting stronger');
+  assertEquals(joinGoals(['Building muscle', 'losing fat', 'getting stronger']), 'Building muscle, losing fat, and getting stronger');
 });

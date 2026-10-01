@@ -25,7 +25,7 @@ import { structuredToProgram, type GeneratedProgram, type ProgramDiet, type Prog
 import { programNarrative } from '@/lib/programNarrative';
 import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern';
 import type { CoachGoal } from '@/lib/types';
-import { goalLabels, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
+import { GOAL_LABELS, goalLabels, joinGoals, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
 
 const REQUEST_TIMEOUT_MS = 75_000;
 
@@ -104,7 +104,13 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
   const goal = primaryGoal(a);
   const goals = selectedGoals(a);
   const trainingLine = goals.length > 1
-    ? goals.map((g) => TRAINING_LINE[g]).join(' ')
+    ? [
+        goals.includes('fat_loss')
+          ? 'Keep muscle and strength as weight drops. Add reps or load when recovery allows; maintaining performance is progress too.'
+          : `Work toward ${joinGoals(goals.map((g) => GOAL_LABELS[g]))} with clean reps. Add reps before increasing load when recovery allows.`,
+        goals.includes('endurance') ? 'Build work capacity gradually with conditioning that leaves you recovered for lifting.' : '',
+        'Stop one or two reps short of failure.',
+      ].filter(Boolean).join(' ')
     : TRAINING_LINE[goal];
   const freq = a.frequency ?? 3;
   const dir = directionOf(a);
@@ -119,7 +125,7 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
   const block = {
     split_type: splitType,
     days_per_week: freq,
-    emphasis: goals.length > 1 ? goals.map((g) => EMPHASIS[g]).join(', ') : EMPHASIS[goal],
+    emphasis: goals.length > 1 ? joinGoals(goals.map((g) => GOAL_LABELS[g])) : EMPHASIS[goal],
     week_pattern: buildWeekPattern(splitType, freq),
   };
 
@@ -188,7 +194,7 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
 
   return {
     title,
-    objective: goals.length > 1 ? `${objective} Work toward all your goals: ${goalLabels(a)}.` : objective,
+    objective: goals.length > 1 ? `${dir ? objective + ' ' : ''}Train ${freq} days a week to ${joinGoals(goals.map((g) => GOAL_LABELS[g]))}.` : objective,
     goal,
     target_weight_kg: dir ? a.goalWeightKg ?? undefined : undefined,
     target_date: targetDate ?? undefined,
@@ -239,7 +245,7 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
 
   return [
     `I just finished onboarding. Lay out my program toward my goal from these answers.`,
-    `Goals: ${goalLabels(a) || 'general fitness'}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.`,
+    `Goal: ${goal}. Goals: ${goalLabels(a) || 'general fitness'}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.`,
     body.length ? `Body: ${body.join(', ')}.` : '',
     `Today is ${today}. ${horizon}`,
     t
