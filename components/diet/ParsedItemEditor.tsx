@@ -274,16 +274,23 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       stored.serving_label !== item.serving_label ||
       stored.quantity !== item.quantity ||
       Math.abs(grams - item.grams) > 0.5;
+    const b = base.current;
+    const ratio = b.grams > 0 && grams > 0 ? grams / b.grams
+      : (b.total > 0 ? finalSize * qtyNum / b.total : 1);
+    const scaled = !preserveSnapshot && per100 && grams > 0
+      ? scaleServingNutrition({ kcal: per100.kcal, protein: per100.protein_g,
+        carb: per100.carb_g, fat: per100.fat_g }, grams / 100)
+      : scaleServingNutrition(b, ratio);
     onSave({
       ...item,
       meal_type: section,
       quantity: stored.quantity,
       serving_label: stored.serving_label,
-      grams: changed ? r1(grams) : item.grams,
-      kcal: changed ? numOr(kcal, 0) : item.kcal,
-      protein_g: changed ? numOr(protein, 0) : item.protein_g,
-      carb_g: changed ? numOr(carb, 0) : item.carb_g,
-      fat_g: changed ? numOr(fat, 0) : item.fat_g,
+      grams: changed ? grams : item.grams,
+      kcal: !changed ? item.kcal : macrosTouched ? numOr(kcal, 0) : scaled.kcal,
+      protein_g: !changed ? item.protein_g : macrosTouched ? numOr(protein, 0) : scaled.protein,
+      carb_g: !changed ? item.carb_g : macrosTouched ? numOr(carb, 0) : scaled.carb,
+      fat_g: !changed ? item.fat_g : macrosTouched ? numOr(fat, 0) : scaled.fat,
       // A corrected line carries the user's numbers, not the parser's.
       source: changed ? 'manual' : item.source,
       confidence: changed ? 'high' : item.confidence,

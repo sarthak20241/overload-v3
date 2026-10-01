@@ -85,3 +85,16 @@ Deno.test('a failed count query never deletes the old meal', async () => {
   assertEquals(await persistLoggedEntryEdit(f.client, entry, item, date, f.findMeal), {});
   assert(!f.calls.some(c => c[0] === 'delete'));
 });
+
+Deno.test('a label-only correction preserves precise nutrition and extended nutrients', async () => {
+  const f = fixture();
+  const original = { ...entry, kcal: 220.4, protein_g: 6.66 };
+  const renamed = { ...item, ...original, grams: 240, serving_label: 'QA glass' };
+  assertEquals(await persistLoggedEntryEdit(f.client, original, renamed, date, f.findMeal), {});
+  const patch = f.calls.find(c => c[0] === 'update')[2];
+  assertEquals(patch.kcal, 220.4);
+  assertEquals(patch.protein_g, 6.66);
+  assertEquals(patch.serving_unit, 'QA glass');
+  assert(!('fiber_g' in patch));
+  assert(!('source' in patch));
+});

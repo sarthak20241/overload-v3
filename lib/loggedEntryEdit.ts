@@ -19,8 +19,7 @@ export async function persistLoggedEntryEdit(
     if (m.error || !m.id) return { error: m.error ?? 'Could not create the meal' };
     mealId = m.id;
   }
-  const nutritionChanged = item.quantity !== entry.quantity || item.serving_label !== entry.serving_unit ||
-    item.grams !== (entry.grams_logged ?? 0) || item.kcal !== entry.kcal ||
+  const nutritionChanged = item.grams !== (entry.grams_logged ?? 0) || item.kcal !== entry.kcal ||
     item.protein_g !== entry.protein_g || item.carb_g !== entry.carb_g || item.fat_g !== entry.fat_g;
   const { data, error } = await supabase.from('meal_entries').update({
     meal_id: mealId, quantity: item.quantity, serving_unit: item.serving_label,
