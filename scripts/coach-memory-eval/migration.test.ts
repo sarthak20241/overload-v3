@@ -264,3 +264,45 @@ Deno.test("the forward repair caps reactivated facts and preserves forgotten fac
     await db.close();
   }
 });
+
+Deno.test("remember and forget acquire the same per-user transaction lock", async () => {
+  const db = await fixture();
+  try {
+    await db.exec(repair);
+    await asUser(db, "owner");
+    await db.query(
+      "select public.coach_remember_fact('injury', 'acl', 'ACL history', 'chat')",
+    );
+    await db.exec("begin");
+    await db.query("select public.coach_forget_fact('acl', 'injury')");
+    const forgottenLocks = (await db.query(
+      "select classid, objid, objsubid, mode from pg_locks where locktype = 'advisory' and granted",
+    )).rows;
+    assertEquals(
+      forgottenLocks.length,
+      1,
+      "forget must hold its transaction lock",
+    );
+    const rejected = await db.query<{ result: { saved: boolean } }>(
+      "select public.coach_remember_fact('injury', 'acl', 'ACL history', 'chat') as result",
+    );
+    assertEquals(rejected.rows[0].result.saved, false);
+    const rememberLocks = (await db.query(
+      "select classid, objid, objsubid, mode from pg_locks where locktype = 'advisory' and granted",
+    )).rows;
+    assertEquals(
+      rememberLocks,
+      forgottenLocks,
+      "remember must use the same user lock",
+    );
+    await db.exec("commit");
+    assertEquals(
+      (await db.query(
+        "select * from pg_locks where locktype = 'advisory' and granted",
+      )).rows,
+      [],
+    );
+  } finally {
+    await db.close();
+  }
+});

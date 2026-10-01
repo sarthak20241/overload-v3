@@ -85,8 +85,41 @@ begin
 end;
 $function$;
 
+create or replace function public.coach_forget_fact(p_key text, p_category text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  uid   text := current_clerk_user_id();
+  v_key text := lower(regexp_replace(btrim(coalesce(p_key, '')), '\s+', ' ', 'g'));
+  v_n   int;
+begin
+  if uid is null then
+    return jsonb_build_object('forgotten', 0, 'reason', 'not signed in');
+  end if;
+  if length(v_key) < 1 then
+    return jsonb_build_object('forgotten', 0, 'reason', 'key is required');
+  end if;
+
+  -- The same lock as remember protects the dismissed-value check from stale reads.
+  perform pg_advisory_xact_lock(hashtextextended('coach_memory:' || uid, 0));
+
+  update public.coach_memory
+     set status = 'dismissed', updated_at = now()
+   where user_id = uid and key = v_key and status = 'active'
+     and (p_category is null or category = p_category);
+  get diagnostics v_n = row_count;
+
+  return jsonb_build_object('forgotten', v_n);
+end;
+$function$;
+
 revoke all on function public.coach_remember_fact(text, text, text, text) from public, anon;
 grant execute on function public.coach_remember_fact(text, text, text, text) to authenticated;
+revoke all on function public.coach_forget_fact(text, text) from public, anon;
+grant execute on function public.coach_forget_fact(text, text) to authenticated;
 
 create or replace function public.delete_user_data(p_user_id text)
 returns void

@@ -39,6 +39,15 @@ Deno.test("the memory block is in the static prompt for every mode", () => {
   }
 });
 
+Deno.test("memory distinguishes an emitted proposal from an applied app change", () => {
+  const text = staticBlock("discuss_program");
+  const memory = text.slice(text.indexOf("<memory>"), text.indexOf("</memory>"));
+  assertStringIncludes(memory, "the user still has to Save or Apply");
+  assertStringIncludes(memory, 'explicitly label it "proposed/unapplied"');
+  assertStringIncludes(memory, "current persisted user_context and recent_plan_changes take precedence");
+  assert(!memory.includes("save the decision in the same turn: what changed and why"));
+});
+
 Deno.test("memory tools ride every conversational mode", () => {
   for (const mode of [
     "chat", "refine_workout", "refine_plan", "discuss_workout", "discuss_plan",

@@ -367,6 +367,8 @@ export const APP_GUIDE = {
 - Food search: "Search foods" over a large catalog with recents, or "Ask Drona to find" a food that is missing. Food detail shows serving sizes and full nutrition facts.
 - Saved meals and the meal builder: "New meal", name it, add foods, "Save meal" or "Log to {meal}".
 - Daily goal: "Goal" or "Set goal" on the diary: Calories, Protein, Carbs, Fat. In chat you change them through propose_targets, which shows a card they Apply.
+- For an existing goal, choose its scope before saving. "Today only" is the default: "Save for today" changes that day's base goal and tomorrow returns to the usual plan. "Rest of this phase" (with a running program) updates the usual goal and current phase together; "Save for this phase". Without a program, "From today on" updates the usual goal from today. A first goal skips the scope choice. A lasting save clears today's one-day override. Past days keep the targets recorded for them.
+- AI logging can reuse matching foods from your own recent logs, according to the accuracy of those earlier numbers. Nutrition numbers you provide for the food take priority over lookup estimates when their basis can be resolved; missing values may still be filled from a source.
 - The Daily goal sheet also has "Fuel days" for extra calories on selected weekdays; call coach_get_app_guide with fuel_days for the steps and limits.
 - What you see: user_context.nutrition (targets, today so far, the 3-day average). Per-item history is in meals and meal_entries through coach_query_sql.
 - Not in the app: a barcode scanner (there is none), day-by-day meal plans (not your lane).
@@ -374,6 +376,9 @@ export const APP_GUIDE = {
     sources: [
       "app/(app)/nutrition.tsx",
       "lib/dietData.ts",
+      "components/diet/NutritionGoalSheet.tsx",
+      "supabase/functions/ai-coach/userFoodMemory.ts",
+      "supabase/functions/ai-coach/statedNumbers.ts",
       "supabase/functions/ai-coach/index.ts",
       "supabase/functions/ai-coach/prompt.ts",
     ],
@@ -410,7 +415,7 @@ export const APP_GUIDE = {
 - From Home: tap the Goal pill to open "Goal and plan". In the current phase, tap "Fuel days" if none are set, or "Edit" beside "FUEL BY DAY" if they are. The week shows the calorie target for each weekday.
 - From the food diary: tap "Goal" or "Set goal", then "Fuel days" in the "Daily goal" sheet. On a fuel day, the extra-calorie chip on the diary also opens the editor. Fuel days require signing in; the diary does not offer the editor to guests.
 - In the "Fuel days" sheet: tap the weekday circles to select days. Each new day starts at +${FUEL_DEFAULT} kcal; use minus or plus to choose +${FUEL_MIN} to +${FUEL_MAX} kcal in ${FUEL_STEP} kcal steps. Optionally label the session ("Long run", "Leg day", up to ${FUEL_LABEL_MAX} characters), then tap "Save fuel days". Deselect a weekday and save to remove it; deselect every day to return to the same goal all week.
-- The extra is added on top of the base calorie target as carbs; protein and fat stay the same. Other weekdays keep their base target. Eating to the larger fuel-day target is on plan. The sheet shows the weekly calorie total and daily average.
+- The extra is added on top of the base calorie target as carbs; protein and fat stay the same. A "Today only" goal overrides that day's base target; its scheduled fuel-day extra still adds on top. Other weekdays keep their base target. Eating to the larger fuel-day target is on plan. The sheet shows the weekly calorie total and daily average.
 - You see the live schedule in user_context.fuel_days. propose_targets changes only the base calorie and macro targets, keeping fuel days on top. To plan or change a program's fuel days in conversation, use generate_program with each phase's fuel_days after the user confirms the proposal; there is no standalone chat tool to edit the live schedule.
 - A manual save updates the live schedule and the current program phase, if one is running. A future phase's planned fuel days go live when that phase starts. When building or refining a program, an omitted fuel_days field keeps the live schedule; an empty list removes it. Preserve existing phase schedules unless the user asks to change them.
 - Manual editing needs sign-in, with no Pro requirement. Planning or refining fuel days through the program coach requires Pro or an active trial.`,
@@ -462,7 +467,7 @@ export const APP_GUIDE = {
       `Goal and program (Home > the Goal pill, screen "Goal and plan").
 - HERO: the goal, the destination (target weight and date) and a phase progress bar. NOW: the current phase with its daily target chips, its diet, training and readiness directives, and that phase's split as routines (or "Build workout split" if none yet). THE FULL PLAN: every phase. "Adjust with Drona" opens you in refine mode. The user can also end the program.
 - A program is what you build with generate_program (Build a Program in the coach menu, or during onboarding): 2 to 6 phases, each with weeks, diet targets, three directives and a training block (split, days per week, a 7-day week pattern with Rest days). The app advances phases by date and applies the current phase's diet targets automatically.
-- The user can change targets and goal on the Goal screen and the diary; every change is logged (user_context.recent_plan_changes tells you what changed, when, and by whom).
+- The user can change targets and goal on the Goal screen and the diary. For an existing nutrition goal, Daily goal defaults to "Today only"; choose "Rest of this phase" for a lasting current-phase change, or "From today on" without a program. Past days keep their recorded targets. Lasting target, goal and program changes are logged (user_context.recent_plan_changes tells you what changed, when, and by whom). "Today only" is a separate one-day target, visible in user_context.today_goal_override; it is not a lasting plan change.
 - Goal choices: build muscle, get stronger, lose fat, build endurance, overall fitness; optional focus areas (abs, arms, chest, back, shoulders, glutes, legs, calves, posture, grip).
 - The current phase includes Fuel days / FUEL BY DAY; call coach_get_app_guide with fuel_days for editing steps. Program generation, discussion and refining require sign-in plus Pro or an active trial. The initial onboarding program preview is a separate, limited path before account creation; it does not grant ongoing guest access to coach chat.`,
     sources: [

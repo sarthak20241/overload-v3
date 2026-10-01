@@ -11,7 +11,7 @@ deno test --no-lock --node-modules-dir=none --allow-read scripts/coach-memory-ev
 
 Runs the actual SQL in an in-memory PostgreSQL instance: deletion with and
 without the optional facts tables, account isolation and RPC permissions,
-and the 60-active-fact cap after reactivation. The historical migration uses
+the 60-active-fact cap after reactivation, and shared remember/forget locking. The historical migration uses
 its verified live version, `20260919023437`; do not apply it again on live.
 The later `coach_memory_cleanup_and_cap` migration is a new forward repair
 and must be applied before deploying the memory tools. It does not require #218.

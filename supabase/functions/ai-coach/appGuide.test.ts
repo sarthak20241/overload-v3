@@ -116,6 +116,30 @@ Deno.test("fuel days are discoverable and explain setup and target behavior", ()
   assertStringIncludes(r.instructions, "propose_targets changes only the base");
 });
 
+Deno.test("nutrition instructions distinguish one-day goals from lasting plan changes", () => {
+  const instructions = APP_GUIDE.nutrition.instructions;
+  for (
+    const label of [
+      "Today only",
+      "Save for today",
+      "Rest of this phase",
+      "Save for this phase",
+      "From today on",
+    ]
+  ) {
+    assertStringIncludes(instructions, label);
+  }
+  assertStringIncludes(instructions, '"Today only" is the default');
+  assertStringIncludes(
+    instructions,
+    "Past days keep the targets recorded for them",
+  );
+  assertStringIncludes(
+    APP_GUIDE.fuel_days.instructions,
+    "scheduled fuel-day extra still adds on top",
+  );
+});
+
 Deno.test("all existing guide topics remain available after the registry migration", () => {
   assertEquals(APP_GUIDE_TOPICS, [
     "workout_logging",
