@@ -471,13 +471,14 @@ export const COACH_TOOLS: AnthropicTool[] = [
   {
     name: 'coach_get_app_guide',
     description:
-      `How one part of the Overload app works: where it is, the exact labels on screen, what it records, and its limits. Call it when the user asks how to do something in the app, whether the app can do something, or where to find a screen, and ALWAYS before telling them the app cannot do something. Topics: ${APP_GUIDE_TOPICS.join(', ')}. A plain phrase like "measurements" or "sleep" also resolves.`,
+      `Detailed instructions and access requirements for one part of the Overload app: where it is, exact screen labels, steps, limits, sign-in, Pro/trial and platform availability. Call it when the user asks how to do something, whether the app can do something, or where to find a screen, and ALWAYS before telling them the app cannot do something. Returns only the selected topic's instructions and per-capability availability. Topics: ${APP_GUIDE_TOPICS.join(', ')}.`,
     input_schema: {
       type: 'object',
       properties: {
         topic: {
           type: 'string',
-          description: 'A topic name from the list, or a plain word for the feature ("measurements", "import", "pro").',
+          enum: APP_GUIDE_TOPICS,
+          description: 'Choose the exact topic ID for the feature the user asks about. For example, body_log for measurements, fuel_days for extra weekday calories, or pro_and_free for subscriptions.',
         },
       },
       required: ['topic'],

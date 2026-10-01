@@ -7,6 +7,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { buildSystemPrompt, MEMORY_TOOL_NAMES, TERMINAL_TOOLS } from "./prompt.ts";
+import { APP_GUIDE_TOPICS } from "./appGuide.ts";
 
 type Mode = NonNullable<Parameters<typeof buildSystemPrompt>[0]["mode"]>;
 
@@ -78,4 +79,6 @@ Deno.test("the app guide tool lists its topics so the model can pick", () => {
   const guide = tools.find((t) => t.name === "coach_get_app_guide")!;
   assertStringIncludes(guide.description, "body_log");
   assertStringIncludes(guide.description, "not_available");
+  const topic = (guide.input_schema.properties as Record<string, { enum?: string[] }>).topic;
+  assertEquals(topic.enum, APP_GUIDE_TOPICS);
 });

@@ -23,6 +23,7 @@ import {
   summarizeMeasurements,
 } from "./memory.ts";
 import { envInt } from "../_shared/envInt.ts";
+import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
@@ -119,7 +120,7 @@ if (!CLERK_ISSUER) {
 // get_coach_access_status() (v_daily_limit) so the client and server agree
 // on what counts as "limit hit."
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
-const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_MAX = AI_LIMITS.proChat;
 const PREVIEW_MAX_CHARS = 200;
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 5;
@@ -745,7 +746,7 @@ const PARSE_MEAL_MAX_TOKENS = 5000;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
 let PARSE_ISOLATE_REQUESTS = 0;
-const PARSE_RATE_LIMIT_MAX = 40;
+const PARSE_RATE_LIMIT_MAX = AI_LIMITS.proFood;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 // Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
 // server never routes anyone to fast on its own.
@@ -783,8 +784,8 @@ const PRECISE_SEARCH_COUNTRY = Deno.env.get("PRECISE_SEARCH_COUNTRY") ?? "india"
 // 402 with `error: "free_cap_hit"` (not 429) so the client opens the
 // upgrade sheet rather than a retry-later toast. Mirror these numbers in
 // get_coach_access_status() — change both together.
-const FREE_CHAT_LIMIT = 3;
-const FREE_PARSE_LIMIT = 3;
+const FREE_CHAT_LIMIT = AI_LIMITS.freeChat;
+const FREE_PARSE_LIMIT = AI_LIMITS.freeFood;
 
 // Fan-out plan generation. On by default; set PLAN_FANOUT=false in the Edge
 // Function secrets to fall back to the single forced-tool call without a
