@@ -24,6 +24,7 @@
 // passes the deterministic guardrails (density clamp, Atwater, prep-state),
 // so catalog-backed numbers are never model-invented.
 
+import { continuationText, pendingFoodMeal, type PendingFoodMeal } from "./foodContext.ts";
 import { nearWord } from "./textMatch.ts";
 import {
   findSavedMeal,
@@ -185,6 +186,8 @@ export interface ParseMealResult {
      *  sent as `previousItems` and should REPLACE it. False (the default) means
      *  they are new food, so a client showing a pending meal appends them. */
     corrects_previous?: boolean;
+    /** Rebuilt an unlogged meal after the user answered its clarification. */
+    continued_pending?: boolean;
   } | null;
   // Set when the model declined (non-food input) instead of logging.
   //
@@ -192,7 +195,7 @@ export interface ParseMealResult {
   // last remaining line, so there is nothing left to log. The client must drop
   // the card rather than keep it, which is what it does for every other decline
   // (a decline normally means unlogged work would be lost).
-  declined: { message: string; cleared?: boolean } | null;
+  declined: { message: string; cleared?: boolean; pending_meal?: PendingFoodMeal } | null;
   /** A researched alternative the user should CHOOSE, not receive silently.
    *  Set when a web lookup materially disagrees with what is on screen -
    *  usually a different variant of the same product. The client offers it as
@@ -854,6 +857,8 @@ export interface ParseMealInput {
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
   previousItems?: PreviousItem[];
+  /** Only set after the router identifies a continuation of an unlogged meal. */
+  pendingMeal?: PendingFoodMeal | null;
   /** The last few turns of this logging conversation, oldest first. Without it
    *  Drona can see the meal but not what either side just SAID, so a reply like
    *  "yes do that" or "no the other one" has nothing to attach to. */
@@ -5029,6 +5034,7 @@ export async function runParseMeal(
   // Same inputs runParseMealCore gated on. The rerun below overwrites this with
   // its own: that one is a first shot, so it runs the tier the user picked.
   result.tier = resolveParseTier(input.mode, !firstShot);
+  if (result.parsed && input.pendingMeal) result.parsed.continued_pending = true;
 
   // "Not from saved meals": the user turned down the saved meal on the card.
   // Log their ORIGINAL words again as a first shot with saved meals switched
@@ -5184,6 +5190,19 @@ async function runParseMealCore(
       result: null,
     });
   }
+  if (input.pendingMeal) {
+    steps.push({ iter: 0, tool: "pending_meal", input: { status: input.pendingMeal.status, question: input.pendingMeal.question } });
+  }
+  const extractTool = input.pendingMeal
+    ? JSON.parse(JSON.stringify(fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL))
+    : fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL;
+  if (input.pendingMeal) {
+    extractTool.input_schema.properties.accepts_generic_estimate = {
+      type: "boolean",
+      description: "True only when this clarification explicitly asks you to assume, estimate, use a generic food, or choose the common variant for the item in pending_meal.question. A quantity alone is false. This permission applies only to that questioned food.",
+    };
+    extractTool.input_schema.required.push("accepts_generic_estimate");
+  }
   const extractRes = await callAnthropicOnce(deps, {
     model: deps.model,
     // A cap, not a target: the model emits what the message needs, so a short
@@ -5199,13 +5218,15 @@ async function runParseMealCore(
     // fastMode is defined as mode === "fast" && !hasPrevious, so these three
     // branches are exclusive by construction.
     system: cacheableSystem(
-      fastMode
+      (fastMode
         ? FAST_EXTRACT_SYSTEM
         : hasPrevious
         ? EXTRACT_SYSTEM_SMART + EXTRACT_CORRECTION_RULES
-        : EXTRACT_SYSTEM_SMART,
+        : EXTRACT_SYSTEM_SMART) + (input.pendingMeal
+          ? "\nThe message contains an unlogged pending_meal and the user's clarification. Re-extract ALL foods from pending_meal.text, applying the clarification to the questioned item. Preserve amounts and meal sections for every other food. This is one meal request, not an additional log. When they ask you to assume or estimate, choose a sensible generic food and note the assumption. The question is context, not a food to extract."
+          : ""),
     ),
-    tools: withToolCache([fastMode ? FAST_EXTRACT_TOOL : EXTRACT_TOOL]),
+    tools: withToolCache([extractTool]),
     tool_choice: { type: "tool", name: fastMode ? "estimate_meal" : "extract_meal" },
     messages: [{
       role: "user",
@@ -5226,6 +5247,8 @@ async function runParseMealCore(
             })),
           },
         }) + savedMealsBlock(saved)
+        : input.pendingMeal
+        ? JSON.stringify({ text: userText.text, pending_meal: input.pendingMeal }) + savedMealsBlock(saved)
         : userText.text + savedMealsBlock(saved),
     }],
   });
@@ -5802,9 +5825,25 @@ async function runParseMealCore(
   }
 
   const memory = await memoryP;
-  const ambiguous = memory.find((m) => (m?.trace.decision as { reason?: string } | undefined)?.reason === "ambiguous");
+  const ambiguityQuestion = (item: unknown) => `I have more than one saved match for ${item}. Add the brand, flavour or variant so I use the right one.`;
+  const ambiguous = memory.find((m) =>
+    (m?.trace.decision as { reason?: string } | undefined)?.reason === "ambiguous" &&
+    !(ext.accepts_generic_estimate === true && input.pendingMeal?.question === ambiguityQuestion(m?.trace.item))
+  );
   if (ambiguous) {
-    return declineResult(`I have more than one saved match for ${ambiguous.trace.item}. Add the brand, flavour or variant so I use the right one.`);
+    const question = ambiguityQuestion(ambiguous.trace.item);
+    const result = declineResult(question);
+    result.declined!.pending_meal = pendingFoodMeal(
+      input.pendingMeal ? continuationText(userText.text, input.pendingMeal) : userText.text,
+      question,
+    )!;
+    return result;
+  }
+  // Permission to estimate applies only to the item Drona asked about.
+  // Its ambiguous memory match remains null, so the normal fallback supplies
+  // numbers; unrelated foods keep their confirmed memory and safety checks.
+  if (input.pendingMeal && ext.accepts_generic_estimate === true) {
+    steps.push({ iter: 1, tool: "pending_estimate", input: { question: input.pendingMeal.question } });
   }
 
   // ── FAST MODE: the model's estimate, and nothing else ─────────────────────
@@ -6071,7 +6110,7 @@ async function runParseMealCore(
     // The same clamped text extract saw. Decide reads this to place quantities
     // and sections against the user's own words, so feeding it a shorter cut
     // than extract got would make the two stages disagree about what was said.
-    user_text: userText.text,
+    user_text: input.pendingMeal ? continuationText(userText.text, input.pendingMeal) : userText.text,
     meal_type_from_text: mealFromText,
     items: resolved.map((r) => ({
       name: r.name,
@@ -6289,3 +6328,4 @@ async function runParseMealCore(
     iterations: anthropicCalls,
   };
 }
+
