@@ -218,7 +218,7 @@ export interface ParseMealResult {
   steps: ParseStep[];
   iterations: number;
   /** The tier that actually answered, which is not always the one the user
-   *  picked: a correction runs Thorough whatever was asked for. Set by
+   *  picked: a Quick follow-up uses the full resolver. Set by
    *  runParseMeal; optional because the food agent builds its result by hand
    *  and has none when it only copied lines it had already read. */
   tier?: ParseTier;
@@ -230,14 +230,13 @@ export interface ParseMealResult {
 export type ParseTier = "fast" | "thorough" | "precise";
 
 /**
- * Which tier a parse runs. Fast and Precise are first-shot only: with a meal on
- * screen the turn may be a correction, removal, question or addition, and those
- * need the previous meal resolved, which is the full pipeline's job. So both
- * fall back to Thorough. runParseMealCore gates on this and runParseMeal
+ * Quick follow-ups need the full extraction/correction pipeline, so they use
+ * Thorough. Precise already uses that pipeline and retains its source matching
+ * and research for newly logged foods. runParseMealCore gates on this and runParseMeal
  * reports it, so the logged tier and the tier that ran cannot drift apart.
  */
 export function resolveParseTier(mode: ParseMealInput["mode"], hasPrevious: boolean): ParseTier {
-  if (hasPrevious) return "thorough";
+  if (hasPrevious && mode === "fast") return "thorough";
   if (mode === "fast") return "fast";
   if (mode === "super") return "precise";
   return "thorough";
@@ -819,7 +818,10 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
   }
   const f = grams / 100;
   return {
-    food_id: null,
+    // Confirmed memory/stated/cache/web matches have already resolved identity.
+    // Keep that id until stripEphemeralIds stamps provenance and verification.
+    // Ordinary ranked candidates remain estimates when decide omitted them.
+    food_id: r.resolvedIdentity ? top?.food_id ?? null : null,
     food_name: top?.name ?? r.name,
     quantity: qty,
     // The label that DROVE the gram math, so quantity x serving_label still
@@ -832,9 +834,9 @@ export function fallbackFromResolved(r: ResolvedItem, candidatePer100: Map<strin
     carb_g: p ? round1(p.carb_g * f) : 0,
     fat_g: p ? round1(p.fat_g * f) : 0,
     fiber_g: p && p.fiber_g !== null ? round1(p.fiber_g * f) : null,
-    source: "estimate",
-    assumption: "I may have missed this item, tap to check it",
-    confidence: "low",
+    source: r.resolvedIdentity && top ? top.source : "estimate",
+    assumption: r.resolvedIdentity && MASS_UNITS.has(unit) ? null : "I may have missed this item, tap to check it",
+    confidence: r.resolvedIdentity && MASS_UNITS.has(unit) && top?.verified !== false ? "high" : "low",
   };
 }
 
@@ -846,8 +848,8 @@ export interface ParseMealInput {
    *  answer - no catalog, no OFF, no FatSecret, no decide (see the FAST MODE
    *  block in runParseMeal). "super": the precise cache, then a web lookup inside
    *  the resolve fan-out, then the full pipeline on verified numbers.
-   *  Both are honoured only on a first-shot log; with a meal on screen the
-   *  turn may be a correction and falls through to the full pipeline. */
+   *  Quick follow-ups use the full pipeline; Precise retains its sources on
+   *  food additions/replacements in that pipeline. */
   mode?: "fast" | "super" | null;
   /** Set only when a parsed-but-unlogged meal is on screen. */
   previousText?: string | null;
@@ -947,7 +949,7 @@ export interface ParseMealDeps {
   // configured, which is how the source stays behind a flag.
   searchFatSecret?(query: string): Promise<CandidateFood[]>;
 
-  /** Super only: read the precise cache before spending a web lookup. Optional
+  /** Read the precise cache before catalog or web lookup. Optional
    *  in the same way searchFatSecret is - absent means the source is simply not
    *  available, and every call site guards on it, so the eval harness and any
    *  deploy without the migration degrade silently instead of throwing.
@@ -2660,6 +2662,9 @@ export interface ExtractedItem {
 
 export interface ResolvedItem extends ExtractedItem {
   candidates: CandidateFood[];
+  /** Identity accepted by memory, a stated panel, precise cache or Precise's
+   *  source matcher/lookup. An omitted decide row may retain this provenance. */
+  resolvedIdentity?: boolean;
   /** Absolute relevance of the top candidate after rerank. The P3 skip-decide
    *  gate keys on this; absent when rerank did not run. */
   rerankTopScore?: number;
@@ -3272,7 +3277,7 @@ async function resolveOneItem(
           sources: (cached.evidence ?? []).length,
         },
       });
-      return { ...item, candidates: [synthesizeVolumeAnchors(cacheRowToCandidate(cached))] };
+      return { ...item, candidates: [synthesizeVolumeAnchors(cacheRowToCandidate(cached))], resolvedIdentity: true };
     }
   }
 
@@ -3303,7 +3308,7 @@ async function resolveOneItem(
           await deps.preciseAliasPut(cacheKey(item.name, item.brand), r.match.meta.id, r.match.confidence)
             .catch((e) => deps.log?.(`[parse_meal] precise_alias write failed: ${String(e).slice(0, 120)}`));
         }
-        return { ...item, candidates: [synthesizeVolumeAnchors(r.match.food)] };
+        return { ...item, candidates: [synthesizeVolumeAnchors(r.match.food)], resolvedIdentity: true };
       }
     }
     const tWeb0 = Date.now();
@@ -3335,7 +3340,7 @@ async function resolveOneItem(
         input: { item: item.name, ms: Date.now() - tWeb0 },
         result: { name: found.name, kcal: found.kcal },
       });
-      return { ...item, candidates: [synthesizeVolumeAnchors(found)] };
+      return { ...item, candidates: [synthesizeVolumeAnchors(found)], resolvedIdentity: true };
     }
   }
 
@@ -4911,13 +4916,17 @@ export async function tryFastCorrection(
     // reason, and missed here because the eval asserts output shape and not
     // which path produced it, so only a unit test can hold this line honest.
     const prev = byName.get((item.correctsFoodName ?? item.name).toLowerCase());
-    // Every line must map to a known, catalog-backed previous line.
-    if (!prev || !prev.food_id) return null;
-    // A changed identity ("paneer not tofu") needs a real re-resolve.
-    if (!wordsOverlap(item.name, prev.food_name)) return null;
+    // User-set/saved numbers can be rescaled without a catalogue id. Other
+    // sources still need the known row's per-100 basis.
+    if (!prev || (!prev.food_id && prev.source !== "manual")) return null;
+    // Shared words do not prove unchanged identity: banana and chocolate
+    // protein oats overlap but need different resolution. Only a normalized
+    // identical food can use the portion-only shortcut.
+    if (memoryKey(memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })) !==
+        memoryKey(prev.food_name)) return null;
 
-    const per100 = await deps.getFoodPer100(prev.food_id);
-    if (!per100) return null;
+    const per100 = prev.source === "manual" ? null : await deps.getFoodPer100(prev.food_id!);
+    if (prev.source !== "manual" && !per100) return null;
 
     let grams: number | null = null;
     let servingLabel = prev.serving_label;
@@ -4926,7 +4935,9 @@ export async function tryFastCorrection(
       grams = item.quantity;
       servingLabel = massUnit === "ml" ? "ml" : "g";
     } else {
-      const servings = await deps.getFoodServings?.(prev.food_id) ?? [];
+      const servings = prev.source === "manual" && prev.grams > 0 && prev.quantity > 0
+        ? [{ label: prev.serving_label, grams: prev.grams / prev.quantity }]
+        : prev.food_id ? await deps.getFoodServings?.(prev.food_id) ?? [] : [];
       const sv = matchServing(servings, item.unit)
         // "make it 2" keeps the serving and only changes the count.
         ?? (item.unit === "serving" ? matchServing(servings, prev.serving_label) : null);
@@ -4974,11 +4985,11 @@ export async function tryFastCorrection(
       quantity: item.quantity,
       serving_label: servingLabel,
       grams: round1(grams),
-      kcal: round1(per100.kcal * f),
-      protein_g: round1(per100.protein_g * f),
-      carb_g: round1(per100.carb_g * f),
-      fat_g: round1(per100.fat_g * f),
-      fiber_g: per100.fiber_g === null ? null : round1(per100.fiber_g * f),
+      kcal: round1(per100!.kcal * f),
+      protein_g: round1(per100!.protein_g * f),
+      carb_g: round1(per100!.carb_g * f),
+      fat_g: round1(per100!.fat_g * f),
+      fiber_g: per100!.fiber_g === null ? null : round1(per100!.fiber_g * f),
       // Keep the line's provenance. Hardcoding "catalog" promoted an OFF-backed
       // row to a fully vetted one: the card's "from label" chip vanished and a
       // packaged-food panel started reading as a curated match, purely because
@@ -5001,12 +5012,11 @@ export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
-  // First-shot only. With a card on screen the turn is an edit of that card, and
-  // the correction paths own it; a saved line already on the card is 'manual',
-  // so those paths keep its numbers as they are.
+  // Saved meals may be newly named on an addition/replacement too. Existing
+  // card lines remain owned by the correction paths and retain their numbers.
   const firstShot = (input.previousItems ?? []).length === 0;
   let saved: SavedMealForParse[] = [];
-  if (firstShot && input.savedMeals) {
+  if (input.savedMeals) {
     try {
       saved = await input.savedMeals;
     } catch {
@@ -5131,27 +5141,27 @@ async function runParseMealCore(
   // Fast only ever handles a first-shot log. With a card on screen the turn may
   // be a correction, removal, question or addition, and those need the full
   // pipeline; silently degrading them to fast would eat the user's intent.
-  // Super rides the SAME first-shot rule, and for the same reason. Note it is
-  // deliberately not fastMode's sibling in behaviour - super keeps decide,
-  // keeps the reranker, keeps every guard. The only thing it adds is where the
-  // numbers come from. resolveParseTier holds the rule so runParseMeal can
+  // Precise keeps the full extraction/correction pipeline on follow-ups and
+  // adds its usual source matching and lookup for newly resolved foods.
+  // resolveParseTier holds the rule so runParseMeal can
   // report the tier this gate actually chose.
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
-  // The user's memory is read only for a first-shot log (see memoryP below),
-  // and started now so the read overlaps the extract call.
-  const memoryLoadP = (!hasPrevious && deps.userMemory && deps.jev)
+  // First-shot reads overlap extraction. Follow-ups wait until extraction has
+  // identified food additions/replacements, so questions and research requests
+  // do not read memory only to discard it.
+  let memoryLoadP = (!hasPrevious && deps.userMemory && deps.jev)
     ? deps.userMemory.load().catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }))
     : null;
   // Every parse says whether the memory ran, so "it had nothing to offer" and
   // "it never ran" cannot look the same in the traces.
-  if (deps.userMemory && !memoryLoadP) {
+  if (deps.userMemory && !deps.jev) {
     steps.push({
       iter: 0,
       tool: "user_memory",
       input: { tier },
-      result: { skipped: hasPrevious ? "follow_up" : "no_jev" },
+      result: { skipped: "no_jev" },
     });
   }
   // The prep-state guard looks for words like "roasted" in what the user wrote.
@@ -5215,7 +5225,7 @@ async function runParseMealCore(
               grams: p.grams,
             })),
           },
-        })
+        }) + savedMealsBlock(saved)
         : userText.text + savedMealsBlock(saved),
     }],
   });
@@ -5319,6 +5329,17 @@ async function runParseMealCore(
     });
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
+  // A request to question/research the existing card must not answer with the
+  // very memory being challenged. These branches return before resolution.
+  if (hasPrevious && deps.userMemory && deps.jev &&
+      (ext.requests_research === true ||
+       (ext.asks_about_previous === true && !correctsPrevious && extItems.length === 0) ||
+       ext.declined === true || extItems.length === 0)) {
+    steps.push({
+      iter: 0, tool: "user_memory", input: { tier },
+      result: { skipped: ext.requests_research === true ? "research_requested" : "non_logging" },
+    });
+  }
   // Handled in runParseMeal, which re-logs the original words without saved
   // meals. Nothing below would do anything useful with this turn.
   // The code check only counts when the card has a 'manual' line, which is how
@@ -5416,8 +5437,14 @@ async function runParseMealCore(
       : null;
   // The user's saved meals come out HERE, before any lookup can run on them.
   // Nothing past this line sees a saved item: no estimate, no catalog, no web.
-  if (!hasPrevious && saved.length > 0) {
+  if (saved.length > 0 && ext.requests_research !== true) {
     extItems = extItems.filter((it) => {
+      // Do not reinterpret a card's existing food as a saved meal just because
+      // extraction attached a saved_meal tag while changing its portion.
+      const existing = correctsPrevious
+        ? prevItems.find((p) => memoryKey(p.food_name) === memoryKey(it.name))
+        : null;
+      if (existing) return true;
       const meal = findSavedMeal(it.savedMeal, saved);
       if (!meal) {
         const offer = suggestSavedMeal(it.name, saved);
@@ -5431,7 +5458,12 @@ async function runParseMealCore(
     // so return now: runParseMeal fills the lines in from the stored rows.
     if (hits.length > 0 && extItems.length === 0) {
       return {
-        parsed: { meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour), items: [], drona_line: "" },
+        parsed: {
+          meal_type: mealFromText ?? input.mealHint ?? mealForHour(input.localHour),
+          items: correctsPrevious ? keepUncoveredPrevious([], prevItems, replacedNames) : [],
+          drona_line: "",
+          corrects_previous: correctsPrevious,
+        },
         declined: null,
         usage,
         tool_calls: toolCalls,
@@ -5680,18 +5712,27 @@ async function runParseMealCore(
   }
   const tResolve0 = Date.now();
   // ── The user's own memory, before every other source ─────────────────────
-  // Foods THIS user logged in the last 10 days (userFoodMemory.ts). A food Jev
-  // says IS the line answers it in every tier, so the same person gets the same
-  // number every time. First-shot logs only: a follow-up turn is where "double
-  // check" and "that's wrong" live, and repeating ourselves there is exactly
-  // what the user asked us not to do. Started now, awaited where each tier
-  // needs it, so Quick still paints its rows first.
+  // Newly logged foods use the same memory in first shots and follow-ups.
+  // Existing card edits keep their current identity/numbers; questions and
+  // explicit research have already returned above.
+  const memoryEligible = toResolve.map((it) => !correctsPrevious ||
+    !prevItems.some((p) => memoryKey(p.food_name) === memoryKey(memoryInputName({
+      name: memoryLineName(it), brand: it.brand ?? null,
+    }))));
+  if (hasPrevious && deps.userMemory && deps.jev) {
+    if (memoryEligible.some(Boolean)) {
+      memoryLoadP = deps.userMemory.load()
+        .catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }));
+    } else {
+      steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: { skipped: "existing_card" } });
+    }
+  }
   let memTimeZone: string | null = null;
   const memoryP: Promise<Array<MemoryMatch | null>> = memoryLoadP && deps.jev
     ? (async () => {
       const loaded = await memoryLoadP;
       memTimeZone = loaded.timeZone;
-      const aliases = await deps.userMemory?.lookupAliases?.(toResolve.map((it) =>
+      const aliases = await deps.userMemory?.lookupAliases?.(toResolve.filter((_, idx) => memoryEligible[idx]).map((it) =>
         memoryKey(memoryInputName({ name: memoryLineName(it), brand: it.brand ?? null }))
       )).catch(() => [] as MemoryEntry[]) ?? [];
       const foods = buildMemory([...aliases, ...loaded.entries], tier);
@@ -5713,12 +5754,12 @@ async function runParseMealCore(
         // preparation out of the name, and without it Jev compared plain
         // "chicken breast" to a grilled row and rightly refused (sim test,
         // 2026-09-27). Same join as codeFillItems' food_name.
-        toResolve.map((it) =>
+        toResolve.map((it, idx) =>
           // The user's own numbers win over their memory too: no call for a
           // line that carries them.
           // Numbers we can actually use, not merely numbers written: a total
           // with no typed weight falls back to the memory like any line.
-          statedFor(it)
+          !memoryEligible[idx] || statedFor(it)
             ? Promise.resolve(null)
             : matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
         ),
@@ -5910,7 +5951,7 @@ async function runParseMealCore(
         if (st.complete) {
           const cand = statedCandidate(st, item);
           memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
-          return { ...item, candidates: [cand] } as ResolvedItem;
+          return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
         }
         const looked = await resolveOneItem(
           deps, item, steps, toolCalls, stapleNames,
@@ -5934,14 +5975,14 @@ async function runParseMealCore(
         }
         const cand = statedCandidate(st, item, looked.candidates[0]);
         memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
-        return { ...item, candidates: [cand] } as ResolvedItem;
+        return { ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem;
       }
       const remembered = memory[idx]?.food;
       if (remembered) {
         toolCalls.push("user_memory_match");
         const cand = memoryCandidate(remembered);
         memoryByFood.set(cand.food_id as string, memoryStamp(remembered, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })));
-        return Promise.resolve({ ...item, candidates: [cand] } as ResolvedItem);
+        return Promise.resolve({ ...item, candidates: [cand], resolvedIdentity: true } as ResolvedItem);
       }
       return resolveOneItem(
         deps,
@@ -6248,5 +6289,3 @@ async function runParseMealCore(
     iterations: anthropicCalls,
   };
 }
-
-

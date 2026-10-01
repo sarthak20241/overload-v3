@@ -176,7 +176,7 @@ Deno.test("no weight and no estimate: the memory is not used rather than guessed
 
 /** Fake network: Jev scores remembered rows by name; the model extracts one
  *  line and decides it onto whatever candidate id it is shown. */
-function net(opts: { scores: Record<string, number>; calls: string[]; line: Record<string, unknown> }): typeof fetch {
+function net(opts: { scores: Record<string, number>; calls: string[]; line: Record<string, unknown>; extraction?: Record<string, unknown> }): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     const body = JSON.parse(String(init?.body ?? "{}"));
@@ -196,7 +196,7 @@ function net(opts: { scores: Record<string, number>; calls: string[]; line: Reco
     if (name === "estimate_meal" || name === "extract_meal") {
       return Response.json({
         stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
-        content: [{ type: "tool_use", name, input: { declined: false, meal_type_from_text: null, items: [opts.line] } }],
+        content: [{ type: "tool_use", name, input: { declined: false, meal_type_from_text: null, items: [opts.line], ...opts.extraction } }],
       });
     }
     if (name === "report_sources") {
@@ -219,8 +219,8 @@ function net(opts: { scores: Record<string, number>; calls: string[]; line: Reco
 const liveAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 const live = (over: Partial<MemoryEntry> = {}) => entry({ logged_at: liveAgo(1), ...over });
 
-function deps(entries: MemoryEntry[], scores: Record<string, number>, calls: string[], lookups: string[], line: Record<string, unknown>): ParseMealDeps {
-  const fetchFn = net({ scores, calls, line });
+function deps(entries: MemoryEntry[], scores: Record<string, number>, calls: string[], lookups: string[], line: Record<string, unknown>, extraction?: Record<string, unknown>): ParseMealDeps {
+  const fetchFn = net({ scores, calls, line, extraction });
   return {
     anthropicApiKey: "k", model: "m", maxTokens: 100, timeoutMs: 1000, webSearchEnabled: true,
     searchFoods: async (q) => { lookups.push(`search:${q}`); return []; },
@@ -307,10 +307,10 @@ Deno.test("Quick: an unsure match keeps the model's own estimate", async () => {
   assertEquals(r.parsed!.items[0].source, "estimate");
 });
 
-Deno.test("a follow-up turn never asks the memory: that is where 'double check' lives", async () => {
+Deno.test("an explicit research request never asks memory for the answer being challenged", async () => {
   const calls: string[] = [], lookups: string[] = [];
   const r = await runParseMeal(
-    deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED),
+    deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED, { requests_research: true, items: [] }),
     {
       ...BASE, text: "double check the chicken", mode: "super",
       previousItems: [{ food_name: "grilled chicken breast", quantity: 150, serving_label: "g", grams: 150, kcal: 226, protein_g: 46.5, carb_g: 0, fat_g: 4.8, food_id: null, source: "catalog" } as never],
@@ -334,12 +334,10 @@ Deno.test("Quick: remembered numbers at an absurd amount are flagged, like an es
   assertEquals(item.confidence, "low");
 });
 
-Deno.test("a follow-up turn never even reads the user's log", async () => {
-  // Reviewer on #220: the 10-day read ran on every parse and was thrown away on
-  // follow-ups. It is now started only for a first-shot log.
+Deno.test("an explicit research request never reads history only to discard it", async () => {
   let reads = 0;
   const calls: string[] = [], lookups: string[] = [];
-  const d = deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED);
+  const d = deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED, { requests_research: true, items: [] });
   d.userMemory = { load: () => { reads++; return Promise.resolve({ entries: [live()], timeZone: null }); } };
   await runParseMeal(d, {
     ...BASE, text: "double check the chicken", mode: "super",
@@ -388,17 +386,17 @@ Deno.test("the trace says when the memory had nothing this tier may use", async 
   assertEquals((step?.result as { logged_lines: number }).logged_lines, 1);
 });
 
-Deno.test("the trace says when a follow-up turn skipped the memory", async () => {
+Deno.test("the trace says why a research request skipped memory", async () => {
   const calls: string[] = [], lookups: string[] = [];
   const r = await runParseMeal(
-    deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED),
+    deps([live()], { "grilled chicken breast": 0.97 }, calls, lookups, EXTRACTED, { requests_research: true, items: [] }),
     {
       ...BASE, text: "double check the chicken", mode: "super",
       previousItems: [{ food_name: "grilled chicken breast", quantity: 150, serving_label: "g", grams: 150, kcal: 226, protein_g: 46.5, carb_g: 0, fat_g: 4.8, food_id: null, source: "catalog" } as never],
     },
   ).catch(() => null);
   const step = (r?.steps ?? []).find((s) => s.tool === "user_memory");
-  assertEquals((step?.result as { skipped: string }).skipped, "follow_up");
+  assertEquals((step?.result as { skipped: string }).skipped, "research_requested");
 });
 
 Deno.test("confirmed aliases resolve without Jev, even when it is down", async () => {

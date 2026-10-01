@@ -19,10 +19,21 @@ servings, so each request scales its new portion. Alias provenance references
 the saved entry and trace. Undo/product replacement retracts that evidence;
 deleting the latest snapshot deletes its cache row conservatively.
 
+Food additions and identity replacements in follow-ups use the same personal
+memory, saved-meal matching and precise cache as first-shot logs. Precise
+retains its source matching and web lookup after a cache miss. Quick follow-ups
+use the full extraction/correction pipeline so additions and edits preserve the
+existing card. Pure questions, explicit research requests and existing card
+quantity edits do not consult personal memory; manual portions rescale the
+card's own numbers, including lines without a catalogue ID. Untouched lines
+retain their numbers and meal sections. If decide omits a resolved food, the
+fallback keeps its provenance, alias evidence and verification status.
+
 ## Validation
 
 ```sh
 deno test --allow-all supabase/functions/ai-coach/userFoodMemory.test.ts
+deno test --allow-all supabase/functions/ai-coach/followUpLogging.test.ts
 deno run --allow-read --allow-env --allow-net scripts/personal-food-memory/eval.ts
 ```
 
