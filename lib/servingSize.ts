@@ -77,3 +77,18 @@ export function joinServing(
   const bare = size === 1 && !LEAD.test(original.serving_label.trim()) && was.size === 1;
   return { quantity: count, serving_label: bare ? unit : `${fmt(size)} ${unit}` };
 }
+
+/** Normalize a completed unit edit, preserving the amount of food. Call after
+ * typing finishes: a temporary "g" while deleting "glass" is not a gram edit. */
+export function sizeForUnitChange(
+  size: number, count: number, grams: number, previous: string, next: string,
+  gramsPerUnit: (unit: string) => number | null,
+): number {
+  if (previous.trim().toLowerCase() === next.trim().toLowerCase()) return size;
+  const weight = gramsPerUnit(next);
+  if (weight && grams > 0 && count > 0) {
+    const converted = Math.round((grams / weight / count) * 1000) / 1000;
+    if (converted > 0) return converted;
+  } else if (gramsPerUnit(previous) !== null) return 1;
+  return size;
+}

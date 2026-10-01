@@ -4,7 +4,7 @@
 // check is a copy of the two tables' keys in lib/units.ts.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { joinServing, splitServing } from "./servingSize.ts";
+import { joinServing, splitServing, sizeForUnitChange } from "./servingSize.ts";
 
 const UNITS = new Set(["g", "kg", "oz", "lb", "ml", "l", "cup", "tbsp", "tsp"]);
 const isM = (u: string) => UNITS.has(u.trim().toLowerCase());
@@ -45,4 +45,13 @@ Deno.test("a small metric serving keeps its grams", () => {
   // 65 g of roti moved to kg is 0.065 kg. Two decimals stored 0.07 kg (70 g).
   const orig = { quantity: 1, serving_label: "1 roti" };
   assertEquals(joinServing({ size: 0.065, unit: "kg", count: 1 }, orig, isM), { quantity: 0.065, serving_label: "kg" });
+});
+
+Deno.test("a completed named-unit edit ignores temporary mass-unit text", () => {
+  const gramsPerUnit = (u: string) => u === 'g' ? 1 : u === 'kg' ? 1000 : null;
+  assertEquals(sizeForUnitChange(2, 1, 480, 'glass', 'QA glass', gramsPerUnit), 2);
+  assertEquals(sizeForUnitChange(150, 1, 150, 'g', 'slice', gramsPerUnit), 1);
+  assertEquals(sizeForUnitChange(1, 2, 140, 'roti', 'g', gramsPerUnit), 70);
+  assertEquals(sizeForUnitChange(70, 2, 140, 'g', 'kg', gramsPerUnit), 0.07);
+  assertEquals(sizeForUnitChange(100, 1.5, 150, 'g', 'g', gramsPerUnit), 100);
 });

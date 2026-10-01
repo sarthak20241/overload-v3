@@ -40,7 +40,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/constants/theme';
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
-import { formatServing } from '@/lib/foods';
+import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
@@ -257,9 +257,9 @@ export function ParsedMealCard({
         </View>
         <View style={s.macros}>
           <Text style={[s.macroNum, { color: C.foreground }]}>{r0(it.kcal)} cal</Text>
-          <Text style={[s.macroNum, { color: C.macro.protein }]}>{r0(it.protein_g)}g P</Text>
-          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{r0(it.carb_g)}g C</Text>
-          <Text style={[s.macroNum, { color: C.macro.fat }]}>{r0(it.fat_g)}g F</Text>
+          <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(it.protein_g)}g P</Text>
+          <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(it.carb_g)}g C</Text>
+          <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(it.fat_g)}g F</Text>
         </View>
         {it.assumption && <Text style={s.assumption}>{it.assumption}</Text>}
         {/* I14. Deliberately a BUTTON, not a tappable sentence: nobody
@@ -410,9 +410,9 @@ export function ParsedMealCard({
           {items.length > 1 && (
             <View style={s.totals}>
               <Text style={[s.totalNum, { color: C.foreground }]}>{r0(sum.kcal)}</Text>
-              <Text style={[s.totalNum, { color: C.macro.protein }]}>{r0(sum.p)}g P</Text>
-              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{r0(sum.c)}g C</Text>
-              <Text style={[s.totalNum, { color: C.macro.fat }]}>{r0(sum.f)}g F</Text>
+              <Text style={[s.totalNum, { color: C.macro.protein }]}>{formatMacroGrams(sum.p)}g P</Text>
+              <Text style={[s.totalNum, { color: C.macro.carbs }]}>{formatMacroGrams(sum.c)}g C</Text>
+              <Text style={[s.totalNum, { color: C.macro.fat }]}>{formatMacroGrams(sum.f)}g F</Text>
               <Text style={s.totalCount}>{items.length} items</Text>
             </View>
           )}

@@ -1,5 +1,5 @@
 /**
- * Edit one line of a parsed meal BEFORE it is logged.
+ * Edit a food line before or after it is logged.
  *
  * The parser is good but not psychic: it may read "a samosa" as the 100 g
  * regular when you ate the 65 g medium, or land on a near-miss food. Rather
@@ -26,11 +26,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { Spacing, Radius, FontSize, FontWeight, LetterSpacing } from '@/constants/theme';
-import { loadFoodForEdit, type ParsedMealItem, type Per100Macros } from '@/lib/dietData';
+import { loadFoodForEdit, macroKcal, type ParsedMealItem, type Per100Macros } from '@/lib/dietData';
+import { haptics } from '@/lib/haptics';
 import { useSupabaseClient } from '@/lib/supabase';
 import type { FoodServing, MealType } from '@/lib/foods';
 import { isMassUnit, isMeasurementUnit, massToGrams } from '@/lib/units';
-import { joinServing, splitServing } from '@/lib/servingSize';
+import { joinServing, splitServing, sizeForUnitChange } from '@/lib/servingSize';
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'breakfast', label: 'Breakfast' },
@@ -43,6 +44,11 @@ interface Props {
   item: ParsedMealItem | null;   // null = closed
   onCancel: () => void;
   onSave: (patch: ParsedMealItem) => void;
+  busy?: boolean;
+  error?: string | null;
+  onDelete?: () => void;
+  /** Saved entries scale their logged snapshot, including manual corrections. */
+  preserveSnapshot?: boolean;
 }
 
 const r0 = (n: number) => Math.round(n);
@@ -69,7 +75,7 @@ function gramsOf(total: number, unit: string): number | null {
  *  means clearing a box mid-edit and retyping it never drifts the macros. */
 interface Base { total: number; grams: number; kcal: number; protein: number; carb: number; fat: number }
 
-export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
+export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, onDelete, preserveSnapshot = false }: Props) {
   const { C } = useTheme();
   const s = makeStyles(C);
   const supabase = useSupabaseClient();
@@ -78,6 +84,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   const [per100, setPer100] = useState<Per100Macros | null>(null);
   const [size, setSize] = useState('1');
   const [unit, setUnit] = useState('');
+  const committedUnit = useRef('');
   const [qty, setQty] = useState('1');
   const [grams, setGrams] = useState(0);
   const base = useRef<Base>({ total: 1, grams: 0, kcal: 0, protein: 0, carb: 0, fat: 0 });
@@ -114,6 +121,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     const p = splitServing(item.quantity, item.serving_label, isMeasurementUnit);
     setSize(fmt(p.size));
     setUnit(p.unit);
+    committedUnit.current = p.unit;
     setQty(fmt(p.count));
     setGrams(item.grams);
     base.current = {
@@ -140,6 +148,16 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   const sizeNum = useMemo(() => numOr(size, 0), [size]);
   const qtyNum = useMemo(() => numOr(qty, 0), [qty]);
 
+  // The same advisory cross-check as Quick Add. A label may differ from 4/4/9;
+  // the user's calories remain authoritative, even when the numbers disagree.
+  const anyMacro = [protein, carb, fat].some((v) => v.trim().length > 0);
+  const fromMacros = macroKcal({
+    protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
+  });
+  const kcalNum = numOr(kcal, 0);
+  const mismatch = anyMacro && kcalNum > 0
+    && Math.abs(fromMacros - kcalNum) > Math.max(50, kcalNum * 0.2);
+
   function deriveMacros(g: number, basis: Per100Macros | null) {
     if (!basis) return;
     const f = g / 100;
@@ -159,7 +177,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     const g = gramsOf(total, u) ?? (b.total > 0 ? b.grams * (total / b.total) : b.grams);
     setGrams(g);
     if (macrosTouched) return;
-    if (per100 && g > 0) { deriveMacros(g, per100); return; }
+    if (!preserveSnapshot && per100 && g > 0) { deriveMacros(g, per100); return; }
     const ratio = b.grams > 0 && g > 0 ? g / b.grams : (b.total > 0 ? total / b.total : 1);
     setKcal(String(r0(b.kcal * ratio)));
     setProtein(String(r1(b.protein * ratio)));
@@ -170,33 +188,20 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   function onSizeChange(next: string) { setSize(next); recompute(next, qty); }
   function onQtyChange(next: string) { setQty(next); recompute(size, next); }
 
-  /** A unit edit never changes how much food the line is. A word ("slice"
-   *  -> "tub") keeps every number. A unit that converts to grams (g, kg, oz,
-   *  lb, ml, l) rewrites the SIZE to hold the same grams: 150 g -> kg reads
-   *  0.15 kg, 2 roti of 140 g -> g reads 70 g x 2. Leaving the size alone let
-   *  "150 g" edited to kg save as 150 kg carrying 150 g of macros. */
-  function onUnitChange(next: string) {
-    setUnit(next);
-    let total = sizeNum * qtyNum;
-    const perUnit = gramsOf(1, next);
-    if (perUnit && grams > 0 && qtyNum > 0) {
-      const nextSize = Math.round((grams / perUnit / qtyNum) * 1000) / 1000;
-      if (nextSize > 0) {
-        setSize(fmt(nextSize));
-        total = nextSize * qtyNum;
-      }
-    } else if (gramsOf(1, unit) !== null) {
-      // Leaving grams for a unit with no fixed weight (slice, tub, cup): the
-      // gram count means nothing as a size, so start at one serving. Without
-      // this 150 g retyped as "slice" saved as "150 slice".
-      setSize('1');
-      total = qtyNum;
+  /** Convert only the completed label. Transient text ("glass" -> "g" -> "")
+   * must not change the serving size while the user is deleting or typing. */
+  function commitUnit(next = unit): number {
+    const nextSize = sizeForUnitChange(sizeNum, qtyNum, grams,
+      committedUnit.current, next, u => gramsOf(1, u));
+    if (next !== committedUnit.current) {
+      committedUnit.current = next;
+      if (nextSize !== sizeNum) setSize(fmt(nextSize));
+      if (nextSize * qtyNum > 0) base.current = {
+        total: nextSize * qtyNum, grams,
+        kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
+      };
     }
-    // Rebase so the next size or quantity edit scales from what is on screen.
-    base.current = {
-      total, grams,
-      kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
-    };
+    return nextSize;
   }
 
   /** Pick a catalog serving: it sets size + unit and its real grams. */
@@ -204,15 +209,31 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
     const p = splitServing(1, sv.label, isMeasurementUnit);
     setSize(fmt(p.size));
     setUnit(p.unit);
+    committedUnit.current = p.unit;
     const count = qtyNum > 0 ? qtyNum : 1;
     if (!(qtyNum > 0)) setQty('1');
     const g = sv.grams * count;
-    setGrams(g);
-    base.current = {
-      total: p.size * count, grams: g,
+    const ratio = grams > 0 ? g / grams : 1;
+    const next = {
       kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
     };
-    if (!macrosTouched) deriveMacros(g, per100);
+    if (!macrosTouched) {
+      if (preserveSnapshot) {
+        next.kcal = r0(next.kcal * ratio);
+        next.protein = r1(next.protein * ratio);
+        next.carb = r1(next.carb * ratio);
+        next.fat = r1(next.fat * ratio);
+      } else if (per100) {
+        next.kcal = r0(per100.kcal * g / 100);
+        next.protein = r1(per100.protein_g * g / 100);
+        next.carb = r1(per100.carb_g * g / 100);
+        next.fat = r1(per100.fat_g * g / 100);
+      }
+      setKcal(String(next.kcal)); setProtein(String(next.protein));
+      setCarb(String(next.carb)); setFat(String(next.fat));
+    }
+    setGrams(g);
+    base.current = { total: p.size * count, grams: g, ...next };
   }
 
   const servingOn = (sv: FoodServing) => {
@@ -238,12 +259,15 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
 
   // An empty or zero box has no amount to save. Save used to fall back to 1
   // and keep the grams of the last real number, so the two disagreed.
-  const canSave = sizeNum > 0 && qtyNum > 0 && unit.trim().length > 0;
+  const canSave = !busy && sizeNum > 0 && qtyNum > 0 && unit.trim().length > 0;
+
+  const close = () => { if (!busy) { Keyboard.dismiss(); onCancel(); } };
 
   function save() {
     if (!item || !canSave) return;
+    const finalSize = commitUnit();
     const stored = joinServing(
-      { size: sizeNum, unit: unit.trim() || 'serving', count: qtyNum },
+      { size: finalSize, unit: unit.trim() || 'serving', count: qtyNum },
       item, isMeasurementUnit,
     );
     const changed =
@@ -256,11 +280,11 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
       meal_type: section,
       quantity: stored.quantity,
       serving_label: stored.serving_label,
-      grams: r1(grams),
-      kcal: numOr(kcal, 0),
-      protein_g: numOr(protein, 0),
-      carb_g: numOr(carb, 0),
-      fat_g: numOr(fat, 0),
+      grams: changed ? r1(grams) : item.grams,
+      kcal: changed ? numOr(kcal, 0) : item.kcal,
+      protein_g: changed ? numOr(protein, 0) : item.protein_g,
+      carb_g: changed ? numOr(carb, 0) : item.carb_g,
+      fat_g: changed ? numOr(fat, 0) : item.fat_g,
       // A corrected line carries the user's numbers, not the parser's.
       source: changed ? 'manual' : item.source,
       confidence: changed ? 'high' : item.confidence,
@@ -281,8 +305,8 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
   }
 
   return (
-    <Modal visible={!!item} transparent animationType="slide" onRequestClose={onCancel}>
-      <Pressable style={s.backdrop} onPress={onCancel} accessibilityLabel="Close editor" />
+    <Modal visible={!!item} transparent animationType="slide" onRequestClose={close}>
+      <Pressable style={s.backdrop} onPress={close} accessibilityLabel="Close editor" />
       <View
         style={[
           s.sheet,
@@ -292,7 +316,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
           },
         ]}
       >
-        <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <ScrollView pointerEvents={busy ? 'none' : 'auto'} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Text style={s.title} numberOfLines={1}>{item?.food_name ?? ''}</Text>
 
           <Text style={s.eyebrow}>Meal</Text>
@@ -354,7 +378,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
                 />
                 <View style={s.servingDivider} />
                 <TextInput
-                  value={unit} onChangeText={onUnitChange} placeholder="g, slice"
+                  value={unit} onChangeText={setUnit} onBlur={() => { commitUnit(); }} placeholder="g, slice"
                   autoCapitalize="none" autoCorrect={false}
                   style={[s.inlineInput, s.unitInput]} placeholderTextColor={C.textDim}
                   accessibilityLabel="Serving unit"
@@ -373,7 +397,7 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
           {!!totalLine && <Text style={s.totalTxt} numberOfLines={1}>{totalLine}</Text>}
 
           <Text style={[s.eyebrow, { marginTop: Spacing.sm }]}>
-            {!macrosTouched && per100 ? 'Macros, auto from serving' : 'Macros'}
+            {!preserveSnapshot && !macrosTouched && per100 ? 'Macros, auto from serving' : 'Macros'}
           </Text>
           <View style={s.row}>
             <View style={s.field}>
@@ -396,19 +420,40 @@ export function ParsedItemEditor({ item, onCancel, onSave }: Props) {
             </View>
           </View>
 
-          <View style={s.actions}>
-            <Pressable onPress={onCancel} style={s.cancel} hitSlop={8}>
-              <Text style={s.cancelTxt}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={save} disabled={!canSave} hitSlop={8}
-              style={[s.saveBtn, !canSave && { opacity: 0.4 }]}
-              accessibilityRole="button" accessibilityState={{ disabled: !canSave }}
-            >
-              <Text style={s.saveTxt}>Save</Text>
-            </Pressable>
-          </View>
         </ScrollView>
+
+        {anyMacro && (
+          <View style={s.macroSumRow}>
+            <Text selectable accessibilityLiveRegion="polite" style={s.macroSum}>
+              {`Those macros come to ${r1(fromMacros)} cal${mismatch ? ` — you entered ${r0(kcalNum)}. Yours is what gets logged.` : '.'}`}
+            </Text>
+            {kcalNum <= 0 && fromMacros > 0 && (
+              <Pressable
+                onPress={() => { setMacrosTouched(true); setKcal(String(r0(fromMacros))); haptics.tick(); }}
+                disabled={busy} hitSlop={10} accessibilityRole="button" accessibilityLabel="Use calories from macros"
+              >
+                <Text style={s.macroSumUse}>Use it</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        {error ? <Text accessibilityRole="alert" style={[s.macroSum, { flex: undefined, color: C.dangerText, marginTop: Spacing.sm }]}>{error}</Text> : null}
+        <View style={s.actions}>
+          {onDelete && <Pressable onPress={onDelete} disabled={busy} hitSlop={8} style={{ marginRight: 'auto' }} accessibilityRole="button" accessibilityLabel="Delete food">
+            <Text style={[s.cancelTxt, { color: C.dangerText }]}>Delete</Text>
+          </Pressable>}
+          <Pressable onPress={close} style={s.cancel} hitSlop={8}>
+            <Text style={s.cancelTxt}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            onPress={save} disabled={!canSave} hitSlop={8}
+            style={[s.saveBtn, !canSave && { opacity: 0.4 }]}
+            accessibilityRole="button" accessibilityState={{ disabled: !canSave }}
+          >
+            <Text style={s.saveTxt}>{busy ? 'Saving…' : 'Save'}</Text>
+          </Pressable>
+        </View>
       </View>
     </Modal>
   );
@@ -459,6 +504,9 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
       paddingHorizontal: Spacing.md, paddingVertical: 9,
       color: C.foreground, fontSize: FontSize.base, fontVariant: ['tabular-nums'],
     },
+    macroSumRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginTop: Spacing.sm },
+    macroSum: { flex: 1, fontSize: FontSize.sm, color: C.textMuted, lineHeight: 18, fontVariant: ['tabular-nums'] },
+    macroSumUse: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: C.accentText },
     actions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: Spacing.md, marginTop: Spacing.md },
     cancel: { paddingVertical: 8, paddingHorizontal: 12 },
     cancelTxt: { fontSize: FontSize.base, color: C.textSecondary, fontWeight: FontWeight.medium },
