@@ -68,7 +68,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
-import { formatServing } from '@/lib/foods';
+import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -1294,7 +1294,7 @@ export default function NutritionScreen() {
                 <Text style={s.sectionLabel}>{m.label}</Text>
                 <View style={{ flex: 1 }} />
                 {entries.length > 0 && (
-                  <Text style={s.sectionSub}>{round(sub.protein)}g P · {round(sub.kcal)}</Text>
+                  <Text style={s.sectionSub}>{formatMacroGrams(sub.protein)}g P · {round(sub.kcal)}</Text>
                 )}
               </View>
 
@@ -1318,9 +1318,9 @@ export default function NutritionScreen() {
                       </Text>
                       <View style={s.macros}>
                         <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
-                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
+                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
+                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
+                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
                       </View>
                     </Pressable>
                     {dronaRef && (
@@ -1496,9 +1496,10 @@ export default function NutritionScreen() {
         )}
       </View>
 
-      {/* Tap a logged entry to rescale it, move its section, or delete it. */}
+      {/* Tap a logged entry to edit its portion, macros, or meal section. */}
       <EntryEditSheet
         entry={editEntry}
+        date={viewDate}
         onClose={() => setEditEntry(null)}
         onSaved={() => { setEditEntry(null); reload(); }}
       />

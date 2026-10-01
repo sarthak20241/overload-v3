@@ -12,6 +12,7 @@
  * Catalog: searchCatalog() merges the bundled FOOD_LIBRARY (Indian staples, always
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
+import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
@@ -58,6 +59,8 @@ export interface LoggedEntry {
   id: string;
   meal_id: string;              // parent meal, for move + empty-meal cleanup
   meal_type: MealType;
+  food_id?: string | null;
+  source?: ParsedMealItem['source'];
   food_name: string;
   serving_unit: string;
   quantity: number;
@@ -158,7 +161,7 @@ async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<D
   const { end } = dayRange(last);
   const { data, error } = await supabase
     .from('meals')
-    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
+    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
     .gte('logged_at', start).lte('logged_at', end);
   // A failed query is NOT "nothing logged": the caller keeps what it has.
   if (error || !data) return { ok: false };
@@ -186,6 +189,7 @@ async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<D
     for (const { mt, e } of list) {
       grouped[mt].push({
         id: e.id, meal_id: e.meal_id, meal_type: mt, food_name: e.food_name,
+        food_id: e.food_id ?? null, source: e.source,
         serving_unit: e.serving_unit, quantity: num(e.quantity),
         grams_logged: e.grams_logged == null ? null : num(e.grams_logged),
         kcal: num(e.kcal), protein_g: num(e.protein_g),
@@ -1926,6 +1930,14 @@ export async function deleteMealEntry(
     .from('meal_entries').select('id', { count: 'exact', head: true }).eq('meal_id', entry.meal_id);
   if ((count ?? 0) === 0) await supabase.from('meals').delete().eq('id', entry.meal_id);
   return {};
+}
+
+/** Edit the logged snapshot, keeping a meal move in the same row update. */
+export async function updateLoggedEntry(
+  supabase: Supa, entry: LoggedEntry, item: ParsedMealItem, date: Date = getLogDate(),
+): Promise<{ error?: string }> {
+  return persistLoggedEntryEdit(supabase, entry, item, date,
+    (meal, day) => findOrCreateMeal(supabase, meal, day));
 }
 
 /** Rescale a logged entry to a new quantity, scaling grams + the macro snapshot
