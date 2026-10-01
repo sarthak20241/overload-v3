@@ -17,7 +17,9 @@ The user's own number overrides, nutrition tier eligibility, and follow-up
 correction behavior remain intact. Cache rows retain per-100 nutrition and
 servings, so each request scales its new portion. Alias provenance references
 the saved entry and trace. Undo/product replacement retracts that evidence;
-deleting the latest snapshot deletes its cache row conservatively.
+deleting the latest snapshot deletes its cache row conservatively. Entry and
+whole-meal deletion retract evidence within the owner's cache, including
+aliases confirmed by older entries when a newer snapshot survives.
 
 Food additions and identity replacements in follow-ups use the same personal
 memory, saved-meal matching and precise cache as first-shot logs. Precise
@@ -45,13 +47,15 @@ conflicts and additional products held out from the initial diagnosis.
 Run `supabase/tests/personal_food_aliases.sql` on the migrated database. It
 checks save-only learning, auto-log ordering, edited cards, replacements, Undo,
 provenance and user isolation under authenticated Clerk claims, then rolls
-back all synthetic fixtures.
+back all synthetic fixtures. Also run
+`supabase/tests/personal_food_alias_cleanup.sql` to verify historical-entry
+Undo, whole-meal cascades, selective cleanup, ownership and trigger privileges.
 
 ## Deploy and observe
 
 1. Apply `20261001024340_personal_food_aliases.sql`, then the
    `personal_food_cache_grants` and `personal_food_cache_indexes` migrations
-   with Supabase MCP. The warm-up
+   with Supabase MCP, followed by `personal_food_alias_owner_cleanup`. The warm-up
    uses only real saved entries in the recent window and guesses no aliases.
 2. Run the SQL integration checks, then deploy `ai-coach` from this PR's tested
    commit using `Deploy Edge Functions` workflow dispatch. No mobile OTA required.
@@ -66,5 +70,5 @@ No absolute model accuracy is claimed. Save-and-repeat alias behavior is
 covered deterministically; first-use shorthand remains a model judgment.
 Rollback is redeploying the preceding `ai-coach` commit. The new cache tables
 and triggers can remain inert; to stop new learning, drop `cache_saved_food`,
-`cache_auto_log_aliases`, and `retract_food_aliases` triggers. No diary rows need
+`cache_auto_log_aliases`, `retract_food_aliases`, and `retract_meal_food_aliases` triggers. No diary rows need
 changing.
