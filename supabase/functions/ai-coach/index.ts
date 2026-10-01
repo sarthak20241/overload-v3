@@ -93,6 +93,7 @@ import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
+  ANON_GOAL_LABEL,
   buildAnonProgramMessage,
   sanitizeAnonIntake,
 } from "./anonOnboarding.ts";
@@ -4164,15 +4165,24 @@ Deno.serve(async (req) => {
 
   // 4c. Standing profile notes set at onboarding: injury_notes = physical /
   // medical things to train around, training_preferences = how they like to
-  // train (equipment, favourite/avoided lifts, session length). Same merge
+  // train (equipment, favourite/avoided lifts, session length), and goals =
+  // the complete training-goal selection. Same merge
   // pattern as 4b — a plain RLS-scoped select folded into the userContext blob
   // so the prompt builder needs no new parameter. Best-effort: a failure just
   // means the coach plans without them, exactly as it did before.
   try {
-    const { data: profileNotes, error: pnError } = await userClient
+    let { data: profileNotes, error: pnError } = await userClient
       .from("user_profiles")
-      .select("injury_notes, training_preferences, timezone")
+      .select("injury_notes, training_preferences, timezone, goals")
       .maybeSingle();
+    if (pnError && ["42703", "PGRST204"].includes(pnError.code)
+      && /\bgoals\b/i.test(pnError.message)) {
+      // Keep injury constraints, preferences and local dates during rollout.
+      const legacy = await userClient.from("user_profiles")
+        .select("injury_notes, training_preferences, timezone").maybeSingle();
+      profileNotes = legacy.data ? { ...legacy.data, goals: null } : null;
+      pnError = legacy.error;
+    }
     if (pnError) {
       console.log("[ai-coach] profile-notes error:", pnError.message);
     } else if (profileNotes) {
@@ -4182,11 +4192,15 @@ Deno.serve(async (req) => {
         typeof profileNotes.training_preferences === "string"
           ? profileNotes.training_preferences.trim()
           : "";
-      if (injuries || prefs) {
+      const goals = Array.isArray(profileNotes.goals)
+        ? profileNotes.goals.filter((g: unknown) => typeof g === "string" && Object.hasOwn(ANON_GOAL_LABEL, g))
+        : [];
+      if (injuries || prefs || goals.length) {
         if (!userContext || typeof userContext !== "object") userContext = {};
         const ctx = userContext as Record<string, unknown>;
         if (injuries) ctx.injury_notes = injuries;
         if (prefs) ctx.training_preferences = prefs;
+        if (goals.length) ctx.goals = goals;
         trace.has_user_context = true;
       }
       // The user's date, so "yesterday" and "on Monday" mean their days. Date

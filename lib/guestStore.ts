@@ -96,6 +96,7 @@ export interface GuestProfile {
   goal_weight_kg?: number | null;
   body_fat_percent?: number | null;
   goal?: string | null;
+  goals?: import('./types').CoachGoal[];
   experience_level?: string | null;
   weekly_target_sessions?: number | null;
   training_age_months?: number | null;

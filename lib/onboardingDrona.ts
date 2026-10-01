@@ -17,6 +17,7 @@
  * to the deterministic program. The user never sees a failure state.
  */
 import type { OnboardingAnswers } from '@/lib/onboarding';
+import { selectedGoals } from '@/lib/fitnessGoals';
 
 // Generation can legitimately take 15-30 s (the build screen is elastic by
 // design and simply holds the thinking state). This cap only guards against
@@ -28,6 +29,7 @@ const REQUEST_TIMEOUT_MS = 75_000;
  * the edge builds the message server-side from exactly these fields. */
 export interface AnonIntake {
   goal: string | null;
+  goals: string[];
   experience: string | null;
   frequency: number | null;
   gender: string | null;
@@ -53,6 +55,7 @@ export function buildAnonIntake(
 ): AnonIntake {
   return {
     goal: answers.goal,
+    goals: selectedGoals(answers),
     experience: answers.experience,
     frequency: answers.frequency,
     gender: answers.gender,

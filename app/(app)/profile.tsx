@@ -32,6 +32,7 @@ import { getGuestWorkouts, getGuestProfile, updateGuestProfile, type GuestProfil
 import { invalidateCustomExercisesCache } from '@/components/routines/ExercisePickerSheet';
 import { getLevelInfo, getTierForLevel, isMaxLevel } from '@/lib/xp';
 import type { CoachGoal, ExperienceLevel } from '@/lib/types';
+import { selectedGoals, toggleGoal } from '@/lib/fitnessGoals';
 import { ThemedAlert } from '@/components/ui/ThemedAlert';
 import { Portal } from '@/components/ui/Portal';
 import { useSheetSlide } from '@/hooks/useSheetSlide';
@@ -298,7 +299,8 @@ export default function ProfileScreen() {
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   const [bodyFatLog, setBodyFatLog] = useState<BodyFatEntry[]>([]);
   // Coach context (Phase 0). Empty string = unset / show placeholder.
-  const [coachGoal, setCoachGoal] = useState<CoachGoal | ''>('');
+  const [coachGoals, setCoachGoals] = useState<CoachGoal[]>([]);
+  const goalSaveQueue = useRef<Promise<void>>(Promise.resolve());
   // "Let Drona make small adjustments" (migration 0124). On by default. Off
   // does not silence Drona; it turns every small change into a question.
   const [autoAdjust, setAutoAdjust] = useState(true);
@@ -524,7 +526,7 @@ export default function ProfileScreen() {
       setTotalXP(0);
       setTotalWorkouts(0);
       setJoinDate('');
-      setCoachGoal('');
+      setCoachGoals([]);
       setExperienceLevel('');
       setWeeklyTargetSessions('');
       setTrainingAgeMonths('');
@@ -540,7 +542,7 @@ export default function ProfileScreen() {
         setHeight(p.height_cm ? String(p.height_cm) : '');
         applyWeights(p.weight_kg, p.goal_weight_kg);
         setBodyFat(p.body_fat_percent ? String(p.body_fat_percent) : '');
-        setCoachGoal((p.goal as CoachGoal | null) || '');
+        setCoachGoals(selectedGoals(p));
         setExperienceLevel((p.experience_level as ExperienceLevel | null) || '');
         setWeeklyTargetSessions(p.weekly_target_sessions != null ? String(p.weekly_target_sessions) : '');
         setTrainingAgeMonths(p.training_age_months != null ? String(p.training_age_months) : '');
@@ -557,7 +559,7 @@ export default function ProfileScreen() {
         setBodyFat(profile.body_fat_percent ? String(profile.body_fat_percent) : '');
         setTotalXP(profile.xp || 0);
         setJoinDate(profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '');
-        setCoachGoal((profile.goal as CoachGoal | null) || '');
+        setCoachGoals(selectedGoals(profile));
         setAutoAdjust(profile.drona_auto_adjust !== false);
         setExperienceLevel((profile.experience_level as ExperienceLevel | null) || '');
         setWeeklyTargetSessions(profile.weekly_target_sessions != null ? String(profile.weekly_target_sessions) : '');
@@ -1166,14 +1168,14 @@ export default function ProfileScreen() {
           <View style={styles.section}>
             <SectionLabel icon="zap">TRAINING PROFILE</SectionLabel>
             <Text style={[styles.coachHint, { color: C.textMuted }]}>
-              Helps Coach Drona tailor recommendations to your goals and experience.
+              Choose all your training goals and keep at least one selected. Coach Drona uses these and your experience to tailor recommendations.
             </Text>
 
-            {/* Goal — horizontal scroll because 5 options */}
+            {/* Goals — horizontal scroll because 5 options */}
             <View style={[styles.infoCard, { backgroundColor: C.card, borderColor: C.borderSubtle, marginBottom: 8 }]}>
               <View style={[styles.infoRow, { borderBottomColor: C.borderSubtle }]}>
                 <RowIcon name="target" color={Colors.rowIcon.trainingGoal} />
-                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Primary goal</Text>
+                <Text style={[styles.infoLabel, { color: C.foreground, flex: 1 }]}>Training goals</Text>
               </View>
               <ScrollView
                 horizontal
@@ -1181,15 +1183,24 @@ export default function ProfileScreen() {
                 contentContainerStyle={styles.choicePillsRow}
               >
                 {GOAL_OPTIONS.map((opt) => {
-                  const active = coachGoal === opt.value;
+                  const active = coachGoals.includes(opt.value);
                   return (
                     <TouchableOpacity
                       key={opt.value}
                       onPress={() => {
-                        if (opt.value !== coachGoal) track('profile_field_changed', { field: 'goal', value: opt.value });
-                        setCoachGoal(opt.value);
-                        persistField({ goal: opt.value });
+                        const patch = toggleGoal({ goals: coachGoals }, opt.value);
+                        if (!patch.goals.length) {
+                          setShowErrorAlert('Keep at least one training goal selected. Add another goal before removing this one.');
+                          return;
+                        }
+                        track('profile_field_changed', { field: 'goals', value: patch.goals.join(',') });
+                        setCoachGoals(patch.goals);
+                        // Preserve tap order when users toggle several goals quickly.
+                        goalSaveQueue.current = goalSaveQueue.current.then(() => persistField(patch));
                       }}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: active }}
+                      accessibilityLabel={opt.label}
                       activeOpacity={0.85}
                       style={[
                         styles.choicePill,

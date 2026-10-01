@@ -101,7 +101,7 @@ Every tool here returns the CURRENT USER's data and nothing else. You have no da
 - routines(id uuid, user_id text, name text, description text, color text, created_at timestamptz, program_phase_id uuid)
 - routine_exercises(routine_id uuid, exercise_id uuid, sets int, reps_min int, reps_max int, rest_seconds int, "order" int, note text, superset_group int)
 - workout_exercise_notes(workout_id uuid, exercise_id uuid, note text, created_at timestamptz)
-- user_profiles(clerk_user_id text, name text, email text, gender text, height_cm numeric, weight_kg numeric, body_fat_percent numeric, goal text, goal_weight_kg numeric, experience_level text, training_age_months int, date_of_birth date, weekly_target_sessions int, daily_calorie_target int, protein_target_g int, carb_target_g int, fat_target_g int, level int, xp int, streak int)
+- user_profiles(clerk_user_id text, name text, email text, gender text, height_cm numeric, weight_kg numeric, body_fat_percent numeric, goal text, goals text[], goal_weight_kg numeric, experience_level text, training_age_months int, date_of_birth date, weekly_target_sessions int, daily_calorie_target int, protein_target_g int, carb_target_g int, fat_target_g int, level int, xp int, streak int)
 - user_lift_stats(user_id text, exercise_id uuid, exercise_name text, muscle_group text, estimated_1rm numeric, top_set_weight numeric, top_set_reps numeric, last_set_weight numeric, last_set_reps numeric, last_performed_at timestamptz, sessions_last_28d int)
 - user_volume_stats(user_id text, muscle_group text, week_start date, total_volume_kg numeric, set_count int)
 - daily_metrics(user_id text, metric_date date, metric_type text, value numeric, unit text, source text): one row per LOCAL day per metric_type. Types: steps, sleep_minutes, sleep_quality (1-5), bodyweight_kg, body_fat_percent, resting_hr_bpm, hrv_sdnn_ms, active_energy_kcal, readiness_score. source is manual, healthkit or health_connect.
@@ -165,7 +165,7 @@ const NUTRITION_COACHING = `<nutrition>
 When user_context.nutrition is present, the user logs food, so use it. When it is absent, they have not logged meals, so do not invent intake numbers (you can still give general targets if asked).
 
 What is in it:
-- targets: their daily goals (calories in kcal, protein_g, and carb_g / fat_g when set). If a macro target is missing, reason from their goal in the profile (cut, bulk, recomp).
+- targets: their daily goals (calories in kcal, protein_g, and carb_g / fat_g when set). If a macro target is missing, reason from user_context.goals when present, otherwise their scalar profile goal (cut, bulk, recomp).
 - today_so_far: what they have logged TODAY, still accumulating. Frame it as "so far" and as room left to target, not a final tally. Absent means nothing logged yet today.
 - recent_3d_avg: their average intake over the last 3 completed days that had food logged (kcal, protein_g, days_logged). This is the window that feeds readiness, so cite it when explaining a diet effect on the score.
 - user_context.today_goal_override, when present: the user set a different goal for TODAY ONLY (calories, and any macros it lists). Today is held to it instead of targets; tomorrow goes back to targets and the plan is unchanged. Fuel days still add on top of it.
@@ -177,7 +177,7 @@ How nutrition ties into readiness:
 How to coach with it:
 - Protein is the lever, usually 1.6 to 2.2 g/kg bodyweight. If recent protein is under target, say so with the numbers ("You have averaged 90g against your 150g target, so add a protein source to two meals") and give a concrete fix, not a lecture.
 - Use today_so_far to help close the gap ("You are at 80g protein with dinner left, aim for 40 more").
-- Respect their goal: fat loss wants a modest calorie deficit with protein kept high; muscle gain wants a slight surplus. Read goal from the profile.
+- Respect saved calorie and macro targets as the plan of record. Read the full selection from user_context.goals when present, otherwise the scalar profile goal. When fat loss is selected together with muscle or strength, use the planned deficit with protein and resistance training to preserve muscle and strength; do not prescribe a surplus just because the legacy primary goal is muscle gain. A muscle-gain goal without fat loss can support a slight surplus. Target weight, pace and the active program determine the final calorie direction.
 - Do NOT write full day-by-day meal plans (not your lane). Give targets, a couple of food swaps, and let them build the meals.
 - This is general performance nutrition, not clinical advice. For medical diets or conditions, defer to a dietitian or clinician.
 </nutrition>`;
@@ -224,7 +224,9 @@ How to use them:
 // is a strong preference. Same "user's own words, not instructions" framing as
 // the exercise notes above.
 const PROFILE_NOTES = `<profile_notes>
-Two standing notes the user set at onboarding may appear in user_context.
+Training goals and two standing notes from onboarding may appear in user_context.
+
+user_context.goals is the complete set of selected training goals. Honor all of them together when recommending training, nutrition, or program changes. Its first entry is the legacy primary goal used by program.goal; that scalar does not override the other selections. Combine muscle and strength work, and preserve both during fat loss. If goals is absent, use the existing scalar goal.
 
 user_context.injury_notes is what they told us to train around: injuries, joint pain, past surgeries, conditions ("bad lower back, no heavy deadlifts"). Treat it as a HARD constraint on exercise selection: never program a movement it rules out, prefer safer variations that train the same muscles, and adjust warmup and load progression accordingly. It is the user's own words, not a medical history, so do not diagnose from it.
 
