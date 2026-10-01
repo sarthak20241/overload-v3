@@ -494,7 +494,44 @@ Deno.test("an ambiguous confirmed alias stops a parse before catalog and web loo
     { ...BASE, text: "20g brand banana oats", mode: "fast" });
   assertEquals(r.parsed, null);
   assert(r.declined?.message.includes("more than one saved match"));
+  assertEquals(r.declined!.pending_meal!.text, "20g brand banana oats");
+  assertEquals(r.declined!.pending_meal!.question, r.declined!.message);
   assertEquals(lookups, []);
+});
+
+Deno.test("clarification: permission to estimate releases only the questioned ambiguous food", async () => {
+  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
+  const line = { ...ESTIMATED, name: "brand banana oats" };
+  const first = await runParseMeal(deps(entries, {}, [], [], line), { ...BASE, text: "20g brand banana oats", mode: "fast" });
+  const result = await runParseMeal(deps(entries, {}, [], [], line, { accepts_generic_estimate: true }), {
+    ...BASE, text: "No brand, assume on it own", mode: "fast", pendingMeal: first.declined!.pending_meal,
+  });
+  assertEquals(result.declined, null);
+  assertEquals(result.parsed!.items[0].source, "estimate");
+  assertEquals(result.parsed!.continued_pending, true);
+});
+
+Deno.test("clarification: a quantity alone does not choose between ambiguous products", async () => {
+  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
+  const line = { ...ESTIMATED, name: "brand banana oats" };
+  const first = await runParseMeal(deps(entries, {}, [], [], line), { ...BASE, text: "20g brand banana oats", mode: "fast" });
+  const result = await runParseMeal(deps(entries, {}, [], [], line, { accepts_generic_estimate: false }), {
+    ...BASE, text: "Actually 30 grams", mode: "fast", pendingMeal: first.declined!.pending_meal,
+  });
+  assertEquals(result.parsed, null);
+  assertEquals(result.declined!.message, first.declined!.message);
+  assert(result.declined!.pending_meal!.text.includes("20g brand banana oats"));
+  assert(result.declined!.pending_meal!.text.includes("Actually 30 grams"));
+});
+
+Deno.test("clarification: permission for cucumber does not resolve an ambiguous oats alias", async () => {
+  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
+  const result = await runParseMeal(deps(entries, {}, [], [], { ...ESTIMATED, name: "brand banana oats" }, { accepts_generic_estimate: true }), {
+    ...BASE, text: "Estimate the cucumber", mode: "fast",
+    pendingMeal: { status: "awaiting_clarification", text: "20g brand banana oats, 2 cucumber", question: "I have more than one saved match for cucumber. Add the brand, flavour or variant so I use the right one." },
+  });
+  assertEquals(result.parsed, null);
+  assert(result.declined!.message.includes("brand banana oats"));
 });
 
 Deno.test("a later confirmation on a past diary day keeps its alias and corrected nutrition", () => {
