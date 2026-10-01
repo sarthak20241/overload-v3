@@ -28,8 +28,10 @@ destructive migration, or repeated store submission is attempted.
 
 ## Setup and controls
 
-- Repository variable `VACATION_ISSUES_ENABLED=true` enables both workflows.
-  Set it to `false` to stop new work immediately. During coverage the older
+- Repository variable `VACATION_ISSUES_ENABLED=true` enables acknowledgments.
+  Additionally set `VACATION_NIGHTLY_ENABLED=true` after cloud preflight passes
+  to enable nightly fixes. Set either to `false` to stop new fixes immediately.
+  During active nightly coverage the older
   immediate Claude issue resolver is disabled to prevent duplicate fixes.
 - Existing `CLAUDE_CODE_OAUTH_TOKEN` must authenticate successfully.
 - `EXPO_TOKEN` is required for mobile releases.

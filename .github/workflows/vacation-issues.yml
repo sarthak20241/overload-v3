@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   queue:
-    if: github.event_name != 'pull_request' && vars.VACATION_ISSUES_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && vars.VACATION_ISSUES_ENABLED == 'true' && vars.VACATION_NIGHTLY_ENABLED == 'true'
     runs-on: ubuntu-latest
     outputs:
       issues: ${{ steps.queue.outputs.issues }}
