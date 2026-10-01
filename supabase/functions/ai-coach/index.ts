@@ -6,10 +6,24 @@ import {
   CREATE_CUSTOM_FOOD_TOOL,
   CREATE_CUSTOM_MEAL_TOOL,
   LIST_LOGGED_MEALS_TOOL,
+  MEMORY_TOOL_NAMES,
   STRUCTURED_TOOLS,
   TERMINAL_TOOLS,
 } from "./prompt.ts";
+import { lookupAppGuide } from "./appGuide.ts";
+import {
+  type CardRow,
+  cardsForContext,
+  type MeasurementRow,
+  memoryForContext,
+  memoryRefusalOf,
+  type MemoryRow,
+  type PlanChangeRow,
+  planChangesForContext,
+  summarizeMeasurements,
+} from "./memory.ts";
 import { envInt } from "../_shared/envInt.ts";
+import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
@@ -108,7 +122,7 @@ if (!CLERK_ISSUER) {
 // get_coach_access_status() (v_daily_limit) so the client and server agree
 // on what counts as "limit hit."
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
-const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_MAX = AI_LIMITS.proChat;
 const PREVIEW_MAX_CHARS = 200;
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 5;
@@ -734,7 +748,7 @@ const PARSE_MEAL_MAX_TOKENS = 5000;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
 let PARSE_ISOLATE_REQUESTS = 0;
-const PARSE_RATE_LIMIT_MAX = 40;
+const PARSE_RATE_LIMIT_MAX = AI_LIMITS.proFood;
 const PARSE_WEB_SEARCH_ENABLED = Deno.env.get("PARSE_MEAL_WEB_SEARCH") !== "false";
 // Fast mode's kill switch. "on" only honours what the CLIENT asked for; the
 // server never routes anyone to fast on its own.
@@ -776,8 +790,8 @@ const PRECISE_SEARCH_COUNTRY = Deno.env.get("PRECISE_SEARCH_COUNTRY") ?? "india"
 // 402 with `error: "free_cap_hit"` (not 429) so the client opens the
 // upgrade sheet rather than a retry-later toast. Mirror these numbers in
 // get_coach_access_status() — change both together.
-const FREE_CHAT_LIMIT = 3;
-const FREE_PARSE_LIMIT = 3;
+const FREE_CHAT_LIMIT = AI_LIMITS.freeChat;
+const FREE_PARSE_LIMIT = AI_LIMITS.freeFood;
 
 // Fan-out plan generation. On by default; set PLAN_FANOUT=false in the Edge
 // Function secrets to fall back to the single forced-tool call without a
@@ -1078,7 +1092,109 @@ async function executeTool(
   userClient: SupabaseClient,
   name: string,
   input: Record<string, unknown>,
+  // The resolved mode, recorded as coach_memory.source so a fact can be traced
+  // to the conversation kind that saved it. Optional: the RPC defaults to chat.
+  source?: string | null,
 ): Promise<unknown> {
+  // Memory (migration 20260919023437). Both RPCs return {saved|forgotten, reason} and
+  // never raise for bad input, so the model reads the reason and moves on.
+  if (name === "remember_fact") {
+    try {
+      const { data, error } = await userClient.rpc("coach_remember_fact", {
+        p_category: String(input.category ?? ""),
+        p_key: String(input.key ?? ""),
+        p_value: String(input.value ?? ""),
+        p_source: typeof source === "string" && source ? source : "chat",
+      });
+      if (error) return { error: error.message };
+      return data ?? { saved: false, reason: "no response" };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+  if (name === "forget_fact") {
+    try {
+      const { data, error } = await userClient.rpc("coach_forget_fact", {
+        p_key: String(input.key ?? ""),
+        p_category: typeof input.category === "string" && input.category ? input.category : null,
+      });
+      if (error) return { error: error.message };
+      return data ?? { forgotten: 0 };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  // The app guide is static text; no database round trip.
+  if (name === "coach_get_app_guide") return lookupAppGuide(input.topic);
+
+  // Body log history: plain RLS-scoped reads over daily_metrics (weight, body
+  // fat) and body_measurements (tape). No RPC, no migration.
+  if (name === "coach_get_body_log") {
+    const metric = String(input.metric ?? "weight");
+    const daysBack = Math.min(Math.max(Math.round(Number(input.days_back ?? 90)) || 90, 7), 730);
+    const since = new Date(Date.now() - daysBack * 86_400_000).toISOString().slice(0, 10);
+    try {
+      if (metric === "measurements") {
+        const site = String(input.site ?? "").trim();
+        let q = userClient
+          .from("body_measurements")
+          .select("measured_on, site, value_cm")
+          .gte("measured_on", since)
+          .order("measured_on", { ascending: false })
+          .limit(400);
+        if (site) q = q.eq("site", site);
+        const { data, error } = await q;
+        if (error) return { error: error.message };
+        const rows = (data ?? []) as MeasurementRow[];
+        return {
+          metric,
+          unit: "cm",
+          days_back: daysBack,
+          summary: summarizeMeasurements(rows),
+          readings: rows.map((r) => ({ on: r.measured_on, site: r.site, cm: Number(r.value_cm) })),
+          note: rows.length === 0
+            ? "No tape measurements logged in this window. They live on the Analytics tab under Body Measurements."
+            : undefined,
+        };
+      }
+      const type = metric === "body_fat" ? "body_fat_percent" : "bodyweight_kg";
+      const { data, error } = await userClient
+        .from("daily_metrics")
+        .select("metric_date, value, source")
+        .eq("metric_type", type)
+        .gte("metric_date", since)
+        .order("metric_date", { ascending: false })
+        .limit(400);
+      if (error) return { error: error.message };
+      const rows = (data ?? []) as Array<{ metric_date: string; value: number | string; source: string }>;
+      const readings = rows
+        .map((r) => ({ on: r.metric_date, value: Math.round(Number(r.value) * 10) / 10, source: r.source }))
+        .filter((r) => Number.isFinite(r.value));
+      const latest = readings[0];
+      const earliest = readings[readings.length - 1];
+      return {
+        metric,
+        unit: type === "bodyweight_kg" ? "kg" : "%",
+        days_back: daysBack,
+        summary: latest && earliest
+          ? {
+            count: readings.length,
+            latest: latest,
+            earliest: earliest,
+            change: Math.round((latest.value - earliest.value) * 10) / 10,
+          }
+          : null,
+        readings,
+        note: readings.length === 0
+          ? `No ${metric === "body_fat" ? "body fat" : "weight"} entries in this window. They are logged on the Analytics tab.`
+          : undefined,
+      };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
   const rpcMap: Record<string, { fn: string; args: (i: Record<string, unknown>) => Record<string, unknown> }> = {
     coach_get_exercise_history: {
       fn: "coach_get_exercise_history",
@@ -1225,11 +1341,43 @@ function toolErrorOf(result: unknown): string | null {
  */
 function recordToolCall(trace: CoachTrace, name: string, result: unknown): void {
   const err = toolErrorOf(result);
-  trace.tool_calls.push(err ? `${name}__error` : name);
+  // A memory RPC that refused (bad key, blocked value, not signed in) returns
+  // normally, so without this it would log as a save that happened.
+  const refused = err ? null : memoryRefusalOf(name, result);
+  trace.tool_calls.push(err ? `${name}__error` : refused ? `${name}__rejected` : name);
+  if (refused) {
+    const spans = (trace.spans ??= {});
+    const errors = (spans.tool_errors ??= []) as { tool: string; error: string }[];
+    if (errors.length < 10) errors.push({ tool: name, error: refused.slice(0, 300) });
+    return;
+  }
   if (!err) return;
   const spans = (trace.spans ??= {});
   const errors = (spans.tool_errors ??= []) as { tool: string; error: string }[];
   if (errors.length < 10) errors.push({ tool: name, error: err.slice(0, 300) });
+}
+
+/**
+ * Runs the memory tools (remember_fact / forget_fact) the model emitted in a
+ * turn that ALSO carries a structured tool. The structured tool ends the loop
+ * without a further model call, so anything else in that turn would otherwise
+ * be dropped on the floor, and the prompt asks the model to save the decision
+ * in the same turn it emits generate_plan / propose_targets. Fast RPCs, so
+ * awaited; results only go to the trace.
+ */
+async function runMemorySideEffects(
+  userClient: SupabaseClient,
+  toolUses: Array<{ name?: string; input?: Record<string, unknown> }>,
+  trace: CoachTrace,
+): Promise<void> {
+  const side = toolUses.filter((b) => typeof b.name === "string" && MEMORY_TOOL_NAMES.has(b.name));
+  if (side.length === 0) return;
+  await Promise.all(
+    side.map(async (b) => {
+      const result = await executeTool(userClient, b.name ?? "", b.input ?? {}, trace.mode);
+      recordToolCall(trace, b.name ?? "<unknown>", result);
+    }),
+  );
 }
 
 // ── Voyage query embedding (Phase 2.2) ──────────────────────────────────────
@@ -1708,7 +1856,10 @@ async function runStreamingToolLoop(
 
     if (terminalUse) {
       // Structured tool: emit input as a structured SSE event and exit. Don't
-      // try to "execute" it — its input IS the response.
+      // try to "execute" it — its input IS the response. A remember_fact
+      // emitted alongside it is the decision being saved; run it first so
+      // the exit does not drop it.
+      await runMemorySideEffects(userClient, toolUses, trace);
       trace.tool_calls.push(terminalUse.name);
       structured = { name: terminalUse.name, input: terminalUse.input ?? {} };
       sse.write("structured", { name: terminalUse.name, input: terminalUse.input ?? {} });
@@ -1720,7 +1871,7 @@ async function runStreamingToolLoop(
     }
     const toolResults = await Promise.all(
       toolUses.map(async (block: any) => {
-        const result = await executeTool(userClient, block.name ?? "", block.input ?? {});
+        const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode);
         // Record after the call, not before: the result is what tells us
         // whether the tool actually worked.
         recordToolCall(trace, block.name ?? "<unknown>", result);
@@ -4111,6 +4262,93 @@ Deno.serve(async (req) => {
     console.log("[ai-coach] fuel-days fetch threw:", String(e));
   }
 
+  // 4e. What the coach carries between conversations (coach-enhancement plan,
+  // Problem 2). Four RLS-scoped reads, in parallel, each best-effort and folded
+  // into the userContext blob like 4b/4c so every mode sees them for free:
+  //   memory               facts saved with remember_fact (coach_memory, 20260919023437)
+  //   recent_plan_changes  the plan diary (plan_changes, 0123), one line each
+  //   recent_coach_cards   the weekly cards and what the user did with them
+  //   body_measurements    latest tape reading per site, with the change
+  // Each read has its own try/catch: a missing table (a migration not yet
+  // applied) costs that one key and nothing else. The shapes are built by
+  // memory.ts so they stay compact; this block is on every turn's prompt.
+  {
+    const ctxOf = (): Record<string, unknown> => {
+      if (!userContext || typeof userContext !== "object") userContext = {};
+      return userContext as Record<string, unknown>;
+    };
+    const dayIso = (daysAgo: number) =>
+      new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+
+    await Promise.all([
+      (async () => {
+        try {
+          const { data, error } = await userClient
+            .from("coach_memory")
+            .select("category, key, value, updated_at")
+            .eq("status", "active")
+            .order("updated_at", { ascending: false })
+            .limit(60);
+          if (error) return console.log("[ai-coach] memory read error:", error.message);
+          const facts = memoryForContext((data ?? []) as MemoryRow[]);
+          if (facts.length > 0) {
+            ctxOf().memory = facts;
+            trace.has_user_context = true;
+          }
+        } catch (e) {
+          console.log("[ai-coach] memory read threw:", String(e));
+        }
+      })(),
+      (async () => {
+        try {
+          const { data, error } = await userClient
+            .from("plan_changes")
+            .select("occurred_at, entity, action, changes, source, label")
+            .gte("occurred_at", `${dayIso(60)}T00:00:00Z`)
+            .order("occurred_at", { ascending: false })
+            .limit(25);
+          if (error) return console.log("[ai-coach] plan-changes read error:", error.message);
+          const lines = planChangesForContext((data ?? []) as PlanChangeRow[]);
+          if (lines.length > 0) ctxOf().recent_plan_changes = lines;
+        } catch (e) {
+          console.log("[ai-coach] plan-changes read threw:", String(e));
+        }
+      })(),
+      (async () => {
+        try {
+          const { data, error } = await userClient
+            .from("drona_cards")
+            .select("week_start, kind, topic, title, status, summary")
+            .order("week_start", { ascending: false })
+            .limit(6);
+          if (error) return console.log("[ai-coach] cards read error:", error.message);
+          const cards = cardsForContext((data ?? []) as CardRow[]);
+          if (cards.length > 0) ctxOf().recent_coach_cards = cards;
+        } catch (e) {
+          console.log("[ai-coach] cards read threw:", String(e));
+        }
+      })(),
+      (async () => {
+        try {
+          const { data, error } = await userClient
+            .from("body_measurements")
+            .select("measured_on, site, value_cm")
+            .gte("measured_on", dayIso(90))
+            .order("measured_on", { ascending: false })
+            .limit(400);
+          if (error) return console.log("[ai-coach] measurements read error:", error.message);
+          const summary = summarizeMeasurements((data ?? []) as MeasurementRow[]);
+          if (summary) {
+            ctxOf().body_measurements = summary;
+            trace.has_user_context = true;
+          }
+        } catch (e) {
+          console.log("[ai-coach] measurements read threw:", String(e));
+        }
+      })(),
+    ]);
+  }
+
   // 5. Validate messages (body was parsed once above, before the rate gate)
   const incomingMessages = body.messages;
   if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
@@ -4556,6 +4794,9 @@ Deno.serve(async (req) => {
         (b) => typeof b.name === "string" && STRUCTURED_TOOLS.has(b.name),
       );
       if (terminalUse) {
+        // Same as the streaming branch: save any decision emitted alongside
+        // the terminal tool before the loop exits.
+        await runMemorySideEffects(userClient, toolUses, trace);
         trace.tool_calls.push(terminalUse.name ?? "<terminal>");
         structured = {
           name: terminalUse.name ?? "",
@@ -4573,7 +4814,7 @@ Deno.serve(async (req) => {
       // turns, loop again.
       const toolResults = await Promise.all(
         toolUses.map(async (block) => {
-          const result = await executeTool(userClient, block.name ?? "", block.input ?? {});
+          const result = await executeTool(userClient, block.name ?? "", block.input ?? {}, trace.mode);
           // Record after the call, not before: the result is what tells us
           // whether the tool actually worked.
           recordToolCall(trace, block.name ?? "<unknown>", result);
