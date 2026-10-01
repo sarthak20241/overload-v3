@@ -22,6 +22,7 @@ export interface UserProfile {
   created_at: string;
   // Phase 0 — coach context fields. Nullable; UI nudges users to fill them.
   goal?: CoachGoal;
+  goals?: CoachGoal[];
   experience_level?: ExperienceLevel;
   training_age_months?: number;
   date_of_birth?: string;

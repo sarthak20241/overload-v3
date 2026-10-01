@@ -25,6 +25,7 @@ import { structuredToProgram, type GeneratedProgram, type ProgramDiet, type Prog
 import { programNarrative } from '@/lib/programNarrative';
 import { buildWeekPattern, splitCycle, weekPatternFor } from '@/lib/weekPattern';
 import type { CoachGoal } from '@/lib/types';
+import { goalLabels, primaryGoal, selectedGoals } from '@/lib/fitnessGoals';
 
 const REQUEST_TIMEOUT_MS = 75_000;
 
@@ -100,7 +101,11 @@ const DELOAD_READINESS = 'Half the sets, same weights. Sleep is the work this we
  */
 export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras): GeneratedProgram {
   const today = extras.todayISO ?? localISO();
-  const goal: CoachGoal = a.goal ?? 'general';
+  const goal = primaryGoal(a);
+  const goals = selectedGoals(a);
+  const trainingLine = goals.length > 1
+    ? goals.map((g) => TRAINING_LINE[g]).join(' ')
+    : TRAINING_LINE[goal];
   const freq = a.frequency ?? 3;
   const dir = directionOf(a);
   const weeks = programWeeks(a, extras.weeklyRateKg);
@@ -114,7 +119,7 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
   const block = {
     split_type: splitType,
     days_per_week: freq,
-    emphasis: EMPHASIS[goal],
+    emphasis: goals.length > 1 ? goals.map((g) => EMPHASIS[g]).join(', ') : EMPHASIS[goal],
     week_pattern: buildWeekPattern(splitType, freq),
   };
 
@@ -153,37 +158,37 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
   if (dir === 'loss') {
     const dietLine = 'Protein first, every meal. Log it and I hold the line.';
     if (weeks <= 4) {
-      phases.push(phase('Cut', weeks, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Cut', weeks, working, dietLine, trainingLine));
     } else if (weeks <= 9) {
-      phases.push(phase('Deficit block', weeks - 1, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Deficit block', weeks - 1, working, dietLine, trainingLine));
       phases.push(phase('Hold and reassess', 1, maintenance, 'Back to maintenance for a week. Watch the scale settle.', 'Same weights, one set fewer. Bank the progress.'));
     } else {
       const first = Math.floor((weeks - 2) / 2);
-      phases.push(phase('Deficit block 1', first, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Deficit block 1', first, working, dietLine, trainingLine));
       phases.push(phase('Diet break', 1, maintenance, 'Eat at maintenance for a week. This is part of the plan, not a slip.', 'Keep training. Weights stay, sets drop by one.', DELOAD_READINESS));
-      phases.push(phase('Deficit block 2', weeks - 2 - first, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Deficit block 2', weeks - 2 - first, working, dietLine, trainingLine));
       phases.push(phase('Hold and reassess', 1, maintenance, 'Back to maintenance. We check where you landed and set the next goal.', 'Test a top set on your main lifts. I want the numbers.'));
     }
   } else if (dir === 'gain') {
     const dietLine = 'Eat the surplus on training days. Protein first, then carbs around the session.';
     if (weeks <= 5) {
-      phases.push(phase('Gain block', weeks, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Gain block', weeks, working, dietLine, trainingLine));
     } else {
       const first = Math.floor((weeks - 1) / 2);
-      phases.push(phase('Gain block 1', first, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Gain block 1', first, working, dietLine, trainingLine));
       phases.push(phase('Deload week', 1, working, 'Keep eating to the targets. Growth happens on rest.', 'Half the sets, same weights.', DELOAD_READINESS));
-      phases.push(phase('Gain block 2', weeks - 1 - first, working, dietLine, TRAINING_LINE[goal]));
+      phases.push(phase('Gain block 2', weeks - 1 - first, working, dietLine, trainingLine));
     }
   } else {
     const dietLine = 'Eat to the targets. Protein first. The trend is what we train.';
     phases.push(phase('Base', 4, working, dietLine, 'Learn the lifts and own the form. Add weight only when every rep is clean.'));
-    phases.push(phase('Build', 7, working, dietLine, TRAINING_LINE[goal]));
+    phases.push(phase('Build', 7, working, dietLine, trainingLine));
     phases.push(phase('Deload and retest', 1, working, 'Same targets. Recover, then test.', 'Half the sets for five days, then retest your top sets.', DELOAD_READINESS));
   }
 
   return {
     title,
-    objective,
+    objective: goals.length > 1 ? `${objective} Work toward all your goals: ${goalLabels(a)}.` : objective,
     goal,
     target_weight_kg: dir ? a.goalWeightKg ?? undefined : undefined,
     target_date: targetDate ?? undefined,
@@ -197,14 +202,6 @@ export function buildStarterProgram(a: OnboardingAnswers, extras: ProgramExtras)
 
 // ─── Drona path ──────────────────────────────────────────────────────────────
 
-const GOAL_LABEL: Record<CoachGoal, string> = {
-  hypertrophy: 'build muscle',
-  strength: 'get stronger',
-  fat_loss: 'lose fat',
-  endurance: 'build endurance',
-  general: 'general fitness',
-};
-
 /**
  * Client twin of the edge's buildAnonProgramMessage (supabase/functions/
  * ai-coach/anonOnboarding.ts) for the authenticated re-onboarding path.
@@ -213,7 +210,7 @@ const GOAL_LABEL: Record<CoachGoal, string> = {
  */
 export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: ProgramExtras): string {
   const today = extras.todayISO ?? localISO();
-  const goal: CoachGoal = a.goal ?? 'general';
+  const goal = primaryGoal(a);
   const freq = a.frequency ?? 3;
   const dir = directionOf(a);
 
@@ -242,7 +239,7 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
 
   return [
     `I just finished onboarding. Lay out my program toward my goal from these answers.`,
-    `Goal: ${GOAL_LABEL[goal]}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.`,
+    `Goals: ${goalLabels(a) || 'general fitness'}. Experience: ${a.experience ?? 'beginner'}. Training ${freq} days a week.`,
     body.length ? `Body: ${body.join(', ')}.` : '',
     `Today is ${today}. ${horizon}`,
     t
@@ -256,6 +253,7 @@ export function buildOnboardingProgramMessage(a: OnboardingAnswers, extras: Prog
       : '',
     `Rules:`,
     `- start_date is ${today}. goal is "${goal}".`,
+    `- Honor every selected goal in the objective and training directives. Combine muscle and strength work when both are selected; support fat loss through the fuel targets while preserving muscle and strength.`,
     `- 2 to 4 phases, earliest first. Put a deload or diet break where recovery calls for it.`,
     `- Every training_block has days_per_week is ${freq}. Pick the split from my goal, days, experience and notes. Do not default to one style.`,
     `- Every training_block also has week_pattern: 7 entries, Day 1 to Day 7, "Rest" for a day off, with exactly ${freq} training days.`,
