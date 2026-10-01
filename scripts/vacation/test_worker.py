@@ -1,7 +1,6 @@
 import datetime as dt
 import json
 import os
-import tempfile
 import unittest
 from unittest.mock import patch
 import worker
@@ -44,6 +43,31 @@ class Gates(unittest.TestCase):
         plan = {'issue': 2, 'pr': 3, 'base': 'a', 'sha': 'b', 'files': ['tools/helper.py']}
         with patch.dict(os.environ, {'PLAN': json.dumps(plan)}, clear=True), patch.object(worker, 'active', return_value=True), patch.object(worker, 'gh', return_value=json.dumps({'headRefOid': 'changed', 'baseRefName': 'main', 'state': 'OPEN'})) as gh, patch.object(worker, 'comment'), patch.object(worker, 'label'):
             with self.assertRaisesRegex(RuntimeError, 'changed'):
+                worker.release()
+            self.assertEqual(gh.call_count, 1)
+
+    def test_main_advance_blocks_before_merge(self):
+        plan = {'issue': 2, 'pr': 3, 'base': 'a', 'sha': 'b', 'files': ['tools/helper.py']}
+        pr = {'headRefOid': 'b', 'baseRefName': 'main', 'state': 'OPEN', 'statusCheckRollup': []}
+        with patch.dict(os.environ, {'PLAN': json.dumps(plan)}, clear=True), patch.object(worker, 'active', return_value=True), patch.object(worker, 'gh', return_value=json.dumps(pr)) as gh, patch.object(worker, 'run', side_effect=['', 'new-main']), patch.object(worker, 'comment'), patch.object(worker, 'label'):
+            with self.assertRaisesRegex(RuntimeError, 'Main advanced'):
+                worker.release()
+            self.assertEqual(gh.call_count, 1)
+
+    def test_missing_database_password_blocks_before_merge(self):
+        plan = {'issue': 2, 'pr': 3, 'base': 'a', 'sha': 'b', 'files': ['supabase/migrations/202610020001_bug.sql']}
+        env = {'PLAN': json.dumps(plan), 'SUPABASE_ACCESS_TOKEN': 'dummy', 'SUPABASE_URL': 'https://dummy.supabase.co'}
+        with patch.dict(os.environ, env, clear=True), patch.object(worker, 'active', return_value=True), patch.object(worker, 'gh') as gh, patch.object(worker, 'comment'), patch.object(worker, 'label'):
+            with self.assertRaisesRegex(RuntimeError, 'SUPABASE_DB_PASSWORD'):
+                worker.release()
+            gh.assert_not_called()
+
+    def test_failed_checks_block_before_merge(self):
+        plan = {'issue': 2, 'pr': 3, 'base': 'a', 'sha': 'b', 'files': ['tools/helper.py']}
+        pr = {'headRefOid': 'b', 'baseRefName': 'main', 'state': 'OPEN',
+              'statusCheckRollup': [{'name': 'Deploy decision', 'conclusion': 'FAILURE'}]}
+        with patch.dict(os.environ, {'PLAN': json.dumps(plan)}, clear=True), patch.object(worker, 'active', return_value=True), patch.object(worker, 'gh', return_value=json.dumps(pr)) as gh, patch.object(worker, 'comment'), patch.object(worker, 'label'):
+            with self.assertRaisesRegex(RuntimeError, 'check is incomplete or failed'):
                 worker.release()
             self.assertEqual(gh.call_count, 1)
 
