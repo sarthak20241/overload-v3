@@ -1,5 +1,10 @@
 name: Vacation nightly issues
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/vacation-*.yml'
+      - 'scripts/vacation/**'
   schedule:
     - cron: '30 17 1-9 10 *'
   workflow_dispatch:
@@ -16,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   queue:
-    if: vars.VACATION_ISSUES_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && vars.VACATION_ISSUES_ENABLED == 'true'
     runs-on: ubuntu-latest
     outputs:
       issues: ${{ steps.queue.outputs.issues }}
@@ -31,7 +36,9 @@ jobs:
           PREFLIGHT: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight_only }}
         run: python3 scripts/vacation/worker.py queue
   preflight:
-    if: github.event_name == 'workflow_dispatch' && inputs.preflight_only
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.preflight_only) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-node@v4
