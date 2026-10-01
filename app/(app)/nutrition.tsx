@@ -47,7 +47,7 @@ import {
 import { useCoachAccess } from '@/hooks/useCoachAccess';
 import {
   useDayNutrition, useNutritionTargets, useNutritionStreak, setLogMeal, setLogDate, ymd,
-  parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
+  type PendingFoodMeal, parseMeal, parseMealStreaming, logParsedMeal, undoParsedMeal, capNotice, capUpgradeContext, sectionsOf,
   loadNutritionRange, dateFromYmd, listSavedMeals, savedMealAsItems, usePrefetchWeek,
   type ParsedMeal, type LoggedEntry, type ParsedMealItem, type StreamedItem, type LoggedParseRef,
 } from '@/lib/dietData';
@@ -68,7 +68,7 @@ import { useSupabaseClient } from '@/lib/supabase';
 import { useClerkUser } from '@/hooks/useClerkUser';
 import { useKeyboardAwareScroll } from '@/hooks/useKeyboardAwareScroll';
 import type { MealType } from '@/lib/foods';
-import { formatServing } from '@/lib/foods';
+import { formatServing, formatMacroGrams } from '@/lib/foods';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** The AI-logging flow state driving the bar + the ParsedMealCard above it.
@@ -106,7 +106,7 @@ type ParseFlow =
       // choice. Applying is local, so picking costs no round trip.
       proposal?: { items: ParsedMealItem[]; note: string } | null;
     }
-  | { status: 'declined'; raw: string; message: string }
+  | { status: 'declined'; raw: string; message: string; pendingMeal?: PendingFoodMeal | null }
   // On an add (write) failure we keep the reviewed meal so Retry re-attempts the
   // WRITE, not the whole AI parse (which would burn an API call + could differ).
   // `clientId`/`logDate`: a "Just log it" send that failed in transport. Retry
@@ -493,6 +493,7 @@ export default function NutritionScreen() {
     // one" should correct THAT samosa, not log a second one. Captured before we
     // switch to 'analysing' (which drops the reviewed meal from flow).
     const prevReview = flowRef.current.status === 'review' ? flowRef.current : null;
+    const pendingMeal = !retry && flowRef.current.status === 'declined' ? flowRef.current.pendingMeal : null;
     // A RETRY carries no context, deliberately. It re-sends one specific past
     // send, so the meal on screen is not what it is about: passing `pending`
     // here made the retry text arrive as a CORRECTION of an unrelated reviewed
@@ -530,7 +531,7 @@ export default function NutritionScreen() {
       setLostSends((l) => l.filter((x) => x.client_id !== auto.clientId));
     }
     setFlow({ status: 'analysing', raw: t, auto: !!auto });
-    const turns = turnsRef.current.slice();
+    const turns = retry ? [] : turnsRef.current.slice();
     pushTurn('user', t);
     // The card on screen is a better hint than the wall clock. "and a dosa"
     // added to a meal the user has placed in Dinner must join THAT meal, and
@@ -542,6 +543,7 @@ export default function NutritionScreen() {
       text: t,
       mealHint: prevReview?.mealType ?? mealForNow(),
       previous: pending,
+      pendingMeal,
       turns,
       autoLog: auto,
       // The food bar can draw a save card, so it asks for creates.
@@ -616,7 +618,7 @@ export default function NutritionScreen() {
         setFlow({ ...prevReview, notice: res.message, proposal: res.proposal ?? null });
         return;
       }
-      setFlow({ status: 'declined', raw: t, message: res.message });
+      setFlow({ status: 'declined', raw: t, message: res.message, pendingMeal: res.pendingMeal });
       return;
     }
     // The free tier's daily logs ran out. This is a paywall, not a breakage:
@@ -744,7 +746,7 @@ export default function NutritionScreen() {
           const head = keptMealType ?? headOf(res.meal.items);
           return {
             status: 'review',
-            raw: t,
+            raw: res.meal.continued_pending && pendingMeal ? `${pendingMeal.text}; ${t}` : t,
             meal: { ...res.meal, meal_type: head },
             mealType: head,
             mealTypePicked: prevReview?.mealTypePicked,
@@ -1091,6 +1093,7 @@ export default function NutritionScreen() {
     // abort stops that work rather than merely ignoring its answer.
     parseTokenRef.current += 1;
     parseAbortRef.current?.abort();
+    turnsRef.current = [];
     setFlow({ status: 'idle' });
   }, [flow]);
 
@@ -1294,7 +1297,7 @@ export default function NutritionScreen() {
                 <Text style={s.sectionLabel}>{m.label}</Text>
                 <View style={{ flex: 1 }} />
                 {entries.length > 0 && (
-                  <Text style={s.sectionSub}>{round(sub.protein)}g P · {round(sub.kcal)}</Text>
+                  <Text style={s.sectionSub}>{formatMacroGrams(sub.protein)}g P · {round(sub.kcal)}</Text>
                 )}
               </View>
 
@@ -1318,9 +1321,9 @@ export default function NutritionScreen() {
                       </Text>
                       <View style={s.macros}>
                         <Text style={[s.macroNum, { color: C.foreground }]}>{round(e.kcal)} cal</Text>
-                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{round(e.protein_g)}g P</Text>
-                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{round(e.carb_g)}g C</Text>
-                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{round(e.fat_g)}g F</Text>
+                        <Text style={[s.macroNum, { color: C.macro.protein }]}>{formatMacroGrams(e.protein_g)}g P</Text>
+                        <Text style={[s.macroNum, { color: C.macro.carbs }]}>{formatMacroGrams(e.carb_g)}g C</Text>
+                        <Text style={[s.macroNum, { color: C.macro.fat }]}>{formatMacroGrams(e.fat_g)}g F</Text>
                       </View>
                     </Pressable>
                     {dronaRef && (
@@ -1496,9 +1499,10 @@ export default function NutritionScreen() {
         )}
       </View>
 
-      {/* Tap a logged entry to rescale it, move its section, or delete it. */}
+      {/* Tap a logged entry to edit its portion, macros, or meal section. */}
       <EntryEditSheet
         entry={editEntry}
+        date={viewDate}
         onClose={() => setEditEntry(null)}
         onSaved={() => { setEditEntry(null); reload(); }}
       />
@@ -1676,3 +1680,4 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     send: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accentText, alignItems: 'center', justifyContent: 'center' },
   });
 }
+
