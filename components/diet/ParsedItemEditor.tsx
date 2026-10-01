@@ -31,7 +31,7 @@ import { haptics } from '@/lib/haptics';
 import { useSupabaseClient } from '@/lib/supabase';
 import type { FoodServing, MealType } from '@/lib/foods';
 import { isMassUnit, isMeasurementUnit, massToGrams } from '@/lib/units';
-import { joinServing, splitServing, sizeForUnitChange } from '@/lib/servingSize';
+import { joinServing, splitServing, sizeForUnitChange, scaleServingNutrition } from '@/lib/servingSize';
 
 const MEAL_OPTIONS: { value: MealType; label: string }[] = [
   { value: 'breakfast', label: 'Breakfast' },
@@ -196,10 +196,13 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     if (next !== committedUnit.current) {
       committedUnit.current = next;
       if (nextSize !== sizeNum) setSize(fmt(nextSize));
-      if (nextSize * qtyNum > 0) base.current = {
-        total: nextSize * qtyNum, grams,
-        kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
-      };
+      if (nextSize * qtyNum > 0) {
+        const b = base.current;
+        const nutrition = macrosTouched
+          ? { kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0) }
+          : scaleServingNutrition(b, b.grams > 0 ? grams / b.grams : (b.total > 0 ? sizeNum * qtyNum / b.total : 1));
+        base.current = { total: nextSize * qtyNum, grams, ...nutrition };
+      }
     }
     return nextSize;
   }
@@ -213,24 +216,20 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     const count = qtyNum > 0 ? qtyNum : 1;
     if (!(qtyNum > 0)) setQty('1');
     const g = sv.grams * count;
-    const ratio = grams > 0 ? g / grams : 1;
-    const next = {
+    const b = base.current;
+    const ratio = b.grams > 0 ? g / b.grams : 1;
+    let next = {
       kcal: numOr(kcal, 0), protein: numOr(protein, 0), carb: numOr(carb, 0), fat: numOr(fat, 0),
     };
     if (!macrosTouched) {
       if (preserveSnapshot) {
-        next.kcal = r0(next.kcal * ratio);
-        next.protein = r1(next.protein * ratio);
-        next.carb = r1(next.carb * ratio);
-        next.fat = r1(next.fat * ratio);
+        next = scaleServingNutrition(b, ratio);
       } else if (per100) {
-        next.kcal = r0(per100.kcal * g / 100);
-        next.protein = r1(per100.protein_g * g / 100);
-        next.carb = r1(per100.carb_g * g / 100);
-        next.fat = r1(per100.fat_g * g / 100);
+        next = scaleServingNutrition({ kcal: per100.kcal, protein: per100.protein_g,
+          carb: per100.carb_g, fat: per100.fat_g }, g / 100);
       }
-      setKcal(String(next.kcal)); setProtein(String(next.protein));
-      setCarb(String(next.carb)); setFat(String(next.fat));
+      setKcal(String(r0(next.kcal))); setProtein(String(r1(next.protein)));
+      setCarb(String(r1(next.carb))); setFat(String(r1(next.fat)));
     }
     setGrams(g);
     base.current = { total: p.size * count, grams: g, ...next };

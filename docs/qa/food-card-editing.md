@@ -23,3 +23,13 @@ The single saved simulator fixture is identifiable as lassi, `1.5 × 2 QA glass`
 - TypeScript comparison against HEAD using the same installed dependencies: 272 distinct diagnostics before and after, no added diagnostics. The repository-wide type check remains blocked by existing unrelated errors; changed food files have no diagnostics.
 
 Saving uses one entry update for nutrition and meal assignment, requires a returned row before reporting success, and keeps a failed draft available for retry. Saved entries scale their logged snapshot, preserving manual corrections rather than replacing them with current catalog values. Extended nutrient snapshots are marked unknown after nutrition corrections because those fields were not edited in this form. No schema migration is needed.
+
+### Review follow-up: serving precision
+
+The independent PR review caught rounding drift when serving chips or completed
+unit changes rebased from displayed values. Those operations now retain full
+precision internally and round only when updating the fields. The regression
+covers 250 g / 6.7 g protein -> 100 g -> 250 g -> double quantity, yielding
+13.4 g rather than 13.6 g. All 15 portion and persistence tests pass. A simulator
+recheck of the saved fixture scaled quantity down and then to 3, showing 1,800
+calories and 40.2 g protein; the draft was cancelled.

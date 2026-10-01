@@ -92,3 +92,9 @@ export function sizeForUnitChange(
   } else if (gramsPerUnit(previous) !== null) return 1;
   return size;
 }
+
+/** Scale an unrounded nutrition snapshot; rounding belongs only in UI fields. */
+export function scaleServingNutrition<T extends { kcal: number; protein: number; carb: number; fat: number }>(basis: T, ratio: number) {
+  return { kcal: basis.kcal * ratio, protein: basis.protein * ratio,
+    carb: basis.carb * ratio, fat: basis.fat * ratio };
+}
