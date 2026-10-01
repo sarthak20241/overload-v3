@@ -7,7 +7,7 @@ insert into public.meals (id,user_id,meal_type,logged_at) values
  ('b0000000-0000-4000-8000-000000000001','food_alias_test_b','breakfast',now());
 
 do $$
-declare trace_id uuid; entry_id uuid; item jsonb; aliases text[];
+declare trace_id uuid; entry_id uuid; item jsonb; v_aliases text[];
 begin
   item := '{"food_name":"Test Brand protein oats","memory_input_name":"my breakfast oats","quantity":10,"grams":10,"kcal":40,"protein_g":2,"carb_g":6,"fat_g":1,"confidence":"high"}';
   insert into public.parse_traces (user_id,input_text,outcome,items,tier)
@@ -18,8 +18,8 @@ begin
   -- Matching a user's saved card confirms the alias despite an old mobile build.
   insert into public.meal_entries (meal_id,food_name,quantity,serving_unit,grams_logged,kcal,protein_g,carb_g,fat_g,logged_via,source)
   values ('a0000000-0000-4000-8000-000000000001','Test Brand protein oats',10,'g',10,40,2,6,1,'ai','catalog') returning id into entry_id;
-  select c.aliases into aliases from public.user_food_cache c where c.user_id='food_alias_test_a';
-  if aliases is distinct from array['my breakfast oats'] then raise exception 'save did not confirm alias: %',aliases; end if;
+  select c.aliases into v_aliases from public.user_food_cache c where c.user_id='food_alias_test_a';
+  if v_aliases is distinct from array['my breakfast oats'] then raise exception 'save did not confirm alias: %',v_aliases; end if;
   if (select tier from public.user_food_cache where user_id='food_alias_test_a') <> 'precise' then raise exception 'provenance lost'; end if;
 
   -- Same names/portions on a second user must not inherit the first user's alias.

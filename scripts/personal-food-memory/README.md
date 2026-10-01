@@ -38,7 +38,9 @@ back all synthetic fixtures.
 
 ## Deploy and observe
 
-1. Apply `20261001024340_personal_food_aliases.sql` with Supabase MCP. The warm-up
+1. Apply `20261001024340_personal_food_aliases.sql`, then the
+   `personal_food_cache_grants` and `personal_food_cache_indexes` migrations
+   with Supabase MCP. The warm-up
    uses only real saved entries in the recent window and guesses no aliases.
 2. Run the SQL integration checks, then deploy `ai-coach` from this PR's tested
    commit using `Deploy Edge Functions` workflow dispatch. No mobile OTA required.
