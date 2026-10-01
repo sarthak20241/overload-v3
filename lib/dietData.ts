@@ -12,6 +12,7 @@
  * Catalog: searchCatalog() merges the bundled FOOD_LIBRARY (Indian staples, always
  * offline) with the Supabase `foods` table (the 7.4k USDA catalog), deduped by name.
  */
+import { persistLoggedEntryEdit } from './loggedEntryEdit';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { FunctionRegion } from '@supabase/supabase-js';
@@ -58,6 +59,8 @@ export interface LoggedEntry {
   id: string;
   meal_id: string;              // parent meal, for move + empty-meal cleanup
   meal_type: MealType;
+  food_id?: string | null;
+  source?: ParsedMealItem['source'];
   food_name: string;
   serving_unit: string;
   quantity: number;
@@ -158,7 +161,7 @@ async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<D
   const { end } = dayRange(last);
   const { data, error } = await supabase
     .from('meals')
-    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
+    .select('id, meal_type, logged_at, meal_entries(id, meal_id, food_id, source, food_name, quantity, serving_unit, grams_logged, kcal, protein_g, carb_g, fat_g, position)')
     .gte('logged_at', start).lte('logged_at', end);
   // A failed query is NOT "nothing logged": the caller keeps what it has.
   if (error || !data) return { ok: false };
@@ -186,6 +189,7 @@ async function fetchDayRange(supabase: Supa, first: Date, last: Date): Promise<D
     for (const { mt, e } of list) {
       grouped[mt].push({
         id: e.id, meal_id: e.meal_id, meal_type: mt, food_name: e.food_name,
+        food_id: e.food_id ?? null, source: e.source,
         serving_unit: e.serving_unit, quantity: num(e.quantity),
         grams_logged: e.grams_logged == null ? null : num(e.grams_logged),
         kcal: num(e.kcal), protein_g: num(e.protein_g),
@@ -675,6 +679,7 @@ export interface ParsedMeal {
    *  REPLACE it. When false/absent they are new food, so a caller showing a
    *  pending meal appends them instead of throwing the old lines away. */
   corrects_previous?: boolean;
+  continued_pending?: boolean;
 }
 
 /** parse_meal outcome: either a parsed meal to log, or a decline (non-food
@@ -687,6 +692,12 @@ export type AutoLogSkipped = 'declined' | 'implausible' | 'write_error';
  *  than a boolean so the next capability (improvise, challenge) is one more
  *  string, not a second flag the server has to learn to read. */
 export const FOOD_BAR_CAPABILITIES = ['food_create'] as const;
+
+export interface PendingFoodMeal {
+  status: 'awaiting_clarification';
+  text: string;
+  question: string;
+}
 
 export type ParseMealResult =
   | {
@@ -712,6 +723,7 @@ export type ParseMealResult =
   | {
     kind: 'declined';
     message: string;
+    pendingMeal?: PendingFoodMeal | null;
     proposal?: { items: ParsedMealItem[]; note: string } | null;
     cleared?: boolean;
   }
@@ -836,6 +848,10 @@ function toParseResult(data: any): ParseMealResult {
       message: String(data.declined.message),
       proposal,
       cleared: data.declined.cleared === true,
+      pendingMeal: data.declined.pending_meal?.status === 'awaiting_clarification' &&
+          typeof data.declined.pending_meal.text === 'string' && typeof data.declined.pending_meal.question === 'string'
+        ? { status: 'awaiting_clarification', text: data.declined.pending_meal.text.slice(0, 2000), question: data.declined.pending_meal.question.slice(0, 400) }
+        : null,
     };
   }
   const parsed = data?.parsed;
@@ -871,6 +887,7 @@ function toParseResult(data: any): ParseMealResult {
       items: (parsed.items as any[]).map((i) => toParsedItem(i, mealType)),
       drona_line: String(parsed.drona_line ?? 'Here it is. Keep the protein coming.'),
       corrects_previous: parsed.corrects_previous === true,
+      continued_pending: parsed.continued_pending === true,
     },
     logged,
     autoLogSkipped: skipped === 'declined' || skipped === 'implausible' || skipped === 'write_error' ? skipped : null,
@@ -1007,6 +1024,7 @@ export async function parseMealStreaming(
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
           : {}),
+        ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
       }),
     });
@@ -1108,6 +1126,8 @@ export async function parseMeal(
      *  read as a brand new one. The server resolves a pure serving/quantity
      *  change without a second model call, so refining is cheaper than parsing. */
     previous?: { text: string; items: ParsedMealItem[] } | null;
+    /** Original food retained even when parsing stopped before producing items. */
+    pendingMeal?: PendingFoodMeal | null;
     /** Recent turns of this logging conversation, oldest first. Lets a bare
      *  "yes" answer whatever Drona just offered. */
     turns?: { role: 'user' | 'drona'; text: string }[];
@@ -1156,6 +1176,7 @@ export async function parseMeal(
         ...(args.turns && args.turns.length > 0
           ? { recent_turns: args.turns.slice(-4).map((t) => ({ role: t.role, text: t.text.slice(0, 240) })) }
           : {}),
+        ...(args.pendingMeal ? { pending_meal: args.pendingMeal } : {}),
         ...autoLogFields(args.autoLog, now),
         ...(args.previous && args.previous.items.length > 0
           ? {
@@ -1928,6 +1949,14 @@ export async function deleteMealEntry(
   return {};
 }
 
+/** Edit the logged snapshot, keeping a meal move in the same row update. */
+export async function updateLoggedEntry(
+  supabase: Supa, entry: LoggedEntry, item: ParsedMealItem, date: Date = getLogDate(),
+): Promise<{ error?: string }> {
+  return persistLoggedEntryEdit(supabase, entry, item, date,
+    (meal, day) => findOrCreateMeal(supabase, meal, day));
+}
+
 /** Rescale a logged entry to a new quantity, scaling grams + the macro snapshot
  *  linearly from the current values (macros are linear in amount). Clamps to a
  *  sane range so a fat-fingered stepper can't write absurd rows. */
@@ -2147,3 +2176,4 @@ export async function logQuickAdd(
   });
   return {};
 }
+
