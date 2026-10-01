@@ -39,8 +39,8 @@ destructive migration, or repeated store submission is attempted.
 - Run **Vacation nightly issues → Run workflow → preflight_only=true** to test
   cloud AI and Expo login without modifying issues or deploying.
 - `vacation:hold` excludes an issue. `vacation:needs-human` stops automatic
-  retries. Review the blocker and existing PR before removing that label; an
-  existing worker PR is left for attention rather than duplicated.
+  retries. After resolving the blocker, remove that label to retry. An existing
+  worker PR is refreshed, tested and reviewed again rather than duplicated.
 - GitHub Actions failure emails are the failure notification channel. The issue
   also gets progress, blocker, PR, and release comments. Enable GitHub email
   notifications before leaving.

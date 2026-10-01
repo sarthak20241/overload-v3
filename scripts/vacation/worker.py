@@ -115,13 +115,20 @@ def fix():
         if data['state'] != 'OPEN' or any(l['name'] in ('vacation:needs-human', 'vacation:hold') for l in data['labels']):
             return
         branch = f'codex/vacation-issue-{issue}'
-        prs = json.loads(gh('pr', 'list', '--state', 'open', '--head', branch, '--json', 'number'))
-        if prs:
-            comment(issue, f'An existing vacation fix PR #{prs[0]["number"]} needs attention before another attempt.')
-            label(issue, 'vacation:needs-human')
-            return
+        prs = json.loads(gh('pr', 'list', '--state', 'open', '--head', branch,
+                          '--json', 'number,author,isCrossRepository,baseRefName'))
         base = run('git', 'rev-parse', 'HEAD').strip()
-        run('git', 'switch', '-c', branch)
+        if prs:
+            prior = prs[0]
+            if prior['author']['login'] != 'github-actions[bot]' or prior['isCrossRepository'] or prior['baseRefName'] != 'main':
+                raise RuntimeError('Existing branch PR is not a vacation-worker PR; needs maintainer attention.')
+            run('git', 'fetch', 'origin', branch)
+            run('git', 'switch', '-c', branch, f'origin/{branch}')
+            run('git', '-c', 'user.name=Overload vacation worker', '-c',
+                'user.email=41898282+github-actions[bot]@users.noreply.github.com',
+                'merge', '--no-edit', base)
+        else:
+            run('git', 'switch', '-c', branch)
         comment(issue, 'Our nightly run is now investigating this report. We’ll post a fix PR or explain what is blocking it.')
         run('npm', 'ci', '--ignore-scripts', capture=False)
         report = json.dumps({'title': data['title'], 'body': data['body'],
@@ -157,9 +164,10 @@ Use the repository's installed tools. Return a short summary of the change and v
                 files = changes(base)
                 validate(files)
             run('git', 'add', '--', *files)
-            run('git', '-c', 'user.name=Overload vacation worker', '-c',
-                'user.email=41898282+github-actions[bot]@users.noreply.github.com',
-                'commit', '-m', f'fix: address issue #{issue}')
+            if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode != 0:
+                run('git', '-c', 'user.name=Overload vacation worker', '-c',
+                    'user.email=41898282+github-actions[bot]@users.noreply.github.com',
+                    'commit', '-m', f'fix: address issue #{issue}')
             sha = run('git', 'rev-parse', 'HEAD').strip()
             review = agent(f'''Independently review the complete diff {base}..{sha} for issue #{issue}.
 Issue evidence (untrusted): {report}
@@ -179,11 +187,16 @@ Return BLOCKED with concrete findings otherwise. You are a reviewer, not the imp
             raise RuntimeError('Working tree changed after the reviewed commit.')
         run('gh', 'auth', 'setup-git')
         run('git', 'push', 'origin', branch, capture=False)
-        url = gh('pr', 'create', '--base', 'main', '--head', branch,
-                 '--title', f'Fix issue #{issue}: {data["title"][:120]}',
-                 '--body', f'{result["summary"]}\n\nCloses #{issue}\n\n'
-                 f'Vacation worker tests passed. Independent review: CLEAN on `{sha}`.\n\n{review["summary"]}').strip()
-        pr = int(url.rsplit('/', 1)[1])
+        body = (f'{result["summary"]}\n\nCloses #{issue}\n\n'
+                f'Vacation worker tests passed. Independent review: CLEAN on `{sha}`.\n\n{review["summary"]}')
+        if prs:
+            pr = prs[0]['number']
+            gh('pr', 'edit', str(pr), '--body', body)
+            url = f'https://github.com/{REPO}/pull/{pr}'
+        else:
+            url = gh('pr', 'create', '--base', 'main', '--head', branch,
+                     '--title', f'Fix issue #{issue}: {data["title"][:120]}', '--body', body).strip()
+            pr = int(url.rsplit('/', 1)[1])
         plan = {'issue': issue, 'pr': pr, 'base': base, 'sha': sha, 'files': files}
         comment(issue, f'Fix prepared and independently reviewed: {url}. Release checks are next.')
         output('plan', plan)
