@@ -64,6 +64,24 @@ const INPUT = {
   recentFoods: [], todayTotals: null, targets: null,
 };
 
+Deno.test("pending clarification: Quick extraction receives the whole original meal without a prior card", async () => {
+  const lookups: string[] = [];
+  const deps = stub(lookups);
+  const fetchFn = deps.fetchFn!;
+  let payload: any;
+  deps.fetchFn = (async (url, init) => {
+    payload = JSON.parse(String(init!.body));
+    return fetchFn(url, init);
+  }) as typeof fetch;
+  const pendingMeal = { status: "awaiting_clarification" as const, text: "chicken with butter for breakfast", question: "Which butter?" };
+  const result = await runParseMeal(deps, { ...INPUT, text: "No brand, assume on it own", pendingMeal });
+  assertEquals(JSON.parse(payload.messages[0].content), { text: "No brand, assume on it own", pending_meal: pendingMeal });
+  assertEquals(result.parsed!.items.map((i) => i.food_name), ["chicken", "butter"]);
+  assertEquals(result.parsed!.continued_pending, true);
+  assertEquals(result.declined, null);
+  assertEquals(lookups, []);
+});
+
 Deno.test("fast mode makes no lookup of any kind", async () => {
   const lookups: string[] = [];
   const r = await runParseMeal(stub(lookups), INPUT);
