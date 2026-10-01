@@ -18,7 +18,7 @@
 // Runtime-agnostic (no Deno globals), like ourSources.ts.
 
 import { askJev, type JevDeps, type JevQuestion } from "./jev.ts";
-import { MATCH_LEVELS } from "./preciseMatch.ts";
+
 
 export type ParseTierName = "fast" | "thorough" | "precise";
 
@@ -50,6 +50,10 @@ export interface MemoryEntry {
   logged_via: string | null;
   tier: string | null;
   logged_at: string;
+  /** Durable, saved diary evidence loaded from this user’s private cache. */
+  persistent?: boolean;
+  alias_lookup?: boolean;
+  confirmed_aliases?: string[];
 }
 
 /** A remembered food: the newest eligible entry for a name, as per 100 g. */
@@ -66,6 +70,7 @@ export interface MemoryFood {
   level: ParseTierName;
   times: number;
   last_logged_at: string;
+  confirmed_aliases?: string[];
 }
 
 const RANK: Record<ParseTierName, number> = { fast: 1, thorough: 2, precise: 3 };
@@ -105,7 +110,7 @@ export function buildMemory(
   const byKey = new Map<string, { newest: MemoryEntry; times: number }>();
   for (const e of entries) {
     const at = Date.parse(e.logged_at);
-    if (!Number.isFinite(at) || at < since) continue;
+    if (!Number.isFinite(at) || (!e.persistent && at < since)) continue;
     if (!e.food_name?.trim() || !(e.grams && e.grams > 0) || !(e.kcal >= 0)) continue;
     if (!servesTier(entryLevel(e), tier)) continue;
     const key = memoryKey(e.food_name);
@@ -139,12 +144,18 @@ export function buildMemory(
       level: entryLevel(e),
       times,
       last_logged_at: e.logged_at,
+      confirmed_aliases: e.confirmed_aliases ?? [],
     };
   });
   const newestFirst = (a: MemoryFood, b: MemoryFood) => Date.parse(b.last_logged_at) - Date.parse(a.last_logged_at);
   const frequent = foods.filter((f) => f.times >= 2).sort((a, b) => b.times - a.times || newestFirst(a, b));
   const recent = foods.filter((f) => f.times < 2).sort(newestFirst);
-  return [...frequent, ...recent].slice(0, MEMORY_MAX_FOODS);
+  const pinned = new Set(entries.filter((e) => e.alias_lookup).map((e) => memoryKey(e.food_name)));
+  const ordered = [...frequent, ...recent];
+  return [
+    ...ordered.filter((f) => pinned.has(f.key)),
+    ...ordered.filter((f) => !pinned.has(f.key)).slice(0, Math.max(0, MEMORY_MAX_FOODS - pinned.size)),
+  ];
 }
 
 /** Character-trigram similarity, 0..1. Cheap, typo- and order-tolerant. */
@@ -167,45 +178,56 @@ export function nameSimilarity(a: string, b: string): number {
 export function shortlist(foods: MemoryFood[], line: string, n = MEMORY_SHORTLIST): MemoryFood[] {
   if (foods.length <= n) return foods;
   return [...foods]
-    .map((f) => ({ f, s: nameSimilarity(f.name, line) }))
+    .map((f) => ({ f, s: Math.max(nameSimilarity(f.name, line), ...(f.confirmed_aliases ?? []).map((a) => nameSimilarity(a, line))) }))
     .sort((a, b) => b.s - a.s)
     .slice(0, n)
     .map((x) => x.f);
 }
 
-const MEMORY_RULE = "the same food prepared the same way. Raw and cooked differ, and so do " +
-  "grilled, fried and boiled. When either names a brand, the brand must match. A dish made with " +
-  "the food, or a different variant (low fat, sugar-free, flavour), is not it.";
+/** Personal history interprets omitted descriptors as shorthand, while the
+ * global catalog still requires an exact product match. Keep explicit input
+ * and candidate names IN each question: references alone confused Jev in the
+ * multi-row regression even when the state included both names. */
+export const MEMORY_LEVELS = [
+  "Different food or an explicitly conflicting brand, flavour, preparation, or variant.",
+  "Unresolved: more than one remembered product fits the shorthand, or the identity is unclear.",
+  "The same remembered product, including unique compatible shorthand or omitted descriptors. No explicit detail conflicts and no other remembered product equally fits.",
+];
+export const MEMORY_RULE =
+  "Resolve the user's shorthand against ONLY this user's remembered foods in remembered_foods. " +
+  "The candidate is a food this user previously accepted. Judge intended identity, not exact wording. " +
+  "Missing words such as protein, product-line words, or full brand spelling are unspecified, not contradictory. " +
+  "Punctuation, possessives, abbreviation and obvious spelling errors may be shorthand. " +
+  "A partial brand may identify its unique compatible remembered brand. " +
+  "The core food or ingredient must be the same. Different ingredients or plant species are different foods even when both are seeds, nuts, grains or milk. " +
+  "Every explicitly named flavour, brand, preparation, fat level, and other variant must agree. " +
+  "An explicit different flavour/brand or raw versus cooked is a conflict. " +
+  "If multiple remembered products fit the stated details, choose unresolved for each, unless this user has a confirmed alias that uniquely identifies one. " +
+  "Do not invent aliases and do not prefer protein products merely because the user logged them. " +
+  "Other brands/flavours in the list do not create ambiguity when they conflict with explicit input details. " +
+  "Quantities do not affect food identity. Score the specified candidate using the ordered criteria.";
 
-export function memoryQuestions(line: { name: string; brand: string | null }, foods: MemoryFood[]): Record<string, JevQuestion> {
-  const out: Record<string, JevQuestion> = {};
-  foods.forEach((f, i) => {
-    out[`m${i + 1}`] = {
-      type: "score",
-      instructions:
-        `How well does this food the user logged before match food f1 in "foods"? ` +
-        `Logged before: ${f.name}. A match must be ${MEMORY_RULE} Word order matters: chocolate milk is not milk chocolate.`,
-      criteria: MATCH_LEVELS,
-    };
-  });
-  return out;
+export function memoryInputName(line: { name: string; brand: string | null }): string {
+  return line.brand && !memoryKey(line.name).includes(memoryKey(line.brand))
+    ? `${line.brand} ${line.name}` : line.name;
 }
 
-/** Same energy, within 10% (or 5 kcal for very light foods). */
-function sameNumbers(a: MemoryFood, b: MemoryFood): boolean {
-  const x = a.per100.kcal, y = b.per100.kcal;
-  return Math.abs(x - y) <= Math.max(0.1 * Math.max(x, y), 5);
+export function memoryQuestions(line: { name: string; brand: string | null }, foods: MemoryFood[]): Record<string, JevQuestion> {
+  return Object.fromEntries(foods.map((f, i) => [`m${i + 1}`, {
+    type: "score",
+    instructions: MEMORY_RULE + ` Input food: ${memoryInputName(line)}. Candidate previously logged by this user: ${f.name}.`,
+    criteria: MEMORY_LEVELS,
+  }]));
 }
 
 export type MemoryDecision =
   | { food: MemoryFood; confidence: number }
-  | { food: null; reason: "no_foods" | "no_answer" | "below_floor"; confidence: number };
+  | { food: null; reason: "no_foods" | "no_answer" | "below_floor" | "ambiguous"; confidence: number };
 
 /**
  * The food to serve, from Jev's per-row chance of "exactly this food". Below
- * the floor nothing is served. When two rows clear it with different numbers,
- * the one logged most recently wins: that is what the user accepted last, and a
- * fixed rule keeps the answer the same every time.
+ * the floor nothing is served. Distinct products that both clear the floor are ambiguous. Reordered names
+ * for the same food keep the latest accepted nutrition.
  */
 export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR): MemoryDecision {
   if (foods.length === 0) return { food: null, reason: "no_foods", confidence: 0 };
@@ -217,9 +239,13 @@ export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, 
     return { food: null, reason: "below_floor", confidence: Math.max(...scores.map((s) => s ?? 0)) };
   }
   const best = passing.sort((a, b) => b.p - a.p)[0];
-  const rivals = passing.filter((x) => x !== best && !sameNumbers(x.f, best.f));
-  if (rivals.length === 0) return { food: best.f, confidence: best.p };
-  const newest = [best, ...rivals].sort((a, b) => Date.parse(b.f.last_logged_at) - Date.parse(a.f.last_logged_at))[0];
+  // Equal nutrition is not proof of equal identity (two flavours can have
+  // the same calories). Only reordered names share the old recency tie-break.
+  const identity = (f: MemoryFood) => memoryKey(f.name).split(" ").sort().join(" ");
+  if (passing.some((x) => identity(x.f) !== identity(best.f))) {
+    return { food: null, reason: "ambiguous", confidence: best.p };
+  }
+  const newest = passing.sort((a, b) => Date.parse(b.f.last_logged_at) - Date.parse(a.f.last_logged_at))[0];
   return { food: newest.f, confidence: newest.p };
 }
 
@@ -236,16 +262,34 @@ export async function matchMemory(
   foods: MemoryFood[],
   line: { name: string; brand: string | null },
 ): Promise<MemoryMatch> {
-  const trace: Record<string, unknown> = { item: line.name, remembered: foods.length };
+  const lookup = memoryInputName(line);
+  const trace: Record<string, unknown> = { item: line.name, lookup_name: lookup, remembered: foods.length, policy: "personal-shorthand-v1" };
   try {
-    const list = shortlist(foods, line.brand && !memoryKey(line.name).includes(memoryKey(line.brand)) ? `${line.brand} ${line.name}` : line.name);
+    // Confirmed aliases resolve before a top-N cut and without model calls.
+    // Multiple targets remain ambiguous, including after a user correction.
+    const exact = foods.filter((f) => (f.confirmed_aliases ?? []).some((a) => memoryKey(a) === memoryKey(lookup)));
+    if (exact.length > 0) {
+      trace.path = "confirmed_alias";
+      if (exact.length !== 1) {
+        trace.decision = { match: null, reason: "ambiguous", candidates: exact.map((f) => f.name) };
+        return { food: null, confidence: 0, trace };
+      }
+      const food = exact[0];
+      trace.decision = { match: food.name, level: food.level, conf: 1 };
+      return { food, confidence: 1, trace };
+    }
+    trace.path = "jev";
+    const list = shortlist(foods, lookup);
     trace.shortlist = list.length;
     if (list.length === 0) {
       trace.decision = { match: null, reason: "no_foods" };
       return { food: null, confidence: 0, trace };
     }
     const res = await askJev(
-      { foods: [{ id: "f1", name: line.name, brand: line.brand }] },
+      {
+        foods: [{ id: "f1", name: line.name, brand: line.brand }],
+        remembered_foods: list.map((f, i) => ({ id: `m${i + 1}`, name: f.name, confirmed_aliases: f.confirmed_aliases ?? [] })),
+      },
       memoryQuestions(line, list),
       jev,
     ).catch(() => null);
@@ -255,9 +299,16 @@ export async function matchMemory(
       return a?.type === "score" ? (a.probabilities?.["2"] ?? 0) : null;
     });
     trace.rows = list.map((f, i) => ({ name: f.name.slice(0, 60), kcal: f.per100.kcal, level: f.level, score: scores[i] === null ? null : Math.round((scores[i] as number) * 100) / 100 }));
-    const d = decideMemory(list, scores);
+    const unresolved = list.filter((_, i) => {
+      if (!res?.ok) return false;
+      const a = res.response.answers[`m${i + 1}`] as { probabilities?: Record<string, number> } | undefined;
+      return (a?.probabilities?.["1"] ?? 0) >= MEMORY_FLOOR;
+    });
+    const d = unresolved.length > 1
+      ? { food: null, reason: "ambiguous" as const, confidence: 0 }
+      : decideMemory(list, scores);
     if (!d.food) {
-      trace.decision = { match: null, reason: res && !res.ok ? `jev_${res.failure}` : d.reason, conf: Math.round(d.confidence * 100) / 100 };
+      trace.decision = { match: null, reason: res && !res.ok ? `jev_${res.failure}` : d.reason, candidates: d.reason === "ambiguous" ? list.map((f) => f.name) : undefined, conf: Math.round(d.confidence * 100) / 100 };
       return { food: null, confidence: d.confidence, trace };
     }
     trace.decision = { match: d.food.name.slice(0, 60), kcal: d.food.per100.kcal, level: d.food.level, logged: d.food.last_logged_at.slice(0, 10), conf: Math.round(d.confidence * 100) / 100 };

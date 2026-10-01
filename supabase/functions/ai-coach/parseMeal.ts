@@ -53,6 +53,7 @@ import {
   type MemoryFood,
   type MemoryMatch,
   memoryKey,
+  memoryInputName,
   memoryNote,
 } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
@@ -162,6 +163,8 @@ export interface ParsedItem {
    *  parse ran in: a line answered from the user's memory keeps the tier of
    *  the entry it came from. Read by migration 0149's trigger off the trace. */
   numbers_tier?: ParseTier;
+  /** A proposed personal alias. Learned only when this food is saved. */
+  memory_input_name?: string;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -913,7 +916,10 @@ export interface ParseMealDeps {
    *  through their own client so RLS keeps them theirs. A food Jev says IS a
    *  line answers it before any other source, in every tier, on a first-shot
    *  log only. Absent: no memory, the tiers run as before. */
-  userMemory?: { load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }> };
+  userMemory?: {
+    load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }>;
+    lookupAliases?: (keys: string[]) => Promise<MemoryEntry[]>;
+  };
   anthropicApiKey: string;
   model: string;
   maxTokens: number;
@@ -4074,6 +4080,8 @@ export interface MemoryStamp {
   note: string;
   level: ParseTier;
   source: ParsedItem["source"];
+  canonical_name?: string;
+  input_name?: string;
 }
 
 const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
@@ -4084,9 +4092,11 @@ export function memoryFoodId(food: MemoryFood): string {
   return `${EPHEMERAL_ID_PREFIX}mem_${food.key}`;
 }
 
-export function memoryStamp(food: MemoryFood, timeZone?: string | null): MemoryStamp {
+export function memoryStamp(food: MemoryFood, timeZone?: string | null, inputName?: string): MemoryStamp {
   const src = (food.source ?? "") as ParsedItem["source"];
   return {
+    canonical_name: food.name,
+    input_name: inputName,
     note: memoryNote(food, timeZone),
     level: food.level,
     source: MEMORY_SOURCES.has(src) ? src : "catalog",
@@ -4223,10 +4233,11 @@ export function memoryQuickItem(
   else if (line.est && line.est.total_g > 0) grams = line.est.total_g;
   if (!grams || !(grams > 0) || grams > 5000) return null;
   const f = grams / 100;
-  const stamp = memoryStamp(food, timeZone);
+  const stamp = memoryStamp(food, timeZone, memoryInputName(line));
   return {
     food_id: null,
     food_name: food.name,
+    memory_input_name: stamp.input_name,
     quantity: qty,
     serving_label: line.unit,
     grams: round1(grams),
@@ -4256,7 +4267,7 @@ export function stripEphemeralIds(
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
     const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
     const base = mem
-      ? { ...it, assumption: mem.note, numbers_tier: mem.level, source: mem.source, confidence: "high" as const }
+      ? { ...it, food_name: mem.canonical_name ?? it.food_name, memory_input_name: mem.input_name, assumption: mem.note, numbers_tier: mem.level, source: mem.source, confidence: "high" as const }
       : it;
     const marked = verdict === undefined ? base : { ...base, verified: verdict };
     return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
@@ -5680,7 +5691,10 @@ async function runParseMealCore(
     ? (async () => {
       const loaded = await memoryLoadP;
       memTimeZone = loaded.timeZone;
-      const foods = buildMemory(loaded.entries, tier);
+      const aliases = await deps.userMemory?.lookupAliases?.(toResolve.map((it) =>
+        memoryKey(memoryInputName({ name: memoryLineName(it), brand: it.brand ?? null }))
+      )).catch(() => [] as MemoryEntry[]) ?? [];
+      const foods = buildMemory([...aliases, ...loaded.entries], tier);
       if (foods.length === 0) {
         steps.push({
           iter: 1,
@@ -5746,6 +5760,12 @@ async function runParseMealCore(
     });
   }
 
+  const memory = await memoryP;
+  const ambiguous = memory.find((m) => (m?.trace.decision as { reason?: string } | undefined)?.reason === "ambiguous");
+  if (ambiguous) {
+    return declineResult(`I have more than one saved match for ${ambiguous.trace.item}. Add the brand, flavour or variant so I use the right one.`);
+  }
+
   // ── FAST MODE: the model's estimate, and nothing else ─────────────────────
   // Decided 2026-09-15. Quick used to search the catalog here and let an
   // accepted row REPLACE the estimate the naming call had already produced.
@@ -5764,7 +5784,6 @@ async function runParseMealCore(
   // number the user has already seen. fastNoCatalog.test.ts counts every
   // lookup to keep it that way. Thorough and Precise are untouched.
   if (fastMode) {
-    const memory = await memoryP;
     T.resolve_ms = 0;
     const tPost0 = Date.now();
     const fastItems: ParsedItem[] = toResolve.map((r, idx) => {
@@ -5779,7 +5798,7 @@ async function runParseMealCore(
         return statedLine;
       }
       const remembered = memory[idx]?.food
-        ? memoryQuickItem(memory[idx]!.food!, { ...r, est: r.est ?? null }, memTimeZone)
+        ? memoryQuickItem(memory[idx]!.food!, { ...r, name: memoryLineName(r), est: r.est ?? null }, memTimeZone)
         : null;
       if (remembered) {
         toolCalls.push("user_memory_match");
@@ -5880,7 +5899,6 @@ async function runParseMealCore(
     };
   }
 
-  const memory = await memoryP;
   const resolved: ResolvedItem[] = await Promise.all(
     toResolve.map(async (item, idx) => {
       // The user's own numbers first. A full panel answers with no lookup; a
@@ -5922,7 +5940,7 @@ async function runParseMealCore(
       if (remembered) {
         toolCalls.push("user_memory_match");
         const cand = memoryCandidate(remembered);
-        memoryByFood.set(cand.food_id as string, memoryStamp(remembered, memTimeZone));
+        memoryByFood.set(cand.food_id as string, memoryStamp(remembered, memTimeZone, memoryInputName({ name: memoryLineName(item), brand: item.brand ?? null })));
         return Promise.resolve({ ...item, candidates: [cand] } as ResolvedItem);
       }
       return resolveOneItem(

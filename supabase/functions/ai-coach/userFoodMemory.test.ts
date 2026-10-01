@@ -184,7 +184,7 @@ function net(opts: { scores: Record<string, number>; calls: string[]; line: Reco
       opts.calls.push(`jev:${body.state?.foods?.[0]?.name ?? ""}`);
       const answers: Record<string, unknown> = {};
       for (const [k, q] of Object.entries(body.questions as Record<string, { instructions: string }>)) {
-        const name = /Logged before: (.+?)\. A match/.exec(q.instructions)?.[1] ?? "";
+        const name = /Candidate previously logged by this user: (.+)\.$/.exec(q.instructions)?.[1] ?? "";
         const p = opts.scores[name] ?? 0;
         answers[k] = { type: "score", probabilities: { "0": 1 - p, "1": 0, "2": p }, confidence: p };
       }
@@ -399,4 +399,102 @@ Deno.test("the trace says when a follow-up turn skipped the memory", async () =>
   ).catch(() => null);
   const step = (r?.steps ?? []).find((s) => s.tool === "user_memory");
   assertEquals((step?.result as { skipped: string }).skipped, "follow_up");
+});
+
+Deno.test("confirmed aliases resolve without Jev, even when it is down", async () => {
+  let requests = 0;
+  const oats = { ...food("Doctor's Choice banana caramel protein oats", 427.3), confirmed_aliases: ["doctors banana caramel oats"] };
+  const r = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (() => { requests++; throw Error("offline"); }) as typeof fetch },
+    [oats], { name: "DOCTORS banana-caramel oats", brand: null });
+  assertEquals(r.food?.name, oats.name);
+  assertEquals(r.trace.path, "confirmed_alias");
+  assertEquals(requests, 0);
+});
+
+Deno.test("an alias checks explicit brand and preparation too", async () => {
+  const remembered = { ...food("grilled Brand A chicken", 151), confirmed_aliases: ["Brand A chicken"] };
+  let requests = 0;
+  const d = { apiKey: "k", timeoutMs: 100, fetchFn: (async () => { requests++; return new Response("down", { status: 500 }); }) as typeof fetch };
+  assertEquals((await matchMemory(d, [remembered], { name: "chicken", brand: "Brand B" })).food, null);
+  assertEquals((await matchMemory(d, [remembered], { name: "raw Brand A chicken", brand: null })).food, null);
+  assertEquals(requests, 2);
+});
+
+Deno.test("the same alias on two products is ambiguous, not newest-wins", async () => {
+  const list = [food("Brand banana protein oats", 400), food("Brand banana regular oats", 400)]
+    .map((f) => ({ ...f, confirmed_aliases: ["brand banana oats"] }));
+  const r = await matchMemory({ apiKey: "", timeoutMs: 1 }, list, { name: "brand banana oats", brand: null });
+  assertEquals(r.food, null);
+  assertEquals((r.trace.decision as { reason: string }).reason, "ambiguous");
+  assertEquals(decideMemory(list, [0.98, 0.99]).food, null);
+});
+
+Deno.test("an exact alias cannot disappear behind the top-ten shortlist", async () => {
+  const target = { ...food("Long canonical packaged product name", 100), confirmed_aliases: ["my cereal"] };
+  const list = Array.from({ length: 20 }, (_, i) => food(`my cereal ${i}`, 100)).concat(target);
+  const r = await matchMemory({ apiKey: "", timeoutMs: 1 }, list, { name: "my cereal", brand: null });
+  assertEquals(r.food?.name, target.name);
+});
+
+Deno.test("durable confirmed foods survive ten days without upgrading their tier", () => {
+  const cached = entry({ logged_at: daysAgo(60), persistent: true, confirmed_aliases: ["my chicken"], tier: "fast", source: "estimate" });
+  assertEquals(buildMemory([cached], "fast", NOW)[0].confirmed_aliases, ["my chicken"]);
+  assertEquals(buildMemory([cached], "precise", NOW), []);
+});
+
+Deno.test("an exact alias DB lookup survives the 300-food memory bound", () => {
+  const cache = Array.from({ length: 301 }, (_, i) => entry({ food_name: `recent food ${i}`, logged_at: daysAgo(1) }));
+  const alias = entry({ food_name: "older canonical product", logged_at: daysAgo(60), persistent: true, alias_lookup: true, confirmed_aliases: ["my cereal"] });
+  const result = buildMemory([...cache, alias], "precise", NOW);
+  assert(result.some((f) => f.name === alias.food_name));
+  assertEquals(result.length, 300);
+});
+
+Deno.test("new shorthand questions name the input and each candidate explicitly", async () => {
+  const oats = food("Doctor's Choice banana caramel protein oats", 427.3);
+  let state: { remembered_foods: unknown[] } | undefined;
+  const r = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    state = body.state;
+    assert(body.questions.m1.instructions.includes("Input food: doctors banana caramel oats."));
+    assert(body.questions.m1.instructions.includes(`Candidate previously logged by this user: ${oats.name}.`));
+    assert(body.questions.m1.instructions.includes("unspecified, not contradictory"));
+    return Response.json({ answers: { m1: { type: "score", probabilities: { "0": 0.01, "1": 0.01, "2": 0.98 } } } });
+  }) as typeof fetch }, [oats], { name: "doctors banana caramel oats", brand: null });
+  assertEquals(r.food?.name, oats.name);
+  assertEquals(state?.remembered_foods.length, 1);
+});
+
+Deno.test("Jev's unresolved variants are declined rather than falling back to generic food", async () => {
+  const list = [food("Brand protein oats", 400), food("Brand regular oats", 400)];
+  const r = await matchMemory({ apiKey: "k", timeoutMs: 100, fetchFn: (async () => Response.json({ answers: {
+    m1: { type: "score", probabilities: { "0": 0.01, "1": 0.95, "2": 0.04 } },
+    m2: { type: "score", probabilities: { "0": 0.01, "1": 0.95, "2": 0.04 } },
+  } })) as typeof fetch }, list, { name: "Brand oats", brand: null });
+  assertEquals((r.trace.decision as { reason: string }).reason, "ambiguous");
+});
+
+Deno.test("confirmed alias repeat scales the new portion and carries save-only evidence", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  const canonical = "Doctor's Choice banana caramel protein oats";
+  const cached = live({ food_name: canonical, kcal: 427.3, grams: 100, protein_g: 24, carb_g: 60, fat_g: 10, persistent: true,
+    logged_at: liveAgo(60), confirmed_aliases: ["doctors banana caramel oats"] });
+  const r = await runParseMeal(deps([cached], {}, calls, lookups,
+    { ...ESTIMATED, name: "doctors banana caramel oats", quantity: 20, est_total_g: 20 }),
+    { ...BASE, text: "20g doctors banana caramel oats", mode: "fast" });
+  const item = r.parsed!.items[0];
+  assertEquals([item.food_name, item.grams, item.kcal, item.numbers_tier], [canonical, 20, 85.5, "precise"]);
+  assertEquals(item.memory_input_name, "doctors banana caramel oats");
+  assert(!calls.some((c) => c.startsWith("jev:")));
+  assertEquals(lookups, []);
+});
+
+Deno.test("an ambiguous confirmed alias stops a parse before catalog and web lookup", async () => {
+  const calls: string[] = [], lookups: string[] = [];
+  const entries = ["Brand banana protein oats", "Brand banana regular oats"].map((food_name) => live({ food_name, confirmed_aliases: ["brand banana oats"] }));
+  const r = await runParseMeal(deps(entries, {}, calls, lookups, { ...ESTIMATED, name: "brand banana oats" }),
+    { ...BASE, text: "20g brand banana oats", mode: "fast" });
+  assertEquals(r.parsed, null);
+  assert(r.declined?.message.includes("more than one saved match"));
+  assertEquals(lookups, []);
 });
