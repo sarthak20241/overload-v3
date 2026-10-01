@@ -10,7 +10,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { computeReadiness, type BaselineStat, type ReadinessResult } from './readiness';
 import { syncHealthData } from './healthSync';
-import { dowOfISO, kcalOnDow, normalizeFuelDays } from './fuelDays';
+import { dowOfISO, normalizeFuelDays } from './fuelDays';
+import { targetsForDay, type DayTargetRow, type TargetHistoryRow } from './targetHistory';
 
 const BASELINE_DAYS = 28;
 // sleep_quality rides along for today's read only; it is a subjective modifier, so
@@ -121,7 +122,7 @@ async function loadNutritionFactor(
   try {
     const from = shiftDaysISO(today, -NUTRITION_LOOKBACK);
     const to = shiftDaysISO(today, -1);
-    const [statsRes, profileRes, fuelRes] = await Promise.all([
+    const [statsRes, profileRes, fuelRes, historyRes, dayRes] = await Promise.all([
       supabase
         .from('user_nutrition_stats')
         .select('day, kcal, protein_g')
@@ -140,6 +141,19 @@ async function loadNutritionFactor(
         .select('calorie_day_boosts')
         .eq('clerk_user_id', userId)
         .maybeSingle(),
+      // The goal each past day had (0150), best effort the same way: without
+      // it, every day is scored against today's goal, as before.
+      supabase
+        .from('user_target_history')
+        .select('effective_from, kcal, protein_g, carb_g, fat_g, calorie_day_boosts')
+        .eq('user_id', userId),
+      // Goals set for one day only (0151), same best-effort rule.
+      supabase
+        .from('user_day_targets')
+        .select('day, kcal, protein_g, carb_g, fat_g')
+        .eq('user_id', userId)
+        .gte('day', from)
+        .lte('day', to),
     ]);
     // Either query erroring means we can't trust the ratios; skip the factor
     // rather than silently scoring against fallback targets (the "any failure
@@ -160,12 +174,30 @@ async function loadNutritionFactor(
     const avgKcal = logged.reduce((a, d) => a + d.kcal, 0) / logged.length;
 
     const prof = (profileRes.data ?? {}) as { protein_target_g?: number | string | null; daily_calorie_target?: number | string | null };
-    const proteinTarget = Number(prof.protein_target_g) || DEFAULT_PROTEIN_TARGET;
-    const baseKcal = Number(prof.daily_calorie_target) || DEFAULT_KCAL_TARGET;
-    // Each logged day asked for its own amount: a long-run Sunday eaten to its
-    // +300 is on plan, not an over-fuelled day. So compare against the mean of
-    // the logged days' own targets.
-    const kcalTarget = logged.reduce((a, d) => a + kcalOnDow(baseKcal, fuel, dowOfISO(d.day)), 0) / logged.length;
+    const live = {
+      kcal: Number(prof.daily_calorie_target) || DEFAULT_KCAL_TARGET,
+      protein: Number(prof.protein_target_g) || DEFAULT_PROTEIN_TARGET,
+      carb: 0,
+      fat: 0,
+    };
+    const history = historyRes.error ? null : (historyRes.data ?? []) as TargetHistoryRow[];
+    const overrides = dayRes.error ? null : (dayRes.data ?? []) as DayTargetRow[];
+    // Each logged day asked for its own amount: the goal it had then (a goal
+    // changed today does not rewrite yesterday), plus its fuel day (a long-run
+    // Sunday eaten to its +300 is on plan). Compare against the mean of the
+    // logged days' own targets.
+    const dayTargets = logged.map((d) => targetsForDay({
+      dayISO: d.day,
+      todayISO: today,
+      dow: dowOfISO(d.day),
+      live,
+      liveFuel: fuel,
+      history,
+      defaults: { kcal: DEFAULT_KCAL_TARGET, protein: DEFAULT_PROTEIN_TARGET, carb: 0, fat: 0 },
+      overrides,
+    }));
+    const kcalTarget = dayTargets.reduce((a, t) => a + t.kcal, 0) / logged.length;
+    const proteinTarget = dayTargets.reduce((a, t) => a + t.protein, 0) / logged.length;
     if (proteinTarget <= 0 || kcalTarget <= 0) return null;
 
     return { proteinRatio: avgProtein / proteinTarget, energyRatio: avgKcal / kcalTarget };

@@ -27,6 +27,7 @@ import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
 import { fuelForPrompt, withPhaseFuelDays } from "./programFuel.ts";
+import type { DayTargetRow } from "../_shared/targetHistory.ts";
 import {
   type CandidateFood,
   type MealType,
@@ -88,6 +89,7 @@ import { voyageRerank } from "./rerank.ts";
 import { runGeneratePlan, type TextCaller } from "./generatePlan.ts";
 import { countryForTimezone } from "./searchCountry.ts";
 import { selectMatchRows } from "./ourSources.ts";
+import { MEMORY_DAYS, type MemoryEntry } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 import {
   type AnonIntake,
@@ -763,6 +765,10 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // Jev match beside the web lookup and only record it on the trace) | on (serve
 // an accepted row and skip the web). Anything unrecognised is off: this can
 // only change what users are served when someone sets "on" on purpose.
+// The user's own food memory (userFoodMemory.ts, migration 0149): on unless
+// set to "off", a kill switch that needs no deploy.
+const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
+
 const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
   const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
   return v === "shadow" || v === "on" ? v : "off";
@@ -2539,6 +2545,59 @@ interface MealRow {
   entries: Array<Record<string, unknown>>;
 }
 
+/**
+ * This user's logged lines from the last MEMORY_DAYS days, for their food
+ * memory, and their zone (the card note names the day they logged it). Through
+ * the USER's client, never the service role: RLS is what makes the memory
+ * theirs alone. Any failure is an empty memory, never a failed parse.
+ */
+async function fetchMemoryEntries(
+  userClient: SupabaseClient,
+): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
+  const sinceIso = new Date(Date.now() - MEMORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const [mealsRes, profileRes] = await Promise.all([
+    userClient
+      .from("meals")
+      .select(
+        "logged_at, meal_entries(food_name, food_id, kcal, protein_g, carb_g, fat_g, fiber_g, grams_logged, quantity, serving_unit, source, logged_via, tier)",
+      )
+      .gte("logged_at", sinceIso)
+      .order("logged_at", { ascending: false })
+      .limit(300),
+    userClient.from("user_profiles").select("timezone").maybeSingle(),
+  ]).catch(() => [{ data: null, error: true }, { data: null }] as const);
+  const timeZone = typeof (profileRes as { data?: { timezone?: unknown } | null })?.data?.timezone === "string"
+    ? (profileRes as { data: { timezone: string } }).data.timezone
+    : null;
+  const rows = (mealsRes as { data?: unknown; error?: unknown });
+  if (rows.error || !Array.isArray(rows.data)) return { entries: [], timeZone };
+  const num = (v: unknown) => (typeof v === "number" ? v : v == null ? NaN : Number(v));
+  const entries: MemoryEntry[] = [];
+  for (const m of rows.data as Array<Record<string, unknown>>) {
+    const at = typeof m.logged_at === "string" ? m.logged_at : null;
+    if (!at || !Array.isArray(m.meal_entries)) continue;
+    for (const e of m.meal_entries as Array<Record<string, unknown>>) {
+      entries.push({
+        food_name: typeof e.food_name === "string" ? e.food_name : "",
+        food_id: typeof e.food_id === "string" ? e.food_id : null,
+        kcal: num(e.kcal),
+        protein_g: num(e.protein_g) || 0,
+        carb_g: num(e.carb_g) || 0,
+        fat_g: num(e.fat_g) || 0,
+        fiber_g: e.fiber_g == null ? null : num(e.fiber_g),
+        grams: e.grams_logged == null ? null : num(e.grams_logged),
+        quantity: e.quantity == null ? null : num(e.quantity),
+        serving_unit: typeof e.serving_unit === "string" ? e.serving_unit : null,
+        source: typeof e.source === "string" ? e.source : null,
+        logged_via: typeof e.logged_via === "string" ? e.logged_via : null,
+        tier: typeof e.tier === "string" ? e.tier : null,
+        logged_at: at,
+      });
+    }
+  }
+  return { entries, timeZone };
+}
+
 async function mealsWithin(userClient: SupabaseClient, days: number): Promise<MealRow[]> {
   const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await userClient
@@ -2769,6 +2828,11 @@ function makeParseDeps(
       ? { apiKey: JEV_API_KEY, timeoutMs: Math.max(JEV_TIMEOUT_MS, 5000), log: (m) => console.log(m) }
       : undefined,
     searchCountry: PRECISE_SEARCH_COUNTRY,
+    // This user's own log, last 10 days, through THEIR client: RLS keeps it
+    // theirs. Started now so it is ready by the time extract finishes.
+    userMemory: USER_FOOD_MEMORY && JEV_API_KEY
+      ? { load: () => fetchMemoryEntries(userClient) }
+      : undefined,
     preciseMatch: PRECISE_MATCH_MODE !== "off" && JEV_API_KEY
       ? {
         mode: PRECISE_MATCH_MODE,
@@ -3125,6 +3189,7 @@ async function handleParseMealRequest(args: {
           fallbackMeal: result.parsed.meal_type,
           logDate: auto.logDate ?? new Date().toISOString().slice(0, 10),
           tzOffsetMin: auto.tzOffsetMin,
+          tier: result.tier ?? null,
         });
         if ("error" in write) {
           reason = write.error;
@@ -3178,7 +3243,11 @@ async function handleParseMealRequest(args: {
     localDate
       ? userClient.from("user_profiles").select("calorie_day_boosts").maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-  ]).then(([recentFoods, targetsRes, totalsRes, fuelRes]) => {
+    // A goal set for this day only (0151, "Today only" on the goal sheet).
+    localDate
+      ? userClient.from("user_day_targets").select("day, kcal, protein_g, carb_g, fat_g").eq("day", localDate).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]).then(([recentFoods, targetsRes, totalsRes, fuelRes, dayRes]) => {
     const targetsRow = (targetsRes as { data: Record<string, unknown> | null }).data;
     const totalsRow = (totalsRes as { data: Record<string, unknown> | null }).data;
     const fuelRow = (fuelRes as { data: Record<string, unknown> | null; error: unknown }).error
@@ -3187,17 +3256,27 @@ async function handleParseMealRequest(args: {
     // The logged day's OWN calorie target: a long-run Sunday has its fuel on
     // top, so "you have 300 left" must not read as "you are at your limit".
     const fuel = normalizeFuelDays(fuelRow?.calorie_day_boosts);
-    const baseKcal = targetsRow?.daily_calorie_target == null ? null : Number(targetsRow.daily_calorie_target);
+    const dayRow = (dayRes as { data: DayTargetRow | null; error: unknown }).error
+      ? null
+      : (dayRes as { data: DayTargetRow | null }).data;
+    // The day's own goal replaces the base when one was set for it; fuel adds on top either way.
+    const baseKcal = dayRow
+      ? Number(dayRow.kcal)
+      : targetsRow?.daily_calorie_target == null ? null : Number(targetsRow.daily_calorie_target);
     const dayKcal = baseKcal != null && localDate ? kcalOnDow(baseKcal, fuel, dowOfISO(localDate)) : baseKcal;
+    const dayProtein = dayRow?.protein_g != null
+      ? Number(dayRow.protein_g)
+      : targetsRow?.protein_target_g == null ? null : Number(targetsRow.protein_target_g);
     return {
       recentFoods,
       todayTotals: totalsRow
         ? { kcal: Number(totalsRow.kcal ?? 0), protein_g: Number(totalsRow.protein_g ?? 0) }
         : null,
-      targets: targetsRow
+      // A one-day goal counts even for a profile with no lasting targets.
+      targets: targetsRow || dayRow
         ? {
           daily_calorie_target: dayKcal,
-          protein_target_g: targetsRow.protein_target_g === null ? null : Number(targetsRow.protein_target_g),
+          protein_target_g: dayProtein,
         }
         : null,
     };
@@ -3364,6 +3443,8 @@ async function handleParseMealRequest(args: {
             }
             void recordParseTrace(admin, {
               user_id: userId,
+              // The tier the parse ran in (0149): stamps the lines the client logs.
+              tier: result.tier ?? null,
               input_text: text.slice(0, USER_TEXT_MAX_CHARS),
               meal_hint: mealHint,
               model: PARSE_MEAL_MODEL,
@@ -3605,6 +3686,8 @@ async function handleParseMealRequest(args: {
     ];
     void recordParseTrace(admin, {
       user_id: userId,
+      // The tier the parse ran in (0149): stamps the lines the client logs.
+      tier: result.tier ?? null,
       input_text: text.slice(0, USER_TEXT_MAX_CHARS),
       meal_hint: mealHint,
       model: PARSE_MEAL_MODEL,
@@ -4140,6 +4223,26 @@ Deno.serve(async (req) => {
       trace.has_user_context = true;
     }
     const ctx = userContext as Record<string, unknown> | null;
+    // A goal the user set for today only (0151). user_context.nutrition.targets
+    // is the lasting goal, so Drona needs to know today is different. Only when
+    // 4c knows the user's date: a UTC guess would name the wrong day.
+    const todayDate = (ctx?.today as { date?: string } | undefined)?.date;
+    if (ctx && todayDate) {
+      const { data: one, error: oneError } = await userClient
+        .from("user_day_targets")
+        .select("kcal, protein_g, carb_g, fat_g")
+        .eq("day", todayDate)
+        .maybeSingle();
+      if (oneError) console.log("[ai-coach] day-target error:", oneError.message);
+      else if (one) {
+        ctx.today_goal_override = {
+          calories: Number(one.kcal),
+          ...(one.protein_g != null ? { protein_g: Number(one.protein_g) } : {}),
+          ...(one.carb_g != null ? { carb_g: Number(one.carb_g) } : {}),
+          ...(one.fat_g != null ? { fat_g: Number(one.fat_g) } : {}),
+        };
+      }
+    }
     if (ctx && ctx.program && typeof ctx.program === "object") {
       const { data: active } = await userClient
         .from("coach_programs")

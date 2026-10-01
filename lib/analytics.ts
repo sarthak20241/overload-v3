@@ -183,6 +183,7 @@ export type AnalyticsEvent =
   | 'nutrition_targets_edited'
   | 'fuel_days_saved'
   | 'fuel_days_opened'
+  | 'program_calories_from_goal_sheet'
   | 'nutrition_day_changed'
   // ── Coach Drona ──────────────────────────────────────────────────────────
   | 'coach_opened'

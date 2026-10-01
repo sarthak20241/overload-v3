@@ -45,6 +45,16 @@ import {
 } from "./preciseCache.ts";
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import { matchOurSources } from "./ourSources.ts";
+import { fillStated, readStated, type StatedPer100, statedNote, statedPer100, type StatedRaw } from "./statedNumbers.ts";
+import {
+  buildMemory,
+  matchMemory,
+  type MemoryEntry,
+  type MemoryFood,
+  type MemoryMatch,
+  memoryKey,
+  memoryNote,
+} from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
 
 /** How long shadow mode may keep the user waiting for the our-sources match
@@ -148,6 +158,10 @@ export interface ParsedItem {
    *  always present. A line that already carries one (a corrected previous
    *  line) keeps it unless the new text names a meal for that line. */
   meal_type?: MealType;
+  /** The tier whose numbers this line carries, when that is not the tier the
+   *  parse ran in: a line answered from the user's memory keeps the tier of
+   *  the entry it came from. Read by migration 0149's trigger off the trace. */
+  numbers_tier?: ParseTier;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -895,6 +909,11 @@ export type ParseProgress =
   | { kind: "fill"; items: ParsedItem[]; meal_type: MealType; drona_line: string };
 
 export interface ParseMealDeps {
+  /** This user's logged lines from the last 10 days (userFoodMemory.ts), read
+   *  through their own client so RLS keeps them theirs. A food Jev says IS a
+   *  line answers it before any other source, in every tier, on a first-shot
+   *  log only. Absent: no memory, the tiers run as before. */
+  userMemory?: { load: () => Promise<{ entries: MemoryEntry[]; timeZone: string | null }> };
   anthropicApiKey: string;
   model: string;
   maxTokens: number;
@@ -1151,7 +1170,8 @@ const EXTRACT_TOOL = {
   name: "extract_meal",
   description:
     "Report every distinct food or drink in the text as a separate item. Extraction only: " +
-    "no nutrition numbers, no serving-size guessing beyond what the text says.",
+    "no nutrition numbers of your own (numbers the USER wrote go in stated), no serving-size " +
+    "guessing beyond what the text says.",
   input_schema: {
     type: "object",
     properties: {
@@ -1279,6 +1299,28 @@ const EXTRACT_TOOL = {
               description:
                 'Preparation state the text implies: "roasted", "fried", "cooked", "raw", ' +
                 "etc. null when unstated.",
+            },
+            stated: {
+              type: ["object", "null"],
+              description:
+                "ONLY when the user's own text gives nutrition numbers for THIS food (a label " +
+                'they read out, or their own tracking: "per 100 g: 130 kcal, 22.5 g protein"). ' +
+                "Copy them exactly as written; never estimate, recall or complete them - a " +
+                "number they did not write is null. Omit or null when they wrote none.",
+              properties: {
+                basis: {
+                  type: "string",
+                  enum: ["per_100g", "per_100ml", "per_serving", "total"],
+                  description: "What the numbers are for: per 100 g, per 100 ml, per one serving " +
+                    "(serving_g grams), or the total for this line.",
+                },
+                serving_g: { type: ["number", "null"], description: "Grams in that serving, when the text says it." },
+                kcal: { type: ["number", "null"] },
+                protein_g: { type: ["number", "null"] },
+                carb_g: { type: ["number", "null"] },
+                fat_g: { type: ["number", "null"] },
+                fiber_g: { type: ["number", "null"] },
+              },
             },
             meal: {
               type: ["string", "null"],
@@ -2313,7 +2355,7 @@ const EXTRACT_SYSTEM_HEAD = `You segment free-text food logs for OVERLOAD, a lif
  *  buy output tokens for numbers the second call overwrites anyway. In FAST
  *  there IS no second call, so this sentence must not be sent: it told the
  *  model not to do the exact thing FAST_EXTRACT_TOOL makes required. */
-const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition.`;
+const EXTRACT_NO_NUTRITION = ` Do NOT resolve nutrition. The one exception is numbers the user wrote themselves for a food ("per 100 g: 130 kcal, 22 g protein"): copy them into that item's stated field exactly as written, never estimated or completed.`;
 
 /** Smart only, since fast carries its own standalone prompt below. quantity
  *  and unit mirror what the user SAID; inventing an amount nobody typed is
@@ -2360,6 +2402,8 @@ Keep names faithful: correct spelling ("panner" is "paneer"), and keep words tha
 One item per food the user LISTED. A composite dish is one item ("rajma chawal"), but an add-on named alongside a dish is its own line, never folded in - the user edits and deletes lines one at a time. Never drop an item, never merge two named foods into one.
 
 Indian context: plain "tea" or "chai" is milk tea; plain "coffee" is milk coffee.
+
+When the user writes nutrition numbers for a food themselves (a label they read out, or their own tracking), copy them into that item's stated field exactly as written, with what they are per, and base the est_ numbers on them. Never fill in a number they did not write. Leave stated out otherwise.
 
 If there is nothing to log (a question, chatter, a workout), decline.
 
@@ -2603,6 +2647,9 @@ export interface ExtractedItem {
   /** The exact name of the user's saved meal this item IS, when the message
    *  referred to one (see savedMeals.ts). First-shot only. */
   savedMeal?: string | null;
+  /** Nutrition numbers the USER wrote for this food, as written
+   *  (statedNumbers.ts). They win over every source. */
+  stated?: StatedRaw | null;
 }
 
 export interface ResolvedItem extends ExtractedItem {
@@ -4022,16 +4069,196 @@ export function retargetMismatchedIds(
  * along with the strip also inherits its one real guarantee - that every return
  * path calls it - instead of adding a second step each path could forget.
  */
+/** What a line answered from the user's memory carries onto the card. */
+export interface MemoryStamp {
+  note: string;
+  level: ParseTier;
+  source: ParsedItem["source"];
+}
+
+const MEMORY_SOURCES = new Set<ParsedItem["source"]>(["catalog", "off", "fatsecret", "web", "estimate", "manual"]);
+
+/** The ephemeral candidate id for a remembered food: unique per food, so the
+ *  final line maps back to it exactly, and stripped before the client sees it. */
+export function memoryFoodId(food: MemoryFood): string {
+  return `${EPHEMERAL_ID_PREFIX}mem_${food.key}`;
+}
+
+export function memoryStamp(food: MemoryFood, timeZone?: string | null): MemoryStamp {
+  const src = (food.source ?? "") as ParsedItem["source"];
+  return {
+    note: memoryNote(food, timeZone),
+    level: food.level,
+    source: MEMORY_SOURCES.has(src) ? src : "catalog",
+  };
+}
+
+/** A remembered food as a catalog candidate, for Thorough and Precise. */
+export function memoryCandidate(food: MemoryFood): CandidateFood {
+  return {
+    food_id: memoryFoodId(food),
+    name: food.name,
+    brand: null,
+    base_unit: "g",
+    kcal: food.per100.kcal,
+    protein_g: food.per100.protein_g,
+    carb_g: food.per100.carb_g,
+    fat_g: food.per100.fat_g,
+    fiber_g: food.per100.fiber_g,
+    servings: food.serving ? [{ label: food.serving.label, grams: food.serving.grams, is_default: true }] : [],
+    source: "catalog",
+  };
+}
+
+/** The words the memory match compares: the preparation joined back onto the
+ *  name, unless the name already says it. */
+export function memoryLineName(it: { name: string; prep?: string | null }): string {
+  const prep = (it.prep ?? "").trim();
+  if (!prep || memoryKey(it.name).includes(memoryKey(prep))) return it.name;
+  return `${prep} ${it.name}`;
+}
+
+/** The user's own numbers for a line, per 100 g, or null when they gave none
+ *  or they cannot be put on a per-100 basis without guessing. */
+export function statedFor(it: ExtractedItem): StatedPer100 | null {
+  if (!it.stated) return null;
+  const unit = it.unit.trim().toLowerCase();
+  // A line total converts only against a weight the user TYPED. The model's
+  // own gram guess would make "Your numbers: 200 kcal for 60 g" half ours.
+  const lineGrams = MASS_UNITS.has(unit) && it.quantity > 0 ? it.quantity : null;
+  return statedPer100(it.stated, lineGrams, PLAUSIBLE.maxKcalPer100);
+}
+
+/** What a line answered by the user's own numbers carries onto the card. They
+ *  are the user's, so the saved line is 'manual' and serves every tier. */
+export function statedStamp(s: StatedPer100, filled: "looked up" | "estimated"): MemoryStamp {
+  return { note: statedNote(s, filled), level: "precise", source: "manual" };
+}
+
+/** A Thorough/Precise candidate carrying the user's numbers: all of them for a
+ *  full panel, or theirs over `base` for the fields they gave. */
+export function statedCandidate(s: StatedPer100, it: ExtractedItem, base?: CandidateFood): CandidateFood {
+  const per = base ? fillStated(s, base) : fillStated(s, { protein_g: 0, carb_g: 0, fat_g: 0, fiber_g: null });
+  const unit = it.unit.trim().toLowerCase();
+  const printed = s.serving_g && !MASS_UNITS.has(unit)
+    ? [{ label: it.unit, grams: s.serving_g, is_default: true }]
+    : [];
+  return {
+    food_id: `${EPHEMERAL_ID_PREFIX}user_${memoryKey(foodLabel(it))}`,
+    name: foodLabel(it),
+    brand: it.brand ?? null,
+    base_unit: base?.base_unit ?? "g",
+    kcal: per.kcal,
+    protein_g: per.protein_g,
+    carb_g: per.carb_g,
+    fat_g: per.fat_g,
+    fiber_g: per.fiber_g,
+    servings: [...printed, ...(base?.servings ?? []).map((sv) => ({ ...sv, is_default: printed.length ? false : sv.is_default }))],
+    source: "catalog",
+  };
+}
+
+/** A Quick line from the user's own numbers, or null when the amount has no
+ *  weight to scale them by. Missing fields come from Quick's own estimate. */
+export function statedQuickItem(s: StatedPer100, it: ExtractedItem): ParsedItem | null {
+  const qty = it.quantity > 0 ? it.quantity : 1;
+  const unit = it.unit.trim().toLowerCase();
+  let grams: number | null = null;
+  if (MASS_UNITS.has(unit)) grams = qty;
+  else if (s.serving_g) grams = qty * s.serving_g;
+  else if (it.est && it.est.total_g > 0) grams = it.est.total_g;
+  if (!grams || grams > 5000) return null;
+  let per: { kcal: number; protein_g: number; carb_g: number; fat_g: number; fiber_g: number | null };
+  if (s.complete) per = fillStated(s, { protein_g: 0, carb_g: 0, fat_g: 0, fiber_g: null });
+  else if (it.est && it.est.total_g > 0) {
+    const k = 100 / it.est.total_g;
+    per = fillStated(s, { protein_g: it.est.protein_g * k, carb_g: it.est.carb_g * k, fat_g: it.est.fat_g * k, fiber_g: null });
+  } else return null;
+  const f = grams / 100;
+  const stamp = statedStamp(s, "estimated");
+  return {
+    food_id: null,
+    food_name: foodLabel(it),
+    quantity: qty,
+    serving_label: it.unit,
+    grams: round1(grams),
+    kcal: round1(per.kcal * f),
+    protein_g: round1(per.protein_g * f),
+    carb_g: round1(per.carb_g * f),
+    fat_g: round1(per.fat_g * f),
+    fiber_g: per.fiber_g == null ? null : round1(per.fiber_g * f),
+    source: stamp.source,
+    assumption: stamp.note,
+    confidence: "high",
+    // The user's own numbers serve every tier, however they were logged.
+    numbers_tier: stamp.level,
+  };
+}
+
+/** A unit, singular: "pieces" and "piece" are one unit. */
+const unitKey = (u: string) => {
+  const k = memoryKey(u);
+  if (k.endsWith("ies")) return `${k.slice(0, -3)}y`;
+  if (k.endsWith("s") && !k.endsWith("ss")) return k.slice(0, -1);
+  return k;
+};
+
+/**
+ * A Quick line answered from the user's memory, or null when the amount cannot
+ * be turned into grams without guessing past the model's own weight. A typed
+ * weight wins; a unit the user logged it in before ("2 pieces" when they logged
+ * "1 piece" = 50 g) converts exactly; otherwise the model's gram estimate for
+ * THIS line is used, as Quick already does for its display weight.
+ */
+export function memoryQuickItem(
+  food: MemoryFood,
+  line: { name: string; brand: string | null; quantity: number; unit: string; est?: { total_g: number } | null },
+  timeZone?: string | null,
+): ParsedItem | null {
+  const qty = line.quantity > 0 ? line.quantity : 1;
+  const unit = line.unit.trim().toLowerCase();
+  let grams: number | null = null;
+  if (MASS_UNITS.has(unit)) grams = qty;
+  else if (food.serving && unitKey(food.serving.label) === unitKey(unit)) grams = qty * food.serving.grams;
+  else if (line.est && line.est.total_g > 0) grams = line.est.total_g;
+  if (!grams || !(grams > 0) || grams > 5000) return null;
+  const f = grams / 100;
+  const stamp = memoryStamp(food, timeZone);
+  return {
+    food_id: null,
+    food_name: food.name,
+    quantity: qty,
+    serving_label: line.unit,
+    grams: round1(grams),
+    kcal: round1(food.per100.kcal * f),
+    protein_g: round1(food.per100.protein_g * f),
+    carb_g: round1(food.per100.carb_g * f),
+    fat_g: round1(food.per100.fat_g * f),
+    fiber_g: food.per100.fiber_g == null ? null : round1(food.per100.fiber_g * f),
+    source: stamp.source,
+    assumption: stamp.note,
+    confidence: "high",
+    numbers_tier: stamp.level,
+  };
+}
+
 export function stripEphemeralIds(
   items: ParsedItem[],
   /** food_id -> did the evidence behind that candidate clear the bar. Only
    *  researched candidates appear (see verifiedForItems); a line matched to
    *  anything else is left unstamped rather than stamped false. */
   verifiedByFood?: Map<string, boolean>,
+  /** food_id -> the user's remembered food behind that candidate. Stamped here
+   *  for the same reason as `verified`: the id is about to be erased. */
+  memoryByFood?: Map<string, MemoryStamp>,
 ): ParsedItem[] {
   return items.map((it) => {
     const verdict = it.food_id ? verifiedByFood?.get(it.food_id) : undefined;
-    const marked = verdict === undefined ? it : { ...it, verified: verdict };
+    const mem = it.food_id ? memoryByFood?.get(it.food_id) : undefined;
+    const base = mem
+      ? { ...it, assumption: mem.note, numbers_tier: mem.level, source: mem.source, confidence: "high" as const }
+      : it;
+    const marked = verdict === undefined ? base : { ...base, verified: verdict };
     return isEphemeralId(marked.food_id) ? { ...marked, food_id: null } : marked;
   });
 }
@@ -4901,6 +5128,21 @@ async function runParseMealCore(
   const tier = resolveParseTier(input.mode, hasPrevious);
   const fastMode = tier === "fast";
   const superMode = tier === "precise";
+  // The user's memory is read only for a first-shot log (see memoryP below),
+  // and started now so the read overlaps the extract call.
+  const memoryLoadP = (!hasPrevious && deps.userMemory && deps.jev)
+    ? deps.userMemory.load().catch(() => ({ entries: [] as MemoryEntry[], timeZone: null }))
+    : null;
+  // Every parse says whether the memory ran, so "it had nothing to offer" and
+  // "it never ran" cannot look the same in the traces.
+  if (deps.userMemory && !memoryLoadP) {
+    steps.push({
+      iter: 0,
+      tool: "user_memory",
+      input: { tier },
+      result: { skipped: hasPrevious ? "follow_up" : "no_jev" },
+    });
+  }
   // The prep-state guard looks for words like "roasted" in what the user wrote.
   // On a follow-up the current text is "yes" or "make it 3", so the describing
   // words live in the ORIGINAL message: match against both.
@@ -5060,6 +5302,7 @@ async function runParseMealCore(
           ? o.meal
           : null,
         est: chained ? chained.est : rawEst,
+        stated: readStated(o.stated),
         savedMeal: typeof o.saved_meal === "string" && o.saved_meal.trim() ? o.saved_meal.trim().slice(0, 120) : null,
       }];
     });
@@ -5425,6 +5668,52 @@ async function runParseMealCore(
     });
   }
   const tResolve0 = Date.now();
+  // ── The user's own memory, before every other source ─────────────────────
+  // Foods THIS user logged in the last 10 days (userFoodMemory.ts). A food Jev
+  // says IS the line answers it in every tier, so the same person gets the same
+  // number every time. First-shot logs only: a follow-up turn is where "double
+  // check" and "that's wrong" live, and repeating ourselves there is exactly
+  // what the user asked us not to do. Started now, awaited where each tier
+  // needs it, so Quick still paints its rows first.
+  let memTimeZone: string | null = null;
+  const memoryP: Promise<Array<MemoryMatch | null>> = memoryLoadP && deps.jev
+    ? (async () => {
+      const loaded = await memoryLoadP;
+      memTimeZone = loaded.timeZone;
+      const foods = buildMemory(loaded.entries, tier);
+      if (foods.length === 0) {
+        steps.push({
+          iter: 1,
+          tool: "user_memory",
+          input: { tier },
+          result: {
+            remembered: 0,
+            logged_lines: loaded.entries.length,
+            decision: { match: null, reason: "no_usable_foods" },
+          },
+        });
+        return toResolve.map(() => null);
+      }
+      const matches = await Promise.all(
+        // prep rides along ("grilled" + "chicken breast"): extract may split a
+        // preparation out of the name, and without it Jev compared plain
+        // "chicken breast" to a grilled row and rightly refused (sim test,
+        // 2026-09-27). Same join as codeFillItems' food_name.
+        toResolve.map((it) =>
+          // The user's own numbers win over their memory too: no call for a
+          // line that carries them.
+          // Numbers we can actually use, not merely numbers written: a total
+          // with no typed weight falls back to the memory like any line.
+          statedFor(it)
+            ? Promise.resolve(null)
+            : matchMemory(deps.jev!, foods, { name: memoryLineName(it), brand: it.brand ?? null })
+        ),
+      );
+      for (const m of matches) if (m) steps.push({ iter: 1, tool: "user_memory", input: { tier }, result: m.trace });
+      return matches;
+    })().catch(() => toResolve.map(() => null))
+    : Promise.resolve(toResolve.map(() => null));
+  const memoryByFood = new Map<string, MemoryStamp>();
   // Only foods with a repeat count are staples; the recency fallback list has
   // no `times` and must not be treated as habit.
   const stapleNames = new Set(
@@ -5468,14 +5757,40 @@ async function runParseMealCore(
   // food; what the catalog added was a way to be precisely wrong.
   //
   // So Quick makes NO lookup: no catalog search, no OFF, no FatSecret, no
-  // precise-cache read, and no row re-read in verifyItems. The rows were
+  // precise-cache read, and no row re-read in verifyItems. The one exception
+  // is the user's OWN memory (owner decision 2026-09-27): foods they logged
+  // in the last 10 days, one Jev call, and only when they have any. The rows were
   // painted above from these same estimates, so the fill below cannot move a
   // number the user has already seen. fastNoCatalog.test.ts counts every
   // lookup to keep it that way. Thorough and Precise are untouched.
   if (fastMode) {
+    const memory = await memoryP;
     T.resolve_ms = 0;
     const tPost0 = Date.now();
-    const fastItems: ParsedItem[] = toResolve.map((r) => {
+    const fastItems: ParsedItem[] = toResolve.map((r, idx) => {
+      // The user's own numbers first: over the memory, over the estimate.
+      const statedLine = (() => {
+        const st = statedFor(r);
+        return st ? statedQuickItem(st, r) : null;
+      })();
+      if (statedLine) {
+        toolCalls.push("user_stated");
+        steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "stated" } });
+        return statedLine;
+      }
+      const remembered = memory[idx]?.food
+        ? memoryQuickItem(memory[idx]!.food!, { ...r, est: r.est ?? null }, memTimeZone)
+        : null;
+      if (remembered) {
+        toolCalls.push("user_memory_match");
+        steps.push({ iter: 2, tool: "fast_fill", input: { item: r.name, unit: r.unit }, result: { used: "memory" } });
+        // The same guard an estimate gets: remembered numbers at a mistyped
+        // amount ("2000g" peanut butter) still log, but visibly unsure.
+        const odd = implausibleLine(remembered);
+        if (!odd) return remembered;
+        deps.log?.(`[parse_meal] remembered line implausible for "${r.name}": ${odd}`);
+        return { ...remembered, confidence: "low" as const };
+      }
       // Per-item verdict in the trace. The harness prints fast_fill lines, and
       // "fallback" is the one worth seeing: a line with no usable estimate.
       steps.push({
@@ -5565,9 +5880,52 @@ async function runParseMealCore(
     };
   }
 
+  const memory = await memoryP;
   const resolved: ResolvedItem[] = await Promise.all(
-    toResolve.map((item) =>
-      resolveOneItem(
+    toResolve.map(async (item, idx) => {
+      // The user's own numbers first. A full panel answers with no lookup; a
+      // partial one keeps theirs and lets the tier fill only what is missing.
+      const st = statedFor(item);
+      if (st) {
+        toolCalls.push("user_stated");
+        steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { per100_kcal: st.kcal, complete: st.complete } });
+        if (st.complete) {
+          const cand = statedCandidate(st, item);
+          memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
+          return { ...item, candidates: [cand] } as ResolvedItem;
+        }
+        const looked = await resolveOneItem(
+          deps, item, steps, toolCalls, stapleNames,
+          superMode
+            ? (it: ExtractedItem) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st2) => steps.push(st2))
+            : undefined,
+        );
+        // Nothing to fill the missing fields from: the lookup's own answer
+        // stands rather than inventing zeros for what the user did not give.
+        if (!looked.candidates[0]) return looked;
+        // The row that fills the missing fields must be the food she named: a
+        // fried row filling "raw" chicken's fat, saved as HER numbers, would
+        // then serve every tier from her memory. A clash or a grade the row
+        // does not honour leaves the lookup's own answer, unlabelled.
+        const said = [item.prep, foodLabel(item)].filter(Boolean).join(" ");
+        const rowName = looked.candidates[0].name;
+        if (variantClash(said, rowName) || unhonouredGrade(said, rowName)) {
+          steps.push({ iter: 1, tool: "user_stated", input: { item: item.name }, result: { merged: false, row: rowName.slice(0, 60) } });
+          return looked;
+        }
+        const cand = statedCandidate(st, item, looked.candidates[0]);
+        memoryByFood.set(cand.food_id as string, statedStamp(st, "looked up"));
+        return { ...item, candidates: [cand] } as ResolvedItem;
+      }
+      const remembered = memory[idx]?.food;
+      if (remembered) {
+        toolCalls.push("user_memory_match");
+        const cand = memoryCandidate(remembered);
+        memoryByFood.set(cand.food_id as string, memoryStamp(remembered, memTimeZone));
+        return Promise.resolve({ ...item, candidates: [cand] } as ResolvedItem);
+      }
+      return resolveOneItem(
         deps,
         item,
         steps,
@@ -5581,8 +5939,8 @@ async function runParseMealCore(
           ? (it: ExtractedItem) =>
             superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st))
           : undefined,
-      )
-    ),
+      );
+    }),
   );
   T.resolve_ms = Date.now() - tResolve0;
   const tDecide0 = Date.now();
@@ -5629,6 +5987,7 @@ async function runParseMealCore(
           prepForItems(resolved),
         ),
         verifiedForItems(resolved),
+        memoryByFood,
       ),
       extItems,
       { explicit: mealFromText, fallback: input.mealHint ?? mealForHour(input.localHour) },
@@ -5815,7 +6174,7 @@ async function runParseMealCore(
   // See stripEphemeralIds: every path that returns items to the client must
   // strip them, not just this one. The verification map goes in with them,
   // because the id it keys on is what this call is about to erase.
-  items = stripEphemeralIds(items, verifiedForItems(resolved));
+  items = stripEphemeralIds(items, verifiedForItems(resolved), memoryByFood);
   if (items.length === 0) {
     return declineResult(
       "I could not pull any food out of that. Give me the foods and amounts and I will log them.",
