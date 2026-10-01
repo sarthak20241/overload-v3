@@ -20,7 +20,7 @@ def git_env(push=False):
 
 def run(*args, env=None, capture=True):
     if args[0] == 'git':
-        pushing = 'push' in args[1:]
+        pushing = args[1] == 'push'
         env = git_env(push=pushing)
         args = ('git', '-c', 'core.hooksPath=/dev/null', *args[1:])
         if pushing:
