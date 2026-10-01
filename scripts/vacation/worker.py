@@ -11,7 +11,22 @@ END = dt.datetime(2026, 10, 9, 18, 30, tzinfo=dt.timezone.utc)
 REPO = os.environ.get('GITHUB_REPOSITORY', 'sarthak20241/overload-v3')
 
 
+def git_env(push=False):
+    keys = ('PATH', 'HOME', 'LANG') + (('GH_TOKEN',) if push else ())
+    env = {key: os.environ[key] for key in keys if key in os.environ}
+    env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1')
+    return env
+
+
 def run(*args, env=None, capture=True):
+    if args[0] == 'git':
+        pushing = 'push' in args[1:]
+        env = git_env(push=pushing)
+        args = ('git', '-c', 'core.hooksPath=/dev/null', *args[1:])
+        if pushing:
+            # Clear repository-authored helpers and use only the trusted gh helper.
+            args = (*args[:3], '-c', 'credential.helper=', '-c',
+                    'credential.helper=!gh auth git-credential', *args[3:])
     return subprocess.run(args, check=True, text=True, env=env,
                           stdout=subprocess.PIPE if capture else None,
                           stderr=subprocess.STDOUT if capture else None).stdout
@@ -120,7 +135,7 @@ def fix():
         base = run('git', 'rev-parse', 'HEAD').strip()
         if prs:
             prior = prs[0]
-            if prior['author']['login'] != 'github-actions[bot]' or prior['isCrossRepository'] or prior['baseRefName'] != 'main':
+            if prior['author']['login'] not in ('github-actions[bot]', 'github-actions') or prior['isCrossRepository'] or prior['baseRefName'] != 'main':
                 raise RuntimeError('Existing branch PR is not a vacation-worker PR; needs maintainer attention.')
             run('git', 'fetch', 'origin', branch)
             run('git', 'switch', '-c', branch, f'origin/{branch}')
@@ -164,7 +179,8 @@ Use the repository's installed tools. Return a short summary of the change and v
                 files = changes(base)
                 validate(files)
             run('git', 'add', '--', *files)
-            if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode != 0:
+            staged = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', 'diff', '--cached', '--quiet'], env=git_env())
+            if staged.returncode != 0:
                 run('git', '-c', 'user.name=Overload vacation worker', '-c',
                     'user.email=41898282+github-actions[bot]@users.noreply.github.com',
                     'commit', '-m', f'fix: address issue #{issue}')
@@ -186,7 +202,7 @@ Return BLOCKED with concrete findings otherwise. You are a reviewer, not the imp
         if run('git', 'status', '--porcelain').strip():
             raise RuntimeError('Working tree changed after the reviewed commit.')
         run('gh', 'auth', 'setup-git')
-        run('git', 'push', 'origin', branch, capture=False)
+        run('git', 'push', f'https://github.com/{REPO}.git', branch, capture=False)
         body = (f'{result["summary"]}\n\nCloses #{issue}\n\n'
                 f'Vacation worker tests passed. Independent review: CLEAN on `{sha}`.\n\n{review["summary"]}')
         if prs:

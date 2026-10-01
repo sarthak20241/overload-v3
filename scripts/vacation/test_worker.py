@@ -1,12 +1,38 @@
 import datetime as dt
 import json
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 import worker
 
 
 class Gates(unittest.TestCase):
+    def test_git_credentials_are_removed_except_push_auth(self):
+        with patch.dict(os.environ, {'PATH': '/bin', 'HOME': '/tmp', 'GH_TOKEN': 'github-dummy',
+                                    'CLAUDE_CODE_OAUTH_TOKEN': 'ai-dummy',
+                                    'SUPABASE_DB_PASSWORD': 'db-dummy'}, clear=True):
+            env = worker.git_env()
+            self.assertNotIn('GH_TOKEN', env)
+            self.assertNotIn('CLAUDE_CODE_OAUTH_TOKEN', env)
+            self.assertNotIn('SUPABASE_DB_PASSWORD', env)
+            env = worker.git_env(push=True)
+            self.assertEqual(env['GH_TOKEN'], 'github-dummy')
+            self.assertNotIn('CLAUDE_CODE_OAUTH_TOKEN', env)
+            self.assertNotIn('SUPABASE_DB_PASSWORD', env)
+
+    def test_git_commit_does_not_execute_repository_hook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker.run('git', '-C', directory, 'init')
+            hook = Path(directory) / '.git/hooks/pre-commit'
+            marker = Path(directory) / 'hook-ran'
+            hook.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+            hook.chmod(0o755)
+            worker.run('git', '-C', directory, '-c', 'user.name=Test', '-c',
+                       'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'test')
+            self.assertFalse(marker.exists())
+
     def test_infrastructure_is_protected(self):
         for path in ('.github/workflows/x.yml', 'scripts/vacation/worker.py',
                      'package-lock.json', 'supabase/config.toml', 'admin/AGENTS.md'):
