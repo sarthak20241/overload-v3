@@ -2561,7 +2561,7 @@ function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
     grams: 100, quantity: c.serving_grams ? 100 / Number(c.serving_grams) : 100,
     serving_unit: typeof c.serving_label === "string" ? c.serving_label : "g",
     source: typeof c.source === "string" ? c.source : null, logged_via: "ai",
-    tier: String(c.tier), logged_at: String(c.last_logged_at), persistent: true,
+    tier: String(c.tier), logged_at: String(c.last_logged_at), persistent: true, confirmed_at: String(c.confirmed_at),
     confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
   };
 }

@@ -52,6 +52,7 @@ export interface MemoryEntry {
   logged_at: string;
   /** Durable, saved diary evidence loaded from this user’s private cache. */
   persistent?: boolean;
+  confirmed_at?: string;
   alias_lookup?: boolean;
   confirmed_aliases?: string[];
 }
@@ -119,7 +120,7 @@ export function buildMemory(
     if (!got) byKey.set(key, { newest: e, times: 1 });
     else {
       got.times++;
-      if (Date.parse(e.logged_at) > Date.parse(got.newest.logged_at)) got.newest = e;
+      if (Date.parse(e.confirmed_at ?? e.logged_at) > Date.parse(got.newest.confirmed_at ?? got.newest.logged_at)) got.newest = e;
     }
   }
   const foods: MemoryFood[] = [...byKey.entries()].map(([key, { newest: e, times }]) => {

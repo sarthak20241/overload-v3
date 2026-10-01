@@ -498,3 +498,11 @@ Deno.test("an ambiguous confirmed alias stops a parse before catalog and web loo
   assert(r.declined?.message.includes("more than one saved match"));
   assertEquals(lookups, []);
 });
+
+Deno.test("a later confirmation on a past diary day keeps its alias and corrected nutrition", () => {
+  const cached = entry({ kcal: 250, persistent: true, logged_at: daysAgo(5), confirmed_at: daysAgo(0), confirmed_aliases: ["my chicken"] });
+  const recent = entry({ kcal: 226, logged_at: daysAgo(1) });
+  const remembered = buildMemory([cached, recent], "precise", NOW)[0];
+  assertEquals(remembered.per100.kcal, 166.7);
+  assertEquals(remembered.confirmed_aliases, ["my chicken"]);
+});
