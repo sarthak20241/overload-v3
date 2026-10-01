@@ -85,6 +85,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
   const [size, setSize] = useState('1');
   const [unit, setUnit] = useState('');
   const committedUnit = useRef('');
+  const derivedFromCatalog = useRef(false);
   const [qty, setQty] = useState('1');
   const [grams, setGrams] = useState(0);
   const base = useRef<Base>({ total: 1, grams: 0, kcal: 0, protein: 0, carb: 0, fat: 0 });
@@ -133,6 +134,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     setCarb(String(r1(item.carb_g)));
     setFat(String(r1(item.fat_g)));
     setMacrosTouched(false);
+    derivedFromCatalog.current = false;
     setSection(item.meal_type);
     setServings([]);
     setPer100(null);
@@ -160,6 +162,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
 
   function deriveMacros(g: number, basis: Per100Macros | null) {
     if (!basis) return;
+    derivedFromCatalog.current = true;
     const f = g / 100;
     setKcal(String(r0(basis.kcal * f)));
     setProtein(String(r1(basis.protein_g * f)));
@@ -225,6 +228,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
       if (preserveSnapshot) {
         next = scaleServingNutrition(b, ratio);
       } else if (per100) {
+        derivedFromCatalog.current = true;
         next = scaleServingNutrition({ kcal: per100.kcal, protein: per100.protein_g,
           carb: per100.carb_g, fat: per100.fat_g }, g / 100);
       }
@@ -277,7 +281,7 @@ export function ParsedItemEditor({ item, onCancel, onSave, busy = false, error, 
     const b = base.current;
     const ratio = b.grams > 0 && grams > 0 ? grams / b.grams
       : (b.total > 0 ? finalSize * qtyNum / b.total : 1);
-    const scaled = !preserveSnapshot && per100 && grams > 0
+    const scaled = derivedFromCatalog.current && !preserveSnapshot && per100 && grams > 0
       ? scaleServingNutrition({ kcal: per100.kcal, protein: per100.protein_g,
         carb: per100.carb_g, fat: per100.fat_g }, grams / 100)
       : scaleServingNutrition(b, ratio);
