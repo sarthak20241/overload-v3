@@ -1,0 +1,70 @@
+name: Vacation nightly issues
+on:
+  schedule:
+    - cron: '30 17 1-9 10 *'
+  workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: Check cloud authentication without changing issues or releasing
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  issues: read
+concurrency:
+  group: vacation-nightly
+  cancel-in-progress: false
+jobs:
+  queue:
+    if: vars.VACATION_ISSUES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      issues: ${{ steps.queue.outputs.issues }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select the oldest eligible report
+        id: queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFLIGHT: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight_only }}
+        run: python3 scripts/vacation/worker.py queue
+  preflight:
+    if: github.event_name == 'workflow_dispatch' && inputs.preflight_only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code@2.1.286 eas-cli@24.8.0
+      - name: Check AI authentication
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          claude -p 'Reply with OK. Do not use tools.' --tools '' --max-turns 1 --output-format json > /tmp/claude.json
+          jq -r '.result // "No authentication result"' /tmp/claude.json
+          jq -e '.is_error == false and .subtype == "success"' /tmp/claude.json
+      - name: Check Expo authentication
+        if: always()
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          test -n "$EXPO_TOKEN" || { echo '::error::Add EXPO_TOKEN to repository secrets'; exit 1; }
+          eas whoami
+  work:
+    needs: queue
+    if: needs.queue.outputs.issues != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        issue: ${{ fromJSON(needs.queue.outputs.issues) }}
+    uses: ./.github/workflows/vacation-worker.yml
+    with:
+      issue: ${{ matrix.issue }}
+    secrets: inherit
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
