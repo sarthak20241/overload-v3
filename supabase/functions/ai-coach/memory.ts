@@ -4,7 +4,7 @@
 // folded into user_context so every mode (chat, refine, discuss, program, the
 // plan fan-out) sees them for free:
 //
-//   coach_memory       facts the coach saved with remember_fact (migration 0127)
+//   coach_memory       facts the coach saved with remember_fact (migration 20260919023437)
 //   plan_changes       the database's own diary of plan edits (migration 0123)
 //   drona_cards        the weekly proposals and what the user did with them
 //   body_measurements  tape measurements, latest per site with the change

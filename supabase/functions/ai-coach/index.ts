@@ -1090,7 +1090,7 @@ async function executeTool(
   // to the conversation kind that saved it. Optional: the RPC defaults to chat.
   source?: string | null,
 ): Promise<unknown> {
-  // Memory (migration 0127). Both RPCs return {saved|forgotten, reason} and
+  // Memory (migration 20260919023437). Both RPCs return {saved|forgotten, reason} and
   // never raise for bad input, so the model reads the reason and moves on.
   if (name === "remember_fact") {
     try {
@@ -4162,7 +4162,7 @@ Deno.serve(async (req) => {
   // 4e. What the coach carries between conversations (coach-enhancement plan,
   // Problem 2). Four RLS-scoped reads, in parallel, each best-effort and folded
   // into the userContext blob like 4b/4c so every mode sees them for free:
-  //   memory               facts saved with remember_fact (coach_memory, 0127)
+  //   memory               facts saved with remember_fact (coach_memory, 20260919023437)
   //   recent_plan_changes  the plan diary (plan_changes, 0123), one line each
   //   recent_coach_cards   the weekly cards and what the user did with them
   //   body_measurements    latest tape reading per site, with the change

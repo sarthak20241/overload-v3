@@ -140,6 +140,11 @@ async function runCase(c: Case): Promise<{ ok: boolean; note: string }> {
 }
 
 const cases = ONLY.length ? CASES.filter((c) => ONLY.includes(c.id)) : CASES;
+const unknown = ONLY.filter((id) => !CASES.some((c) => c.id === id));
+if (unknown.length || cases.length === 0) {
+  console.error(`ONLY contains unknown cases: ${unknown.join(", ") || ONLY.join(", ")}`);
+  process.exit(2);
+}
 let pass = 0;
 let total = 0;
 for (const c of cases) {

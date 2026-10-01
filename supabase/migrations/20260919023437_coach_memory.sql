@@ -1,10 +1,11 @@
--- 0147_coach_memory.sql (was 0127_coach_memory.sql on an unmerged branch)
+-- 20260919023437_coach_memory.sql (was 0127/0147 on unmerged branches)
 --
 -- ALREADY APPLIED LIVE on 2026-09-19 as schema_migrations 20260919023437
 -- "coach_memory". It is committed now so the repo matches the database. The
--- number moved because main took 0127 (drona_card_later) and PR #218 holds
--- 0131-0138 and 0142-0146. Do not re-apply: the table and index are guarded,
--- but the policy is not. delete_user_data is left to 0146 (see the end).
+-- filename now uses that verified live version, avoiding PR #218's 0147.
+-- This records the historical memory schema/RPCs; the separate
+-- coach_memory_cleanup_and_cap migration supplies account cleanup and repairs
+-- the active-fact cap on existing databases as well as fresh installations.
 --
 --
 -- Drona was stateless between conversations. A user who said "keep sessions
@@ -178,8 +179,5 @@ grant execute on function public.coach_remember_fact(text, text, text, text) to 
 revoke all on function public.coach_forget_fact(text, text) from public, anon;
 grant execute on function public.coach_forget_fact(text, text) to authenticated;
 
--- ── Account deletion ─────────────────────────────────────────────────────────
--- The live apply on 2026-09-19 also redefined delete_user_data (0121's body plus
--- coach_memory). That body is left out of this file on purpose: 0146 (PR #218)
--- redefines delete_user_data later and already deletes coach_memory, so a stale
--- copy here, numbered after 0146, would drop the facts tables from deletion.
+-- Account deletion is handled by the later coach_memory_cleanup_and_cap
+-- migration, independently of whether PR #218's facts tables are installed.
