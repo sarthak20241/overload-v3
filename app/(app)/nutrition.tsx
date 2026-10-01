@@ -16,7 +16,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState,
+  View, Text, ScrollView, Pressable, TextInput, StyleSheet, useWindowDimensions, AppState, Keyboard,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1461,7 +1461,12 @@ export default function NutritionScreen() {
                 will actually RUN, so a lapsed subscriber sees Thorough rather
                 than a Precise badge over a Thorough parse. */}
             <Pressable
-              onPress={() => setSpeedSheetOpen(true)}
+              onPress={() => {
+                // The portal shares the app window, so the keyboard would cover
+                // its bottom rows. Blur the composer without clearing its draft.
+                Keyboard.dismiss();
+                setSpeedSheetOpen(true);
+              }}
               hitSlop={12}
               accessibilityRole="button"
               accessibilityLabel={`Logging mode: ${SPEED_CHIP[runningSpeed].label}`}
