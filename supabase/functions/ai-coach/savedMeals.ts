@@ -214,7 +214,7 @@ export function mergeSavedLines<R extends MergeableResult>(
         meal_type: lines[0]?.meal_type ?? mealType,
         items: lines,
         drona_line: savedDronaLine(hits, null),
-        corrects_previous: false,
+        corrects_previous: result.parsed?.corrects_previous ?? false,
       },
       declined: null,
     };

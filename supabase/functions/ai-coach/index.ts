@@ -2552,11 +2552,25 @@ interface MealRow {
  * the USER's client, never the service role: RLS is what makes the memory
  * theirs alone. Any failure is an empty memory, never a failed parse.
  */
+/** Persisted cache snapshots have already been confirmed by diary writes. */
+function cachedMemoryEntry(c: Record<string, unknown>): MemoryEntry {
+  return {
+    food_name: String(c.food_name), food_id: typeof c.food_id === "string" ? c.food_id : null,
+    kcal: Number(c.kcal), protein_g: Number(c.protein_g), carb_g: Number(c.carb_g), fat_g: Number(c.fat_g),
+    fiber_g: c.fiber_g == null ? null : Number(c.fiber_g),
+    grams: 100, quantity: c.serving_grams ? 100 / Number(c.serving_grams) : 100,
+    serving_unit: typeof c.serving_label === "string" ? c.serving_label : "g",
+    source: typeof c.source === "string" ? c.source : null, logged_via: "ai",
+    tier: String(c.tier), logged_at: String(c.last_logged_at), persistent: true, confirmed_at: String(c.confirmed_at),
+    confirmed_aliases: Array.isArray(c.aliases) ? c.aliases.filter((a): a is string => typeof a === "string") : [],
+  };
+}
+
 async function fetchMemoryEntries(
   userClient: SupabaseClient,
 ): Promise<{ entries: MemoryEntry[]; timeZone: string | null }> {
   const sinceIso = new Date(Date.now() - MEMORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const [mealsRes, profileRes] = await Promise.all([
+  const [mealsRes, profileRes, cacheRes] = await Promise.all([
     userClient
       .from("meals")
       .select(
@@ -2566,14 +2580,17 @@ async function fetchMemoryEntries(
       .order("logged_at", { ascending: false })
       .limit(300),
     userClient.from("user_profiles").select("timezone").maybeSingle(),
-  ]).catch(() => [{ data: null, error: true }, { data: null }] as const);
+    // An unavailable cache is additive: retain the existing history read.
+    userClient.from("user_food_cache").select("*").order("confirmed_at", { ascending: false }).limit(300),
+  ]).catch(() => [{ data: null, error: true }, { data: null }, { data: null }] as const);
   const timeZone = typeof (profileRes as { data?: { timezone?: unknown } | null })?.data?.timezone === "string"
     ? (profileRes as { data: { timezone: string } }).data.timezone
     : null;
   const rows = (mealsRes as { data?: unknown; error?: unknown });
-  if (rows.error || !Array.isArray(rows.data)) return { entries: [], timeZone };
+  const cached = Array.isArray(cacheRes.data) ? cacheRes.data.map((c) => cachedMemoryEntry(c as Record<string, unknown>)) : [];
+  if (rows.error || !Array.isArray(rows.data)) return { entries: cached, timeZone };
   const num = (v: unknown) => (typeof v === "number" ? v : v == null ? NaN : Number(v));
-  const entries: MemoryEntry[] = [];
+  const entries: MemoryEntry[] = [...cached];
   for (const m of rows.data as Array<Record<string, unknown>>) {
     const at = typeof m.logged_at === "string" ? m.logged_at : null;
     if (!at || !Array.isArray(m.meal_entries)) continue;
@@ -2832,7 +2849,16 @@ function makeParseDeps(
     // This user's own log, last 10 days, through THEIR client: RLS keeps it
     // theirs. Started now so it is ready by the time extract finishes.
     userMemory: USER_FOOD_MEMORY && JEV_API_KEY
-      ? { load: () => fetchMemoryEntries(userClient) }
+      ? {
+        load: () => fetchMemoryEntries(userClient),
+        // Exact aliases are queried separately so a long-lived user's alias
+        // cannot disappear behind the recent-cache or top-N memory limits.
+        lookupAliases: async (keys: string[]) => {
+          if (!keys.length) return [];
+          const { data } = await userClient.from("user_food_cache").select("*").overlaps("aliases", keys);
+          return (data ?? []).map((c) => ({ ...cachedMemoryEntry(c as Record<string, unknown>), alias_lookup: true }));
+        },
+      }
       : undefined,
     preciseMatch: PRECISE_MATCH_MODE !== "off" && JEV_API_KEY
       ? {
