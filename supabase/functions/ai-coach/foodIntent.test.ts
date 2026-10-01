@@ -271,7 +271,7 @@ Deno.test("the whole ladder is exercised in order: jev, then model, then default
 
 // A compile-time reminder that the union is what the criteria advertise. If a
 // new intent is added to FoodIntent without a rubric, this stops being valid.
-const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true };
+const _exhaustive: Record<FoodIntent, true> = { log: true, create: true, other: true, steps: true, continue: true };
 void _exhaustive;
 
 // ── The gate: should we even ask? ───────────────────────────────────────────
