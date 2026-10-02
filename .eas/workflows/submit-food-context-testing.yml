@@ -1,0 +1,60 @@
+name: Submit Android food-context build to testing tracks
+
+# The same Android binary already submitted to closed testing by deploy.yml.
+# This workflow only submits; it does not create another build.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.eas/workflows/submit-food-context-testing.yml'
+  workflow_dispatch: {}
+
+jobs:
+  get_android:
+    name: Find Android build from PR 232
+    type: get-build
+    params:
+      platform: android
+      profile: production
+      distribution: store
+      git_commit_hash: a477bb560ba807c59280ddac1662dc49b9954de7
+
+  submit_internal:
+    name: Submit to Play internal testing
+    type: submit
+    needs: [get_android]
+    if: ${{ needs.get_android.outputs.build_id }}
+    params:
+      build_id: ${{ needs.get_android.outputs.build_id }}
+      profile: production
+    hooks:
+      after_checkout:
+        - name: Select internal testing in this job checkout
+          run: |
+            node <<'NODE'
+            const fs = require('fs');
+            const config = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            config.submit.production.android.track = 'internal';
+            config.submit.production.android.changesNotSentForReview = false;
+            fs.writeFileSync('eas.json', JSON.stringify(config, null, 2) + '\n');
+            NODE
+
+  submit_open:
+    name: Submit to Play open testing
+    type: submit
+    needs: [get_android, submit_internal]
+    if: ${{ needs.get_android.outputs.build_id }}
+    params:
+      build_id: ${{ needs.get_android.outputs.build_id }}
+      profile: production
+    hooks:
+      after_checkout:
+        - name: Select open testing in this job checkout
+          run: |
+            node <<'NODE'
+            const fs = require('fs');
+            const config = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            config.submit.production.android.track = 'beta';
+            config.submit.production.android.changesNotSentForReview = false;
+            fs.writeFileSync('eas.json', JSON.stringify(config, null, 2) + '\n');
+            NODE
