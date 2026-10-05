@@ -1,0 +1,73 @@
+name: Vacation fix review release
+on:
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: number
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      plan: ${{ steps.fix.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.101.0
+      - run: npm install -g @anthropic-ai/claude-code@2.1.286
+      - name: Preserve trusted automation before the agent runs
+        run: cp -R scripts/vacation "$RUNNER_TEMP/vacation"
+      - name: Fix, test and independently review
+        id: fix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+        run: python3 "$RUNNER_TEMP/vacation/worker.py" fix
+  release:
+    needs: fix
+    if: needs.fix.outputs.plan != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.101.0
+      - run: npm install -g eas-cli@24.8.0
+      - name: Merge reviewed commit and release
+        env:
+          PLAN: ${{ needs.fix.outputs.plan }}
+          GH_TOKEN: ${{ github.token }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python3 scripts/vacation/worker.py release
