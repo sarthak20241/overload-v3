@@ -753,7 +753,8 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p.r.url]));
     const data = await deps.callModel({
       model: deps.model,
-      max_tokens: 1500,
+      // 2000, not 1500: Haiku 5.5 counts the same text as ~30% more tokens.
+      max_tokens: 2000,
       system: READ_SYSTEM,
       tools: [READ_TOOL],
       tool_choice: { type: "tool", name: READ_TOOL.name },

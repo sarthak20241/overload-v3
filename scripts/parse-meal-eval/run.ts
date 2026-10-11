@@ -14,6 +14,7 @@
 // a .env.local in the cwd. Costs: ~40 Haiku calls per full run (well under
 // $0.10); web search adds ~$0.01 per search when enabled.
 
+import "./denoShim";
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -48,7 +49,8 @@ const env = (k: string) => process.env[k] ?? dotenv[k] ?? "";
 const SUPABASE_URL = env("EXPO_PUBLIC_SUPABASE_URL");
 const SUPABASE_ANON_KEY = env("EXPO_PUBLIC_SUPABASE_ANON_KEY");
 const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
-const MODEL = env("MODEL") || "claude-haiku-4-5";
+// Default mirrors PARSE_MEAL_MODEL in index.ts.
+const MODEL = env("MODEL") || "claude-haiku-5-5";
 const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
 // Route model calls through the `claude -p` CLI (subscription) instead of the
 // API. Correctness only - see claude-cli-fetch.ts for what it does not model.
@@ -71,6 +73,8 @@ const COST_CAP_USD = Number(env("EVAL_COST_CAP_USD") || "0") || 0;
 /** USD per million tokens, [input, output]. */
 const PRICES: Record<string, [number, number]> = {
   "claude-haiku-4-5": [1, 5],
+  // Up to 100K-token prompts; $0.50 / $2.50 beyond, which parse_meal never reaches.
+  "claude-haiku-5-5": [0.1, 0.5],
   "claude-sonnet-5": [2, 10],
   "claude-opus-5": [5, 25],
 };
@@ -188,7 +192,7 @@ const deps: ParseMealDeps = {
   // Mirrors PARSE_MEAL_MAX_TOKENS in index.ts. Keep them equal or the eval
   // measures a decide call with a different budget than the one that ships,
   // which is exactly how a truncation bug hides from a green suite.
-  maxTokens: 5000,
+  maxTokens: 6500,
   timeoutMs: 30000,
   webSearchEnabled: WEB_SEARCH,
 

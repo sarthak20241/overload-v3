@@ -204,7 +204,9 @@ export const CASES: EvalCase[] = [
     expect: {
       minItems: 2, maxItems: 2,
       items: [
-        { nameIncludes: "milk", gramsBetween: [500, 500] },
+        // Milk is ~1.03 g/ml, so 500 ml is ~515 g. Either 1:1 or the real
+        // density is a correct log; the gap is ~3%.
+        { nameIncludes: "milk", gramsBetween: [500, 525] },
         { nameIncludes: "whey", gramsBetween: [25, 40] },
       ],
     },
@@ -479,7 +481,8 @@ export const CASES: EvalCase[] = [
     id: "amul-kool",
     text: "1 bottle amul kool 200ml",
     hour: 15,
-    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "kool", gramsBetween: [200, 200] }] },
+    // 1.00 to 1.05 g/ml: a milk drink logged at its real density is not wrong.
+    expect: { minItems: 1, maxItems: 1, items: [{ nameIncludes: "kool", gramsBetween: [200, 210] }] },
   },
   {
     id: "epigamia-yogurt",
