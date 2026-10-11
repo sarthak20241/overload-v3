@@ -1310,7 +1310,7 @@ export const CASES: EvalCase[] = [
     hour: 14,
     expect: {
       maxItems: 1,
-      items: [{ nameIncludes: ["daliya", "dalia"], kcalBetween: [79, 81], proteinBetween: [0.5, 1.5] }],
+      items: [{ nameIncludes: "daliya", nameIncludesAny: ["dalia"], kcalBetween: [79, 81], proteinBetween: [0.5, 1.5] }],
     },
   },
   {

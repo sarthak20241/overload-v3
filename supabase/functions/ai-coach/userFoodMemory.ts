@@ -277,12 +277,17 @@ export type MemoryDecision =
 
 /** A name's words, singular: "Cucumbers, raw" -> {cucumber, raw}. */
 function nameWords(name: string): Set<string> {
-  return new Set(memoryKey(name).split(" ").filter(Boolean).map((w) =>
+  return new Set(nameWordList(name));
+}
+
+/** A name's words in order, plurals folded ("cucumbers" -> "cucumber"). */
+function nameWordList(name: string): string[] {
+  return memoryKey(name).split(" ").filter(Boolean).map((w) =>
     w.length > 4 && w.endsWith("ies") ? `${w.slice(0, -3)}y`
       : w.length > 4 && w.endsWith("oes") ? w.slice(0, -2)
       : w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1)
       : w
-  ));
+  );
 }
 
 /**
@@ -321,8 +326,10 @@ function ruledOutByWords(typed: string, a: string, all: string[]): boolean {
 
 /** The remembered name is what the user typed, word for word (plurals aside). */
 function sameWords(typed: string, a: string): boolean {
-  const t = nameWords(typed), x = nameWords(a);
-  return t.size > 0 && t.size === x.size && [...t].every((w) => x.has(w));
+  // In order: "chocolate milk" is not "milk chocolate". Whether two names are
+  // the same FOOD is Jev's call; this only says the words are literally the same.
+  const t = nameWordList(typed), x = nameWordList(a);
+  return t.length > 0 && t.length === x.length && t.every((w, i) => w === x[i]);
 }
 
 /**
@@ -336,12 +343,20 @@ function sameWords(typed: string, a: string): boolean {
  * user typed goes before habit: "oats" logged once beats "protein oats" logged
  * ten times, because the extra word may be a different product.
  */
-export function decideMemory(foods: MemoryFood[], scores: Array<number | null>, floor = MEMORY_FLOOR, typed = ""): MemoryDecision {
+export function decideMemory(
+  foods: MemoryFood[],
+  scores: Array<number | null>,
+  floor = MEMORY_FLOOR,
+  typed = "",
+  /** Rule out a variant the typed words name against (ruledOutByWords). Off
+   *  for a confirmed alias: the user already said which row these words mean. */
+  veto = true,
+): MemoryDecision {
   if (foods.length === 0) return { food: null, reason: "no_foods", confidence: 0 };
   if (scores.every((s) => s === null)) return { food: null, reason: "no_answer", confidence: 0 };
   const names = foods.map((f) => f.name);
   const scored = foods.map((f, i) => ({ f, p: scores[i] ?? 0 }))
-    .filter((x) => !typed || !ruledOutByWords(typed, x.f.name, names));
+    .filter((x) => !veto || !typed || !ruledOutByWords(typed, x.f.name, names));
   const passing = scored.filter((x) => x.p >= floor);
   if (passing.length === 0) {
     return { food: null, reason: "below_floor", confidence: Math.max(...scores.map((s) => s ?? 0)) };
@@ -402,9 +417,12 @@ export async function matchMemory(
       // The typed words still rank first: two rows under one alias ("cucumber"
       // and "Cucumber, raw", both confirmed as "cucumber") otherwise tie on
       // times and trust, and the newer one won by a millisecond.
-      const d = decideMemory(exact, exact.map(() => 1), MEMORY_FLOOR, lookup) as MemoryDecision & { food: MemoryFood };
-      trace.decision = decided(d);
-      return { food: d.food, confidence: 1, trace };
+      const d = decideMemory(exact, exact.map(() => 1), MEMORY_FLOOR, lookup, false);
+      if (d.food) {
+        trace.decision = decided(d as MemoryDecision & { food: MemoryFood });
+        return { food: d.food, confidence: 1, trace };
+      }
+      trace.alias_unresolved = d.reason ?? "no_food";
     }
     trace.path = "jev";
     const list = shortlist(foods, lookup);
@@ -452,10 +470,16 @@ export async function matchMemory(
 
 /** The card's note for a line answered from memory: "Same as you logged on
  *  Sep 26", on the user's own calendar when their zone is known. */
+/** The note's sentence naming the other variants. One builder, so a build
+ *  that draws the swap chip can remove exactly this (parseMeal forSwapChips). */
+export function alsoSentence(names: string[]): string {
+  return names.length ? ` You also log ${names.join(" and ")}; if it was that, just say so.` : "";
+}
+
 export function memoryNote(food: MemoryFood, timeZone?: string | null): string {
   // A different variant that also fits: name it, so a wrong pick costs the user one
   // sentence ("it was the vanilla") instead of a refused meal.
-  const also = food.also?.length ? ` You also log ${food.also.join(" and ")}; if it was that, just say so.` : "";
+  const also = alsoSentence(food.also ?? []);
   const d = new Date(food.last_logged_at);
   if (!Number.isFinite(d.getTime())) return also ? `Same as you logged before.${also}` : "Same as you logged before";
   let day: string;

@@ -1,6 +1,6 @@
 // Run with: deno test --allow-all lib/variantSwap.test.ts
 import { assertEquals } from 'jsr:@std/assert@1';
-import { optionAt, readSwapOptions, swapToAlternative, type SwapLine } from './variantSwap.ts';
+import { optionAt, readSwapOptions, swapLabel, swapToAlternative, type SwapLine } from './variantSwap.ts';
 
 const vanilla = {
   food_name: 'vanilla whey', grams: 30, kcal: 114, protein_g: 23, carb_g: 3, fat_g: 1.5, fiber_g: null,
@@ -46,4 +46,11 @@ Deno.test('only the variant the user logs most is labelled their usual', () => {
   assertEquals(swapped.usual, false);
   assertEquals(swapped.alternatives?.[0].usual, true);
   assertEquals(swapToAlternative(swapped, 0).usual, true);
+});
+
+Deno.test('the failure this prevents: an edited line still called itself the user\'s usual', () => {
+  assertEquals(swapLabel(chocolate), 'your usual');
+  assertEquals(swapLabel(swapToAlternative(chocolate, 0)), 'your log');
+  // The editor clears the note and marks the line manual: it is "edited" now.
+  assertEquals(swapLabel({ ...chocolate, source: 'manual', assumption: null } as SwapLine), null);
 });

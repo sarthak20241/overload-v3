@@ -88,9 +88,12 @@ export function carryPendingMeal(a: {
   const question = a.shown.trim().slice(0, 400);
   if (a.incoming) {
     if (!a.continued) return a.incoming;
+    // Answers are appended, so a long thread is trimmed in the MIDDLE: the
+    // meal at the start and the newest answer at the end both survive.
+    const joined = continuationText(a.text.trim(), a.incoming);
     return {
       status: "awaiting_clarification",
-      text: continuationText(a.text.trim(), a.incoming).slice(0, 2000),
+      text: joined.length <= 2000 ? joined : `${joined.slice(0, 1200)}\n...\n${joined.slice(-795)}`,
       question: question || a.incoming.question,
     };
   }

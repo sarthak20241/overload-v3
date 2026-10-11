@@ -132,3 +132,11 @@ export function swapToAlternative<T extends SwapLine>(line: T, k: number): T {
     alternatives: [previous, ...options.filter((_, i) => i !== k)],
   };
 }
+
+/** The card's tag for a line with variants: the served one is the user's
+ *  usual, a swapped-in one is from their log. Null once the user edited the
+ *  numbers (the editor clears the note), so the card says "edited" instead. */
+export function swapLabel(line: Pick<SwapLine, 'alternatives' | 'assumption' | 'usual'>): 'your usual' | 'your log' | null {
+  if (!line.alternatives?.length || !line.assumption) return null;
+  return line.usual === false ? 'your log' : 'your usual';
+}

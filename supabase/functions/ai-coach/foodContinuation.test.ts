@@ -32,7 +32,7 @@ Deno.test("incident replay: clarification rebuilds five foods in breakfast and s
       const input = JSON.parse(request.messages[0].content);
       assertEquals(input.text, text);
       assertEquals(input.pending_meal.text, original);
-      return new Response(JSON.stringify({ stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "tool_use", name: "estimate_meal", input: { declined: false, accepts_generic_estimate: true, meal_type_from_text: null, items } }] }), { status: 200 });
+      return new Response(JSON.stringify({ stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "tool_use", name: "estimate_meal", input: { declined: false, meal_type_from_text: null, items } }] }), { status: 200 });
     }) as typeof fetch,
   };
   // Reproduce the conflicting personal aliases that blocked the real meal.

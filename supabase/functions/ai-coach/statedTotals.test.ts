@@ -285,6 +285,32 @@ Deno.test("the failure this prevents: a total-only correction looked every food 
   assert(r.steps.some((s) => s.tool === "meal_total_correction"));
 });
 
+Deno.test("the failure this prevents: a reworded name on a total-only correction was looked up as a new food", async () => {
+  // Real model, 2026-10-11: the card said "toast", the model wrote "Toasted
+  // Bread" back with no change marked, so it matched nothing on the card.
+  const prev = [
+    { ...line("boiled eggs", 155, 13, 1, 11, 100), source: "estimate" as const, confidence: "medium" as const, meal_type: "breakfast" as const },
+    { ...line("toast", 80, 3, 15, 1, 30), source: "estimate" as const, confidence: "medium" as const, meal_type: "breakfast" as const },
+    { ...line("orange juice", 110, 2, 26, 0.5, 250), source: "estimate" as const, confidence: "medium" as const, meal_type: "breakfast" as const },
+  ];
+  const copy = (n: string, k: number, p: number, c: number, f: number, g: number) => ({ ...est(n, k, p, c, f, g), corrects_food_name: null });
+  const searched: string[] = [];
+  const run = (items: unknown[]) => runParseMeal(
+    mealDeps({ declined: false, corrects_previous: true, meal_type_from_text: null, stated_meal_total: { kcal: 400 }, items },
+      [line("Toaster pastries, brown-sugar-cinnamon", 410, 4, 70, 12, 100)], {
+        searchFoods: async (q: string) => { searched.push(q); return []; },
+      }),
+    { ...BASE, text: "make the whole meal 400 kcal", mode: "fast", previousText: "2 boiled eggs, 1 toast and a glass of orange juice", previousItems: prev },
+  );
+  const r = await run([copy("Boiled Egg", 155, 13, 1, 11, 100), copy("Toasted Bread", 80, 3, 15, 1, 30), copy("Orange Juice", 110, 2, 26, 0.5, 250)]);
+  assertEquals(searched, []);
+  assertEquals(r.parsed!.items.map((i) => i.food_name), ["boiled eggs", "toast", "orange juice"]);
+  assertEquals(sum(r.parsed!.items, "kcal"), 400);
+  // A food added in the same message changes the count: it is not swallowed.
+  const added = await run([copy("boiled eggs", 155, 13, 1, 11, 100), copy("toast", 80, 3, 15, 1, 30), copy("orange juice", 110, 2, 26, 0.5, 250), copy("banana", 105, 1, 27, 0.4, 118)]);
+  assert(added.parsed!.items.some((i) => /banana/i.test(i.food_name)), JSON.stringify(added.parsed!.items.map((i) => i.food_name)));
+});
+
 Deno.test("a meal total counts a saved meal the user named, and the rest fits", async () => {
   // PR #236 review: saved lines joined the card after the total, so "my oat
   // bowl and a banana, 500 kcal" came to 400 + 500.

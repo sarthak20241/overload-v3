@@ -940,6 +940,10 @@ export default function NutritionScreen() {
    *  logs, priced from their own numbers (lib/variantSwap). Pure client state
    *  like every card edit; nothing is written until Add. */
   const onSwapItem = useCallback((i: number, k: number) => {
+    // Counted only when there is a line to swap: a tap that lands after the
+    // card moved on is not an edit.
+    const cur = flowRef.current;
+    if (cur.status !== 'review' || !cur.meal.items[i]?.alternatives?.[k]) return;
     editCountRef.current += 1;
     track('parse_proposal_edited', { action: 'swap_variant' });
     setFlow((f): ParseFlow => {
