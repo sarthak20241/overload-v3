@@ -170,3 +170,67 @@ Deno.test("only catalog ids are looked up: a FatSecret id would fail the whole l
   assertEquals(asked.length, 1);
   assert(asked[0].every((id) => !id.startsWith("fs:")), JSON.stringify(asked));
 });
+
+// ── Branded products with no row: the label from the web (Pro only) ─────────
+
+const PANEL = { kcal: 210, protein_g: 24, carb_g: 4, fat_g: 11 };
+function brandHarness(opts: { mode: "shadow" | "on"; brandWeb: boolean; brand: string | null; kind: string }) {
+  const calls: string[] = [];
+  const decideRows: string[][] = [];
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes("typesafe.ai")) return fakeJev({ kind: opts.kind, scores: [0.05, 0.02] }, calls)(url, init);
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const tools: string[] = (body.tools ?? []).map((t: { name: string }) => t.name);
+    const tool = tools.includes("report_sources") ? "report_sources" : body.tool_choice.name;
+    calls.push(tool);
+    let input: Record<string, unknown>;
+    if (tool === "extract_meal") {
+      input = { declined: false, items: [{ name: "low fat paneer", brand: opts.brand, quantity: 100, unit: "g", prep: null }] };
+    } else if (tool === "report_sources") {
+      input = { results: [{
+        for_item: "low fat paneer", found: true, serving_label: "pack", serving_grams: 200,
+        readings: ["https://brand.example/paneer", "https://shop.example/paneer"].map((u) => ({ url: u, per_100: PANEL })),
+      }] };
+    } else {
+      const payload = JSON.parse(body.messages[0].content);
+      decideRows.push(payload.items[0].candidates.map((c: { name: string }) => c.name));
+      input = { meal_type: "lunch", drona_line: "Logged.", items: [] };
+    }
+    return Response.json({ stop_reason: "tool_use", usage: {}, content: [{ type: "tool_use", name: tool, input }] });
+  }) as typeof fetch;
+  const deps: ParseMealDeps = {
+    anthropicApiKey: "test", model: "test", maxTokens: 1000, timeoutMs: 1000, webSearchEnabled: true, fetchFn,
+    searchFoods: async () => [food("p1", "Low Fat Paneer", 190, 25), food("p2", "Pork, loin, lean and fat", 256, 26)],
+    backfillOffFood: async () => null,
+    getFoodPer100: async () => null,
+    jev: { apiKey: "jev-test", timeoutMs: 1000, fetchFn },
+    thoroughMatch: { mode: opts.mode, brandWeb: opts.brandWeb, sourcesOf: async () => new Map([["p1", "curated"], ["p2", "usda"]]) },
+  };
+  return { deps, calls, decideRows };
+}
+const brandInput = { ...input, text: "country delight low fat paneer 100g", mode: null };
+
+Deno.test("brand with no row of ours: Pro gets the label from the web, decide sees only it", async () => {
+  const h = brandHarness({ mode: "on", brandWeb: true, brand: "Country Delight", kind: "packaged" });
+  const r = await runParseMeal(h.deps, brandInput);
+  assert(h.calls.includes("report_sources"), JSON.stringify(h.calls));
+  assertEquals(h.decideRows.map((rows) => rows.length), [1]);
+  const item = r.parsed!.items[0];
+  assertEquals([item.kcal, item.protein_g], [210, 24]);
+  assert(r.steps.some((s) => s.tool === "thorough_brand_web" && s.result !== null));
+});
+
+Deno.test("no web for a free user, an unbranded line, a kind that is not packaged, or shadow", async () => {
+  const cases = [
+    { mode: "on", brandWeb: false, brand: "Country Delight", kind: "packaged" },
+    { mode: "on", brandWeb: true, brand: null, kind: "packaged" },
+    { mode: "on", brandWeb: true, brand: "Country Delight", kind: "plain" },
+    { mode: "on", brandWeb: true, brand: "Country Delight", kind: "dish" },
+    { mode: "shadow", brandWeb: true, brand: "Country Delight", kind: "packaged" },
+  ] as const;
+  for (const c of cases) {
+    const h = brandHarness(c);
+    await runParseMeal(h.deps, brandInput);
+    assert(!h.calls.includes("report_sources"), JSON.stringify(c));
+  }
+});

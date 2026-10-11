@@ -46,7 +46,7 @@ import {
 } from "./preciseCache.ts";
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import { matchOurSources } from "./ourSources.ts";
-import { applyJudgement, judgeThorough, type ThoroughMatchMode } from "./thoroughMatch.ts";
+import { applyJudgement, judgeThorough, type ThoroughMatchMode, wantsBrandWeb } from "./thoroughMatch.ts";
 import { fillStated, readStated, type StatedPer100, statedNote, statedPer100, type StatedRaw } from "./statedNumbers.ts";
 import {
   buildMemory,
@@ -989,6 +989,11 @@ export interface ParseMealDeps {
   thoroughMatch?: {
     mode: ThoroughMatchMode;
     sourcesOf(ids: string[]): Promise<Map<string, string>>;
+    /** When Jev says a BRANDED product has no row of ours, look its label up
+     *  on the web (Precise's lookup, superLookupOne) instead of estimating.
+     *  Pro only, set per request; a guess there is a generic number under the
+     *  user's brand name, and only the label is better. */
+    brandWeb?: boolean;
   };
   preciseMatch?: {
     mode: "off" | "shadow" | "on";
@@ -6084,6 +6089,37 @@ async function runParseMealCore(
         if (j) steps.push({ iter: 1, tool: "thorough_match", input: { mode: tm.mode, action: j.action }, result: j.trace });
       }
       if (tm.mode === "on") resolved = resolved.map((r, i) => (judged[i] ? applyJudgement(r, judged[i]!) : r));
+      // A branded product none of our rows is: its label, from the web. Only
+      // in "on" (shadow must not spend), only when Jev was sure of the kind,
+      // and only with a brand to search for. A miss leaves the estimate.
+      const webFor = resolved.map((r, i) => !!judged[i] && wantsBrandWeb(judged[i]!, r));
+      if (tm.mode === "on" && tm.brandWeb && webFor.some(Boolean)) {
+        const tWeb0 = Date.now();
+        const found = await Promise.all(resolved.map((r, i) =>
+          webFor[i]
+            ? superLookupOne(deps, r, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st)).catch(() => null)
+            : Promise.resolve(null)
+        ));
+        resolved = resolved.map((r, i) => {
+          if (!webFor[i]) return r;
+          steps.push({
+            iter: 1,
+            tool: "thorough_brand_web",
+            input: { item: foodLabel(r), ms: Date.now() - tWeb0 },
+            result: found[i] ? { name: found[i]!.name, kcal: found[i]!.kcal } : null,
+          });
+          if (!found[i]) return r;
+          toolCalls.push("super_lookup");
+          return { ...r, candidates: [synthesizeVolumeAnchors(found[i]!)], resolvedIdentity: true };
+        });
+      } else if (webFor.some(Boolean)) {
+        steps.push({
+          iter: 1,
+          tool: "thorough_brand_web",
+          input: { skipped: tm.mode !== "on" ? "shadow" : "not_pro", items: resolved.filter((_, i) => webFor[i]).map(foodLabel) },
+          result: null,
+        });
+      }
     }
     T.thorough_match_ms = Date.now() - tMatch0;
   }

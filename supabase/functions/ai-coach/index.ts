@@ -607,6 +607,7 @@ function startFoodAgent(args: {
   admin: any;
   userId: string;
   recentTurns: { role: "user" | "drona"; text: string }[];
+  brandWeb: boolean;
   onStatus?: (label: string) => void;
 }): Promise<FoodAgentOutcome | null> {
   return args.intentP.then(async (d) => {
@@ -628,7 +629,7 @@ function startFoodAgent(args: {
         // A fresh parse without onProgress: the agent's parses must not paint
         // rows on the card behind its back.
         parseFood: (t) =>
-          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId), {
+          runParseMeal(makeParseDeps(args.userClient, args.admin, args.userId, { brandWeb: args.brandWeb }), {
             text: t,
             localHour: args.localHour,
             mealHint: args.mealHint,
@@ -2835,6 +2836,9 @@ function makeParseDeps(
   userClient: SupabaseClient,
   admin: SupabaseClient,
   userId: string,
+  /** Pro and trialing only. A web lookup is Anthropic's or Tavily's fee, the
+   *  same reason Precise is Pro-only; absent means no web. */
+  opts: { brandWeb?: boolean } = {},
 ): ParseMealDeps {
   let searchCountryP: Promise<string | null> | undefined;
   return {
@@ -2945,6 +2949,7 @@ function makeParseDeps(
     thoroughMatch: THOROUGH_MATCH_MODE !== "off" && JEV_API_KEY
       ? {
         mode: THOROUGH_MATCH_MODE,
+        brandWeb: opts.brandWeb === true,
         sourcesOf: async (ids: string[]) => {
           if (ids.length === 0) return new Map<string, string>();
           const { data, error } = await admin.from("foods").select("id, source").in("id", ids);
@@ -3457,7 +3462,7 @@ async function handleParseMealRequest(args: {
     // path (type, send, close the app), so cancel() is a no-op and the parse
     // runs through to the diary write. parseAbortFor scopes that to the flag.
     const abort = parseAbortFor(autoLogArmed);
-    const deps = { ...makeParseDeps(userClient, admin, userId), abortSignal: abort.signal };
+    const deps = { ...makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }), abortSignal: abort.signal };
     const stream = new ReadableStream({
       cancel() {
         abort.cancel();
@@ -3486,7 +3491,7 @@ async function handleParseMealRequest(args: {
         void intentP.then((d) => { settledIntent = d; });
         const agentP = startFoodAgent({
           intentP, supportsCreate, text, mealHint, localHour, localDate, mode: "fast", savedMealsP, readDiary,
-          contextPromise, userClient, admin, userId, recentTurns,
+          contextPromise, userClient, admin, userId, recentTurns, brandWeb: !parseFreeTier,
           // Builds that do not know this event skip it (dietData ignores
           // unknown events), so this needs no capability of its own.
           onStatus: (label) => send("status", { label }),
@@ -3706,13 +3711,13 @@ async function handleParseMealRequest(args: {
     const agentP = startFoodAgent({
       intentP, supportsCreate, text, mealHint, localHour, localDate,
       mode: wantsSuper ? "super" : wantsFast ? "fast" : null,
-      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns,
+      savedMealsP, readDiary, contextPromise, userClient, admin, userId, recentTurns, brandWeb: !parseFreeTier,
     });
     const work = (async () => {
       const pendingMeal = foodContext.pendingMeal && (await intentP)?.intent === "continue"
         ? foodContext.pendingMeal : null;
       const firstParse = await runParseMeal(
-        makeParseDeps(userClient, admin, userId),
+        makeParseDeps(userClient, admin, userId, { brandWeb: !parseFreeTier }),
         {
           text,
           localHour,

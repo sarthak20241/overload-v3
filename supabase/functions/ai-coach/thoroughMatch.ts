@@ -15,6 +15,9 @@
 //
 //   Jev accepts a row      -> decide sees only that row
 //   Jev says no row is it  -> decide sees no rows, and estimates
+//     ...a branded product -> its label from the web first (Pro only, owner
+//                             decision 2026-10-11): a guess there is a
+//                             generic number under the user's brand name
 //   Jev failed or timed out -> nothing changes (fail open)
 //
 // Runtime-agnostic (no Deno globals) so the eval drives this exact file.
@@ -93,4 +96,11 @@ export function applyJudgement(item: ResolvedItem, j: ThoroughJudgement): Resolv
   if (j.action === "serve" && j.candidate) return { ...item, candidates: [j.candidate] };
   if (j.action === "estimate") return { ...item, candidates: [] };
   return item;
+}
+
+/** A branded product Jev found no row for: the one case worth a web lookup.
+ *  The kind must be Jev's own confident answer (an unsure kind is only TREATED
+ *  as packaged), and there must be a brand to search the label by. */
+export function wantsBrandWeb(j: ThoroughJudgement, item: Pick<ResolvedItem, "brand">): boolean {
+  return j.action === "estimate" && j.trace.kind === "packaged" && !!item.brand?.trim();
 }

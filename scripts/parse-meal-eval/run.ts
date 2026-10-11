@@ -113,6 +113,11 @@ const FATSECRET_SECRET = env("FATSECRET_CONSUMER_SECRET");
 // JEV_API_KEY; off without it, same as production.
 const JEV_API_KEY = env("JEV_API_KEY");
 const THOROUGH_MATCH = (["shadow", "on"] as const).find((m) => m === env("THOROUGH_MATCH")) ?? "off";
+// EVAL_BRAND_WEB=1: a Pro user, so a branded product with no row gets its
+// label from the web. Through Tavily, because the CLI cannot run Anthropic's
+// server web_search tool. Spends Tavily credits; nothing is written to the
+// Precise cache (no preciseCachePut here).
+const BRAND_WEB = env("EVAL_BRAND_WEB") === "1" && !!env("TAVILY_API_KEY");
 async function embedQueryForEval(text: string): Promise<number[] | null> {
   if (!VOYAGE_API_KEY) return null;
   try {
@@ -259,6 +264,7 @@ const deps: ParseMealDeps = {
   thoroughMatch: THOROUGH_MATCH !== "off" && JEV_API_KEY
     ? {
       mode: THOROUGH_MATCH,
+      brandWeb: BRAND_WEB,
       sourcesOf: async (ids: string[]) => {
         const { data, error } = ids.length
           ? await supabase.from("foods").select("id, source").in("id", ids)
@@ -268,6 +274,7 @@ const deps: ParseMealDeps = {
       },
     }
     : undefined,
+  ...(BRAND_WEB ? { webLookup: "tavily" as const, tavily: { apiKey: env("TAVILY_API_KEY"), timeoutMs: 20_000 } } : {}),
   log: () => {},
 };
 
@@ -377,7 +384,7 @@ async function main() {
   const cases = corpus.filter((c) => !ONLY || ONLY.has(c.id))
     .filter((c) => !c.expect.needsWebSearch || WEB_SEARCH);
   console.log(
-    `parse_meal eval: ${cases.length} cases (${CASE_SET}) | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | thorough_match=${THOROUGH_MATCH} | OFF backfill=DRY RUN\n`,
+    `parse_meal eval: ${cases.length} cases (${CASE_SET}) | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | thorough_match=${THOROUGH_MATCH}${BRAND_WEB ? "+brand_web" : ""} | OFF backfill=DRY RUN\n`,
   );
 
   const outcomes: CaseOutcome[] = [];
@@ -506,6 +513,13 @@ async function main() {
             "correction_guard",
             "fast_correction",
             "thorough_match",
+            "thorough_brand_web",
+            "tavily_search",
+            "tavily_extract",
+            "web_relevance",
+            "web_panels",
+            "web_read",
+            "web_fallback",
           ].includes(String(st.tool))
         ) {
           console.log(`      # ${st.tool} ${JSON.stringify(st.input)} -> ${JSON.stringify(st.result ?? null)}`);
