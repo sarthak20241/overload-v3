@@ -399,6 +399,18 @@ Deno.test("the trace says why a research request skipped memory", async () => {
   assertEquals((step?.result as { skipped: string }).skipped, "research_requested");
 });
 
+Deno.test("one alias on two rows: the row named as typed wins, whichever is newer", async () => {
+  // Was a millisecond race: both rows confirmed as "cucumber", tied on times
+  // and trust, so the newer won. The incident replay test flaked on it.
+  const plain = { ...food("cucumber", 16, daysAgo(2)), confirmed_aliases: ["cucumber"] };
+  const raw = { ...food("Cucumber, raw", 15, daysAgo(1)), confirmed_aliases: ["cucumber"] };
+  const down = { apiKey: "jev", timeoutMs: 1000, fetchFn: (async () => new Response("down", { status: 503 })) as typeof fetch };
+  for (const order of [[plain, raw], [raw, plain]]) {
+    const m = await matchMemory(down, order, { name: "cucumber", brand: null });
+    assertEquals(m.food?.name, "cucumber");
+  }
+});
+
 Deno.test("confirmed aliases resolve without Jev, even when it is down", async () => {
   let requests = 0;
   const oats = { ...food("Doctor's Choice banana caramel protein oats", 427.3), confirmed_aliases: ["doctors banana caramel oats"] };
