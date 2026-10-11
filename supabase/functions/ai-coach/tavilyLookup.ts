@@ -41,6 +41,25 @@ export interface WebFinding {
   /** The brand the pages sell this product under, when the user's own words
    *  name it too (brandFromPages). Null otherwise. */
   brand: string | null;
+  /** Set when the label was found under a rewritten name (search_rewrite),
+   *  not the user's words: the name the pages sell it as. */
+  searched_as?: string | null;
+}
+
+/** One result the first searches returned, for the search rewrite to learn from. */
+export interface SeenResult {
+  title: string;
+  site: string;
+  /** Jev's first-look "exactly this food?", null when Jev did not answer. */
+  p: number | null;
+}
+
+/** A second try at the search, written by the model from what the first
+ *  searches turned up. */
+export interface SearchRewrite {
+  /** The product's likely name as sold, the user's brand kept. */
+  name: string;
+  queries: string[];
 }
 
 export interface TavilyLookupDeps {
@@ -55,6 +74,10 @@ export interface TavilyLookupDeps {
   callModel(payload: Record<string, unknown>): Promise<any | null>;
   model: string;
   log?: (msg: string) => void;
+  /** Runs once, after the fixed searches found no page about exactly this
+   *  food: reads what they DID return and proposes the name the product is
+   *  sold under, plus searches for it. Absent: no second try. */
+  suggestSearch?: (item: WebFoodItem, seen: SeenResult[]) => Promise<SearchRewrite | null>;
 }
 
 export interface LookupStep {
@@ -72,6 +95,13 @@ export interface TavilyLookupOutcome {
    *  either attempt. The caller then runs the old lookup, so Precise keeps
    *  working. */
   unavailable: boolean;
+  /** The name the search rewrite searched under, whether or not it found a
+   *  label: the catalog and FatSecret can still find the food by it. Set only
+   *  when it differs from the user's words and its searches ran. */
+  renamed?: string | null;
+  /** Every search ran and none found a label for this food: "not found" is
+   *  then a fact, not an outage. */
+  searchedNoLabel?: boolean;
 }
 
 // ── Tuning ──────────────────────────────────────────────────────────────────
@@ -102,8 +132,13 @@ export const HEADING_CHARS = 300;
 export const MAX_PAGES_READ = 5;
 /** Results Jev judges per search. */
 export const MAX_RESULTS = 8;
-/** Two searches at most: the second only when the first found no panel. */
+/** Fixed searches: the second only when the first found no panel. The search
+ *  rewrite may add MAX_REWRITE_SEARCHES more after these. */
 export const MAX_SEARCHES = 2;
+/** Searches the rewrite may add, after the fixed ones found nothing. */
+export const MAX_REWRITE_SEARCHES = 2;
+/** Results shown to the rewrite: enough to see what the shops call it. */
+export const MAX_SEEN_FOR_REWRITE = 16;
 /** Characters of panel text kept per page. A full Indian label panel with
  *  per-100 g and per-serving columns fits in well under this. */
 export const PANEL_CHARS = 1600;
@@ -145,7 +180,10 @@ export function preferDomainsFor(country: string | null): string[] {
 export function foodLabel(item: WebFoodItem): string {
   const name = item.name.trim();
   const brand = item.brand?.trim() ?? "";
-  if (!brand || name.toLowerCase().includes(brand.toLowerCase())) return name;
+  // Compared with spaces and punctuation gone: shops write a brand joined or
+  // spaced, so the user's "Muscle Blaze" and a page's "MuscleBlaze" doubled up.
+  const squash = (x: string) => x.toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, "");
+  if (!brand || squash(name).includes(squash(brand))) return name;
   return `${brand} ${name}`;
 }
 
@@ -600,7 +638,7 @@ async function selectPages(
   item: WebFoodItem,
   results: TavilyResult[],
   steps: LookupStep[],
-): Promise<{ pages: Array<{ r: TavilyResult; panel: string }>; credits: number }> {
+): Promise<{ pages: Array<{ r: TavilyResult; panel: string }>; credits: number; seen: SeenResult[] }> {
   let credits = 0;
   const cands: Candidate[] = [...results]
     .sort((a, b) => b.score - a.score)
@@ -612,6 +650,7 @@ async function selectPages(
       pieces: pagePieces(r.raw_content).length ? pagePieces(r.raw_content) : pagePieces(r.content),
       p: null,
     }));
+  const seenOf = () => cands.map((c) => ({ title: c.r.title.slice(0, 120), site: hostOf(c.r.url), p: round2(c.p) }));
 
   const fillBlind = async (list: Candidate[]) => {
     // Every kept page without its full text, not only those with no pieces at
@@ -644,7 +683,7 @@ async function selectPages(
     const pages = top
       .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")) }))
       .filter((x): x is { r: TavilyResult; panel: string } => !!x.panel);
-    return { pages, credits };
+    return { pages, credits, seen: seenOf() };
   };
 
   const jev = deps.jev;
@@ -662,10 +701,10 @@ async function selectPages(
     .filter((c) => (c.p ?? 0) >= UNSURE_FLOOR)
     .sort((a, b) => (b.p ?? 0) - (a.p ?? 0))
     .slice(0, MAX_PAGES_READ);
-  if (kept.length === 0) return { pages: [], credits };
+  if (kept.length === 0) return { pages: [], credits, seen: seenOf() };
   await fillBlind(kept);
   const withPieces = kept.filter((c) => c.pieces.length > 0);
-  if (withPieces.length === 0) return { pages: [], credits };
+  if (withPieces.length === 0) return { pages: [], credits, seen: seenOf() };
 
   const second = await askSecondLook(jev, item, withPieces);
   if (!second) {
@@ -676,7 +715,7 @@ async function selectPages(
       .map((c) => ({ r: c.r, panel: findPanelText(c.pieces.join(" ")) }))
       .filter((x): x is { r: TavilyResult; panel: string } => !!x.panel);
     steps.push({ tool: "web_relevance", input: { mode: "jev", look: 2 }, result: { failure: "jev_failed", kept: pages.length } });
-    return { pages, credits };
+    return { pages, credits, seen: seenOf() };
   }
 
   const pages: Array<{ r: TavilyResult; panel: string; p: number }> = [];
@@ -700,7 +739,7 @@ async function selectPages(
     result: trace,
   });
   pages.sort((a, b) => b.p - a.p);
-  return { pages: pages.map(({ r, panel }) => ({ r, panel })), credits };
+  return { pages: pages.map(({ r, panel }) => ({ r, panel })), credits, seen: seenOf() };
 }
 
 /**
@@ -710,15 +749,23 @@ async function selectPages(
  * to the Anthropic lookup. "Searched and found nothing" is
  * NOT unavailable: it is an answer, and paying a second provider to hear the
  * same thing would double the cost of every obscure food.
+ *
+ * When the fixed searches find no page about exactly this food, one rewrite
+ * (deps.suggestSearch) reads what they DID return and searches again under the
+ * name the product is sold as. People call products by nicknames the label
+ * never prints, and a fixed query built from their words can only ever find
+ * pages that use those words.
  */
 export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem): Promise<TavilyLookupOutcome> {
   const steps: LookupStep[] = [];
   let credits = 0;
   const seen = new Set<string>();
-  const queries = searchQueries(item);
+  const judged: SeenResult[] = [];
+  const asked: string[] = [];
 
-  for (let attempt = 0; attempt < queries.length; attempt++) {
-    const q = queries[attempt];
+  /** One search, judged against `as`, read if anything survives. */
+  const attempt = async (q: string, as: WebFoodItem): Promise<WebFinding | "unavailable" | null> => {
+    asked.push(q);
     const s = await tavilySearch(q, {
       country: deps.country,
       preferDomains: preferDomainsFor(deps.country),
@@ -727,27 +774,31 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
     credits += s.credits;
     if (!s.ok) {
       steps.push({ tool: "tavily_search", input: { q }, result: { failure: s.failure, detail: s.detail } });
-      // A failed search means the lookup did not finish, whichever attempt it
-      // was: only a search that RAN and found nothing is an answer. So the
-      // caller falls back either way. The second attempt failing is the likely
-      // shape of a balance running out mid-lookup (caught on PR review).
-      return { finding: null, credits, steps, unavailable: true };
+      return "unavailable";
     }
     const fresh = s.results.filter((r) => !seen.has(r.url));
     fresh.forEach((r) => seen.add(r.url));
     steps.push({
       tool: "tavily_search",
       input: { q, country: deps.country },
-      result: { results: s.results.length, new: fresh.length, sites: fresh.map((r) => hostOf(r.url)) },
+      result: {
+        results: s.results.length,
+        new: fresh.length,
+        sites: fresh.map((r) => hostOf(r.url)),
+        // Titles too: the sites alone could not say WHICH product a search
+        // brought back, and that is the first question when a lookup misses.
+        titles: fresh.map((r) => r.title.slice(0, 80)),
+      },
     });
-    if (fresh.length === 0) continue;
+    if (fresh.length === 0) return null;
 
-    const picked = await selectPages(deps, item, fresh, steps);
+    const picked = await selectPages(deps, as, fresh, steps);
     credits += picked.credits;
+    judged.push(...picked.seen);
     const withPanel = picked.pages;
     if (withPanel.length === 0) {
       steps.push({ tool: "web_panels", input: { results: fresh.length }, result: { panels: 0 } });
-      continue;
+      return null;
     }
 
     const byId = new Map(withPanel.map((p, i) => [`p${i + 1}`, p.r.url]));
@@ -761,7 +812,7 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
       messages: [{
         role: "user",
         content: JSON.stringify({
-          food: { name: item.name, brand: item.brand },
+          food: { name: as.name, brand: as.brand },
           pages: withPanel.map((p, i) => ({ page_id: `p${i + 1}`, site: hostOf(p.r.url), title: p.r.title, text: p.panel })),
         }),
       }],
@@ -791,21 +842,156 @@ export async function runTavilyLookup(deps: TavilyLookupDeps, item: WebFoodItem)
         kept: readings.map((r) => ({ site: hostOf(r.ref), kcal: r.per_100.kcal })),
       },
     });
-    if (readings.length === 0) continue;
+    if (readings.length === 0) return null;
 
     const sites = [...new Set(readings.map((r) => hostOf(r.ref)).filter(Boolean))];
     return {
-      finding: {
-        readings,
-        serving_label: serving?.label ?? null,
-        serving_grams: serving?.grams ?? null,
-        source_note: sites.length ? `from ${sites.slice(0, 2).join(" and ")}`.slice(0, 80) : null,
-        brand: brandFromPages(item, pageBrands),
-      },
-      credits,
-      steps,
-      unavailable: false,
+      readings,
+      serving_label: serving?.label ?? null,
+      serving_grams: serving?.grams ?? null,
+      source_note: sites.length ? `from ${sites.slice(0, 2).join(" and ")}`.slice(0, 80) : null,
+      // The USER's words decide which page brand may be stored, never the
+      // rewrite's: brandFromPages only keeps a brand the user typed.
+      brand: brandFromPages(item, pageBrands),
     };
+  };
+
+  for (const q of searchQueries(item)) {
+    const found = await attempt(q, item);
+    // A failed search means the lookup did not finish, whichever attempt it
+    // was: only a search that RAN and found nothing is an answer. So the
+    // caller falls back either way. The second attempt failing is the likely
+    // shape of a balance running out mid-lookup (caught on PR review).
+    if (found === "unavailable") return { finding: null, credits, steps, unavailable: true };
+    if (found) return { finding: found, credits, steps, unavailable: false };
   }
-  return { finding: null, credits, steps, unavailable: false };
+
+  const missed = { finding: null, credits, steps, unavailable: false, searchedNoLabel: true };
+  // No results at all leaves the rewrite nothing to learn from but the name.
+  if (!deps.suggestSearch || judged.length === 0) return missed;
+  const raw = await deps.suggestSearch(item, judged.slice(0, MAX_SEEN_FOR_REWRITE)).catch(() => null);
+  const rewrite = cleanRewrite(raw, item, asked);
+  steps.push({
+    tool: "search_rewrite",
+    input: { seen: judged.length },
+    result: rewrite ? { name: rewrite.name, queries: rewrite.queries } : { none: true },
+  });
+  if (!rewrite) return missed;
+  // The same words with new searches is a retry, not a new name: nothing to
+  // tell the catalog or decide.
+  const differs = normName(rewrite.name) !== normName(foodLabel(item)) && normName(rewrite.name) !== normName(item.name);
+
+  // Judged and read as the rewritten name, with the user's brand: Jev's "same
+  // brand, same product, same variant" is then asked of the product the rewrite
+  // believes they ate, and a page for any other one still fails it.
+  const as: WebFoodItem = { name: rewrite.name, brand: item.brand };
+  let ran = false;
+  for (const q of rewrite.queries) {
+    const found = await attempt(q, as);
+    // An outage HERE is not a reason to pay the fallback provider: the fixed
+    // searches ran and answered "nothing", and that answer stands.
+    if (found === "unavailable") break;
+    ran = true;
+    if (found) {
+      return {
+        finding: { ...found, ...(differs ? { searched_as: rewrite.name } : {}) },
+        credits,
+        steps,
+        unavailable: false,
+        ...(differs ? { renamed: rewrite.name } : {}),
+      };
+    }
+  }
+  return { ...missed, ...(differs && ran ? { renamed: rewrite.name } : {}) };
+}
+
+const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, " ").trim();
+
+/**
+ * The model's rewrite, made safe to search with. Null when it adds nothing:
+ * no name, or the same words and only searches already run.
+ */
+export function cleanRewrite(raw: SearchRewrite | null | undefined, item: WebFoodItem, asked: string[]): SearchRewrite | null {
+  const name = typeof raw?.name === "string" ? raw.name.replace(/\s+/g, " ").trim().slice(0, 100) : "";
+  if (!name) return null;
+  const done = new Set(asked.map(normName));
+  const queries: string[] = [];
+  for (const q of Array.isArray(raw?.queries) ? raw!.queries : []) {
+    if (typeof q !== "string") continue;
+    const t = q.replace(/\s+/g, " ").trim().slice(0, 150);
+    if (!t || done.has(normName(t)) || queries.some((x) => normName(x) === normName(t))) continue;
+    queries.push(t);
+    if (queries.length >= MAX_REWRITE_SEARCHES) break;
+  }
+  const renamed = normName(name) !== normName(foodLabel(item)) && normName(name) !== normName(item.name);
+  if (queries.length === 0) {
+    if (!renamed) return null;
+    const q = `${name} nutrition facts`;
+    if (done.has(normName(q))) return null;
+    queries.push(q);
+  }
+  return { name, queries };
+}
+
+// ── The search rewrite request ──────────────────────────────────────────────
+
+export const SUGGEST_TOOL = {
+  name: "search_again",
+  description: "Name the product as it is sold, and write new searches for its nutrition label.",
+  input_schema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "The product's most likely name as the brand and the shops print it, the user's brand " +
+          "kept. The user's words unchanged when you cannot tell.",
+      },
+      queries: {
+        type: "array",
+        items: { type: "string" },
+        description: `Up to ${MAX_REWRITE_SEARCHES} web searches that would find this exact product's nutrition label.`,
+      },
+    },
+    required: ["name", "queries"],
+  },
+};
+
+export const SUGGEST_SYSTEM =
+  "A web search for a food's nutrition label found no page about exactly that food. You see the food as the " +
+  "user named it and the titles of the pages the search did return. Work out what the product is most likely " +
+  "called where it is sold, from those titles and from what you know of the brand's range. People often use a " +
+  "nickname the label never prints: a flavour called after a well known product of another company, a short " +
+  "form of the brand, a misspelling, a size or pack word in place of the product line. Keep the user's brand " +
+  "and the kind of product. Never swap to another brand, and never to a different product of the same brand " +
+  "just because it came up: a different flavour or variant is a different product. Never add a size, weight, " +
+  "protein amount or pack count the user did not say, even when a title carries one: a brand often sells the " +
+  "same flavour in several sizes, and picking one for them guesses the very number they are logging. If you " +
+  "cannot tell, keep the user's words as the name. Then write up to two short searches for that exact " +
+  "product's nutrition facts.";
+
+/** The forced call the caller sends to its model for a rewrite. */
+export function suggestSearchPayload(model: string, item: WebFoodItem, seen: SeenResult[]): Record<string, unknown> {
+  return {
+    model,
+    max_tokens: 400,
+    system: SUGGEST_SYSTEM,
+    tools: [SUGGEST_TOOL],
+    tool_choice: { type: "tool", name: SUGGEST_TOOL.name },
+    messages: [{
+      role: "user",
+      content: JSON.stringify({
+        food: { name: item.name, brand: item.brand },
+        results: seen.map((r) => ({ title: r.title, site: r.site })),
+      }),
+    }],
+  };
+}
+
+/** The rewrite out of the model's response, or null. Shape only; cleanRewrite
+ *  makes it safe. */
+export function parseSuggestion(data: any): SearchRewrite | null {
+  const block = (data?.content ?? []).find((b: any) => b?.type === "tool_use" && b?.name === SUGGEST_TOOL.name);
+  const input = block?.input;
+  if (!input || typeof input.name !== "string") return null;
+  return { name: input.name, queries: Array.isArray(input.queries) ? input.queries.filter((q: unknown) => typeof q === "string") : [] };
 }
