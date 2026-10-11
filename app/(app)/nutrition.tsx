@@ -36,6 +36,7 @@ import { EntryEditSheet } from '@/components/diet/EntryEditSheet';
 import { NutritionGoalSheet } from '@/components/diet/NutritionGoalSheet';
 import { FuelDaysSheet } from '@/components/diet/FuelDaysSheet';
 import { fuelOn } from '@/lib/fuelDays';
+import { latestLogDay, readLogDayPhrase } from '@/lib/logDay';
 import { SaveMealSheet } from '@/components/diet/SaveMealSheet';
 import { SavedMealsSheet } from '@/components/diet/SavedMealsSheet';
 import { DayPickerSheet } from '@/components/diet/DayPickerSheet';
@@ -209,13 +210,16 @@ const round = (n: number) => Math.round(n);
 export default function NutritionScreen() {
   const { C } = useTheme();
   const insets = useSafeAreaInsets();
-  // Which calendar day the diary is showing. Defaults to today; ‹ › + the calendar
-  // move it. Logging/editing on a past day writes to that day (see the sync below).
+  // Which calendar day the diary is showing. Defaults to today; ‹ ›, the week
+  // strip and the calendar move it, back or ahead up to latestLogDay(). Logging
+  // or editing on another day writes to that day (see the sync below).
   const [viewDate, setViewDate] = useState<Date>(() => new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const viewIso = ymd(viewDate);
   const todayIso = ymd(new Date());
   const isToday = viewIso === todayIso;
+  const latestIso = ymd(latestLogDay());
+  const atLatest = viewIso >= latestIso;
   // The strip shows the Sunday-start calendar week containing viewDate, so the
   // columns (S M T W T F S) never shuffle — only the highlight moves. Jumping
   // to another week via the calendar swaps the whole row in place.
@@ -472,12 +476,13 @@ export default function NutritionScreen() {
     ));
   }, [totalsDayIso, totals.kcal]);
 
-  // Step the diary a day back/forward; never past today.
+  // Step the diary a day back/forward; never past the last day a log can
+  // land on (a few weeks ahead, for planning).
   const stepDay = useCallback((delta: number) => {
     track('nutrition_day_changed', { direction: delta > 0 ? 'forward' : 'back' });
     setViewDate((d) => {
       const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta);
-      return ymd(next) > ymd(new Date()) ? d : next;
+      return ymd(next) > ymd(latestLogDay()) ? d : next;
     });
   }, []);
 
@@ -488,6 +493,19 @@ export default function NutritionScreen() {
   const runParse = useCallback(async (raw: string, retry?: { clientId: string; logDate: string }) => {
     const t = raw.trim();
     if (!t || !supabase) return;
+    // "2 eggs for tomorrow": the message names its own day. Go there first, so
+    // the diary on screen, the card's Add and a "Just log it" write all land on
+    // it, and send the parser the food without the date. A retry keeps the day
+    // it was first sent for and only needs the same words taken out.
+    const named = readLogDayPhrase(t);
+    const sendText = named ? named.rest : t;
+    const logDay = !retry && named ? named.date : viewDate;
+    if (!retry && named && ymd(named.date) !== ymd(viewDate)) {
+      track('nutrition_day_changed', { direction: named.date > viewDate ? 'forward' : 'back', source: 'text' });
+      setViewDate(named.date);
+    }
+    // Only a day ("for tomorrow"): moving there was the whole ask.
+    if (!sendText) return;
     setSavedReview(false);
     setCardMinimized(false);
     // A meal still under review is context for the next line: "make it a small
@@ -522,7 +540,7 @@ export default function NutritionScreen() {
     // It cleared `pending` above, so the two rules do not fight.
     const auto = retry
       ?? (!pending && autoLogRef.current
-        ? { clientId: newAutoLogClientId(), logDate: ymd(viewDate) }
+        ? { clientId: newAutoLogClientId(), logDate: ymd(logDay) }
         : null);
     if (auto) {
       // Pending BEFORE the request leaves: if the app dies mid-stream, the next
@@ -541,7 +559,7 @@ export default function NutritionScreen() {
     // the only thing standing between it and the hour. Falls back to the clock
     // for a first-shot log, which is what it was always for.
     const args = {
-      text: t,
+      text: sendText,
       mealHint: prevReview?.mealType ?? mealForNow(),
       previous: pending,
       pendingMeal,
@@ -1163,7 +1181,12 @@ export default function NutritionScreen() {
   // One story, one narrator: Drona's line must agree with the ring. Placeholder
   // logic until the coach reads the day for real (edge fn).
   const surplus = eaten.kcal - targets.kcal;
-  const dronaLine = surplus > 0
+  // A day still ahead holds a plan, not food eaten, so it gets its own line.
+  const dronaLine = viewIso > todayIso
+    ? surplus > 0
+      ? `That plan runs ${fmtK(surplus)} over. Trim it now and the day lands on target.`
+      : 'Planning ahead. Build the day here and keep the ring inside your goal.'
+    : surplus > 0
     ? `You're ${fmtK(surplus)} over today. Ease up at dinner and the week still balances.`
     : "Good start. Get one more protein hit in at lunch and you're on pace.";
 
@@ -1192,7 +1215,7 @@ export default function NutritionScreen() {
                 <Text style={s.title}>{dayLabel(viewDate)}</Text>
                 <Feather name="calendar" size={13} color={C.textMuted} />
               </Pressable>
-              <Pressable onPress={() => stepDay(1)} disabled={isToday} hitSlop={8} style={[s.dayArrow, { opacity: isToday ? 0.3 : 1 }]} accessibilityLabel="Next day">
+              <Pressable onPress={() => stepDay(1)} disabled={atLatest} hitSlop={8} style={[s.dayArrow, { opacity: atLatest ? 0.3 : 1 }]} accessibilityLabel="Next day">
                 <Feather name="chevron-right" size={18} color={C.textSecondary} />
               </Pressable>
             </View>
@@ -1211,20 +1234,21 @@ export default function NutritionScreen() {
 
         {/* Week strip — the calendar week around the viewed day; tap a bubble to
             jump straight there. Each day wears a thin ring showing how much of
-            the calorie goal was eaten that day. Future days are dimmed/locked. */}
+            the calorie goal is logged for that day, planned days included.
+            Only days past latestLogDay() are dimmed/locked. */}
         <View style={s.weekStrip}>
           {weekDays.map((d) => {
             const iso = ymd(d);
             const selected = iso === viewIso;
-            const future = iso > todayIso;
+            const locked = iso > latestIso;
             const pct = Math.min((weekKcal[iso] ?? 0) / (targetsOn(d).kcal || 1), 1);
             const R = 16, CIRC = 2 * Math.PI * R;
             return (
               <Pressable
                 key={iso}
                 onPress={() => setViewDate(d)}
-                disabled={future}
-                style={[s.weekDay, future && { opacity: 0.35 }]}
+                disabled={locked}
+                style={[s.weekDay, locked && { opacity: 0.35 }]}
                 accessibilityLabel={`Go to ${dayLabel(d)}`}
               >
                 <Text style={[s.weekDayName, selected && { color: C.foreground }]}>
@@ -1233,7 +1257,7 @@ export default function NutritionScreen() {
                 <View style={s.weekDayRing}>
                   <Svg width={36} height={36} style={StyleSheet.absoluteFill}>
                     <Circle cx={18} cy={18} r={R} stroke={C.borderSubtle} strokeWidth={2} fill="none" />
-                    {!future && pct > 0 && (
+                    {!locked && pct > 0 && (
                       <Circle
                         cx={18} cy={18} r={R}
                         stroke={C.macro.calories} strokeWidth={2} fill="none"
@@ -1611,7 +1635,7 @@ export default function NutritionScreen() {
         onLogged={reload}
       />
 
-      {/* Jump the diary to any past day. */}
+      {/* Jump the diary to any past day, or ahead to plan one. */}
       <ParseSpeedSheet
         open={speedSheetOpen}
         value={parseSpeed}
