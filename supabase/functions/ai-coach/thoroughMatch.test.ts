@@ -59,6 +59,13 @@ Deno.test("Jev's row is the only row decide sees", async () => {
   assertEquals(applyJudgement(item([TOAST, MELBA]), j).candidates.map((c) => c.food_id), ["t1"]);
 });
 
+Deno.test("a rerank score stays only on the row it was given to", () => {
+  const base = { ...item([TOAST, MELBA]), rerankTopScore: 0.9 } as ResolvedItem;
+  const serve = (c: CandidateFood) => ({ action: "serve" as const, candidate: c, trace: {} });
+  assertEquals(applyJudgement(base, serve(TOAST)).rerankTopScore, 0.9);
+  assertEquals(applyJudgement(base, serve(MELBA)).rerankTopScore, undefined);
+});
+
 Deno.test("no row is the food: decide gets no rows, so it estimates", async () => {
   const j = await judgeThorough(jev({ scores: [0.1] }), item([MELBA]), sources);
   assertEquals(j.action, "estimate");

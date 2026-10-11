@@ -996,9 +996,6 @@ export interface ParseMealDeps {
    *  searchCountry.ts). When present its answer wins, null included: null
    *  means "no boost", which is right for a zone we cannot place. */
   resolveSearchCountry?(): Promise<string | null>;
-  /** Precise, our sources first (ourSources.ts, PRECISE_MATCH_MODE). "shadow"
-   *  runs the Jev match beside the web lookup and only records it; "on" serves
-   *  an accepted row and skips the web. Needs `jev`. */
   /** Thorough: Jev checks that the catalog row IS the food named, the same
    *  check Precise runs before the web (thoroughMatch.ts). "shadow" asks and
    *  only records; "on" serves Jev's row, or no row so decide estimates.
@@ -1012,6 +1009,9 @@ export interface ParseMealDeps {
      *  user's brand name, and only the label is better. */
     brandWeb?: boolean;
   };
+  /** Precise, our sources first (ourSources.ts, PRECISE_MATCH_MODE). "shadow"
+   *  runs the Jev match beside the web lookup and only records it; "on" serves
+   *  an accepted row and skips the web. Needs `jev`. */
   preciseMatch?: {
     mode: "off" | "shadow" | "on";
     findCandidates(item: MatchItem): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>>;

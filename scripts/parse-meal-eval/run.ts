@@ -269,7 +269,9 @@ const deps: ParseMealDeps = {
         const { data, error } = ids.length
           ? await supabase.from("foods").select("id, source").in("id", ids)
           : { data: [], error: null };
-        if (error) console.error(`  foods.source lookup error: ${error.message}`);
+        // Thrown, as production does, so a failed lookup is "no_sources" and
+        // keeps every row here too.
+        if (error) throw new Error(error.message);
         return new Map(((data ?? []) as Array<{ id: string; source: string }>).map((r) => [String(r.id), String(r.source)]));
       },
     }

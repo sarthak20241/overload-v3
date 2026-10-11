@@ -93,7 +93,13 @@ export async function judgeThorough(
 
 /** The item decide will see after the judgement, in "on" mode. */
 export function applyJudgement(item: ResolvedItem, j: ThoroughJudgement): ResolvedItem {
-  if (j.action === "serve" && j.candidate) return { ...item, candidates: [j.candidate] };
+  if (j.action === "serve" && j.candidate) {
+    // The rerank score belongs to the row that ranked first. If Jev took
+    // another one, the score says nothing about it, and code fill (which
+    // skips decide on a strong score) must not read it as this row's.
+    const sameTop = item.candidates[0] === j.candidate;
+    return { ...item, candidates: [j.candidate], ...(sameTop ? {} : { rerankTopScore: undefined }) };
+  }
   if (j.action === "estimate") return { ...item, candidates: [] };
   return item;
 }
