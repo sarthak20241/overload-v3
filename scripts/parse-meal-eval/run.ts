@@ -26,6 +26,7 @@ import {
 import { searchFatSecret } from "../../supabase/functions/ai-coach/fatsecret";
 import { voyageRerank } from "../../supabase/functions/ai-coach/rerank";
 import { CASES, type EvalCase } from "./cases";
+import { THOROUGH_MATCH_CASES } from "./thoroughMatchCases";
 import { makeClaudeCliFetch } from "./claude-cli-fetch";
 
 // ── Env ─────────────────────────────────────────────────────────────────────
@@ -55,6 +56,9 @@ const WEB_SEARCH = env("EVAL_WEB_SEARCH") === "1";
 // Route model calls through the `claude -p` CLI (subscription) instead of the
 // API. Correctness only - see claude-cli-fetch.ts for what it does not model.
 const VIA_CLI = env("EVAL_VIA_CLI") === "1";
+// Which corpus. "thorough-match" is the wrong-catalog-row set
+// (thoroughMatchCases.ts); anything else is the main corpus.
+const CASE_SET = env("CASE_SET") || "main";
 const ONLY = env("ONLY") ? new Set(env("ONLY").split(",").map((s: string) => s.trim())) : null;
 // How many cases run at once. Default 1 keeps the historical serial behaviour
 // (and the historical latency numbers, which are only comparable when nothing
@@ -105,6 +109,10 @@ const VOYAGE_API_KEY = env("VOYAGE_API_KEY");
 // FatSecret (tier 2b). Absent creds = source silently off, same as production.
 const FATSECRET_KEY = env("FATSECRET_CONSUMER_KEY");
 const FATSECRET_SECRET = env("FATSECRET_CONSUMER_SECRET");
+// Thorough's Jev row check (thoroughMatch.ts): THOROUGH_MATCH=shadow|on. Needs
+// JEV_API_KEY; off without it, same as production.
+const JEV_API_KEY = env("JEV_API_KEY");
+const THOROUGH_MATCH = (["shadow", "on"] as const).find((m) => m === env("THOROUGH_MATCH")) ?? "off";
 async function embedQueryForEval(text: string): Promise<number[] | null> {
   if (!VOYAGE_API_KEY) return null;
   try {
@@ -246,6 +254,20 @@ const deps: ParseMealDeps = {
       is_default: !!s.is_default,
     }));
   },
+  // Only with the row check on, so an "off" run stays the exact baseline.
+  ...(THOROUGH_MATCH !== "off" && JEV_API_KEY ? { jev: { apiKey: JEV_API_KEY, timeoutMs: 5000 } } : {}),
+  thoroughMatch: THOROUGH_MATCH !== "off" && JEV_API_KEY
+    ? {
+      mode: THOROUGH_MATCH,
+      sourcesOf: async (ids: string[]) => {
+        const { data, error } = ids.length
+          ? await supabase.from("foods").select("id, source").in("id", ids)
+          : { data: [], error: null };
+        if (error) console.error(`  foods.source lookup error: ${error.message}`);
+        return new Map(((data ?? []) as Array<{ id: string; source: string }>).map((r) => [String(r.id), String(r.source)]));
+      },
+    }
+    : undefined,
   log: () => {},
 };
 
@@ -351,10 +373,11 @@ function scoreCase(c: EvalCase, result: ParseMealResult): string[] {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const cases = CASES.filter((c) => !ONLY || ONLY.has(c.id))
+  const corpus = CASE_SET === "thorough-match" ? THOROUGH_MATCH_CASES : CASES;
+  const cases = corpus.filter((c) => !ONLY || ONLY.has(c.id))
     .filter((c) => !c.expect.needsWebSearch || WEB_SEARCH);
   console.log(
-    `parse_meal eval: ${cases.length} cases | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | OFF backfill=DRY RUN\n`,
+    `parse_meal eval: ${cases.length} cases (${CASE_SET}) | model=${MODEL} | web_search=${WEB_SEARCH ? "on" : "off"} | thorough_match=${THOROUGH_MATCH} | OFF backfill=DRY RUN\n`,
   );
 
   const outcomes: CaseOutcome[] = [];
@@ -482,6 +505,7 @@ async function main() {
             "correction_scope",
             "correction_guard",
             "fast_correction",
+            "thorough_match",
           ].includes(String(st.tool))
         ) {
           console.log(`      # ${st.tool} ${JSON.stringify(st.input)} -> ${JSON.stringify(st.result ?? null)}`);

@@ -797,6 +797,14 @@ const PARSE_FAST_MODE = (Deno.env.get("PARSE_FAST_MODE") ?? "on") as "off" | "on
 // set to "off", a kill switch that needs no deploy.
 const USER_FOOD_MEMORY = (Deno.env.get("USER_FOOD_MEMORY") ?? "on").trim().toLowerCase() !== "off";
 
+// Thorough's row check (thoroughMatch.ts): Jev asks whether the catalog row
+// IS the food named, and a "no" makes decide estimate. Same values and same
+// rule as PRECISE_MATCH_MODE: off unless set on purpose.
+const THOROUGH_MATCH_MODE: "off" | "shadow" | "on" = (() => {
+  const v = (Deno.env.get("THOROUGH_MATCH_MODE") ?? "off").trim().toLowerCase();
+  return v === "shadow" || v === "on" ? v : "off";
+})();
+
 const PRECISE_MATCH_MODE: "off" | "shadow" | "on" = (() => {
   const v = (Deno.env.get("PRECISE_MATCH_MODE") ?? "off").trim().toLowerCase();
   return v === "shadow" || v === "on" ? v : "off";
@@ -2931,6 +2939,17 @@ function makeParseDeps(
           if (!keys.length) return [];
           const { data } = await userClient.from("user_food_cache").select("*").overlaps("aliases", keys);
           return (data ?? []).map((c) => ({ ...cachedMemoryEntry(c as Record<string, unknown>), alias_lookup: true }));
+        },
+      }
+      : undefined,
+    thoroughMatch: THOROUGH_MATCH_MODE !== "off" && JEV_API_KEY
+      ? {
+        mode: THOROUGH_MATCH_MODE,
+        sourcesOf: async (ids: string[]) => {
+          if (ids.length === 0) return new Map<string, string>();
+          const { data, error } = await admin.from("foods").select("id, source").in("id", ids);
+          if (error) throw new Error(error.message);
+          return new Map(((data ?? []) as Array<{ id: string; source: string }>).map((r) => [r.id, r.source]));
         },
       }
       : undefined,

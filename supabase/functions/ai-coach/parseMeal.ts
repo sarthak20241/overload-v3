@@ -46,6 +46,7 @@ import {
 } from "./preciseCache.ts";
 import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
 import { matchOurSources } from "./ourSources.ts";
+import { applyJudgement, judgeThorough, type ThoroughMatchMode } from "./thoroughMatch.ts";
 import { fillStated, readStated, type StatedPer100, statedNote, statedPer100, type StatedRaw } from "./statedNumbers.ts";
 import {
   buildMemory,
@@ -981,6 +982,14 @@ export interface ParseMealDeps {
   /** Precise, our sources first (ourSources.ts, PRECISE_MATCH_MODE). "shadow"
    *  runs the Jev match beside the web lookup and only records it; "on" serves
    *  an accepted row and skips the web. Needs `jev`. */
+  /** Thorough: Jev checks that the catalog row IS the food named, the same
+   *  check Precise runs before the web (thoroughMatch.ts). "shadow" asks and
+   *  only records; "on" serves Jev's row, or no row so decide estimates.
+   *  sourcesOf maps catalog food ids to foods.source for the gate. */
+  thoroughMatch?: {
+    mode: ThoroughMatchMode;
+    sourcesOf(ids: string[]): Promise<Map<string, string>>;
+  };
   preciseMatch?: {
     mode: "off" | "shadow" | "on";
     findCandidates(item: MatchItem): Promise<Array<{ food: CandidateFood; meta: MatchCandidate }>>;
@@ -5982,7 +5991,7 @@ async function runParseMealCore(
     };
   }
 
-  const resolved: ResolvedItem[] = await Promise.all(
+  let resolved: ResolvedItem[] = await Promise.all(
     toResolve.map(async (item, idx) => {
       // The user's own numbers first. A full panel answers with no lookup; a
       // partial one keeps theirs and lets the tier fill only what is missing.
@@ -6044,6 +6053,40 @@ async function runParseMealCore(
     }),
   );
   T.resolve_ms = Date.now() - tResolve0;
+
+  // ── Thorough: is the row the food? ────────────────────────────────────────
+  // Precise has its own check inside resolve, and Quick never searches. A line
+  // already answered by the user's numbers, their memory or the cache carries
+  // resolvedIdentity and is not asked about again.
+  const tm = deps.thoroughMatch;
+  if (!fastMode && !superMode && tm && tm.mode !== "off" && deps.jev) {
+    const tMatch0 = Date.now();
+    const asked = resolved.map((r) => !r.resolvedIdentity && r.candidates.length > 0);
+    if (asked.some(Boolean)) {
+      // Catalog rows only. A FatSecret row carries "fs:<id>", which is not a
+      // foods id: one in the list fails the whole lookup. Its origin is its
+      // own source field, which candidateMeta falls back to.
+      const ids = [...new Set(resolved.flatMap((r, i) =>
+        asked[i] ? r.candidates
+          .filter((c) => c.source === "catalog" && c.food_id && !c.food_id.startsWith(EPHEMERAL_ID_PREFIX))
+          .map((c) => c.food_id!) : []
+      ))];
+      const sourceOf = await tm.sourcesOf(ids).catch(() => null);
+      // No origins, no judgement: the gate would read every catalog row as an
+      // unknown source and refuse the right one, so a failed lookup would cost
+      // the user rows they had. Same rule as a Jev failure: change nothing.
+      const blind = !sourceOf || (ids.length > 0 && sourceOf.size === 0);
+      if (blind) steps.push({ iter: 1, tool: "thorough_match", input: { mode: tm.mode, action: "keep" }, result: { reason: "no_sources" } });
+      const judged = blind ? resolved.map(() => null) : await Promise.all(resolved.map((r, i) =>
+        asked[i] ? judgeThorough(deps.jev!, r, sourceOf!, deps.log).catch(() => null) : Promise.resolve(null)
+      ));
+      for (const j of judged) {
+        if (j) steps.push({ iter: 1, tool: "thorough_match", input: { mode: tm.mode, action: j.action }, result: j.trace });
+      }
+      if (tm.mode === "on") resolved = resolved.map((r, i) => (judged[i] ? applyJudgement(r, judged[i]!) : r));
+    }
+    T.thorough_match_ms = Date.now() - tMatch0;
+  }
   const tDecide0 = Date.now();
 
   // ── Stage 3: decide ───────────────────────────────────────────────────────

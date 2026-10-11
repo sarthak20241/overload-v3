@@ -19,6 +19,8 @@ npx expo install <package>
 # run bills the subscription instead of API credit.
 EVAL_VIA_CLI=1 npx tsx scripts/parse-meal-eval/run.ts
 # Composable: ONLY=case-a,case-b  FAST_MODE=on  EVAL_WEB_SEARCH=1  DEBUG_STEPS=1
+# Wrong-catalog-row set (Thorough): CASE_SET=thorough-match, and
+# THOROUGH_MATCH=on (or shadow) to run Jev's row check (needs JEV_API_KEY).
 
 # Use the API key ONLY when the question is latency or token cost. The harness
 # warns that CLI timings are not comparable — they measure the CLI, not the
