@@ -309,6 +309,8 @@ function previousAsParsedItem(p: PreviousItem): ParsedItem {
     source: p.source ?? "estimate",
     assumption: p.assumption ?? null,
     confidence: p.confidence ?? "medium",
+    // Kept so the NEXT double check on this line still looks up the user's words.
+    ...(p.said_name ? { said_name: p.said_name } : {}),
   };
 }
 
@@ -1244,6 +1246,15 @@ const EXTRACT_TOOL = {
           "offered to search and the user agreed, this is true. Only ever true when a " +
           "previous meal was given.",
       },
+      research_food_names: {
+        type: ["array", "null"],
+        items: { type: "string" },
+        description:
+          "With requests_research: the previous lines the user wants looked up, each copied as the " +
+          'previous meal spells its food_name. "check the peanuts" sends the peanuts line; a user who ' +
+          "calls a line by their own words (said_name) still gets that line's food_name. null or empty " +
+          "when they did not single any out (a bare yes, check everything).",
+      },
       asks_about_previous: {
         type: "boolean",
         description:
@@ -2146,7 +2157,7 @@ A meal the user just logged may be shown to you as previous_meal (it is on scree
 - QUESTION about that meal (set asks_about_previous true, declined false, items empty): the user is challenging or checking your numbers rather than eating. "is that correct?", "that seems high", "are you sure it had 122 g protein?". Never treat this as non-food chatter: the app answers it with the real numbers.
 - QUESTION THAT ALSO STATES THE FIX ("that seems high, make it 100g", "is that right? it was a small one"): set corrects_previous TRUE and list the corrected items as well. The user told you the answer; do not just agree with them and change nothing.
 - REMOVAL ("remove the tofu", "drop the milk", "I did not have the rice", "scratch the dosa"): put the line's name in removed_food_names, copied as the previous meal spells it, and LEAVE IT OUT of items. Set corrects_previous true. Listing it in items keeps it in the log, which is the opposite of what was asked.
-- ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance.
+- ACCEPTING A LOOKUP (set requests_research true, declined false, items empty): Drona offered to search for the real label and the user said yes. Judge this from recent_turns, not the words alone: a bare "yes" or "please" right after that offer is an acceptance. When the user names which lines to check ("look up the peanuts", "check the bar"), put those lines' food_names in research_food_names; the app looks up only those.
 When in doubt between correction and addition, prefer addition: adding a wrong item is easier for the user to spot and fix than silently rewriting what they already checked.`;
 
 /**
@@ -2257,7 +2268,7 @@ const FAST_EXTRACT_TOOL = (() => {
   // a previous meal was given". Leaving them in the schema asks Haiku to
   // consider, and often emit, five fields whose answer is fixed. Latency here is
   // output tokens, so a field the model cannot need is pure delay.
-  for (const dead of ["requests_research", "asks_about_previous", "corrects_previous", "removed_food_names", "rejects_saved"]) {
+  for (const dead of ["requests_research", "research_food_names", "asks_about_previous", "corrects_previous", "removed_food_names", "rejects_saved"]) {
     delete t.input_schema.properties[dead];
   }
   delete item.properties.corrects_food_name;
@@ -4083,6 +4094,33 @@ export function removalNames(phrase: string, rowName: string): boolean {
  * for. "Milk" adds nothing beyond "milk"; "Chai / Milk Tea" adds two. Ties go
  * to the first, and no candidate returns null rather than guessing.
  */
+/**
+ * Mark the lines a typed double check named (research_food_names), so research
+ * looks up only those. A line the client already marked (the tapped button)
+ * wins and the names are ignored. Each name resolves to ONE line, the same way
+ * a removal does, by food_name or by the user's own words for the line. Names
+ * that match nothing mark nothing, and research then keeps its first-three reach.
+ */
+export function markResearchTargets(previous: PreviousItem[], names: unknown): PreviousItem[] {
+  if (previous.some((p) => p.research === true) || !Array.isArray(names)) return previous;
+  const wanted = names.filter((n): n is string => typeof n === "string" && n.trim() !== "").map((n) => n.trim());
+  if (wanted.length === 0) return previous;
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const hit = new Set<PreviousItem>();
+  for (const n of wanted) {
+    const exact = previous.find((p) => norm(p.food_name) === norm(n) || (p.said_name && norm(p.said_name) === norm(n)));
+    const target = exact ??
+      bestRemovalTarget(n, previous) ??
+      bestRemovalTarget(n, previous.map((p) => ({ ...p, food_name: p.said_name ?? "" })));
+    if (!target) continue;
+    // bestRemovalTarget on the said_name view returns a copy: map it back.
+    const line = previous.find((p) => p === target) ?? previous.find((p) => p.said_name === target.food_name);
+    if (line) hit.add(line);
+  }
+  if (hit.size === 0) return previous;
+  return previous.map((p) => (hit.has(p) ? { ...p, research: true } : p));
+}
+
 export function bestRemovalTarget(phrase: string, previous: PreviousItem[]): PreviousItem | null {
   const words = (x: string) => x.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
   let best: PreviousItem | null = null;
@@ -5360,6 +5398,9 @@ async function runParseMealCore(
             text: input.previousText ?? "",
             items: prevItems.map((p) => ({
               food_name: p.food_name,
+              // What the user called it, when the card shows another name: they
+              // will refer to the line by these words ("check the oreo bar").
+              ...(p.said_name ? { said_name: p.said_name } : {}),
               quantity: p.quantity,
               serving_label: p.serving_label,
               grams: p.grams,
@@ -5657,9 +5698,18 @@ async function runParseMealCore(
   // spends web-search time on purpose: they have told us the fast answer was
   // wrong, so the slow one is worth it.
   if (hasPrevious && ext.requests_research === true) {
-    const researched = await researchPrevious(deps, prevItems, accumulate, () => anthropicCalls++)
+    const targets = markResearchTargets(prevItems, ext.research_food_names);
+    const researched = await researchPrevious(deps, targets, accumulate, () => anthropicCalls++)
       .catch(() => null);
-    steps.push({ iter: 1, tool: "research_previous", input: { found: researched ? researched.items.length : 0 } });
+    steps.push({
+      iter: 1,
+      tool: "research_previous",
+      input: {
+        found: researched ? researched.items.length : 0,
+        // Which lines were looked up: the tapped or named ones, else null (first three).
+        targets: targets.some((p) => p.research) ? targets.filter((p) => p.research).map((p) => p.food_name) : null,
+      },
+    });
     if (researched?.conflict) {
       // The web found something materially different, most likely another
       // variant. Offer it rather than apply it: a wrong silent swap is worse

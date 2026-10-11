@@ -26,6 +26,7 @@ import {
   type ParsedItem,
   type ParseMealDeps,
   type ParseMealInput,
+  markResearchTargets,
   type ResolvedItem,
   runParseMeal,
   stampSaidNames,
@@ -406,14 +407,17 @@ Deno.test("the double check searches for the user's words, and the line takes th
 
 // ── The double check looks up the tapped line, and only that line ───────────
 
-function researchDeps(looked: string[]): ParseMealDeps {
+function researchDeps(looked: string[], extraction: Record<string, unknown> = {}, extractSeen: string[] = []): ParseMealDeps {
   const fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const tools: string[] = (body.tools ?? []).map((t: { name: string }) => t.name);
     const name = tools.find((t) => t !== "web_search") ?? "";
     const reply = (input: unknown) =>
       Response.json({ stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "tool_use", name, input }] });
-    if (name === "extract_meal") return reply({ requests_research: true, items: [] });
+    if (name === "extract_meal") {
+      extractSeen.push(String(body.messages[0].content));
+      return reply({ requests_research: true, items: [], ...extraction });
+    }
     if (name === "report_labels") {
       const items = JSON.parse(body.messages[0].content) as Array<{ name: string }>;
       looked.push(...items.map((i) => i.name));
@@ -454,4 +458,60 @@ Deno.test("an old app that marks no line still gets the first three looked up", 
   const looked: string[] = [];
   await runParseMeal(researchDeps(looked), ask(MEAL));
   assertEquals(looked, ["chicken", "peanuts", "banana"]);
+});
+
+// ── Typed double checks target the line they name ───────────────────────────
+
+Deno.test("a typed 'check the peanuts' looks up only the peanuts", async () => {
+  const looked: string[] = [];
+  const r = await runParseMeal(researchDeps(looked, { research_food_names: ["Peanuts"] }), { ...ask(MEAL), text: "can you check the peanuts online" });
+  assertEquals(looked, ["peanuts"]);
+  assertEquals(r.parsed!.items.map((i) => i.kcal), [234, 500, 96, 160]);
+  const step = r.steps.find((st) => st.tool === "research_previous");
+  assertEquals((step?.input as { targets: string[] }).targets, ["peanuts"]);
+});
+
+Deno.test("a line named by the user's own words is found through said_name, and they see those words", async () => {
+  const looked: string[] = [];
+  const seen: string[] = [];
+  const bar = { ...line("Fitzo Protein Bar Vanilla Wafer", 10, 13, 5), said_name: "Fitzo biscotti protein bar" };
+  const r = await runParseMeal(
+    researchDeps(looked, { research_food_names: ["biscotti bar"] }, seen),
+    { ...ask([...MEAL.slice(0, 3), bar]), text: "look up the biscotti bar" },
+  );
+  assertEquals(looked, ["Fitzo biscotti protein bar"]);
+  assert(seen[0].includes("Fitzo biscotti protein bar"));
+  // The untouched lines come back, and the user's words ride along on them.
+  assertEquals(r.parsed!.items.length, 4);
+});
+
+Deno.test("the tapped line wins over names the model read out of the text", async () => {
+  const looked: string[] = [];
+  await runParseMeal(
+    researchDeps(looked, { research_food_names: ["peanuts"] }),
+    ask(MEAL.map((it, i) => (i === 2 ? { ...it, research: true } : it))),
+  );
+  assertEquals(looked, ["banana"]);
+});
+
+Deno.test("names that match no line keep the first-three reach", async () => {
+  const looked: string[] = [];
+  await runParseMeal(researchDeps(looked, { research_food_names: ["paneer"] }), ask(MEAL));
+  assertEquals(looked, ["chicken", "peanuts", "banana"]);
+});
+
+Deno.test("each name marks ONE line: 'milk' is the milk, not the milk tea", () => {
+  const meal = [line("Chai / Milk Tea", 1, 5, 1), line("Milk", 3, 5, 3)];
+  assertEquals(markResearchTargets(meal, ["milk"]).map((p) => p.research === true), [false, true]);
+  assertEquals(markResearchTargets(meal, null), meal);
+});
+
+Deno.test("an untouched line keeps the user's words through a double check", async () => {
+  const looked: string[] = [];
+  const peanuts = { ...MEAL[1], said_name: "groundnuts" };
+  const r = await runParseMeal(
+    researchDeps(looked),
+    ask([MEAL[0], peanuts, MEAL[2], { ...MEAL[3], research: true }]),
+  );
+  assertEquals(r.parsed!.items[1].said_name, "groundnuts");
 });
