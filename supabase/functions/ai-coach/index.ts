@@ -182,7 +182,10 @@ const RETRIEVAL_QUERY_TIMEOUT_MS = envInt("RETRIEVAL_QUERY_TIMEOUT_MS", 8000);
 // NOT the coach 30/24h window: meals happen several times a day and must not
 // eat chat quota. Web search (tier 3 of the fallback ladder) is env-gated so
 // it can be killed without a redeploy if costs or quality surprise us.
-const PARSE_MEAL_MODEL = "claude-haiku-4-5";
+// Haiku 5.5 since 2026-10-11: 99/102 on the parse_meal eval against 98/102
+// for Haiku 4.5, at a tenth of the per-token price. It thinks by default on
+// unforced turns (the web lookup loop), so watch latency there.
+const PARSE_MEAL_MODEL = "claude-haiku-5-5";
 
 // ── Food intent routing (log vs create) ─────────────────────────────────────
 // TypeSafe's Jev decides whether a message is "I ate this" or "save this for
@@ -221,7 +224,8 @@ async function classifyFoodIntentWithModel(text: string): Promise<FoodIntent | n
   if (!ANTHROPIC_API_KEY) return null;
   const res = await callAnthropic({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 64,
+    // 96, not 64: Haiku 5.5 counts the same text as ~30% more tokens.
+    max_tokens: 96,
     system:
       "You route messages typed into a food tracking app. Decide on the INSTRUCTION in the message, " +
       "not on the food it describes. Creating requires an EXPLICIT ask to save, create, or remember a " +
@@ -481,7 +485,12 @@ async function replyToFoodBarChat(
     : "";
   const res = await callWithDiaryReads({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 300,
+    // Haiku 5.5 thinks before an unforced reply, and thinking spends this cap.
+    // At 300 it could run out mid-thought and return no text, which the caller
+    // serves as the canned decline. Low effort keeps the thinking short; the
+    // prompt, not the cap, keeps the reply to three sentences.
+    max_tokens: 1024,
+    output_config: { effort: "low" },
     system:
       "You are Coach Drona, answering inside the food logging box of a fitness app. The user typed something that is not a meal. " +
       `${canDo} ${diary}` +
@@ -523,7 +532,8 @@ async function draftFoodCreate(
     : "";
   const res = await callWithDiaryReads({
     model: PARSE_MEAL_MODEL,
-    max_tokens: 900,
+    // 1200, not 900: Haiku 5.5 counts the same text as ~30% more tokens.
+    max_tokens: 1200,
     system:
       "The user asked to SAVE a food or meal in a fitness app. Call exactly one tool. " +
       "create_custom_food for one thing with no parts; create_custom_meal for a named dish described by its ingredients. " +
@@ -759,9 +769,10 @@ function foodIntentStep(d: FoodIntentDecision | null, outcome?: FoodBarOutcome):
 // The DECIDE call's budget. It writes one line per item plus the Drona line,
 // so it scales with the item count, and that ceiling went from 12 to 50
 // (MAX_ITEMS_PER_PARSE). 1600 was sized for twelve; a long day would have been
-// cut off mid-JSON. 5000 matches the extract budgets - a cap, not a target, so
-// an ordinary two-item meal costs exactly what it did before.
-const PARSE_MEAL_MAX_TOKENS = 5000;
+// cut off mid-JSON. It matches the extract budgets - a cap, not a target, so
+// an ordinary two-item meal costs exactly what it did before. 5000 until Haiku
+// 5.5, which counts the same text as ~30% more tokens; 6500 since.
+const PARSE_MEAL_MAX_TOKENS = 6500;
 // #1 latency instrumentation: per-isolate parse counter; ==1 means the isolate
 // was cold for this request (proxy for cold-start cost we cannot time inside).
 let PARSE_ISOLATE_REQUESTS = 0;
