@@ -17,9 +17,14 @@
 import type { DronaFacts } from './dronaCards.ts';
 import { completeFood, type DietFacts } from './dronaCalories.ts';
 import { dowOfISO, fuelDayText, fuelOn, normalizeFuelDays } from './fuelDays.ts';
+import { SONNET_MODEL, sonnetSettings } from './sonnet.ts';
 
-export const DRONA_CARD_MODEL = 'claude-sonnet-4-6';
+export const DRONA_CARD_MODEL = SONNET_MODEL;
 const TIMEOUT_MS = 25_000;
+// 400 was the tool call alone under Sonnet 4.6. Sonnet 5.5 writes more around
+// the call, and at 550 the API eval cut it off before the rationale. A cap,
+// not a target: billing is on what is written.
+const MAX_TOKENS = 2000;
 
 export interface ModelTool {
   name: string;
@@ -156,10 +161,14 @@ export async function askCaloriesModel(
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model,
-        max_tokens: 400,
+        max_tokens: MAX_TOKENS,
         system: CALORIE_SYSTEM,
         tools: CALORIE_TOOLS,
-        tool_choice: { type: 'any' },
+        // Not forced: Sonnet 5.5 rejects tool_choice "any". The system prompt
+        // asks for exactly one tool call, and no call already reads as a hold.
+        // No thinking, as under Sonnet 4.6: the app waits on this call for at
+        // most 10s (lib/dronaCard.ts) when it asks for the week's card.
+        ...sonnetSettings(model),
         messages: [{ role: 'user', content: caloriePrompt(pack) }],
       }),
       signal: controller.signal,
@@ -175,9 +184,15 @@ export async function askCaloriesModel(
       cache_read_tokens: u.cache_read_input_tokens ?? 0,
       cache_creation_tokens: u.cache_creation_input_tokens ?? 0,
     };
+    // A call cut off at the cap is a partial object (a number with no
+    // rationale); never let half an answer reach the validator.
+    if (data?.stop_reason === 'max_tokens') {
+      return { tool: 'none', input: {}, usage, latency_ms: Date.now() - started, error: 'max_tokens' };
+    }
     const block = (data?.content ?? []).find((b: { type?: string }) => b?.type === 'tool_use');
     if (!block || (block.name !== 'propose_targets' && block.name !== 'hold')) {
-      return { tool: 'none', input: {}, usage, latency_ms: Date.now() - started, error: 'no tool call' };
+      const why = data?.stop_reason === 'refusal' ? 'refusal' : data?.stop_reason === 'max_tokens' ? 'max_tokens' : 'no tool call';
+      return { tool: 'none', input: {}, usage, latency_ms: Date.now() - started, error: why };
     }
     return { tool: block.name, input: block.input ?? {}, usage, latency_ms: Date.now() - started };
   } catch (e) {

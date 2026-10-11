@@ -23,6 +23,7 @@ import {
   summarizeMeasurements,
 } from "./memory.ts";
 import { envInt } from "../_shared/envInt.ts";
+import { requireTool, retryTool, SONNET_MODEL, SONNET_SETTINGS, sonnetSettings } from "../_shared/sonnet.ts";
 import { AI_LIMITS } from "../_shared/aiLimits.ts";
 import { isTimeZone } from "../_shared/wallClock.ts";
 import { dowOfISO, kcalOnDow, normalizeFuelDays } from "../_shared/fuelDays.ts";
@@ -126,8 +127,12 @@ if (!CLERK_ISSUER) {
 const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_MAX = AI_LIMITS.proChat;
 const PREVIEW_MAX_CHARS = 200;
-const MODEL = "claude-sonnet-4-6";
+const MODEL = SONNET_MODEL;
 const MAX_TOOL_ITERATIONS = 5;
+// What the user sees when Sonnet declines a turn on safety grounds (a 200 with
+// stop_reason "refusal" and no text). Rare for a fitness coach, but an empty
+// bubble reads as a crash.
+const REFUSAL_REPLY = "I can't help with that one. Ask me about your training, food or recovery.";
 // Mode-aware token budgets. Chat replies stay tight (the rubric rewards
 // concise coaching prose). Single-workout generation needs ~700–1500 tokens
 // for the JSON tool input plus the 1-line intent. Plan generation easily
@@ -136,16 +141,19 @@ const MAX_TOOL_ITERATIONS = 5;
 // when the model hits the cap mid-tool-emission → stop_reason flips to
 // "max_tokens", the tool_use block is incomplete, and the client gets a
 // `structured: null` payload.
-const CHAT_MAX_TOKENS = 1024;
-const GENERATE_WORKOUT_MAX_TOKENS = 2048;
-const GENERATE_PLAN_MAX_TOKENS = 4096;
+// Every budget here went up ~30% with Sonnet 5.5, whose tokenizer counts the
+// same text as ~30% more tokens than Sonnet 4.6's (1024, 2048, 4096, 6144
+// before). Same outputs, same headroom.
+const CHAT_MAX_TOKENS = 1400;
+const GENERATE_WORKOUT_MAX_TOKENS = 2700;
+const GENERATE_PLAN_MAX_TOKENS = 5400;
 // generate_program has its own ceiling. Measured from a real 6-phase emission
 // (~465 chars of prose per phase + ~250 of JSON keys/numbers) a schema-max
 // 12-phase program is ~9.5k chars, roughly 2.4-2.7k tokens. 4096 covered that
 // but thinly. Anthropic bills actual output, so the extra ceiling costs nothing
 // on the typical 2-6 phase program and only exists for the tail. Truncation is
 // still hard-errored (tool_truncated), never silently dropped.
-const GENERATE_PROGRAM_MAX_TOKENS = 6144;
+const GENERATE_PROGRAM_MAX_TOKENS = 8000;
 const ANTHROPIC_MAX_TOKENS = CHAT_MAX_TOKENS; // default; overridden per-mode
 // Every model-call timeout below reads its budget through the shared envInt
 // (../_shared/envInt.ts), so any of them can be retuned from the Edge
@@ -840,7 +848,7 @@ const VOYAGE_TIMEOUT_MS = envInt("VOYAGE_TIMEOUT_MS", 6000);
 
 // SSE keepalive. The streaming coach turn can go completely silent on the
 // wire for minutes: only `text_delta` is forwarded to the client, and a
-// forced terminal tool (generate_program above all — 6144 max_tokens, the
+// forced terminal tool (generate_program above all — 8000 max_tokens, the
 // largest budget of any mode) emits its whole payload as `input_json_delta`,
 // which is accumulated server-side and never sent. generate_plan is shielded
 // by the fan-out's plan_skeleton/plan_day events; program modes have no
@@ -1547,7 +1555,8 @@ async function buildRetrievalQuery(
 
 // ── Anthropic API ───────────────────────────────────────────────────────────
 interface AnthropicMessage {
-  role: "user" | "assistant";
+  // "system" is a mid-conversation operator note (requireTool), Sonnet 5.5+.
+  role: "user" | "assistant" | "system";
   content: string | unknown[];
 }
 
@@ -1709,13 +1718,16 @@ async function runStreamingToolLoop(
   let hitIterationCap = false;
   let structured: { name: string; input: Record<string, unknown> } | null = null;
 
+  // Sonnet 5.5 rejects a forced tool_choice, so the required tool is named in
+  // an appended system note instead (requireTool). It must follow a user turn;
+  // the client always ends on one, but an unexpected history falls back to the
+  // retry below rather than sending a 400.
+  const lastRole = conversation[conversation.length - 1]?.role;
+  if (forceTool && lastRole === "user") conversation.push(requireTool(forceTool));
+  // One second ask when the model answers a required turn in text.
+  let retriedForce = false;
+
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-    // forceTool ONLY on the first iteration. Once the terminal tool has
-    // fired (or after a follow-up turn appended tool_results), the model
-    // should be free to either chat or call another tool.
-    const toolChoice = (forceTool && iter === 0)
-      ? { type: "tool" as const, name: forceTool }
-      : undefined;
     const iterStartedAt = Date.now();
 
     // Same hung-upstream guard as the non-streaming callAnthropic. The abort
@@ -1740,7 +1752,7 @@ async function runStreamingToolLoop(
           tools,
           messages: conversation,
           stream: true,
-          ...(toolChoice ? { tool_choice: toolChoice } : {}),
+          ...SONNET_SETTINGS,
         }),
         signal: streamAbort.signal,
       });
@@ -1793,6 +1805,22 @@ async function runStreamingToolLoop(
             sse.write("delta", { text: d.text });
           } else if (d.type === "input_json_delta") {
             blk._input += d.partial_json;
+          } else if (d.type === "thinking_delta") {
+            // between_tools: a progress note written between tool calls ("Let
+            // me check your bench history."). Sonnet 4.6 sent these as text, so
+            // they stream to the user as before.
+            blk.thinking = (blk.thinking ?? "") + d.thinking;
+            if (!wroteTextThisIteration && iter > 0 && accumulatedText && !/\s$/.test(accumulatedText)) {
+              accumulatedText += "\n\n";
+              sse.write("delta", { text: "\n\n" });
+            }
+            wroteTextThisIteration = true;
+            accumulatedText += d.thinking;
+            sse.write("delta", { text: d.thinking });
+          } else if (d.type === "signature_delta") {
+            // The block must go back to the API unchanged, signature included,
+            // or the next iteration's request is rejected.
+            blk.signature = (blk.signature ?? "") + d.signature;
           }
         } else if (t === "content_block_stop") {
           const blk = blocks[event.index];
@@ -1851,6 +1879,25 @@ async function runStreamingToolLoop(
           sse.write("error", { error: msg, code: "tool_truncated" });
           throw new Error(msg);
         }
+      }
+      if (stopReason === "refusal") {
+        // A safety decline arrives as a normal 200. Say something rather than
+        // ending on an empty bubble.
+        trace.tool_calls.push("__refusal");
+        if (!accumulatedText.trim()) {
+          accumulatedText = REFUSAL_REPLY;
+          sse.write("delta", { text: REFUSAL_REPLY });
+        }
+        return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
+      }
+      // A required tool answered in text: ask once more, keeping the model's
+      // own reply in the history. Forcing used to make this impossible.
+      if (forceTool && !retriedForce && stopReason === "end_turn" && iter < MAX_TOOL_ITERATIONS - 1) {
+        retriedForce = true;
+        trace.tool_calls.push(`${forceTool}__retry`);
+        conversation.push({ role: "assistant", content: cleanBlocks });
+        conversation.push(retryTool(forceTool));
+        continue;
       }
       // Model is done — we've streamed all the text already.
       return { finalText: accumulatedText, totalInput, totalOutput, totalCacheCreation, totalCacheRead, hitIterationCap, structured };
@@ -1940,11 +1987,13 @@ async function loadExerciseCatalog(admin: SupabaseClient): Promise<string[]> {
  *  the whole body before parsing anyway, so streaming buys nothing here. */
 function makeTextCaller(): TextCaller {
   return async ({ system, messages, maxTokens, model, label }) => {
+    const m = model ?? MODEL;
     const res = await callAnthropic({
-      model: model ?? MODEL,
+      model: m,
       max_tokens: maxTokens,
       system,
       messages,
+      ...sonnetSettings(m),
     });
     if (!res.ok) throw new Error(`${label}: anthropic ${res.status}: ${res.body.slice(0, 160)}`);
     const blocks: Array<{ type: string; text?: string }> = res.data.content ?? [];
@@ -3886,27 +3935,45 @@ async function handleAnonOnboardingProgram(args: {
     mode: "generate_program",
   });
 
-  const apiResult = await callAnthropic({
-    model: MODEL,
-    max_tokens: GENERATE_PROGRAM_MAX_TOKENS,
-    system,
-    tools,
-    messages: [{ role: "user", content: programMessage }],
-    tool_choice: { type: "tool", name: "generate_program" },
-  });
-  if (!apiResult.ok) {
-    trace.status = "anthropic_error";
-    trace.error_message = `anon_anthropic_${apiResult.status}: ${preview(apiResult.body) ?? ""}`;
-    return respond({ error: "generation_failed" }, 502);
+  // Required, not forced (Sonnet 5.5 rejects forced tool_choice): the tool is
+  // named in a system note, and a text-only answer gets one second ask.
+  const messages: AnthropicMessage[] = [
+    { role: "user", content: programMessage },
+    requireTool("generate_program"),
+  ];
+  type Block = { type: string; name?: string; input?: Record<string, unknown> };
+  let toolUse: Block | undefined;
+  for (let attempt = 0; attempt < 2 && !toolUse; attempt++) {
+    const apiResult = await callAnthropic({
+      model: MODEL,
+      max_tokens: GENERATE_PROGRAM_MAX_TOKENS,
+      system,
+      tools,
+      messages,
+      ...SONNET_SETTINGS,
+    });
+    if (!apiResult.ok) {
+      trace.status = "anthropic_error";
+      trace.error_message = `anon_anthropic_${apiResult.status}: ${preview(apiResult.body) ?? ""}`;
+      return respond({ error: "generation_failed" }, 502);
+    }
+
+    const usage = apiResult.data.usage ?? {};
+    trace.input_tokens = (trace.input_tokens ?? 0) + (usage.input_tokens ?? 0);
+    trace.output_tokens = (trace.output_tokens ?? 0) + (usage.output_tokens ?? 0);
+
+    const blocks: Block[] = apiResult.data.content ?? [];
+    toolUse = blocks.find((b) => b.type === "tool_use" && b.name === "generate_program");
+    // A program cut off at the cap parses to a partial object; do not ship it.
+    if (toolUse && apiResult.data.stop_reason === "max_tokens") {
+      trace.status = "internal_error";
+      trace.error_message = "anon: generate_program truncated at max_tokens";
+      return respond({ error: "no_program" }, 502);
+    }
+    if (!toolUse && apiResult.data.stop_reason === "end_turn") {
+      messages.push({ role: "assistant", content: blocks }, retryTool("generate_program"));
+    }
   }
-
-  const usage = apiResult.data.usage ?? {};
-  trace.input_tokens = usage.input_tokens ?? null;
-  trace.output_tokens = usage.output_tokens ?? null;
-
-  const blocks: Array<{ type: string; name?: string; input?: Record<string, unknown> }> =
-    apiResult.data.content ?? [];
-  const toolUse = blocks.find((b) => b.type === "tool_use" && b.name === "generate_program");
   if (!toolUse?.input) {
     trace.status = "internal_error";
     trace.error_message = "anon: no generate_program tool_use in response";
@@ -4756,7 +4823,7 @@ Deno.serve(async (req) => {
   // 6. Non-streaming tool-use loop (legacy / fallback path).
   //
   // Keep behavior in sync with the streaming branch above:
-  //  - same per-mode max_tokens budget (so generate_plan gets 4096)
+  //  - same per-mode max_tokens budget (so generate_plan gets 5400)
   //  - force tool_choice on iter 0 when force_tool is set
   //  - terminal tools (generate_workout / generate_plan) are NOT executed;
   //    their input IS the structured response, returned in `structured`
@@ -4785,23 +4852,24 @@ Deno.serve(async (req) => {
   let finalText: string | null = null;
   let structured: { name: string; input: Record<string, unknown> } | null = null;
 
+  // The required tool is named in an appended system note, not forced
+  // (Sonnet 5.5 rejects forced tool_choice). Identical to streaming behavior.
+  // Use effectiveForceTool here so refine modes (which set it to null even
+  // when forceTool was technically present) never require one.
+  if (effectiveForceTool && conversation[conversation.length - 1]?.role === "user") {
+    conversation.push(requireTool(effectiveForceTool));
+  }
+  let retriedForce = false;
+
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-      // Force the matching terminal tool ONLY on the first iteration so
-      // follow-up turns (after we've appended tool_results) are free to
-      // either chat or call another tool. Identical to streaming behavior.
-      // Use effectiveForceTool here so refine modes (which set it to null
-      // even when forceTool was technically present) never auto-force.
-      const toolChoice = (effectiveForceTool && iter === 0)
-        ? { type: "tool" as const, name: effectiveForceTool }
-        : undefined;
       const apiResult = await callAnthropic({
         model: MODEL,
         max_tokens: nonStreamMaxTokens,
         system,
         tools,
         messages: conversation,
-        ...(toolChoice ? { tool_choice: toolChoice } : {}),
+        ...SONNET_SETTINGS,
       });
 
       if (!apiResult.ok) {
@@ -4822,6 +4890,20 @@ Deno.serve(async (req) => {
 
       const stopReason = data.stop_reason;
       const contentBlocks: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> = data.content ?? [];
+
+      // A required tool answered in text: ask once more, as in streaming.
+      if (stopReason === "end_turn" && effectiveForceTool && !retriedForce && iter < MAX_TOOL_ITERATIONS - 1) {
+        retriedForce = true;
+        trace.tool_calls.push(`${effectiveForceTool}__retry`);
+        conversation.push({ role: "assistant", content: contentBlocks });
+        conversation.push(retryTool(effectiveForceTool));
+        continue;
+      }
+      if (stopReason === "refusal") {
+        trace.tool_calls.push("__refusal");
+        finalText = REFUSAL_REPLY;
+        break;
+      }
 
       // Final response: no more tool calls. Extract text and exit loop.
       if (stopReason !== "tool_use") {

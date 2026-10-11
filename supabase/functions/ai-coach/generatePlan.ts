@@ -323,7 +323,8 @@ export async function runGeneratePlan(
     const r = await deps.call({
       system,
       messages: [{ role: "user", content: `${stripRationaleDirective(intake)}\n\n${VARIANT_RULE}\n\n${SKELETON_FORMAT_SPEC}` }],
-      maxTokens: 1500,
+      // 1500 / 900 / 500 under Sonnet 4.6; ~30% up for Sonnet 5.5's tokenizer.
+      maxTokens: 2000,
       model: deps.model,
       label: "skeleton",
     });
@@ -364,7 +365,7 @@ export async function runGeneratePlan(
           FILL_FORMAT_SPEC,
         ].join("\n"),
       }],
-      maxTokens: 900,
+      maxTokens: 1200,
       model: deps.fillModel ?? deps.model,
       label: `fill:d${i + 1}`,
     });
@@ -391,7 +392,7 @@ export async function runGeneratePlan(
           `Write ONLY the rationale: 3-4 sentences, plain prose in one paragraph, no lists, no headings, no preamble. Why this split at this frequency for their goal, and how to progress it.`,
         ].join("\n"),
       }],
-      maxTokens: 500,
+      maxTokens: 700,
       model: deps.model,
       label: "rationale",
     });

@@ -29,12 +29,13 @@ import { COMPACT_FORMAT_SPEC, parseCompactPlan, type ParsedPlan } from './encodi
 import { callClaudeCli } from './cliCaller';
 // The fanout variant drives the SHIPPED module, not a copy of it.
 import { runGeneratePlan, type TextCaller } from '../../supabase/functions/ai-coach/generatePlan';
+import { requireTool, SONNET_MODEL, sonnetSettings } from '../../supabase/functions/_shared/sonnet';
 import type { CoachIntake, EvalCase, OnboardingIntake } from './cases';
 import type { CoachGoal } from '../../lib/types';
 
-export const DEFAULT_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL = SONNET_MODEL;
 /** Mirrors GENERATE_PLAN_MAX_TOKENS in supabase/functions/ai-coach/index.ts. */
-export const GENERATE_PLAN_MAX_TOKENS = 4096;
+export const GENERATE_PLAN_MAX_TOKENS = 5400;
 /** Mirrors ANTHROPIC_TIMEOUT_MS after the 2026-07-19 bump from 30s. Runs that
  *  cross the OLD 30s value are still counted, since that is what shipped
  *  before and what PR #66's non-streaming call would have hit. */
@@ -383,8 +384,9 @@ export async function runBaseline(c: EvalCase, o: VariantOpts): Promise<RunResul
   try {
     r = await streamCall(o.apiKey, {
       model, max_tokens: GENERATE_PLAN_MAX_TOKENS, system, tools,
-      messages: [{ role: 'user', content: await messageFor(c, o.catalog ?? 'library') }],
-      tool_choice: { type: 'tool', name: 'generate_plan' },
+      // Required, not forced, as ai-coach does it: Sonnet 5.5 rejects forced tool_choice.
+      messages: [{ role: 'user', content: await messageFor(c, o.catalog ?? 'library') }, requireTool('generate_plan')],
+      ...sonnetSettings(model),
     }, { trackToolWorkouts: true });
   } catch (e) {
     return failed(c, 'baseline', String(e).slice(0, 200));
@@ -429,6 +431,7 @@ export async function runCompact(c: EvalCase, o: VariantOpts): Promise<RunResult
       r = await streamCall(o.apiKey, {
         model, max_tokens: GENERATE_PLAN_MAX_TOKENS, system,
         messages: [{ role: 'user', content: msg }],
+        ...sonnetSettings(model),
       }, { trackCompactDays: true });
     }
   } catch (e) {
@@ -488,6 +491,7 @@ export async function runFanout(c: EvalCase, o: VariantOpts): Promise<RunResult>
           max_tokens: maxTokens,
           system: sys,
           messages,
+          ...sonnetSettings(m ?? model),
         });
         if (label === 'skeleton') firstTtft = r.ttft_ms;
         return {
