@@ -303,6 +303,33 @@ Deno.test("thorough logs a named saved meal once, even when decide relists it", 
   assert(h.calls.includes("log_meal"));
 });
 
+// The guard keeps a line only when it names an extracted food, so a food decide
+// RENAMED is dropped too. reconcileExtracted then puts the extracted food back,
+// so the user never loses it: the banana is here, even though decide called it
+// "Cavendish fruit".
+Deno.test("a food decide renames is dropped by the guard and restored, never lost", async () => {
+  const banana = { name: "banana", brand: null, quantity: 1, unit: "piece", prep: null, meal: null };
+  const h = harness({
+    extraction: { items: [
+      { name: "My oat bowl", saved_meal: "My oat bowl", quantity: 1, unit: "serving", meal: null },
+      banana,
+    ] },
+    decide: { items: [
+      { food_id: null, food_name: "Cavendish fruit", grams: 120, kcal: 107, protein_g: 1.3, carb_g: 27, fat_g: 0.4,
+        source: "estimate", confidence: "medium", assumption: "One medium banana." },
+    ] },
+  });
+  const r = await runParseMeal(h.deps, {
+    ...base, text: "my oat bowl and a banana", previousText: null, previousItems: [],
+    mode: null, savedMeals: Promise.resolve([saved]),
+  });
+  const names = r.parsed!.items.map((i) => i.food_name.toLowerCase());
+  assertEquals(names.length, 2);
+  assertEquals(names[0], canonical.toLowerCase());
+  assert(names[1].includes("banana"), names.join(" | "));
+  assert(r.steps.some((s) => s.tool === "saved_meal_guard"));
+});
+
 Deno.test("saved meal replacement retains the correction contract and untouched card lines", async () => {
   const h = harness({ extraction: { corrects_previous: true, items: [{
     name: "My oat bowl", saved_meal: "My oat bowl", quantity: 1, unit: "serving", corrects_food_name: "toast",
