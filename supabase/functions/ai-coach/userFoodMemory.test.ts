@@ -739,3 +739,27 @@ Deno.test("a food with no other variant offers no chip", async () => {
   );
   assertEquals(r.parsed!.items[0].alternatives, undefined);
 });
+
+// ── Review fixes, 2026-10-11 ────────────────────────────────────────────────
+
+Deno.test("an exact name keeps its word order: 'chocolate milk' is not exactly 'milk chocolate'", () => {
+  // Jev decides whether both are the food meant. If it lets both through, the
+  // literal name must not hand the win to the reversed one logged more often.
+  const list = [{ ...food("milk chocolate", 535), times: 9 }, { ...food("chocolate milk", 83), times: 1 }];
+  assertEquals(decideMemory(list, [0.9, 0.9], undefined, "chocolate milk").food?.name, "chocolate milk");
+});
+
+Deno.test("a confirmed alias is not overruled by the variant rule, and never throws", async () => {
+  // Both rows were confirmed under one alias that contains both flavours. The
+  // variant rule ruled each out by the other's word, the result was null, and
+  // the code read null.name: the throw was caught and memory gave nothing.
+  const alias = ["chocolate vanilla whey"];
+  const rows = [
+    { ...food("chocolate whey", 390), confirmed_aliases: alias, times: 3 },
+    { ...food("vanilla whey", 380), confirmed_aliases: alias, times: 1 },
+  ];
+  const down = { apiKey: "jev", timeoutMs: 1000, fetchFn: (async () => new Response("down", { status: 503 })) as typeof fetch };
+  const m = await matchMemory(down, rows, { name: "chocolate vanilla whey", brand: null });
+  assertEquals(m.trace.path, "confirmed_alias");
+  assertEquals(m.food?.name, "chocolate whey");
+});

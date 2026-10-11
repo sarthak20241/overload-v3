@@ -41,7 +41,7 @@ import { Spacing, Radius, FontSize, FontWeight, LetterSpacing, Shadow } from '@/
 import { sectionsOfItems, type ParsedMeal, type ParsedMealItem } from '@/lib/dietData';
 import type { MealType } from '@/lib/foods';
 import { formatServing, formatMacroGrams } from '@/lib/foods';
-import { optionAt } from '@/lib/variantSwap';
+import { optionAt, swapLabel } from '@/lib/variantSwap';
 import { DronaMark } from '@/components/coach/DronaMark';
 
 /** One more state for "Just log it": `sent` (the stream dropped after the
@@ -217,9 +217,7 @@ export function ParsedMealCard({
     // As served it is the one they log most (userFoodMemory.decideMemory);
     // after a swap it is one they log less.
     const options = it.alternatives ?? [];
-    const prov = it.saved_meal ? 'saved meal'
-      : options.length > 0 ? (it.usual === false ? 'your log' : 'your usual')
-      : provenance(it.source);
+    const prov = it.saved_meal ? 'saved meal' : swapLabel(it) ?? provenance(it.source);
     return (
       <Pressable
         key={i}
@@ -280,7 +278,7 @@ export function ParsedMealCard({
               <Pressable
                 key={`${o.food_name}-${k}`}
                 onPress={(e) => { e.stopPropagation(); onSwapItem(i, k); }}
-                hitSlop={6}
+                hitSlop={8}
                 style={({ pressed }) => [s.swapChip, pressed && s.itemPressed]}
                 accessibilityRole="button"
                 accessibilityLabel={`Swap to ${o.food_name}, ${r0(optionAt(o, it.grams).kcal)} calories`}
@@ -796,7 +794,7 @@ function makeStyles(C: ReturnType<typeof useTheme>['C']) {
     swapRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 },
     swapLead: { fontSize: FontSize.xs, color: C.textSecondary },
     swapChip: {
-      paddingVertical: 4, paddingHorizontal: 10, maxWidth: '100%',
+      paddingVertical: 5, paddingHorizontal: 10, maxWidth: '100%',
       borderRadius: Radius.full, borderWidth: 1, borderColor: C.borderSubtle,
     },
     swapTxt: { fontSize: FontSize.xs, color: C.foreground, fontWeight: FontWeight.medium },

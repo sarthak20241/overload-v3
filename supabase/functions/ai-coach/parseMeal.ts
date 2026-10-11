@@ -72,6 +72,7 @@ import {
   type MemoryMatch,
   memoryKey,
   memoryInputName,
+  alsoSentence,
   memoryNote,
 } from "./userFoodMemory.ts";
 import type { MatchCandidate, MatchItem } from "./preciseMatch.ts";
@@ -4099,6 +4100,22 @@ export function scopeCorrection(
     const key = p.food_name.trim().toLowerCase();
     if (replaced.delete(key)) unreplaced.push(p.food_name);
   }
+  // A meal total changes no food. When the model also marked no line as
+  // changed and returned as many lines as the card has, every line is the
+  // card's own, even one it reworded: "toast" came back as "Toasted Bread",
+  // matched nothing, and was looked up again as a new food (real model,
+  // 2026-10-11). A line added or removed in the same message changes the count,
+  // so it still takes the normal path.
+  if (
+    mealTotalOnly && extItems.length === prevItems.length &&
+    extItems.every((it) => !it.correctsFoodName && !it.stated)
+  ) {
+    for (const p of prevItems) {
+      const key = p.food_name.trim().toLowerCase();
+      if (replaced.delete(key)) unreplaced.push(p.food_name);
+    }
+    return { toResolve: [], untouched: extItems.length, unchangedCount: extItems.length, unreplaced, changed: [], contradictions };
+  }
   if (passthrough.size > 0 && (passthrough.size < extItems.length || mealTotalOnly)) {
     return {
       toResolve: extItems.filter((_, i) => !passthrough.has(i)),
@@ -4405,7 +4422,8 @@ export function memoryAlternatives(foods: MemoryFood[], grams: number, timeZone?
  *  writes that sentence, so this removes exactly what it wrote. */
 export function forSwapChips(it: ParsedItem): ParsedItem {
   if (!it.alternatives?.length || !it.assumption) return it;
-  return { ...it, assumption: it.assumption.replace(/ You also log .+?; if it was that, just say so\.$/, "") };
+  const sentence = alsoSentence(it.alternatives.map((a) => a.food_name));
+  return it.assumption.endsWith(sentence) ? { ...it, assumption: it.assumption.slice(0, -sentence.length) } : it;
 }
 
 /** A remembered food as a catalog candidate, for Thorough and Precise. */
@@ -5512,12 +5530,12 @@ export async function runParseMeal(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
-  const result = await runParseMealSaved(deps, input);
+  const result = await runParseMealOnce(deps, input);
   if (input.variantChips && result.parsed) result.parsed.items = result.parsed.items.map(forSwapChips);
   return result;
 }
 
-async function runParseMealSaved(
+async function runParseMealOnce(
   deps: ParseMealDeps,
   input: ParseMealInput,
 ): Promise<ParseMealResult> {
@@ -5557,6 +5575,7 @@ async function runParseMealSaved(
       (result.usage[k] as number) = ((result.usage[k] as number) ?? 0) + ((first.usage[k] as number) ?? 0);
     }
     result.iterations += first.iterations;
+    result.tool_calls = [...first.tool_calls, ...result.tool_calls];
   }
   // Same inputs runParseMealCore gated on. The rerun below overwrites this with
   // its own: that one is a first shot, so it runs the tier the user picked.
@@ -6312,7 +6331,7 @@ async function runParseMealCore(
     // again. Re-resolving them all searched "toast" and logged Toaster pastries
     // (real model, 2026-10-11). The card's lines come back as they are and
     // runParseMeal scales them to the total.
-    if (toResolve.length === 0) {
+    if (toResolve.length === 0 && statedOut.meal) {
       const kept = keepUncoveredPrevious([], prevItems, replacedNames);
       steps.push({ iter: 1, tool: "meal_total_correction", input: { items: kept.length } });
       const items = assignItemMeals(kept, extItems, {

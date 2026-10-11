@@ -297,6 +297,9 @@ export const PENDING_QUESTION: JevQuestion = {
 export const PROCEED_FLOOR = 0.25;
 /** Dropping a meal the user wanted is the costlier mistake, so cancel needs more. */
 export const CANCEL_FLOOR = 0.6;
+/** An intent read this sure that the message is not about the waiting meal
+ *  outranks a proceed under 50%. */
+export const INTENT_SURE = 0.8;
 
 /**
  * How much the router is allowed to do.
@@ -509,6 +512,7 @@ export async function routeFoodIntent(
       }
 
       hasFood = asNoul(res.response.answers.has_food);
+      const choice = asChoice(res.response.answers.intent);
       const pc = context?.pendingMeal ? asChoice(res.response.answers.pending) : null;
       if (pc) {
         pendingAction = pc.choice === "proceed" && pc.confidence >= PROCEED_FLOOR
@@ -516,6 +520,13 @@ export async function routeFoodIntent(
           : pc.choice === "cancel" && pc.confidence >= CANCEL_FLOOR
           ? "cancel"
           : "unrelated";
+        // A weak "proceed" does not overrule a confident read that the message
+        // is something else ("how much protein left?" at other 95%). Her real
+        // terse replies never cleared INTENT_SURE as other (65-79% with the meal
+        // in view), so they still finish the meal.
+        const sureElse = !!choice && (choice.choice === "other" || choice.choice === "create" || choice.choice === "steps") &&
+          choice.confidence >= INTENT_SURE && pc.confidence < 0.5;
+        if (pendingAction === "proceed" && sureElse) pendingAction = "unrelated";
         if (pendingAction === "proceed") {
           deps.log?.(`[food_intent] pending=proceed conf=${pc.confidence.toFixed(2)}`);
           return {
@@ -530,7 +541,6 @@ export async function routeFoodIntent(
         }
       }
 
-      const choice = asChoice(res.response.answers.intent);
       if (choice && isIntent(choice.choice) && (choice.choice !== "continue" || context?.pendingMeal)) {
         if (choice.confidence >= JEV_INTENT_FLOOR) {
           deps.log?.(

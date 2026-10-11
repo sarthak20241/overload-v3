@@ -185,3 +185,25 @@ Deno.test("offers and questions are not claims", () => {
   assertEquals(claimsAction("You got it - I'll add a standard veggies option at 50 cal for you."), true);
   assertEquals(claimsAction("I logged veggies and fats, 50 cal to your food diary."), true);
 });
+
+// ── Review fixes, 2026-10-11 ────────────────────────────────────────────────
+
+Deno.test("a confident side question is not pulled into the waiting meal by a weak proceed", async () => {
+  const route = (intent: number, proceed: number) => routeFoodIntent("how much protein left today?", {
+    jev: { apiKey: "k", timeoutMs: 1000, fetchFn: jevAnswers({ intent: choice("other", intent), has_food: { type: "noul", noul: 0.02 }, pending: choice("proceed", proceed) }) },
+  }, readFoodContext([], casein));
+  const side = await route(0.95, 0.3);
+  assertEquals([side.intent, side.pendingAction], ["other", "unrelated"]);
+  // The real "any" read as other 79% with the meal in view: still finishes it.
+  assertEquals((await route(0.79, 0.3)).intent, "continue");
+  // A sure proceed wins even over a sure other.
+  assertEquals((await route(0.95, 0.6)).intent, "continue");
+});
+
+Deno.test("a long thread keeps the meal and the newest answer, trimming the middle", () => {
+  const meal = { ...casein, text: "x".repeat(1990) }; // + the answer = over 2000
+  const out = withPendingMeal({ message: "Which one?" }, { decision: decision({ intent: "continue", pendingAction: "proceed" }), incoming: meal, text: "the plain one" });
+  const text = out!.pending_meal!.text;
+  assert(text.length <= 2000, String(text.length));
+  assert(text.startsWith("xxxx") && text.endsWith("the plain one"), text.slice(-40));
+});
