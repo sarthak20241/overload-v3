@@ -1281,10 +1281,23 @@ export const CASES: EvalCase[] = [
     text: "Add roughly 500 cal for dinner having 12g protein rest fats and carbs (i had chicken curry, poha, rice, salad and watermelon)",
     hour: 23,
     expect: {
-      maxItems: 1,
+      // Every food stays its own line, scaled to the user's total.
+      minItems: 4,
       mealType: "dinner",
-      items: [{ nameIncludes: "curry", kcalBetween: [495, 505], proteinBetween: [11.5, 12.5] }],
       totalKcalBetween: [495, 505],
+    },
+  },
+  {
+    // A meal total on a correction used to merge the card's foods into one line.
+    id: "user-meal-total-correction",
+    text: "2 boiled eggs, 1 toast and a glass of orange juice for breakfast",
+    followUp: "make the whole meal 400 kcal",
+    expectCorrection: true,
+    hour: 9,
+    expect: {
+      minItems: 3,
+      mealType: "breakfast",
+      totalKcalBetween: [395, 405],
     },
   },
   {

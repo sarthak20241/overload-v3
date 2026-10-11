@@ -8,17 +8,17 @@
 //   - "Track daliya in lunch (roughly 80 cal, most carbs and rest fat, 1g
 //     protein)": a line total with no weight, which nothing read.
 //   - "No, 145g apple should be 90 cals" came back 75 kcal: the fast
-//     correction recomputed from the old row and never read her number.
+//     correction recomputed from the old row and never read the user's number.
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { honourLineTotals, readStatedTotal, statedLineTotal } from "./statedNumbers.ts";
+import { honourLineTotals, readStatedTotal, splitTotal, statedLineTotal } from "./statedNumbers.ts";
 import { type ParseMealDeps, type ParsedItem, runParseMeal, scopeCorrection } from "./parseMeal.ts";
 
 // ── The arithmetic ──────────────────────────────────────────────────────────
 
 const DINNER_LINES = { kcal: 905, protein_g: 50.4, carb_g: 100.7, fat_g: 33.1, fiber_g: null };
 
-Deno.test("a meal total keeps every number she gave and fits the rest to her kcal", () => {
+Deno.test("a meal total keeps every number the user gave and fits the rest to their kcal", () => {
   const l = honourLineTotals(DINNER_LINES, { kcal: 500, protein_g: 12, carb_g: null, fat_g: null, fiber_g: null });
   assertEquals(l.kcal, 500);
   assertEquals(l.protein_g, 12);
@@ -28,7 +28,7 @@ Deno.test("a meal total keeps every number she gave and fits the rest to her kca
   assert(l.carb_g > 60 && l.carb_g < 70, `carbs ${l.carb_g}`);
 });
 
-Deno.test("with no kcal given, the kcal moves by the macros she changed", () => {
+Deno.test("with no kcal given, the kcal moves by the macros the user changed", () => {
   const l = honourLineTotals({ kcal: 100, protein_g: 5, carb_g: 10, fat_g: 4, fiber_g: null }, { kcal: null, protein_g: 10, carb_g: null, fat_g: null, fiber_g: null });
   assertEquals(l.protein_g, 10);
   assertEquals(l.kcal, 120);
@@ -42,19 +42,19 @@ Deno.test("a line total with no weight is a line total; a typed weight is left t
   assertEquals([two?.kcal, two?.protein_g], [240, 48]);
 });
 
-Deno.test("a total past any meal is a misread, not her meal", () => {
+Deno.test("a total past any meal is a misread, not the user's meal", () => {
   assertEquals(readStatedTotal({ kcal: 25000 }), null);
   assertEquals(readStatedTotal({ kcal: null, protein_g: null }), null);
   assertEquals(readStatedTotal({ kcal: 500, protein_g: 12 })?.protein_g, 12);
 });
 
-Deno.test("a correction line carrying her numbers is never restored as unchanged", () => {
+Deno.test("a correction line carrying the user's numbers is never restored as unchanged", () => {
   const prev = [{ food_id: "usda-apple", food_name: "apple", quantity: 145, serving_label: "g", grams: 145 }];
   const it = { name: "apple", brand: null, quantity: 145, unit: "g", prep: null, correctsFoodName: null, meal: null, est: null, savedMeal: null };
   const plain = scopeCorrection([it, { ...it, name: "banana" }] as never, prev, new Set());
-  const hers = scopeCorrection([{ ...it, stated: { basis: "total", serving_g: null, kcal: 90, protein_g: null, carb_g: null, fat_g: null, fiber_g: null } }, { ...it, name: "banana" }] as never, prev, new Set());
+  const stated = scopeCorrection([{ ...it, stated: { basis: "total", serving_g: null, kcal: 90, protein_g: null, carb_g: null, fat_g: null, fiber_g: null } }, { ...it, name: "banana" }] as never, prev, new Set());
   assertEquals(plain.toResolve.map((x) => x.name), ["banana"]);
-  assertEquals(hers.toResolve.map((x) => x.name), ["apple", "banana"]);
+  assertEquals(stated.toResolve.map((x) => x.name), ["apple", "banana"]);
 });
 
 // ── End to end ──────────────────────────────────────────────────────────────
@@ -111,15 +111,21 @@ const DINNER_DECIDE = [
 ];
 const MEAL_TOTAL = { kcal: 500, protein_g: 12, carb_g: null, fat_g: null, fiber_g: null };
 
-function assertHerDinner(items: ParsedItem[]) {
-  assertEquals(items.length, 1, JSON.stringify(items.map((i) => [i.food_name, i.kcal])));
-  const it = items[0];
-  assertEquals(it.kcal, 500);
-  assertEquals(it.protein_g, 12);
-  assertEquals(it.source, "manual");
-  assertEquals(it.numbers_tier, "precise");
-  assertEquals(it.assumption, "Your numbers: 500 kcal, 12 g protein for the meal, the rest estimated");
-  assert(it.food_name.startsWith("Chicken"), it.food_name);
+const sum = (items: ParsedItem[], k: "kcal" | "protein_g" | "carb_g" | "fat_g") => Math.round(items.reduce((a, i) => a + i[k], 0) * 10) / 10;
+
+function assertUserDinner(items: ParsedItem[]) {
+  // Every food stays its own line; together they are the user's total.
+  assertEquals(items.length, 5, JSON.stringify(items.map((i) => [i.food_name, i.kcal])));
+  assertEquals(sum(items, "kcal"), 500);
+  assertEquals(sum(items, "protein_g"), 12);
+  for (const it of items) {
+    // Our arithmetic, not the user's numbers: the lowest trust.
+    assertEquals([it.source, it.numbers_tier], ["estimate", "fast"]);
+    assertEquals(it.assumption, "Scaled to fit your meal total: 500 kcal, 12 g protein");
+  }
+  // Grams follow the calories, so each food keeps a believable density.
+  const poha = items.find((i) => /poha/i.test(i.food_name))!;
+  assert(poha.grams < 258 && poha.grams > 100, String(poha.grams));
 }
 
 Deno.test("the failure this prevents: a meal total in Thorough logged as 905 kcal and 50 g protein", async () => {
@@ -127,8 +133,8 @@ Deno.test("the failure this prevents: a meal total in Thorough logged as 905 kca
     mealDeps({ declined: false, meal_type_from_text: "dinner", stated_meal_total: MEAL_TOTAL, items: DINNER_ITEMS }, DINNER_DECIDE),
     { ...BASE, text: DINNER_TEXT, mode: null },
   );
-  assertHerDinner(r.parsed!.items);
-  // The sentence is rebuilt from her numbers, not decide's 50 g.
+  assertUserDinner(r.parsed!.items);
+  // The sentence is rebuilt from the user's numbers, not decide's 50 g.
   assert(!r.parsed!.drona_line.includes("50g"), r.parsed!.drona_line);
 });
 
@@ -137,7 +143,7 @@ Deno.test("a meal total holds in Quick too", async () => {
     mealDeps({ declined: false, meal_type_from_text: "dinner", stated_meal_total: MEAL_TOTAL, items: DINNER_ITEMS }, []),
     { ...BASE, text: DINNER_TEXT, mode: "fast" },
   );
-  assertHerDinner(r.parsed!.items);
+  assertUserDinner(r.parsed!.items);
 });
 
 Deno.test("a line total with no weight answers the line in Quick", async () => {
@@ -165,7 +171,7 @@ Deno.test("a line total with no weight answers the line in Thorough", async () =
   assertEquals([it.kcal, it.protein_g, it.source], [200, 20, "manual"]);
 });
 
-Deno.test("the failure this prevents: a correction with her number came back with the old row's", async () => {
+Deno.test("the failure this prevents: a correction with the user's number came back with the old row's", async () => {
   const prev = [{
     food_id: "usda-apple", food_name: "apple", quantity: 145, serving_label: "g", grams: 145,
     kcal: 75.4, protein_g: 0.4, carb_g: 20, fat_g: 0.3, fiber_g: null, source: "catalog" as const, meal_type: "snack" as const,
@@ -187,7 +193,7 @@ Deno.test("the failure this prevents: a correction with her number came back wit
   assert(!r.tool_calls.includes("fast_correction"), JSON.stringify(r.tool_calls));
 });
 
-Deno.test("a meal total over lines in different meals is not forced onto them", async () => {
+Deno.test("a meal total over lines in different meals still adds up, each line keeping its meal", async () => {
   const r = await runParseMeal(
     mealDeps({
       declined: false, meal_type_from_text: null, stated_meal_total: { kcal: 300 },
@@ -195,25 +201,136 @@ Deno.test("a meal total over lines in different meals is not forced onto them", 
     }, []),
     { ...BASE, text: "2 eggs for breakfast and dal for dinner, 300 kcal", mode: "fast" },
   );
-  assertEquals(r.parsed!.items.length, 2);
-  assert(r.steps.some((s) => s.tool === "user_stated_total" && (s.result as { reason?: string } | null)?.reason === "the lines span several meals"));
+  const items = r.parsed!.items;
+  assertEquals(items.map((i) => i.meal_type), ["breakfast", "dinner"]);
+  assertEquals(sum(items, "kcal"), 300);
 });
 
-Deno.test("a meal total counts the lines that already carry her own numbers", async () => {
-  // Paneer from her label (a full panel, 67 g x 190/100 = 127 kcal), then
-  // 300 kcal for the whole plate: the roti and sabzi share what is left.
+const PANEER_TEXT = "67g milky mist paneer (per 100g 190 kcal, 25g protein, 6.7g carbs, 7g fat), roti and sabzi, 300 kcal total";
+const PANEER_ITEMS = [
+  { ...est("paneer", 130, 17, 4, 5, 67), quantity: 67, unit: "g", stated: { basis: "per_100g", kcal: 190, protein_g: 25, carb_g: 6.7, fat_g: 7 } },
+  est("roti", 120, 3, 18, 3.6, 40), est("sabzi", 90, 2, 8, 5, 100),
+];
+
+Deno.test("a meal total keeps the user's own lines and splits what is left", async () => {
+  // Paneer from the user's label (67 g x 190/100 = 127 kcal); the roti and
+  // sabzi share the other 173 kcal, each still its own line.
   const r = await runParseMeal(
-    mealDeps({
-      declined: false, meal_type_from_text: "lunch", stated_meal_total: { kcal: 300 },
-      items: [
-        { ...est("paneer", 130, 17, 4, 5, 67), quantity: 67, unit: "g", stated: { basis: "per_100g", kcal: 190, protein_g: 25, carb_g: 6.7, fat_g: 7 } },
-        est("roti", 120, 3, 18, 3.6, 40), est("sabzi", 90, 2, 8, 5, 100),
-      ],
-    }, []),
-    { ...BASE, text: "67g milky mist paneer (per 100g 190 kcal, 25g protein, 6.7g carbs, 7g fat), roti and sabzi, 300 kcal total", mode: "fast" },
+    mealDeps({ declined: false, meal_type_from_text: "lunch", stated_meal_total: { kcal: 300 }, items: PANEER_ITEMS }, []),
+    { ...BASE, text: PANEER_TEXT, mode: "fast" },
   );
   const items = r.parsed!.items;
-  assertEquals(items.length, 2);
-  assertEquals(Math.round(items.reduce((a, i) => a + i.kcal, 0)), 300);
+  assertEquals(items.length, 3);
+  assertEquals(sum(items, "kcal"), 300);
   assertEquals(items[0].assumption, "Your numbers: 190 kcal per 100 g");
+  assertEquals(Math.round(items[0].kcal), 127);
+});
+
+Deno.test("the total still wins when the user's own lines already exceed it", async () => {
+  // Paneer alone is 127; a 100 kcal total used to be skipped. Now every line
+  // shares the 100.
+  const r = await runParseMeal(
+    mealDeps({ declined: false, meal_type_from_text: "lunch", stated_meal_total: { kcal: 100 }, items: PANEER_ITEMS }, []),
+    { ...BASE, text: PANEER_TEXT.replace("300", "100"), mode: "fast" },
+  );
+  const items = r.parsed!.items;
+  assertEquals(items.length, 3);
+  assertEquals(sum(items, "kcal"), 100);
+});
+
+Deno.test("the failure this prevents: a meal total on a correction merged the card's foods into one line", async () => {
+  // PR #236 review: the restored lines were folded into one combined line.
+  const prev = [
+    { ...line("eggs", 155, 13, 1, 11, 100), source: "catalog" as const, confidence: "high" as const, meal_type: "breakfast" as const },
+    { ...line("toast", 80, 3, 15, 1, 30), source: "catalog" as const, confidence: "high" as const, meal_type: "breakfast" as const },
+    { ...line("orange juice", 110, 2, 26, 0.5, 250), source: "catalog" as const, confidence: "high" as const, meal_type: "breakfast" as const },
+  ];
+  const copy = (n: string, k: number, p: number, c: number, f: number, g: number) => ({ ...est(n, k, p, c, f, g), corrects_food_name: null });
+  const r = await runParseMeal(
+    mealDeps({
+      declined: false, corrects_previous: true, meal_type_from_text: null, stated_meal_total: { kcal: 400 },
+      items: [copy("eggs", 155, 13, 1, 11, 100), copy("toast", 80, 3, 15, 1, 30), copy("orange juice", 110, 2, 26, 0.5, 250)],
+    }, prev),
+    { ...BASE, text: "make the whole meal 400 kcal", mode: "fast", previousText: "2 eggs, toast and orange juice", previousItems: prev },
+  );
+  const items = r.parsed!.items;
+  assertEquals(items.map((i) => i.food_name), ["eggs", "toast", "orange juice"]);
+  assertEquals(sum(items, "kcal"), 400);
+});
+
+Deno.test("a meal total counts a saved meal the user named, and the rest fits", async () => {
+  // PR #236 review: saved lines joined the card after the total, so "my oat
+  // bowl and a banana, 500 kcal" came to 400 + 500.
+  const saved = {
+    id: "saved-bowl", name: "My oat bowl", kind: "meal" as const, servings: 1, serving_label: null,
+    kcal: 400, protein_g: 25, carb_g: 50, fat_g: 11, fiber_g: 8,
+    items: [{ food_id: null, food_name: "oats", quantity: 100, serving_unit: "g", grams: 100, kcal: 400, protein_g: 25, carb_g: 50, fat_g: 11, fiber_g: 8 }],
+  };
+  const r = await runParseMeal(
+    mealDeps({
+      declined: false, meal_type_from_text: "snack", stated_meal_total: { kcal: 500 },
+      items: [
+        { name: "My oat bowl", saved_meal: "My oat bowl", quantity: 1, unit: "serving", prep: null, brand: null },
+        est("banana", 105, 1.3, 27, 0.4, 118),
+      ],
+    }, []),
+    { ...BASE, text: "my oat bowl and a banana, 500 kcal", mode: "fast", savedMeals: Promise.resolve([saved]) },
+  );
+  const items = r.parsed!.items;
+  assertEquals(sum(items, "kcal"), 500);
+  assertEquals(items.find((i) => i.food_name === "oats")!.kcal, 400);
+  assertEquals(items.find((i) => /banana/.test(i.food_name))!.kcal, 100);
+});
+
+Deno.test("fiber moves with the carbs it is part of and never exceeds them", () => {
+  const [salad] = splitTotal([{ kcal: 13, protein_g: 1, carb_g: 1.6, fat_g: 0.4, fiber_g: 1.5 }, { kcal: 892, protein_g: 49, carb_g: 99, fat_g: 32.7, fiber_g: 5 }],
+    { kcal: 500, protein_g: 12, carb_g: null, fat_g: null, fiber_g: null });
+  assert(salad.line.fiber_g! <= salad.line.carb_g, JSON.stringify(salad.line));
+  assert(salad.line.fiber_g! < 1.5);
+});
+
+Deno.test("a line total is not lost because another food's name has no Latin letters", async () => {
+  // A name in another script cleans to an empty key, which "contained" every
+  // line and left the user's roti total matching two lines.
+  const r = await runParseMeal(
+    mealDeps({
+      declined: false, meal_type_from_text: "lunch",
+      items: [est("पनीर", 130, 17, 4, 5, 67), { ...est("roti", 120, 3, 18, 3.6, 40), stated: { basis: "total", kcal: 90 } }],
+    }, []),
+    { ...BASE, text: "पनीर and 1 roti (90 kcal)", mode: "fast" },
+  );
+  assertEquals(r.parsed!.items.find((i) => i.food_name === "roti")!.kcal, 90);
+});
+
+Deno.test("a number too big to be a meal is traced when it is ignored", async () => {
+  const r = await runParseMeal(
+    mealDeps({ declined: false, meal_type_from_text: "lunch", stated_meal_total: { kcal: 25000 }, items: [est("roti", 120, 3, 18, 3.6, 40)] }, []),
+    { ...BASE, text: "1 roti, 25000 kcal", mode: "fast" },
+  );
+  assertEquals(r.parsed!.items[0].kcal, 120);
+  const step = r.steps.find((st) => st.tool === "user_stated_total");
+  assert(JSON.stringify(step?.result ?? "").includes("meal total past"), JSON.stringify(step));
+});
+
+Deno.test("the user's own numbers for a food beat that food in their memory", async () => {
+  // Memory knows paneer at 150 kcal per 100 g; the user says this bowl was 127.
+  const jevFetch = (async (_u: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const answers = Object.fromEntries(Object.keys(body.questions).map((k) => [k, { type: "score", probabilities: { "0": 0.01, "1": 0.01, "2": 0.98 } }]));
+    return Response.json({ answers });
+  }) as typeof fetch;
+  const remembered = {
+    food_name: "paneer", food_id: null, kcal: 150, protein_g: 18, carb_g: 4, fat_g: 7, fiber_g: null, grams: 100, quantity: 1,
+    serving_unit: "bowl", source: "catalog", logged_via: "ai", tier: "precise", logged_at: new Date(Date.now() - 86_400_000).toISOString(),
+  };
+  const r = await runParseMeal(
+    mealDeps(
+      { declined: false, meal_type_from_text: "lunch", items: [{ ...est("paneer", 150, 18, 4, 7, 100), unit: "bowl", stated: { basis: "total", kcal: 127 } }] },
+      [],
+      { jev: { apiKey: "k", timeoutMs: 1000, fetchFn: jevFetch }, userMemory: { load: () => Promise.resolve({ entries: [remembered], timeZone: null }) } },
+    ),
+    { ...BASE, text: "1 bowl paneer, 127 kcal", mode: "fast" },
+  );
+  const it = r.parsed!.items[0];
+  assertEquals([it.kcal, it.source], [127, "manual"]);
 });

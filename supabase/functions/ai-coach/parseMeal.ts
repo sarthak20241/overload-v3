@@ -52,6 +52,8 @@ import {
   readStated,
   readStatedTotal,
   remainingTotal,
+  shareNote,
+  splitTotal,
   statedLineTotal,
   statedNote,
   type StatedPer100,
@@ -3881,7 +3883,7 @@ export function scopeCorrection(
   const contradictions: string[] = [];
   extItems.forEach((it, i) => {
     // A line carrying numbers the user wrote is an edit even when its name and
-    // amount match the card: restoring it verbatim would drop her numbers.
+    // amount match the card: restoring it verbatim would drop the user's numbers.
     const same = it.stated ? null : unchangedInCorrection(it, prevItems);
     if (same) {
       const qtyMoved = Math.abs((it.quantity || 1) - (same.quantity || 1)) >= 0.001;
@@ -4255,46 +4257,59 @@ export interface StatedCapture {
   meal: StatedTotal | null;
   /** For one line each: totals statedFor could not put on a per-100 basis. */
   lines: { name: string; correctsFoodName: string | null; totals: StatedTotal }[];
+  /** Numbers the user wrote that could not be used, with why. Traced, so "my
+   *  number was ignored" can be answered from the trace. */
+  ignored?: string[];
 }
 
 /** Read a turn's totals off the extraction. */
 export function captureStatedTotals(extMealTotal: unknown, extItems: ExtractedItem[]): StatedCapture {
   const lines: StatedCapture["lines"] = [];
+  const ignored: string[] = [];
   for (const it of extItems) {
     // Numbers statedFor can use are applied in the pipeline itself, where a
     // partial panel is filled from a row that is the right food.
     if (!it.stated || statedFor(it)) continue;
     const totals = statedLineTotal(it.stated, it.quantity, MASS_UNITS.has(it.unit.trim().toLowerCase()));
     if (totals) lines.push({ name: foodLabel(it), correctsFoodName: it.correctsFoodName ?? null, totals });
+    else ignored.push(`${foodLabel(it).slice(0, 60)}: ${it.stated.basis} numbers could not be used (past what any food carries, or a serving with no weight)`);
   }
-  return { meal: readStatedTotal(extMealTotal), lines };
+  const meal = readStatedTotal(extMealTotal);
+  const rawMeal = extMealTotal && typeof extMealTotal === "object" ? Object.values(extMealTotal as Record<string, unknown>) : [];
+  if (!meal && rawMeal.some((v) => typeof v === "number")) ignored.push("meal total past what any meal carries");
+  return { meal, lines, ignored };
 }
 
 /** The one line a named total belongs to, or -1 when it is not exactly one. */
 function lineForTotal(items: ParsedItem[], t: StatedCapture["lines"][number]): number {
-  const keys = [t.name, t.correctsFoodName].filter((k): k is string => !!k).map(memoryKey);
+  // An empty key (a name in another script, or only symbols) would "contain"
+  // every line; it matches nothing instead.
+  const keys = [t.name, t.correctsFoodName].filter((k): k is string => !!k).map(memoryKey).filter(Boolean);
   const hits = items
     .map((it, i) => ({ k: memoryKey(it.food_name), i }))
-    .filter(({ k }) => keys.some((want) => k === want || k.includes(want) || want.includes(k)));
+    .filter(({ k }) => k && keys.some((want) => k === want || k.includes(want) || want.includes(k)));
   return hits.length === 1 ? hits[0].i : -1;
 }
 
-/** "Chicken curry, poha, rice" for the one line a meal total is logged as. */
-function combinedName(items: ParsedItem[]): string {
-  const names = items.map((it) => it.food_name.trim().toLowerCase());
-  const joined = names.join(", ").replace(/^./, (c) => c.toUpperCase());
-  return joined.length <= 120 ? joined : `${joined.slice(0, 117).trimEnd()}...`;
-}
+const sameNumbers = (a: ParsedItem, b: ParsedItem) =>
+  Math.abs(a.kcal - b.kcal) < 0.5 && a.protein_g === b.protein_g && a.carb_g === b.carb_g && a.fat_g === b.fat_g;
 
 /**
  * The finished lines with the totals the user wrote. Runs once, in
- * runParseMeal, after every tier and correction path, so no path can drop her
- * numbers. Lines that already carry her own numbers ('manual') are hers and are
- * left as they are; a meal total counts them and applies to the rest.
+ * runParseMeal, after every tier, correction path and saved meal, so no path
+ * can drop the user's numbers.
+ *
+ * A meal total (owner decision 2026-10-11) is split across the lines: every
+ * food stays its own line, scaled to its share, grams and quantity with it.
+ * Lines that already carry the user's own numbers ('manual': numbers typed in
+ * this message, a saved meal, or a remembered food they edited) keep them, and
+ * the rest share what is left. When those lines already exceed the total, or
+ * every line is the user's, the total still wins and all lines share it. A
+ * meal of one line simply carries the total as the user's own numbers.
  */
 export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, steps: ParseStep[]): ParsedItem[] | null {
   if (items.length === 0 || (!cap.meal && cap.lines.length === 0)) return null;
-  let out = [...items];
+  const out = [...items];
   let changed = false;
 
   for (const t of cap.lines) {
@@ -4317,53 +4332,47 @@ export function honourStatedTotals(items: ParsedItem[], cap: StatedCapture, step
   }
 
   if (cap.meal) {
-    const fixed = out.filter((it) => it.source === "manual");
-    const rest = out.filter((it) => it.source !== "manual");
-    const meals = new Set(rest.map((it) => it.meal_type ?? null));
-    const left = rest.length ? remainingTotal(cap.meal, fixed) : null;
-    const why = rest.length === 0
-      ? "every line already carries your numbers"
-      : meals.size > 1
-      ? "the lines span several meals"
-      : !left
-      ? "lines with your own numbers already exceed the total"
-      : null;
-    if (why) {
-      steps.push({ iter: 8, tool: "user_stated_total", input: { meal: cap.meal }, result: { applied: false, reason: why } });
-    } else {
-      const sum = (pick: (it: ParsedItem) => number) => round1(rest.reduce((a, it) => a + (pick(it) || 0), 0));
-      const fibers = rest.map((it) => it.fiber_g).filter((f): f is number => f !== null);
-      const grams = sum((it) => it.grams);
-      const base: ParsedItem = rest.length === 1 ? rest[0] : {
-        food_id: null,
-        food_name: combinedName(rest),
-        quantity: 1,
-        serving_label: "meal",
-        grams,
-        kcal: sum((it) => it.kcal),
-        protein_g: sum((it) => it.protein_g),
-        carb_g: sum((it) => it.carb_g),
-        fat_g: sum((it) => it.fat_g),
-        fiber_g: fibers.length ? round1(fibers.reduce((a, b) => a + b, 0)) : null,
-        source: "manual",
-        assumption: null,
-        confidence: "high",
-        meal_type: rest[0].meal_type,
-      };
-      const line: ParsedItem = {
-        ...honourLineTotals(base, left as StatedTotal),
+    const meal = cap.meal;
+    const fixedIdx = out.map((it, i) => (it.source === "manual" ? i : -1)).filter((i) => i >= 0);
+    const restIdx = out.map((_, i) => i).filter((i) => !fixedIdx.includes(i));
+    const left = restIdx.length ? remainingTotal(meal, fixedIdx.map((i) => out[i])) : null;
+    // The total wins: when the user's own lines leave nothing to share, every
+    // line shares the total.
+    const pool = left ? restIdx : out.map((_, i) => i);
+    const target = left ?? meal;
+    if (pool.length === 1 && out.length === 1) {
+      out[0] = {
+        ...honourLineTotals(out[0], meal),
         source: "manual",
         numbers_tier: "precise",
-        assumption: totalNote(cap.meal, "meal"),
+        assumption: totalNote(meal, "meal"),
         confidence: "high",
       };
-      // Where the first of the replaced lines stood, counted among the kept ones.
-      const at = out.slice(0, out.indexOf(rest[0])).filter((it) => it.source === "manual").length;
-      out = [...fixed];
-      out.splice(at, 0, line);
-      changed = true;
-      steps.push({ iter: 8, tool: "user_stated_total", input: { meal: cap.meal }, result: { applied: true, lines: rest.length, kcal: line.kcal } });
+    } else {
+      const split = splitTotal(pool.map((i) => out[i]), target);
+      pool.forEach((idx, j) => {
+        const { line, ratio } = split[j];
+        if (sameNumbers(line, out[idx])) return;
+        const before = out[idx];
+        out[idx] = {
+          ...line,
+          grams: round1(before.grams * ratio),
+          quantity: Math.round(before.quantity * ratio * 100) / 100,
+          // Our arithmetic, not the user's numbers: the lowest trust, so the
+          // user's memory reuses it only in Quick and only when nothing better
+          // exists.
+          source: "estimate",
+          numbers_tier: "fast",
+          assumption: shareNote(meal),
+          confidence: "medium",
+        };
+      });
     }
+    changed = true;
+    steps.push({
+      iter: 8, tool: "user_stated_total", input: { meal },
+      result: { applied: true, lines: pool.length, kept: left ? fixedIdx.length : 0, kcal: round1(out.reduce((a, it) => a + it.kcal, 0)) },
+    });
   }
   return changed ? out : null;
 }
@@ -5190,16 +5199,6 @@ export async function runParseMeal(
   result.tier = resolveParseTier(input.mode, !firstShot);
   if (result.parsed && input.pendingMeal) result.parsed.continued_pending = true;
 
-  // Totals the user wrote win over every tier and every path (owner decision
-  // 2026-09-29), applied here because every result passes through. The
-  // sentence is rebuilt from the new numbers: decide wrote it for the old ones.
-  if (result.parsed) {
-    const honoured = honourStatedTotals(result.parsed.items, stated, result.steps);
-    if (honoured) {
-      result.parsed = { ...result.parsed, items: honoured, drona_line: templateDronaLine(honoured) };
-    }
-  }
-
   // "Not from saved meals": the user turned down the saved meal on the card.
   // Log their ORIGINAL words again as a first shot with saved meals switched
   // off, in the same mode, and replace the card. The correction paths are the
@@ -5235,15 +5234,27 @@ export async function runParseMeal(
   }
 
   if (suggestions.length > 0) result.saved_suggestions = suggestions;
-  if (hits.length === 0) return result;
-  const merged = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
-  merged.steps = [...merged.steps, {
-    iter: 0,
-    tool: "saved_meal",
-    input: { offered: saved.length },
-    result: hits.map((h) => ({ id: h.meal.id, name: h.meal.name, count: h.count })),
-  }];
-  return merged;
+  let final = result;
+  if (hits.length > 0) {
+    final = mergeSavedLines(result, hits, input.mealHint ?? mealForHour(input.localHour));
+    final.steps = [...final.steps, {
+      iter: 0,
+      tool: "saved_meal",
+      input: { offered: saved.length },
+      result: hits.map((h) => ({ id: h.meal.id, name: h.meal.name, count: h.count })),
+    }];
+  }
+  // Totals the user wrote win over every tier and every path (owner decisions
+  // 2026-09-29, 2026-10-11), applied last, after saved meals join the card, so
+  // a meal total covers everything the user named. The sentence is rebuilt
+  // from the new numbers: decide wrote it for the old ones.
+  if (final.parsed) {
+    const honoured = honourStatedTotals(final.parsed.items, stated, final.steps);
+    if (honoured) {
+      final.parsed = { ...final.parsed, items: honoured, drona_line: templateDronaLine(honoured) };
+    }
+  }
+  return final;
 }
 
 async function runParseMealCore(
@@ -5517,8 +5528,12 @@ async function runParseMealCore(
     });
   // Totals the user wrote, applied to the finished lines in runParseMeal.
   Object.assign(statedOut, captureStatedTotals(ext.stated_meal_total, extItems));
-  if (statedOut.meal || statedOut.lines.length) {
-    steps.push({ iter: 0, tool: "user_stated_total", input: { meal: statedOut.meal, lines: statedOut.lines.length }, result: null });
+  if (statedOut.meal || statedOut.lines.length || statedOut.ignored?.length) {
+    steps.push({
+      iter: 0, tool: "user_stated_total",
+      input: { meal: statedOut.meal, lines: statedOut.lines.length },
+      result: statedOut.ignored?.length ? { ignored: statedOut.ignored } : null,
+    });
   }
   // Only trust the correction flag when a previous meal was actually supplied.
   const correctsPrevious = hasPrevious && ext.corrects_previous === true;
@@ -5824,7 +5839,7 @@ async function runParseMealCore(
   // per-100 macros. ~2s instead of ~6s. Falls through on anything ambiguous.
   // Not for numbers the user wrote: this path recomputes from the old row's
   // per-100, so "no, 145g apple should be 90 cals" came back 75 kcal again
-  // (live, 2026-09-27). The full path below applies her numbers.
+  // (live, 2026-09-27). The full path below applies the user's numbers.
   if (correctsPrevious && !extItems.some((it) => it.stated)) {
     const tFast0 = Date.now();
     const correctedRaw = await tryFastCorrection(deps, extItems, prevItems).catch(() => null);
