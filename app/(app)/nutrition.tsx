@@ -830,8 +830,11 @@ export default function NutritionScreen() {
         // length so a crafted product name cannot append instructions of its
         // own. Low severity - the lookup is bounded and its output is a
         // schema-constrained macro panel - but the guard costs nothing.
+        // The user's own words when the server sent them: the card's name can
+        // be the wrong row itself (a different brand's bar), and searching for
+        // it would only "confirm" the mistake.
         text: `yes, look up the label for ${
-          item.food_name.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
+          (item.said_name ?? item.food_name).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80)
         } online and check these numbers`,
         mealHint: f.mealType,
         previous: { text: f.raw, items: f.meal.items },

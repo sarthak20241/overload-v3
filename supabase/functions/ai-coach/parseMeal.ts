@@ -44,7 +44,8 @@ import {
   type SourceReading,
   VERIFY_TOLERANCE,
 } from "./preciseCache.ts";
-import { foodLabel, runTavilyLookup } from "./tavilyLookup.ts";
+import { foodLabel, parseSuggestion, runTavilyLookup, suggestSearchPayload } from "./tavilyLookup.ts";
+import { otherBrandRows } from "./brandCheck.ts";
 import { matchOurSources } from "./ourSources.ts";
 import { fillStated, readStated, type StatedPer100, statedNote, statedPer100, type StatedRaw } from "./statedNumbers.ts";
 import {
@@ -166,6 +167,11 @@ export interface ParsedItem {
   numbers_tier?: ParseTier;
   /** A proposed personal alias. Learned only when this food is saved. */
   memory_input_name?: string;
+  /** The user's own words for this line, when the card names it differently
+   *  (a catalog row's name, a rewritten search name). The double check looks
+   *  the food up by THESE: looking up the card's name only re-checks the row
+   *  that may be the mistake. */
+  said_name?: string;
 }
 
 // One entry in the agent's tool-call trail, captured for observability + eval.
@@ -279,6 +285,8 @@ export interface PreviousItem {
    *  it - which silently collapses a logged day into one section the first
    *  time the user says "make it 3 eggs". */
   meal_type?: MealType;
+  /** ParsedItem.said_name, sent back by the client. */
+  said_name?: string;
 }
 
 /** An untouched previous line, rebuilt verbatim. */
@@ -970,6 +978,10 @@ export interface ParseMealDeps {
    *  Precise. */
   webLookup?: "anthropic" | "tavily";
   tavily?: TavilyDeps;
+  /** Precise on Tavily: when the fixed searches miss, one model call reads what
+   *  they returned and searches again under the name the product is sold as
+   *  (tavilyLookup.ts suggestSearch). false turns it off (SEARCH_REWRITE=off). */
+  searchRewrite?: boolean;
   /** Jev, for judging which search results are about exactly this food. */
   jev?: JevDeps;
   /** Tavily country boost ("india"). Used when resolveSearchCountry is absent. */
@@ -2497,6 +2509,9 @@ export function buildDecideSystemPrompt(input: ParseMealInput): string {
   The same phrase shape gives opposite answers: "amul toned milk" -> plain toned milk row is fine, "quest protein bar" -> a generic protein bar row is NOT.
 - grade_not_stocked on an item means we checked every candidate in CODE and none of them stock the grade the user asked for. Do NOT take one of those rows. ESTIMATE the product they actually named, and say so in assumption ("No low fat paneer row, so these are estimated"). A generic row's macros are more wrong than a careful estimate: low fat paneer is ~190 kcal/100 g against plain paneer's 283, double toned milk ~42 against toned's 58.
 - sources_disagree_pct on a candidate means we read that food's calories from several places and they did not agree, by roughly that percentage. Its per_100 is the middle of what we found, not a settled fact. Still pick the candidate if it is the right food, but never mark that line confidence high, and say the doubt out loud in assumption in Drona's voice ("Sources vary on this one, so treat it as a ballpark"). A candidate with no such flag agreed with itself; say nothing about sourcing there.
+- looked_up_as on an item means the user's words found no label as written, and a search showed the product is sold under that name. A candidate that is the looked_up_as product IS the user's food; say in assumption which product you took it as.
+- similar_products on an item are other companies' products we found. They are NEVER the food: do not log one, and do not copy its numbers. Use them, with what you know of the user's brand and its range, only to keep your estimate in a sensible range.
+- label_not_found on an item means the web was searched for this product's label and none was found. If no candidate is acceptable, say so in assumption ("Couldn't find this exact label, so this is my estimate").
 - No acceptable candidate: estimate from your own knowledge. food_id null, source "estimate", confidence low or medium, assumption naming what you assumed. Never refuse to log a real food.
 </candidate_rules>
 
@@ -2676,6 +2691,14 @@ export interface ResolvedItem extends ExtractedItem {
   /** Absolute relevance of the top candidate after rerank. The P3 skip-decide
    *  gate keys on this; absent when rerank did not run. */
   rerankTopScore?: number;
+  /** Precise: the user's words found no label, and the search rewrite says the
+   *  product is sold under this name. The catalog was searched by it too. */
+  lookedUpAs?: string;
+  /** Precise: the web was searched for this food's label and none was found. */
+  labelNotFound?: boolean;
+  /** Rows the brand check took out (another company's product). Never logged;
+   *  decide sees them only as a range for its own estimate. */
+  similar?: CandidateFood[];
 }
 
 // A cup serving anchors every spoon: 1 cup = 16 tbsp = 48 tsp. Deriving the
@@ -3092,7 +3115,8 @@ async function webFindingFor(
   onUsage: (data: any) => void,
   onCall: () => void,
   onStep?: (step: ParseStep) => void,
-): Promise<SuperFinding | undefined> {
+  onRenamed?: (name: string) => void,
+): Promise<(SuperFinding & { searched_as?: string | null }) | undefined> {
   if (deps.webLookup === "tavily" && deps.tavily) {
     const country = deps.resolveSearchCountry
       ? await deps.resolveSearchCountry().catch(() => deps.searchCountry ?? null)
@@ -3113,7 +3137,18 @@ async function webFindingFor(
         onUsage(r.data);
         return r.data;
       },
+      suggestSearch: deps.searchRewrite === false ? undefined : async (food, seen) => {
+        const r = await callAnthropicOnce(deps, suggestSearchPayload(deps.model, food, seen));
+        if (!r.ok) {
+          deps.log?.(`[parse_meal] search rewrite failed: ${r.status}`);
+          return null;
+        }
+        onCall();
+        onUsage(r.data);
+        return parseSuggestion(r.data);
+      },
     }, { name: item.name, brand: item.brand ?? null });
+    if (out.renamed) onRenamed?.(out.renamed);
     // Counted through the same accumulator as tokens, so the credits land in
     // usage and index.ts can write the Tavily cost row.
     if (out.credits > 0) onUsage({ tavily_credits: out.credits });
@@ -3133,8 +3168,9 @@ export async function superLookupOne(
   onUsage: (data: any) => void,
   onCall: () => void,
   onStep?: (step: ParseStep) => void,
+  onRenamed?: (name: string) => void,
 ): Promise<CandidateFood | null> {
-  const finding = await webFindingFor(deps, item, onUsage, onCall, onStep);
+  const finding = await webFindingFor(deps, item, onUsage, onCall, onStep, onRenamed);
   if (!finding || finding.readings.length === 0) return null;
 
   const reconciled = reconcileReadings(finding.readings);
@@ -3171,7 +3207,12 @@ export async function superLookupOne(
   // foodLabel, not a bare "brand name": extract reports brand "Parle" AND name
   // "Parle Hide and Seek biscuits", which put "Parle Parle ..." on the card
   // and into precise_cache.display_name (live, ai-coach v186, 2026-09-26).
-  const display = foodLabel(item);
+  // Found under a rewritten name: the card shows the product as it is sold, so
+  // the user can see which one we took. The cache key stays the user's words below,
+  // so the next time anyone types them it is a straight hit.
+  const display = finding.searched_as
+    ? foodLabel({ name: finding.searched_as, brand: item.brand ?? null })
+    : foodLabel(item);
   // The pages' brand when extract left it inside the name (brandFromPages):
   // one value for the cache row and for this turn's candidate.
   const brand = item.brand ?? finding.brand ?? null;
@@ -3254,8 +3295,12 @@ async function resolveOneItem(
    *  (see the WEB_LOOKUP_TOOL header): upgrade before the card exists and it is
    *  stable, upgrade after and the user watches numbers move under a live Add
    *  button. */
-  superLookup?: (item: ExtractedItem) => Promise<CandidateFood | null>,
+  superLookup?: (item: ExtractedItem, onRenamed?: (name: string) => void) => Promise<CandidateFood | null>,
 ): Promise<ResolvedItem> {
+  /** Precise: the search rewrite's name for this food, when its label was not
+   *  found under the user's words. The catalog ladder below searches it too. */
+  let lookedUpAs: string | undefined;
+  let labelNotFound = false;
   // ── Precise-cache short-circuit (Phase 7b) ────────────────────────────────
   // Read BEFORE the fan-out, not as another arm of it: the whole point is that
   // a hit costs no web latency and no web quota. 0109's precise_cache_get()
@@ -3320,7 +3365,8 @@ async function resolveOneItem(
       }
     }
     const tWeb0 = Date.now();
-    const found = await superLookup(item).catch(() => null);
+    const found = await superLookup(item, (name) => { lookedUpAs = name; }).catch(() => null);
+    labelNotFound = !found;
     if (ours && pm?.mode === "shadow") {
       // Shadow adds at most SHADOW_GRACE_MS to the answer the user is waiting
       // for, and usually nothing: the match runs beside the web lookup, which
@@ -3369,6 +3415,10 @@ async function resolveOneItem(
     !!part && item.name.toLowerCase().includes(part.toLowerCase());
   const withPart = (part: string | null | undefined, base: string) =>
     part && !base.toLowerCase().includes(part.toLowerCase()) ? `${part} ${base}` : base;
+  // The rewrite's name LEADS when there is one: the user's own words already
+  // missed on the web, and the 0079 search needs every word to match, so a
+  // nickname the label never prints finds nothing in the catalog either.
+  if (lookedUpAs) push(lookedUpAs);
   if (item.brand && !has(item.brand)) push(withPart(item.brand, item.name));
   // PREP BELONGS IN THE LADDER, and its absence cost a real case. Extract puts
   // prep in its own field, so "1 cup cooked rice" arrives as name "rice" with
@@ -3453,8 +3503,11 @@ async function resolveOneItem(
     }
     return merged.slice(0, 10);
   };
+  // The name the shops print, when the rewrite found one: OFF and FatSecret
+  // search by keywords, and the user's nickname was what made them miss.
+  const sourceQuery = lookedUpAs ?? foodLabel(item);
   const runOff = async (): Promise<CandidateFood[]> => {
-    const q = foodLabel(item);
+    const q = sourceQuery;
     toolCalls.push("lookup_packaged_food");
     const found: CandidateFood[] = [];
     try {
@@ -3500,7 +3553,7 @@ async function resolveOneItem(
 
   const runFatSecret = async (): Promise<CandidateFood[]> => {
     if (!deps.searchFatSecret) return [];
-    const q = foodLabel(item);
+    const q = sourceQuery;
     toolCalls.push("lookup_fatsecret");
     let found: CandidateFood[] = [];
     try {
@@ -3550,11 +3603,31 @@ async function resolveOneItem(
   let usable = sane.length > 0 ? sane : candidates;
   let rerankTopScore: number | undefined;
 
+  // Another company's product never answers for a food named by brand
+  // (brandCheck.ts). What it takes out is kept as `similar`: decide may use it
+  // as a range for its own estimate, never as the line.
+  let similar: CandidateFood[] = [];
+  if (item.brand && deps.jev && usable.length > 0) {
+    const check = await otherBrandRows(
+      deps.jev,
+      { name: lookedUpAs ?? item.name, brand: item.brand },
+      usable.map((c) => ({ name: c.name, brand: c.brand })),
+    );
+    steps.push({ iter: 1, tool: "brand_check", input: { item: item.name, brand: item.brand }, result: check.trace });
+    if (check.drop.length > 0) {
+      const gone = new Set(check.drop);
+      similar = usable.filter((_, i) => gone.has(i)).slice(0, 3);
+      usable = usable.filter((_, i) => !gone.has(i));
+    }
+  }
+
   // Rerank: the user's own phrase against each candidate, best first. This is
   // where "2 whole eggs" beats "Eggs, chicken, yolk, raw" no matter what order
   // the sources returned. Fail-open: on any miss the merge order stands.
   if (deps.rerankCandidates && usable.length > 1) {
-    const rrQuery = [item.prep, item.brand, item.name].filter(Boolean).join(" ");
+    const rrQuery = lookedUpAs
+      ? [item.prep, lookedUpAs].filter(Boolean).join(" ")
+      : [item.prep, item.brand, item.name].filter(Boolean).join(" ");
     const docs = usable.map((c) => (c.brand ? `${c.brand} ${c.name}` : c.name));
     const rr = await deps.rerankCandidates(rrQuery, docs).catch(() => null);
     if (rr) {
@@ -3604,7 +3677,14 @@ async function resolveOneItem(
 
   // decide reads every candidate we pass; past ~6 the list is distractors.
   usable = usable.slice(0, 6);
-  return { ...item, candidates: usable.map(synthesizeVolumeAnchors), rerankTopScore };
+  return {
+    ...item,
+    candidates: usable.map(synthesizeVolumeAnchors),
+    rerankTopScore,
+    ...(lookedUpAs ? { lookedUpAs } : {}),
+    ...(labelNotFound ? { labelNotFound } : {}),
+    ...(similar.length ? { similar } : {}),
+  };
 }
 
 function round1(n: number): number {
@@ -4297,6 +4377,24 @@ export function stripEphemeralIds(
  * is skipped - silently bypassed both guards. FatSecret exists to fix the
  * low-fat-paneer class of bug, so it of all sources must be checked.
  */
+/**
+ * Stamp each line with the user's own words when the card names it something
+ * else, so the double check can look up what they SAID. Matched through the row
+ * the line was filled from, so it runs before stripEphemeralIds erases the
+ * ids that link a line to its item.
+ */
+export function stampSaidNames(items: ParsedItem[], resolved: ResolvedItem[]): ParsedItem[] {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return items.map((it) => {
+    if (!it.food_id || it.said_name) return it;
+    const r = resolved.find((x) => x.candidates.some((c) => c.food_id === it.food_id));
+    if (!r) return it;
+    const said = [r.prep && !norm(r.name).includes(norm(r.prep)) ? r.prep : null, foodLabel(r)]
+      .filter(Boolean).join(" ").slice(0, 100);
+    return norm(said) && norm(said) !== norm(it.food_name) ? { ...it, said_name: said } : it;
+  });
+}
+
 function applyNameAgreement(
   deps: ParseMealDeps,
   said: string,
@@ -4804,8 +4902,12 @@ async function researchPrevious(
   onCall: () => void,
 ): Promise<{ items: ParsedItem[]; note: string; conflict: string | null } | null> {
   if (!deps.webSearchEnabled || previous.length === 0) return null;
+  // The user's own words when the line carries them: the card's name may be
+  // the very row being doubted (a catalog row swapped in for their product),
+  // and looking THAT up only confirms the mistake.
+  const lookupName = (p: PreviousItem) => p.said_name?.trim() || p.food_name;
   const targets: ExtractedItem[] = previous.slice(0, 3).map((p) => ({
-    name: p.food_name,
+    name: lookupName(p),
     brand: null,
     quantity: p.quantity,
     unit: p.serving_label,
@@ -4820,7 +4922,7 @@ async function researchPrevious(
   for (const p of previous) {
     let label: WebLabel | null = null;
     for (const [forItem, l] of labels) {
-      if (wordsOverlap(p.food_name, forItem)) { label = l; break; }
+      if (wordsOverlap(lookupName(p), forItem)) { label = l; break; }
     }
     if (!label || !(p.grams > 0)) {
       // No label for this line (not looked up, or no name match). Keep it as it
@@ -4855,7 +4957,9 @@ async function researchPrevious(
       // food_id drops: these macros are the web label's, not that catalog row's,
       // so verifyItems must not overwrite them with the numbers we distrusted.
       food_id: null,
-      food_name: p.food_name,
+      // The user's words now: the numbers are the label for what they named, so the
+      // old row's name would sit over numbers that are not its own.
+      food_name: lookupName(p),
       quantity: p.quantity,
       serving_label: p.serving_label,
       grams: p.grams,
@@ -5998,8 +6102,8 @@ async function runParseMealCore(
         const looked = await resolveOneItem(
           deps, item, steps, toolCalls, stapleNames,
           superMode
-            ? (it: ExtractedItem) =>
-              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st2) => steps.push(st2))
+            ? (it: ExtractedItem, onRenamed?: (name: string) => void) =>
+              superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st2) => steps.push(st2), onRenamed)
             : undefined,
         );
         // Nothing to fill the missing fields from: the lookup's own answer
@@ -6037,8 +6141,8 @@ async function runParseMealCore(
         // accumulate() is passed through so the web_search_requests these calls
         // spend land in usage, which is what 0113 prices.
         superMode
-          ? (it: ExtractedItem) =>
-            superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st))
+          ? (it: ExtractedItem, onRenamed?: (name: string) => void) =>
+            superLookupOne(deps, it, accumulate, () => { anthropicCalls++; }, (st) => steps.push(st), onRenamed)
           : undefined,
       );
     }),
@@ -6080,12 +6184,15 @@ async function runParseMealCore(
     const fillDefault = mealFromText ?? input.mealHint ?? mealForHour(input.localHour);
     const filled = assignItemMeals(
       stripEphemeralIds(
-        flagPrepMismatch(
-          checkAtwater(reconcileQuantity(
-            await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
-            servingsForItems(resolved),
-          )),
-          prepForItems(resolved),
+        stampSaidNames(
+          flagPrepMismatch(
+            checkAtwater(reconcileQuantity(
+              await verifyItems(deps, clampVolumetricGrams(codeFill.items), candidatePer100),
+              servingsForItems(resolved),
+            )),
+            prepForItems(resolved),
+          ),
+          resolved,
         ),
         verifiedForItems(resolved),
         memoryByFood,
@@ -6131,6 +6238,18 @@ async function runParseMealCore(
       // Top 4 candidates: the ranked search already puts the right row first;
       // extra candidates only inflate decide-call input tokens (latency).
       candidates: r.candidates.slice(0, 4).map(candidatePayload),
+      ...(r.lookedUpAs ? { looked_up_as: r.lookedUpAs } : {}),
+      ...(r.labelNotFound ? { label_not_found: true } : {}),
+      // No food_id on purpose: these can inform an estimate, never be logged.
+      ...(r.similar?.length
+        ? {
+          similar_products: r.similar.map((c) => ({
+            name: c.name,
+            ...(c.brand ? { brand: c.brand } : {}),
+            per_100: { kcal: c.kcal, protein_g: c.protein_g, carb_g: c.carb_g, fat_g: c.fat_g },
+          })),
+        }
+        : {}),
     })),
   };
 
@@ -6220,9 +6339,12 @@ async function runParseMealCore(
     items = reconcileExtracted(items, resolved, candidatePer100);
   }
 
-  items = flagPrepMismatch(
-    checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
-    prepForItems(resolved),
+  items = stampSaidNames(
+    flagPrepMismatch(
+      checkAtwater(reconcileQuantity(items, servingsForItems(resolved))),
+      prepForItems(resolved),
+    ),
+    resolved,
   );
 
   // Shadow mode: decide already produced the real answer above. Compare what

@@ -662,6 +662,11 @@ export interface ParsedMealItem {
    *  instead of "edited": the numbers are the user's, from My Meals. */
   saved_meal?: string | null;
 
+  /** The user's own words for this line, when the card names it differently
+   *  (a catalog row, a product found under another name). The double check
+   *  looks the food up by these, not by the card's name. */
+  said_name?: string;
+
   /** The diary section THIS line goes to. One message can cover a whole day
    *  ("eggs for breakfast, dal at lunch"), so lines in one parsed meal can
    *  belong to different sections. The server stamps every line; the client
@@ -796,6 +801,7 @@ function toParsedItem(i: any, fallbackMeal: MealType | null): ParsedMealItem {
     // render rather than claiming a cross-check that never happened.
     verified: i.verified === true,
     ...(typeof i.saved_meal === 'string' && i.saved_meal.trim() ? { saved_meal: i.saved_meal.trim() } : {}),
+    ...(typeof i.said_name === 'string' && i.said_name.trim() ? { said_name: i.said_name.trim() } : {}),
   };
 }
 
@@ -1203,6 +1209,9 @@ export async function parseMeal(
               meal_type: it.meal_type,
               assumption: it.assumption,
               confidence: it.confidence,
+              // The user's words for the line, so a double check looks up what
+              // they named rather than the row that may be the mistake.
+              ...(it.said_name ? { said_name: it.said_name } : {}),
             })),
           }
           : {}),
